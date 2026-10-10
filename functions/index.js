@@ -1741,6 +1741,270 @@ exports.getPedidosVigentesBusint = onCall(
   }
 );
 
+// (2026-10-10, a pedido de Fredy) "Disponible para despachar": para cada
+// cliente y referencia, cuánto se pidió, cuánto ya se produjo (Entradas a
+// Planta), cuánto ya se despachó (facturado/traslados netos de devoluciones),
+// cuánto falta producir, cuánto está listo para despachar y cuánto vale (con
+// el precio del pedido en Busint). Cruce por NÚMERO DE PEDIDO + REFERENCIA
+// (las referencias se comparan sin guiones: Busint usa "98-138", Planta
+// "98138").
+//   - Pedido:    ApiGen_OrdenesDePedidoBusint (en vivo).
+//   - Despachado: ApiGen_FacturadoBusint (FAC + TEX + TCO, netos de DTE/DTC,
+//                 que ya llegan con cantidad negativa).
+//   - Producido: "Entradas de Planta" ya sincronizadas en Firestore
+//                 (planta_entradas_cargas), por Nped + ref, netas de devoluciones.
+//   - Precio:    1) tablas de pedido de Busint (pedidos pendientes / pedidos
+//                 detalles clientes) si traen ese pedido+ref; 2) precio
+//                 facturado en ese mismo pedido+ref; 3) última factura del
+//                 mismo cliente+ref. Cada fila dice de dónde salió su precio
+//                 ("precioFuente") para que nadie tenga que adivinar.
+function refSinGuion(v) {
+  return String(v ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+exports.getDisponibleParaDespachar = onCall(
+  {
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL, BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 540,
+    memory: "2GiB",
+  },
+  async (request) => {
+    if (!request.auth) throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+    const fechaValida = (v) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
+    const hoyISO = new Date().toISOString().slice(0, 10);
+    const sumarDias = (iso, n) => {
+      const d = new Date(`${iso}T00:00:00Z`);
+      d.setUTCDate(d.getUTCDate() + n);
+      return d.toISOString().slice(0, 10);
+    };
+    const fechaInicio = fechaValida(request.data?.fechaInicio) ? request.data.fechaInicio : sumarDias(hoyISO, -270);
+    const fechaFin = fechaValida(request.data?.fechaFin) ? request.data.fechaFin : sumarDias(hoyISO, 90);
+    const avisos = [];
+
+    // 1) Pedidos (en vivo)
+    let filasPedido;
+    try {
+      filasPedido = await consultarOrdenesBusint(fechaInicio, fechaFin);
+    } catch (err) {
+      logger.error("Error consultando Busint (getDisponibleParaDespachar)", { error: String(err) });
+      throw new HttpsError("unavailable", "No se pudo consultar los pedidos en Busint. Intenta de nuevo en unos minutos.");
+    }
+    const lineas = new Map(); // `${numPed}|${refNorm}` -> línea
+    const porPedidoCliente = new Map();
+    const numPedsSet = new Set();
+    for (const f of filasPedido) {
+      const numPed = String(f.numPed ?? "").trim();
+      const ref = String(f.ref || "").trim();
+      if (!numPed || !ref) continue;
+      const refNorm = refSinGuion(ref);
+      const clave = `${numPed}|${refNorm}`;
+      if (!lineas.has(clave)) {
+        lineas.set(clave, {
+          numPed,
+          ref,
+          refNorm,
+          cliente: String(f.cliente || "").trim() || "Sin cliente",
+          descripcion: "",
+          fechaDespacho: soloFecha(f.fechaDespacho),
+          pedido: 0,
+          producido: 0,
+          despachado: 0,
+          precio: 0,
+          precioFuente: "",
+        });
+        numPedsSet.add(numPed);
+        porPedidoCliente.set(numPed, String(f.cliente || "").trim() || "Sin cliente");
+      }
+      lineas.get(clave).pedido += Math.round(Number(f.cantPed) || 0);
+    }
+
+    // 2) Despachado + precios facturados (por tandas de 30 días; solo se
+    // guarda el resumen de los pedidos que interesan).
+    const precioFactPedidoRef = new Map(); // numPed|refNorm -> precio
+    const precioFactClienteRef = new Map(); // cliente|refNorm -> {precio, fecha}
+    try {
+      const finTotal = new Date(`${hoyISO}T00:00:00Z`);
+      let cursor = new Date(`${fechaInicio}T00:00:00Z`);
+      while (cursor <= finTotal) {
+        const finTanda = new Date(cursor);
+        finTanda.setUTCDate(finTanda.getUTCDate() + 29);
+        const finEf = finTanda > finTotal ? finTotal : finTanda;
+        const filasFact = await consultarFacturadoBusint(cursor.toISOString().slice(0, 10), finEf.toISOString().slice(0, 10));
+        for (const f of filasFact) {
+          const numPed = String(f.numped ?? "").trim();
+          const refNorm = refSinGuion(f.ref);
+          if (!refNorm) continue;
+          const precio = Number(f.precio) || 0;
+          const desc = Number(f.desc) || 0;
+          const precioNeto = precio > 0 ? precio * (1 - (desc > 0 && desc < 100 ? desc / 100 : 0)) : 0;
+          if (numPed && numPedsSet.has(numPed)) {
+            const clave = `${numPed}|${refNorm}`;
+            const l = lineas.get(clave);
+            if (l) l.despachado += Number(f.cant) || 0;
+            if (precioNeto > 0 && !precioFactPedidoRef.has(clave)) precioFactPedidoRef.set(clave, precioNeto);
+          }
+          if (precioNeto > 0) {
+            const cli = porPedidoCliente.get(numPed) || String(f.nombreCliente || f.NombreCliente || f.cliente || f.Cliente || "").trim();
+            const fecha = soloFecha(f.fechaFact);
+            if (cli) {
+              const ck = `${cli}|${refNorm}`;
+              const prev = precioFactClienteRef.get(ck);
+              if (!prev || fecha >= prev.fecha) precioFactClienteRef.set(ck, { precio: precioNeto, fecha });
+            }
+          }
+        }
+        cursor = new Date(finEf);
+        cursor.setUTCDate(cursor.getUTCDate() + 1);
+      }
+    } catch (err) {
+      logger.error("Error consultando facturación (getDisponibleParaDespachar)", { error: String(err) });
+      avisos.push("No se pudo consultar la facturación de Busint: lo 'despachado' puede estar incompleto.");
+    }
+
+    // 3) Producido: Entradas de Planta en Firestore
+    let entradasSinPedido = 0;
+    try {
+      const anioIni = Number(fechaInicio.slice(0, 4));
+      const anioFin = Number(hoyISO.slice(0, 4));
+      const refsDocs = [];
+      for (let a = anioIni; a <= anioFin; a++) refsDocs.push(db.collection("planta_entradas_cargas").doc(`sync-busint-${a}`));
+      const docs = await db.getAll(...refsDocs);
+      const mapa = new Map();
+      const clave = (e) => `${e.numEnt}|${e.fecha}|${e.esDevolucion ? "D" : "E"}`;
+      const baseSnap = await db.collection("planta_entradas_cargas").orderBy("creadoEn", "desc").limit(15).get();
+      const baseDoc = baseSnap.docs.find((d) => !d.data().anio);
+      if (baseDoc) (baseDoc.data().entradas || []).forEach((e) => mapa.set(clave(e), e));
+      docs.forEach((d) => {
+        if (d.exists) (d.data().entradas || []).forEach((e) => mapa.set(clave(e), e));
+      });
+      for (const e of mapa.values()) {
+        if ((e.fecha || "") < fechaInicio) continue;
+        const cant = Number(e.cantidad) || 0;
+        if (!cant) continue;
+        const numPed = String(e.nPedido ?? "").trim();
+        if (!numPed) { entradasSinPedido += 1; continue; }
+        const l = lineas.get(`${numPed}|${refSinGuion(e.refN)}`) || lineas.get(`${numPed}|${refSinGuion(e.refExt)}`);
+        if (l) {
+          l.producido += cant;
+          if (!l.descripcion && e.descripcion) l.descripcion = e.descripcion;
+        }
+      }
+    } catch (err) {
+      logger.error("Error leyendo Entradas de Planta (getDisponibleParaDespachar)", { error: String(err) });
+      avisos.push("No se pudieron leer las Entradas de Planta: lo 'producido' puede estar incompleto.");
+    }
+
+    // 4) Pedidos dados por cumplido u ocultos: se excluyen
+    const cumplidos = new Set();
+    try {
+      const pedidosClientes = await consultarTablaBusintBDCompleta("pedidos clientes");
+      pedidosClientes.forEach((p) => {
+        const n = String(p?.NumPed ?? "").trim();
+        if (!n || !numPedsSet.has(n)) return;
+        const raw = primerCampoDefinido(p, ["Dadoporcumplido", "DadoPorCumplido", "dadoporcumplido", "DadoCumplido"]);
+        if (String(raw ?? "").trim().toUpperCase() === "S") cumplidos.add(n);
+      });
+    } catch (err) {
+      logger.error("Error leyendo 'pedidos clientes' (getDisponibleParaDespachar)", { error: String(err) });
+      avisos.push("No se pudo leer cuáles pedidos están 'dados por cumplido': pueden aparecer pedidos ya cerrados.");
+    }
+    const ocultosSnap = await db.collection("pedidos_ocultos_busint").get();
+    ocultosSnap.docs.forEach((d) => cumplidos.add(String(d.data().numero || d.id).trim()));
+
+    // 5) Precio del pedido en las tablas de Busint (si traen ese pedido)
+    const precioTablaPedidoRef = new Map();
+    const diagTablas = {};
+    for (const tabla of ["pedidos pendientes", "pedidos detalles clientes"]) {
+      try {
+        const filas = await consultarTablaBusintBDCompleta(tabla);
+        let usadas = 0;
+        for (const r of filas) {
+          const numPed = String(r?.NumPed ?? "").trim();
+          if (!numPed || !numPedsSet.has(numPed)) continue;
+          const precio = Number(r?.Precio) || 0;
+          if (precio <= 0) continue;
+          const descp = Number(primerCampoDefinido(r, ["descp", "DescP", "Descp"])) || 0;
+          const k = `${numPed}|${refSinGuion(r?.Ref)}`;
+          if (!precioTablaPedidoRef.has(k)) {
+            precioTablaPedidoRef.set(k, precio * (1 - (descp > 0 && descp < 100 ? descp / 100 : 0)));
+            usadas += 1;
+          }
+        }
+        diagTablas[tabla] = { filas: filas.length, preciosUsados: usadas };
+      } catch (err) {
+        diagTablas[tabla] = { error: String(err?.message || err).slice(0, 200) };
+      }
+    }
+
+    // 6) Armar resultado por cliente
+    const porClienteMap = new Map();
+    let sinPrecio = 0;
+    for (const l of lineas.values()) {
+      if (cumplidos.has(l.numPed)) continue;
+      const k = `${l.numPed}|${l.refNorm}`;
+      const pT = precioTablaPedidoRef.get(k);
+      const pF = precioFactPedidoRef.get(k);
+      const pC = precioFactClienteRef.get(`${l.cliente}|${l.refNorm}`);
+      if (pT > 0) { l.precio = pT; l.precioFuente = "pedido"; }
+      else if (pF > 0) { l.precio = pF; l.precioFuente = "factura del pedido"; }
+      else if (pC) { l.precio = pC.precio; l.precioFuente = "última factura del cliente"; }
+      else { l.precio = 0; l.precioFuente = "sin precio"; }
+      l.producido = Math.max(0, l.producido);
+      l.despachado = Math.max(0, l.despachado);
+      const saldoPedido = Math.max(0, l.pedido - l.despachado);
+      const disponible = Math.max(0, Math.min(l.producido - l.despachado, saldoPedido));
+      const faltaProducir = Math.max(0, l.pedido - Math.max(l.producido, l.despachado));
+      const estado = l.pedido > 0 && l.despachado >= l.pedido ? "despachado"
+        : disponible > 0 && faltaProducir === 0 ? "listo"
+        : disponible > 0 ? "parcial"
+        : "sin_producir";
+      if (!l.precio) sinPrecio += disponible > 0 ? 1 : 0;
+      if (!porClienteMap.has(l.cliente)) porClienteMap.set(l.cliente, []);
+      porClienteMap.get(l.cliente).push({
+        numPed: l.numPed,
+        ref: l.ref,
+        descripcion: l.descripcion,
+        fechaDespacho: l.fechaDespacho,
+        pedido: l.pedido,
+        producido: l.producido,
+        despachado: l.despachado,
+        faltaProducir,
+        disponible,
+        precio: Math.round(l.precio),
+        precioFuente: l.precioFuente,
+        valorDisponible: Math.round(disponible * l.precio),
+        estado,
+      });
+    }
+    const porCliente = [...porClienteMap.entries()]
+      .map(([cliente, filas]) => {
+        filas.sort((a, b) => (b.disponible > 0) - (a.disponible > 0) || a.ref.localeCompare(b.ref) || a.numPed.localeCompare(b.numPed));
+        return {
+          cliente,
+          filas,
+          totales: {
+            pedido: filas.reduce((s, f) => s + f.pedido, 0),
+            producido: filas.reduce((s, f) => s + f.producido, 0),
+            despachado: filas.reduce((s, f) => s + f.despachado, 0),
+            faltaProducir: filas.reduce((s, f) => s + f.faltaProducir, 0),
+            disponible: filas.reduce((s, f) => s + f.disponible, 0),
+            valorDisponible: filas.reduce((s, f) => s + f.valorDisponible, 0),
+          },
+        };
+      })
+      .sort((a, b) => a.cliente.localeCompare(b.cliente));
+    if (entradasSinPedido) avisos.push(`${entradasSinPedido} entrada(s) de Planta no traen número de pedido y no se pudieron asignar a ningún cliente.`);
+    if (sinPrecio) avisos.push(`${sinPrecio} referencia(s) con unidades disponibles no tienen precio en Busint (salen con precio 0).`);
+    return {
+      generadoEn: new Date().toISOString(),
+      fechaInicio,
+      fechaFin,
+      porCliente,
+      avisos,
+      diagTablas,
+    };
+  }
+);
+
 // Callable usado por "Revisar contra Busint" tanto en Pedidos (pestaña
 // Activos) como en el módulo Corte: dado un rango de fechas, devuelve
 // simplemente la LISTA de números de pedido que Busint todavía tiene hoy en
