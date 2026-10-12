@@ -1939,21 +1939,37 @@ exports.getDisponibleParaDespachar = onCall(
       }
     }
 
-    // 5b) Precio matriculado de la referencia (ApiGen_Referencias.precioPM): se
-    // usa solo como ÚLTIMO recurso, cuando no hay precio del pedido ni de
-    // facturas (las tablas de pedido de Busint están congeladas).
+    // 5b) Precio matriculado de la referencia (ApiGen_Referencias.precioPM): es la
+    // ÚNICA fuente de precio (decisión de Fredy): el de la pantalla de Costos.
     const precioMatriculado = new Map(); // refNorm -> precioPM
     const filaPorRef = new Map(); // refNorm -> fila del maestro (para el diagnóstico)
     try {
       const referencias = await consultarCatalogoBusint("ApiGen_Referencias");
-      // Se indexa por la referencia interna Y por la externa (la del cliente):
-      // en los pedidos puede venir cualquiera de las dos.
+      // 1) Por la referencia INTERNA (la que cuenta; cada una tiene su precio).
       for (const r of referencias) {
+        const k = refSinGuion(r?.ref);
+        if (!k) continue;
+        if (!filaPorRef.has(k)) filaPorRef.set(k, r);
         const pm = Number(r?.precioPM) || 0;
-        for (const k of [refSinGuion(r?.ref), refSinGuion(r?.referenciaExterna)]) {
-          if (!k) continue;
-          if (!filaPorRef.has(k)) filaPorRef.set(k, r);
-          if (pm >= PRECIO_MINIMO_REAL && !precioMatriculado.has(k)) precioMatriculado.set(k, pm);
+        if (pm >= PRECIO_MINIMO_REAL && !precioMatriculado.has(k)) precioMatriculado.set(k, pm);
+      }
+      // 2) Por la referencia EXTERNA solo para los códigos que no coinciden con
+      // ninguna referencia interna, y solo si todas las referencias que comparten
+      // ese externo tienen el MISMO precio matriculado (si no, es ambiguo y no se
+      // adivina: queda sin matricular).
+      const porExterna = new Map(); // refNorm externo -> { precios:Set, fila }
+      for (const r of referencias) {
+        const k = refSinGuion(r?.referenciaExterna);
+        if (!k || filaPorRef.has(k)) continue;
+        const e = porExterna.get(k) || { precios: new Set(), fila: r };
+        e.precios.add(Math.round((Number(r?.precioPM) || 0) * 100) / 100);
+        porExterna.set(k, e);
+      }
+      for (const [k, e] of porExterna) {
+        filaPorRef.set(k, e.fila);
+        if (e.precios.size === 1) {
+          const pm = [...e.precios][0];
+          if (pm >= PRECIO_MINIMO_REAL) precioMatriculado.set(k, pm);
         }
       }
       diagTablas["ApiGen_Referencias"] = { filas: referencias.length, preciosMatriculados: precioMatriculado.size };
