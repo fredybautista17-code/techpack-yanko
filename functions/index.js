@@ -1756,7 +1756,8 @@ exports.getPedidosVigentesBusint = onCall(
 //   - Precio:    1) tablas de pedido de Busint (pedidos pendientes / pedidos
 //                 detalles clientes) si traen ese pedido+ref; 2) precio
 //                 facturado en ese mismo pedido+ref; 3) última factura del
-//                 mismo cliente+ref. Cada fila dice de dónde salió su precio
+//                 mismo cliente+ref; 4) precio matriculado de la referencia
+//                 (ApiGen_Referencias.precioPM), último recurso. Cada fila dice de dónde salió su precio
 //                 ("precioFuente") para que nadie tenga que adivinar.
 function refSinGuion(v) {
   return String(v ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
@@ -1935,6 +1936,25 @@ exports.getDisponibleParaDespachar = onCall(
       }
     }
 
+    // 5b) Precio matriculado de la referencia (ApiGen_Referencias.precioPM): se
+    // usa solo como ÚLTIMO recurso, cuando no hay precio del pedido ni de
+    // facturas (las tablas de pedido de Busint están congeladas).
+    const precioMatriculado = new Map(); // refNorm -> precioPM
+    try {
+      const referencias = await consultarCatalogoBusint("ApiGen_Referencias");
+      for (const r of referencias) {
+        const k = refSinGuion(r?.ref);
+        if (!k) continue;
+        const pm = Number(r?.precioPM) || 0;
+        if (pm > 0 && !precioMatriculado.has(k)) precioMatriculado.set(k, pm);
+      }
+      diagTablas["ApiGen_Referencias"] = { filas: referencias.length, preciosMatriculados: precioMatriculado.size };
+    } catch (err) {
+      logger.error("Error leyendo ApiGen_Referencias (getDisponibleParaDespachar)", { error: String(err) });
+      diagTablas["ApiGen_Referencias"] = { error: String(err?.message || err).slice(0, 200) };
+      avisos.push("No se pudo leer el precio matriculado de las referencias: las líneas sin precio de pedido o factura quedarán 'sin precio'.");
+    }
+
     // 6) Armar resultado por cliente
     const porClienteMap = new Map();
     let sinPrecio = 0;
@@ -1947,6 +1967,7 @@ exports.getDisponibleParaDespachar = onCall(
       if (pT > 0) { l.precio = pT; l.precioFuente = "pedido"; }
       else if (pF > 0) { l.precio = pF; l.precioFuente = "factura del pedido"; }
       else if (pC) { l.precio = pC.precio; l.precioFuente = "última factura del cliente"; }
+      else if (precioMatriculado.get(l.refNorm) > 0) { l.precio = precioMatriculado.get(l.refNorm); l.precioFuente = "precio matriculado"; }
       else { l.precio = 0; l.precioFuente = "sin precio"; }
       l.producido = Math.max(0, l.producido);
       l.despachado = Math.max(0, l.despachado);
