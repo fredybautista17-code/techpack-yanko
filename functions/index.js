@@ -1942,13 +1942,36 @@ exports.getDisponibleParaDespachar = onCall(
     const precioMatriculado = new Map(); // refNorm -> precioPM
     try {
       const referencias = await consultarCatalogoBusint("ApiGen_Referencias");
+      // Se indexa por la referencia interna Y por la externa (la del cliente):
+      // en los pedidos puede venir cualquiera de las dos.
+      const filaPorRef = new Map(); // refNorm -> fila del maestro
       for (const r of referencias) {
-        const k = refSinGuion(r?.ref);
-        if (!k) continue;
         const pm = Number(r?.precioPM) || 0;
-        if (pm > 0 && !precioMatriculado.has(k)) precioMatriculado.set(k, pm);
+        for (const k of [refSinGuion(r?.ref), refSinGuion(r?.referenciaExterna)]) {
+          if (!k) continue;
+          if (!filaPorRef.has(k)) filaPorRef.set(k, r);
+          if (pm > 0 && !precioMatriculado.has(k)) precioMatriculado.set(k, pm);
+        }
       }
-      diagTablas["ApiGen_Referencias"] = { filas: referencias.length, preciosMatriculados: precioMatriculado.size };
+      // Diagnóstico: referencias del reporte que siguen sin precio, con los
+      // campos de precio que trae el maestro (para ver cuál tiene el valor).
+      const sinPrecioDiag = [];
+      const vistas = new Set();
+      for (const l of lineas.values()) {
+        if (sinPrecioDiag.length >= 15) break;
+        if (vistas.has(l.refNorm)) continue;
+        const k = `${l.numPed}|${l.refNorm}`;
+        if (precioTablaPedidoRef.get(k) > 0 || precioFactPedidoRef.get(k) > 0 || precioFactClienteRef.get(`${l.cliente}|${l.refNorm}`) || precioMatriculado.get(l.refNorm) > 0) continue;
+        vistas.add(l.refNorm);
+        const fila = filaPorRef.get(l.refNorm);
+        if (!fila) { sinPrecioDiag.push({ ref: l.ref, enMaestro: false }); continue; }
+        const camposPrecio = {};
+        for (const [campo, valor] of Object.entries(fila)) {
+          if (/prec|valor|costo|vta|venta|mayor|public/i.test(campo)) camposPrecio[campo] = valor;
+        }
+        sinPrecioDiag.push({ ref: l.ref, enMaestro: true, refMaestro: fila.ref, refExterna: fila.referenciaExterna, camposPrecio });
+      }
+      diagTablas["ApiGen_Referencias"] = { filas: referencias.length, preciosMatriculados: precioMatriculado.size, sinPrecio: sinPrecioDiag };
     } catch (err) {
       logger.error("Error leyendo ApiGen_Referencias (getDisponibleParaDespachar)", { error: String(err) });
       diagTablas["ApiGen_Referencias"] = { error: String(err?.message || err).slice(0, 200) };

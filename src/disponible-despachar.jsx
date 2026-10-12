@@ -378,6 +378,23 @@ export default function DisponibleDespacharView({ db, functionsClient, T }) {
           {datos.avisos.map((a, i) => <div key={i}>⚠️ {a}</div>)}
         </div>
       )}
+      {datos?.diagTablas?.ApiGen_Referencias && (datos.diagTablas.ApiGen_Referencias.error || datos.diagTablas.ApiGen_Referencias.sinPrecio?.length > 0) && (
+        <details style={{ padding: "8px 14px", background: T.canvas, border: `1px solid ${T.border}`, borderRadius: 8, fontSize: 12, marginBottom: 12 }}>
+          <summary style={{ cursor: "pointer", fontWeight: 700, color: T.slate }}>🔧 Diagnóstico de precios (para soporte)</summary>
+          <div style={{ marginTop: 8, lineHeight: 1.6 }}>
+            {datos.diagTablas.ApiGen_Referencias.error
+              ? <div style={{ color: T.coral }}>No se pudo leer el maestro de referencias: {datos.diagTablas.ApiGen_Referencias.error}</div>
+              : <>
+                  <div>Maestro de referencias: {datos.diagTablas.ApiGen_Referencias.filas} filas, {datos.diagTablas.ApiGen_Referencias.preciosMatriculados} con precio matriculado.</div>
+                  {datos.diagTablas.ApiGen_Referencias.sinPrecio.map((r, i) => (
+                    <div key={i} style={{ fontFamily: "monospace", fontSize: 11 }}>
+                      <b>{r.ref}</b>: {r.enMaestro ? `en maestro (ref ${r.refMaestro}, ext ${r.refExterna || "—"}) · ${JSON.stringify(r.camposPrecio)}` : "NO aparece en el maestro de referencias"}
+                    </div>
+                  ))}
+                </>}
+          </div>
+        </details>
+      )}
       {cargando && !datos && <div style={{ padding: 30, textAlign: "center", color: T.slate, fontSize: 13 }}>Cruzando pedidos, facturación y producción... puede tardar un minuto.</div>}
 
       {grupo && (
