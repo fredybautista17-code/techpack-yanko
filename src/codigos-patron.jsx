@@ -65,10 +65,49 @@ export function buscarPorPatron(categoria, linea, cliente, config) {
   };
 }
 
-// Arma las dos tablas a partir de las reglas sueltas que ya existen: por cada
-// categoría toma el rango más repetido, y por cada marca+grupo el prefijo más
-// repetido. Solo agrega lo que todavía no está (no pisa nada).
-export function importarDesdeReglas(config) {
+// Modelos disponibles para importar: cada combinación marca + grupo + prefijo
+// que aparece en las reglas sueltas, y los prefijos de reglas sin marca.
+export function modelosDeReglas(config) {
+  const m = new Map();
+  (config.codigosReferencia || []).forEach((c) => {
+    if (!c.prefijo || !c.categoria) return;
+    const prefijo = String(c.prefijo).trim();
+    const clave = `${c.cliente || ""}|${c.grupo || ""}|${prefijo}`;
+    if (!m.has(clave)) m.set(clave, { clave, cliente: c.cliente || "", grupo: c.grupo || "", prefijo, reglas: 0 });
+    m.get(clave).reglas += 1;
+  });
+  return [...m.values()]
+    .sort((a, b) => b.reglas - a.reglas)
+    .map((x) => ({
+      ...x,
+      etiqueta: `${x.cliente || "Reglas sin marca"}${x.grupo ? " · " + x.grupo : ""} · prefijo ${x.prefijo} (${x.reglas} regla${x.reglas === 1 ? "" : "s"})`,
+    }));
+}
+
+// Normaliza un nombre de categoría para detectar los casi iguales
+// (Falda / Faldas, Capri / Capry, Cachetero / Short Cachetero).
+function claveParecida(n) {
+  return String(n || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/y/g, "i").replace(/[^a-z0-9]/g, "").replace(/^short(?=.{4})/, "").replace(/s$/, "");
+}
+export function categoriasParecidas(nombres) {
+  const lista = [...new Set((nombres || []).filter(Boolean))];
+  const pares = [];
+  lista.forEach((a, i) => lista.slice(i + 1).forEach((b) => {
+    const ka = claveParecida(a);
+    const kb = claveParecida(b);
+    if (!ka || !kb) return;
+    if (ka === kb) pares.push([a, b]);
+  }));
+  return pares;
+}
+
+// Arma las dos tablas a partir de las reglas sueltas. Los BLOQUES salen solo
+// de las reglas del modelo elegido (una marca + grupo + prefijo), porque cada
+// prefijo puede tener rangos propios (ej. el 82 usa rangos anchos) y mezclarlos
+// todos daba bloques que se pisaban. Los PREFIJOS por marca y grupo salen de
+// todas las reglas que traen cliente y grupo. Solo agrega lo que todavía no
+// está (no pisa nada).
+export function importarDesdeReglas(config, modeloClave) {
   const reglas = config.codigosReferencia || [];
   const rangoDe = (c) => {
     const tiene = c.rangoInicio != null && c.rangoInicio !== "";
@@ -77,9 +116,11 @@ export function importarDesdeReglas(config) {
   };
   const masFrecuente = (mapa) => [...mapa.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
 
+  const delModelo = modeloClave
+    ? reglas.filter((c) => c.prefijo && c.categoria && `${c.cliente || ""}|${c.grupo || ""}|${String(c.prefijo).trim()}` === modeloClave)
+    : [];
   const porCat = new Map();
-  reglas.forEach((c) => {
-    if (!c.categoria || !c.prefijo) return;
+  delModelo.forEach((c) => {
     const { ini, fin } = rangoDe(c);
     const tieneD = c.desbordeInicio !== "" && c.desbordeInicio != null && c.desbordeFin !== "" && c.desbordeFin != null;
     const clave = `${ini}|${fin}|${tieneD ? c.desbordeInicio : ""}|${tieneD ? c.desbordeFin : ""}`;
@@ -147,6 +188,9 @@ export default function PatronCodigosReferencia({ config, onUpdateConfig, T, sug
   const [nuevaMarca, setNuevaMarca] = useState({ cliente: "", copiarDe: "" });
   const [msg, setMsg] = useState("");
   const [prueba, setPrueba] = useState({ cliente: "", grupo: "", categoria: "" });
+  const modelos = useMemo(() => modelosDeReglas(config), [config]);
+  const [modeloSel, setModeloSel] = useState("");
+  const parecidas = useMemo(() => categoriasParecidas([...(config.categorias || []), ...bloques.map((b) => b.categoria)]), [config.categorias, bloques]);
 
   const bloquesOrdenados = useMemo(() => [...bloques].sort((a, b) => Number(a.inicio) - Number(b.inicio) || a.categoria.localeCompare(b.categoria)), [bloques]);
 
@@ -192,12 +236,18 @@ export default function PatronCodigosReferencia({ config, onUpdateConfig, T, sug
     setMsg("");
   }
   function importar() {
-    const { bloquesNuevos, marcasNuevas } = importarDesdeReglas(config);
-    if (!bloquesNuevos.length && !marcasNuevas.length) { setMsg("No encontré nada nuevo para tomar de tus reglas actuales."); return; }
+    if (!modeloSel) { setMsg("Primero elige de cuál marca y prefijo quieres tomar el patrón."); return; }
+    const { bloquesNuevos, marcasNuevas } = importarDesdeReglas(config, modeloSel);
+    if (!bloquesNuevos.length && !marcasNuevas.length) { setMsg("No encontré nada nuevo para tomar con ese modelo."); return; }
     onUpdateConfig({ bloquesCategoria: [...bloques, ...bloquesNuevos], marcasPrefijos: [...marcas, ...marcasNuevas] });
-    setMsg(`✅ Tomé ${bloquesNuevos.length} bloque(s) de categoría y ${marcasNuevas.length} marca(s) de tus reglas actuales. Revísalos y corrige lo que haga falta.`);
+    setMsg(`✅ Tomé ${bloquesNuevos.length} bloque(s) de categoría y ${marcasNuevas.length} marca(s). Revísalos y corrige lo que haga falta.`);
   }
-
+  function vaciar() {
+    if (!bloques.length && !marcas.length) return;
+    if (!window.confirm(`¿Vaciar las dos tablas del patrón (${bloques.length} bloques y ${marcas.length} marcas)? Tus reglas sueltas no se tocan.`)) return;
+    onUpdateConfig({ bloquesCategoria: [], marcasPrefijos: [] });
+    setMsg("Listo: las tablas del patrón quedaron vacías. Tus reglas sueltas siguen igual.");
+  }
   const categoriasLibres = (config.categorias || []).filter((c) => !bloques.some((b) => b.categoria === c));
   const clientesLibres = clientes.filter((c) => !marcas.some((m) => m.cliente === c));
 
@@ -222,8 +272,23 @@ export default function PatronCodigosReferencia({ config, onUpdateConfig, T, sug
             Escribe el patrón UNA vez. El código sale así: <b>prefijo de la marca y grupo</b> + <b>bloque de la categoría</b> + consecutivo. Una marca nueva es una sola fila en la segunda tabla.
           </div>
         </div>
-        <button onClick={importar} style={{ padding: "8px 14px", borderRadius: 8, border: `1.5px solid ${T.border}`, background: T.white, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>📥 Tomar el patrón de mis reglas actuales</button>
       </div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", padding: "10px 12px", background: T.canvas, border: `1px solid ${T.border}`, borderRadius: 10, marginBottom: 10 }}>
+        <span style={{ fontSize: 12.5, fontWeight: 700, color: T.ink }}>📥 Tomar el patrón de:</span>
+        <select value={modeloSel} onChange={(e) => setModeloSel(e.target.value)} style={{ padding: "7px 8px", border: "1.5px solid #E8E2DB", borderRadius: 8, fontSize: 13, fontFamily: "inherit", background: "#fff", maxWidth: 440 }}>
+          <option value="">— Elige una marca y prefijo —</option>
+          {modelos.map((m) => <option key={m.clave} value={m.clave}>{m.etiqueta}</option>)}
+        </select>
+        <button onClick={importar} style={{ padding: "7px 14px", borderRadius: 8, border: "none", background: T.ink, color: "#fff", fontWeight: 800, fontSize: 12, cursor: "pointer" }}>Importar</button>
+        <span style={{ flex: 1 }} />
+        <button onClick={vaciar} style={{ padding: "7px 12px", borderRadius: 8, border: `1.5px solid ${T.coral}55`, background: T.coralBg, color: T.coral, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>🗑 Vaciar tablas</button>
+      </div>
+      <div style={{ fontSize: 11, color: T.slate, margin: "-4px 0 10px", fontStyle: "italic" }}>Elige UN modelo limpio (por ejemplo Kamila · Dama · prefijo 98): de ahí salen los bloques. Cada prefijo puede tener rangos propios, así que no se mezclan todos.</div>
+      {parecidas.length > 0 && (
+        <div style={{ padding: "8px 12px", background: T.amberBg, color: T.amber, borderRadius: 8, fontSize: 12, marginBottom: 10 }}>
+          <b>⚠ Categorías con nombres parecidos:</b> {parecidas.map(([a, b]) => `${a} ≈ ${b}`).join("  |  ")}. Si son la misma, deja una sola en Administración → Categorías para que el patrón no quede repartido.
+        </div>
+      )}
       {msg && <div style={{ padding: "8px 12px", background: msg.startsWith("✅") ? T.jadeBg : T.amberBg, color: msg.startsWith("✅") ? T.jade : T.amber, borderRadius: 8, fontSize: 12, fontWeight: 600, marginBottom: 10 }}>{msg}</div>}
 
       <div style={{ fontWeight: 700, fontSize: 14, color: T.ink, margin: "14px 0 6px" }}>1) Bloques por categoría</div>
