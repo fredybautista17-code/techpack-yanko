@@ -1759,6 +1759,8 @@ exports.getPedidosVigentesBusint = onCall(
 //                 mismo cliente+ref; 4) precio matriculado de la referencia
 //                 (ApiGen_Referencias.precioPM), último recurso. Cada fila dice de dónde salió su precio
 //                 ("precioFuente") para que nadie tenga que adivinar.
+// Precio mínimo para considerarlo real (pesos). Busint guarda 0,01 como relleno.
+const PRECIO_MINIMO_REAL = 1;
 function refSinGuion(v) {
   return String(v ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
@@ -1836,7 +1838,7 @@ exports.getDisponibleParaDespachar = onCall(
           if (!refNorm) continue;
           const precio = Number(f.precio) || 0;
           const desc = Number(f.desc) || 0;
-          const precioNeto = precio > 0 ? precio * (1 - (desc > 0 && desc < 100 ? desc / 100 : 0)) : 0;
+          const precioNeto = precio >= PRECIO_MINIMO_REAL ? precio * (1 - (desc > 0 && desc < 100 ? desc / 100 : 0)) : 0;
           if (numPed && numPedsSet.has(numPed)) {
             const clave = `${numPed}|${refNorm}`;
             const l = lineas.get(clave);
@@ -1922,7 +1924,8 @@ exports.getDisponibleParaDespachar = onCall(
           const numPed = String(r?.NumPed ?? "").trim();
           if (!numPed || !numPedsSet.has(numPed)) continue;
           const precio = Number(r?.Precio) || 0;
-          if (precio <= 0) continue;
+          // Busint deja precios simbólicos (p. ej. 0,01) en estas tablas: no son precio real.
+          if (precio < PRECIO_MINIMO_REAL) continue;
           const descp = Number(primerCampoDefinido(r, ["descp", "DescP", "Descp"])) || 0;
           const k = `${numPed}|${refSinGuion(r?.Ref)}`;
           if (!precioTablaPedidoRef.has(k)) {
@@ -1950,7 +1953,7 @@ exports.getDisponibleParaDespachar = onCall(
         for (const k of [refSinGuion(r?.ref), refSinGuion(r?.referenciaExterna)]) {
           if (!k) continue;
           if (!filaPorRef.has(k)) filaPorRef.set(k, r);
-          if (pm > 0 && !precioMatriculado.has(k)) precioMatriculado.set(k, pm);
+          if (pm >= PRECIO_MINIMO_REAL && !precioMatriculado.has(k)) precioMatriculado.set(k, pm);
         }
       }
       diagTablas["ApiGen_Referencias"] = { filas: referencias.length, preciosMatriculados: precioMatriculado.size };
