@@ -10,7 +10,7 @@ import ModuloNomina from "./modulo-nomina";
 import ModuloInformes from "./modulo-informes";
 import CotizadorView from "./modulo-cotizador";
 import DisponibleDespacharView from "./disponible-despachar";
-import PatronCodigosReferencia, { buscarPorPatron } from "./codigos-patron";
+import PatronCodigosReferencia, { buscarPorPatron, PrefijosDeCliente } from "./codigos-patron";
 import { initializeApp } from "firebase/app";
 import {
   getFirestore,
@@ -11256,6 +11256,8 @@ function ImportarClientesBusintModal({ clientesExistentes, onImportar, onClose }
 function ClientesTab({ config, onUpdateConfig }) {
   const [showForm, setShowForm] = useState(false);
   const [editIdx, setEditIdx] = useState(null);
+  const [prefAbierto, setPrefAbierto] = useState(null);
+  const [busqCliente, setBusqCliente] = useState("");
   const [form, setForm] = useState({ nombre: "", contacto: "", email: "", telefono: "" });
   const clientes = config.clientes || [];
   function openNew() { setForm({ nombre: "", contacto: "", email: "", telefono: "" }); setEditIdx(null); setShowForm(true); }
@@ -11263,10 +11265,21 @@ function ClientesTab({ config, onUpdateConfig }) {
   function save() {
     if (!form.nombre.trim()) return;
     const updated = editIdx !== null ? clientes.map((c, i) => (i === editIdx ? { ...form } : c)) : [...clientes, { ...form, id: uid() }];
-    onUpdateConfig({ clientes: updated });
+    // Si cambió el nombre, los prefijos matriculados del cliente lo siguen
+    const parcial = { clientes: updated };
+    const viejo = editIdx !== null ? clientes[editIdx]?.nombre : null;
+    if (viejo && viejo !== form.nombre && (config.marcasPrefijos || []).some((m) => m.cliente === viejo)) {
+      parcial.marcasPrefijos = config.marcasPrefijos.map((m) => (m.cliente === viejo ? { ...m, cliente: form.nombre } : m));
+    }
+    onUpdateConfig(parcial);
     setShowForm(false);
   }
-  function del(i) { onUpdateConfig({ clientes: clientes.filter((_, idx) => idx !== i) }); }
+  function del(i) {
+    const nombre = clientes[i]?.nombre;
+    const parcial = { clientes: clientes.filter((_, idx) => idx !== i) };
+    if ((config.marcasPrefijos || []).some((m) => m.cliente === nombre)) parcial.marcasPrefijos = config.marcasPrefijos.filter((m) => m.cliente !== nombre);
+    onUpdateConfig(parcial);
+  }
   const [showImportar, setShowImportar] = useState(false);
   function aplicarImportacion({ nuevos, reemplazos }) {
     const actualizados = clientes.map((c) => (reemplazos.has(c.id) ? { ...c, ...reemplazos.get(c.id) } : c));
@@ -11304,20 +11317,34 @@ function ClientesTab({ config, onUpdateConfig }) {
         </div>
       )}
       {!clientes.length && !showForm && <div style={{ textAlign: "center", padding: 32, color: T.slate, fontSize: 13 }}>No hay clientes registrados.</div>}
+      {clientes.length > 6 && (
+        <input value={busqCliente} onChange={(e) => setBusqCliente(e.target.value)} placeholder="🔎 Buscar cliente…" style={{ width: "100%", maxWidth: 360, padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit", marginBottom: 12 }} />
+      )}
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        {clientes.map((c, i) => (
-          <div key={i} style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 18px", background: T.canvas, borderRadius: 12, border: `1px solid ${T.border}` }}>
+        {clientes.map((c, i) => {
+          const q = busqCliente.trim().toLowerCase();
+          if (q && !String(c.nombre || "").toLowerCase().includes(q)) return null;
+          const nPref = ((config.marcasPrefijos || []).find((m) => m.cliente === c.nombre)?.lista || []).length
+            || Object.values((config.marcasPrefijos || []).find((m) => m.cliente === c.nombre)?.prefijos || {}).join(",").split(",").filter((x) => x.trim()).length;
+          const abierto = prefAbierto === c.nombre;
+          return (
+          <div key={i}>
+          <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 18px", background: T.canvas, borderRadius: 12, border: `1px solid ${T.border}` }}>
             <Avatar name={c.nombre} size={42} />
             <div style={{ flex: 1 }}>
               <div style={{ fontWeight: 800, fontSize: 14, color: T.ink }}>{c.nombre}</div>
               <div style={{ fontSize: 12, color: T.slate, marginTop: 2 }}>{c.contacto}{c.email ? ` · ${c.email}` : ""}{c.telefono ? ` · ${c.telefono}` : ""}</div>
             </div>
             <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => setPrefAbierto(abierto ? null : c.nombre)} style={{ padding: "6px 12px", background: abierto ? T.ink : T.white, border: `1px solid ${T.border}`, borderRadius: 8, color: abierto ? "#fff" : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>🔢 Prefijos{nPref ? ` (${nPref})` : ""}</button>
               <button onClick={() => openEdit(i)} style={{ padding: "6px 12px", background: T.denimBg, border: `1px solid ${T.denim}44`, borderRadius: 8, color: T.denim, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>✏ Editar</button>
               <button onClick={() => del(i)} style={{ padding: "6px 12px", background: T.coralBg, border: `1px solid ${T.coral}44`, borderRadius: 8, color: T.coral, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>Eliminar</button>
             </div>
           </div>
-        ))}
+          {abierto && <PrefijosDeCliente cliente={c.nombre} config={config} onUpdateConfig={onUpdateConfig} T={T} />}
+          </div>
+          );
+        })}
       </div>
     </div>
   );
