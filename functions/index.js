@@ -1940,11 +1940,11 @@ exports.getDisponibleParaDespachar = onCall(
     // usa solo como ÚLTIMO recurso, cuando no hay precio del pedido ni de
     // facturas (las tablas de pedido de Busint están congeladas).
     const precioMatriculado = new Map(); // refNorm -> precioPM
+    const filaPorRef = new Map(); // refNorm -> fila del maestro (para el diagnóstico)
     try {
       const referencias = await consultarCatalogoBusint("ApiGen_Referencias");
       // Se indexa por la referencia interna Y por la externa (la del cliente):
       // en los pedidos puede venir cualquiera de las dos.
-      const filaPorRef = new Map(); // refNorm -> fila del maestro
       for (const r of referencias) {
         const pm = Number(r?.precioPM) || 0;
         for (const k of [refSinGuion(r?.ref), refSinGuion(r?.referenciaExterna)]) {
@@ -1953,25 +1953,7 @@ exports.getDisponibleParaDespachar = onCall(
           if (pm > 0 && !precioMatriculado.has(k)) precioMatriculado.set(k, pm);
         }
       }
-      // Diagnóstico: referencias del reporte que siguen sin precio, con los
-      // campos de precio que trae el maestro (para ver cuál tiene el valor).
-      const sinPrecioDiag = [];
-      const vistas = new Set();
-      for (const l of lineas.values()) {
-        if (sinPrecioDiag.length >= 15) break;
-        if (vistas.has(l.refNorm)) continue;
-        const k = `${l.numPed}|${l.refNorm}`;
-        if (precioTablaPedidoRef.get(k) > 0 || precioFactPedidoRef.get(k) > 0 || precioFactClienteRef.get(`${l.cliente}|${l.refNorm}`) || precioMatriculado.get(l.refNorm) > 0) continue;
-        vistas.add(l.refNorm);
-        const fila = filaPorRef.get(l.refNorm);
-        if (!fila) { sinPrecioDiag.push({ ref: l.ref, enMaestro: false }); continue; }
-        const camposPrecio = {};
-        for (const [campo, valor] of Object.entries(fila)) {
-          if (/prec|valor|costo|vta|venta|mayor|public/i.test(campo)) camposPrecio[campo] = valor;
-        }
-        sinPrecioDiag.push({ ref: l.ref, enMaestro: true, refMaestro: fila.ref, refExterna: fila.referenciaExterna, camposPrecio });
-      }
-      diagTablas["ApiGen_Referencias"] = { filas: referencias.length, preciosMatriculados: precioMatriculado.size, sinPrecio: sinPrecioDiag };
+      diagTablas["ApiGen_Referencias"] = { filas: referencias.length, preciosMatriculados: precioMatriculado.size };
     } catch (err) {
       logger.error("Error leyendo ApiGen_Referencias (getDisponibleParaDespachar)", { error: String(err) });
       diagTablas["ApiGen_Referencias"] = { error: String(err?.message || err).slice(0, 200) };
@@ -2019,6 +2001,23 @@ exports.getDisponibleParaDespachar = onCall(
         estado,
       });
     }
+    // Diagnóstico: líneas que de verdad salieron sin precio (misma lógica que la
+    // tabla), con los campos de precio que trae el maestro para esa referencia.
+    const sinPrecioDiag = [];
+    const vistasDiag = new Set();
+    for (const l of lineas.values()) {
+      if (sinPrecioDiag.length >= 15) break;
+      if (cumplidos.has(l.numPed) || l.precio > 0 || vistasDiag.has(l.refNorm)) continue;
+      vistasDiag.add(l.refNorm);
+      const fila = filaPorRef.get(l.refNorm);
+      if (!fila) { sinPrecioDiag.push({ ref: l.ref, numPed: l.numPed, enMaestro: false }); continue; }
+      const camposPrecio = {};
+      for (const [campo, valor] of Object.entries(fila)) {
+        if (/prec|valor|costo|vta|venta|mayor|public/i.test(campo)) camposPrecio[campo] = valor;
+      }
+      sinPrecioDiag.push({ ref: l.ref, numPed: l.numPed, enMaestro: true, refMaestro: fila.ref, refExterna: fila.referenciaExterna, camposPrecio });
+    }
+    if (diagTablas["ApiGen_Referencias"] && !diagTablas["ApiGen_Referencias"].error) diagTablas["ApiGen_Referencias"].sinPrecio = sinPrecioDiag;
     const porCliente = [...porClienteMap.entries()]
       .map(([cliente, filas]) => {
         filas.sort((a, b) => (b.disponible > 0) - (a.disponible > 0) || a.ref.localeCompare(b.ref) || a.numPed.localeCompare(b.numPed));
