@@ -10,6 +10,7 @@ import ModuloNomina from "./modulo-nomina";
 import ModuloInformes from "./modulo-informes";
 import CotizadorView from "./modulo-cotizador";
 import DisponibleDespacharView from "./disponible-despachar";
+import PatronCodigosReferencia, { buscarPorPatron } from "./codigos-patron";
 import { initializeApp } from "firebase/app";
 import {
   getFirestore,
@@ -779,6 +780,13 @@ const INIT_CONFIG = {
   // Códigos de Referencia (incluye un botón para cargar la plantilla
   // sugerida a partir del cuadro real que maneja Industrias Yanko).
   codigosReferencia: [],
+  // (2026-10-12, a pedido de Fredy) Patrón de códigos: en vez de una regla por
+  // cada Categoría x Línea x Cliente, un bloque por categoría
+  // (bloquesCategoria: Cachetero 1-99, Falda 200-299...) y una fila por marca
+  // con su prefijo por grupo (marcasPrefijos: Kamila -> Dama 98, Caballero 97...).
+  // Ver src/codigos-patron.jsx y buscarEntradaCodigoReferencia.
+  bloquesCategoria: [],
+  marcasPrefijos: [],
   // Áreas de la compañía usadas en el módulo de KPIs (ver KPIsView), que
   // cubre TODA la empresa, no solo Diseño. Cada Puesto (colección
   // `kpi_puestos`) pertenece a UNA de estas áreas; cada persona y cada KPI
@@ -922,15 +930,18 @@ function nowISO() { return new Date().toISOString(); }
 // así una fila puede amarrarse a "toda línea de Caballero" sin tener que
 // enumerar cada línea puntual de Busint.
 function buscarEntradaCodigoReferencia(categoria, linea, cliente, config) {
+  if (!categoria) return null;
   const catalogo = (config?.codigosReferencia || []).filter((c) => c.categoria === categoria);
-  if (!categoria || catalogo.length === 0) return null;
   const grupo = (config?.lineaGrupoMap || {})[linea] || "";
   const candidatas = catalogo.filter(
     (c) => (!c.cliente || c.cliente === cliente) && (!c.linea || c.linea === linea) && (!c.grupo || c.grupo === grupo)
   );
-  if (candidatas.length === 0) return null;
   const especificidad = (c) => (c.cliente ? 4 : 0) + (c.linea ? 2 : 0) + (c.grupo ? 1 : 0);
-  return candidatas.reduce((mejor, c) => (especificidad(c) > especificidad(mejor) ? c : mejor), candidatas[0]);
+  const mejor = candidatas.length ? candidatas.reduce((m, c) => (especificidad(c) > especificidad(m) ? c : m), candidatas[0]) : null;
+  // (2026-10-12) Orden: regla puntual (con cliente, línea o grupo) > patrón
+  // (bloque de la categoría + prefijo de la marca y grupo) > regla genérica.
+  if (mejor && especificidad(mejor) > 0) return mejor;
+  return buscarPorPatron(categoria, linea, cliente, config) || mejor;
 }
 // Compara/busca referencias IGNORANDO el guion — Busint a veces guarda o
 // devuelve el mismo código SIN guion (ej. "985609" en vez de "98-5609"),
@@ -12264,6 +12275,16 @@ const PLANTILLA_CODIGOS_REFERENCIA = [
 // bitácora ya sincronizada (busint_referencias, la misma que usa
 // BusintSyncPanel/useMaestroReferenciasBusint) y se agregan los que falten.
 // Solo agrega — nunca borra valores que ya hayas puesto a mano.
+// (2026-10-12) Envuelve el patrón de códigos para darle la bitácora de Busint
+// (useMaestroReferenciasBusint) a la prueba "siguiente código".
+function PatronCodigosWrapper({ config, onUpdateConfig, protos, capsulas }) {
+  const busint = useMaestroReferenciasBusint();
+  const sugerir = useCallback(
+    (categoria, linea, cliente, cfg) => sugerirReferencia(categoria, linea, cliente, cfg, protos || [], capsulas || [], busint.lista),
+    [protos, capsulas, busint.lista]
+  );
+  return <PatronCodigosReferencia config={config} onUpdateConfig={onUpdateConfig} T={T} sugerir={sugerir} />;
+}
 function SincronizarLineasBusintBtn({ config, onUpdateConfig }) {
   const busint = useMaestroReferenciasBusint();
   const [msg, setMsg] = useState("");
@@ -12783,6 +12804,10 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
             </div>
             <BusintSyncPanel />
             <ReferenciasNoEnBusintView protos={protos} capsulas={capsulas} />
+            <PatronCodigosWrapper config={config} onUpdateConfig={onUpdateConfig} protos={protos} capsulas={capsulas} />
+            <div style={{ height: 1, background: T.border, margin: "8px 0 20px" }} />
+            <div style={{ fontWeight: 800, fontSize: 16, color: T.ink, marginBottom: 4 }}>Reglas puntuales (excepciones)</div>
+            <div style={{ fontSize: 12.5, color: T.slate, marginBottom: 14, lineHeight: 1.5 }}>Solo para lo que se sale del patrón de arriba (por ejemplo una línea o una marca con un rango propio). Una regla puntual le gana al patrón.</div>
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginBottom: 14 }}>
               <SincronizarLineasBusintBtn config={config} onUpdateConfig={onUpdateConfig} />
               <Btn variant="secondary" onClick={cargarPlantillaCodigos}>📋 Cargar plantilla sugerida (98 dama/fábrica + 96 Reform)</Btn>
