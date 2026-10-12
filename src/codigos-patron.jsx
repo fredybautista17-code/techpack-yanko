@@ -17,6 +17,9 @@ import React, { useState, useEffect, useMemo } from "react";
 
 const uidLocal = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 const pad3 = (n) => String(n).padStart(3, "0");
+// "Para quién" = todos los grupos (el prefijo sirve para Dama, Caballero, Niña, Niño…)
+export const GRUPO_TODOS = "*";
+const etiquetaGrupo = (g) => (g === GRUPO_TODOS ? "todos los grupos" : g);
 
 // Desborde automático ×10: el bloque 200-299 sigue en 2000-2999. Los bloques
 // que empiezan por debajo de 100 (el 001-099) y los muy anchos (1000 o más)
@@ -69,7 +72,7 @@ export function listaMatriculados(marca) {
 export function prefijosDeGrupo(marca, grupo) {
   const vistos = new Set();
   return listaMatriculados(marca)
-    .filter((x) => x.grupo === grupo)
+    .filter((x) => x.grupo === grupo || x.grupo === GRUPO_TODOS)
     .map((x) => String(x.prefijo || "").trim())
     .filter((x) => x && !vistos.has(x) && vistos.add(x));
 }
@@ -79,7 +82,7 @@ export function prefijosDeGrupo(marca, grupo) {
 export function prefijosParaCategoria(marca, grupo, categoria) {
   const vistos = new Set();
   return listaMatriculados(marca)
-    .filter((x) => x.grupo === grupo && (!(x.categorias || []).length || x.categorias.includes(categoria)))
+    .filter((x) => (x.grupo === grupo || x.grupo === GRUPO_TODOS) && (!(x.categorias || []).length || x.categorias.includes(categoria)))
     .map((x) => String(x.prefijo || "").trim())
     .filter((x) => x && !vistos.has(x) && vistos.add(x));
 }
@@ -306,14 +309,14 @@ export function PrefijosDeCliente({ cliente, config, onUpdateConfig, T }) {
     if (!actual) return;
     const fila = { ...actual, ...cambios };
     if (!fila.prefijo) { setMsg("El prefijo no puede quedar vacío. Para quitarlo usa Eliminar."); return; }
-    if (lista.some((x) => x.id !== id && x.prefijo === fila.prefijo && x.grupo === fila.grupo)) { setMsg(`Ya tiene el prefijo ${fila.prefijo} para ${fila.grupo}. Agrega las categorías en esa misma fila.`); return; }
+    if (lista.some((x) => x.id !== id && x.prefijo === fila.prefijo && x.grupo === fila.grupo)) { setMsg(`Ya tiene el prefijo ${fila.prefijo} para ${etiquetaGrupo(fila.grupo)}. Agrega las categorías en esa misma fila.`); return; }
     setMsg("");
     guardar(lista.map((x) => (x.id === id ? fila : x)));
   }
   function matricular() {
     const prefijo = limpiarPrefijo(nuevo.prefijo);
     if (!prefijo || !nuevo.grupo) { setMsg("Escribe el prefijo y elige para quién es (el grupo)."); return; }
-    if (lista.some((x) => x.prefijo === prefijo && x.grupo === nuevo.grupo)) { setMsg(`Ya tiene el prefijo ${prefijo} para ${nuevo.grupo}. Agrega las categorías en esa misma fila.`); return; }
+    if (lista.some((x) => x.prefijo === prefijo && x.grupo === nuevo.grupo)) { setMsg(`Ya tiene el prefijo ${prefijo} para ${etiquetaGrupo(nuevo.grupo)}. Agrega las categorías en esa misma fila.`); return; }
     guardar([...lista, { id: uidLocal(), prefijo, grupo: nuevo.grupo, categorias: nuevo.categorias }]);
     setNuevo({ prefijo: "", grupo: nuevo.grupo, categorias: [] });
     setMsg("");
@@ -334,7 +337,8 @@ export function PrefijosDeCliente({ cliente, config, onUpdateConfig, T }) {
                 <td style={{ ...td, width: 110 }}><Celda value={x.prefijo} style={{ textAlign: "center", fontWeight: 800, color: T.denim }} onCommit={(v) => cambiarFila(x.id, { prefijo: limpiarPrefijo(v) })} /></td>
                 <td style={{ ...td, width: 170 }}>
                   <select value={x.grupo} onChange={(e) => cambiarFila(x.id, { grupo: e.target.value })} style={{ ...sel, width: "100%" }}>
-                    {[...new Set([...grupos, x.grupo])].map((g) => <option key={g} value={g}>{g}</option>)}
+                    <option value={GRUPO_TODOS}>Todos los grupos</option>
+                    {[...new Set([...grupos, x.grupo])].filter((g) => g !== GRUPO_TODOS).map((g) => <option key={g} value={g}>{g}</option>)}
                   </select>
                 </td>
                 <td style={td}><SelectorCategorias T={T} idLista={`dl-cat-${x.id}`} opciones={categorias} valor={x.categorias || []} onChange={(v) => cambiarFila(x.id, { categorias: v })} /></td>
@@ -349,6 +353,7 @@ export function PrefijosDeCliente({ cliente, config, onUpdateConfig, T }) {
               <td style={td}>
                 <select value={nuevo.grupo} onChange={(e) => setNuevo((f) => ({ ...f, grupo: e.target.value }))} style={{ ...sel, width: "100%" }}>
                   <option value="">— Para quién —</option>
+                  <option value={GRUPO_TODOS}>Todos los grupos</option>
                   {grupos.map((g) => <option key={g} value={g}>{g}</option>)}
                 </select>
               </td>
@@ -580,7 +585,7 @@ export default function PatronCodigosReferencia({ config, onUpdateConfig, T, sug
           usuariosPrefijo.length ? (
             <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6, fontSize: 13 }}>
               {usuariosPrefijo.map((u, i) => (
-                <div key={i}><b>{u.cliente}</b> · {u.grupo} · <span style={{ color: T.slate }}>{u.categorias.length ? u.categorias.join(", ") : "todas las categorías"}</span></div>
+                <div key={i}><b>{u.cliente}</b> · {etiquetaGrupo(u.grupo)} · <span style={{ color: T.slate }}>{u.categorias.length ? u.categorias.join(", ") : "todas las categorías"}</span></div>
               ))}
             </div>
           ) : <div style={{ marginTop: 10, fontSize: 12.5, color: T.slate, fontStyle: "italic" }}>Ninguna empresa tiene matriculado ese prefijo.</div>
