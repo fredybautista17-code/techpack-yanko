@@ -228,25 +228,47 @@ function Celda({ value, onCommit, style, type = "text", placeholder, ancho }) {
   );
 }
 
-// Casillas para marcar prefijos matriculados (sin marcar = todos los prefijos)
+// Prefijos de un bloque: solo se muestran los marcados (con x para quitarlos) y
+// un campo con búsqueda para agregar otro entre los matriculados. Sin ninguno
+// marcado el bloque vale para todos los prefijos. Usa el <datalist id="dl-prefijos">
+// que dibuja la pantalla una sola vez.
 function SelectorPrefijos({ opciones, valor, onChange, T }) {
   const marcados = listaPrefijos(valor);
-  const todos = [...new Set([...opciones, ...marcados])];
-  const alternar = (x) => onChange((marcados.includes(x) ? marcados.filter((y) => y !== x) : [...marcados, x]).join(", "));
+  const [txt, setTxt] = useState("");
+  const agregar = (x) => {
+    const v = String(x || "").trim();
+    if (!v || !opciones.includes(v)) return false;
+    if (!marcados.includes(v)) onChange([...marcados, v].join(", "));
+    setTxt("");
+    return true;
+  };
+  const quitar = (x) => onChange(marcados.filter((y) => y !== x).join(", "));
+  const noExiste = txt.trim() !== "" && !opciones.includes(txt.trim());
   return (
     <div style={{ display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center" }}>
-      {todos.map((x) => {
-        const on = marcados.includes(x);
+      {marcados.map((x) => {
         const huerfano = !opciones.includes(x);
         return (
-          <button key={x} type="button" onClick={() => alternar(x)} title={huerfano ? "Este prefijo ya no está matriculado" : "Clic para marcar o quitar"}
-            style={{ padding: "2px 9px", borderRadius: 999, border: `1.5px solid ${huerfano ? T.coral : on ? T.denim : T.border}`, background: on ? T.denim : T.white, color: on ? "#fff" : T.slate, fontWeight: 800, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
+          <span key={x} title={huerfano ? "Este prefijo ya no está matriculado" : ""} style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 4px 2px 9px", borderRadius: 999, border: `1.5px solid ${huerfano ? T.coral : T.denim}`, background: huerfano ? T.coralBg : T.denim, color: huerfano ? T.coral : "#fff", fontWeight: 800, fontSize: 12 }}>
             {x}{huerfano ? " ⚠" : ""}
-          </button>
+            <button type="button" onClick={() => quitar(x)} title="Quitar" style={{ border: "none", background: "transparent", color: "inherit", cursor: "pointer", fontWeight: 900, fontSize: 13, padding: "0 4px", lineHeight: 1 }}>×</button>
+          </span>
         );
       })}
-      {!todos.length && <span style={{ fontSize: 11, color: T.slate, fontStyle: "italic" }}>Matricula prefijos abajo</span>}
-      {todos.length > 0 && !marcados.length && <span style={{ fontSize: 11, color: T.slate, fontWeight: 700 }}>= todos</span>}
+      {!marcados.length && <span style={{ fontSize: 11, color: T.slate, fontWeight: 700 }}>Todos</span>}
+      <input
+        list="dl-prefijos"
+        value={txt}
+        placeholder="+ prefijo"
+        title={noExiste ? "Ese prefijo no está matriculado" : "Escribe o elige un prefijo matriculado"}
+        onChange={(e) => {
+          const t = e.nativeEvent && e.nativeEvent.inputType;
+          setTxt(e.target.value);
+          if ((t === undefined || t === "insertReplacementText") && opciones.includes(e.target.value.trim())) agregar(e.target.value);
+        }}
+        onKeyDown={(e) => { if (e.key === "Enter") agregar(txt); }}
+        style={{ width: 84, padding: "3px 8px", border: `1.5px solid ${noExiste ? T.coral : T.border}`, borderRadius: 999, fontSize: 12, fontFamily: "inherit" }}
+      />
     </div>
   );
 }
@@ -259,6 +281,8 @@ export default function PatronCodigosReferencia({ config, onUpdateConfig, T, sug
   const [nuevoBloque, setNuevoBloque] = useState({ categoria: "", inicio: "", fin: "", prefijos: "" });
   const [nuevaMarca, setNuevaMarca] = useState({ cliente: "", copiarDe: "" });
   const [nuevosPref, setNuevosPref] = useState({});
+  const [busquedaEmp, setBusquedaEmp] = useState("");
+  const [abiertaId, setAbiertaId] = useState("");
   const [msg, setMsg] = useState("");
   const [prueba, setPrueba] = useState({ cliente: "", grupo: "", categoria: "", prefijo: "" });
   const modelos = useMemo(() => modelosDeReglas(config), [config]);
@@ -275,7 +299,6 @@ export default function PatronCodigosReferencia({ config, onUpdateConfig, T, sug
     const agregar = (id, txt) => { if (!m.has(id)) m.set(id, new Set()); m.get(id).add(txt); };
     const universo = new Set([""]);
     bloques.forEach((b) => listaPrefijos(b.prefijos).forEach((x) => universo.add(x)));
-    marcas.forEach((mm) => listaMatriculados(mm).forEach((x) => { if (x.prefijo) universo.add(String(x.prefijo)); }));
     const cats = [...new Set(bloques.map((b) => b.categoria))];
     universo.forEach((pref) => {
       const efectivos = cats
@@ -300,7 +323,7 @@ export default function PatronCodigosReferencia({ config, onUpdateConfig, T, sug
       }));
     });
     return m;
-  }, [bloques, marcas]);
+  }, [bloques]);
 
   // Dos bloques de la MISMA categoría que valen para el mismo prefijo
   const duplicados = useMemo(() => {
@@ -361,10 +384,14 @@ export default function PatronCodigosReferencia({ config, onUpdateConfig, T, sug
     setMsg("");
   }
   function agregarMarca() {
-    if (!nuevaMarca.cliente) { setMsg("Elige la marca (cliente) que quieres agregar."); return; }
-    const origen = marcas.find((m) => m.cliente === nuevaMarca.copiarDe);
+    const nombre = String(nuevaMarca.cliente || "").trim();
+    if (!nombre || !clientes.includes(nombre)) { setMsg("Escribe y elige una empresa de la lista de Clientes."); return; }
+    if (marcas.some((m) => m.cliente === nombre)) { setMsg("Esa empresa ya está en el patrón."); return; }
+    const origen = marcas.find((m) => m.cliente === String(nuevaMarca.copiarDe || "").trim());
     const lista = origen ? listaMatriculados(origen).map((x) => ({ ...x, id: uidLocal() })) : [];
-    onUpdateConfig({ marcasPrefijos: [...marcas, { id: uidLocal(), cliente: nuevaMarca.cliente, lista, prefijos: derivarPrefijos(lista) }] });
+    const nueva = { id: uidLocal(), cliente: nombre, lista, prefijos: derivarPrefijos(lista) };
+    onUpdateConfig({ marcasPrefijos: [...marcas, nueva] });
+    setAbiertaId(nueva.id);
     setNuevaMarca({ cliente: "", copiarDe: "" });
     setMsg("");
   }
@@ -396,6 +423,15 @@ export default function PatronCodigosReferencia({ config, onUpdateConfig, T, sug
     try { return sugerir(prueba.categoria, "__prueba__", prueba.cliente, cfgPrueba, prueba.prefijo); } catch (e) { return null; }
     // eslint-disable-next-line
   }, [prueba, config, sugerir]);
+
+  const norm = (v) => String(v || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+  const empresasVista = useMemo(() => {
+    const q = norm(busquedaEmp);
+    const orden = [...marcas].sort((x, y) => String(x.cliente).localeCompare(String(y.cliente), "es"));
+    if (!q) return orden;
+    return orden.filter((m) => norm(m.cliente).includes(q) || listaMatriculados(m).some((x) => norm(x.prefijo) === q || norm(x.prefijo).startsWith(q)));
+    // eslint-disable-next-line
+  }, [marcas, busquedaEmp]);
 
   const th = (t, al) => <th style={{ background: T.ink, color: T.seam, textAlign: al || "left", padding: "9px 12px", fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4 }}>{t}</th>;
   const td = { padding: "6px 10px", borderBottom: `1px solid ${T.border}`, verticalAlign: "middle" };
@@ -429,6 +465,9 @@ export default function PatronCodigosReferencia({ config, onUpdateConfig, T, sug
       )}
       {msg && <div style={{ padding: "8px 12px", background: msg.startsWith("✅") ? T.jadeBg : T.amberBg, color: msg.startsWith("✅") ? T.jade : T.amber, borderRadius: 8, fontSize: 12, fontWeight: 600, marginBottom: 10 }}>{msg}</div>}
 
+      <datalist id="dl-prefijos">{prefijosMatriculados.map((x) => <option key={x} value={x} />)}</datalist>
+      <datalist id="dl-clientes-libres">{clientesLibres.map((c) => <option key={c} value={c} />)}</datalist>
+      <datalist id="dl-marcas">{marcas.map((m) => <option key={m.id} value={m.cliente} />)}</datalist>
       <div style={{ fontWeight: 700, fontSize: 14, color: T.ink, margin: "14px 0 6px" }}>1) Bloques por categoría</div>
       <div style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 12, overflow: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 700 }}>
@@ -493,79 +532,88 @@ export default function PatronCodigosReferencia({ config, onUpdateConfig, T, sug
         En la columna <b>Prefijos</b>, sin marcar significa que el bloque vale para todos los prefijos. Si un prefijo usa los números de otra forma (por ejemplo el 98-1000 a 1999 es Byker pero el 96-1100 a 1999 es Vestido), agrega una fila de esa categoría y marca ese prefijo: esa gana sobre la general solo para ese prefijo. Los avisos de choque se revisan prefijo por prefijo.
       </div>
 
-      <div style={{ fontWeight: 700, fontSize: 14, color: T.ink, margin: "20px 0 6px" }}>2) Prefijos matriculados por empresa</div>
-      {marcas.map((m) => {
-        const lista = listaMatriculados(m);
-        const nuevo = nuevosPref[m.id] || { prefijo: "", grupo: "", nota: "" };
-        return (
-          <div key={m.id} style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 12, marginBottom: 10, overflow: "hidden" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", background: T.canvas, flexWrap: "wrap" }}>
-              <b style={{ fontSize: 14, color: T.ink }}>{m.cliente}</b>
-              <span style={{ flex: 1, display: "flex", gap: 14, flexWrap: "wrap", fontSize: 12, color: T.slate }}>
-                {grupos.map((g) => {
-                  const ps = prefijosDeGrupo(m, g);
-                  return <span key={g}>{g}: <b style={{ color: ps.length ? T.denim : T.slate }}>{ps.length ? ps.join(" · ") : "—"}</b></span>;
-                })}
-              </span>
-              <button onClick={() => onUpdateConfig({ marcasPrefijos: marcas.filter((x) => x.id !== m.id) })} style={{ background: T.coralBg, border: "none", borderRadius: 6, padding: "4px 10px", color: T.coral, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>Quitar empresa</button>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", margin: "20px 0 6px" }}>
+        <span style={{ fontWeight: 700, fontSize: 14, color: T.ink }}>2) Prefijos matriculados por empresa</span>
+        <span style={{ fontSize: 12, color: T.slate }}>{marcas.length} empresa{marcas.length === 1 ? "" : "s"}</span>
+        <input type="text" value={busquedaEmp} onChange={(e) => setBusquedaEmp(e.target.value)} placeholder="🔎 Buscar empresa o prefijo…" style={{ ...sel, flex: 1, minWidth: 220, maxWidth: 360 }} />
+      </div>
+      <div style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 12, maxHeight: 480, overflowY: "auto" }}>
+        {empresasVista.map((m) => {
+          const abierta = abiertaId === m.id;
+          const lista = listaMatriculados(m);
+          const nuevo = nuevosPref[m.id] || { prefijo: "", grupo: "", nota: "" };
+          return (
+            <div key={m.id} style={{ borderBottom: `1px solid ${T.border}` }}>
+              <div role="button" tabIndex={0} onClick={() => setAbiertaId(abierta ? "" : m.id)} onKeyDown={(e) => { if (e.key === "Enter") setAbiertaId(abierta ? "" : m.id); }}
+                style={{ display: "flex", alignItems: "center", gap: 12, padding: "9px 12px", cursor: "pointer", background: abierta ? T.canvas : T.white, flexWrap: "wrap" }}>
+                <span style={{ width: 14, color: T.slate }}>{abierta ? "▾" : "▸"}</span>
+                <b style={{ fontSize: 14, color: T.ink, minWidth: 190 }}>{m.cliente}</b>
+                <span style={{ flex: 1, display: "flex", gap: 14, flexWrap: "wrap", fontSize: 12, color: T.slate }}>
+                  {grupos.map((g) => {
+                    const ps = prefijosDeGrupo(m, g);
+                    return ps.length ? <span key={g}>{g}: <b style={{ color: T.denim }}>{ps.join(" · ")}</b></span> : null;
+                  })}
+                  {!lista.length && <i>sin prefijos</i>}
+                </span>
+                <span style={{ fontSize: 11, color: T.slate }}>{lista.length} prefijo{lista.length === 1 ? "" : "s"}</span>
+              </div>
+              {abierta && (
+                <div style={{ padding: "0 0 10px", background: T.canvas }}>
+                  <div style={{ overflow: "auto", background: T.white }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 560 }}>
+                      <thead><tr>{th("Prefijo")}{th("Grupo")}{th("Nota (opcional)")}{th("")}</tr></thead>
+                      <tbody>
+                        {lista.map((x) => (
+                          <tr key={x.id}>
+                            <td style={{ ...td, width: 130 }}><Celda value={x.prefijo} style={{ textAlign: "center", fontWeight: 800, color: T.denim }} onCommit={(v) => cambiarFila(m, x.id, { prefijo: limpiarPrefijo(v) })} /></td>
+                            <td style={{ ...td, width: 200 }}>
+                              <select value={x.grupo} onChange={(e) => cambiarFila(m, x.id, { grupo: e.target.value })} style={{ ...sel, width: "100%" }}>
+                                {[...new Set([...grupos, x.grupo])].map((g) => <option key={g} value={g}>{g}</option>)}
+                              </select>
+                            </td>
+                            <td style={td}><Celda value={x.nota || ""} placeholder="Ej: vestidos" onCommit={(v) => cambiarFila(m, x.id, { nota: String(v).trim() })} /></td>
+                            <td style={{ ...td, width: 90, textAlign: "right" }}>
+                              <button onClick={() => guardarLista(m.id, lista.filter((y) => y.id !== x.id))} style={{ background: T.coralBg, border: "none", borderRadius: 6, padding: "4px 10px", color: T.coral, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>Eliminar</button>
+                            </td>
+                          </tr>
+                        ))}
+                        {!lista.length && <tr><td colSpan={4} style={{ ...td, color: T.slate, fontStyle: "italic" }}>Esta empresa todavía no tiene prefijos matriculados.</td></tr>}
+                        <tr style={{ background: T.canvas }}>
+                          <td style={td}><input type="text" placeholder="Ej: 98" value={nuevo.prefijo} onChange={(e) => setNuevosPref((x) => ({ ...x, [m.id]: { ...nuevo, prefijo: e.target.value } }))} onKeyDown={(e) => { if (e.key === "Enter") matricular(m); }} style={{ ...sel, width: "100%", textAlign: "center", fontWeight: 800 }} /></td>
+                          <td style={td}>
+                            <select value={nuevo.grupo} onChange={(e) => setNuevosPref((x) => ({ ...x, [m.id]: { ...nuevo, grupo: e.target.value } }))} style={{ ...sel, width: "100%" }}>
+                              <option value="">— Grupo —</option>
+                              {grupos.map((g) => <option key={g} value={g}>{g}</option>)}
+                            </select>
+                          </td>
+                          <td style={td}><input type="text" placeholder="Ej: vestidos" value={nuevo.nota} onChange={(e) => setNuevosPref((x) => ({ ...x, [m.id]: { ...nuevo, nota: e.target.value } }))} onKeyDown={(e) => { if (e.key === "Enter") matricular(m); }} style={{ ...sel, width: "100%" }} /></td>
+                          <td style={{ ...td, textAlign: "right" }}><button onClick={() => matricular(m)} style={{ background: T.ink, color: "#fff", border: "none", borderRadius: 8, padding: "7px 12px", fontWeight: 800, fontSize: 12, cursor: "pointer" }}>+ Matricular</button></td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  <div style={{ textAlign: "right", padding: "8px 12px 0" }}>
+                    <button onClick={() => { if (window.confirm(`¿Quitar a ${m.cliente} del patrón? Se borran sus prefijos matriculados (el cliente no se borra).`)) { onUpdateConfig({ marcasPrefijos: marcas.filter((x) => x.id !== m.id) }); setAbiertaId(""); } }} style={{ background: T.coralBg, border: "none", borderRadius: 6, padding: "4px 10px", color: T.coral, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>Quitar empresa</button>
+                  </div>
+                </div>
+              )}
             </div>
-            <div style={{ overflow: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 560 }}>
-                <thead><tr>{th("Prefijo")}{th("Grupo")}{th("Nota (opcional)")}{th("")}</tr></thead>
-                <tbody>
-                  {lista.map((x) => (
-                    <tr key={x.id}>
-                      <td style={{ ...td, width: 130 }}><Celda value={x.prefijo} style={{ textAlign: "center", fontWeight: 800, color: T.denim }} onCommit={(v) => cambiarFila(m, x.id, { prefijo: limpiarPrefijo(v) })} /></td>
-                      <td style={{ ...td, width: 200 }}>
-                        <select value={x.grupo} onChange={(e) => cambiarFila(m, x.id, { grupo: e.target.value })} style={{ ...sel, width: "100%" }}>
-                          {[...new Set([...grupos, x.grupo])].map((g) => <option key={g} value={g}>{g}</option>)}
-                        </select>
-                      </td>
-                      <td style={td}><Celda value={x.nota || ""} placeholder="Ej: vestidos" onCommit={(v) => cambiarFila(m, x.id, { nota: String(v).trim() })} /></td>
-                      <td style={{ ...td, width: 90, textAlign: "right" }}>
-                        <button onClick={() => guardarLista(m.id, lista.filter((y) => y.id !== x.id))} style={{ background: T.coralBg, border: "none", borderRadius: 6, padding: "4px 10px", color: T.coral, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>Eliminar</button>
-                      </td>
-                    </tr>
-                  ))}
-                  {!lista.length && <tr><td colSpan={4} style={{ ...td, color: T.slate, fontStyle: "italic" }}>Esta empresa todavía no tiene prefijos matriculados.</td></tr>}
-                  <tr style={{ background: T.canvas }}>
-                    <td style={td}><input type="text" placeholder="Ej: 98" value={nuevo.prefijo} onChange={(e) => setNuevosPref((x) => ({ ...x, [m.id]: { ...nuevo, prefijo: e.target.value } }))} onKeyDown={(e) => { if (e.key === "Enter") matricular(m); }} style={{ ...sel, width: "100%", textAlign: "center", fontWeight: 800 }} /></td>
-                    <td style={td}>
-                      <select value={nuevo.grupo} onChange={(e) => setNuevosPref((x) => ({ ...x, [m.id]: { ...nuevo, grupo: e.target.value } }))} style={{ ...sel, width: "100%" }}>
-                        <option value="">— Grupo —</option>
-                        {grupos.map((g) => <option key={g} value={g}>{g}</option>)}
-                      </select>
-                    </td>
-                    <td style={td}><input type="text" placeholder="Ej: vestidos" value={nuevo.nota} onChange={(e) => setNuevosPref((x) => ({ ...x, [m.id]: { ...nuevo, nota: e.target.value } }))} onKeyDown={(e) => { if (e.key === "Enter") matricular(m); }} style={{ ...sel, width: "100%" }} /></td>
-                    <td style={{ ...td, textAlign: "right" }}><button onClick={() => matricular(m)} style={{ background: T.ink, color: "#fff", border: "none", borderRadius: 8, padding: "7px 12px", fontWeight: 800, fontSize: 12, cursor: "pointer" }}>+ Matricular</button></td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-        );
-      })}
-      {!marcas.length && <div style={{ ...td, color: T.slate, fontStyle: "italic" }}>Todavía no hay empresas en el patrón.</div>}
-      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", padding: "10px 12px", background: T.canvas, border: `1px solid ${T.border}`, borderRadius: 12 }}>
-        <select value={nuevaMarca.cliente} onChange={(e) => setNuevaMarca((f) => ({ ...f, cliente: e.target.value }))} style={sel}>
-          <option value="">— Empresa nueva —</option>
-          {clientesLibres.map((c) => <option key={c} value={c}>{c}</option>)}
-        </select>
-        <select value={nuevaMarca.copiarDe} onChange={(e) => setNuevaMarca((f) => ({ ...f, copiarDe: e.target.value }))} style={sel}>
-          <option value="">Empezar vacía</option>
-          {marcas.map((m) => <option key={m.id} value={m.cliente}>Copiar prefijos de {m.cliente}</option>)}
-        </select>
+          );
+        })}
+        {!empresasVista.length && <div style={{ padding: "12px 14px", color: T.slate, fontStyle: "italic", fontSize: 13 }}>{marcas.length ? "Ninguna empresa coincide con la búsqueda." : "Todavía no hay empresas en el patrón."}</div>}
+      </div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", padding: "10px 12px", background: T.canvas, border: `1px solid ${T.border}`, borderRadius: 12, marginTop: 10 }}>
+        <input list="dl-clientes-libres" value={nuevaMarca.cliente} onChange={(e) => setNuevaMarca((f) => ({ ...f, cliente: e.target.value }))} placeholder="Empresa nueva (escribe para buscar)" style={{ ...sel, minWidth: 260 }} />
+        <input list="dl-marcas" value={nuevaMarca.copiarDe} onChange={(e) => setNuevaMarca((f) => ({ ...f, copiarDe: e.target.value }))} placeholder="Copiar prefijos de… (opcional)" style={{ ...sel, minWidth: 240 }} />
         <button onClick={agregarMarca} style={{ background: T.ink, color: "#fff", border: "none", borderRadius: 8, padding: "7px 12px", fontWeight: 800, fontSize: 12, cursor: "pointer" }}>+ Agregar empresa</button>
       </div>
       <div style={{ fontSize: 11, color: T.slate, marginTop: 6, fontStyle: "italic" }}>
-        Matricula cada prefijo una sola vez, con su grupo. Si una empresa tiene varios prefijos en un grupo (por ejemplo Dama 98 y 96), al crear el código eliges cuál usar. Los prefijos matriculados son los que aparecen para marcar en la tabla de bloques. Las empresas salen de la lista de Clientes: si una no aparece, créala primero en Administración → Clientes. Las reglas puntuales de la lista de abajo (por línea, grupo o cliente) siguen funcionando como excepciones y le ganan al patrón.
+        Haz clic en una empresa para ver o editar sus prefijos. Matricula cada prefijo una sola vez, con su grupo. Si una empresa tiene varios prefijos en un grupo (por ejemplo Dama 98 y 96), al crear el código eliges cuál usar. Los prefijos matriculados son los que se pueden agregar en la tabla de bloques. Las empresas salen de la lista de Clientes: si una no aparece, créala primero en Administración → Clientes. Las reglas puntuales de la lista de abajo (por línea, grupo o cliente) siguen funcionando como excepciones y le ganan al patrón.
       </div>
 
       <div style={{ marginTop: 14, padding: "12px 14px", background: T.jadeBg, borderRadius: 12, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", fontSize: 13 }}>
         <b>🧪 Probar:</b>
-        <select value={prueba.cliente} onChange={(e) => setPrueba((p) => ({ ...p, cliente: e.target.value }))} style={sel}>
-          <option value="">Marca</option>{marcas.map((m) => <option key={m.id} value={m.cliente}>{m.cliente}</option>)}
-        </select>
+        <input list="dl-marcas" value={prueba.cliente} onChange={(e) => setPrueba((p) => ({ ...p, cliente: e.target.value }))} placeholder="Marca (escribe para buscar)" style={{ ...sel, minWidth: 220 }} />
         <select value={prueba.grupo} onChange={(e) => setPrueba((p) => ({ ...p, grupo: e.target.value }))} style={sel}>
           <option value="">Grupo</option>{grupos.map((g) => <option key={g} value={g}>{g}</option>)}
         </select>
