@@ -2007,15 +2007,26 @@ exports.getDisponibleParaDespachar = onCall(
     const vistasDiag = new Set();
     for (const l of lineas.values()) {
       if (sinPrecioDiag.length >= 15) break;
-      if (cumplidos.has(l.numPed) || l.precio > 0 || vistasDiag.has(l.refNorm)) continue;
+      // Se compara el precio REDONDEADO (el que ve la pantalla): un precio de
+      // 0,007 pasa 'l.precio > 0' pero se muestra como 'sin precio'.
+      if (cumplidos.has(l.numPed) || Math.round(l.precio) > 0 || vistasDiag.has(l.refNorm)) continue;
       vistasDiag.add(l.refNorm);
+      const kd = `${l.numPed}|${l.refNorm}`;
+      const candidatos = {
+        precioFinal: l.precio,
+        fuente: l.precioFuente,
+        tablaPedido: precioTablaPedidoRef.get(kd) ?? null,
+        facturaPedido: precioFactPedidoRef.get(kd) ?? null,
+        facturaCliente: precioFactClienteRef.get(`${l.cliente}|${l.refNorm}`)?.precio ?? null,
+        matriculado: precioMatriculado.get(l.refNorm) ?? null,
+      };
       const fila = filaPorRef.get(l.refNorm);
-      if (!fila) { sinPrecioDiag.push({ ref: l.ref, numPed: l.numPed, enMaestro: false }); continue; }
+      if (!fila) { sinPrecioDiag.push({ ref: l.ref, numPed: l.numPed, enMaestro: false, candidatos }); continue; }
       const camposPrecio = {};
       for (const [campo, valor] of Object.entries(fila)) {
         if (/prec|valor|costo|vta|venta|mayor|public/i.test(campo)) camposPrecio[campo] = valor;
       }
-      sinPrecioDiag.push({ ref: l.ref, numPed: l.numPed, enMaestro: true, refMaestro: fila.ref, refExterna: fila.referenciaExterna, camposPrecio });
+      sinPrecioDiag.push({ ref: l.ref, numPed: l.numPed, enMaestro: true, refMaestro: fila.ref, refExterna: fila.referenciaExterna, camposPrecio, candidatos });
     }
     if (diagTablas["ApiGen_Referencias"] && !diagTablas["ApiGen_Referencias"].error) diagTablas["ApiGen_Referencias"].sinPrecio = sinPrecioDiag;
     const porCliente = [...porClienteMap.entries()]

@@ -388,7 +388,7 @@ export default function DisponibleDespacharView({ db, functionsClient, T }) {
                   <div>Maestro de referencias: {datos.diagTablas.ApiGen_Referencias.filas} filas, {datos.diagTablas.ApiGen_Referencias.preciosMatriculados} con precio matriculado.</div>
                   {datos.diagTablas.ApiGen_Referencias.sinPrecio.map((r, i) => (
                     <div key={i} style={{ fontFamily: "monospace", fontSize: 11, wordBreak: "break-all" }}>
-                      <b>{r.ref}</b> (pedido {r.numPed}): {r.enMaestro ? `en maestro (ref ${r.refMaestro}, ext ${r.refExterna || "—"}) · ${JSON.stringify(r.camposPrecio)}` : "NO aparece en el maestro de referencias"}
+                      <b>{r.ref}</b> (pedido {r.numPed}): {r.enMaestro ? `en maestro (ref ${r.refMaestro}, ext ${r.refExterna || "—"}) · ${JSON.stringify(r.camposPrecio)}` : "NO aparece en el maestro de referencias"} · candidatos: {JSON.stringify(r.candidatos)}
                     </div>
                   ))}
                 </>}
