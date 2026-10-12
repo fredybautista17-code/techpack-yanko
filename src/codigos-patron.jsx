@@ -77,12 +77,31 @@ export function prefijosDeGrupo(marca, grupo) {
     .filter((x) => x && !vistos.has(x) && vistos.add(x));
 }
 
+// ¿El prefijo matriculado (fila x) se usa en esta categoría? Una fila guarda
+// "categorias" (lista de las que usa, cuando son pocas) o "excluir" (las que NO
+// usa, cuando usa casi todas). Sin ninguna de las dos vale para todas, incluso
+// para las categorías que se creen después.
+export function aplicaCategoria(x, categoria) {
+  const cats = x?.categorias || [];
+  if (cats.length) return cats.includes(categoria);
+  return !(x?.excluir || []).includes(categoria);
+}
+// Texto corto: "todas las categorías" / "todas menos A, B" / "A, B, C"
+export function textoCategorias(x, todas) {
+  const lista = todas || [];
+  const cats = x?.categorias || [];
+  const excl = x?.excluir || [];
+  if (!cats.length && !excl.length) return "todas las categorías";
+  if (cats.length) return cats.join(", ");
+  return excl.length >= lista.length && lista.length ? "ninguna categoría" : `todas menos ${excl.join(", ")}`;
+}
+
 // Prefijos que una empresa tiene asignados para un grupo y una categoría. Una
 // fila matriculada sin categorías vale para todas.
 export function prefijosParaCategoria(marca, grupo, categoria) {
   const vistos = new Set();
   return listaMatriculados(marca)
-    .filter((x) => (x.grupo === grupo || x.grupo === GRUPO_TODOS) && (!(x.categorias || []).length || x.categorias.includes(categoria)))
+    .filter((x) => (x.grupo === grupo || x.grupo === GRUPO_TODOS) && aplicaCategoria(x, categoria))
     .map((x) => String(x.prefijo || "").trim())
     .filter((x) => x && !vistos.has(x) && vistos.add(x));
 }
@@ -240,46 +259,74 @@ function derivarPrefijos(lista) {
   return o;
 }
 
-// Categorías de un prefijo: etiquetas con × y un campo con búsqueda para
-// agregar otra. Sin ninguna significa "todas las categorías".
-function SelectorCategorias({ opciones, valor, onChange, T, idLista }) {
-  const marcadas = Array.isArray(valor) ? valor : [];
-  const [txt, setTxt] = useState("");
-  const buscar = (x) => opciones.find((o) => o.toLowerCase() === String(x || "").trim().toLowerCase());
-  const agregar = (x) => {
-    const real = buscar(x);
-    if (!real) return;
-    if (!marcadas.includes(real)) onChange([...marcadas, real]);
-    setTxt("");
+// Categorías de un prefijo: un botón con el resumen que abre un panel de
+// casillas (marcar todas / quitar todas / buscar). Si marca casi todas se
+// guarda la lista de las que NO usa ("todas menos…"), así una categoría nueva
+// queda incluida sola; si marca pocas se guarda la lista de las que usa.
+function SelectorCategorias({ opciones, valor, onChange, T }) {
+  const [abierto, setAbierto] = useState(false);
+  const [q, setQ] = useState("");
+  const N = opciones.length;
+  const marcada = (c) => aplicaCategoria(valor, c);
+  const seleccion = opciones.filter(marcada);
+  const n = seleccion.length;
+  const fuera = opciones.filter((c) => !marcada(c));
+  const desdeSeleccion = (sel) => {
+    const k = sel.length;
+    if (k === N) return { categorias: [], excluir: [] };
+    if (k >= N / 2) return { categorias: [], excluir: opciones.filter((c) => !sel.includes(c)) };
+    return { categorias: sel, excluir: [] };
   };
-  const quitar = (x) => onChange(marcadas.filter((y) => y !== x));
-  const noExiste = txt.trim() !== "" && !buscar(txt);
+  const alternar = (c) => onChange(desdeSeleccion(marcada(c) ? seleccion.filter((x) => x !== c) : [...seleccion, c]));
+  const corto = (lista) => lista.slice(0, 5).join(", ") + (lista.length > 5 ? ` +${lista.length - 5}` : "");
+
+  let estilo = { background: "#fff", color: T.ink, border: `1.5px solid ${T.border}` };
+  let texto;
+  if (!N || n === N) { estilo = { background: T.jadeBg, color: T.jade, border: "1.5px solid transparent" }; texto = "Todas las categorías"; }
+  else if (n === 0) { estilo = { background: T.coralBg, color: T.coral, border: "1.5px solid transparent" }; texto = "Ninguna: marca al menos una"; }
+  else if (n >= N / 2) { estilo = { background: T.amberBg, color: T.amber, border: "1.5px solid transparent" }; texto = `Todas menos: ${corto(fuera)}`; }
+  else texto = null;
+  const visibles = opciones.filter((c) => !q.trim() || c.toLowerCase().includes(q.trim().toLowerCase()));
+
   return (
-    <div style={{ display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center" }}>
-      <datalist id={idLista}>{opciones.filter((o) => !marcadas.includes(o)).map((o) => <option key={o} value={o} />)}</datalist>
-      {marcadas.map((x) => {
-        const huerfana = !opciones.includes(x);
-        return (
-          <span key={x} title={huerfana ? "Esta categoría ya no existe" : ""} style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 4px 2px 10px", borderRadius: 999, border: `1.5px solid ${huerfana ? T.coral : T.denim}`, background: huerfana ? T.coralBg : T.denim, color: huerfana ? T.coral : "#fff", fontWeight: 700, fontSize: 12 }}>
-            {x}{huerfana ? " ⚠" : ""}
-            <button type="button" onClick={() => quitar(x)} title="Quitar" style={{ border: "none", background: "transparent", color: "inherit", cursor: "pointer", fontWeight: 900, fontSize: 13, padding: "0 4px", lineHeight: 1 }}>×</button>
+    <div>
+      <button type="button" onClick={() => setAbierto((v) => !v)} style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap", padding: "5px 12px", borderRadius: 8, fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, cursor: "pointer", textAlign: "left", ...estilo }}>
+        {texto !== null ? <span>{texto}</span> : (
+          <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>
+            {seleccion.slice(0, 5).map((c) => <span key={c} style={{ padding: "1px 9px", borderRadius: 999, background: T.denim, color: "#fff", fontSize: 12 }}>{c}</span>)}
+            {seleccion.length > 5 && <span style={{ color: T.slate }}>+{seleccion.length - 5}</span>}
           </span>
-        );
-      })}
-      {!marcadas.length && <span style={{ padding: "2px 10px", borderRadius: 999, background: T.jadeBg, color: T.jade, fontWeight: 700, fontSize: 12 }}>Todas las categorías</span>}
-      <input
-        list={idLista}
-        value={txt}
-        placeholder="+ categoría"
-        title={noExiste ? "Esa categoría no existe" : "Escribe o elige una categoría"}
-        onChange={(e) => {
-          const t = e.nativeEvent && e.nativeEvent.inputType;
-          setTxt(e.target.value);
-          if ((t === undefined || t === "insertReplacementText") && buscar(e.target.value)) agregar(e.target.value);
-        }}
-        onKeyDown={(e) => { if (e.key === "Enter") agregar(txt); }}
-        style={{ width: 118, padding: "3px 10px", border: `1.5px solid ${noExiste ? T.coral : T.border}`, borderRadius: 999, fontSize: 12, fontFamily: "inherit" }}
-      />
+        )}
+        <span style={{ color: T.slate, fontSize: 10 }}>{abierto ? "▲" : "▼"}</span>
+      </button>
+      {abierto && (
+        <div style={{ marginTop: 8, width: 340, maxWidth: "100%", background: "#fff", border: `1.5px solid ${T.ink}`, borderRadius: 12, boxShadow: "0 8px 24px rgba(27,27,47,.18)", overflow: "hidden" }}>
+          <div style={{ padding: "10px 12px", borderBottom: `1px solid ${T.border}`, display: "flex", flexDirection: "column", gap: 8 }}>
+            <input type="text" value={q} onChange={(e) => setQ(e.target.value)} placeholder="🔎 Buscar categoría…" style={{ width: "100%", padding: "7px 10px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit" }} />
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <button type="button" onClick={() => onChange({ categorias: [], excluir: [] })} style={{ padding: "4px 10px", borderRadius: 6, border: `1.5px solid ${T.ink}`, background: T.ink, color: "#fff", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Marcar todas</button>
+              <button type="button" onClick={() => onChange({ categorias: [], excluir: [...opciones] })} style={{ padding: "4px 10px", borderRadius: 6, border: `1.5px solid ${T.border}`, background: T.canvas, color: T.ink, fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Quitar todas</button>
+              <span style={{ marginLeft: "auto", fontSize: 12, color: T.slate, fontWeight: 700 }}>{n} de {N}</span>
+            </div>
+          </div>
+          <div style={{ maxHeight: 230, overflowY: "auto", padding: "4px 0" }}>
+            {visibles.map((c) => {
+              const on = marcada(c);
+              return (
+                <label key={c} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 14px", cursor: "pointer", fontSize: 13.5, color: on ? T.ink : T.slate }}>
+                  <input type="checkbox" checked={on} onChange={() => alternar(c)} style={{ width: 16, height: 16 }} />
+                  <span style={on ? undefined : { textDecoration: "line-through" }}>{c}</span>
+                </label>
+              );
+            })}
+            {!visibles.length && <div style={{ padding: "8px 14px", fontSize: 12, color: T.slate, fontStyle: "italic" }}>Ninguna categoría coincide.</div>}
+          </div>
+          <div style={{ padding: "8px 12px", borderTop: `1px solid ${T.border}`, background: T.canvas, display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12, color: T.slate }}>
+            <span>Marca las que usa este prefijo</span>
+            <button type="button" onClick={() => { setAbierto(false); setQ(""); }} style={{ padding: "4px 12px", borderRadius: 6, border: "none", background: T.ink, color: "#fff", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Listo</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -294,7 +341,7 @@ export function PrefijosDeCliente({ cliente, config, onUpdateConfig, T }) {
   const grupos = config.gruposLinea || ["Dama", "Caballero", "Niña", "Niño"];
   const categorias = config.categorias || [];
   const [msg, setMsg] = useState("");
-  const [nuevo, setNuevo] = useState({ prefijo: "", grupo: "", categorias: [] });
+  const [nuevo, setNuevo] = useState({ prefijo: "", grupo: "", categorias: [], excluir: [] });
   const th = (t) => <th style={{ background: T.ink, color: T.seam, textAlign: "left", padding: "9px 12px", fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4 }}>{t}</th>;
   const td = { padding: "8px 10px", borderBottom: `1px solid ${T.border}`, verticalAlign: "middle" };
   const sel = { padding: "7px 8px", border: "1.5px solid #E8E2DB", borderRadius: 8, fontSize: 13, fontFamily: "inherit", background: "#fff" };
@@ -317,15 +364,15 @@ export function PrefijosDeCliente({ cliente, config, onUpdateConfig, T }) {
     const prefijo = limpiarPrefijo(nuevo.prefijo);
     if (!prefijo || !nuevo.grupo) { setMsg("Escribe el prefijo y elige para quién es (el grupo)."); return; }
     if (lista.some((x) => x.prefijo === prefijo && x.grupo === nuevo.grupo)) { setMsg(`Ya tiene el prefijo ${prefijo} para ${etiquetaGrupo(nuevo.grupo)}. Agrega las categorías en esa misma fila.`); return; }
-    guardar([...lista, { id: uidLocal(), prefijo, grupo: nuevo.grupo, categorias: nuevo.categorias }]);
-    setNuevo({ prefijo: "", grupo: nuevo.grupo, categorias: [] });
+    guardar([...lista, { id: uidLocal(), prefijo, grupo: nuevo.grupo, categorias: nuevo.categorias, excluir: nuevo.excluir }]);
+    setNuevo({ prefijo: "", grupo: nuevo.grupo, categorias: [], excluir: [] });
     setMsg("");
   }
 
   return (
     <div style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 12, overflow: "hidden", marginTop: 8 }}>
       <div style={{ padding: "10px 14px", background: T.canvas, borderBottom: `1px solid ${T.border}`, fontSize: 12, color: T.slate }}>
-        <b style={{ color: T.ink }}>Prefijos de {cliente}</b> — matricula cada prefijo con <b>para quién</b> es y <b>en qué categorías</b> se usa. Sin categorías significa todas. Los rangos por categoría se definen en Códigos de Referencia y valen para todas las marcas.
+        <b style={{ color: T.ink }}>Prefijos de {cliente}</b> — matricula cada prefijo con <b>para quién</b> es y <b>en qué categorías</b> se usa. Si usa todas, deja "Todas las categorías"; si usa casi todas, márcalas todas y quita las que no. Los rangos por categoría se definen en Códigos de Referencia y valen para todas las marcas.
       </div>
       {msg && <div style={{ padding: "8px 14px", background: T.amberBg, color: T.amber, fontSize: 12, fontWeight: 600 }}>{msg}</div>}
       <div style={{ overflow: "auto" }}>
@@ -341,7 +388,7 @@ export function PrefijosDeCliente({ cliente, config, onUpdateConfig, T }) {
                     {[...new Set([...grupos, x.grupo])].filter((g) => g !== GRUPO_TODOS).map((g) => <option key={g} value={g}>{g}</option>)}
                   </select>
                 </td>
-                <td style={td}><SelectorCategorias T={T} idLista={`dl-cat-${x.id}`} opciones={categorias} valor={x.categorias || []} onChange={(v) => cambiarFila(x.id, { categorias: v })} /></td>
+                <td style={td}><SelectorCategorias T={T} opciones={categorias} valor={x} onChange={(v) => cambiarFila(x.id, v)} /></td>
                 <td style={{ ...td, width: 90, textAlign: "right" }}>
                   <button onClick={() => guardar(lista.filter((y) => y.id !== x.id))} style={{ background: T.coralBg, border: "none", borderRadius: 6, padding: "4px 10px", color: T.coral, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>Eliminar</button>
                 </td>
@@ -357,7 +404,7 @@ export function PrefijosDeCliente({ cliente, config, onUpdateConfig, T }) {
                   {grupos.map((g) => <option key={g} value={g}>{g}</option>)}
                 </select>
               </td>
-              <td style={td}><SelectorCategorias T={T} idLista="dl-cat-nuevo" opciones={categorias} valor={nuevo.categorias} onChange={(v) => setNuevo((f) => ({ ...f, categorias: v }))} /></td>
+              <td style={td}><SelectorCategorias T={T} opciones={categorias} valor={nuevo} onChange={(v) => setNuevo((f) => ({ ...f, ...v }))} /></td>
               <td style={{ ...td, textAlign: "right" }}><button onClick={matricular} style={{ background: T.ink, color: "#fff", border: "none", borderRadius: 8, padding: "7px 12px", fontWeight: 800, fontSize: 12, cursor: "pointer" }}>+ Matricular</button></td>
             </tr>
           </tbody>
@@ -382,24 +429,30 @@ export default function PatronCodigosReferencia({ config, onUpdateConfig, T, sug
   const bloquesOrdenados = useMemo(() => [...bloques].sort((a, b) => Number(a.inicio) - Number(b.inicio) || a.categoria.localeCompare(b.categoria)), [bloques]);
 
   // Choques: dos rangos de categorías distintas que se pisan, pero SOLO si
-  // alguna empresa asignó esas dos categorías al MISMO prefijo (un prefijo sin
-  // categorías vale para todas). Así el 98 con Byker y el 96 con Vestido no
-  // chocan aunque los números se crucen.
+  // alguna empresa asignó a mano esas dos categorías al MISMO prefijo. Un
+  // prefijo en "Todas las categorías" no genera avisos. Así el 98 con Byker y
+  // el 96 con Vestido no chocan aunque los números se crucen.
   const choques = useMemo(() => {
-    const m = new Map(); // id de bloque -> Set de textos
-    const agregar = (id, txt) => { if (!m.has(id)) m.set(id, new Set()); m.get(id).add(txt); };
+    const m = new Map(); // id de bloque -> Map(otra categoría -> { tipos, prefijos })
+    const agregar = (id, cat, tipo, prefijos) => {
+      if (!m.has(id)) m.set(id, new Map());
+      const mm = m.get(id);
+      if (!mm.has(cat)) mm.set(cat, { tipos: new Set(), prefijos: new Set() });
+      mm.get(cat).tipos.add(tipo);
+      prefijos.forEach((x) => mm.get(cat).prefijos.add(x));
+    };
     const todasCats = [...new Set(bloques.map((b) => b.categoria))];
-    const porPref = new Map(); // prefijo -> Set de categorías
+    const porPref = new Map(); // prefijo -> Set de categorías asignadas a mano
     marcas.forEach((mm) => listaMatriculados(mm).forEach((x) => {
       if (!x.prefijo) return;
+      if (!(x.categorias || []).length && !(x.excluir || []).length) return; // todas: sin avisos
       const k = String(x.prefijo);
-      const cats = (x.categorias || []).length ? x.categorias : todasCats;
       if (!porPref.has(k)) porPref.set(k, new Set());
-      cats.forEach((c) => porPref.get(k).add(c));
+      todasCats.filter((c) => aplicaCategoria(x, c)).forEach((c) => porPref.get(k).add(c));
     }));
     const conjuntos = new Map(); // mismas categorías -> prefijos que las comparten
     porPref.forEach((set, pref) => {
-      const cats = [...set].filter((c) => todasCats.includes(c)).sort();
+      const cats = [...set].sort();
       if (cats.length < 2) return;
       const k = cats.join("|");
       if (!conjuntos.has(k)) conjuntos.set(k, { cats, prefijos: [] });
@@ -412,13 +465,12 @@ export default function PatronCodigosReferencia({ config, onUpdateConfig, T, sug
         const d = desbordeDeBloque(b);
         if (d) rangos.push({ b, ini: d.inicio, fin: d.fin, tipo: "desborde" });
       });
-      const tag = ` · mismo prefijo: ${prefijos.slice(0, 3).join(", ")}${prefijos.length > 3 ? "…" : ""}`;
       rangos.forEach((x, i) => rangos.slice(i + 1).forEach((y) => {
         if (x.b.categoria === y.b.categoria) return;
         if (x.ini <= y.fin && y.ini <= x.fin) {
           const tipo = x.tipo === "desborde" || y.tipo === "desborde" ? "desborde" : "bloque";
-          agregar(x.b.id, `${y.b.categoria} (${tipo})${tag}`);
-          agregar(y.b.id, `${x.b.categoria} (${tipo})${tag}`);
+          agregar(x.b.id, y.b.categoria, tipo, prefijos);
+          agregar(y.b.id, x.b.categoria, tipo, prefijos);
         }
       }));
     });
@@ -466,10 +518,10 @@ export default function PatronCodigosReferencia({ config, onUpdateConfig, T, sug
     if (!q) return [];
     const out = [];
     marcas.forEach((m) => listaMatriculados(m).forEach((x) => {
-      if (String(x.prefijo).toLowerCase() === q) out.push({ cliente: m.cliente, grupo: x.grupo, categorias: x.categorias || [] });
+      if (String(x.prefijo).toLowerCase() === q) out.push({ cliente: m.cliente, grupo: x.grupo, texto: textoCategorias(x, config.categorias) });
     }));
     return out.sort((a, b) => String(a.cliente).localeCompare(String(b.cliente), "es"));
-  }, [marcas, busquedaPref]);
+  }, [marcas, busquedaPref, config.categorias]);
   const totalPrefijos = useMemo(() => marcas.reduce((n, m) => n + listaMatriculados(m).length, 0), [marcas]);
 
   // Prueba: usa un "linea" ficticia mapeada al grupo elegido
@@ -525,7 +577,14 @@ export default function PatronCodigosReferencia({ config, onUpdateConfig, T, sug
                 <tr key={b.id}>
                   <td style={{ ...td, fontWeight: 700 }}>
                     {b.categoria}
-                    {chocaCon && <div style={{ fontSize: 11, color: T.coral, fontWeight: 700 }}>⚠ choca con: {[...chocaCon].join(", ")}</div>}
+                    {chocaCon && (
+                      <div
+                        title={[...chocaCon].map(([cat, v]) => `${cat} (${[...v.tipos].join("/")}) — prefijos: ${[...v.prefijos].slice(0, 6).join(", ")}${v.prefijos.size > 6 ? "…" : ""}`).join("\n")}
+                        style={{ fontSize: 11, color: T.coral, fontWeight: 700, cursor: "help" }}
+                      >
+                        ⚠ cruza con {[...chocaCon.keys()].slice(0, 2).join(", ")}{chocaCon.size > 2 ? ` (+${chocaCon.size - 2})` : ""}
+                      </div>
+                    )}
                     {duplicados.get(b.id) && <div style={{ fontSize: 11, color: T.coral, fontWeight: 700 }}>⚠ esta categoría tiene dos filas de rango</div>}
                   </td>
                   <td style={{ ...td, width: 110 }}><Celda type="number" value={b.inicio} onCommit={(v) => cambiarBloque(b.id, { inicio: Number(v) || 0 })} /></td>
@@ -585,7 +644,7 @@ export default function PatronCodigosReferencia({ config, onUpdateConfig, T, sug
           usuariosPrefijo.length ? (
             <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6, fontSize: 13 }}>
               {usuariosPrefijo.map((u, i) => (
-                <div key={i}><b>{u.cliente}</b> · {etiquetaGrupo(u.grupo)} · <span style={{ color: T.slate }}>{u.categorias.length ? u.categorias.join(", ") : "todas las categorías"}</span></div>
+                <div key={i}><b>{u.cliente}</b> · {etiquetaGrupo(u.grupo)} · <span style={{ color: T.slate }}>{u.texto}</span></div>
               ))}
             </div>
           ) : <div style={{ marginTop: 10, fontSize: 12.5, color: T.slate, fontStyle: "italic" }}>Ninguna empresa tiene matriculado ese prefijo.</div>
