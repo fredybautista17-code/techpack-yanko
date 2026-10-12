@@ -929,7 +929,7 @@ function nowISO() { return new Date().toISOString(); }
 // elegida sale de config.lineaGrupoMap (ver DEFAULT_CONFIG.lineaGrupoMap) —
 // así una fila puede amarrarse a "toda línea de Caballero" sin tener que
 // enumerar cada línea puntual de Busint.
-function buscarEntradaCodigoReferencia(categoria, linea, cliente, config) {
+function buscarEntradaCodigoReferencia(categoria, linea, cliente, config, prefijoElegido) {
   if (!categoria) return null;
   const catalogo = (config?.codigosReferencia || []).filter((c) => c.categoria === categoria);
   const grupo = (config?.lineaGrupoMap || {})[linea] || "";
@@ -941,7 +941,7 @@ function buscarEntradaCodigoReferencia(categoria, linea, cliente, config) {
   // (2026-10-12) Orden: regla puntual (con cliente, línea o grupo) > patrón
   // (bloque de la categoría + prefijo de la marca y grupo) > regla genérica.
   if (mejor && especificidad(mejor) > 0) return mejor;
-  return buscarPorPatron(categoria, linea, cliente, config) || mejor;
+  return buscarPorPatron(categoria, linea, cliente, config, prefijoElegido) || mejor;
 }
 // Compara/busca referencias IGNORANDO el guion — Busint a veces guarda o
 // devuelve el mismo código SIN guion (ej. "985609" en vez de "98-5609"),
@@ -995,8 +995,8 @@ function numerosEnRango(prefijo, inicio, fin, ...listasDeRefs) {
 // como "segunda vuelta" de Faldas una vez se agota 98-201 a 98-299), la
 // sugerencia salta automáticamente a ese rango de desborde en vez de
 // invadir el bloque de la categoría vecina.
-function sugerirReferencia(categoria, linea, cliente, config, protos, capsulas, busintLista) {
-  const entrada = buscarEntradaCodigoReferencia(categoria, linea, cliente, config);
+function sugerirReferencia(categoria, linea, cliente, config, protos, capsulas, busintLista, prefijoElegido) {
+  const entrada = buscarEntradaCodigoReferencia(categoria, linea, cliente, config, prefijoElegido);
   if (!entrada || !entrada.prefijo) return null;
   const prefijo = String(entrada.prefijo).trim();
   // Compatibilidad con filas creadas ANTES de este cambio (solo tenían
@@ -1030,7 +1030,7 @@ function sugerirReferencia(categoria, linea, cliente, config, protos, capsulas, 
     rangoInicio = inicioD;
     rangoFin = finD;
   }
-  return { codigo: `${prefijo}-${String(siguiente).padStart(3, "0")}`, prefijo, rangoInicio, rangoFin, siguiente };
+  return { codigo: `${prefijo}-${String(siguiente).padStart(3, "0")}`, prefijo, prefijosDisponibles: entrada.prefijosDisponibles || [], rangoInicio, rangoFin, siguiente };
 }
 // Busca si un código de referencia ya está en uso DENTRO de ATLAS mismo
 // (prototipos o referencias de cápsula) — a diferencia de la bitácora de
@@ -1794,7 +1794,7 @@ function candidatosReferencia(sug, busint, protos, capsulas, n = 5) {
   }
   return candidatos;
 }
-function SugerenciaYVerificacionRef({ sug, referencia, onUsar, busint, protos, capsulas }) {
+function SugerenciaYVerificacionRef({ sug, referencia, onUsar, busint, protos, capsulas, onElegirPrefijo }) {
   const refNorm = normalizarRefComparacion(referencia);
   const sugerencia = sug?.codigo || null;
   if (!sugerencia && !refNorm) return null;
@@ -1803,6 +1803,15 @@ function SugerenciaYVerificacionRef({ sug, referencia, onUsar, busint, protos, c
   const candidatos = !refNorm ? candidatosReferencia(sug, busint, protos, capsulas) : [];
   return (
     <div style={{ padding: "10px 12px", background: T.canvas, borderRadius: 8, marginBottom: 12, border: `1px solid ${T.border}`, display: "flex", flexDirection: "column", gap: 6 }}>
+      {sug?.prefijosDisponibles?.length > 1 && onElegirPrefijo && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: T.ink, fontWeight: 700 }}>
+          <span>Prefijo:</span>
+          <select value={sug.prefijo} onChange={(e) => onElegirPrefijo(e.target.value)} style={{ padding: "4px 8px", border: `1.5px solid ${T.border}`, borderRadius: 6, fontSize: 13, fontWeight: 800, color: T.denim, background: T.white }}>
+            {sug.prefijosDisponibles.map((x) => <option key={x} value={x}>{x}</option>)}
+          </select>
+          <span style={{ color: T.slate, fontWeight: 600, fontSize: 11.5 }}>esta marca tiene varios prefijos en este grupo</span>
+        </div>
+      )}
       {sugerencia && (
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, fontSize: 12.5, color: candidatos[0]?.libre === false ? T.coral : T.jade, fontWeight: 700 }}>
           <span>
@@ -1868,9 +1877,10 @@ function SugerenciaYVerificacionRef({ sug, referencia, onUsar, busint, protos, c
 }
 function NewProtoModal({ onSave, onClose, config, protos, capsulas }) {
   const [form, setForm] = useState({ name: "", categoria: "", silueta: "", linea: "", rango: "", reference: "", assignedTo: "", cliente: "", mes: "", tipoTela: "", baseMolderia: "", numPrototipo: "" });
+  const [prefijoSel, setPrefijoSel] = useState("");
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   const busint = useMaestroReferenciasBusint();
-  const sug = sugerirReferencia(form.categoria, form.linea, form.cliente, config, protos || [], capsulas || [], busint.lista);
+  const sug = sugerirReferencia(form.categoria, form.linea, form.cliente, config, protos || [], capsulas || [], busint.lista, prefijoSel);
   function save() {
     if (!form.name || !form.reference) return;
     onSave({ id: uid(), ...form, status: "borrador", currentStage: "ilustracion", stageStartedAt: today(), createdAt: today(), promotedTo: null, image: null, bom: [], pom: [], observations: [] });
@@ -1889,7 +1899,7 @@ function NewProtoModal({ onSave, onClose, config, protos, capsulas }) {
         <Field label="Rango"><FSel value={form.rango} onChange={set("rango")} options={config.rangos} /></Field>
         <Field label="Mes"><FSel value={form.mes} onChange={set("mes")} options={MONTHS_ES} /></Field>
       </div>
-      <SugerenciaYVerificacionRef sug={sug} referencia={form.reference} onUsar={(codigo) => set("reference")(codigo)} busint={busint} protos={protos} capsulas={capsulas} />
+      <SugerenciaYVerificacionRef sug={sug} referencia={form.reference} onUsar={(codigo) => set("reference")(codigo)} busint={busint} protos={protos} capsulas={capsulas} onElegirPrefijo={setPrefijoSel} />
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Ref"><FInput value={form.reference} onChange={set("reference")} placeholder="Ej: C-003" /></Field>
         <Field label="Responsable"><FSel value={form.assignedTo} onChange={set("assignedTo")} options={config.disenadores} /></Field>
@@ -2010,12 +2020,13 @@ function NewCapsulaModal({ onSave, onClose, config }) {
 
 function NewRefModal({ capsula, onSave, onClose, config, protos, capsulas }) {
   const [form, setForm] = useState({ name: "", reference: "", assignedTo: "", categoria: "", silueta: "", linea: "", rango: "", colores: "", tallas: "", tipoTela: "", baseMolderia: "", numPrototipo: "" });
+  const [prefijoSel, setPrefijoSel] = useState("");
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   const busint = useMaestroReferenciasBusint();
   // OJO: en este formulario el campo "Cliente" en pantalla se guarda bajo
   // form.colores (así venía de antes) — se usa igual acá para que el
   // consecutivo sugerido también tenga en cuenta el cliente.
-  const sug = sugerirReferencia(form.categoria, form.linea, form.colores, config, protos || [], capsulas || [], busint.lista);
+  const sug = sugerirReferencia(form.categoria, form.linea, form.colores, config, protos || [], capsulas || [], busint.lista, prefijoSel);
   function save() {
     if (!form.name || !form.reference) return;
     onSave(capsula.id, {
@@ -2033,7 +2044,7 @@ function NewRefModal({ capsula, onSave, onClose, config, protos, capsulas }) {
         <Field label="Silueta"><FSel value={form.silueta} onChange={set("silueta")} options={config.siluetas} /></Field>
       </div>
       <Field label="Línea"><FSel value={form.linea} onChange={set("linea")} options={config.lineas} /></Field>
-      <SugerenciaYVerificacionRef sug={sug} referencia={form.reference} onUsar={(codigo) => set("reference")(codigo)} busint={busint} protos={protos} capsulas={capsulas} />
+      <SugerenciaYVerificacionRef sug={sug} referencia={form.reference} onUsar={(codigo) => set("reference")(codigo)} busint={busint} protos={protos} capsulas={capsulas} onElegirPrefijo={setPrefijoSel} />
       <Field label="Ref"><FInput value={form.reference} onChange={set("reference")} placeholder="Ej: CM-001" /></Field>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Responsable"><FSel value={form.assignedTo} onChange={set("assignedTo")} options={config.disenadores} /></Field>
@@ -12280,7 +12291,7 @@ const PLANTILLA_CODIGOS_REFERENCIA = [
 function PatronCodigosWrapper({ config, onUpdateConfig, protos, capsulas }) {
   const busint = useMaestroReferenciasBusint();
   const sugerir = useCallback(
-    (categoria, linea, cliente, cfg) => sugerirReferencia(categoria, linea, cliente, cfg, protos || [], capsulas || [], busint.lista),
+    (categoria, linea, cliente, cfg, prefijoElegido) => sugerirReferencia(categoria, linea, cliente, cfg, protos || [], capsulas || [], busint.lista, prefijoElegido),
     [protos, capsulas, busint.lista]
   );
   return <PatronCodigosReferencia config={config} onUpdateConfig={onUpdateConfig} T={T} sugerir={sugerir} />;

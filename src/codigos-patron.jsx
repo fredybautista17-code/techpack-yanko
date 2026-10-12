@@ -38,25 +38,38 @@ export function desbordeDeBloque(b) {
   return desbordeAuto(b.inicio, b.fin);
 }
 
+// Una celda de la tabla de prefijos puede traer varios, separados por coma,
+// espacio o punto y coma (ej. "98, 82"). El primero es el predeterminado.
+export function listaPrefijos(valor) {
+  const vistos = new Set();
+  return String(valor || "").split(/[,;\s]+/).map((x) => x.trim()).filter((x) => {
+    if (!x || vistos.has(x)) return false;
+    vistos.add(x);
+    return true;
+  });
+}
+
 // Busca el código por patrón: prefijo de la marca (según el grupo de la línea)
 // + bloque de la categoría. Devuelve el mismo formato de entrada que usa
 // sugerirReferencia, o null si el patrón no alcanza.
-export function buscarPorPatron(categoria, linea, cliente, config) {
+export function buscarPorPatron(categoria, linea, cliente, config, prefijoElegido) {
   if (!categoria || !cliente) return null;
   const bloque = (config?.bloquesCategoria || []).find((b) => b.categoria === categoria);
   if (!bloque) return null;
   const marca = (config?.marcasPrefijos || []).find((m) => m.cliente === cliente);
   if (!marca) return null;
   const grupo = (config?.lineaGrupoMap || {})[linea] || "";
-  const prefijo = String((marca.prefijos || {})[grupo] || "").trim();
-  if (!prefijo) return null;
+  const lista = listaPrefijos((marca.prefijos || {})[grupo]);
+  if (!lista.length) return null;
+  const prefijo = lista.includes(prefijoElegido) ? prefijoElegido : lista[0];
   const d = desbordeDeBloque(bloque);
   return {
-    id: `patron-${marca.id}-${bloque.id}`,
+    id: `patron-${marca.id}-${bloque.id}-${prefijo}`,
     categoria,
     cliente,
     grupo,
     prefijo,
+    prefijosDisponibles: lista,
     rangoInicio: Number(bloque.inicio),
     rangoFin: Number(bloque.fin),
     desbordeInicio: d ? d.inicio : "",
@@ -187,7 +200,7 @@ export default function PatronCodigosReferencia({ config, onUpdateConfig, T, sug
   const [nuevoBloque, setNuevoBloque] = useState({ categoria: "", inicio: "", fin: "" });
   const [nuevaMarca, setNuevaMarca] = useState({ cliente: "", copiarDe: "" });
   const [msg, setMsg] = useState("");
-  const [prueba, setPrueba] = useState({ cliente: "", grupo: "", categoria: "" });
+  const [prueba, setPrueba] = useState({ cliente: "", grupo: "", categoria: "", prefijo: "" });
   const modelos = useMemo(() => modelosDeReglas(config), [config]);
   const [modeloSel, setModeloSel] = useState("");
   const parecidas = useMemo(() => categoriasParecidas([...(config.categorias || []), ...bloques.map((b) => b.categoria)]), [config.categorias, bloques]);
@@ -226,7 +239,7 @@ export default function PatronCodigosReferencia({ config, onUpdateConfig, T, sug
     setMsg("");
   }
   function cambiarMarca(id, grupo, valor) {
-    onUpdateConfig({ marcasPrefijos: marcas.map((m) => (m.id === id ? { ...m, prefijos: { ...(m.prefijos || {}), [grupo]: String(valor).trim() } } : m)) });
+    onUpdateConfig({ marcasPrefijos: marcas.map((m) => (m.id === id ? { ...m, prefijos: { ...(m.prefijos || {}), [grupo]: listaPrefijos(valor).join(", ") } } : m)) });
   }
   function agregarMarca() {
     if (!nuevaMarca.cliente) { setMsg("Elige la marca (cliente) que quieres agregar."); return; }
@@ -255,9 +268,11 @@ export default function PatronCodigosReferencia({ config, onUpdateConfig, T, sug
   const sugerencia = useMemo(() => {
     if (!prueba.cliente || !prueba.categoria || !prueba.grupo || !sugerir) return null;
     const cfgPrueba = { ...config, lineaGrupoMap: { ...(config.lineaGrupoMap || {}), __prueba__: prueba.grupo } };
-    try { return sugerir(prueba.categoria, "__prueba__", prueba.cliente, cfgPrueba); } catch (e) { return null; }
+    try { return sugerir(prueba.categoria, "__prueba__", prueba.cliente, cfgPrueba, prueba.prefijo); } catch (e) { return null; }
     // eslint-disable-next-line
   }, [prueba, config, sugerir]);
+
+  const prefijosPrueba = listaPrefijos(((marcas.find((m) => m.cliente === prueba.cliente) || {}).prefijos || {})[prueba.grupo]);
 
   const th = (t, al) => <th style={{ background: T.ink, color: T.seam, textAlign: al || "left", padding: "9px 12px", fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4 }}>{t}</th>;
   const td = { padding: "6px 10px", borderBottom: `1px solid ${T.border}`, verticalAlign: "middle" };
@@ -357,7 +372,7 @@ export default function PatronCodigosReferencia({ config, onUpdateConfig, T, sug
               <tr key={m.id}>
                 <td style={{ ...td, fontWeight: 700 }}>{m.cliente}</td>
                 {grupos.map((g) => (
-                  <td key={g} style={{ ...td, width: 110 }}><Celda value={(m.prefijos || {})[g] || ""} placeholder="—" style={{ textAlign: "center", fontWeight: 800, color: T.denim }} onCommit={(v) => cambiarMarca(m.id, g, v)} /></td>
+                  <td key={g} style={{ ...td, width: 130 }}><Celda value={(m.prefijos || {})[g] || ""} placeholder="—" style={{ textAlign: "center", fontWeight: 800, color: T.denim }} onCommit={(v) => cambiarMarca(m.id, g, v)} /></td>
                 ))}
                 <td style={{ ...td, width: 90, textAlign: "right" }}>
                   <button onClick={() => onUpdateConfig({ marcasPrefijos: marcas.filter((x) => x.id !== m.id) })} style={{ background: T.coralBg, border: "none", borderRadius: 6, padding: "4px 10px", color: T.coral, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>Eliminar</button>
@@ -384,7 +399,7 @@ export default function PatronCodigosReferencia({ config, onUpdateConfig, T, sug
         </table>
       </div>
       <div style={{ fontSize: 11, color: T.slate, marginTop: 6, fontStyle: "italic" }}>
-        Las marcas salen de la lista de Clientes. Si un cliente no aparece, créalo primero en Administración → Clientes. Las reglas puntuales de la lista de abajo (por línea, grupo o cliente) siguen funcionando como excepciones y le ganan al patrón.
+        Si una marca tiene varios prefijos en un grupo, escríbelos separados por coma (ej. 98, 82): el primero es el predeterminado y al crear el código eliges cuál usar. Las marcas salen de la lista de Clientes. Si un cliente no aparece, créalo primero en Administración → Clientes. Las reglas puntuales de la lista de abajo (por línea, grupo o cliente) siguen funcionando como excepciones y le ganan al patrón.
       </div>
 
       <div style={{ marginTop: 14, padding: "12px 14px", background: T.jadeBg, borderRadius: 12, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", fontSize: 13 }}>
@@ -398,6 +413,11 @@ export default function PatronCodigosReferencia({ config, onUpdateConfig, T, sug
         <select value={prueba.categoria} onChange={(e) => setPrueba((p) => ({ ...p, categoria: e.target.value }))} style={sel}>
           <option value="">Categoría</option>{(config.categorias || []).map((c) => <option key={c} value={c}>{c}</option>)}
         </select>
+        {prefijosPrueba.length > 1 && (
+          <select value={prefijosPrueba.includes(prueba.prefijo) ? prueba.prefijo : prefijosPrueba[0]} onChange={(e) => setPrueba((p) => ({ ...p, prefijo: e.target.value }))} style={sel}>
+            {prefijosPrueba.map((x) => <option key={x} value={x}>Prefijo {x}</option>)}
+          </select>
+        )}
         {prueba.cliente && prueba.grupo && prueba.categoria && (
           sugerencia
             ? <span>→ el siguiente código sería <b style={{ fontSize: 18, color: T.jade }}>{sugerencia.codigo}</b> <span style={{ color: T.slate, fontSize: 12 }}>(rango {sugerencia.prefijo}-{pad3(sugerencia.rangoInicio)} a {sugerencia.prefijo}-{pad3(sugerencia.rangoFin)})</span></span>
