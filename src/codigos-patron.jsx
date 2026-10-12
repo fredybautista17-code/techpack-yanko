@@ -3,7 +3,8 @@
 // + Grupo + Cliente a un prefijo y un rango, así que cada marca nueva obligaba
 // a escribir decenas de reglas. Ahora el patrón se separa en dos tablas:
 //   1) config.bloquesCategoria: UN bloque por categoría (Cachetero 1-99,
-//      Byker 100-199, Falda 200-299...), igual para todas las marcas. El
+//      Byker 100-199, Falda 200-299...), igual para todos los prefijos salvo
+//      que el bloque traiga "prefijos" (excepción de un prefijo). El
 //      desborde sigue el patrón ×10 (200-299 → 2000-2999) o se deja manual.
 //   2) config.marcasPrefijos: UNA fila por marca/cliente con su prefijo por
 //      grupo (Dama, Caballero, Niña, Niño).
@@ -52,16 +53,31 @@ export function listaPrefijos(valor) {
 // Busca el código por patrón: prefijo de la marca (según el grupo de la línea)
 // + bloque de la categoría. Devuelve el mismo formato de entrada que usa
 // sugerirReferencia, o null si el patrón no alcanza.
+// Bloque de una categoría para un prefijo: el bloque propio de ese prefijo
+// (columna "Prefijos" de la tabla) gana; si no hay, vale el bloque general
+// (el que tiene la columna "Prefijos" vacía).
+export function bloqueParaPrefijo(bloques, categoria, prefijo) {
+  const delCat = (bloques || []).filter((b) => b.categoria === categoria);
+  return (
+    delCat.find((b) => listaPrefijos(b.prefijos).includes(prefijo)) ||
+    delCat.find((b) => !listaPrefijos(b.prefijos).length) ||
+    null
+  );
+}
+
 export function buscarPorPatron(categoria, linea, cliente, config, prefijoElegido) {
   if (!categoria || !cliente) return null;
-  const bloque = (config?.bloquesCategoria || []).find((b) => b.categoria === categoria);
-  if (!bloque) return null;
+  const bloques = config?.bloquesCategoria || [];
+  if (!bloques.some((b) => b.categoria === categoria)) return null;
   const marca = (config?.marcasPrefijos || []).find((m) => m.cliente === cliente);
   if (!marca) return null;
   const grupo = (config?.lineaGrupoMap || {})[linea] || "";
   const lista = listaPrefijos((marca.prefijos || {})[grupo]);
-  if (!lista.length) return null;
-  const prefijo = lista.includes(prefijoElegido) ? prefijoElegido : lista[0];
+  // Solo los prefijos que tienen bloque para esta categoría
+  const conBloque = lista.filter((x) => bloqueParaPrefijo(bloques, categoria, x));
+  if (!conBloque.length) return null;
+  const prefijo = conBloque.includes(prefijoElegido) ? prefijoElegido : conBloque[0];
+  const bloque = bloqueParaPrefijo(bloques, categoria, prefijo);
   const d = desbordeDeBloque(bloque);
   return {
     id: `patron-${marca.id}-${bloque.id}-${prefijo}`,
@@ -69,7 +85,7 @@ export function buscarPorPatron(categoria, linea, cliente, config, prefijoElegid
     cliente,
     grupo,
     prefijo,
-    prefijosDisponibles: lista,
+    prefijosDisponibles: conBloque,
     rangoInicio: Number(bloque.inicio),
     rangoFin: Number(bloque.fin),
     desbordeInicio: d ? d.inicio : "",
@@ -197,7 +213,7 @@ export default function PatronCodigosReferencia({ config, onUpdateConfig, T, sug
   const marcas = config.marcasPrefijos || [];
   const grupos = config.gruposLinea || ["Dama", "Caballero", "Niña", "Niño"];
   const clientes = (config.clientes || []).map((c) => c.nombre).filter(Boolean);
-  const [nuevoBloque, setNuevoBloque] = useState({ categoria: "", inicio: "", fin: "" });
+  const [nuevoBloque, setNuevoBloque] = useState({ categoria: "", inicio: "", fin: "", prefijos: "" });
   const [nuevaMarca, setNuevaMarca] = useState({ cliente: "", copiarDe: "" });
   const [msg, setMsg] = useState("");
   const [prueba, setPrueba] = useState({ cliente: "", grupo: "", categoria: "", prefijo: "" });
@@ -207,23 +223,49 @@ export default function PatronCodigosReferencia({ config, onUpdateConfig, T, sug
 
   const bloquesOrdenados = useMemo(() => [...bloques].sort((a, b) => Number(a.inicio) - Number(b.inicio) || a.categoria.localeCompare(b.categoria)), [bloques]);
 
-  // Choques: un rango (principal o desborde) que pisa el de OTRA categoría
+  // Choques POR PREFIJO: para cada prefijo se arma el bloque que le toca a cada
+  // categoría (el propio del prefijo, o el general) y se comparan entre sí.
+  // Así el 1000-1999 de Byker en el 98 no choca con el Vestido del 96.
   const choques = useMemo(() => {
-    const rangos = [];
-    bloques.forEach((b) => {
-      rangos.push({ cat: b.categoria, ini: Number(b.inicio), fin: Number(b.fin), tipo: "principal" });
-      const d = desbordeDeBloque(b);
-      if (d) rangos.push({ cat: b.categoria, ini: d.inicio, fin: d.fin, tipo: "desborde" });
+    const m = new Map(); // id de bloque -> Set de textos
+    const agregar = (id, txt) => { if (!m.has(id)) m.set(id, new Set()); m.get(id).add(txt); };
+    const universo = new Set([""]);
+    bloques.forEach((b) => listaPrefijos(b.prefijos).forEach((x) => universo.add(x)));
+    marcas.forEach((mm) => Object.values(mm.prefijos || {}).forEach((v) => listaPrefijos(v).forEach((x) => universo.add(x))));
+    const cats = [...new Set(bloques.map((b) => b.categoria))];
+    universo.forEach((pref) => {
+      const efectivos = cats
+        .map((c) => (pref ? bloqueParaPrefijo(bloques, c, pref) : bloques.find((b) => b.categoria === c && !listaPrefijos(b.prefijos).length)))
+        .filter(Boolean);
+      const rangos = [];
+      efectivos.forEach((b) => {
+        const general = !listaPrefijos(b.prefijos).length;
+        rangos.push({ b, general, ini: Number(b.inicio), fin: Number(b.fin), tipo: "principal" });
+        const d = desbordeDeBloque(b);
+        if (d) rangos.push({ b, general, ini: d.inicio, fin: d.fin, tipo: "desborde" });
+      });
+      rangos.forEach((x, i) => rangos.slice(i + 1).forEach((y) => {
+        if (x.b.categoria === y.b.categoria) return;
+        if (pref && x.general && y.general) return; // ya se revisó en el caso general
+        if (x.ini <= y.fin && y.ini <= x.fin) {
+          const tipo = x.tipo === "desborde" || y.tipo === "desborde" ? "desborde" : "bloque";
+          const tag = pref ? ` en prefijo ${pref}` : "";
+          agregar(x.b.id, `${y.b.categoria} (${tipo})${tag}`);
+          agregar(y.b.id, `${x.b.categoria} (${tipo})${tag}`);
+        }
+      }));
     });
+    return m;
+  }, [bloques, marcas]);
+
+  // Dos bloques de la MISMA categoría que valen para el mismo prefijo
+  const duplicados = useMemo(() => {
     const m = new Map();
-    rangos.forEach((a, i) => rangos.slice(i + 1).forEach((b) => {
-      if (a.cat === b.cat) return;
-      if (a.ini <= b.fin && b.ini <= a.fin) {
-        if (!m.has(a.cat)) m.set(a.cat, new Set());
-        if (!m.has(b.cat)) m.set(b.cat, new Set());
-        m.get(a.cat).add(`${b.cat} (${a.tipo === "desborde" || b.tipo === "desborde" ? "desborde" : "bloque"})`);
-        m.get(b.cat).add(`${a.cat} (${a.tipo === "desborde" || b.tipo === "desborde" ? "desborde" : "bloque"})`);
-      }
+    bloques.forEach((x, i) => bloques.slice(i + 1).forEach((y) => {
+      if (x.categoria !== y.categoria) return;
+      const px = listaPrefijos(x.prefijos);
+      const py = listaPrefijos(y.prefijos);
+      if ((!px.length && !py.length) || px.some((v) => py.includes(v))) { m.set(x.id, true); m.set(y.id, true); }
     }));
     return m;
   }, [bloques]);
@@ -234,8 +276,15 @@ export default function PatronCodigosReferencia({ config, onUpdateConfig, T, sug
     const ini = Number(nuevoBloque.inicio);
     const fin = Number(nuevoBloque.fin);
     if (!nuevoBloque.categoria || !(ini >= 0) || nuevoBloque.inicio === "" || !(fin >= ini)) { setMsg("Elige la categoría y escribe el inicio y el fin del bloque."); return; }
-    guardarBloques([...bloques, { id: uidLocal(), categoria: nuevoBloque.categoria, inicio: ini, fin, desbordeModo: desbordeAuto(ini, fin) ? "auto" : "ninguno" }]);
-    setNuevoBloque({ categoria: "", inicio: "", fin: "" });
+    const pref = listaPrefijos(nuevoBloque.prefijos);
+    const yaHay = bloques.some((b) => {
+      if (b.categoria !== nuevoBloque.categoria) return false;
+      const pb = listaPrefijos(b.prefijos);
+      return (!pb.length && !pref.length) || pb.some((v) => pref.includes(v));
+    });
+    if (yaHay) { setMsg(pref.length ? "Esa categoría ya tiene un bloque para ese prefijo. Edítalo en la tabla." : "Esa categoría ya tiene un bloque general. Si es una excepción de un prefijo, escribe el prefijo en la columna Prefijos."); return; }
+    guardarBloques([...bloques, { id: uidLocal(), categoria: nuevoBloque.categoria, inicio: ini, fin, prefijos: pref.join(", "), desbordeModo: desbordeAuto(ini, fin) ? "auto" : "ninguno" }]);
+    setNuevoBloque({ categoria: "", inicio: "", fin: "", prefijos: "" });
     setMsg("");
   }
   function cambiarMarca(id, grupo, valor) {
@@ -261,7 +310,7 @@ export default function PatronCodigosReferencia({ config, onUpdateConfig, T, sug
     onUpdateConfig({ bloquesCategoria: [], marcasPrefijos: [] });
     setMsg("Listo: las tablas del patrón quedaron vacías. Tus reglas sueltas siguen igual.");
   }
-  const categoriasLibres = (config.categorias || []).filter((c) => !bloques.some((b) => b.categoria === c));
+  const categoriasLibres = config.categorias || [];
   const clientesLibres = clientes.filter((c) => !marcas.some((m) => m.cliente === c));
 
   // Prueba: usa un "linea" ficticia mapeada al grupo elegido
@@ -271,8 +320,6 @@ export default function PatronCodigosReferencia({ config, onUpdateConfig, T, sug
     try { return sugerir(prueba.categoria, "__prueba__", prueba.cliente, cfgPrueba, prueba.prefijo); } catch (e) { return null; }
     // eslint-disable-next-line
   }, [prueba, config, sugerir]);
-
-  const prefijosPrueba = listaPrefijos(((marcas.find((m) => m.cliente === prueba.cliente) || {}).prefijos || {})[prueba.grupo]);
 
   const th = (t, al) => <th style={{ background: T.ink, color: T.seam, textAlign: al || "left", padding: "9px 12px", fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4 }}>{t}</th>;
   const td = { padding: "6px 10px", borderBottom: `1px solid ${T.border}`, verticalAlign: "middle" };
@@ -309,17 +356,19 @@ export default function PatronCodigosReferencia({ config, onUpdateConfig, T, sug
       <div style={{ fontWeight: 700, fontSize: 14, color: T.ink, margin: "14px 0 6px" }}>1) Bloques por categoría</div>
       <div style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 12, overflow: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 700 }}>
-          <thead><tr>{th("Categoría")}{th("Inicio")}{th("Fin")}{th("Cuando se llena sigue en")}{th("")}</tr></thead>
+          <thead><tr>{th("Categoría")}{th("Prefijos")}{th("Inicio")}{th("Fin")}{th("Cuando se llena sigue en")}{th("")}</tr></thead>
           <tbody>
             {bloquesOrdenados.map((b) => {
               const d = desbordeDeBloque(b);
-              const chocaCon = choques.get(b.categoria);
+              const chocaCon = choques.get(b.id);
               return (
                 <tr key={b.id}>
                   <td style={{ ...td, fontWeight: 700 }}>
                     {b.categoria}
                     {chocaCon && <div style={{ fontSize: 11, color: T.coral, fontWeight: 700 }}>⚠ choca con: {[...chocaCon].join(", ")}</div>}
+                    {duplicados.get(b.id) && <div style={{ fontSize: 11, color: T.coral, fontWeight: 700 }}>⚠ hay otro bloque de esta categoría para el mismo prefijo</div>}
                   </td>
+                  <td style={{ ...td, width: 120 }}><Celda value={b.prefijos || ""} placeholder="Todos" style={{ textAlign: "center", fontWeight: 800, color: T.denim }} onCommit={(v) => cambiarBloque(b.id, { prefijos: listaPrefijos(v).join(", ") })} /></td>
                   <td style={{ ...td, width: 110 }}><Celda type="number" value={b.inicio} onCommit={(v) => cambiarBloque(b.id, { inicio: Number(v) || 0 })} /></td>
                   <td style={{ ...td, width: 110 }}><Celda type="number" value={b.fin} onCommit={(v) => cambiarBloque(b.id, { fin: Number(v) || 0 })} /></td>
                   <td style={td}>
@@ -346,7 +395,7 @@ export default function PatronCodigosReferencia({ config, onUpdateConfig, T, sug
                 </tr>
               );
             })}
-            {!bloquesOrdenados.length && <tr><td colSpan={5} style={{ ...td, color: T.slate, fontStyle: "italic" }}>Todavía no hay bloques. Usa "Tomar el patrón de mis reglas actuales" o agrega el primero abajo.</td></tr>}
+            {!bloquesOrdenados.length && <tr><td colSpan={6} style={{ ...td, color: T.slate, fontStyle: "italic" }}>Todavía no hay bloques. Usa "Tomar el patrón de mis reglas actuales" o agrega el primero abajo.</td></tr>}
             <tr style={{ background: T.canvas }}>
               <td style={td}>
                 <select value={nuevoBloque.categoria} onChange={(e) => setNuevoBloque((f) => ({ ...f, categoria: e.target.value }))} style={{ ...sel, width: "100%" }}>
@@ -354,6 +403,7 @@ export default function PatronCodigosReferencia({ config, onUpdateConfig, T, sug
                   {categoriasLibres.map((c) => <option key={c} value={c}>{c}</option>)}
                 </select>
               </td>
+              <td style={td}><input type="text" placeholder="Todos" value={nuevoBloque.prefijos} onChange={(e) => setNuevoBloque((f) => ({ ...f, prefijos: e.target.value }))} style={{ ...sel, width: "100%", textAlign: "center" }} /></td>
               <td style={td}><input type="number" placeholder="Ej: 200" value={nuevoBloque.inicio} onChange={(e) => setNuevoBloque((f) => ({ ...f, inicio: e.target.value }))} style={{ ...sel, width: "100%" }} /></td>
               <td style={td}><input type="number" placeholder="Ej: 299" value={nuevoBloque.fin} onChange={(e) => setNuevoBloque((f) => ({ ...f, fin: e.target.value }))} style={{ ...sel, width: "100%" }} /></td>
               <td style={{ ...td, color: T.slate, fontSize: 12 }}>{desbordeAuto(nuevoBloque.inicio, nuevoBloque.fin) ? `Automático: ${desbordeAuto(nuevoBloque.inicio, nuevoBloque.fin).inicio} – ${desbordeAuto(nuevoBloque.inicio, nuevoBloque.fin).fin}` : ""}</td>
@@ -361,6 +411,10 @@ export default function PatronCodigosReferencia({ config, onUpdateConfig, T, sug
             </tr>
           </tbody>
         </table>
+      </div>
+
+      <div style={{ fontSize: 11, color: T.slate, marginTop: 6, fontStyle: "italic" }}>
+        La columna <b>Prefijos</b> vacía significa que el bloque vale para todos los prefijos. Si un prefijo usa los números de otra forma (por ejemplo el 98-1000 a 1999 es Byker pero el 96-1100 a 1999 es Vestido), agrega una fila de esa categoría con el prefijo escrito: esa gana sobre la general solo para ese prefijo. Los avisos de choque se revisan prefijo por prefijo.
       </div>
 
       <div style={{ fontWeight: 700, fontSize: 14, color: T.ink, margin: "20px 0 6px" }}>2) Prefijos por marca</div>
@@ -413,9 +467,9 @@ export default function PatronCodigosReferencia({ config, onUpdateConfig, T, sug
         <select value={prueba.categoria} onChange={(e) => setPrueba((p) => ({ ...p, categoria: e.target.value }))} style={sel}>
           <option value="">Categoría</option>{(config.categorias || []).map((c) => <option key={c} value={c}>{c}</option>)}
         </select>
-        {prefijosPrueba.length > 1 && (
-          <select value={prefijosPrueba.includes(prueba.prefijo) ? prueba.prefijo : prefijosPrueba[0]} onChange={(e) => setPrueba((p) => ({ ...p, prefijo: e.target.value }))} style={sel}>
-            {prefijosPrueba.map((x) => <option key={x} value={x}>Prefijo {x}</option>)}
+        {sugerencia?.prefijosDisponibles?.length > 1 && (
+          <select value={sugerencia.prefijo} onChange={(e) => setPrueba((p) => ({ ...p, prefijo: e.target.value }))} style={sel}>
+            {sugerencia.prefijosDisponibles.map((x) => <option key={x} value={x}>Prefijo {x}</option>)}
           </select>
         )}
         {prueba.cliente && prueba.grupo && prueba.categoria && (
