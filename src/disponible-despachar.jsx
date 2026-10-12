@@ -431,8 +431,7 @@ export default function DisponibleDespacharView({ db, functionsClient, T }) {
                       <td style={{ padding: "9px 12px", textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: f.faltaProducir ? 700 : 400, color: f.faltaProducir ? T.amber : T.slate, background: f.faltaProducir ? T.amberBg : "transparent" }}>{fmt(f.faltaProducir)}</td>
                       <td style={{ padding: "9px 12px", textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: 800, color: f.disponible ? T.jade : T.slate, background: f.disponible ? T.jadeBg : "transparent" }}>{fmt(f.disponible)}</td>
                       <td style={{ padding: "9px 12px", textAlign: "right", fontVariantNumeric: "tabular-nums" }} title={`Precio tomado de: ${f.precioFuente}`}>
-                        {f.precio ? money(f.precio) : <span style={{ color: T.coral, fontWeight: 700 }}>sin precio</span>}
-                        {f.precio > 0 && f.precioFuente !== "pedido" && f.precioFuente !== "preorden" && <span style={{ color: T.amber }}> *</span>}
+                        {f.precio ? money(f.precio) : <span style={{ color: T.coral, fontWeight: 700 }}>{f.esPreorden ? "sin precio" : "sin matricular"}</span>}
                       </td>
                       <td style={{ padding: "9px 12px", textAlign: "right", fontVariantNumeric: "tabular-nums", color: T.slate }}>{money(valorPedidoDe(f))}</td>
                       <td style={{ padding: "9px 12px", textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: 700, color: f.valorDisponible ? T.jade : T.slate }}>{money(f.valorDisponible)}</td>
@@ -462,7 +461,7 @@ export default function DisponibleDespacharView({ db, functionsClient, T }) {
           </div>
           <div style={{ fontSize: 11, color: T.slate, marginTop: 10, lineHeight: 1.5 }}>
             Disponible = lo producido (Entradas a Planta) menos lo ya despachado (facturas y traslados netos de devoluciones), sin pasar del saldo del pedido.
-            Las filas violeta son preórdenes montadas que todavía no son pedido: suman en Pedido y Falta producir, nunca en Disponible. Precio: es el matriculado de la referencia en Busint (pantalla de Costos). <span style={{ color: T.amber, fontWeight: 700 }}>*</span> = no es el de la tabla del pedido; si la referencia no tiene precio matriculado se toma de la factura de ese pedido o de la última factura del cliente (pasa el mouse sobre el precio para ver de dónde salió).
+            Las filas violeta son preórdenes montadas que todavía no son pedido: suman en Pedido y Falta producir, nunca en Disponible. Precio: es el precio matriculado de la referencia en Busint (pantalla de Costos); las referencias "sin matricular" hay que matricularlas allá y salen con valor $0 hasta entonces.
             {datos?.generadoEn && <> · Consultado: {new Date(datos.generadoEn).toLocaleString("es-CO")}</>}
           </div>
         </>

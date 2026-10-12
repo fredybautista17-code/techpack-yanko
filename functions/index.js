@@ -1753,11 +1753,10 @@ exports.getPedidosVigentesBusint = onCall(
 //                 que ya llegan con cantidad negativa).
 //   - Producido: "Entradas de Planta" ya sincronizadas en Firestore
 //                 (planta_entradas_cargas), por Nped + ref, netas de devoluciones.
-//   - Precio:    1) precio MATRICULADO de la referencia (ApiGen_Referencias.precioPM,
-//                 el de la pantalla de Costos de Busint); si no lo tiene, respaldo:
-//                 2) tablas de pedido de Busint; 3) precio facturado en ese mismo
-//                 pedido+ref; 4) última factura del mismo cliente+ref. Los precios
-//                 menores a $1 (relleno 0,01 de Busint) no cuentan. Cada fila dice de
+//   - Precio:    SOLO el precio MATRICULADO de la referencia (ApiGen_Referencias.precioPM,
+//                 el de la pantalla de Costos de Busint), buscado por referencia interna y
+//                 externa. Menores a $1 (relleno 0,01 de Busint) no cuentan. Sin matricular
+//                 -> "sin matricular" (sin respaldo de pedido ni facturas). Cada fila dice de
 //                 dónde salió su precio
 //                 ("precioFuente") para que nadie tenga que adivinar.
 // Precio mínimo para considerarlo real (pesos). Busint guarda 0,01 como relleno.
@@ -1961,7 +1960,7 @@ exports.getDisponibleParaDespachar = onCall(
     } catch (err) {
       logger.error("Error leyendo ApiGen_Referencias (getDisponibleParaDespachar)", { error: String(err) });
       diagTablas["ApiGen_Referencias"] = { error: String(err?.message || err).slice(0, 200) };
-      avisos.push("No se pudo leer el precio matriculado de las referencias: las líneas sin precio de pedido o factura quedarán 'sin precio'.");
+      avisos.push("No se pudo leer el precio matriculado de las referencias: todas las líneas saldrán 'sin matricular'.");
     }
 
     // 6) Armar resultado por cliente
@@ -1973,14 +1972,12 @@ exports.getDisponibleParaDespachar = onCall(
       const pT = precioTablaPedidoRef.get(k);
       const pF = precioFactPedidoRef.get(k);
       const pC = precioFactClienteRef.get(`${l.cliente}|${l.refNorm}`);
-      // (2026-10, a pedido de Fredy) Manda el PRECIO MATRICULADO (el de la
-      // pantalla de Costos de Busint). Las demás fuentes son respaldo para las
-      // referencias que no lo tienen matriculado.
+      // (2026-10, a pedido de Fredy) SOLO el PRECIO MATRICULADO (el de la pantalla
+      // de Costos de Busint), para que todos los precios sigan el mismo patrón.
+      // Sin respaldo de pedido/facturas: lo que no está matriculado sale
+      // "sin matricular" y hay que matricularlo en Busint.
       if (precioMatriculado.get(l.refNorm) > 0) { l.precio = precioMatriculado.get(l.refNorm); l.precioFuente = "precio matriculado"; }
-      else if (pT > 0) { l.precio = pT; l.precioFuente = "pedido"; }
-      else if (pF > 0) { l.precio = pF; l.precioFuente = "factura del pedido"; }
-      else if (pC) { l.precio = pC.precio; l.precioFuente = "última factura del cliente"; }
-      else { l.precio = 0; l.precioFuente = "sin precio"; }
+      else { l.precio = 0; l.precioFuente = "sin matricular"; }
       l.producido = Math.max(0, l.producido);
       l.despachado = Math.max(0, l.despachado);
       const saldoPedido = Math.max(0, l.pedido - l.despachado);
@@ -2054,7 +2051,7 @@ exports.getDisponibleParaDespachar = onCall(
       })
       .sort((a, b) => a.cliente.localeCompare(b.cliente));
     if (entradasSinPedido) avisos.push(`${entradasSinPedido} entrada(s) de Planta no traen número de pedido y no se pudieron asignar a ningún cliente.`);
-    if (sinPrecio) avisos.push(`${sinPrecio} referencia(s) con unidades disponibles no tienen precio en Busint (salen con precio 0).`);
+    if (sinPrecio) avisos.push(`${sinPrecio} referencia(s) con unidades disponibles no tienen precio matriculado en Busint (salen con precio 0): matricúlalas en la pantalla de Costos.`);
     return {
       generadoEn: new Date().toISOString(),
       fechaInicio,
