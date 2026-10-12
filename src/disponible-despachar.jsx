@@ -462,7 +462,7 @@ export default function DisponibleDespacharView({ db, functionsClient, T }) {
           </div>
           <div style={{ fontSize: 11, color: T.slate, marginTop: 10, lineHeight: 1.5 }}>
             Disponible = lo producido (Entradas a Planta) menos lo ya despachado (facturas y traslados netos de devoluciones), sin pasar del saldo del pedido.
-            Las filas violeta son preórdenes montadas que todavía no son pedido: suman en Pedido y Falta producir, nunca en Disponible. Precio con <span style={{ color: T.amber, fontWeight: 700 }}>*</span> = no estaba en la tabla del pedido; se tomó de la factura de ese pedido o de la última factura del cliente.
+            Las filas violeta son preórdenes montadas que todavía no son pedido: suman en Pedido y Falta producir, nunca en Disponible. Precio: es el matriculado de la referencia en Busint (pantalla de Costos). <span style={{ color: T.amber, fontWeight: 700 }}>*</span> = no es el de la tabla del pedido; si la referencia no tiene precio matriculado se toma de la factura de ese pedido o de la última factura del cliente (pasa el mouse sobre el precio para ver de dónde salió).
             {datos?.generadoEn && <> · Consultado: {new Date(datos.generadoEn).toLocaleString("es-CO")}</>}
           </div>
         </>

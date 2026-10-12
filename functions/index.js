@@ -1753,11 +1753,12 @@ exports.getPedidosVigentesBusint = onCall(
 //                 que ya llegan con cantidad negativa).
 //   - Producido: "Entradas de Planta" ya sincronizadas en Firestore
 //                 (planta_entradas_cargas), por Nped + ref, netas de devoluciones.
-//   - Precio:    1) tablas de pedido de Busint (pedidos pendientes / pedidos
-//                 detalles clientes) si traen ese pedido+ref; 2) precio
-//                 facturado en ese mismo pedido+ref; 3) última factura del
-//                 mismo cliente+ref; 4) precio matriculado de la referencia
-//                 (ApiGen_Referencias.precioPM), último recurso. Cada fila dice de dónde salió su precio
+//   - Precio:    1) precio MATRICULADO de la referencia (ApiGen_Referencias.precioPM,
+//                 el de la pantalla de Costos de Busint); si no lo tiene, respaldo:
+//                 2) tablas de pedido de Busint; 3) precio facturado en ese mismo
+//                 pedido+ref; 4) última factura del mismo cliente+ref. Los precios
+//                 menores a $1 (relleno 0,01 de Busint) no cuentan. Cada fila dice de
+//                 dónde salió su precio
 //                 ("precioFuente") para que nadie tenga que adivinar.
 // Precio mínimo para considerarlo real (pesos). Busint guarda 0,01 como relleno.
 const PRECIO_MINIMO_REAL = 1;
@@ -1972,10 +1973,13 @@ exports.getDisponibleParaDespachar = onCall(
       const pT = precioTablaPedidoRef.get(k);
       const pF = precioFactPedidoRef.get(k);
       const pC = precioFactClienteRef.get(`${l.cliente}|${l.refNorm}`);
-      if (pT > 0) { l.precio = pT; l.precioFuente = "pedido"; }
+      // (2026-10, a pedido de Fredy) Manda el PRECIO MATRICULADO (el de la
+      // pantalla de Costos de Busint). Las demás fuentes son respaldo para las
+      // referencias que no lo tienen matriculado.
+      if (precioMatriculado.get(l.refNorm) > 0) { l.precio = precioMatriculado.get(l.refNorm); l.precioFuente = "precio matriculado"; }
+      else if (pT > 0) { l.precio = pT; l.precioFuente = "pedido"; }
       else if (pF > 0) { l.precio = pF; l.precioFuente = "factura del pedido"; }
       else if (pC) { l.precio = pC.precio; l.precioFuente = "última factura del cliente"; }
-      else if (precioMatriculado.get(l.refNorm) > 0) { l.precio = precioMatriculado.get(l.refNorm); l.precioFuente = "precio matriculado"; }
       else { l.precio = 0; l.precioFuente = "sin precio"; }
       l.producido = Math.max(0, l.producido);
       l.despachado = Math.max(0, l.despachado);
