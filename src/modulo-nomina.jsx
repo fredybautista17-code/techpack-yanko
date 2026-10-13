@@ -3424,6 +3424,22 @@ const EMPRESAS_TNS = [
   { value: "yanko", label: "Industrias Yanko BC SAS" },
   { value: "indutex", label: "Indutex" },
 ];
+// TNS manda los valores del Balance como texto; se convierte a número aceptando
+// tanto "1.234.567,89" como "1234567.89".
+function numTNS(v) {
+  if (v === null || v === undefined) return 0;
+  let t = String(v).trim().replace(/[^0-9,.\-]/g, "");
+  if (!t) return 0;
+  if (t.includes(",") && t.includes(".")) {
+    t = t.lastIndexOf(",") > t.lastIndexOf(".") ? t.replace(/\./g, "").replace(",", ".") : t.replace(/,/g, "");
+  } else if (t.includes(",")) {
+    t = /,\d{1,2}$/.test(t) ? t.replace(",", ".") : t.replace(/,/g, "");
+  } else if (t.includes(".") && (t.split(".").length > 2 || /\.\d{3}$/.test(t))) {
+    t = t.replace(/\./g, ""); // solo puntos de miles ("1.234.567")
+  }
+  const n = Number(t);
+  return Number.isNaN(n) ? 0 : n;
+}
 function SelectorEmpresaTNS({ empresa, onChange }) {
   return (
     <Field label="Empresa TNS">
@@ -3493,6 +3509,27 @@ function TNSConexionView() {
       setApiTns({ error: err?.message || "No se pudo explorar la API." });
     }
   }
+  // Prueba del Balance de Comprobación (2026-10-13): saldo por cliente desde TNS.
+  const hoyISO = new Date().toISOString().slice(0, 10);
+  const [balFechaIni, setBalFechaIni] = useState(`${hoyISO.slice(0, 4)}-01-01`);
+  const [balFechaFin, setBalFechaFin] = useState(hoyISO);
+  const [balCuentaIni, setBalCuentaIni] = useState("1305");
+  const [balCuentaFin, setBalCuentaFin] = useState("130599");
+  const [balSucursal, setBalSucursal] = useState("");
+  const [balance, setBalance] = useState(null); // null | "cargando" | { ok, data, enviado } | { error }
+  async function probarBalance() {
+    setBalance("cargando");
+    try {
+      const llamar = httpsCallable(functionsClient, "probarBalanceTNS");
+      const resp = await llamar({ empresa, fechaInicial: balFechaIni, fechaFinal: balFechaFin, cuentaInicial: balCuentaIni.trim(), cuentaFinal: balCuentaFin.trim(), codigosucursal: balSucursal.trim() });
+      setBalance(resp.data);
+    } catch (err) {
+      setBalance({ error: err?.message || "No se pudo consultar el Balance de Comprobación." });
+    }
+  }
+  const balCuentas = balance && balance.ok ? (Array.isArray(balance.data?.data) ? balance.data.data : []) : [];
+  const balTerceros = balCuentas.flatMap((c) => (Array.isArray(c.terceros) ? c.terceros : []).map((t) => ({ ...t, cuenta: c.codigo, nombreCuenta: c.nombre })))
+    .sort((a, b) => Math.abs(numTNS(b.nuevoSaldo)) - Math.abs(numTNS(a.nuevoSaldo)));
   const [rutaDetalle, setRutaDetalle] = useState("");
   const endpointDetalle = apiTns && apiTns.ok && rutaDetalle ? apiTns.endpoints.find((e) => `${e.metodo} ${e.ruta}` === rutaDetalle) : null;
   const palabrasApi = filtroApi.split(",").map((x) => x.trim().toLowerCase()).filter(Boolean);
@@ -3581,6 +3618,68 @@ function TNSConexionView() {
                 {JSON.stringify(terceros.crudo, null, 2)}
               </pre>
             )}
+          </div>
+        )}
+      </div>
+
+      <div style={{ marginTop: 32, paddingTop: 24, borderTop: `1px solid ${C.border}` }}>
+        <div style={{ fontSize: 14, fontWeight: 800, color: C.ink, marginBottom: 8 }}>Prueba: Balance de Comprobación (saldo de cartera por cliente)</div>
+        <div style={{ fontSize: 12, color: C.slate, marginBottom: 16 }}>
+          Trae de TNS el balance de las cuentas que indiques (para cartera, la cuenta de clientes por cobrar, normalmente 1305) con el saldo de cada cliente. Es solo una consulta de lectura: no cambia nada en TNS ni en Contabilidad. Sirve para comparar contra el Excel de cartera que subes hoy. Usa la empresa elegida arriba.
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12, marginBottom: 12 }}>
+          <Field label="Desde (fecha)"><FInput type="date" value={balFechaIni} onChange={setBalFechaIni} /></Field>
+          <Field label="Hasta (fecha)"><FInput type="date" value={balFechaFin} onChange={setBalFechaFin} /></Field>
+          <Field label="Cuenta inicial"><FInput value={balCuentaIni} onChange={setBalCuentaIni} /></Field>
+          <Field label="Cuenta final"><FInput value={balCuentaFin} onChange={setBalCuentaFin} /></Field>
+          <Field label="Sucursal (opcional)"><FInput value={balSucursal} onChange={setBalSucursal} placeholder="Vacío = la de siempre" /></Field>
+        </div>
+        <Btn onClick={probarBalance} disabled={balance === "cargando"}>
+          {balance === "cargando" ? "Consultando..." : "📒 Probar Balance de Comprobación"}
+        </Btn>
+        {balance && typeof balance === "object" && balance.error && (
+          <div style={{ marginTop: 16, padding: "12px 16px", background: C.redBg, borderRadius: 8, color: C.red, fontWeight: 700, fontSize: 13 }}>
+            ❌ {balance.error}
+          </div>
+        )}
+        {balance && typeof balance === "object" && balance.ok && (
+          <div style={{ marginTop: 16 }}>
+            {balance.data?.status === false && (
+              <div style={{ marginBottom: 12, padding: "10px 14px", background: C.redBg, borderRadius: 8, color: C.red, fontSize: 12, fontWeight: 700 }}>
+                TNS respondió con un aviso: {balance.data?.message || "(sin mensaje)"}
+              </div>
+            )}
+            <div style={{ fontSize: 12, color: C.slate, marginBottom: 10 }}>
+              {balCuentas.length} cuentas · {balTerceros.length} clientes (terceros) · cuentas {balance.enviado?.cuentaInicial} a {balance.enviado?.cuentaFinal} · {balance.enviado?.fechaInicial} a {balance.enviado?.fechaFinal}
+            </div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, margin: "8px 0" }}>Cuentas</div>
+            <Tabla
+              vacio="TNS no devolvió cuentas en ese rango. Prueba con otro rango de cuentas."
+              columnas={[
+                { key: "codigo", label: "Cuenta" },
+                { key: "nombre", label: "Nombre" },
+                { key: "saldoAnterior", label: "Saldo anterior", align: "right", render: (f) => fmtMoney(numTNS(f.saldoAnterior)) },
+                { key: "totalDebito", label: "Débitos", align: "right", render: (f) => fmtMoney(numTNS(f.totalDebito)) },
+                { key: "totalCredito", label: "Créditos", align: "right", render: (f) => fmtMoney(numTNS(f.totalCredito)) },
+                { key: "nuevoSaldo", label: "Nuevo saldo", align: "right", render: (f) => <b>{fmtMoney(numTNS(f.nuevoSaldo))}</b> },
+                { key: "nTerceros", label: "Clientes", align: "right", render: (f) => (Array.isArray(f.terceros) ? f.terceros.length : 0) },
+              ]}
+              filas={balCuentas}
+            />
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, margin: "16px 0 8px" }}>Saldo por cliente (de mayor a menor)</div>
+            <Tabla
+              vacio="Ninguna cuenta de ese rango trajo clientes (terceros)."
+              columnas={[
+                { key: "cuenta", label: "Cuenta" },
+                { key: "nit", label: "NIT" },
+                { key: "nombre", label: "Cliente" },
+                { key: "saldoAnterior", label: "Saldo anterior", align: "right", render: (f) => fmtMoney(numTNS(f.saldoAnterior)) },
+                { key: "totalDebito", label: "Débitos", align: "right", render: (f) => fmtMoney(numTNS(f.totalDebito)) },
+                { key: "totalCredito", label: "Créditos", align: "right", render: (f) => fmtMoney(numTNS(f.totalCredito)) },
+                { key: "nuevoSaldo", label: "Saldo", align: "right", render: (f) => <b>{fmtMoney(numTNS(f.nuevoSaldo))}</b> },
+              ]}
+              filas={balTerceros}
+            />
           </div>
         )}
       </div>

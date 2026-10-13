@@ -8627,6 +8627,43 @@ exports.insertarNovedadTNS = onCall(
   }
 );
 
+// Prueba del Balance de Comprobación de TNS (2026-10-13, a pedido de Fredy):
+// POST /v2/contabilidad/Reportes/BalanceComprobacion. Pensado para ver si el
+// saldo de cartera por cliente (cuenta de clientes por cobrar, por tercero)
+// se puede traer directo de TNS en vez del Excel "Cartera pendiente por
+// edades". SOLO LEE: es un reporte, no cambia nada en TNS. Devuelve lo que
+// TNS responda, tal cual, para compararlo contra el Excel antes de conectar
+// nada a Contabilidad.
+exports.probarBalanceTNS = onCall(
+  {
+    secrets: TNS_SECRETS_TODAS,
+    timeoutSeconds: 120,
+    memory: "512MiB",
+  },
+  async (request) => {
+    if (!request.auth) throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+    const empresa = request.data?.empresa === "indutex" ? "indutex" : "yanko";
+    const { fechaInicial, fechaFinal, cuentaInicial, cuentaFinal, codigosucursal } = request.data || {};
+    if (!fechaInicial || !fechaFinal || !cuentaInicial || !cuentaFinal) {
+      throw new HttpsError("invalid-argument", "Faltan fechas o cuentas.");
+    }
+    const query = codigosucursal ? `?codigosucursal=${encodeURIComponent(String(codigosucursal))}` : "";
+    const body = {
+      fechaInicial: String(fechaInicial),
+      fechaFinal: String(fechaFinal),
+      cuentaInicial: String(cuentaInicial),
+      cuentaFinal: String(cuentaFinal),
+    };
+    try {
+      const data = await llamarTNS(`/v2/contabilidad/Reportes/BalanceComprobacion${query}`, { method: "POST", body, empresa });
+      return { ok: true, empresa, enviado: body, data };
+    } catch (err) {
+      logger.error("probarBalanceTNS falló", { mensaje: err?.message, stack: err?.stack, body, empresa });
+      throw new HttpsError("internal", err?.message || "Error desconocido al consultar el Balance de Comprobación en TNS.");
+    }
+  }
+);
+
 // Explora qué endpoints expone la API de TNS (2026-10-13, a pedido de Fredy):
 // para saber si TNS ofrece cartera / remisiones / facturas por API y poder
 // reemplazar el Excel que hoy se sube a mano en Contabilidad. Baja el
