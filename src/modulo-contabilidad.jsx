@@ -5256,7 +5256,7 @@ function emparejarClientePedido(nombrePedido, nombresBusint) {
   const contenidos = candidatos.filter((x) => a.includes(x.b)).sort((x, y) => y.b.length - x.b.length || x.n.localeCompare(y.n));
   return contenidos.length ? contenidos[0].n : null;
 }
-function calcularValorizacion({ lotes, precios, pedidos, incluirSinCortar }) {
+function calcularValorizacion({ lotes, precios, pedidos, incluirSinCortar, sinCortarBusint }) {
   const clientes = new Map();
   const precioDe = (ref) => Number(precios?.[normalizarRefComparacion(ref)]) || 0;
   function getCliente(nombre) {
@@ -5292,7 +5292,23 @@ function calcularValorizacion({ lotes, precios, pedidos, incluirSinCortar }) {
     f.unid.pt += Number(l.invBPT) || 0;
   });
   const nombresSinAsociar = new Set();
-  if (incluirSinCortar) {
+  if (incluirSinCortar && Array.isArray(sinCortarBusint)) {
+    // (2026-10, a pedido de Fredy) "Sin cortar" calculado pedido por pedido en el
+    // servidor (getDisponibleParaDespachar): pedido de Busint - lo ya despachado -
+    // lo que está en etapas (corte, planta, semiterminado, BPT). Así un pedido viejo
+    // que sigue "activo" en Atlas pero ya se despachó en Busint deja de contar.
+    sinCortarBusint.forEach((it) => {
+      const ref = String(it.ref || "").trim().toUpperCase();
+      const unid = Number(it.unid) || 0;
+      if (!ref || unid <= 0) return;
+      const crudo = emparejarClientePedido(it.cliente, nombresBusint);
+      const c = getCliente(agruparClienteBusintValorizacion(crudo || String(it.cliente || "(Sin cliente)")));
+      const f = getFila(c, ref, "");
+      f.sinCortar += unid;
+      if (!f.pedidosSinCortar) f.pedidosSinCortar = [];
+      f.pedidosSinCortar.push({ numPed: it.numPed, unid });
+    });
+  } else if (incluirSinCortar) {
     (pedidos || []).filter((p) => p && p.estado !== "cerrado").forEach((p) => {
       const crudo = emparejarClientePedido(p.cliente, nombresBusint);
       const nombre = crudo ? agruparClienteBusintValorizacion(crudo) : CLIENTE_SIN_ASOCIAR;
@@ -5344,7 +5360,7 @@ function calcularValorizacion({ lotes, precios, pedidos, incluirSinCortar }) {
         sp.clientes.add(r.esSinAsociar ? "Pedidos sin cliente asociado" : c.cliente);
         sinPrecio.set(f.ref, sp);
       }
-      r.filas.push({ ref: f.ref, categoria: f.categoria, precio: f.precio, unid: unidFila, valor: valorFila, etapas: u });
+      r.filas.push({ ref: f.ref, categoria: f.categoria, precio: f.precio, unid: unidFila, valor: valorFila, etapas: u, pedidosSinCortar: f.pedidosSinCortar || [] });
     });
     if (r.unid > 0) {
       r.filas.sort((x, y) => y.valor - x.valor || y.unid - x.unid);
@@ -5356,6 +5372,17 @@ function calcularValorizacion({ lotes, precios, pedidos, incluirSinCortar }) {
   const unidSinPrecio = listaSinPrecio.reduce((s, x) => s + x.unid, 0);
   return { clientes: lista, totales, listaSinPrecio, unidSinPrecio, nombresSinAsociar: [...nombresSinAsociar].sort() };
 }
+// Trae del servidor lo que falta por cortar, pedido por pedido (misma función que
+// el reporte "Disponible para despachar"; puede tardar cerca de un minuto).
+async function traerSinCortarBusint() {
+  const resp = await httpsCallable(functionsClient, "getDisponibleParaDespachar", { timeout: 540000 })({});
+  const items = [];
+  (resp.data?.porCliente || []).forEach((g) => (g.filas || []).forEach((f) => {
+    if (f.esPreorden || !(Number(f.etSinCortar) > 0)) return;
+    items.push({ cliente: g.cliente, ref: f.ref, numPed: f.numPed, unid: Number(f.etSinCortar) || 0 });
+  }));
+  return items;
+}
 function ValorizacionPorMarcaView({ pedidos }) {
   const [lotes, setLotes] = useState(null);
   const [precios, setPrecios] = useState(null);
@@ -5363,6 +5390,9 @@ function ValorizacionPorMarcaView({ pedidos }) {
   const [error, setError] = useState("");
   const [actualizadoEn, setActualizadoEn] = useState(null);
   const [incluirSinCortar, setIncluirSinCortar] = useState(false);
+  const [sinCortarBusint, setSinCortarBusint] = useState(null);
+  const [cargandoSinCortar, setCargandoSinCortar] = useState(false);
+  const [errorSinCortar, setErrorSinCortar] = useState("");
   const [clienteAbierto, setClienteAbierto] = useState(null);
   const [detalleGrande, setDetalleGrande] = useState(false);
   const [refAbierta, setRefAbierta] = useState(null);
@@ -5373,9 +5403,25 @@ function ValorizacionPorMarcaView({ pedidos }) {
     window.addEventListener("keydown", alTeclear);
     return () => window.removeEventListener("keydown", alTeclear);
   }, [clienteAbierto]);
+  async function cargarSinCortar() {
+    setCargandoSinCortar(true);
+    setErrorSinCortar("");
+    try {
+      setSinCortarBusint(await traerSinCortarBusint());
+    } catch (err) {
+      setErrorSinCortar(err?.message || "No se pudo calcular lo que falta por cortar desde Busint.");
+    } finally {
+      setCargandoSinCortar(false);
+    }
+  }
+  useEffect(() => {
+    if (incluirSinCortar && sinCortarBusint === null && !cargandoSinCortar && !errorSinCortar) cargarSinCortar();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [incluirSinCortar]);
   async function cargar() {
     setCargando(true);
     setError("");
+    if (incluirSinCortar) cargarSinCortar();
     try {
       const [respLotes, respPrecios] = await Promise.all([
         httpsCallable(functionsClient, "getCargaPlaneacionDesdeBusintGen", { timeout: 300000 })(),
@@ -5394,8 +5440,13 @@ function ValorizacionPorMarcaView({ pedidos }) {
     cargar();
   }, []);
   const datos = useMemo(
-    () => (lotes && precios ? calcularValorizacion({ lotes, precios, pedidos, incluirSinCortar }) : null),
-    [lotes, precios, pedidos, incluirSinCortar]
+    () => (lotes && precios ? calcularValorizacion({
+      lotes, precios, pedidos,
+      // Mientras llega el cálculo de Busint no se muestra "sin cortar"; si falla, se usa el cálculo viejo con los pedidos de Atlas.
+      incluirSinCortar: incluirSinCortar && (Array.isArray(sinCortarBusint) || !!errorSinCortar),
+      sinCortarBusint,
+    }) : null),
+    [lotes, precios, pedidos, incluirSinCortar, sinCortarBusint, errorSinCortar]
   );
   const etapasVisibles = incluirSinCortar
     ? [{ id: "sinCortar", label: "Pedidos sin cortar", corto: "Sin cortar", color: C.ink, bg: C.canvas }, ...ETAPAS_VALORIZACION]
@@ -5475,6 +5526,8 @@ function ValorizacionPorMarcaView({ pedidos }) {
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 14 }}>
         <span style={{ fontSize: 12, color: C.slate }}>
           {cargando ? "Consultando Busint..." : actualizadoEn ? `En vivo desde Busint · Actualizado ${actualizadoEn.toLocaleTimeString("es-CO")}` : ""}
+          {incluirSinCortar && cargandoSinCortar ? " · Calculando lo que falta por cortar pedido por pedido (puede tardar cerca de un minuto)..." : ""}
+          {incluirSinCortar && errorSinCortar ? ` · No se pudo calcular desde Busint (${errorSinCortar}); se usa el cálculo con los pedidos de ATLAS.` : ""}
         </span>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <Btn small variant={incluirSinCortar ? "primary" : "secondary"} onClick={() => { setIncluirSinCortar((v) => !v); setClienteAbierto(null); }}>
@@ -5631,6 +5684,11 @@ function ValorizacionPorMarcaView({ pedidos }) {
                                         );
                                       })}
                                     </div>
+                                    {incluirSinCortar && (f.pedidosSinCortar || []).length > 0 && (
+                                      <div style={{ fontSize: 11, color: C.slate, marginTop: 8 }}>
+                                        <b>Sin cortar viene de:</b> {f.pedidosSinCortar.map((x) => `#${x.numPed} (${fmtNum(x.unid)} un.)`).join(" · ")}
+                                      </div>
+                                    )}
                                   </td>
                                 </tr>
                               )}
@@ -6137,6 +6195,7 @@ function CuadrePorClienteView({ currentUser, pedidos }) {
   // "Valorización por marca") para descontarla del saldo total y ver si cuadra.
   const [valLotes, setValLotes] = useState(null);
   const [valPrecios, setValPrecios] = useState(null);
+  const [valSinCortar, setValSinCortar] = useState(null); // null = cargando, array = listo, false = falló
   const [cargandoVal, setCargandoVal] = useState(false);
   const [errorVal, setErrorVal] = useState("");
   const [etapasValOff, setEtapasValOff] = useState({ sinCortar: true });
@@ -6205,6 +6264,8 @@ function CuadrePorClienteView({ currentUser, pedidos }) {
       ]);
       setValLotes(respLotes.data?.lotes || []);
       setValPrecios(respPrecios.data?.precios || {});
+      // "Sin cortar" pedido por pedido desde Busint, en segundo plano (tarda cerca de un minuto).
+      traerSinCortarBusint().then(setValSinCortar).catch(() => setValSinCortar(false));
     } catch (err) {
       setErrorVal(err?.message || "No se pudo consultar Busint para la valorización.");
     } finally {
@@ -6323,7 +6384,11 @@ function CuadrePorClienteView({ currentUser, pedidos }) {
   const extrasTodas = EMPRESAS_TNS.flatMap((emp) => datos.porEmpresa[emp.id].remis?.extras || []);
   const valCliente = useMemo(() => {
     if (!valLotes || !valPrecios) return null;
-    const calc = calcularValorizacion({ lotes: valLotes, precios: valPrecios, pedidos, incluirSinCortar: true });
+    const calc = calcularValorizacion({
+      lotes: valLotes, precios: valPrecios, pedidos,
+      incluirSinCortar: valSinCortar !== null,
+      sinCortarBusint: Array.isArray(valSinCortar) ? valSinCortar : null,
+    });
     const etapas = {};
     ["sinCortar", "corte", "matPrima", "planta", "semi", "pt"].forEach((k) => { etapas[k] = { valor: 0, unid: 0 }; });
     const nombres = [];
@@ -6339,7 +6404,7 @@ function CuadrePorClienteView({ currentUser, pedidos }) {
         });
       });
     return { etapas, nombres, sinPrecio };
-  }, [valLotes, valPrecios, pedidos, cli]);
+  }, [valLotes, valPrecios, valSinCortar, pedidos, cli]);
   const quitadasTodas = EMPRESAS_TNS.flatMap((emp) => datos.porEmpresa[emp.id].remis?.quitadas || []);
   const totalesPendientes = EMPRESAS_TNS.filter((emp) => datos.porEmpresa[emp.id].remis).map((emp) => {
     const lista = datos.porEmpresa[emp.id].remis.pendientes;
