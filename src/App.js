@@ -16103,11 +16103,19 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
   const historico = pedidos.filter((p) => p.estado === "cerrado");
   const busquedaNorm = busqueda.trim().toLowerCase();
   const listaBase = filtro === "activos" ? activos : historico;
+  // Búsqueda por referencia: ignora guiones, espacios y mayúsculas ("GM5004" = "gm-5004").
+  const normRefBusq = (v) => String(v || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const busquedaRef = normRefBusq(busqueda);
+  const refsQueCoinciden = (p) => (busquedaRef.length >= 2 ? (p.referencias || []).filter((r) => normRefBusq(r.ref).includes(busquedaRef)) : []);
   const lista = !busquedaNorm ? listaBase : listaBase.filter((p) =>
     String(p.numero || "").toLowerCase().includes(busquedaNorm) ||
     (p.cliente || "").toLowerCase().includes(busquedaNorm) ||
-    (p.vendedor || "").toLowerCase().includes(busquedaNorm)
+    (p.vendedor || "").toLowerCase().includes(busquedaNorm) ||
+    refsQueCoinciden(p).length > 0
   );
+  const etiquetasRefs = (p) => refsQueCoinciden(p).map((r, k) => (
+    <span key={k} style={{ display: "inline-block", marginTop: 4, marginRight: 4, padding: "1px 8px", borderRadius: 10, background: T.denimBg, color: T.denim, fontSize: 11, fontWeight: 700 }}>{r.ref} · {fmtNum(r.total)} und</span>
+  ));
   const hoy = new Date();
   const vencidos = activos.filter((p) => p.fechaDespacho && new Date(p.fechaDespacho) < hoy);
   const proximos = activos.filter((p) => { if (!p.fechaDespacho) return false; const d = Math.ceil((new Date(p.fechaDespacho) - hoy) / 86400000); return d >= 0 && d <= 7; });
@@ -16173,8 +16181,8 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
           <input
             value={busqueda}
             onChange={(e) => setBusqueda(e.target.value)}
-            placeholder="🔍 Buscar por N° pedido, cliente o vendedor..."
-            style={{ padding: "7px 12px", border: `1.5px solid ${busqueda ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, minWidth: 260, outline: "none", fontFamily: "inherit", marginLeft: 8 }}
+            placeholder="🔍 Buscar por N° pedido, cliente, vendedor o referencia..."
+            style={{ padding: "7px 12px", border: `1.5px solid ${busqueda ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, minWidth: 340, outline: "none", fontFamily: "inherit", marginLeft: 8 }}
           />
         )}
       </div>
@@ -16206,6 +16214,7 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
                     <td onClick={() => onSelectPedido(p.id)} style={{ padding: "12px 14px" }}>
                       <div style={{ fontWeight: 700, color: T.ink }}>{p.cliente}</div>
                       {p.vendedor && <div style={{ fontSize: 11, color: T.slate }}>{p.vendedor}</div>}
+                      {etiquetasRefs(p)}
                     </td>
                     <td onClick={() => onSelectPedido(p.id)} style={{ padding: "12px 14px", textAlign: "center", fontWeight: 700, color: T.ink }}>{fmtNum(totalP)}</td>
                     <td onClick={() => onSelectPedido(p.id)} style={{ padding: "12px 14px", textAlign: "center", fontWeight: 700, color: T.jade }}>{fmtNum(totalC)}</td>
@@ -16250,6 +16259,7 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
                     {mi.desc}: {p.fechaCumplido || "—"} · {fmtNum(totalP)} uds pedidas · {fmtNum(totalC)} cortadas
                     {p.motivoCierre === "venta_perdida" && p.ventasPerdidasUds ? ` · ${fmtNum(p.ventasPerdidasUds)} uds dadas de baja` : ""}
                   </div>
+                  {etiquetasRefs(p)}
                 </div>
                 {!soloLectura && (
                   <div style={{ display: "flex", gap: 8 }}>
