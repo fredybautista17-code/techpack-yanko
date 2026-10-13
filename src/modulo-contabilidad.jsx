@@ -5838,6 +5838,28 @@ function estadoSaldoCliente(donde, busint, tnsTotal, hayTns) {
   if (donde === "ambos") return { tipo: "pend", texto: "Por revisar" };
   return { tipo: "pend", texto: "Por definir" };
 }
+// (2026-10-13, a pedido de Fredy) Saldos de cartera que se traen en vivo de TNS
+// (Balance de Comprobación: cuenta de clientes 1305 + anticipos 2805) se guardan
+// aparte, en el mismo grupo de documentos, con id "<empresa>_vivo". Si el corte
+// en vivo es más reciente que el último Excel subido, manda para el SALDO por
+// cliente; el detalle por factura (edades/vencimientos) sigue viniendo del Excel.
+function mezclarCarteraTns(docs) {
+  const excel = {};
+  const vivo = {};
+  docs.forEach((d) => {
+    if (d.id.endsWith("_vivo")) vivo[d.id.slice(0, -5)] = d.data();
+    else excel[d.id] = d.data();
+  });
+  const out = { ...excel };
+  Object.keys(vivo).forEach((emp) => {
+    const v = vivo[emp];
+    const x = excel[emp];
+    if (!x || String(v.traidoEn || "") > String(x.cargadoEn || "")) {
+      out[emp] = { ...(x || {}), ...v, detalle: x?.detalle || [], nombreArchivo: "TNS en vivo (Balance de Comprobación)", enVivo: true };
+    }
+  });
+  return out;
+}
 function SaldosClientesView({ currentUser }) {
   const [busint, setBusint] = useState(null);
   const [cargando, setCargando] = useState(false);
@@ -5846,17 +5868,14 @@ function SaldosClientesView({ currentUser }) {
   const [tns, setTns] = useState({});
   const [config, setConfig] = useState({ donde: {}, enlaces: {} });
   const [subiendo, setSubiendo] = useState("");
+  const [trayendo, setTrayendo] = useState("");
   const [mensaje, setMensaje] = useState("");
   const [filtro, setFiltro] = useState("");
   const [soloConSaldo, setSoloConSaldo] = useState(true);
   const [enlazarFila, setEnlazarFila] = useState(null);
   useEffect(() => {
     const unsub = onSnapshot(collection(db, "contabilidad_saldos_tns"), (snap) => {
-      const m = {};
-      snap.docs.forEach((d) => {
-        m[d.id] = d.data();
-      });
-      setTns(m);
+      setTns(mezclarCarteraTns(snap.docs));
     });
     return () => unsub();
   }, []);
@@ -5905,6 +5924,30 @@ function SaldosClientesView({ currentUser }) {
       setError(err?.message || "No se pudo leer el Excel de TNS.");
     } finally {
       setSubiendo("");
+    }
+  }
+  async function traerDeTns(empresaId) {
+    setTrayendo(empresaId);
+    setError("");
+    setMensaje("");
+    try {
+      const resp = await httpsCallable(functionsClient, "getCarteraTNS", { timeout: 300000 })({ empresa: empresaId });
+      const r = resp.data || {};
+      const ahora = new Date();
+      await fsSave("contabilidad_saldos_tns", `${empresaId}_vivo`, {
+        empresa: empresaId,
+        corte: `${r.corte} ${ahora.toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit", hour12: false })}`,
+        traidoEn: ahora.toISOString(),
+        traidoPor: currentUser?.email || currentUser?.nombre || currentUser?.name || "",
+        fuente: "tns_balance_1305_2805",
+        totalFilas: (r.clientes || []).length,
+        clientes: r.clientes || [],
+      });
+      setMensaje(`Se trajo la cartera de TNS (${EMPRESAS_TNS.find((e) => e.id === empresaId)?.nombre}): ${(r.clientes || []).length} clientes con saldo. No incluye edades ni vencimientos por factura.`);
+    } catch (err) {
+      setError(err?.message || "No se pudo traer la cartera de TNS.");
+    } finally {
+      setTrayendo("");
     }
   }
   async function guardarDonde(clave, valor) {
@@ -5996,6 +6039,11 @@ function SaldosClientesView({ currentUser }) {
                 {subiendo === emp.id ? "Cargando..." : d ? "📤 Subir otro corte" : "📤 Subir Excel"}
                 <input type="file" accept=".xlsx,.xls" disabled={!!subiendo} style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; subirExcel(emp.id, f); }} />
               </label>
+              <div style={{ marginTop: 6 }}>
+                <Btn small variant="secondary" onClick={() => traerDeTns(emp.id)} disabled={!!trayendo || !!subiendo}>
+                  {trayendo === emp.id ? "Trayendo de TNS..." : "🔌 Traer saldos de TNS"}
+                </Btn>
+              </div>
             </div>
           );
         })}
@@ -6228,9 +6276,7 @@ function CuadrePorClienteView({ currentUser, pedidos }) {
   }
   useEffect(() => {
     const u1 = onSnapshot(collection(db, "contabilidad_saldos_tns"), (snap) => {
-      const m = {};
-      snap.docs.forEach((d) => { m[d.id] = d.data(); });
-      setTnsCartera(m);
+      setTnsCartera(mezclarCarteraTns(snap.docs));
     });
     const u2 = onSnapshot(collection(db, "contabilidad_remisiones_tns"), (snap) => {
       const m = {};

@@ -8664,10 +8664,101 @@ exports.probarBalanceTNS = onCall(
     };
     try {
       const data = await llamarTNS(`/v2/contabilidad/Reportes/BalanceComprobacion${query}`, { method: "POST", body, empresa });
+      // Se recuerda el código de sucursal de esta empresa en el servidor para que
+      // otras pantallas (ej. Contabilidad → "Traer de TNS") no tengan que pedirlo.
+      if (codigosucursal && data && data.status !== false) {
+        try {
+          await db.collection("config").doc("tns_sucursales").set({ [empresa]: String(codigosucursal) }, { merge: true });
+        } catch (e) {
+          logger.warn("No se pudo guardar la sucursal de TNS", { mensaje: e?.message });
+        }
+      }
       return { ok: true, empresa, enviado: body, data };
     } catch (err) {
       logger.error("probarBalanceTNS falló", { mensaje: err?.message, stack: err?.stack, body, empresa });
       throw new HttpsError("internal", err?.message || "Error desconocido al consultar el Balance de Comprobación en TNS.");
+    }
+  }
+);
+
+// Saldo de cartera por cliente desde TNS (2026-10-13, a pedido de Fredy):
+// reemplaza subir a mano el Excel "Cartera pendiente por edades" SOLO para el
+// saldo por cliente. Verificado contra el Excel del 13/10/2026: el saldo de un
+// cliente = Balance de Comprobación de la cuenta de clientes por cobrar (1305)
+// + Balance de la cuenta de anticipos de clientes (2805, saldo crédito =
+// negativo), igual que hace el Excel (que resta los anticipos dentro del
+// cliente). NO trae edades ni vencimientos por factura (TNS no los expone).
+// Solo LEE; devuelve los datos y es la pantalla quien los guarda.
+function numeroTNS(v) {
+  if (v === null || v === undefined) return 0;
+  let t = String(v).trim().replace(/[^0-9,.\-]/g, "");
+  if (!t) return 0;
+  if (t.includes(",") && t.includes(".")) {
+    t = t.lastIndexOf(",") > t.lastIndexOf(".") ? t.replace(/\./g, "").replace(",", ".") : t.replace(/,/g, "");
+  } else if (t.includes(",")) {
+    t = /,\d{1,2}$/.test(t) ? t.replace(",", ".") : t.replace(/,/g, "");
+  } else if (t.includes(".") && (t.split(".").length > 2 || /\.\d{3}$/.test(t))) {
+    t = t.replace(/\./g, "");
+  }
+  const n = Number(t);
+  return Number.isNaN(n) ? 0 : n;
+}
+async function tercerosBalanceTNS({ empresa, sucursal, fechaInicial, fechaFinal, cuentaInicial, cuentaFinal }) {
+  const body = { fechaInicial, fechaFinal, cuentaInicial, cuentaFinal };
+  const resp = await llamarTNS(`/v2/contabilidad/Reportes/BalanceComprobacion?codigosucursal=${encodeURIComponent(sucursal)}`, { method: "POST", body, empresa });
+  if (resp && resp.status === false) throw new Error(resp.message || "TNS rechazó la consulta del Balance.");
+  const cuentas = Array.isArray(resp?.data) ? resp.data : [];
+  const norm = (c) => String(c || "").replace(/\D/g, "");
+  const codigos = cuentas.map((c) => norm(c.codigo));
+  // Solo las cuentas "hoja" (sin subcuentas en la respuesta) para no contar dos veces.
+  const hojas = cuentas.filter((c, i) => !codigos.some((o, j) => j !== i && o.length > codigos[i].length && o.startsWith(codigos[i])));
+  const terceros = [];
+  hojas.forEach((c) => (Array.isArray(c.terceros) ? c.terceros : []).forEach((t) => terceros.push(t)));
+  return terceros;
+}
+exports.getCarteraTNS = onCall(
+  {
+    secrets: TNS_SECRETS_TODAS,
+    timeoutSeconds: 180,
+    memory: "512MiB",
+  },
+  async (request) => {
+    if (!request.auth) throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+    const empresa = request.data?.empresa === "indutex" ? "indutex" : "yanko";
+    const cfg = await db.collection("config").doc("tns_sucursales").get();
+    const sucursal = cfg.exists ? cfg.data()?.[empresa] : null;
+    if (!sucursal) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Falta el código de sucursal de TNS para esta empresa. Entra a Nómina → Conexión TNS, escribe el código de sucursal y haz la prueba del Balance de Comprobación una vez; queda guardado."
+      );
+    }
+    const hoy = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Bogota" }).format(new Date());
+    const fechaFinal = /^\d{4}-\d{2}-\d{2}$/.test(String(request.data?.fechaFinal || "")) ? request.data.fechaFinal : hoy;
+    const fechaInicial = `${fechaFinal.slice(0, 4)}-01-01`;
+    try {
+      const [facturas, anticipos] = await Promise.all([
+        tercerosBalanceTNS({ empresa, sucursal, fechaInicial, fechaFinal, cuentaInicial: "1305", cuentaFinal: "130599" }),
+        tercerosBalanceTNS({ empresa, sucursal, fechaInicial, fechaFinal, cuentaInicial: "2805", cuentaFinal: "280599" }),
+      ]);
+      const porNit = new Map();
+      const tomar = (t, campo) => {
+        const base = String(t.nit || "").split("-")[0].replace(/\D/g, "") || String(t.nombre || "");
+        if (!porNit.has(base)) porNit.set(base, { nit: String(t.nit || "").trim(), nombre: String(t.nombre || "").trim(), facturas: 0, anticipos: 0 });
+        porNit.get(base)[campo] += numeroTNS(t.nuevoSaldo);
+      };
+      facturas.forEach((t) => tomar(t, "facturas"));
+      anticipos.forEach((t) => tomar(t, "anticipos"));
+      const r2 = (n) => Math.round(n * 100) / 100;
+      // Igual que el Excel: solo clientes con algo abierto (se descartan residuos de centavos).
+      const clientes = [...porNit.values()]
+        .filter((c) => Math.abs(c.facturas) >= 1 || Math.abs(c.anticipos) >= 1)
+        .map((c) => ({ nit: c.nit, nombre: c.nombre, saldo: r2(c.facturas + c.anticipos), facturas: r2(c.facturas), anticipos: r2(c.anticipos), vencido: null, filas: 0 }));
+      logger.info("getCarteraTNS OK", { empresa, fechaFinal, clientes: clientes.length });
+      return { ok: true, empresa, corte: fechaFinal, clientes };
+    } catch (err) {
+      logger.error("getCarteraTNS falló", { mensaje: err?.message, stack: err?.stack, empresa });
+      throw new HttpsError("internal", err?.message || "Error desconocido al traer la cartera de TNS.");
     }
   }
 );
