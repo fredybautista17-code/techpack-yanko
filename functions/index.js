@@ -8695,6 +8695,40 @@ exports.explorarApiTNS = onCall(
       logger.warn("explorarApiTNS: no se encontró el swagger", { intentos });
       return { ok: false, intentos };
     }
+    // Detalle de cada consulta: parámetros, campos que se envían y campos que
+    // devuelve (resolviendo las referencias $ref del swagger, hasta 3 niveles).
+    const esquemas = spec.components?.schemas || spec.definitions || {};
+    const resolverRef = (sch) => {
+      let actual = sch;
+      let guarda = 0;
+      while (actual && actual.$ref && guarda++ < 10) {
+        const nombre = String(actual.$ref).split("/").pop();
+        actual = esquemas[nombre];
+      }
+      return actual || null;
+    };
+    const aplanar = (sch, prefijo = "", nivel = 0, salida = []) => {
+      const r = resolverRef(sch);
+      if (!r || salida.length >= 80) return salida;
+      if (r.type === "array" && r.items) {
+        return aplanar(r.items, `${prefijo}[]`, nivel, salida);
+      }
+      if (r.properties && nivel < 3) {
+        for (const [k, v] of Object.entries(r.properties)) {
+          if (salida.length >= 80) break;
+          const rv = resolverRef(v);
+          const tipo = rv?.type === "array" ? `lista de ${resolverRef(rv.items)?.type || "objeto"}` : (rv?.type || (rv?.properties ? "objeto" : ""));
+          const nombreCampo = prefijo ? `${prefijo}.${k}` : k;
+          const hijoEsObjeto = rv && (rv.properties || (rv.type === "array" && resolverRef(rv.items)?.properties));
+          salida.push({ campo: nombreCampo, tipo: (tipo || "") + (rv?.format ? ` (${rv.format})` : "") + (hijoEsObjeto ? " ▸" : "") });
+          if (hijoEsObjeto) aplanar(v, nombreCampo, nivel + 1, salida);
+        }
+      } else if (!r.properties && prefijo === "" && r.type) {
+        salida.push({ campo: "(valor)", tipo: r.type });
+      }
+      return salida;
+    };
+    const contenidoJson = (c) => c?.["application/json"]?.schema || c?.["text/json"]?.schema || c?.["text/plain"]?.schema || (c ? Object.values(c)[0]?.schema : null);
     const endpoints = [];
     for (const [ruta, ops] of Object.entries(spec.paths || {})) {
       for (const [metodo, op] of Object.entries(ops || {})) {
@@ -8704,6 +8738,12 @@ exports.explorarApiTNS = onCall(
           ruta,
           resumen: String(op?.summary || op?.description || "").slice(0, 200),
           etiqueta: Array.isArray(op?.tags) ? op.tags.join(", ") : "",
+          parametros: [...(ops.parameters || []), ...(op.parameters || [])].map((pa) => {
+            const pr = resolverRef(pa) || pa;
+            return { nombre: pr.name, donde: pr.in, obligatorio: !!pr.required, tipo: resolverRef(pr.schema)?.type || pr.type || "", descripcion: String(pr.description || "").slice(0, 160) };
+          }),
+          cuerpo: aplanar(contenidoJson(op?.requestBody?.content) || (op?.parameters || []).find((x) => x.in === "body")?.schema),
+          respuesta: aplanar(contenidoJson((op?.responses?.["200"] || op?.responses?.["201"] || {}).content) || (op?.responses?.["200"] || {}).schema),
         });
       }
     }

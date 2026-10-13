@@ -3493,6 +3493,8 @@ function TNSConexionView() {
       setApiTns({ error: err?.message || "No se pudo explorar la API." });
     }
   }
+  const [rutaDetalle, setRutaDetalle] = useState("");
+  const endpointDetalle = apiTns && apiTns.ok && rutaDetalle ? apiTns.endpoints.find((e) => `${e.metodo} ${e.ruta}` === rutaDetalle) : null;
   const palabrasApi = filtroApi.split(",").map((x) => x.trim().toLowerCase()).filter(Boolean);
   const endpointsFiltrados = apiTns && apiTns.ok
     ? apiTns.endpoints.filter((e) => palabrasApi.length === 0 || palabrasApi.some((w) => (e.ruta + " " + e.resumen + " " + e.etiqueta).toLowerCase().includes(w)))
@@ -3625,6 +3627,34 @@ function TNSConexionView() {
               ]}
               filas={endpointsFiltrados}
             />
+            <div style={{ marginTop: 20 }}>
+              <Field label="Ver el detalle de una consulta (qué pide y qué devuelve)">
+                <FSel
+                  value={rutaDetalle}
+                  onChange={setRutaDetalle}
+                  options={endpointsFiltrados.map((e) => ({ value: `${e.metodo} ${e.ruta}`, label: `${e.metodo} ${e.ruta}` }))}
+                  placeholder="Elige una consulta de la lista de arriba..."
+                />
+              </Field>
+              {endpointDetalle && (
+                <div style={{ marginTop: 12, border: `1px solid ${C.border}`, borderRadius: 8, padding: 14, background: C.white, fontSize: 12 }}>
+                  <div style={{ fontWeight: 800, color: C.ink, marginBottom: 4 }}>{endpointDetalle.metodo} {endpointDetalle.ruta}</div>
+                  {endpointDetalle.resumen && <div style={{ color: C.slate, marginBottom: 10 }}>{endpointDetalle.resumen}</div>}
+                  <div style={{ fontWeight: 700, margin: "8px 0 4px" }}>Parámetros</div>
+                  {endpointDetalle.parametros.length === 0 ? <div style={{ color: C.slate }}>Ninguno.</div> : endpointDetalle.parametros.map((pa, i) => (
+                    <div key={i}><b>{pa.nombre}</b> ({pa.donde}{pa.obligatorio ? ", obligatorio" : ""}{pa.tipo ? `, ${pa.tipo}` : ""}){pa.descripcion ? ` — ${pa.descripcion}` : ""}</div>
+                  ))}
+                  <div style={{ fontWeight: 700, margin: "10px 0 4px" }}>Datos que se envían</div>
+                  {endpointDetalle.cuerpo.length === 0 ? <div style={{ color: C.slate }}>Ninguno.</div> : endpointDetalle.cuerpo.map((c, i) => (
+                    <div key={i}><b>{c.campo}</b> <span style={{ color: C.slate }}>{c.tipo}</span></div>
+                  ))}
+                  <div style={{ fontWeight: 700, margin: "10px 0 4px" }}>Datos que devuelve</div>
+                  {endpointDetalle.respuesta.length === 0 ? <div style={{ color: C.slate }}>TNS no describe la respuesta (hay que probarla).</div> : endpointDetalle.respuesta.map((c, i) => (
+                    <div key={i}><b>{c.campo}</b> <span style={{ color: C.slate }}>{c.tipo}</span></div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>
