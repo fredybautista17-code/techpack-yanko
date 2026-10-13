@@ -3516,8 +3516,26 @@ function TNSConexionView() {
   const [balCuentaIni, setBalCuentaIni] = useState("1305");
   const [balCuentaFin, setBalCuentaFin] = useState("130599");
   const [balSucursal, setBalSucursal] = useState("");
+  // El código de sucursal es obligatorio en TNS: se recuerda por empresa en este navegador.
+  useEffect(() => {
+    try { setBalSucursal(window.localStorage.getItem(`tns_sucursal_${empresa}`) || ""); } catch (e) { setBalSucursal(""); }
+  }, [empresa]);
+  // Último corte de cartera subido por Excel (Contabilidad → Saldos de clientes), para comparar.
+  const [corteExcel, setCorteExcel] = useState(null);
+  useEffect(() => {
+    setCorteExcel(null);
+    const unsub = onSnapshot(doc(db, "contabilidad_saldos_tns", empresa), (snap) => {
+      setCorteExcel(snap.exists() ? snap.data() : null);
+    }, () => setCorteExcel(null));
+    return () => unsub();
+  }, [empresa]);
   const [balance, setBalance] = useState(null); // null | "cargando" | { ok, data, enviado } | { error }
   async function probarBalance() {
+    if (!balSucursal.trim()) {
+      setBalance({ error: "Escribe el código de sucursal: TNS lo exige para consultar el Balance." });
+      return;
+    }
+    try { window.localStorage.setItem(`tns_sucursal_${empresa}`, balSucursal.trim()); } catch (e) { /* sin almacenamiento */ }
     setBalance("cargando");
     try {
       const llamar = httpsCallable(functionsClient, "probarBalanceTNS");
@@ -3528,9 +3546,31 @@ function TNSConexionView() {
     }
   }
   const balCuentas = balance && balance.ok ? (Array.isArray(balance.data?.data) ? balance.data.data : []) : [];
-  const balTerceros = balCuentas.flatMap((c) => (Array.isArray(c.terceros) ? c.terceros : []).map((t) => ({ ...t, cuenta: c.codigo, nombreCuenta: c.nombre })))
-    .sort((a, b) => Math.abs(numTNS(b.nuevoSaldo)) - Math.abs(numTNS(a.nuevoSaldo)));
-  const [rutaDetalle, setRutaDetalle] = useState("");
+  const nitBase = (v) => String(v || "").split("-")[0].replace(/\D/g, "");
+  const nombreBase = (v) => String(v || "").toUpperCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^A-Z0-9]/g, "");
+  const clientesExcel = Array.isArray(corteExcel?.clientes) ? corteExcel.clientes : [];
+  const excelPorNit = new Map(clientesExcel.map((c) => [nitBase(c.nit), c]));
+  const excelPorNombre = new Map(clientesExcel.map((c) => [nombreBase(c.nombre), c]));
+  const usadosExcel = new Set();
+  const balTercerosBase = balCuentas.flatMap((c) => (Array.isArray(c.terceros) ? c.terceros : []).map((t) => ({ ...t, cuenta: c.codigo, nombreCuenta: c.nombre })));
+  const balTerceros = balTercerosBase.map((t) => {
+    const ex = excelPorNit.get(nitBase(t.nit)) || excelPorNombre.get(nombreBase(t.nombre)) || null;
+    if (ex) usadosExcel.add(ex);
+    const saldoTns = numTNS(t.nuevoSaldo);
+    const saldoExcel = ex ? Number(ex.saldo) || 0 : (corteExcel ? 0 : null);
+    return { ...t, saldoTns, saldoExcel, diferencia: saldoExcel === null ? null : Math.round((saldoTns - saldoExcel) * 100) / 100, soloTns: !ex };
+  });
+  // Clientes con saldo en el Excel que NO aparecen en el Balance de TNS.
+  const soloEnExcel = corteExcel
+    ? clientesExcel.filter((c) => !usadosExcel.has(c) && Math.abs(Number(c.saldo) || 0) >= 1).map((c) => ({
+        cuenta: "(solo en Excel)", nit: c.nit, nombre: c.nombre, saldoTns: 0, saldoExcel: Number(c.saldo) || 0, diferencia: Math.round((0 - (Number(c.saldo) || 0)) * 100) / 100, soloExcel: true,
+      }))
+    : [];
+  const filasComparacion = [...balTerceros, ...soloEnExcel]
+    .sort((a, b) => Math.abs(b.diferencia ?? 0) - Math.abs(a.diferencia ?? 0) || Math.abs(b.saldoTns) - Math.abs(a.saldoTns));
+  const totalTns = filasComparacion.reduce((s2, f) => s2 + f.saldoTns, 0);
+  const totalExcel = filasComparacion.reduce((s2, f) => s2 + (f.saldoExcel || 0), 0);
+  const nDiferentes = filasComparacion.filter((f) => f.diferencia !== null && Math.abs(f.diferencia) >= 1).length;  const [rutaDetalle, setRutaDetalle] = useState("");
   const endpointDetalle = apiTns && apiTns.ok && rutaDetalle ? apiTns.endpoints.find((e) => `${e.metodo} ${e.ruta}` === rutaDetalle) : null;
   const palabrasApi = filtroApi.split(",").map((x) => x.trim().toLowerCase()).filter(Boolean);
   const endpointsFiltrados = apiTns && apiTns.ok
@@ -3632,7 +3672,7 @@ function TNSConexionView() {
           <Field label="Hasta (fecha)"><FInput type="date" value={balFechaFin} onChange={setBalFechaFin} /></Field>
           <Field label="Cuenta inicial"><FInput value={balCuentaIni} onChange={setBalCuentaIni} /></Field>
           <Field label="Cuenta final"><FInput value={balCuentaFin} onChange={setBalCuentaFin} /></Field>
-          <Field label="Sucursal (opcional)"><FInput value={balSucursal} onChange={setBalSucursal} placeholder="Vacío = la de siempre" /></Field>
+          <Field label="Código de sucursal (obligatorio)"><FInput value={balSucursal} onChange={setBalSucursal} placeholder="Ej: 001" /></Field>
         </div>
         <Btn onClick={probarBalance} disabled={balance === "cargando"}>
           {balance === "cargando" ? "Consultando..." : "📒 Probar Balance de Comprobación"}
@@ -3650,7 +3690,7 @@ function TNSConexionView() {
               </div>
             )}
             <div style={{ fontSize: 12, color: C.slate, marginBottom: 10 }}>
-              {balCuentas.length} cuentas · {balTerceros.length} clientes (terceros) · cuentas {balance.enviado?.cuentaInicial} a {balance.enviado?.cuentaFinal} · {balance.enviado?.fechaInicial} a {balance.enviado?.fechaFinal}
+              {balCuentas.length} cuentas · {balTercerosBase.length} clientes (terceros) · cuentas {balance.enviado?.cuentaInicial} a {balance.enviado?.cuentaFinal} · {balance.enviado?.fechaInicial} a {balance.enviado?.fechaFinal}
             </div>
             <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, margin: "8px 0" }}>Cuentas</div>
             <Tabla
@@ -3666,19 +3706,27 @@ function TNSConexionView() {
               ]}
               filas={balCuentas}
             />
-            <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, margin: "16px 0 8px" }}>Saldo por cliente (de mayor a menor)</div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, margin: "16px 0 4px" }}>Saldo por cliente: TNS contra tu Excel de cartera</div>
+            <div style={{ fontSize: 12, color: C.slate, marginBottom: 8 }}>
+              {corteExcel
+                ? `Excel de ${EMPRESAS_TNS.find((e) => e.value === empresa)?.label}: ${corteExcel.nombreArchivo || "último corte"}${corteExcel.corte ? ` (corte ${corteExcel.corte})` : ""}. `
+                : "No hay Excel de cartera cargado para esta empresa, así que no hay con qué comparar. "}
+              Total TNS {fmtMoney(totalTns)}{corteExcel ? ` · Total Excel ${fmtMoney(totalExcel)} · ${nDiferentes} cliente(s) con diferencia` : ""}. Las filas con diferencia van primero.
+            </div>
             <Tabla
               vacio="Ninguna cuenta de ese rango trajo clientes (terceros)."
               columnas={[
-                { key: "cuenta", label: "Cuenta" },
+                { key: "nombre", label: "Cliente", render: (f) => <span style={{ fontWeight: 600 }}>{f.nombre}{f.soloExcel ? " · solo en Excel" : f.soloTns && corteExcel ? " · solo en TNS" : ""}</span> },
                 { key: "nit", label: "NIT" },
-                { key: "nombre", label: "Cliente" },
-                { key: "saldoAnterior", label: "Saldo anterior", align: "right", render: (f) => fmtMoney(numTNS(f.saldoAnterior)) },
-                { key: "totalDebito", label: "Débitos", align: "right", render: (f) => fmtMoney(numTNS(f.totalDebito)) },
-                { key: "totalCredito", label: "Créditos", align: "right", render: (f) => fmtMoney(numTNS(f.totalCredito)) },
-                { key: "nuevoSaldo", label: "Saldo", align: "right", render: (f) => <b>{fmtMoney(numTNS(f.nuevoSaldo))}</b> },
+                { key: "saldoTns", label: "Saldo TNS", align: "right", render: (f) => <b>{fmtMoney(f.saldoTns)}</b> },
+                { key: "saldoExcel", label: "Saldo Excel", align: "right", render: (f) => (f.saldoExcel === null ? "—" : fmtMoney(f.saldoExcel)) },
+                { key: "diferencia", label: "Diferencia", align: "right", render: (f) => (f.diferencia === null ? "—" : <span style={{ fontWeight: 700, color: Math.abs(f.diferencia) >= 1 ? C.red : C.green }}>{fmtMoney(f.diferencia)}</span>) },
+                { key: "saldoAnterior", label: "Saldo anterior", align: "right", render: (f) => (f.soloExcel ? "—" : fmtMoney(numTNS(f.saldoAnterior))) },
+                { key: "totalDebito", label: "Débitos", align: "right", render: (f) => (f.soloExcel ? "—" : fmtMoney(numTNS(f.totalDebito))) },
+                { key: "totalCredito", label: "Créditos", align: "right", render: (f) => (f.soloExcel ? "—" : fmtMoney(numTNS(f.totalCredito))) },
+                { key: "cuenta", label: "Cuenta" },
               ]}
-              filas={balTerceros}
+              filas={filasComparacion}
             />
           </div>
         )}
