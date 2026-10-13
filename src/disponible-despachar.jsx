@@ -17,6 +17,7 @@ const ESTADOS = {
   parcial: { txt: "Parcial", fg: "#A8660B", bg: "#FDF1DA", xl: "FFFDF1DA", xlFg: "FFA8660B" },
   sin_producir: { txt: "Sin producir", fg: "#9A3A2D", bg: "#FBE9E6", xl: "FFFBE9E6", xlFg: "FF9A3A2D" },
   despachado: { txt: "Todo despachado", fg: "#3D5C85", bg: "#E6EEF7", xl: "FFE6EEF7", xlFg: "FF3D5C85" },
+  lote_sin_linea: { txt: "Producción sin línea de pedido", fg: "#3F5565", bg: "#E8EEF2", xl: "FFE8EEF2", xlFg: "FF3F5565" },
   preorden: { txt: "Preorden", fg: "#7B5EA7", bg: "#F3EEF9", xl: "FFF3EEF9", xlFg: "FF7B5EA7" },
 };
 const VIOLETA_FILA = "FFFAF7FD";
@@ -45,6 +46,13 @@ function totalesDe(filas) {
     disponible: s((f) => f.disponible),
     valorPedido: s(valorPedidoDe),
     valorDisponible: s((f) => f.valorDisponible),
+    faltaDespachar: s((f) => f.faltaDespachar),
+    valorFaltaDespachar: s((f) => f.valorFaltaDespachar),
+    etSinCortar: s((f) => f.etSinCortar),
+    etCorte: s((f) => f.etCorte),
+    etPlanta: s((f) => f.etPlanta),
+    etSemi: s((f) => f.etSemi),
+    etBpt: s((f) => f.etBpt),
   };
 }
 // Filas de las preórdenes montadas de un cliente que todavía no son pedido
@@ -77,6 +85,13 @@ function filasPreordenesDe(nombreCliente, preordenes) {
         precioFuente: "preorden",
         valorPedido: Math.round(cant * precio),
         valorDisponible: 0,
+        faltaDespachar: cant,
+        valorFaltaDespachar: Math.round(cant * precio),
+        etSinCortar: cant,
+        etCorte: 0,
+        etPlanta: 0,
+        etSemi: 0,
+        etBpt: 0,
         estado: "preorden",
         esPreorden: true,
         _k: `${p.id}-${i}`,
@@ -103,8 +118,16 @@ const COLUMNAS_EXCEL = [
   { h: "Precio", w: 13, k: "precio", al: "right", money: true },
   { h: "Valor del pedido", w: 17, k: "valorPedido", al: "right", money: true },
   { h: "Valor disponible", w: 17, k: "valorDisponible", al: "right", money: true },
+  { h: "Falta despachar", w: 13, k: "faltaDespachar", al: "right", num: true },
+  { h: "Valor falta despachar", w: 18, k: "valorFaltaDespachar", al: "right", money: true },
+  { h: "Sin cortar", w: 11, k: "etSinCortar", al: "right", num: true },
+  { h: "En corte", w: 10, k: "etCorte", al: "right", num: true },
+  { h: "En planta", w: 10, k: "etPlanta", al: "right", num: true },
+  { h: "Semiterm.", w: 11, k: "etSemi", al: "right", num: true },
+  { h: "En BPT", w: 10, k: "etBpt", al: "right", num: true },
   { h: "Estado", w: 21, k: "estado", al: "center" },
 ];
+const colDe = (k) => COLUMNAS_EXCEL.findIndex((c) => c.k === k) + 1;
 const AZUL_OSCURO = "FF1A1A2E";
 const BLANCO = "FFFFFFFF";
 const CEBRA = "FFF7F4F0";
@@ -157,19 +180,19 @@ function hojaCliente(wb, grupo, filas, usados, generadoEn) {
       if (c.num) cell.numFmt = "#,##0";
       if (c.money) cell.numFmt = '"$"#,##0';
     });
-    const disp = row.getCell(8);
+    const disp = row.getCell(colDe("disponible"));
     if (f.disponible > 0) {
       disp.font = { bold: true, size: 11, color: { argb: "FF1E7A52" } };
       disp.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE3F5EC" } };
-      row.getCell(11).font = { bold: true, size: 11, color: { argb: "FF1E7A52" } };
+      row.getCell(colDe("valorDisponible")).font = { bold: true, size: 11, color: { argb: "FF1E7A52" } };
     }
     if (f.faltaProducir > 0) {
-      row.getCell(7).font = { bold: true, size: 10.5, color: { argb: "FFA8660B" } };
-      row.getCell(7).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFDF1DA" } };
+      row.getCell(colDe("faltaProducir")).font = { bold: true, size: 10.5, color: { argb: "FFA8660B" } };
+      row.getCell(colDe("faltaProducir")).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFDF1DA" } };
     }
     const est = ESTADOS[f.estado];
     if (est) {
-      const ce = row.getCell(12);
+      const ce = row.getCell(colDe("estado"));
       ce.fill = { type: "pattern", pattern: "solid", fgColor: { argb: est.xl } };
       ce.font = { bold: true, size: 10, color: { argb: est.xlFg } };
     }
@@ -179,9 +202,10 @@ function hojaCliente(wb, grupo, filas, usados, generadoEn) {
   const tot = ws.getRow(fin);
   const totF = totalesDe(filas);
   tot.getCell(1).value = "TOTAL";
-  [["pedido", 4], ["producido", 5], ["despachado", 6], ["faltaProducir", 7], ["disponible", 8], ["valorPedido", 10], ["valorDisponible", 11]].forEach(([k, col]) => {
+  ["pedido", "producido", "despachado", "faltaProducir", "disponible", "valorPedido", "valorDisponible", "faltaDespachar", "valorFaltaDespachar", "etSinCortar", "etCorte", "etPlanta", "etSemi", "etBpt"].forEach((k) => {
+    const col = colDe(k);
     tot.getCell(col).value = totF[k];
-    tot.getCell(col).numFmt = k === "valorDisponible" || k === "valorPedido" ? '"$"#,##0' : "#,##0";
+    tot.getCell(col).numFmt = k.startsWith("valor") ? '"$"#,##0' : "#,##0";
   });
   for (let c = 1; c <= n; c++) {
     const cell = tot.getCell(c);
@@ -198,7 +222,7 @@ function hojaCliente(wb, grupo, filas, usados, generadoEn) {
 
 function hojaResumen(wb, grupos, generadoEn) {
   const ws = wb.addWorksheet("Resumen", { views: [{ state: "frozen", ySplit: 4, showGridLines: false }] });
-  const cols = [["Cliente", 34, "left"], ["Referencias", 13, "center"], ["Pedido", 12, "right"], ["Producido", 12, "right"], ["Despachado", 13, "right"], ["Falta producir", 14, "right"], ["Disponible", 13, "right"], ["Valor del pedido", 18, "right"], ["Valor disponible", 18, "right"]];
+  const cols = [["Cliente", 34, "left"], ["Referencias", 13, "center"], ["Pedido", 12, "right"], ["Producido", 12, "right"], ["Despachado", 13, "right"], ["Falta producir", 14, "right"], ["Disponible", 13, "right"], ["Valor del pedido", 18, "right"], ["Valor disponible", 18, "right"], ["Falta despachar", 14, "right"], ["Valor falta despachar", 20, "right"]];
   ws.columns = cols.map(([, w]) => ({ width: w }));
   ws.mergeCells(1, 1, 1, cols.length);
   ws.getCell(1, 1).value = "DISPONIBLE PARA DESPACHAR — RESUMEN POR CLIENTE";
@@ -218,14 +242,14 @@ function hojaResumen(wb, grupos, generadoEn) {
   ws.getRow(4).height = 24;
   grupos.forEach((g, idx) => {
     const row = ws.getRow(5 + idx);
-    const v = [g.cliente, g.filas.length, g.totales.pedido, g.totales.producido, g.totales.despachado, g.totales.faltaProducir, g.totales.disponible, g.totales.valorPedido, g.totales.valorDisponible];
+    const v = [g.cliente, g.filas.length, g.totales.pedido, g.totales.producido, g.totales.despachado, g.totales.faltaProducir, g.totales.disponible, g.totales.valorPedido, g.totales.valorDisponible, g.totales.faltaDespachar, g.totales.valorFaltaDespachar];
     v.forEach((val, i) => {
       const c = row.getCell(i + 1);
       c.value = val;
       c.alignment = { horizontal: cols[i][2], vertical: "middle" };
       c.border = BORDES;
       c.font = { size: 10.5 };
-      if (i >= 2) c.numFmt = i >= 7 ? '"$"#,##0' : "#,##0";
+      if (i >= 2) c.numFmt = i === 7 || i === 8 || i === 10 ? '"$"#,##0' : "#,##0";
       if (idx % 2 === 1) c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: CEBRA } };
     });
     row.getCell(7).font = { bold: true, size: 11, color: { argb: "FF1E7A52" } };
@@ -235,10 +259,10 @@ function hojaResumen(wb, grupos, generadoEn) {
   const fin = 5 + grupos.length;
   const tot = ws.getRow(fin);
   tot.getCell(1).value = "TOTAL";
-  const sumaG = (k) => grupos.reduce((s, g) => s + g.totales[k], 0);
-  [["pedido", 3], ["producido", 4], ["despachado", 5], ["faltaProducir", 6], ["disponible", 7], ["valorPedido", 8], ["valorDisponible", 9]].forEach(([k, col]) => {
+  const sumaG = (k) => grupos.reduce((s, g) => s + (g.totales[k] || 0), 0);
+  [["pedido", 3], ["producido", 4], ["despachado", 5], ["faltaProducir", 6], ["disponible", 7], ["valorPedido", 8], ["valorDisponible", 9], ["faltaDespachar", 10], ["valorFaltaDespachar", 11]].forEach(([k, col]) => {
     tot.getCell(col).value = sumaG(k);
-    tot.getCell(col).numFmt = k === "valorDisponible" || k === "valorPedido" ? '"$"#,##0' : "#,##0";
+    tot.getCell(col).numFmt = k.startsWith("valor") ? '"$"#,##0' : "#,##0";
   });
   for (let c = 1; c <= cols.length; c++) {
     const cell = tot.getCell(c);
@@ -405,14 +429,23 @@ export default function DisponibleDespacharView({ db, functionsClient, T }) {
             {kpi("Producido", fmt(tot.producido), T.denim)}
             {kpi("Ya despachado", fmt(tot.despachado), T.slate)}
             {kpi("Disponible", fmt(tot.disponible), T.jade, "listo para despachar")}
-            {kpi("Valor disponible", money(tot.valorDisponible), T.jade, "con precio del pedido")}
+            {kpi("Valor disponible", money(tot.valorDisponible), T.jade, "con precio matriculado")}
+          </div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+            {kpi("Falta por despachar", fmt(tot.faltaDespachar), T.ink, "pedido − despachado")}
+            {kpi("Valor falta por despachar", money(tot.valorFaltaDespachar), T.ink, "con precio matriculado")}
+            {kpi("Sin cortar", fmt(tot.etSinCortar), T.amber)}
+            {kpi("En corte", fmt(tot.etCorte), T.coral)}
+            {kpi("En planta", fmt(tot.etPlanta), T.denim)}
+            {kpi("Semiterminado", fmt(tot.etSemi), T.violet)}
+            {kpi("En BPT", fmt(tot.etBpt), T.jade)}
           </div>
 
           <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, overflow: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 1050 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 1700 }}>
               <thead>
                 <tr style={{ background: T.ink }}>
-                  {th("Pedido", "center")}{th("Referencia", "left")}{th("Descripción", "left")}{th("Pedido")}{th("Producido")}{th("Despachado")}{th("Falta producir")}{th("Disponible")}{th("Precio")}{th("Valor del pedido")}{th("Valor disponible")}{th("Estado", "center")}
+                  {th("Pedido", "center")}{th("Referencia", "left")}{th("Descripción", "left")}{th("Pedido")}{th("Producido")}{th("Despachado")}{th("Falta producir")}{th("Disponible")}{th("Precio")}{th("Valor del pedido")}{th("Valor disponible")}{th("Falta despachar")}{th("Valor falta despachar")}{th("Sin cortar")}{th("En corte")}{th("En planta")}{th("Semiterm.")}{th("En BPT")}{th("Estado", "center")}
                 </tr>
               </thead>
               <tbody>
@@ -435,11 +468,16 @@ export default function DisponibleDespacharView({ db, functionsClient, T }) {
                       </td>
                       <td style={{ padding: "9px 12px", textAlign: "right", fontVariantNumeric: "tabular-nums", color: T.slate }}>{money(valorPedidoDe(f))}</td>
                       <td style={{ padding: "9px 12px", textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: 700, color: f.valorDisponible ? T.jade : T.slate }}>{money(f.valorDisponible)}</td>
+                      <td style={{ padding: "9px 12px", textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: 800 }}>{fmt(f.faltaDespachar)}</td>
+                      <td style={{ padding: "9px 12px", textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: 700 }}>{money(f.valorFaltaDespachar)}</td>
+                      {[f.etSinCortar, f.etCorte, f.etPlanta, f.etSemi, f.etBpt].map((n, j) => (
+                        <td key={j} style={{ padding: "9px 12px", textAlign: "right", fontVariantNumeric: "tabular-nums", color: n ? T.ink : T.border }}>{n ? fmt(n) : "·"}</td>
+                      ))}
                       <td style={{ padding: "9px 12px", textAlign: "center" }}><span style={{ padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: est.bg, color: est.fg, whiteSpace: "nowrap" }}>{est.txt}</span></td>
                     </tr>
                   );
                 })}
-                {!filas.length && <tr><td colSpan={12} style={{ padding: 24, textAlign: "center", color: T.slate }}>Nada para mostrar con estos filtros.</td></tr>}
+                {!filas.length && <tr><td colSpan={19} style={{ padding: 24, textAlign: "center", color: T.slate }}>Nada para mostrar con estos filtros.</td></tr>}
               </tbody>
               {filas.length > 0 && (
                 <tfoot>
@@ -453,6 +491,13 @@ export default function DisponibleDespacharView({ db, functionsClient, T }) {
                     <td />
                     <td style={{ padding: "10px 12px", textAlign: "right" }}>{money(tot.valorPedido)}</td>
                     <td style={{ padding: "10px 12px", textAlign: "right" }}>{money(tot.valorDisponible)}</td>
+                    <td style={{ padding: "10px 12px", textAlign: "right" }}>{fmt(tot.faltaDespachar)}</td>
+                    <td style={{ padding: "10px 12px", textAlign: "right" }}>{money(tot.valorFaltaDespachar)}</td>
+                    <td style={{ padding: "10px 12px", textAlign: "right" }}>{fmt(tot.etSinCortar)}</td>
+                    <td style={{ padding: "10px 12px", textAlign: "right" }}>{fmt(tot.etCorte)}</td>
+                    <td style={{ padding: "10px 12px", textAlign: "right" }}>{fmt(tot.etPlanta)}</td>
+                    <td style={{ padding: "10px 12px", textAlign: "right" }}>{fmt(tot.etSemi)}</td>
+                    <td style={{ padding: "10px 12px", textAlign: "right" }}>{fmt(tot.etBpt)}</td>
                     <td />
                   </tr>
                 </tfoot>
@@ -462,6 +507,7 @@ export default function DisponibleDespacharView({ db, functionsClient, T }) {
           <div style={{ fontSize: 11, color: T.slate, marginTop: 10, lineHeight: 1.5 }}>
             Disponible = lo producido (Entradas a Planta) menos lo ya despachado (facturas y traslados netos de devoluciones), sin pasar del saldo del pedido.
             Las filas violeta son preórdenes montadas que todavía no son pedido: suman en Pedido y Falta producir, nunca en Disponible. Precio: es el precio matriculado de la referencia en Busint (pantalla de Costos); las referencias "sin matricular" hay que matricularlas allá y salen con valor $0 hasta entonces.
+            Falta por despachar = pedido − despachado; las columnas Sin cortar / En corte / En planta / Semiterm. / En BPT dicen dónde está hoy ese saldo según el Panel de Flujo de Busint (Sin cortar = lo que aún no está en ninguna etapa). Las filas grises "Producción sin línea de pedido" son lotes que están en producción pero no tienen línea en ese pedido: se muestran para que no se pierdan.
             {datos?.generadoEn && <> · Consultado: {new Date(datos.generadoEn).toLocaleString("es-CO")}</>}
           </div>
         </>

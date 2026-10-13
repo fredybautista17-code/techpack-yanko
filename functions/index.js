@@ -1979,6 +1979,34 @@ exports.getDisponibleParaDespachar = onCall(
       avisos.push("No se pudo leer el precio matriculado de las referencias: todas las líneas saldrán 'sin matricular'.");
     }
 
+    // 5c) Lo que está en producción por etapa (Panel de Flujo Operacional de
+    // Busint, por lote): Corte / Bodega Materia Prima / Planta / Semiterminado /
+    // Producto Terminado (BPT). Se agrupa por pedido + referencia para repartir
+    // lo que FALTA POR DESPACHAR de cada línea según dónde está hoy.
+    const lotesPorClave = new Map(); // `${numPed}|${refNorm}` -> { numPed, ref, cliente, e:{corte,planta,semi,pt}, usado }
+    let panelLeido = false;
+    try {
+      const { lotes } = await obtenerLotesPlaneacionDesdeBusint();
+      panelLeido = true;
+      for (const lt of lotes) {
+        const refNorm = refSinGuion(lt.referencia);
+        if (!refNorm) continue;
+        // Mismo criterio que Contabilidad/Planeación: Semiterminado = bodega semi +
+        // inventario en proceso; si ambos son idénticos se cuenta una sola vez.
+        const semi = lt.invSemiterminado === lt.invProceso ? lt.invSemiterminado : lt.invSemiterminado + lt.invProceso;
+        const e = { corte: (Number(lt.invCorte) || 0) + (Number(lt.invBMP) || 0), planta: Number(lt.invPlanta) || 0, semi: Number(semi) || 0, pt: Number(lt.invBPT) || 0 };
+        if (e.corte + e.planta + e.semi + e.pt <= 0) continue;
+        const numPed = lt.numPedido ? String(lt.numPedido) : "";
+        const clave = `${numPed}|${refNorm}`;
+        const prev = lotesPorClave.get(clave) || { numPed, ref: lt.referencia, refNorm, cliente: lt.nombreCliente, e: { corte: 0, planta: 0, semi: 0, pt: 0 }, usado: false };
+        prev.e.corte += e.corte; prev.e.planta += e.planta; prev.e.semi += e.semi; prev.e.pt += e.pt;
+        lotesPorClave.set(clave, prev);
+      }
+    } catch (err) {
+      logger.error("Error leyendo el Panel de Flujo (getDisponibleParaDespachar)", { error: String(err) });
+      avisos.push("No se pudo leer el Panel de Flujo Operacional de Busint: las columnas de etapas (sin cortar, corte, planta, semiterminado, BPT) quedan en cero.");
+    }
+
     // 6) Armar resultado por cliente
     const porClienteMap = new Map();
     let sinPrecio = 0;
@@ -2004,8 +2032,21 @@ exports.getDisponibleParaDespachar = onCall(
         : disponible > 0 ? "parcial"
         : "sin_producir";
       if (!l.precio) sinPrecio += disponible > 0 ? 1 : 0;
+      // Falta por despachar = pedido - despachado, repartido por la etapa donde está hoy.
+      const lot = lotesPorClave.get(k);
+      if (lot) lot.usado = true;
+      const eC = lot ? lot.e.corte : 0, eP = lot ? lot.e.planta : 0, eS = lot ? lot.e.semi : 0, eB = lot ? lot.e.pt : 0;
+      const faltaDespachar = saldoPedido;
+      const etSinCortar = panelLeido ? Math.max(0, faltaDespachar - (eC + eP + eS + eB)) : 0;
       if (!porClienteMap.has(l.cliente)) porClienteMap.set(l.cliente, []);
       porClienteMap.get(l.cliente).push({
+        faltaDespachar,
+        valorFaltaDespachar: Math.round(faltaDespachar * l.precio),
+        etSinCortar,
+        etCorte: eC,
+        etPlanta: eP,
+        etSemi: eS,
+        etBpt: eB,
         numPed: l.numPed,
         ref: l.ref,
         descripcion: l.descripcion,
@@ -2021,6 +2062,49 @@ exports.getDisponibleParaDespachar = onCall(
         estado,
       });
     }
+    // Lotes en producción que NO tienen línea de pedido en este reporte (ej. C-407
+    // de CONBOT en los pedidos 1339/1442): salen aparte para que no se pierdan.
+    // Solo se muestran si el pedido existe en el reporte o el cliente coincide con
+    // uno ya listado; los demás (stock sin pedido de otros clientes) solo se cuentan.
+    const normCli = (v) => String(v || "").toUpperCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^A-Z0-9]+/g, " ").split(" ").filter((t) => t && !["SAS", "LTDA", "SA", "CIA", "S", "A"].includes(t)).join(" ");
+    const clientesExistentes = [...porClienteMap.keys()];
+    const emparejarCliente = (nombre) => {
+      const a = normCli(nombre);
+      if (a.length < 3) return null;
+      return clientesExistentes.find((c) => normCli(c) === a) || clientesExistentes.find((c) => { const b = normCli(c); return b.length >= 3 && (b.includes(a) || a.includes(b)); }) || null;
+    };
+    let lotesSinMostrar = 0;
+    for (const lt of lotesPorClave.values()) {
+      if (lt.usado) continue;
+      if (lt.numPed && cumplidos.has(lt.numPed)) continue;
+      const cliente = (lt.numPed && porPedidoCliente.get(lt.numPed)) || emparejarCliente(lt.cliente);
+      const unid = lt.e.corte + lt.e.planta + lt.e.semi + lt.e.pt;
+      if (!cliente || !porClienteMap.has(cliente)) { lotesSinMostrar += 1; continue; }
+      const precioLote = precioMatriculado.get(lt.refNorm) || 0;
+      porClienteMap.get(cliente).push({
+        numPed: lt.numPed || "(sin pedido)",
+        ref: lt.ref,
+        descripcion: "Lote en producción sin línea en este pedido",
+        fechaDespacho: "",
+        pedido: 0,
+        producido: 0,
+        despachado: 0,
+        faltaProducir: 0,
+        disponible: 0,
+        precio: Math.round(precioLote),
+        precioFuente: precioLote > 0 ? "precio matriculado" : "sin matricular",
+        valorDisponible: 0,
+        faltaDespachar: unid,
+        valorFaltaDespachar: Math.round(unid * precioLote),
+        etSinCortar: 0,
+        etCorte: lt.e.corte,
+        etPlanta: lt.e.planta,
+        etSemi: lt.e.semi,
+        etBpt: lt.e.pt,
+        estado: "lote_sin_linea",
+      });
+    }
+    if (lotesSinMostrar) avisos.push(`${lotesSinMostrar} lote(s) en producción de otros clientes o sin pedido no se muestran (no coinciden con ningún cliente de este reporte).`);
     // Diagnóstico: líneas que de verdad salieron sin precio (misma lógica que la
     // tabla), con los campos de precio que trae el maestro para esa referencia.
     const sinPrecioDiag = [];
@@ -2062,6 +2146,8 @@ exports.getDisponibleParaDespachar = onCall(
             faltaProducir: filas.reduce((s, f) => s + f.faltaProducir, 0),
             disponible: filas.reduce((s, f) => s + f.disponible, 0),
             valorDisponible: filas.reduce((s, f) => s + f.valorDisponible, 0),
+            faltaDespachar: filas.reduce((s, f) => s + (f.faltaDespachar || 0), 0),
+            valorFaltaDespachar: filas.reduce((s, f) => s + (f.valorFaltaDespachar || 0), 0),
           },
         };
       })
