@@ -5416,7 +5416,6 @@ function ValorizacionPorMarcaView({ pedidos }) {
   }
   useEffect(() => {
     if (incluirSinCortar && sinCortarBusint === null && !cargandoSinCortar && !errorSinCortar) cargarSinCortar();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [incluirSinCortar]);
   async function cargar() {
     setCargando(true);
