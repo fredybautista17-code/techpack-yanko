@@ -3479,6 +3479,25 @@ function TNSConexionView() {
     }
   }
 
+  // Explorador de la API de TNS (2026-10-13): lista los endpoints que TNS
+  // ofrece, para saber si hay cartera / remisiones / facturas por API.
+  const [apiTns, setApiTns] = useState(null); // null | "cargando" | { ok, ... } | { error }
+  const [filtroApi, setFiltroApi] = useState("cartera, cobrar, remision, factura, saldo, recibo, cliente, reporte");
+  async function explorarApi() {
+    setApiTns("cargando");
+    try {
+      const llamar = httpsCallable(functionsClient, "explorarApiTNS");
+      const resp = await llamar({ empresa });
+      setApiTns(resp.data);
+    } catch (err) {
+      setApiTns({ error: err?.message || "No se pudo explorar la API." });
+    }
+  }
+  const palabrasApi = filtroApi.split(",").map((x) => x.trim().toLowerCase()).filter(Boolean);
+  const endpointsFiltrados = apiTns && apiTns.ok
+    ? apiTns.endpoints.filter((e) => palabrasApi.length === 0 || palabrasApi.some((w) => (e.ruta + " " + e.resumen + " " + e.etiqueta).toLowerCase().includes(w)))
+    : [];
+
   return (
     <div style={{ maxWidth: 900 }}>
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 16 }}>
@@ -3560,6 +3579,52 @@ function TNSConexionView() {
                 {JSON.stringify(terceros.crudo, null, 2)}
               </pre>
             )}
+          </div>
+        )}
+      </div>
+
+      <div style={{ marginTop: 32, paddingTop: 24, borderTop: `1px solid ${C.border}` }}>
+        <div style={{ fontSize: 14, fontWeight: 800, color: C.ink, marginBottom: 8 }}>Explorar la API de TNS</div>
+        <div style={{ fontSize: 12, color: C.slate, marginBottom: 16 }}>
+          Lista qué consultas ofrece la API de TNS, para saber si se puede traer la cartera, las remisiones y las facturas directo, sin subir el Excel. Solo lee el catálogo de la API: no consulta ni cambia datos de TNS.
+        </div>
+        <Btn onClick={explorarApi} disabled={apiTns === "cargando"}>
+          {apiTns === "cargando" ? "Explorando..." : "🧭 Explorar API de TNS"}
+        </Btn>
+        {apiTns && typeof apiTns === "object" && apiTns.error && (
+          <div style={{ marginTop: 16, padding: "12px 16px", background: C.redBg, borderRadius: 8, color: C.red, fontWeight: 700, fontSize: 13 }}>
+            ❌ {apiTns.error}
+          </div>
+        )}
+        {apiTns && typeof apiTns === "object" && apiTns.ok === false && (
+          <div style={{ marginTop: 16, padding: "12px 16px", background: C.redBg, borderRadius: 8, color: C.red, fontSize: 12 }}>
+            <div style={{ fontWeight: 700, marginBottom: 6 }}>❌ No se encontró el documento de la API (swagger). Se intentó en:</div>
+            {(apiTns.intentos || []).map((it, i) => (
+              <div key={i}>{it.url} — {it.resultado}</div>
+            ))}
+          </div>
+        )}
+        {apiTns && typeof apiTns === "object" && apiTns.ok && (
+          <div style={{ marginTop: 16 }}>
+            <div style={{ fontSize: 12, color: C.slate, marginBottom: 10 }}>
+              {apiTns.titulo} {apiTns.version} · {apiTns.total} consultas en total · leído de {apiTns.urlUsada}
+            </div>
+            <Field label="Filtrar por palabras (separadas por coma; vacío = todas)">
+              <FInput value={filtroApi} onChange={setFiltroApi} />
+            </Field>
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, margin: "8px 0" }}>
+              {endpointsFiltrados.length} coinciden
+            </div>
+            <Tabla
+              vacio="Ninguna consulta coincide con esas palabras."
+              columnas={[
+                { key: "metodo", label: "Método" },
+                { key: "ruta", label: "Ruta" },
+                { key: "etiqueta", label: "Grupo" },
+                { key: "resumen", label: "Descripción" },
+              ]}
+              filas={endpointsFiltrados}
+            />
           </div>
         )}
       </div>

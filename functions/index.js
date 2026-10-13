@@ -8627,6 +8627,92 @@ exports.insertarNovedadTNS = onCall(
   }
 );
 
+// Explora qué endpoints expone la API de TNS (2026-10-13, a pedido de Fredy):
+// para saber si TNS ofrece cartera / remisiones / facturas por API y poder
+// reemplazar el Excel que hoy se sube a mano en Contabilidad. Baja el
+// documento swagger (JSON) de la API y devuelve la lista de rutas
+// (método, ruta, resumen, etiqueta) para filtrarla en pantalla. Solo LEE el
+// swagger: no consulta ni modifica ningún dato de TNS.
+exports.explorarApiTNS = onCall(
+  {
+    secrets: TNS_SECRETS_TODAS,
+    timeoutSeconds: 60,
+    memory: "256MiB",
+  },
+  async (request) => {
+    if (!request.auth) throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+    const empresa = request.data?.empresa === "indutex" ? "indutex" : "yanko";
+    const intentos = [];
+    const candidatos = [];
+    const agregar = (u) => {
+      try {
+        const abs = new URL(u, `${TNS_BASE_URL}/`).toString();
+        if (!candidatos.includes(abs)) candidatos.push(abs);
+      } catch (e) { /* url inválida, se ignora */ }
+    };
+    // 1) Pistas dentro de la propia página del swagger.
+    for (const pagina of ["/index.html", "/swagger-initializer.js", "/swagger/index.html"]) {
+      try {
+        const r = await fetch(`${TNS_BASE_URL}${pagina}`);
+        const t = await r.text();
+        for (const m of t.matchAll(/["'(]([^"'()\s]*swagger[^"'()\s]*\.json[^"'()\s]*)["')]/gi)) agregar(m[1]);
+        for (const m of t.matchAll(/url\s*[:=]\s*["']([^"']+)["']/gi)) agregar(m[1]);
+      } catch (e) {
+        intentos.push({ url: `${TNS_BASE_URL}${pagina}`, resultado: `no se pudo leer: ${e?.message}` });
+      }
+    }
+    // 2) Rutas habituales de swagger en .NET.
+    ["/swagger/v2/swagger.json", "/swagger/v1/swagger.json", "/swagger/swagger.json", "/swagger.json", "/openapi.json", "/v2/swagger.json"].forEach(agregar);
+
+    let spec = null;
+    let urlUsada = null;
+    let token = null;
+    for (const url of candidatos) {
+      try {
+        let r = await fetch(url);
+        if ((r.status === 401 || r.status === 403) && !token) {
+          token = await obtenerTokenTNS(empresa);
+        }
+        if ((r.status === 401 || r.status === 403) && token) {
+          r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+        }
+        const txt = await r.text();
+        let j = null;
+        try { j = JSON.parse(txt); } catch (e) { /* no era JSON */ }
+        if (r.ok && j && j.paths) { spec = j; urlUsada = url; break; }
+        intentos.push({ url, resultado: r.ok ? "respondió pero no es un swagger (sin 'paths')" : `HTTP ${r.status}` });
+      } catch (e) {
+        intentos.push({ url, resultado: `error: ${e?.message}` });
+      }
+    }
+    if (!spec) {
+      logger.warn("explorarApiTNS: no se encontró el swagger", { intentos });
+      return { ok: false, intentos };
+    }
+    const endpoints = [];
+    for (const [ruta, ops] of Object.entries(spec.paths || {})) {
+      for (const [metodo, op] of Object.entries(ops || {})) {
+        if (!["get", "post", "put", "patch", "delete"].includes(metodo)) continue;
+        endpoints.push({
+          metodo: metodo.toUpperCase(),
+          ruta,
+          resumen: String(op?.summary || op?.description || "").slice(0, 200),
+          etiqueta: Array.isArray(op?.tags) ? op.tags.join(", ") : "",
+        });
+      }
+    }
+    endpoints.sort((a, b) => (a.ruta + a.metodo).localeCompare(b.ruta + b.metodo));
+    return {
+      ok: true,
+      urlUsada,
+      titulo: spec.info?.title || "",
+      version: spec.info?.version || "",
+      total: endpoints.length,
+      endpoints,
+    };
+  }
+);
+
 // Botón de prueba desde el aplicativo: confirma que los 3 secretos quedaron
 // bien configurados SIN exponer el token al navegador — solo devuelve
 // { conectado: true } o el motivo del error. Pensado para probar la conexión
