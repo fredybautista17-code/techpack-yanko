@@ -8534,7 +8534,15 @@ async function llamarTNS(path, { method = "GET", body, empresa = "yanko" } = {})
   }
   if (!resp.ok) {
     logger.error("TNS respondió con error", { path, status: resp.status, data });
-    throw new Error(`TNS respondió ${resp.status} en ${path}`);
+    // Se incluye el motivo que manda TNS (si lo hay) para que se vea en pantalla
+    // y no solo el número del error.
+    let detalle = "";
+    try {
+      detalle = typeof data === "string" ? data : (data?.message || data?.title || data?.detail || (data ? JSON.stringify(data) : ""));
+      if (data && data.errors) detalle += ` ${JSON.stringify(data.errors)}`;
+    } catch (e) { /* sin detalle */ }
+    detalle = String(detalle || "").slice(0, 400);
+    throw new Error(`TNS respondió ${resp.status} en ${path}${detalle ? ` — ${detalle}` : ""}`);
   }
   return data;
 }
