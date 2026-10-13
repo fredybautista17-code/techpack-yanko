@@ -8646,8 +8646,14 @@ exports.explorarApiTNS = onCall(
     const candidatos = [];
     const agregar = (u) => {
       try {
-        const abs = new URL(u, `${TNS_BASE_URL}/`).toString();
-        if (!candidatos.includes(abs)) candidatos.push(abs);
+        const abs = new URL(u, `${TNS_BASE_URL}/`);
+        // Solo direcciones del propio servidor de TNS: la página de swagger trae
+        // por defecto un ejemplo ajeno (petstore.swagger.io) que NO es TNS.
+        if (abs.host !== new URL(TNS_BASE_URL).host) {
+          intentos.push({ url: abs.toString(), resultado: "ignorada: no es del servidor de TNS" });
+          return;
+        }
+        if (!candidatos.includes(abs.toString())) candidatos.push(abs.toString());
       } catch (e) { /* url inválida, se ignora */ }
     };
     // 1) Pistas dentro de la propia página del swagger.
@@ -8656,13 +8662,13 @@ exports.explorarApiTNS = onCall(
         const r = await fetch(`${TNS_BASE_URL}${pagina}`);
         const t = await r.text();
         for (const m of t.matchAll(/["'(]([^"'()\s]*swagger[^"'()\s]*\.json[^"'()\s]*)["')]/gi)) agregar(m[1]);
-        for (const m of t.matchAll(/url\s*[:=]\s*["']([^"']+)["']/gi)) agregar(m[1]);
+        for (const m of t.matchAll(/["']?urls?["']?\s*[:=]\s*["']([^"']+)["']/gi)) agregar(m[1]);
       } catch (e) {
         intentos.push({ url: `${TNS_BASE_URL}${pagina}`, resultado: `no se pudo leer: ${e?.message}` });
       }
     }
     // 2) Rutas habituales de swagger en .NET.
-    ["/swagger/v2/swagger.json", "/swagger/v1/swagger.json", "/swagger/swagger.json", "/swagger.json", "/openapi.json", "/v2/swagger.json"].forEach(agregar);
+    ["/swagger/v2/swagger.json", "/swagger/v1/swagger.json", "/swagger/swagger.json", "/swagger.json", "/openapi.json", "/v2/swagger.json", "/swagger/docs/v2", "/swagger/docs/v1", "/api-docs", "/docs/v2/swagger.json", "/v2/api-docs"].forEach(agregar);
 
     let spec = null;
     let urlUsada = null;
