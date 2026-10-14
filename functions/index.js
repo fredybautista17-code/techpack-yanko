@@ -2917,6 +2917,106 @@ exports.getResumenTablaBusintBD = onCall(
   }
 );
 
+// (2026-10-14, a pedido de Fredy) EXPLORATORIO: suma una columna numérica de una
+// tabla de Busint BD agrupada por otra columna (ej. tabla "cartera - tras",
+// grupo CODIGO, valor FACTOT) con rango de fechas opcional, para comparar contra
+// un saldo conocido (ej. saldo de Kamila Venezuela, cliente 116) y descubrir si
+// ya descuenta pagos. Si se manda `valorGrupo`, solo ese grupo y con desglose por
+// mes. SOLO LEE: no escribe nada.
+exports.sumarTablaBusintBD = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 300,
+    memory: "1GiB",
+  },
+  async (request) => {
+    if (!request.auth) throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+    const snapUser = await db.collection("users").where("authUid", "==", request.auth.uid).limit(1).get();
+    if (snapUser.empty) throw new HttpsError("permission-denied", "No tienes permiso para hacer esto.");
+    const u = snapUser.docs[0].data();
+    const esUsuarioCliente = !u.isAdmin && ((Array.isArray(u.clientesProduccion) && u.clientesProduccion.length > 0) || !!u.clienteProduccion);
+    if (esUsuarioCliente) throw new HttpsError("permission-denied", "No tienes permiso para ver esto.");
+    const tabla = String(request.data?.tabla || "").trim();
+    const campoGrupo = String(request.data?.campoGrupo || "").trim();
+    const campoValor = String(request.data?.campoValor || "").trim();
+    const campoFecha = String(request.data?.campoFecha || "").trim();
+    const fechaDesde = String(request.data?.fechaDesde || "").trim();
+    const fechaHasta = String(request.data?.fechaHasta || "").trim();
+    const valorGrupo = String(request.data?.valorGrupo ?? "").trim();
+    if (!tabla || !campoGrupo || !campoValor) throw new HttpsError("invalid-argument", "Indica la tabla, el campo de grupo y el campo del valor.");
+    let filas;
+    try {
+      filas = await consultarTablaBusintBDCompleta(tabla);
+    } catch (err) {
+      logger.error("sumarTablaBusintBD: error consultando la tabla", { tabla, error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar "${tabla}" en Busint: ${err?.message || String(err)}`);
+    }
+    const aISO = (f) => {
+      if (!f) return null;
+      if (typeof f === "string") return f.slice(0, 10);
+      if (f.year && f.month && f.day) return `${f.year}-${String(f.month).padStart(2, "0")}-${String(f.day).padStart(2, "0")}`;
+      return null;
+    };
+    const r2 = (n) => Math.round(n * 100) / 100;
+    const columnas = filas.length ? Object.keys(filas[0]) : [];
+    const grupos = new Map();
+    const porMes = new Map();
+    let usadas = 0, sinFecha = 0, valoresNoNumericos = 0, total = 0;
+    for (const f of filas) {
+      const g = String(f?.[campoGrupo] ?? "(vacío)");
+      if (valorGrupo && g !== valorGrupo) continue;
+      const iso = campoFecha ? aISO(f?.[campoFecha]) : null;
+      if (campoFecha && (fechaDesde || fechaHasta)) {
+        if (!iso) { sinFecha += 1; continue; }
+        if (fechaDesde && iso < fechaDesde) continue;
+        if (fechaHasta && iso > fechaHasta) continue;
+      }
+      const raw = f?.[campoValor];
+      const v = Number(raw);
+      if (raw !== null && raw !== undefined && raw !== "" && Number.isNaN(v)) valoresNoNumericos += 1;
+      const valor = Number.isNaN(v) ? 0 : v;
+      usadas += 1;
+      total += valor;
+      if (!grupos.has(g)) grupos.set(g, { grupo: g, filas: 0, suma: 0, desde: null, hasta: null });
+      const gr = grupos.get(g);
+      gr.filas += 1;
+      gr.suma += valor;
+      if (iso) {
+        if (!gr.desde || iso < gr.desde) gr.desde = iso;
+        if (!gr.hasta || iso > gr.hasta) gr.hasta = iso;
+        if (valorGrupo) {
+          const mes = iso.slice(0, 7);
+          if (!porMes.has(mes)) porMes.set(mes, { mes, filas: 0, suma: 0 });
+          const pm = porMes.get(mes);
+          pm.filas += 1;
+          pm.suma += valor;
+        }
+      }
+    }
+    const lista = [...grupos.values()].map((g) => ({ ...g, suma: r2(g.suma) })).sort((a, b) => Math.abs(b.suma) - Math.abs(a.suma));
+    logger.info("sumarTablaBusintBD", { tabla, campoGrupo, campoValor, filasTotales: filas.length, usadas, grupos: lista.length });
+    return {
+      ok: true,
+      tabla,
+      campoGrupo,
+      campoValor,
+      campoFecha: campoFecha || null,
+      fechaDesde: fechaDesde || null,
+      fechaHasta: fechaHasta || null,
+      valorGrupo: valorGrupo || null,
+      columnas,
+      filasTotales: filas.length,
+      filasUsadas: usadas,
+      filasSinFecha: sinFecha,
+      valoresNoNumericos,
+      total: r2(total),
+      cantidadGrupos: lista.length,
+      grupos: lista.slice(0, 80),
+      porMes: [...porMes.values()].sort((a, b) => a.mes.localeCompare(b.mes)).map((m) => ({ ...m, suma: r2(m.suma) })),
+    };
+  }
+);
+
 // (2026-09-04) EXPLORATORIO — construido a pedido de Fredy mientras se
 // investiga de dónde sacar en vivo "Cant Facturada" para Ventas Perdidas
 // (las otras dos, Cant Pedida/Cumplido/Cant Ventas Perdidas, ya salen de

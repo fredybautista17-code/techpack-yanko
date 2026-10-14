@@ -13143,6 +13143,32 @@ function BusintCatalogoTestView() {
   const [resumen, setResumen] = useState(null);
   const [filtroLocalCampoBD, setFiltroLocalCampoBD] = useState("");
   const [filtroLocalValorBD, setFiltroLocalValorBD] = useState("");
+  // Sumar una columna de una tabla agrupada por otra (2026-10-14): para cuadrar saldos de Busint.
+  const [sumTabla, setSumTabla] = useState("cartera - tras");
+  const [sumGrupo, setSumGrupo] = useState("CODIGO");
+  const [sumValor, setSumValor] = useState("FACTOT");
+  const [sumFechaCampo, setSumFechaCampo] = useState("Fechaini");
+  const [sumDesde, setSumDesde] = useState("");
+  const [sumHasta, setSumHasta] = useState("");
+  const [sumValorGrupo, setSumValorGrupo] = useState("116");
+  const [sumCargando, setSumCargando] = useState(false);
+  const [sumRes, setSumRes] = useState(null);
+  const [sumError, setSumError] = useState("");
+  async function sumarTabla() {
+    if (!sumTabla.trim() || !sumGrupo.trim() || !sumValor.trim()) return;
+    setSumCargando(true);
+    setSumError("");
+    setSumRes(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "sumarTablaBusintBD", { timeout: 300000 });
+      const resp = await llamar({ tabla: sumTabla.trim(), campoGrupo: sumGrupo.trim(), campoValor: sumValor.trim(), campoFecha: sumFechaCampo.trim(), fechaDesde: sumDesde.trim(), fechaHasta: sumHasta.trim(), valorGrupo: sumValorGrupo.trim() });
+      setSumRes(resp.data);
+    } catch (err) {
+      setSumError(err?.message || "No se pudo sumar la tabla.");
+    } finally {
+      setSumCargando(false);
+    }
+  }
   const [cargandoLotes, setCargandoLotes] = useState(false);
   const [lotesReconstruidos, setLotesReconstruidos] = useState(null);
   const [cargandoValidacion, setCargandoValidacion] = useState(false);
@@ -14436,6 +14462,61 @@ function BusintCatalogoTestView() {
           <pre style={{ background: T.white, borderRadius: 10, padding: 12, fontSize: 12, overflowX: "auto", maxHeight: 320, border: `1px solid ${T.border}` }}>
             {JSON.stringify(resumen.ultimas, null, 2)}
           </pre>
+        </div>
+      )}
+      <div style={{ height: 1, background: T.border, margin: "24px 0" }} />
+      <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Sumar por cliente (para cuadrar saldos)</div>
+      <div style={{ fontSize: 13, color: T.slate, marginBottom: 16 }}>
+        Trae una tabla de Busint completa y suma una columna de valor agrupada por otra (ej. tabla <code>cartera - tras</code>, grupo <code>CODIGO</code>, valor <code>FACTOT</code>). Si escribes un valor de grupo (ej. 116) solo suma ese cliente y muestra el desglose por mes. El rango de fechas es opcional. Solo lee: no cambia nada.
+      </div>
+      <div style={{ display: "flex", gap: 10, alignItems: "end", marginBottom: 16, flexWrap: "wrap" }}>
+        <Field label="Tabla"><FInput value={sumTabla} onChange={setSumTabla} placeholder="cartera - tras" /></Field>
+        <Field label="Campo del grupo (cliente)"><FInput value={sumGrupo} onChange={setSumGrupo} placeholder="CODIGO" /></Field>
+        <Field label="Campo del valor"><FInput value={sumValor} onChange={setSumValor} placeholder="FACTOT" /></Field>
+        <Field label="Campo de fecha"><FInput value={sumFechaCampo} onChange={setSumFechaCampo} placeholder="Fechaini" /></Field>
+        <Field label="Desde (AAAA-MM-DD)"><FInput value={sumDesde} onChange={setSumDesde} placeholder="2023-01-01" /></Field>
+        <Field label="Hasta (AAAA-MM-DD)"><FInput value={sumHasta} onChange={setSumHasta} placeholder="2026-10-14" /></Field>
+        <Field label="Solo este grupo (opcional)"><FInput value={sumValorGrupo} onChange={setSumValorGrupo} placeholder="116" /></Field>
+        <div style={{ marginBottom: 14 }}>
+          <Btn onClick={sumarTabla} disabled={sumCargando || !sumTabla.trim() || !sumGrupo.trim() || !sumValor.trim()}>{sumCargando ? "Sumando... (puede tardar)" : "➕ Sumar"}</Btn>
+        </div>
+      </div>
+      {sumError && <div style={{ padding: "10px 14px", background: T.coralBg, color: T.coral, borderRadius: 8, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>⚠ {sumError}</div>}
+      {sumRes && sumRes.ok && (
+        <div style={{ marginBottom: 24, padding: 16, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
+          <div style={{ display: "flex", gap: 16, marginBottom: 12, fontSize: 13, color: T.slate, flexWrap: "wrap" }}>
+            <span>Tabla: <strong style={{ color: T.ink }}>{sumRes.tabla}</strong> ({sumRes.filasTotales} filas)</span>
+            <span>Filas sumadas: <strong style={{ color: T.ink }}>{sumRes.filasUsadas}</strong></span>
+            <span>TOTAL {sumRes.campoValor}: <strong style={{ color: T.ink }}>{Number(sumRes.total).toLocaleString("es-CO")}</strong></span>
+            {sumRes.filasSinFecha > 0 && <span>Sin fecha (excluidas): <strong style={{ color: T.ink }}>{sumRes.filasSinFecha}</strong></span>}
+            {sumRes.valoresNoNumericos > 0 && <span>Valores no numéricos: <strong style={{ color: T.coral }}>{sumRes.valoresNoNumericos}</strong></span>}
+          </div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 6 }}>Por {sumRes.campoGrupo} ({sumRes.cantidadGrupos}; se muestran los 80 de mayor valor)</div>
+          <div style={{ maxHeight: 320, overflow: "auto", background: T.white, borderRadius: 10, border: `1px solid ${T.border}`, marginBottom: 12 }}>
+            <table style={{ width: "100%", fontSize: 12.5, borderCollapse: "collapse" }}>
+              <thead><tr style={{ textAlign: "left", color: T.slate }}><th style={{ padding: "6px 10px" }}>{sumRes.campoGrupo}</th><th style={{ padding: "6px 10px", textAlign: "right" }}>Filas</th><th style={{ padding: "6px 10px", textAlign: "right" }}>Suma</th><th style={{ padding: "6px 10px" }}>Desde</th><th style={{ padding: "6px 10px" }}>Hasta</th></tr></thead>
+              <tbody>
+                {sumRes.grupos.map((g) => (
+                  <tr key={g.grupo} style={{ borderTop: `1px solid ${T.border}` }}><td style={{ padding: "6px 10px", fontWeight: 700 }}>{g.grupo}</td><td style={{ padding: "6px 10px", textAlign: "right" }}>{g.filas}</td><td style={{ padding: "6px 10px", textAlign: "right", fontWeight: 700 }}>{Number(g.suma).toLocaleString("es-CO")}</td><td style={{ padding: "6px 10px" }}>{g.desde || "—"}</td><td style={{ padding: "6px 10px" }}>{g.hasta || "—"}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {(sumRes.porMes || []).length > 0 && (
+            <>
+              <div style={{ fontSize: 12, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 6 }}>Desglose por mes (grupo {sumRes.valorGrupo})</div>
+              <div style={{ maxHeight: 320, overflow: "auto", background: T.white, borderRadius: 10, border: `1px solid ${T.border}` }}>
+                <table style={{ width: "100%", fontSize: 12.5, borderCollapse: "collapse" }}>
+                  <thead><tr style={{ textAlign: "left", color: T.slate }}><th style={{ padding: "6px 10px" }}>Mes</th><th style={{ padding: "6px 10px", textAlign: "right" }}>Filas</th><th style={{ padding: "6px 10px", textAlign: "right" }}>Suma</th></tr></thead>
+                  <tbody>
+                    {sumRes.porMes.map((m) => (
+                      <tr key={m.mes} style={{ borderTop: `1px solid ${T.border}` }}><td style={{ padding: "6px 10px" }}>{m.mes}</td><td style={{ padding: "6px 10px", textAlign: "right" }}>{m.filas}</td><td style={{ padding: "6px 10px", textAlign: "right", fontWeight: 700 }}>{Number(m.suma).toLocaleString("es-CO")}</td></tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
         </div>
       )}
       <div style={{ height: 1, background: T.border, margin: "24px 0" }} />
