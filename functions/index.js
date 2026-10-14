@@ -3060,7 +3060,7 @@ exports.buscarValorEnTablasBusintBD = onCall(
           let hit = false;
           for (const k of Object.keys(f)) {
             const n = Math.abs(Number(f[k]));
-            if (!Number.isNaN(n) && n > 0 && valores.some((v) => Math.abs(n - v) < 0.5)) { hit = true; break; }
+            if (!Number.isNaN(n) && n > 0 && valores.some((v) => Math.abs(n - v) < 1.5)) { hit = true; break; }
           }
           if (hit) coinc.push(f);
         }
@@ -3148,9 +3148,9 @@ exports.getSaldoTrasladosExternosBusint = onCall(
       const cod = String(f.CODIGO ?? "").trim();
       if (!cod || cod === "0") continue;
       const nfact = String(f.NFACT ?? "").trim();
-      if (!porCliente.has(cod)) porCliente.set(cod, { codigo: cod, docs: [], traslados: 0, pagosValor: 0, pagosAjustes: 0, pagosSinDocumento: 0, pagosAtribuidosPorFactura: 0 });
+      if (!porCliente.has(cod)) porCliente.set(cod, { codigo: cod, docs: [], traslados: 0, devoluciones: 0, pagosValor: 0, pagosAjustes: 0, pagosSinDocumento: 0, pagosAtribuidosPorFactura: 0 });
       const c = porCliente.get(cod);
-      const d = { nfact, fecha: aISO(f.Fechaini), valor: num(f.FACTOT), pagadoValor: 0, pagadoAjustes: 0 };
+      const d = { nfact, fecha: aISO(f.Fechaini), valor: num(f.FACTOT), dev: 0, pagadoValor: 0, pagadoAjustes: 0 };
       c.docs.push(d);
       c.traslados += d.valor;
       docPorClave.set(`${cod}|${nfact}`, d);
@@ -3160,6 +3160,23 @@ exports.getSaldoTrasladosExternosBusint = onCall(
       }
     }
 
+    // Devoluciones de traslados (tabla "cartera - trasdev": CODIGO, NDEV, Nfact, DEVTOT).
+    let tablaDevoluciones = null;
+    try {
+      const devs = await consultarTablaBusintBDCompleta("cartera - trasdev");
+      tablaDevoluciones = "cartera - trasdev";
+      for (const f of devs) {
+        const cod = String(f.CODIGO ?? "").trim();
+        const c = porCliente.get(cod);
+        if (!c) continue;
+        const v = num(f.DEVTOT);
+        c.devoluciones += v;
+        const d = docPorClave.get(`${cod}|${String(f.Nfact ?? "").trim()}`);
+        if (d) d.dev += v;
+      }
+    } catch (err) {
+      advertencias.push(`No se pudo leer las devoluciones ("cartera - trasdev"): ${err?.message || String(err)}`);
+    }
     const pagosSinCliente = { filas: 0, valor: 0 };
     for (const p of pagos) {
       let cod = String(p.Cod ?? "").trim();
@@ -3206,11 +3223,11 @@ exports.getSaldoTrasladosExternosBusint = onCall(
     }
 
     const clientes = [...porCliente.values()].map((c) => {
-      const saldoSoloValor = c.traslados - c.pagosValor;
-      const saldoConAjustes = c.traslados - c.pagosValor - c.pagosAjustes;
+      const saldoSoloValor = c.traslados - c.devoluciones - c.pagosValor;
+      const saldoConAjustes = c.traslados - c.devoluciones - c.pagosValor - c.pagosAjustes;
       const pendientes = c.docs
         .map((d) => {
-          const pagado = d.pagadoValor + d.pagadoAjustes;
+          const pagado = d.dev + d.pagadoValor + d.pagadoAjustes;
           return { nfact: d.nfact, fecha: d.fecha, valor: r2(d.valor), pagado: r2(pagado), saldo: r2(d.valor - pagado) };
         })
         .filter((d) => Math.abs(d.saldo) >= 1)
@@ -3221,6 +3238,7 @@ exports.getSaldoTrasladosExternosBusint = onCall(
         nombre: nombrePorCodigo.get(c.codigo) || `Cliente ${c.codigo}`,
         documentos: c.docs.length,
         traslados: r2(c.traslados),
+        devoluciones: r2(c.devoluciones),
         pagosValor: r2(c.pagosValor),
         pagosAjustes: r2(c.pagosAjustes),
         pagosSinDocumento: r2(c.pagosSinDocumento),
@@ -3238,6 +3256,7 @@ exports.getSaldoTrasladosExternosBusint = onCall(
       ok: true,
       tablaTraslados,
       tablaPagos,
+      tablaDevoluciones,
       filasTraslados: docs.length,
       filasPagos: pagos.length,
       pagosSinCliente: { filas: pagosSinCliente.filas, valor: r2(pagosSinCliente.valor) },
