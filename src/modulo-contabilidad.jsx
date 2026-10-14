@@ -2643,6 +2643,9 @@ function FacturacionClientesView() {
     if (tipo === "consignacion") {
       return { monto: acc.monto + c.consignacionNeta.monto + c.trasladoExternoNeto.monto, unidades: acc.unidades + c.consignacionNeta.unidades + c.trasladoExternoNeto.unidades };
     }
+    if (tipo === "traslado_externo") {
+      return { monto: acc.monto + c.trasladoExternoNeto.monto, unidades: acc.unidades + c.trasladoExternoNeto.unidades };
+    }
     return acc;
   }, { monto: 0, unidades: 0 });
   const clientesSinClasificar = (resultado?.clientes || []).filter((c) => !tipoDeCliente(c)).length;
@@ -2760,10 +2763,12 @@ function FacturacionClientesView() {
                     const totalDespachadoMonto =
                       tipoCliente === "facturado" ? c.facturado.monto + c.trasladoExternoNeto.monto
                       : tipoCliente === "consignacion" ? c.consignacionNeta.monto + c.trasladoExternoNeto.monto
+                      : tipoCliente === "traslado_externo" ? c.trasladoExternoNeto.monto
                       : null;
                     const totalDespachadoUnidades =
                       tipoCliente === "facturado" ? c.facturado.unidades + c.trasladoExternoNeto.unidades
                       : tipoCliente === "consignacion" ? c.consignacionNeta.unidades + c.trasladoExternoNeto.unidades
+                      : tipoCliente === "traslado_externo" ? c.trasladoExternoNeto.unidades
                       : null;
                     return (
                       <Fragment key={clave}>
@@ -2797,6 +2802,7 @@ function FacturacionClientesView() {
                               <option value="">— elegir —</option>
                               <option value="facturado">Facturado</option>
                               <option value="consignacion">Consignación</option>
+                              <option value="traslado_externo">Traslado externo</option>
                             </select>
                           </td>
                           <td style={{ padding: "10px 12px", textAlign: "right" }}>
@@ -5880,6 +5886,8 @@ function SaldosClientesView({ currentUser }) {
   const [mensaje, setMensaje] = useState("");
   const [filtro, setFiltro] = useState("");
   const [soloConSaldo, setSoloConSaldo] = useState(true);
+  const [traslados, setTraslados] = useState(null); // null | { ok, clientes, ... } | { error }
+  const [trasladoSel, setTrasladoSel] = useState(null);
   const [diagTexto, setDiagTexto] = useState("");
   const [diagCargando, setDiagCargando] = useState(false);
   const [diagRes, setDiagRes] = useState(null); // null | { ok, ... } | { error }
@@ -5910,7 +5918,19 @@ function SaldosClientesView({ currentUser }) {
     });
     return () => unsub();
   }, []);
+  // (2026-10-14, a pedido de Fredy) Saldo de traslado externo (TEX): no sale en la
+  // cartera en vivo de Busint, se calcula con traslados - pagos (ver
+  // getSaldoTrasladosExternosBusint). Si falla, la pantalla sigue con la cartera normal.
+  async function cargarTraslados() {
+    try {
+      const resp = await httpsCallable(functionsClient, "getSaldoTrasladosExternosBusint", { timeout: 300000 })({});
+      setTraslados(resp.data);
+    } catch (err) {
+      setTraslados({ error: err?.message || "No se pudo calcular el traslado externo." });
+    }
+  }
   async function cargarBusint() {
+    cargarTraslados();
     setCargando(true);
     setError("");
     try {
@@ -6006,11 +6026,29 @@ function SaldosClientesView({ currentUser }) {
     const codigoPorNombre = {};
     busint.forEach((c) => {
       const nombre = String(c.nombre || "").trim();
-      porCodigo.set(String(c.codigo), { clave: `b:${c.codigo}`, nombre, codigo: c.codigo, busint: c.total, tnsPorEmpresa: { yanko: null, indutex: null }, tnsItems: [], facturaMasReciente: c.facturaMasReciente });
+      porCodigo.set(String(c.codigo), { clave: `b:${c.codigo}`, nombre, codigo: c.codigo, busint: c.total, busintCartera: c.total, traslado: null, tnsPorEmpresa: { yanko: null, indutex: null }, tnsItems: [], facturaMasReciente: c.facturaMasReciente });
       if (nombre && !(nombre in codigoPorNombre)) {
         codigoPorNombre[nombre] = String(c.codigo);
         nombresBusint.push(nombre);
       }
+    });
+    // Traslado externo: se suma al saldo Busint del cliente (o se crea la fila si el
+    // cliente no tiene facturas en la cartera, ej. Kamila Venezuela).
+    (traslados?.clientes || []).forEach((t) => {
+      if (Math.abs(t.saldo) < 1) return;
+      const cod = String(t.codigo);
+      let fila = porCodigo.get(cod);
+      if (!fila) {
+        fila = { clave: `b:${cod}`, nombre: t.nombre, codigo: cod, busint: 0, busintCartera: 0, traslado: null, tnsPorEmpresa: { yanko: null, indutex: null }, tnsItems: [], facturaMasReciente: t.ultimoTraslado };
+        porCodigo.set(cod, fila);
+        const nom = String(t.nombre || "").trim();
+        if (nom && !(nom in codigoPorNombre)) {
+          codigoPorNombre[nom] = cod;
+          nombresBusint.push(nom);
+        }
+      }
+      fila.traslado = t;
+      fila.busint = (fila.busint || 0) + t.saldo;
     });
     const solas = [];
     EMPRESAS_TNS.forEach((emp) => {
@@ -6038,7 +6076,7 @@ function SaldosClientesView({ currentUser }) {
       const donde = config.donde[claveCampoSaldos(f.clave)] || "definir";
       return { ...f, donde, estado: estadoSaldoCliente(donde, f.busint, f.tnsPorEmpresa.yanko || 0, f.tnsPorEmpresa.yanko !== null), magnitud: Math.max(Math.abs(f.busint || 0), Math.abs(f.tnsPorEmpresa.yanko || 0), Math.abs(f.tnsPorEmpresa.indutex || 0)) };
     });
-  }, [busint, tns, config]);
+  }, [busint, tns, config, traslados]);
   const visibles = (filas || [])
     .filter((f) => {
       if (soloConSaldo && f.magnitud < 1 && f.donde === "definir") return false;
@@ -6195,7 +6233,14 @@ function SaldosClientesView({ currentUser }) {
                           {DONDE_SALDO.map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
                         </select>
                       </td>
-                      <td style={tdStyle}>{celdaSaldo(f.busint)}</td>
+                      <td style={tdStyle}>
+                        {f.traslado ? (
+                          <span onClick={() => setTrasladoSel(f)} style={{ cursor: "pointer", textDecoration: "underline dotted" }} title="Ver detalle del traslado externo">
+                            {celdaSaldo(f.busint)}
+                            <div style={{ fontSize: 10, color: C.blue, fontWeight: 700 }}>incluye traslado externo ›</div>
+                          </span>
+                        ) : celdaSaldo(f.busint)}
+                      </td>
                       <td style={tdStyle}>{celdaSaldo(f.tnsPorEmpresa.yanko)}</td>
                       <td style={tdStyle}>{celdaSaldo(f.tnsPorEmpresa.indutex)}</td>
                       <td style={tdStyle}><span style={{ background: bg, color: fg, fontSize: 10.5, fontWeight: 800, padding: "3px 9px", borderRadius: 10, whiteSpace: "nowrap" }}>{f.estado.texto}</span></td>
@@ -6210,6 +6255,56 @@ function SaldosClientesView({ currentUser }) {
           </div>
         </>
       )}
+      {traslados?.error && (
+        <div style={{ marginTop: 10, padding: 10, borderRadius: 8, background: C.amberBg, color: C.amber, fontSize: 12.5, fontWeight: 600 }}>
+          ⚠ No se pudo calcular el saldo de traslado externo (los clientes como Kamila Venezuela saldrán sin él): {traslados.error}
+        </div>
+      )}
+      {trasladoSel && (() => {
+        const t = trasladoSel.traslado;
+        const m = (v) => fmtSaldo(v);
+        return (
+          <Modal title={`Saldo Busint — ${trasladoSel.nombre}`} onClose={() => setTrasladoSel(null)} width={720}>
+            <div style={{ fontSize: 12.5, lineHeight: 1.7, marginBottom: 12 }}>
+              <div>Facturas en cartera: <b>{m(trasladoSel.busintCartera || 0)}</b></div>
+              <div>Traslado externo (traslados − pagos): <b>{m(t.saldo)}</b></div>
+              <div style={{ borderTop: `1px solid ${C.border}`, marginTop: 4, paddingTop: 4 }}>Saldo Busint total: <b>{m(trasladoSel.busint)}</b></div>
+            </div>
+            <div style={{ fontSize: 12, color: C.slate, marginBottom: 10, lineHeight: 1.6, background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 8, padding: 10 }}>
+              <b>Traslado externo</b> · {t.documentos} documentos en "{traslados?.tablaTraslados}" por {m(t.traslados)}{t.ultimoTraslado ? ` (último ${fmtFechaISO(t.ultimoTraslado)})` : ""}.<br />
+              Pagos en "{traslados?.tablaPagos}": {m(t.pagosValor)} en valor{Math.abs(t.pagosAjustes) >= 1 ? ` + ${m(t.pagosAjustes)} en descuentos/retenciones` : ""}.<br />
+              {Math.abs(t.pagosAjustes) >= 1 && <>Si solo se cuenta el valor pagado, el saldo sería <b>{m(t.saldoSoloValor)}</b>. </>}
+              {Math.abs(t.pagosSinDocumento) >= 1 && <>Pagos sin factura identificada: {m(t.pagosSinDocumento)}. </>}
+              {traslados?.pagosSinCliente?.filas > 0 && <>Hay {traslados.pagosSinCliente.filas} pago(s) sin cliente ({m(traslados.pagosSinCliente.valor)}) que no se asignaron a nadie.</>}
+            </div>
+            <div style={{ fontSize: 12, fontWeight: 800, color: C.ink, marginBottom: 6 }}>Documentos con saldo ({t.documentosPendientes}{t.documentosPendientes > t.pendientes.length ? `, se muestran los últimos ${t.pendientes.length}` : ""})</div>
+            <div style={{ maxHeight: 280, overflow: "auto", border: `1px solid ${C.border}`, borderRadius: 8 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                <thead>
+                  <tr style={{ background: C.canvas }}>
+                    <th style={{ textAlign: "left", padding: "6px 10px" }}>Traslado</th>
+                    <th style={{ textAlign: "left", padding: "6px 10px" }}>Fecha</th>
+                    <th style={{ textAlign: "right", padding: "6px 10px" }}>Valor</th>
+                    <th style={{ textAlign: "right", padding: "6px 10px" }}>Pagado</th>
+                    <th style={{ textAlign: "right", padding: "6px 10px" }}>Saldo</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {t.pendientes.map((d, i) => (
+                    <tr key={`${d.nfact}-${i}`} style={{ borderTop: `1px solid ${C.border}` }}>
+                      <td style={{ padding: "5px 10px" }}>{d.nfact || "—"}</td>
+                      <td style={{ padding: "5px 10px" }}>{fmtFechaISO(d.fecha)}</td>
+                      <td style={{ padding: "5px 10px", textAlign: "right" }}>{m(d.valor)}</td>
+                      <td style={{ padding: "5px 10px", textAlign: "right" }}>{m(d.pagado)}</td>
+                      <td style={{ padding: "5px 10px", textAlign: "right", fontWeight: 700 }}>{m(d.saldo)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Modal>
+        );
+      })()}
       {enlazarFila && (
         <Modal title={`Enlazar con Busint — ${enlazarFila.nombre}`} onClose={() => setEnlazarFila(null)} width={560}>
           <div style={{ fontSize: 12, color: C.slate, marginBottom: 12, lineHeight: 1.5 }}>

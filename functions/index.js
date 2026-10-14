@@ -3017,6 +3017,181 @@ exports.sumarTablaBusintBD = onCall(
   }
 );
 
+// (2026-10-14, a pedido de Fredy) SALDO DE TRASLADO EXTERNO (TEX) POR CLIENTE.
+// Los clientes que se facturan por traslado externo (ej. Kamila Venezuela,
+// código 116) NO salen en la cartera en vivo de Busint (ApiGen_CarteraFacturacionBusint
+// solo trae facturas). Sus documentos viven en la tabla BD "cartera - tras"
+// (CODIGO, NFACT, FACTOT, Fechaini) y sus pagos en "pagostras detalles"
+// (Npago, Nfact, Valor, Desc, Rtfe, RtfeIva, Cod...). Saldo = Σ FACTOT − pagos.
+// Devuelve, por cliente, el saldo con DOS hipótesis de pago para poder cuadrar
+// contra el saldo real de Busint: (a) solo `Valor`, (b) `Valor + Desc + Rtfe + RtfeIva`.
+// SOLO LEE: no escribe nada.
+exports.getSaldoTrasladosExternosBusint = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY, BUSINT_TOKEN, BUSINT_BASE_URL],
+    timeoutSeconds: 300,
+    memory: "1GiB",
+  },
+  async (request) => {
+    if (!request.auth) throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+    const snapUser = await db.collection("users").where("authUid", "==", request.auth.uid).limit(1).get();
+    if (snapUser.empty) throw new HttpsError("permission-denied", "No tienes permiso para hacer esto.");
+    const u = snapUser.docs[0].data();
+    const esUsuarioCliente = !u.isAdmin && ((Array.isArray(u.clientesProduccion) && u.clientesProduccion.length > 0) || !!u.clienteProduccion);
+    if (esUsuarioCliente) throw new HttpsError("permission-denied", "No tienes permiso para ver cartera.");
+
+    const tablaTraslados = String(request.data?.tablaTraslados || "cartera - tras").trim();
+    const candidatasPagos = request.data?.tablaPagos
+      ? [String(request.data.tablaPagos).trim()]
+      : ["pagostras detalles", "pagostras"];
+    const r2 = (n) => Math.round(n * 100) / 100;
+    const num = (v) => {
+      const n = Number(v);
+      return Number.isNaN(n) ? 0 : n;
+    };
+    const aISO = (f) => {
+      if (!f) return null;
+      if (typeof f === "string") return f.slice(0, 10);
+      if (f.year && f.month && f.day) return `${f.year}-${String(f.month).padStart(2, "0")}-${String(f.day).padStart(2, "0")}`;
+      return null;
+    };
+    const advertencias = [];
+
+    let docs;
+    try {
+      docs = await consultarTablaBusintBDCompleta(tablaTraslados);
+    } catch (err) {
+      logger.error("getSaldoTrasladosExternosBusint: error leyendo traslados", { tablaTraslados, error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar "${tablaTraslados}" en Busint: ${err?.message || String(err)}`);
+    }
+
+    let pagos = null;
+    let tablaPagos = null;
+    for (const t of candidatasPagos) {
+      try {
+        const filas = await consultarTablaBusintBDCompleta(t);
+        if (filas.length && "Valor" in filas[0] && "Cod" in filas[0]) {
+          pagos = filas;
+          tablaPagos = t;
+          break;
+        }
+        advertencias.push(`La tabla "${t}" no tiene las columnas Valor y Cod; se ignoró.`);
+      } catch (err) {
+        advertencias.push(`No se pudo leer la tabla de pagos "${t}": ${err?.message || String(err)}`);
+      }
+    }
+    if (!pagos) {
+      throw new HttpsError("failed-precondition", `No se encontró la tabla de pagos de traslados. ${advertencias.join(" ")}`);
+    }
+
+    // Documentos por cliente y por (cliente|nfact).
+    const porCliente = new Map();
+    const docPorClave = new Map();
+    const clientesPorNfact = new Map(); // nfact -> Set(codigo), para atribuir pagos con Cod=0
+    for (const f of docs) {
+      const cod = String(f.CODIGO ?? "").trim();
+      if (!cod || cod === "0") continue;
+      const nfact = String(f.NFACT ?? "").trim();
+      if (!porCliente.has(cod)) porCliente.set(cod, { codigo: cod, docs: [], traslados: 0, pagosValor: 0, pagosAjustes: 0, pagosSinDocumento: 0, pagosAtribuidosPorFactura: 0 });
+      const c = porCliente.get(cod);
+      const d = { nfact, fecha: aISO(f.Fechaini), valor: num(f.FACTOT), pagadoValor: 0, pagadoAjustes: 0 };
+      c.docs.push(d);
+      c.traslados += d.valor;
+      docPorClave.set(`${cod}|${nfact}`, d);
+      if (nfact) {
+        if (!clientesPorNfact.has(nfact)) clientesPorNfact.set(nfact, new Set());
+        clientesPorNfact.get(nfact).add(cod);
+      }
+    }
+
+    const pagosSinCliente = { filas: 0, valor: 0 };
+    for (const p of pagos) {
+      let cod = String(p.Cod ?? "").trim();
+      const nfact = String(p.Nfact ?? "").trim();
+      let porFactura = false;
+      if ((!cod || cod === "0") && nfact && clientesPorNfact.get(nfact)?.size === 1) {
+        cod = [...clientesPorNfact.get(nfact)][0];
+        porFactura = true;
+      }
+      const valor = num(p.Valor);
+      const ajustes = num(p.Desc) + num(p.Rtfe) + num(p.RtfeIva);
+      if (!porCliente.has(cod)) {
+        // Pago sin cliente identificable: se informa, no se suma a nadie.
+        if (!cod || cod === "0") {
+          pagosSinCliente.filas += 1;
+          pagosSinCliente.valor += valor;
+        }
+        continue;
+      }
+      const c = porCliente.get(cod);
+      c.pagosValor += valor;
+      c.pagosAjustes += ajustes;
+      if (porFactura) c.pagosAtribuidosPorFactura += valor;
+      const d = docPorClave.get(`${cod}|${nfact}`);
+      if (d) {
+        d.pagadoValor += valor;
+        d.pagadoAjustes += ajustes;
+      } else {
+        c.pagosSinDocumento += valor;
+      }
+    }
+
+    // Nombres desde el maestro de clientes de Busint.
+    const nombrePorCodigo = new Map();
+    try {
+      const maestro = await consultarClientesBusint();
+      for (const c of maestro) {
+        const cod = String(c.codigo ?? c.Codigo ?? c.codigoCliente ?? c.CodigoCliente ?? c.id ?? c.Id ?? "").trim();
+        const nom = String(c.nombreORazonSocial || c.nombre || c.razonSocial || c.nombreCorto || "").trim();
+        if (cod && nom && !nombrePorCodigo.has(cod)) nombrePorCodigo.set(cod, nom);
+      }
+    } catch (err) {
+      advertencias.push(`No se pudieron traer los nombres desde ApiGen_Clientes: ${err?.message || String(err)}`);
+    }
+
+    const clientes = [...porCliente.values()].map((c) => {
+      const saldoSoloValor = c.traslados - c.pagosValor;
+      const saldoConAjustes = c.traslados - c.pagosValor - c.pagosAjustes;
+      const pendientes = c.docs
+        .map((d) => {
+          const pagado = d.pagadoValor + d.pagadoAjustes;
+          return { nfact: d.nfact, fecha: d.fecha, valor: r2(d.valor), pagado: r2(pagado), saldo: r2(d.valor - pagado) };
+        })
+        .filter((d) => Math.abs(d.saldo) >= 1)
+        .sort((a, b) => (a.fecha || "").localeCompare(b.fecha || ""));
+      const fechas = c.docs.map((d) => d.fecha).filter(Boolean).sort();
+      return {
+        codigo: c.codigo,
+        nombre: nombrePorCodigo.get(c.codigo) || `Cliente ${c.codigo}`,
+        documentos: c.docs.length,
+        traslados: r2(c.traslados),
+        pagosValor: r2(c.pagosValor),
+        pagosAjustes: r2(c.pagosAjustes),
+        pagosSinDocumento: r2(c.pagosSinDocumento),
+        pagosAtribuidosPorFactura: r2(c.pagosAtribuidosPorFactura),
+        saldoSoloValor: r2(saldoSoloValor),
+        saldo: r2(saldoConAjustes),
+        ultimoTraslado: fechas.length ? fechas[fechas.length - 1] : null,
+        documentosPendientes: pendientes.length,
+        pendientes: pendientes.slice(-150),
+      };
+    });
+    clientes.sort((a, b) => Math.abs(b.saldo) - Math.abs(a.saldo));
+    logger.info("getSaldoTrasladosExternosBusint", { tablaTraslados, tablaPagos, docs: docs.length, pagos: pagos.length, clientes: clientes.length });
+    return {
+      ok: true,
+      tablaTraslados,
+      tablaPagos,
+      filasTraslados: docs.length,
+      filasPagos: pagos.length,
+      pagosSinCliente: { filas: pagosSinCliente.filas, valor: r2(pagosSinCliente.valor) },
+      columnasPagos: Object.keys(pagos[0] || {}),
+      advertencias,
+      clientes,
+    };
+  }
+);
+
 // (2026-09-04) EXPLORATORIO — construido a pedido de Fredy mientras se
 // investiga de dónde sacar en vivo "Cant Facturada" para Ventas Perdidas
 // (las otras dos, Cant Pedida/Cumplido/Cant Ventas Perdidas, ya salen de
