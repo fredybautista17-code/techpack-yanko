@@ -8785,9 +8785,13 @@ exports.getCarteraTNS = onCall(
         x.anticipos += c.anticipos;
       });
       // Igual que el Excel: solo clientes con algo abierto (se descartan residuos de centavos).
+      // Residuos menores a $100 (centavos del Balance, ej. −16) se toman como cero:
+      // el Excel y Busint no los traen y descuadraban el saldo por unos pesos.
+      const limpio = (n) => (Math.abs(n) < 100 ? 0 : r2TNS(n));
       const clientes = [...total.values()]
-        .filter((c) => Math.abs(c.facturas) >= 1 || Math.abs(c.anticipos) >= 1)
-        .map((c) => ({ nit: c.nit, nombre: c.nombre, saldo: r2TNS(c.facturas + c.anticipos), facturas: r2TNS(c.facturas), anticipos: r2TNS(c.anticipos), vencido: null, filas: 0 }));
+        .map((c) => ({ nit: c.nit, nombre: c.nombre, facturas: limpio(c.facturas), anticipos: limpio(c.anticipos) }))
+        .filter((c) => c.facturas !== 0 || c.anticipos !== 0)
+        .map((c) => ({ nit: c.nit, nombre: c.nombre, saldo: r2TNS(c.facturas + c.anticipos), facturas: c.facturas, anticipos: c.anticipos, vencido: null, filas: 0 }));
       logger.info("getCarteraTNS OK", { empresa, fechaFinal, sucursales, clientes: clientes.length });
       return { ok: true, empresa, corte: fechaFinal, sucursales, clientes };
     } catch (err) {

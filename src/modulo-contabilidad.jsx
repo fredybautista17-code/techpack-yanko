@@ -5824,18 +5824,26 @@ async function leerCarteraTNS(file) {
   const clientes = [...porCliente.values()].map((c) => ({ ...c, saldo: Math.round(c.saldo * 100) / 100, vencido: Math.round(c.vencido * 100) / 100 }));
   return { clientes, detalle, totalFilas: filas.length };
 }
-function estadoSaldoCliente(donde, busint, tnsTotal, hayTns) {
-  const cero = (n) => Math.abs(Number(n) || 0) < 1;
+// (2026-10-14, a pedido de Fredy) Busint solo maneja los saldos de Industrias
+// Yanko: NO maneja los de Indutex. Por eso Busint se compara SOLO contra TNS
+// Yanko; el saldo con Indutex se muestra aparte y no entra en esta comparación.
+// Diferencias de hasta $10 (redondeos / centavos del Balance) se toman como cero.
+const TOLERANCIA_SALDO = 10;
+function estadoSaldoCliente(donde, busint, tnsYanko, hayTnsYanko) {
+  const cero = (n) => Math.abs(Number(n) || 0) < TOLERANCIA_SALDO;
   if (donde === "tns") {
     return cero(busint)
       ? { tipo: "ok", texto: "✓ Cuadra: Busint en cero" }
       : { tipo: "alerta", texto: "⚠ Busint debería estar en cero" };
   }
   if (donde === "busint") {
-    if (hayTns && !cero(tnsTotal)) return { tipo: "alerta", texto: "⚠ Tiene saldo en TNS" };
+    if (hayTnsYanko && !cero(tnsYanko)) return { tipo: "alerta", texto: "⚠ Tiene saldo en TNS Yanko" };
     return cero(busint) ? { tipo: "pend", texto: "Sin saldo en Busint" } : { tipo: "ok", texto: "✓ Saldo en Busint" };
   }
-  if (donde === "ambos") return { tipo: "pend", texto: "Por revisar" };
+  if (donde === "ambos") {
+    if (hayTnsYanko && Math.abs((Number(busint) || 0) - (Number(tnsYanko) || 0)) < TOLERANCIA_SALDO) return { tipo: "ok", texto: "✓ Cuadran Busint y TNS Yanko" };
+    return { tipo: "pend", texto: "Por revisar" };
+  }
   return { tipo: "pend", texto: "Por definir" };
 }
 // (2026-10-13, a pedido de Fredy) Saldos de cartera que se traen en vivo de TNS
@@ -5855,7 +5863,7 @@ function mezclarCarteraTns(docs) {
     const v = vivo[emp];
     const x = excel[emp];
     if (!x || String(v.traidoEn || "") > String(x.cargadoEn || "")) {
-      out[emp] = { ...(x || {}), ...v, detalle: x?.detalle || [], nombreArchivo: "TNS en vivo (Balance de Comprobación)", enVivo: true };
+      out[emp] = { ...(x || {}), ...v, detalle: x?.detalle || [], nombreArchivo: "TNS en vivo (Balance de Comprobación)", enVivo: true, excelClientes: x?.clientes || null, excelCorte: x?.corte || null };
     }
   });
   return out;
@@ -5943,7 +5951,26 @@ function SaldosClientesView({ currentUser }) {
         totalFilas: (r.clientes || []).length,
         clientes: r.clientes || [],
       });
-      setMensaje(`Se trajo la cartera de TNS (${EMPRESAS_TNS.find((e) => e.id === empresaId)?.nombre}): ${(r.clientes || []).length} clientes con saldo. No incluye edades ni vencimientos por factura.`);
+      // Comparación rápida contra el último Excel subido (si hay), para detectar
+      // facturas que TNS aún no tiene contabilizadas.
+      let aviso = "";
+      const previo = tns[empresaId];
+      const excelCl = previo ? (previo.enVivo ? previo.excelClientes : previo.clientes) : null;
+      if (Array.isArray(excelCl) && excelCl.length) {
+        const base = (nit) => String(nit || "").split("-")[0].replace(/\D/g, "");
+        const exMap = new Map(excelCl.map((c) => [base(c.nit) || c.nombre, Number(c.saldo) || 0]));
+        const tnMap = new Map((r.clientes || []).map((c) => [base(c.nit) || c.nombre, Number(c.saldo) || 0]));
+        const claves = new Set([...exMap.keys(), ...tnMap.keys()]);
+        let dif = 0;
+        claves.forEach((k) => { if (Math.abs((tnMap.get(k) || 0) - (exMap.get(k) || 0)) >= 10) dif += 1; });
+        const totEx = [...exMap.values()].reduce((t, v) => t + v, 0);
+        const totTn = [...tnMap.values()].reduce((t, v) => t + v, 0);
+        if (dif > 0) {
+          const f = (n) => Math.round(n).toLocaleString("es-CO");
+          aviso = ` OJO: contra el último Excel (${previo.enVivo ? previo.excelCorte || "sin fecha" : previo.corte || "sin fecha"}) hay ${dif} cliente(s) con diferencia (TNS $${f(totTn)} · Excel $${f(totEx)}). Puede ser porque el Excel es de otra fecha o porque TNS aún no tiene contabilizadas algunas facturas. Si prefieres el Excel, súbelo de nuevo y manda sobre este corte.`;
+        }
+      }
+      setMensaje(`Se trajo la cartera de TNS (${EMPRESAS_TNS.find((e) => e.id === empresaId)?.nombre}): ${(r.clientes || []).length} clientes con saldo. No incluye edades ni vencimientos por factura.${aviso}`);
     } catch (err) {
       setError(err?.message || "No se pudo traer la cartera de TNS.");
     } finally {
@@ -5993,9 +6020,7 @@ function SaldosClientesView({ currentUser }) {
     });
     return [...porCodigo.values(), ...solas].map((f) => {
       const donde = config.donde[claveCampoSaldos(f.clave)] || "definir";
-      const tnsTotal = (f.tnsPorEmpresa.yanko || 0) + (f.tnsPorEmpresa.indutex || 0);
-      const hayTns = f.tnsPorEmpresa.yanko !== null || f.tnsPorEmpresa.indutex !== null;
-      return { ...f, donde, estado: estadoSaldoCliente(donde, f.busint, tnsTotal, hayTns), magnitud: Math.max(Math.abs(f.busint || 0), Math.abs(f.tnsPorEmpresa.yanko || 0), Math.abs(f.tnsPorEmpresa.indutex || 0)) };
+      return { ...f, donde, estado: estadoSaldoCliente(donde, f.busint, f.tnsPorEmpresa.yanko || 0, f.tnsPorEmpresa.yanko !== null), magnitud: Math.max(Math.abs(f.busint || 0), Math.abs(f.tnsPorEmpresa.yanko || 0), Math.abs(f.tnsPorEmpresa.indutex || 0)) };
     });
   }, [busint, tns, config]);
   const visibles = (filas || [])
@@ -6017,7 +6042,7 @@ function SaldosClientesView({ currentUser }) {
     <div>
       <div style={{ fontSize: 22, fontWeight: 800, color: C.ink, marginBottom: 4 }}>💳 Saldos de clientes</div>
       <div style={{ fontSize: 13, color: C.slate, marginBottom: 16, maxWidth: 840, lineHeight: 1.55 }}>
-        Cada cliente con su saldo en tres fuentes: Busint (en vivo), TNS Industrias Yanko y TNS Indutex. Un valor negativo (morado) es saldo a favor del cliente. Por cada cliente eliges dónde debe vivir su saldo y la pantalla te avisa si no cuadra.
+        Cada cliente con su saldo en tres fuentes: Busint (en vivo), TNS Industrias Yanko y TNS Indutex. Un valor negativo (morado) es saldo a favor del cliente. Busint solo maneja Industrias Yanko: la comparación con Busint se hace contra TNS Yanko, y el saldo con Indutex se muestra aparte para que veas cómo estás con esos clientes en Indutex. Por cada cliente eliges dónde debe vivir su saldo y la pantalla te avisa si no cuadra.
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))", gap: 10, marginBottom: 14 }}>
         <div style={{ background: C.white, border: `1px solid ${C.border}`, borderLeft: `4px solid ${busint ? C.green : C.amber}`, borderRadius: 12, padding: "12px 14px" }}>
