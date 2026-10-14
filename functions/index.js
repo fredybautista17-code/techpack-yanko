@@ -3158,7 +3158,7 @@ exports.getSaldoTrasladosExternosBusint = onCall(
       const cod = String(f.CODIGO ?? "").trim();
       if (!cod || cod === "0") continue;
       const nfact = String(f.NFACT ?? "").trim();
-      if (!porCliente.has(cod)) porCliente.set(cod, { codigo: cod, docs: [], traslados: 0, devoluciones: 0, notas: 0, pagosValor: 0, pagosAjustes: 0, pagosSinDocumento: 0, pagosAtribuidosPorFactura: 0 });
+      if (!porCliente.has(cod)) porCliente.set(cod, { codigo: cod, docs: [], traslados: 0, devoluciones: 0, notas: 0, notasOmitidas: 0, tieneFacturas: false, pagosValor: 0, pagosAjustes: 0, pagosSinDocumento: 0, pagosAtribuidosPorFactura: 0 });
       const c = porCliente.get(cod);
       const d = { nfact, fecha: aISO(f.Fechaini), valor: num(f.FACTOT), dev: 0, notas: 0, pagadoValor: 0, pagadoAjustes: 0 };
       c.docs.push(d);
@@ -3196,6 +3196,19 @@ exports.getSaldoTrasladosExternosBusint = onCall(
     // Cod=116): se buscan TODAS las tablas con "nota" en el nombre que tengan las columnas
     // Puc / Debito / Credito / Cod / Nfact, y se suman las filas de cuenta 130505xx que
     // caen sobre un traslado del cliente. `notasPorTabla` informa qué tabla aportó cuánto.
+    // Clientes que además tienen facturas (cartera en vivo): sus notas NO se suman al traslado
+    // porque los números de factura y de traslado pueden coincidir (ej. Kamila Colombia: la nota
+    // de la factura 13 se estaba contando contra el traslado 13). Se informan aparte.
+    try {
+      const hoyBogota = new Date().toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
+      const filasCartera = await consultarCatalogoBusint("ApiGen_CarteraFacturacionBusint", { FechaConsulta: hoyBogota });
+      for (const f of filasCartera) {
+        const c = porCliente.get(String(f?.codigoCliente ?? "").trim());
+        if (c) c.tieneFacturas = true;
+      }
+    } catch (err) {
+      advertencias.push(`No se pudo consultar la cartera de facturas para detectar clientes con facturas: ${err?.message || String(err)}`);
+    }
     const notasPorTabla = [];
     try {
       const swaggerResp = await fetch("https://api-yanko-bd.busint.info/swagger/v1/swagger.json");
@@ -3221,6 +3234,10 @@ exports.getSaldoTrasladosExternosBusint = onCall(
           const d = docPorClave.get(`${cod}|${String(n?.Nfact ?? "").trim()}`);
           if (!d) continue;
           const v = num(n?.Debito) - num(n?.Credito);
+          if (c.tieneFacturas) {
+            c.notasOmitidas += v;
+            continue;
+          }
           c.notas += v;
           d.notas += v;
           usadas += 1;
@@ -3295,6 +3312,8 @@ exports.getSaldoTrasladosExternosBusint = onCall(
         traslados: r2(c.traslados),
         devoluciones: r2(c.devoluciones),
         notas: r2(c.notas),
+        notasOmitidas: r2(c.notasOmitidas),
+        tieneFacturas: c.tieneFacturas,
         pagosValor: r2(c.pagosValor),
         pagosAjustes: r2(c.pagosAjustes),
         pagosSinDocumento: r2(c.pagosSinDocumento),
