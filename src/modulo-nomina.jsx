@@ -3545,6 +3545,38 @@ function TNSConexionView() {
       setBalance({ error: err?.message || "No se pudo consultar el Balance de Comprobación." });
     }
   }
+  // Sucursales de TNS (2026-10-14): Yanko e Indutex entran con el mismo código de
+  // empresa y se separan por sucursal. Se consultan 00 a 09, se marcan las de la
+  // empresa y se guardan; "Traer saldos de TNS" suma las marcadas.
+  const [sucExplora, setSucExplora] = useState(null); // null | "cargando" | { ok, ... } | { error }
+  const [sucMarcadas, setSucMarcadas] = useState([]);
+  const [sucVer, setSucVer] = useState(null);
+  const [sucGuardado, setSucGuardado] = useState(null); // null | "guardando" | "ok" | { error }
+  useEffect(() => { setSucExplora(null); setSucMarcadas([]); setSucVer(null); setSucGuardado(null); }, [empresa]);
+  async function explorarSucursales() {
+    setSucExplora("cargando");
+    setSucGuardado(null);
+    setSucVer(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "explorarSucursalesTNS", { timeout: 300000 });
+      const resp = await llamar({ empresa, fechaFinal: balFechaFin });
+      setSucExplora(resp.data);
+      const existentes = (resp.data?.sucursales || []).filter((x) => x.existe).map((x) => x.sucursal);
+      setSucMarcadas((resp.data?.guardadas || []).filter((c) => existentes.includes(c)));
+    } catch (err) {
+      setSucExplora({ error: err?.message || "No se pudieron explorar las sucursales." });
+    }
+  }
+  async function guardarSucursales() {
+    setSucGuardado("guardando");
+    try {
+      const llamar = httpsCallable(functionsClient, "guardarSucursalesTNS");
+      await llamar({ empresa, sucursales: sucMarcadas });
+      setSucGuardado("ok");
+    } catch (err) {
+      setSucGuardado({ error: err?.message || "No se pudo guardar." });
+    }
+  }
   const balCuentas = balance && balance.ok ? (Array.isArray(balance.data?.data) ? balance.data.data : []) : [];
   const nitBase = (v) => String(v || "").split("-")[0].replace(/\D/g, "");
   const nombreBase = (v) => String(v || "").toUpperCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^A-Z0-9]/g, "");
@@ -3663,6 +3695,107 @@ function TNSConexionView() {
       </div>
 
       <div style={{ marginTop: 32, paddingTop: 24, borderTop: `1px solid ${C.border}` }}>
+        <div style={{ fontSize: 14, fontWeight: 800, color: C.ink, marginBottom: 8 }}>Sucursales de TNS (cuáles son de esta empresa)</div>
+        <div style={{ fontSize: 12, color: C.slate, marginBottom: 16 }}>
+          Industrias Yanko e Indutex entran a TNS con el mismo código de empresa y se separan por sucursal. Este botón consulta las sucursales 00 a 09 de la empresa elegida arriba y muestra cuántos clientes y qué saldo tiene cada una. Marca las que pertenecen a esta empresa: abajo ves al instante cuánto cuadra contra tu Excel. Al guardar, el botón "Traer saldos de TNS" de Contabilidad suma esas sucursales. Solo consulta: no cambia nada en TNS. Puede tardar un minuto.
+        </div>
+        <Btn onClick={explorarSucursales} disabled={sucExplora === "cargando"}>
+          {sucExplora === "cargando" ? "Consultando sucursales..." : "🏢 Explorar sucursales"}
+        </Btn>
+        {sucExplora && typeof sucExplora === "object" && sucExplora.error && (
+          <div style={{ marginTop: 16, padding: "12px 16px", background: C.redBg, borderRadius: 8, color: C.red, fontWeight: 700, fontSize: 13 }}>
+            ❌ {sucExplora.error}
+          </div>
+        )}
+        {sucExplora && typeof sucExplora === "object" && sucExplora.ok && (() => {
+          const lista = sucExplora.sucursales || [];
+          const alternar = (cod) => setSucMarcadas((m) => (m.includes(cod) ? m.filter((x) => x !== cod) : [...m, cod]));
+          // Suma de las marcadas por cliente (NIT) y comparación con el Excel.
+          const suma = new Map();
+          lista.filter((x) => x.existe && sucMarcadas.includes(x.sucursal)).forEach((x) => (x.clientes || []).forEach((c) => {
+            const k = nitBase(c.nit) || nombreBase(c.nombre);
+            if (!suma.has(k)) suma.set(k, { nit: c.nit, nombre: c.nombre, saldoTns: 0 });
+            suma.get(k).saldoTns += c.saldo;
+          }));
+          const usados = new Set();
+          const filas = [...suma.values()].map((c) => {
+            const ex = excelPorNit.get(nitBase(c.nit)) || excelPorNombre.get(nombreBase(c.nombre)) || null;
+            if (ex) usados.add(ex);
+            const saldoExcel = ex ? Number(ex.saldo) || 0 : (corteExcel ? 0 : null);
+            return { ...c, saldoTns: Math.round(c.saldoTns * 100) / 100, saldoExcel, diferencia: saldoExcel === null ? null : Math.round((c.saldoTns - saldoExcel) * 100) / 100 };
+          });
+          clientesExcel.filter((c) => !usados.has(c) && Math.abs(Number(c.saldo) || 0) >= 1).forEach((c) => {
+            filas.push({ nit: c.nit, nombre: `${c.nombre} · solo en Excel`, saldoTns: 0, saldoExcel: Number(c.saldo) || 0, diferencia: -(Number(c.saldo) || 0) });
+          });
+          filas.sort((a, b) => Math.abs(b.diferencia ?? 0) - Math.abs(a.diferencia ?? 0) || Math.abs(b.saldoTns) - Math.abs(a.saldoTns));
+          const totTns = filas.reduce((t, f) => t + f.saldoTns, 0);
+          const totEx = filas.reduce((t, f) => t + (f.saldoExcel || 0), 0);
+          const nDif = filas.filter((f) => f.diferencia !== null && Math.abs(f.diferencia) >= 1).length;
+          const ver = sucVer ? lista.find((x) => x.sucursal === sucVer) : null;
+          return (
+            <div style={{ marginTop: 16 }}>
+              <div style={{ fontSize: 12, color: C.slate, marginBottom: 8 }}>Saldo por cliente al corte {sucExplora.corte} (facturas 1305 + anticipos 2805).</div>
+              <Tabla
+                vacio="No se encontró ninguna sucursal."
+                columnas={[
+                  { key: "marcar", label: "Es de esta empresa", render: (f) => (f.existe ? <input type="checkbox" checked={sucMarcadas.includes(f.sucursal)} onChange={() => alternar(f.sucursal)} /> : "—") },
+                  { key: "sucursal", label: "Sucursal", render: (f) => <b>{f.sucursal}</b> },
+                  { key: "estado", label: "Estado", render: (f) => (f.existe ? (f.clientes.length ? "Con saldos" : "Existe, sin saldos de clientes") : <span style={{ color: C.slate }}>No existe o sin acceso</span>) },
+                  { key: "n", label: "Clientes", align: "right", render: (f) => (f.existe ? f.clientes.length : "—") },
+                  { key: "total", label: "Saldo total", align: "right", render: (f) => (f.existe ? <b>{fmtMoney(f.total)}</b> : "—") },
+                  { key: "ver", label: "", render: (f) => (f.existe && f.clientes.length ? <span style={{ color: C.blue || C.ink, cursor: "pointer", fontWeight: 700 }} onClick={() => setSucVer(sucVer === f.sucursal ? null : f.sucursal)}>{sucVer === f.sucursal ? "ocultar" : "ver clientes ›"}</span> : "") },
+                ]}
+                filas={lista}
+              />
+              {ver && (
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, marginBottom: 6 }}>Clientes de la sucursal {ver.sucursal}</div>
+                  <Tabla
+                    vacio="Sin clientes."
+                    columnas={[
+                      { key: "nombre", label: "Cliente", render: (f) => <span style={{ fontWeight: 600 }}>{f.nombre}</span> },
+                      { key: "nit", label: "NIT" },
+                      { key: "facturas", label: "Facturas (1305)", align: "right", render: (f) => fmtMoney(f.facturas) },
+                      { key: "anticipos", label: "Anticipos (2805)", align: "right", render: (f) => fmtMoney(f.anticipos) },
+                      { key: "saldo", label: "Saldo", align: "right", render: (f) => <b>{fmtMoney(f.saldo)}</b> },
+                    ]}
+                    filas={ver.clientes}
+                  />
+                </div>
+              )}
+              <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, margin: "16px 0 4px" }}>
+                Sucursales marcadas ({sucMarcadas.length ? sucMarcadas.join(", ") : "ninguna"}) contra tu Excel
+              </div>
+              <div style={{ fontSize: 12, color: C.slate, marginBottom: 8 }}>
+                {corteExcel
+                  ? `Excel: ${corteExcel.nombreArchivo || "último corte"}${corteExcel.corte ? ` (corte ${corteExcel.corte})` : ""}. Total TNS ${fmtMoney(totTns)} · Total Excel ${fmtMoney(totEx)} · ${nDif} cliente(s) con diferencia.`
+                  : `No hay Excel de cartera cargado para esta empresa. Total TNS ${fmtMoney(totTns)}.`}
+              </div>
+              <Tabla
+                vacio="Marca al menos una sucursal para ver el saldo."
+                columnas={[
+                  { key: "nombre", label: "Cliente", render: (f) => <span style={{ fontWeight: 600 }}>{f.nombre}</span> },
+                  { key: "nit", label: "NIT" },
+                  { key: "saldoTns", label: "Saldo TNS", align: "right", render: (f) => <b>{fmtMoney(f.saldoTns)}</b> },
+                  { key: "saldoExcel", label: "Saldo Excel", align: "right", render: (f) => (f.saldoExcel === null ? "—" : fmtMoney(f.saldoExcel)) },
+                  { key: "diferencia", label: "Diferencia", align: "right", render: (f) => (f.diferencia === null ? "—" : <span style={{ fontWeight: 700, color: Math.abs(f.diferencia) >= 1 ? C.red : C.green }}>{fmtMoney(f.diferencia)}</span>) },
+                ]}
+                filas={filas}
+              />
+              <div style={{ marginTop: 14, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+                <Btn onClick={guardarSucursales} disabled={!sucMarcadas.length || sucGuardado === "guardando"}>
+                  {sucGuardado === "guardando" ? "Guardando..." : `💾 Guardar sucursales de ${EMPRESAS_TNS.find((e) => e.value === empresa)?.label || empresa}`}
+                </Btn>
+                {sucExplora.guardadas?.length ? <span style={{ fontSize: 12, color: C.slate }}>Guardadas hasta ahora: {sucExplora.guardadas.join(", ")}</span> : <span style={{ fontSize: 12, color: C.slate }}>Todavía no hay sucursales guardadas.</span>}
+                {sucGuardado === "ok" && <span style={{ fontSize: 12, color: C.green, fontWeight: 700 }}>✅ Guardado: {sucMarcadas.join(", ")}</span>}
+                {sucGuardado && typeof sucGuardado === "object" && <span style={{ fontSize: 12, color: C.red, fontWeight: 700 }}>❌ {sucGuardado.error}</span>}
+              </div>
+            </div>
+          );
+        })()}
+      </div>
+
+      <div style={{ marginTop: 32, paddingTop: 24, borderTop: `1px solid ${C.border}` }}>
         <div style={{ fontSize: 14, fontWeight: 800, color: C.ink, marginBottom: 8 }}>Prueba: Balance de Comprobación (saldo de cartera por cliente)</div>
         <div style={{ fontSize: 12, color: C.slate, marginBottom: 16 }}>
           Trae de TNS el balance de las cuentas que indiques (para cartera, la cuenta de clientes por cobrar, normalmente 1305) con el saldo de cada cliente. Es solo una consulta de lectura: no cambia nada en TNS ni en Contabilidad. Sirve para comparar contra el Excel de cartera que subes hoy. Usa la empresa elegida arriba.
@@ -3690,7 +3823,7 @@ function TNSConexionView() {
               </div>
             )}
             <div style={{ fontSize: 12, color: C.slate, marginBottom: 10 }}>
-              {balCuentas.length} cuentas · {balTercerosBase.length} clientes (terceros) · cuentas {balance.enviado?.cuentaInicial} a {balance.enviado?.cuentaFinal} · {balance.enviado?.fechaInicial} a {balance.enviado?.fechaFinal}
+              {balCuentas.length} cuentas · {balTercerosBase.length} clientes (terceros) · sucursal {balance.sucursal || "?"} · cuentas {balance.enviado?.cuentaInicial} a {balance.enviado?.cuentaFinal} · {balance.enviado?.fechaInicial} a {balance.enviado?.fechaFinal}
             </div>
             <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, margin: "8px 0" }}>Cuentas</div>
             <Tabla

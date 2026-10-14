@@ -8681,16 +8681,9 @@ exports.probarBalanceTNS = onCall(
     };
     try {
       const data = await llamarTNS(`/v2/contabilidad/Reportes/BalanceComprobacion${query}`, { method: "POST", body, empresa });
-      // Se recuerda el código de sucursal de esta empresa en el servidor para que
-      // otras pantallas (ej. Contabilidad → "Traer de TNS") no tengan que pedirlo.
-      if (codigosucursal && data && data.status !== false) {
-        try {
-          await db.collection("config").doc("tns_sucursales").set({ [empresa]: String(codigosucursal) }, { merge: true });
-        } catch (e) {
-          logger.warn("No se pudo guardar la sucursal de TNS", { mensaje: e?.message });
-        }
-      }
-      return { ok: true, empresa, enviado: body, data };
+      // La sucursal ya NO se guarda sola al probar (antes cualquier prueba exitosa la
+      // pisaba): se guarda a propósito desde "Explorar sucursales" → guardarSucursalesTNS.
+      return { ok: true, empresa, sucursal: codigosucursal ? String(codigosucursal) : null, enviado: body, data };
     } catch (err) {
       logger.error("probarBalanceTNS falló", { mensaje: err?.message, stack: err?.stack, body, empresa });
       throw new HttpsError("internal", err?.message || "Error desconocido al consultar el Balance de Comprobación en TNS.");
@@ -8733,50 +8726,131 @@ async function tercerosBalanceTNS({ empresa, sucursal, fechaInicial, fechaFinal,
   hojas.forEach((c) => (Array.isArray(c.terceros) ? c.terceros : []).forEach((t) => terceros.push(t)));
   return terceros;
 }
+// Una empresa puede tener VARIAS sucursales en TNS (Yanko e Indutex entran con el
+// mismo código de empresa y se separan por sucursal). Se guardan como texto
+// "02,03" en config/tns_sucursales.
+function clavesSucursalesTNS(valor) {
+  const lista = Array.isArray(valor) ? valor : String(valor || "").split(/[\s,;]+/);
+  return [...new Set(lista.map((x) => String(x).trim()).filter(Boolean))];
+}
+const baseNitTNS = (t) => String(t.nit || "").split("-")[0].replace(/\D/g, "") || String(t.nombre || "");
+// Saldo por cliente de UNA sucursal: facturas (1305) + anticipos (2805, crédito = negativo).
+async function saldosClientesSucursalTNS({ empresa, sucursal, fechaInicial, fechaFinal }) {
+  const [facturas, anticipos] = await Promise.all([
+    tercerosBalanceTNS({ empresa, sucursal, fechaInicial, fechaFinal, cuentaInicial: "1305", cuentaFinal: "130599" }),
+    tercerosBalanceTNS({ empresa, sucursal, fechaInicial, fechaFinal, cuentaInicial: "2805", cuentaFinal: "280599" }),
+  ]);
+  const porNit = new Map();
+  const tomar = (t, campo) => {
+    const base = baseNitTNS(t);
+    if (!porNit.has(base)) porNit.set(base, { nit: String(t.nit || "").trim(), nombre: String(t.nombre || "").trim(), facturas: 0, anticipos: 0 });
+    porNit.get(base)[campo] += numeroTNS(t.nuevoSaldo);
+  };
+  facturas.forEach((t) => tomar(t, "facturas"));
+  anticipos.forEach((t) => tomar(t, "anticipos"));
+  return [...porNit.entries()].map(([base, c]) => ({ base, ...c }));
+}
+const r2TNS = (n) => Math.round(n * 100) / 100;
+function fechasCorteTNS(request) {
+  const hoy = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Bogota" }).format(new Date());
+  const fechaFinal = /^\d{4}-\d{2}-\d{2}$/.test(String(request.data?.fechaFinal || "")) ? request.data.fechaFinal : hoy;
+  return { fechaFinal, fechaInicial: `${fechaFinal.slice(0, 4)}-01-01` };
+}
 exports.getCarteraTNS = onCall(
   {
     secrets: TNS_SECRETS_TODAS,
-    timeoutSeconds: 180,
+    timeoutSeconds: 300,
     memory: "512MiB",
   },
   async (request) => {
     if (!request.auth) throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
     const empresa = request.data?.empresa === "indutex" ? "indutex" : "yanko";
     const cfg = await db.collection("config").doc("tns_sucursales").get();
-    const sucursal = cfg.exists ? cfg.data()?.[empresa] : null;
-    if (!sucursal) {
+    const sucursales = clavesSucursalesTNS(cfg.exists ? cfg.data()?.[empresa] : null);
+    if (!sucursales.length) {
       throw new HttpsError(
         "failed-precondition",
-        "Falta el código de sucursal de TNS para esta empresa. Entra a Nómina → Conexión TNS, escribe el código de sucursal y haz la prueba del Balance de Comprobación una vez; queda guardado."
+        "Faltan las sucursales de TNS de esta empresa. Entra a Nómina → Conexión TNS → \"Explorar sucursales\", marca las que son de esta empresa y pulsa \"Guardar\"."
       );
     }
-    const hoy = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Bogota" }).format(new Date());
-    const fechaFinal = /^\d{4}-\d{2}-\d{2}$/.test(String(request.data?.fechaFinal || "")) ? request.data.fechaFinal : hoy;
-    const fechaInicial = `${fechaFinal.slice(0, 4)}-01-01`;
+    const { fechaFinal, fechaInicial } = fechasCorteTNS(request);
     try {
-      const [facturas, anticipos] = await Promise.all([
-        tercerosBalanceTNS({ empresa, sucursal, fechaInicial, fechaFinal, cuentaInicial: "1305", cuentaFinal: "130599" }),
-        tercerosBalanceTNS({ empresa, sucursal, fechaInicial, fechaFinal, cuentaInicial: "2805", cuentaFinal: "280599" }),
-      ]);
-      const porNit = new Map();
-      const tomar = (t, campo) => {
-        const base = String(t.nit || "").split("-")[0].replace(/\D/g, "") || String(t.nombre || "");
-        if (!porNit.has(base)) porNit.set(base, { nit: String(t.nit || "").trim(), nombre: String(t.nombre || "").trim(), facturas: 0, anticipos: 0 });
-        porNit.get(base)[campo] += numeroTNS(t.nuevoSaldo);
-      };
-      facturas.forEach((t) => tomar(t, "facturas"));
-      anticipos.forEach((t) => tomar(t, "anticipos"));
-      const r2 = (n) => Math.round(n * 100) / 100;
+      const porSucursal = await Promise.all(sucursales.map((sucursal) => saldosClientesSucursalTNS({ empresa, sucursal, fechaInicial, fechaFinal })));
+      // Se suman las sucursales por cliente (NIT).
+      const total = new Map();
+      porSucursal.flat().forEach((c) => {
+        if (!total.has(c.base)) total.set(c.base, { nit: c.nit, nombre: c.nombre, facturas: 0, anticipos: 0 });
+        const x = total.get(c.base);
+        x.facturas += c.facturas;
+        x.anticipos += c.anticipos;
+      });
       // Igual que el Excel: solo clientes con algo abierto (se descartan residuos de centavos).
-      const clientes = [...porNit.values()]
+      const clientes = [...total.values()]
         .filter((c) => Math.abs(c.facturas) >= 1 || Math.abs(c.anticipos) >= 1)
-        .map((c) => ({ nit: c.nit, nombre: c.nombre, saldo: r2(c.facturas + c.anticipos), facturas: r2(c.facturas), anticipos: r2(c.anticipos), vencido: null, filas: 0 }));
-      logger.info("getCarteraTNS OK", { empresa, fechaFinal, clientes: clientes.length });
-      return { ok: true, empresa, corte: fechaFinal, clientes };
+        .map((c) => ({ nit: c.nit, nombre: c.nombre, saldo: r2TNS(c.facturas + c.anticipos), facturas: r2TNS(c.facturas), anticipos: r2TNS(c.anticipos), vencido: null, filas: 0 }));
+      logger.info("getCarteraTNS OK", { empresa, fechaFinal, sucursales, clientes: clientes.length });
+      return { ok: true, empresa, corte: fechaFinal, sucursales, clientes };
     } catch (err) {
       logger.error("getCarteraTNS falló", { mensaje: err?.message, stack: err?.stack, empresa });
       throw new HttpsError("internal", err?.message || "Error desconocido al traer la cartera de TNS.");
     }
+  }
+);
+
+// Explora las sucursales de TNS (2026-10-14, a pedido de Fredy): Yanko e Indutex
+// comparten código de empresa y se separan por sucursal. Consulta el saldo por
+// cliente (1305 + 2805) en cada código de sucursal (por defecto 00 a 09) y dice
+// cuáles existen, cuántos clientes y qué saldo tienen. Solo LEE.
+exports.explorarSucursalesTNS = onCall(
+  {
+    secrets: TNS_SECRETS_TODAS,
+    timeoutSeconds: 300,
+    memory: "512MiB",
+  },
+  async (request) => {
+    if (!request.auth) throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+    const empresa = request.data?.empresa === "indutex" ? "indutex" : "yanko";
+    const { fechaFinal, fechaInicial } = fechasCorteTNS(request);
+    const pedidas = clavesSucursalesTNS(request.data?.sucursales);
+    const codigos = pedidas.length ? pedidas : Array.from({ length: 10 }, (_, i) => String(i).padStart(2, "0"));
+    const cfg = await db.collection("config").doc("tns_sucursales").get();
+    const guardadas = clavesSucursalesTNS(cfg.exists ? cfg.data()?.[empresa] : null);
+    const resultados = [];
+    for (let i = 0; i < codigos.length; i += 5) {
+      const grupo = codigos.slice(i, i + 5);
+      const parcial = await Promise.all(
+        grupo.map(async (sucursal) => {
+          try {
+            const clientes = await saldosClientesSucursalTNS({ empresa, sucursal, fechaInicial, fechaFinal });
+            const lista = clientes
+              .filter((c) => Math.abs(c.facturas) >= 1 || Math.abs(c.anticipos) >= 1)
+              .map((c) => ({ nit: c.nit, nombre: c.nombre, facturas: r2TNS(c.facturas), anticipos: r2TNS(c.anticipos), saldo: r2TNS(c.facturas + c.anticipos) }))
+              .sort((a, b) => Math.abs(b.saldo) - Math.abs(a.saldo));
+            return { sucursal, existe: true, clientes: lista, total: r2TNS(lista.reduce((t, c) => t + c.saldo, 0)) };
+          } catch (err) {
+            return { sucursal, existe: false, error: String(err?.message || "Error").slice(0, 160) };
+          }
+        })
+      );
+      resultados.push(...parcial);
+    }
+    logger.info("explorarSucursalesTNS OK", { empresa, fechaFinal, existentes: resultados.filter((r) => r.existe).map((r) => r.sucursal) });
+    return { ok: true, empresa, corte: fechaFinal, guardadas, sucursales: resultados };
+  }
+);
+
+// Guarda qué sucursales de TNS pertenecen a cada empresa (se llama a propósito
+// desde "Explorar sucursales"; ya no se pisa sola al probar el Balance).
+exports.guardarSucursalesTNS = onCall(
+  { timeoutSeconds: 30, memory: "256MiB" },
+  async (request) => {
+    if (!request.auth) throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+    const empresa = request.data?.empresa === "indutex" ? "indutex" : "yanko";
+    const lista = clavesSucursalesTNS(request.data?.sucursales).filter((c) => /^[A-Za-z0-9]{1,6}$/.test(c));
+    if (!lista.length) throw new HttpsError("invalid-argument", "Marca al menos una sucursal.");
+    await db.collection("config").doc("tns_sucursales").set({ [empresa]: lista.join(",") }, { merge: true });
+    logger.info("guardarSucursalesTNS", { empresa, sucursales: lista, uid: request.auth.uid });
+    return { ok: true, empresa, sucursales: lista };
   }
 );
 
