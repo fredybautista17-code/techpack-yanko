@@ -8409,17 +8409,20 @@ const TNS_SECRETS_TODAS = [
 ];
 
 function credencialesTNS(empresa) {
+  // .trim(): un salto de línea o espacio al final del secreto (muy común al
+  // pegarlo en la terminal) hace que TNS responda 401 aunque el dato "se vea" bien.
+  const limpio = (v) => String(v ?? "").trim();
   if (empresa === "indutex") {
     return {
-      codigoEmpresa: TNS_INDUTEX_CODIGO_EMPRESA.value(),
-      nombreUsuario: TNS_INDUTEX_USUARIO.value(),
-      contrasenia: TNS_INDUTEX_CONTRASENIA.value(),
+      codigoEmpresa: limpio(TNS_INDUTEX_CODIGO_EMPRESA.value()),
+      nombreUsuario: limpio(TNS_INDUTEX_USUARIO.value()),
+      contrasenia: limpio(TNS_INDUTEX_CONTRASENIA.value()),
     };
   }
   return {
-    codigoEmpresa: TNS_CODIGO_EMPRESA.value(),
-    nombreUsuario: TNS_USUARIO.value(),
-    contrasenia: TNS_CONTRASENIA.value(),
+    codigoEmpresa: limpio(TNS_CODIGO_EMPRESA.value()),
+    nombreUsuario: limpio(TNS_USUARIO.value()),
+    contrasenia: limpio(TNS_CONTRASENIA.value()),
   };
 }
 
@@ -8447,7 +8450,21 @@ async function obtenerTokenTNS(empresa = "yanko") {
   if (!resp.ok) {
     const texto = await resp.text().catch(() => "");
     logger.error("TNS Login respondió con error", { status: resp.status, texto });
-    throw new Error(`TNS Login respondió ${resp.status}`);
+    // Se muestra el motivo que manda TNS (si lo hay) y el largo de cada dato (no el
+    // valor) para detectar secretos vacíos o con espacios sin exponer nada sensible.
+    let motivo = "";
+    try {
+      const j = JSON.parse(texto);
+      motivo = j?.message || j?.title || j?.detail || "";
+    } catch (e) {
+      motivo = String(texto || "").slice(0, 200);
+    }
+    let largos = "";
+    try {
+      const cr = credencialesTNS(empresa);
+      largos = ` [empresa=${empresa}; código de empresa: ${String(cr.codigoEmpresa || "").length} caracteres, usuario: ${String(cr.nombreUsuario || "").length}, contraseña: ${String(cr.contrasenia || "").length}]`;
+    } catch (e) { /* sin diagnóstico */ }
+    throw new Error(`TNS Login respondió ${resp.status}${motivo ? ` — ${motivo}` : ""}${largos}`);
   }
 
   const textoResp = await resp.text().catch(() => "");
