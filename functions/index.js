@@ -5378,6 +5378,157 @@ exports.getPreciosMatriculadosBusint = onCall(
   }
 );
 
+// (2026-10-14, a pedido de Fredy) Diagnóstico: ¿dónde está un cliente en Busint?
+// A Fredy le faltaban clientes (Gilcar, Kamila Venezuela) en Contabilidad →
+// Saldos de clientes. Dado un texto (ej. "gilcar"), muestra: si el cliente existe
+// en el maestro (ApiGen_Clientes) y con qué código, qué cartera tiene hoy
+// (ApiGen_CarteraFacturacionBusint), qué facturó/despachó en los últimos 12 meses
+// por tipo de documento (FAC/TCO/TEX/DTC/DTE...) y qué códigos de cartera siguen
+// sin nombre. SOLO LEE: no escribe nada.
+exports.diagnosticarClienteBusint = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY, BUSINT_TOKEN, BUSINT_BASE_URL],
+    timeoutSeconds: 300,
+    memory: "1GiB",
+  },
+  async (request) => {
+    if (!request.auth) throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+    const snapUser = await db.collection("users").where("authUid", "==", request.auth.uid).limit(1).get();
+    if (snapUser.empty) throw new HttpsError("permission-denied", "No tienes permiso para hacer esto.");
+    const u = snapUser.docs[0].data();
+    const esUsuarioCliente = !u.isAdmin && ((Array.isArray(u.clientesProduccion) && u.clientesProduccion.length > 0) || !!u.clienteProduccion);
+    if (esUsuarioCliente) throw new HttpsError("permission-denied", "No tienes permiso para ver cartera.");
+    const texto = String(request.data?.texto || "").trim();
+    if (texto.length < 3) throw new HttpsError("invalid-argument", "Escribe al menos 3 letras del nombre del cliente.");
+    const norm = (v) => String(v || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+    const buscado = norm(texto);
+    const r2 = (n) => Math.round(n * 100) / 100;
+    const hoy = new Date().toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
+    const hace12m = new Date(Date.now() - 365 * 24 * 3600 * 1000).toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
+    const avisos = [];
+
+    // 1) Maestro de clientes
+    const codigosCoinciden = new Map(); // codigo -> nombre
+    let maestroInfo = { total: 0, campos: [], coincidencias: [] };
+    try {
+      const maestro = await consultarClientesBusint();
+      maestroInfo.total = maestro.length;
+      maestroInfo.campos = maestro.length ? Object.keys(maestro[0]) : [];
+      maestro.forEach((c) => {
+        const cod = String(c.codigo ?? c.Codigo ?? c.codigoCliente ?? c.CodigoCliente ?? c.id ?? c.Id ?? "").trim();
+        const nombres = [c.nombreORazonSocial, c.nombre, c.razonSocial, c.nombreCorto].map((x) => String(x || "").trim()).filter(Boolean);
+        if (nombres.some((n) => norm(n).includes(buscado))) {
+          const fila = {};
+          Object.keys(c).slice(0, 40).forEach((k) => { const v = c[k]; fila[k] = typeof v === "string" ? v.slice(0, 80) : v; });
+          maestroInfo.coincidencias.push({ codigo: cod, nombre: nombres[0] || "", activo: c.clienteActivo !== false, fila });
+          if (cod) codigosCoinciden.set(cod, nombres[0] || "");
+        }
+      });
+      maestroInfo.coincidencias = maestroInfo.coincidencias.slice(0, 10);
+    } catch (err) {
+      avisos.push(`No se pudo leer el maestro de clientes: ${err?.message || String(err)}`);
+    }
+
+    // 2) Nombres de la tabla BD vieja
+    const nombrePorCodigoBD = new Map();
+    try {
+      const filasNombres = await consultarTablaBusintBDCompleta("ia_carteracxc_data");
+      for (const f of filasNombres) {
+        const cod = String(f.codigo_interno_de_cliente ?? "");
+        const nom = String(f.Nombre_del_cliente || "").trim();
+        if (cod && nom && !nombrePorCodigoBD.has(cod)) nombrePorCodigoBD.set(cod, nom);
+      }
+      nombrePorCodigoBD.forEach((nom, cod) => { if (norm(nom).includes(buscado) && !codigosCoinciden.has(cod)) codigosCoinciden.set(cod, nom); });
+    } catch (err) {
+      avisos.push(`No se pudo leer la tabla de nombres de cartera: ${err?.message || String(err)}`);
+    }
+
+    // 3) Cartera en vivo
+    let carteraPorCodigo = new Map();
+    let totalFilasCartera = 0;
+    try {
+      const filasGen = await consultarCatalogoBusint("ApiGen_CarteraFacturacionBusint", { FechaConsulta: hoy });
+      totalFilasCartera = filasGen.length;
+      for (const f of filasGen) {
+        const cod = String(f.codigoCliente ?? "");
+        if (!cod) continue;
+        if (!carteraPorCodigo.has(cod)) carteraPorCodigo.set(cod, { codigo: cod, documentos: 0, total: 0 });
+        const c = carteraPorCodigo.get(cod);
+        c.documentos += 1;
+        c.total += Number(f.total) || 0;
+      }
+    } catch (err) {
+      avisos.push(`No se pudo leer la cartera en vivo: ${err?.message || String(err)}`);
+    }
+
+    // 4) Facturado / despachado últimos 12 meses por tipo
+    const facturadoPorCodigo = new Map();
+    let filasFacturado = [];
+    try {
+      filasFacturado = await consultarFacturadoBusint(hace12m, hoy);
+      for (const f of filasFacturado) {
+        const cod = String(f.codigoCliente ?? "").trim();
+        const nomFila = String(f.nombreCliente || f.NombreCliente || f.cliente || f.Cliente || "").trim();
+        if (nomFila && norm(nomFila).includes(buscado) && cod && !codigosCoinciden.has(cod)) codigosCoinciden.set(cod, nomFila);
+      }
+      for (const f of filasFacturado) {
+        const cod = String(f.codigoCliente ?? "").trim();
+        if (!cod || !codigosCoinciden.has(cod)) continue;
+        if (!facturadoPorCodigo.has(cod)) facturadoPorCodigo.set(cod, {});
+        const tipos = facturadoPorCodigo.get(cod);
+        const t = String(f.tipo || "").trim().toUpperCase() || "(SIN TIPO)";
+        if (!tipos[t]) tipos[t] = { docs: new Set(), unidades: 0, monto: 0 };
+        const cant = Number(f.cant) || 0;
+        const precio = Number(f.precio) || 0;
+        const desc = Number(f.desc) || 0;
+        tipos[t].docs.add(`${f.doc ?? ""}|${f.numped ?? ""}`);
+        tipos[t].unidades += cant;
+        tipos[t].monto += cant * (desc > 0 ? precio * (1 - desc / 100) : precio);
+      }
+    } catch (err) {
+      avisos.push(`No se pudo leer lo facturado/despachado: ${err?.message || String(err)}`);
+    }
+
+    const coincidencias = [...codigosCoinciden.entries()].map(([codigo, nombre]) => {
+      const cart = carteraPorCodigo.get(codigo) || null;
+      const fac = facturadoPorCodigo.get(codigo) || {};
+      return {
+        codigo,
+        nombre,
+        cartera: cart ? { documentos: cart.documentos, total: r2(cart.total) } : null,
+        facturado: Object.entries(fac).map(([tipo, v]) => ({ tipo, documentos: v.docs.size, unidades: v.unidades, monto: r2(v.monto) })).sort((a, b) => a.tipo.localeCompare(b.tipo)),
+      };
+    });
+
+    // 5) Códigos de cartera que siguen sin nombre (ni en la tabla vieja ni en el maestro)
+    const nombreMaestro = new Set();
+    try {
+      (await consultarClientesBusint()).forEach((c) => {
+        const cod = String(c.codigo ?? c.Codigo ?? c.codigoCliente ?? c.CodigoCliente ?? c.id ?? c.Id ?? "").trim();
+        if (cod) nombreMaestro.add(cod);
+      });
+    } catch (e) { /* ya avisado */ }
+    const sinNombre = [...carteraPorCodigo.values()]
+      .filter((c) => !nombrePorCodigoBD.has(c.codigo) && !nombreMaestro.has(c.codigo))
+      .map((c) => ({ codigo: c.codigo, documentos: c.documentos, total: r2(c.total) }))
+      .sort((a, b) => Math.abs(b.total) - Math.abs(a.total))
+      .slice(0, 15);
+
+    logger.info("diagnosticarClienteBusint", { texto, coincidencias: coincidencias.length, totalFilasCartera, filasFacturado: filasFacturado.length });
+    return {
+      ok: true,
+      texto,
+      desde: hace12m,
+      hasta: hoy,
+      maestro: maestroInfo,
+      coincidencias,
+      totalFilasCartera,
+      codigosCarteraSinNombre: sinNombre,
+      avisos,
+    };
+  }
+);
+
 // (2026-10-05, a pedido de Fredy) PRUEBA DE REALIDAD de la cartera de
 // clientes de Busint: la tabla "ia_carteracxc_data" (API BD) trae una fila por
 // factura/anticipo de cada cliente, con el saldo repartido por edades

@@ -5880,6 +5880,22 @@ function SaldosClientesView({ currentUser }) {
   const [mensaje, setMensaje] = useState("");
   const [filtro, setFiltro] = useState("");
   const [soloConSaldo, setSoloConSaldo] = useState(true);
+  const [diagTexto, setDiagTexto] = useState("");
+  const [diagCargando, setDiagCargando] = useState(false);
+  const [diagRes, setDiagRes] = useState(null); // null | { ok, ... } | { error }
+  async function diagnosticarCliente() {
+    if (diagTexto.trim().length < 3) return;
+    setDiagCargando(true);
+    setDiagRes(null);
+    try {
+      const resp = await httpsCallable(functionsClient, "diagnosticarClienteBusint", { timeout: 300000 })({ texto: diagTexto.trim() });
+      setDiagRes(resp.data);
+    } catch (err) {
+      setDiagRes({ error: err?.message || "No se pudo hacer el diagnóstico." });
+    } finally {
+      setDiagCargando(false);
+    }
+  }
   const [enlazarFila, setEnlazarFila] = useState(null);
   useEffect(() => {
     const unsub = onSnapshot(collection(db, "contabilidad_saldos_tns"), (snap) => {
@@ -6075,6 +6091,63 @@ function SaldosClientesView({ currentUser }) {
       </div>
       {error && <div style={{ padding: 12, borderRadius: 8, background: C.redBg, color: C.red, fontSize: 13, fontWeight: 600, marginBottom: 14 }}>⚠ {error}</div>}
       {mensaje && <div style={{ padding: 12, borderRadius: 8, background: C.greenBg, color: C.green, fontSize: 13, fontWeight: 600, marginBottom: 14 }}>✓ {mensaje}</div>}
+      <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 14px", marginBottom: 14 }}>
+        <div style={{ fontSize: 13, fontWeight: 800, color: C.ink, marginBottom: 4 }}>🔎 ¿Dónde está este cliente en Busint?</div>
+        <div style={{ fontSize: 12, color: C.slate, marginBottom: 8, maxWidth: 760, lineHeight: 1.5 }}>
+          Escribe parte del nombre (ej. gilcar, kamila). Te muestra si existe en el maestro de clientes de Busint, qué cartera tiene hoy y qué facturó o despachó en los últimos 12 meses por tipo de documento (FAC factura, TCO consignación, TEX traslado externo, DTC/DTE devoluciones). Solo consulta, no cambia nada.
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <div style={{ width: 260 }}>
+            <FInput value={diagTexto} onChange={setDiagTexto} placeholder="Nombre del cliente..." />
+          </div>
+          <Btn small variant="secondary" onClick={diagnosticarCliente} disabled={diagCargando || diagTexto.trim().length < 3}>
+            {diagCargando ? "Buscando en Busint..." : "Buscar"}
+          </Btn>
+        </div>
+        {diagRes && diagRes.error && <div style={{ marginTop: 10, padding: 10, borderRadius: 8, background: C.redBg, color: C.red, fontSize: 12.5, fontWeight: 600 }}>⚠ {diagRes.error}</div>}
+        {diagRes && diagRes.ok && (
+          <div style={{ marginTop: 12, fontSize: 12.5 }}>
+            {(diagRes.avisos || []).map((a, i) => <div key={i} style={{ color: C.amber, marginBottom: 4 }}>⚠ {a}</div>)}
+            <div style={{ color: C.slate, marginBottom: 8 }}>
+              Maestro de clientes: {diagRes.maestro?.total ?? 0} clientes en Busint · {(diagRes.maestro?.coincidencias || []).length} coincidencia(s) por nombre · {diagRes.totalFilasCartera} documentos en la cartera de hoy · facturado del {diagRes.desde} al {diagRes.hasta}.
+            </div>
+            {(diagRes.coincidencias || []).length === 0 && (
+              <div style={{ padding: 10, borderRadius: 8, background: C.amberBg, color: C.amber, fontWeight: 600 }}>
+                No se encontró ningún cliente con ese nombre en el maestro, ni en la cartera, ni en lo facturado. Prueba con otra parte del nombre.
+              </div>
+            )}
+            {(diagRes.coincidencias || []).map((c) => (
+              <div key={c.codigo} style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", marginBottom: 8 }}>
+                <div style={{ fontWeight: 800, color: C.ink }}>{c.nombre || "(sin nombre)"} <span style={{ color: C.slate, fontWeight: 600 }}>· código {c.codigo}</span></div>
+                <div style={{ marginTop: 4 }}>
+                  Cartera hoy:{" "}
+                  {c.cartera ? <b>{c.cartera.documentos} documento(s) · saldo {fmtSaldo(c.cartera.total)}</b> : <span style={{ color: C.amber, fontWeight: 700 }}>sin documentos en la cartera (por eso no sale en Saldos de clientes)</span>}
+                </div>
+                <div style={{ marginTop: 4 }}>
+                  Facturado / despachado (12 meses):{" "}
+                  {c.facturado.length === 0 ? <span style={{ color: C.slate }}>nada</span> : c.facturado.map((f) => (
+                    <span key={f.tipo} style={{ display: "inline-block", marginRight: 12 }}><b>{f.tipo}</b> {f.documentos} doc · {Math.round(f.unidades).toLocaleString("es-CO")} und · {fmtSaldo(f.monto)}</span>
+                  ))}
+                </div>
+              </div>
+            ))}
+            {(diagRes.maestro?.coincidencias || []).length > 0 && (
+              <details style={{ marginBottom: 8 }}>
+                <summary style={{ cursor: "pointer", color: C.slate, fontWeight: 700 }}>Ver los datos del maestro de clientes (campos que trae Busint)</summary>
+                <pre style={{ background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 8, padding: 10, fontSize: 11, maxHeight: 240, overflow: "auto", whiteSpace: "pre-wrap" }}>{JSON.stringify(diagRes.maestro.coincidencias, null, 2)}</pre>
+              </details>
+            )}
+            {(diagRes.codigosCarteraSinNombre || []).length > 0 && (
+              <details>
+                <summary style={{ cursor: "pointer", color: C.slate, fontWeight: 700 }}>Códigos con saldo en la cartera que siguen SIN nombre ({diagRes.codigosCarteraSinNombre.length} mayores)</summary>
+                <div style={{ marginTop: 6 }}>
+                  {diagRes.codigosCarteraSinNombre.map((c) => <div key={c.codigo}>Cliente {c.codigo} · {c.documentos} doc · {fmtSaldo(c.total)}</div>)}
+                </div>
+              </details>
+            )}
+          </div>
+        )}
+      </div>
       {cargando && !busint && <div style={{ padding: 24, textAlign: "center", color: C.slate, fontSize: 13 }}>Consultando la cartera de Busint...</div>}
       {filas && (
         <>
