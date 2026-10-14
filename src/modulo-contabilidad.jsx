@@ -5833,8 +5833,8 @@ async function leerCarteraTNS(file) {
 // (2026-10-14, a pedido de Fredy) Busint solo maneja los saldos de Industrias
 // Yanko: NO maneja los de Indutex. Por eso Busint se compara SOLO contra TNS
 // Yanko; el saldo con Indutex se muestra aparte y no entra en esta comparación.
-// Diferencias de hasta $10 (redondeos / centavos del Balance) se toman como cero.
-const TOLERANCIA_SALDO = 10;
+// Diferencias de hasta $50 (redondeos / centavos del Balance) se toman como cero.
+const TOLERANCIA_SALDO = 50;
 // (2026-10-14) `busintFacturas` = parte de facturas en cartera (sin traslado externo, que TNS nunca tiene);
 // es la que se compara contra TNS en "Ambos". Si no se manda, se usa `busint`.
 function estadoSaldoCliente(donde, busint, tnsYanko, hayTnsYanko, busintFacturas) {
@@ -5893,6 +5893,7 @@ function SaldosClientesView({ currentUser }) {
   const [soloConSaldo, setSoloConSaldo] = useState(true);
   const [traslados, setTraslados] = useState(null); // null | { ok, clientes, ... } | { error }
   const [trasladoSel, setTrasladoSel] = useState(null);
+  const [cargandoTraslados, setCargandoTraslados] = useState(false);
   const [diagTexto, setDiagTexto] = useState("");
   const [diagCargando, setDiagCargando] = useState(false);
   const [diagRes, setDiagRes] = useState(null); // null | { ok, ... } | { error }
@@ -5927,11 +5928,14 @@ function SaldosClientesView({ currentUser }) {
   // cartera en vivo de Busint, se calcula con traslados - pagos (ver
   // getSaldoTrasladosExternosBusint). Si falla, la pantalla sigue con la cartera normal.
   async function cargarTraslados() {
+    setCargandoTraslados(true);
     try {
       const resp = await httpsCallable(functionsClient, "getSaldoTrasladosExternosBusint", { timeout: 300000 })({});
       setTraslados(resp.data);
     } catch (err) {
       setTraslados({ error: err?.message || "No se pudo calcular el traslado externo." });
+    } finally {
+      setCargandoTraslados(false);
     }
   }
   async function cargarBusint() {
@@ -6108,6 +6112,11 @@ function SaldosClientesView({ currentUser }) {
           <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: C.slate }}>Busint · Industrias Yanko</div>
           <div style={{ fontSize: 14, fontWeight: 800, margin: "3px 0" }}>{cargando ? "Consultando..." : busint ? "En vivo" : "Sin datos"}</div>
           <div style={{ fontSize: 11.5, color: C.slate, marginBottom: 6 }}>{actualizadoEn ? `Actualizado ${actualizadoEn.toLocaleTimeString("es-CO")}` : ""}</div>
+          {cargandoTraslados && (
+            <div style={{ fontSize: 11.5, color: C.amber, fontWeight: 700, marginBottom: 6, lineHeight: 1.4 }}>
+              ⏳ Calculando traslado externo (1–2 min)... los saldos de clientes como Kamila Venezuela aún no son los finales.
+            </div>
+          )}
           <Btn small variant="secondary" onClick={cargarBusint} disabled={cargando}>🔄 Actualizar</Btn>
         </div>
         {EMPRESAS_TNS.map((emp) => {
