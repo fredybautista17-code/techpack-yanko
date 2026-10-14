@@ -13169,6 +13169,25 @@ function BusintCatalogoTestView() {
       setSumCargando(false);
     }
   }
+  const [bvPalabras, setBvPalabras] = useState("tras,nota,dev");
+  const [bvValores, setBvValores] = useState("7631250,55582637");
+  const [bvCargando, setBvCargando] = useState(false);
+  const [bvRes, setBvRes] = useState(null);
+  const [bvError, setBvError] = useState("");
+  async function buscarValorEnTablas() {
+    setBvCargando(true);
+    setBvError("");
+    setBvRes(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "buscarValorEnTablasBusintBD", { timeout: 540000 });
+      const resp = await llamar({ palabrasClave: bvPalabras.trim(), valores: bvValores.trim() });
+      setBvRes(resp.data);
+    } catch (err) {
+      setBvError(err?.message || "No se pudo buscar el valor.");
+    } finally {
+      setBvCargando(false);
+    }
+  }
   const [cargandoLotes, setCargandoLotes] = useState(false);
   const [lotesReconstruidos, setLotesReconstruidos] = useState(null);
   const [cargandoValidacion, setCargandoValidacion] = useState(false);
@@ -14517,6 +14536,36 @@ function BusintCatalogoTestView() {
               </div>
             </>
           )}
+        </div>
+      )}
+      <div style={{ height: 1, background: T.border, margin: "24px 0" }} />
+      <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Buscar un valor en varias tablas</div>
+      <div style={{ fontSize: 13, color: T.slate, marginBottom: 16 }}>
+        Revisa todas las tablas cuyo nombre contenga alguna de las palabras (separadas por coma) y te dice en cuáles aparece un valor exacto en cualquier columna. Sirve para ubicar de dónde sale un número de un reporte de Busint. Puede tardar varios minutos. Solo lee: no cambia nada.
+      </div>
+      <div style={{ display: "flex", gap: 10, alignItems: "end", marginBottom: 16, flexWrap: "wrap" }}>
+        <Field label="Palabras del nombre de la tabla"><FInput value={bvPalabras} onChange={setBvPalabras} placeholder="tras,nota,dev" /></Field>
+        <Field label="Valores a buscar (coma)"><FInput value={bvValores} onChange={setBvValores} placeholder="7631250,55582637" /></Field>
+        <div style={{ marginBottom: 14 }}>
+          <Btn onClick={buscarValorEnTablas} disabled={bvCargando || !bvPalabras.trim() || !bvValores.trim()}>{bvCargando ? "Buscando... (puede tardar)" : "🔎 Buscar"}</Btn>
+        </div>
+      </div>
+      {bvError && <div style={{ padding: "10px 14px", background: T.coralBg, color: T.coral, borderRadius: 8, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>⚠ {bvError}</div>}
+      {bvRes && bvRes.ok && (
+        <div style={{ marginBottom: 24, padding: 16, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}`, fontSize: 12.5 }}>
+          <div style={{ color: T.slate, marginBottom: 10 }}>Se revisaron {bvRes.tablasRevisadas} de {bvRes.totalTablasConPalabra} tablas con esas palabras (valores: {bvRes.valores.join(", ")}).{(bvRes.saltadas || []).length > 0 ? ` No se pudieron revisar: ${bvRes.saltadas.join("; ")}.` : ""}</div>
+          {bvRes.resultados.filter((r) => r.coincidencias > 0).length === 0 && <div style={{ color: T.coral, fontWeight: 700 }}>Ninguna tabla tiene esos valores.</div>}
+          {bvRes.resultados.filter((r) => r.coincidencias > 0).map((r) => (
+            <div key={r.tabla} style={{ marginBottom: 12 }}>
+              <div style={{ fontWeight: 800, color: T.ink }}>{r.tabla} <span style={{ color: T.slate, fontWeight: 600 }}>· {r.coincidencias} fila(s) con coincidencia · {r.filas} filas en total</span></div>
+              <div style={{ color: T.slate, fontSize: 11.5 }}>Columnas: {r.columnas.join(", ")}</div>
+              <pre style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 8, padding: 8, fontSize: 11, maxHeight: 180, overflow: "auto", whiteSpace: "pre-wrap" }}>{JSON.stringify(r.muestra, null, 2)}</pre>
+            </div>
+          ))}
+          <details>
+            <summary style={{ cursor: "pointer", color: T.slate, fontWeight: 700 }}>Tablas revisadas sin coincidencia</summary>
+            <div style={{ marginTop: 6 }}>{bvRes.resultados.filter((r) => r.coincidencias === 0).map((r) => `${r.tabla} (${r.filas})`).join(" · ")}</div>
+          </details>
         </div>
       )}
       <div style={{ height: 1, background: T.border, margin: "24px 0" }} />

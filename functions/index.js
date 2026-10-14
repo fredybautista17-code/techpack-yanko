@@ -3017,6 +3017,62 @@ exports.sumarTablaBusintBD = onCall(
   }
 );
 
+// (2026-10-14, a pedido de Fredy) EXPLORATORIO: busca en qué tablas de Busint BD
+// (cuyo nombre contiene alguna palabra clave) aparece un valor numérico exacto
+// en cualquier columna. Sirve para ubicar, por ejemplo, de dónde sale la
+// devolución ($7.631.250, traslado 2218) y las notas de contabilidad
+// ($55.582.637, traslado 2333) del reporte "Traslados por facturar extractos" de
+// Kamila Venezuela. SOLO LEE: no escribe nada.
+exports.buscarValorEnTablasBusintBD = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 540,
+    memory: "1GiB",
+  },
+  async (request) => {
+    if (!request.auth) throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+    const snapUser = await db.collection("users").where("authUid", "==", request.auth.uid).limit(1).get();
+    if (snapUser.empty) throw new HttpsError("permission-denied", "No tienes permiso para hacer esto.");
+    const u = snapUser.docs[0].data();
+    const esUsuarioCliente = !u.isAdmin && ((Array.isArray(u.clientesProduccion) && u.clientesProduccion.length > 0) || !!u.clienteProduccion);
+    if (esUsuarioCliente) throw new HttpsError("permission-denied", "No tienes permiso para ver esto.");
+    const palabras = String(request.data?.palabrasClave || "").split(",").map((k) => k.trim().toLowerCase()).filter(Boolean);
+    const valores = String(request.data?.valores || "").split(",").map((v) => Math.abs(Number(String(v).trim().replace(/[^0-9.-]/g, "")))).filter((v) => v > 0);
+    if (!palabras.length || !valores.length) throw new HttpsError("invalid-argument", "Indica palabras clave del nombre de tabla y al menos un valor numérico.");
+    let enumList;
+    try {
+      const swaggerResp = await fetch("https://api-yanko-bd.busint.info/swagger/v1/swagger.json");
+      const swagger = await swaggerResp.json();
+      enumList = swagger.paths["/api/Query"].post.parameters.find((p) => p.name === "tableName").schema.enum;
+    } catch (err) {
+      throw new HttpsError("unavailable", `No se pudo traer la lista de tablas: ${err?.message || String(err)}`);
+    }
+    const tablas = enumList.filter((t) => palabras.some((k) => t.toLowerCase().includes(k))).slice(0, 25);
+    const inicio = Date.now();
+    const resultados = [];
+    const saltadas = [];
+    for (const tabla of tablas) {
+      if (Date.now() - inicio > 470000) { saltadas.push(`${tabla} (se acabó el tiempo)`); continue; }
+      try {
+        const filas = await consultarTablaBusintBDCompleta(tabla, 500, 60);
+        const coinc = [];
+        for (const f of filas) {
+          let hit = false;
+          for (const k of Object.keys(f)) {
+            const n = Math.abs(Number(f[k]));
+            if (!Number.isNaN(n) && n > 0 && valores.some((v) => Math.abs(n - v) < 0.5)) { hit = true; break; }
+          }
+          if (hit) coinc.push(f);
+        }
+        resultados.push({ tabla, filas: filas.length, columnas: filas.length ? Object.keys(filas[0]) : [], coincidencias: coinc.length, muestra: coinc.slice(0, 5) });
+      } catch (err) {
+        saltadas.push(`${tabla} (${String(err?.message || err).slice(0, 80)})`);
+      }
+    }
+    return { ok: true, valores, tablasRevisadas: resultados.length, totalTablasConPalabra: enumList.filter((t) => palabras.some((k) => t.toLowerCase().includes(k))).length, saltadas, resultados: resultados.sort((a, b) => b.coincidencias - a.coincidencias) };
+  }
+);
+
 // (2026-10-14, a pedido de Fredy) SALDO DE TRASLADO EXTERNO (TEX) POR CLIENTE.
 // Los clientes que se facturan por traslado externo (ej. Kamila Venezuela,
 // código 116) NO salen en la cartera en vivo de Busint (ApiGen_CarteraFacturacionBusint
