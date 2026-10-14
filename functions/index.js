@@ -3047,7 +3047,17 @@ exports.buscarValorEnTablasBusintBD = onCall(
     } catch (err) {
       throw new HttpsError("unavailable", `No se pudo traer la lista de tablas: ${err?.message || String(err)}`);
     }
-    const tablas = enumList.filter((t) => palabras.some((k) => t.toLowerCase().includes(k))).slice(0, 25);
+    // Todas las tablas que calzan, con las más probables (nota / cartera / tras) primero para que
+    // el lote 1 ya las incluya; el resto en orden alfabético. `desde` permite pasar al siguiente lote.
+    const prioridad = (t) => {
+      const n = t.toLowerCase();
+      return (n.includes("nota") ? 0 : 2) + (n.includes("cartera") || n.includes("tras") ? 0 : 1);
+    };
+    const todasCoinciden = enumList
+      .filter((t) => palabras.some((k) => t.toLowerCase().includes(k)))
+      .sort((a, b) => prioridad(a) - prioridad(b) || a.localeCompare(b));
+    const desde = Math.max(0, parseInt(request.data?.desde, 10) || 0);
+    const tablas = todasCoinciden.slice(desde, desde + 25);
     const inicio = Date.now();
     const resultados = [];
     const saltadas = [];
@@ -3069,7 +3079,7 @@ exports.buscarValorEnTablasBusintBD = onCall(
         saltadas.push(`${tabla} (${String(err?.message || err).slice(0, 80)})`);
       }
     }
-    return { ok: true, valores, tablasRevisadas: resultados.length, totalTablasConPalabra: enumList.filter((t) => palabras.some((k) => t.toLowerCase().includes(k))).length, saltadas, resultados: resultados.sort((a, b) => b.coincidencias - a.coincidencias) };
+    return { ok: true, valores, desde, hasta: desde + tablas.length, siguiente: desde + tablas.length < todasCoinciden.length ? desde + tablas.length : null, nombresCoincidentes: todasCoinciden, tablasRevisadas: resultados.length, totalTablasConPalabra: todasCoinciden.length, saltadas, resultados: resultados.sort((a, b) => b.coincidencias - a.coincidencias) };
   }
 );
 

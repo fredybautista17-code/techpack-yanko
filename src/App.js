@@ -13171,6 +13171,7 @@ function BusintCatalogoTestView() {
   }
   const [bvPalabras, setBvPalabras] = useState("tras,nota,dev");
   const [bvValores, setBvValores] = useState("7631250,55582637");
+  const [bvDesde, setBvDesde] = useState("0");
   const [bvCargando, setBvCargando] = useState(false);
   const [bvRes, setBvRes] = useState(null);
   const [bvError, setBvError] = useState("");
@@ -13180,8 +13181,9 @@ function BusintCatalogoTestView() {
     setBvRes(null);
     try {
       const llamar = httpsCallable(functionsClient, "buscarValorEnTablasBusintBD", { timeout: 540000 });
-      const resp = await llamar({ palabrasClave: bvPalabras.trim(), valores: bvValores.trim() });
+      const resp = await llamar({ palabrasClave: bvPalabras.trim(), valores: bvValores.trim(), desde: Number(bvDesde) || 0 });
       setBvRes(resp.data);
+      if (resp.data?.siguiente !== null && resp.data?.siguiente !== undefined) setBvDesde(String(resp.data.siguiente));
     } catch (err) {
       setBvError(err?.message || "No se pudo buscar el valor.");
     } finally {
@@ -14546,6 +14548,7 @@ function BusintCatalogoTestView() {
       <div style={{ display: "flex", gap: 10, alignItems: "end", marginBottom: 16, flexWrap: "wrap" }}>
         <Field label="Palabras del nombre de la tabla"><FInput value={bvPalabras} onChange={setBvPalabras} placeholder="tras,nota,dev" /></Field>
         <Field label="Valores a buscar (coma)"><FInput value={bvValores} onChange={setBvValores} placeholder="7631250,55582637" /></Field>
+        <Field label="Empezar desde la tabla # (lotes de 25)"><FInput value={bvDesde} onChange={setBvDesde} placeholder="0" /></Field>
         <div style={{ marginBottom: 14 }}>
           <Btn onClick={buscarValorEnTablas} disabled={bvCargando || !bvPalabras.trim() || !bvValores.trim()}>{bvCargando ? "Buscando... (puede tardar)" : "🔎 Buscar"}</Btn>
         </div>
@@ -14553,7 +14556,7 @@ function BusintCatalogoTestView() {
       {bvError && <div style={{ padding: "10px 14px", background: T.coralBg, color: T.coral, borderRadius: 8, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>⚠ {bvError}</div>}
       {bvRes && bvRes.ok && (
         <div style={{ marginBottom: 24, padding: 16, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}`, fontSize: 12.5 }}>
-          <div style={{ color: T.slate, marginBottom: 10 }}>Se revisaron {bvRes.tablasRevisadas} de {bvRes.totalTablasConPalabra} tablas con esas palabras (valores: {bvRes.valores.join(", ")}).{(bvRes.saltadas || []).length > 0 ? ` No se pudieron revisar: ${bvRes.saltadas.join("; ")}.` : ""}</div>
+          <div style={{ color: T.slate, marginBottom: 10 }}>Lote revisado: tablas {bvRes.desde + 1} a {bvRes.hasta} de {bvRes.totalTablasConPalabra} con esas palabras ({bvRes.tablasRevisadas} leídas; valores: {bvRes.valores.join(", ")}).{bvRes.siguiente !== null && bvRes.siguiente !== undefined ? ` Faltan más: el campo "Empezar desde" ya quedó en ${bvRes.siguiente}, pulsa Buscar otra vez para el siguiente lote.` : " Ya se revisaron todas."}{(bvRes.saltadas || []).length > 0 ? ` No se pudieron revisar: ${bvRes.saltadas.join("; ")}.` : ""}</div>
           {bvRes.resultados.filter((r) => r.coincidencias > 0).length === 0 && <div style={{ color: T.coral, fontWeight: 700 }}>Ninguna tabla tiene esos valores.</div>}
           {bvRes.resultados.filter((r) => r.coincidencias > 0).map((r) => (
             <div key={r.tabla} style={{ marginBottom: 12 }}>
@@ -14562,6 +14565,10 @@ function BusintCatalogoTestView() {
               <pre style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 8, padding: 8, fontSize: 11, maxHeight: 180, overflow: "auto", whiteSpace: "pre-wrap" }}>{JSON.stringify(r.muestra, null, 2)}</pre>
             </div>
           ))}
+          <details style={{ marginBottom: 6 }}>
+            <summary style={{ cursor: "pointer", color: T.slate, fontWeight: 700 }}>Lista de las {bvRes.totalTablasConPalabra} tablas que calzan (en el orden en que se revisan)</summary>
+            <div style={{ marginTop: 6 }}>{(bvRes.nombresCoincidentes || []).map((n, i) => `${i + 1}. ${n}`).join(" · ")}</div>
+          </details>
           <details>
             <summary style={{ cursor: "pointer", color: T.slate, fontWeight: 700 }}>Tablas revisadas sin coincidencia</summary>
             <div style={{ marginTop: 6 }}>{bvRes.resultados.filter((r) => r.coincidencias === 0).map((r) => `${r.tabla} (${r.filas})`).join(" · ")}</div>
