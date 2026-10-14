@@ -5835,9 +5835,9 @@ async function leerCarteraTNS(file) {
 // Yanko; el saldo con Indutex se muestra aparte y no entra en esta comparación.
 // Diferencias de hasta $50 (redondeos / centavos del Balance) se toman como cero.
 const TOLERANCIA_SALDO = 50;
-// (2026-10-14) `busintFacturas` = parte de facturas en cartera (sin traslado externo, que TNS nunca tiene);
-// es la que se compara contra TNS en "Ambos". Si no se manda, se usa `busint`.
-function estadoSaldoCliente(donde, busint, tnsYanko, hayTnsYanko, busintFacturas) {
+// (2026-10-14) En "Ambos" se compara el saldo TOTAL de Busint (facturas + traslado externo) contra TNS
+// Yanko: el saldo debe estar igual en los dos lados. `tieneTraslado` solo sirve para explicar la diferencia.
+function estadoSaldoCliente(donde, busint, tnsYanko, hayTnsYanko, tieneTraslado) {
   const cero = (n) => Math.abs(Number(n) || 0) < TOLERANCIA_SALDO;
   if (donde === "tns") {
     return cero(busint)
@@ -5849,9 +5849,10 @@ function estadoSaldoCliente(donde, busint, tnsYanko, hayTnsYanko, busintFacturas
     return cero(busint) ? { tipo: "pend", texto: "Sin saldo en Busint" } : { tipo: "ok", texto: "✓ Saldo en Busint" };
   }
   if (donde === "ambos") {
-    const facturas = busintFacturas === undefined || busintFacturas === null ? busint : busintFacturas;
-    if (hayTnsYanko && Math.abs((Number(facturas) || 0) - (Number(tnsYanko) || 0)) < TOLERANCIA_SALDO) {
-      return { tipo: "ok", texto: facturas !== busint ? "✓ Cuadran facturas Busint y TNS Yanko" : "✓ Cuadran Busint y TNS Yanko" };
+    if (hayTnsYanko) {
+      const dif = (Number(busint) || 0) - (Number(tnsYanko) || 0);
+      if (Math.abs(dif) < TOLERANCIA_SALDO) return { tipo: "ok", texto: "✓ Cuadran Busint y TNS Yanko" };
+      return { tipo: "pend", texto: `Por revisar · difiere ${fmtSaldo(Math.abs(dif))}${tieneTraslado ? " · incluye traslado externo" : ""}` };
     }
     return { tipo: "pend", texto: "Por revisar" };
   }
@@ -6083,7 +6084,7 @@ function SaldosClientesView({ currentUser }) {
     });
     return [...porCodigo.values(), ...solas].map((f) => {
       const donde = config.donde[claveCampoSaldos(f.clave)] || "definir";
-      return { ...f, donde, estado: estadoSaldoCliente(donde, f.busint, f.tnsPorEmpresa.yanko || 0, f.tnsPorEmpresa.yanko !== null, f.traslado ? f.busintCartera || 0 : undefined), magnitud: Math.max(Math.abs(f.busint || 0), Math.abs(f.tnsPorEmpresa.yanko || 0), Math.abs(f.tnsPorEmpresa.indutex || 0)) };
+      return { ...f, donde, estado: estadoSaldoCliente(donde, f.busint, f.tnsPorEmpresa.yanko || 0, f.tnsPorEmpresa.yanko !== null, !!f.traslado), magnitud: Math.max(Math.abs(f.busint || 0), Math.abs(f.tnsPorEmpresa.yanko || 0), Math.abs(f.tnsPorEmpresa.indutex || 0)) };
     });
   }, [busint, tns, config, traslados]);
   const visibles = (filas || [])
