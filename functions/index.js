@@ -5448,6 +5448,33 @@ exports.getResumenCarteraClientesBusintBD = onCall(
       } catch (err) {
         logger.warn("No se pudieron traer los nombres de clientes (ia_carteracxc_data)", { error: String(err) });
       }
+      // (2026-10-14, a pedido de Fredy) La tabla BD quedó cortada hacia feb-2026:
+      // los clientes creados después salían como "Cliente <código>" y no se
+      // podían emparejar con TNS por nombre. Los que faltan se completan con el
+      // maestro de clientes de Busint (ApiGen_Clientes), que está al día.
+      let nombresDesdeMaestro = 0;
+      const codigosGen = new Set(filasGen.map((f) => String(f.codigoCliente ?? "")).filter(Boolean));
+      const faltantesNombre = [...codigosGen].filter((c) => !nombrePorCodigo.has(c));
+      if (faltantesNombre.length) {
+        try {
+          const maestro = await consultarClientesBusint();
+          for (const c of maestro) {
+            const cod = String(c.codigo ?? c.Codigo ?? c.codigoCliente ?? c.CodigoCliente ?? c.id ?? c.Id ?? "").trim();
+            const nom = String(c.nombreORazonSocial || c.nombre || c.razonSocial || c.nombreCorto || "").trim();
+            if (cod && nom && !nombrePorCodigo.has(cod)) {
+              nombrePorCodigo.set(cod, nom);
+              if (codigosGen.has(cod)) nombresDesdeMaestro += 1;
+            }
+          }
+          logger.info("Nombres de clientes completados con ApiGen_Clientes", {
+            faltabanAntes: faltantesNombre.length,
+            completados: nombresDesdeMaestro,
+            camposMaestro: maestro.length ? Object.keys(maestro[0]) : [],
+          });
+        } catch (err) {
+          logger.warn("No se pudo completar los nombres con ApiGen_Clientes", { error: String(err) });
+        }
+      }
       const porCodigo = new Map();
       for (const f of filasGen) {
         const codigo = f.codigoCliente;
@@ -5508,6 +5535,8 @@ exports.getResumenCarteraClientesBusintBD = onCall(
         tabla: "ApiGen_CarteraFacturacionBusint",
         totalFilas: filasGen.length,
         totalClientes: clientesGen.length,
+        nombresDesdeMaestro,
+        sinNombre: clientesGen.filter((c) => c.sinNombre).length,
         columnas: filasGen.length ? Object.keys(filasGen[0]) : [],
         clientes: clientesGen,
       };
