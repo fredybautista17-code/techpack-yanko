@@ -3192,24 +3192,46 @@ exports.getSaldoTrasladosExternosBusint = onCall(
     // disminuye. Se cruzan por (Cod = cliente, Nfact = número de traslado) y solo cuentan las que
     // caen sobre un traslado del cliente (confirmado con el reporte "Traslados por facturar
     // extractos" de Busint de Kamila Venezuela: 5 notas débito, traslados 2701/2702/2703/2720/2723).
-    let tablaNotas = null;
+    // La tabla exacta de las notas de clientes no es "notascontable detalles" (ahí no hay
+    // Cod=116): se buscan TODAS las tablas con "nota" en el nombre que tengan las columnas
+    // Puc / Debito / Credito / Cod / Nfact, y se suman las filas de cuenta 130505xx que
+    // caen sobre un traslado del cliente. `notasPorTabla` informa qué tabla aportó cuánto.
+    const notasPorTabla = [];
     try {
-      const notas = await consultarTablaBusintBDCompleta("notascontable detalles");
-      tablaNotas = "notascontable detalles";
-      for (const n of notas) {
-        if (!String(n?.Puc || "").trim().startsWith("130505")) continue;
-        const cod = String(n?.Cod ?? "").trim();
-        const c = porCliente.get(cod);
-        if (!c) continue;
-        const d = docPorClave.get(`${cod}|${String(n?.Nfact ?? "").trim()}`);
-        if (!d) continue;
-        const v = num(n?.Debito) - num(n?.Credito);
-        c.notas += v;
-        d.notas += v;
+      const swaggerResp = await fetch("https://api-yanko-bd.busint.info/swagger/v1/swagger.json");
+      const swagger = await swaggerResp.json();
+      const enumList = swagger.paths["/api/Query"].post.parameters.find((p) => p.name === "tableName").schema.enum;
+      const candidatas = enumList.filter((t) => t.toLowerCase().includes("nota")).slice(0, 15);
+      for (const tabla of candidatas) {
+        let filas;
+        try {
+          filas = await consultarTablaBusintBDCompleta(tabla);
+        } catch (err) {
+          continue;
+        }
+        const f0 = filas[0] || {};
+        if (!("Puc" in f0 && "Debito" in f0 && "Credito" in f0 && "Cod" in f0 && "Nfact" in f0)) continue;
+        let usadas = 0;
+        let suma = 0;
+        for (const n of filas) {
+          if (!String(n?.Puc || "").trim().startsWith("130505")) continue;
+          const cod = String(n?.Cod ?? "").trim();
+          const c = porCliente.get(cod);
+          if (!c) continue;
+          const d = docPorClave.get(`${cod}|${String(n?.Nfact ?? "").trim()}`);
+          if (!d) continue;
+          const v = num(n?.Debito) - num(n?.Credito);
+          c.notas += v;
+          d.notas += v;
+          usadas += 1;
+          suma += v;
+        }
+        notasPorTabla.push({ tabla, filas: filas.length, usadas, suma: r2(suma) });
       }
     } catch (err) {
-      advertencias.push(`No se pudieron leer las notas de contabilidad ("notascontable detalles"): ${err?.message || String(err)}`);
+      advertencias.push(`No se pudieron leer las notas de contabilidad: ${err?.message || String(err)}`);
     }
+    const tablaNotas = notasPorTabla.filter((t) => t.usadas > 0).map((t) => t.tabla).join(", ") || null;
     const pagosSinCliente = { filas: 0, valor: 0 };
     for (const p of pagos) {
       let cod = String(p.Cod ?? "").trim();
@@ -3292,6 +3314,7 @@ exports.getSaldoTrasladosExternosBusint = onCall(
       tablaPagos,
       tablaDevoluciones,
       tablaNotas,
+      notasPorTabla,
       filasTraslados: docs.length,
       filasPagos: pagos.length,
       pagosSinCliente: { filas: pagosSinCliente.filas, valor: r2(pagosSinCliente.valor) },
