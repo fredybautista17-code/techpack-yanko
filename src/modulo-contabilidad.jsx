@@ -6288,6 +6288,7 @@ function SaldosClientesView({ currentUser }) {
             <div style={{ fontSize: 12, color: C.slate, marginBottom: 10, lineHeight: 1.6, background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 8, padding: 10 }}>
               <b>Traslado externo</b> · {t.documentos} documentos en "{traslados?.tablaTraslados}" por {m(t.traslados)}{t.ultimoTraslado ? ` (último ${fmtFechaISO(t.ultimoTraslado)})` : ""}.<br />
               {Math.abs(t.devoluciones || 0) >= 1 && <>Devoluciones ("{traslados?.tablaDevoluciones}"): {m(t.devoluciones)}.<br /></>}
+              {Math.abs(t.notas || 0) >= 1 && <>Notas de contabilidad ("{traslados?.tablaNotas}"): {m(t.notas)} (positivo = el cliente debe más).<br /></>}
               Pagos en "{traslados?.tablaPagos}": {m(t.pagosValor)} en valor{Math.abs(t.pagosAjustes) >= 1 ? ` + ${m(t.pagosAjustes)} en descuentos/retenciones` : ""}.<br />
               {Math.abs(t.pagosAjustes) >= 1 && <>Si solo se cuenta el valor pagado, el saldo sería <b>{m(t.saldoSoloValor)}</b>. </>}
               {Math.abs(t.pagosSinDocumento) >= 1 && <>Pagos sin factura identificada: {m(t.pagosSinDocumento)}. </>}

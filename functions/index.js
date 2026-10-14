@@ -3158,9 +3158,9 @@ exports.getSaldoTrasladosExternosBusint = onCall(
       const cod = String(f.CODIGO ?? "").trim();
       if (!cod || cod === "0") continue;
       const nfact = String(f.NFACT ?? "").trim();
-      if (!porCliente.has(cod)) porCliente.set(cod, { codigo: cod, docs: [], traslados: 0, devoluciones: 0, pagosValor: 0, pagosAjustes: 0, pagosSinDocumento: 0, pagosAtribuidosPorFactura: 0 });
+      if (!porCliente.has(cod)) porCliente.set(cod, { codigo: cod, docs: [], traslados: 0, devoluciones: 0, notas: 0, pagosValor: 0, pagosAjustes: 0, pagosSinDocumento: 0, pagosAtribuidosPorFactura: 0 });
       const c = porCliente.get(cod);
-      const d = { nfact, fecha: aISO(f.Fechaini), valor: num(f.FACTOT), dev: 0, pagadoValor: 0, pagadoAjustes: 0 };
+      const d = { nfact, fecha: aISO(f.Fechaini), valor: num(f.FACTOT), dev: 0, notas: 0, pagadoValor: 0, pagadoAjustes: 0 };
       c.docs.push(d);
       c.traslados += d.valor;
       docPorClave.set(`${cod}|${nfact}`, d);
@@ -3186,6 +3186,29 @@ exports.getSaldoTrasladosExternosBusint = onCall(
       }
     } catch (err) {
       advertencias.push(`No se pudo leer las devoluciones ("cartera - trasdev"): ${err?.message || String(err)}`);
+    }
+    // Notas de contabilidad sobre la cartera de clientes (tabla "notascontable detalles", cuenta
+    // 130505xx = Clientes Nacionales): un Débito aumenta lo que debe el cliente, un Crédito lo
+    // disminuye. Se cruzan por (Cod = cliente, Nfact = número de traslado) y solo cuentan las que
+    // caen sobre un traslado del cliente (confirmado con el reporte "Traslados por facturar
+    // extractos" de Busint de Kamila Venezuela: 5 notas débito, traslados 2701/2702/2703/2720/2723).
+    let tablaNotas = null;
+    try {
+      const notas = await consultarTablaBusintBDCompleta("notascontable detalles");
+      tablaNotas = "notascontable detalles";
+      for (const n of notas) {
+        if (!String(n?.Puc || "").trim().startsWith("130505")) continue;
+        const cod = String(n?.Cod ?? "").trim();
+        const c = porCliente.get(cod);
+        if (!c) continue;
+        const d = docPorClave.get(`${cod}|${String(n?.Nfact ?? "").trim()}`);
+        if (!d) continue;
+        const v = num(n?.Debito) - num(n?.Credito);
+        c.notas += v;
+        d.notas += v;
+      }
+    } catch (err) {
+      advertencias.push(`No se pudieron leer las notas de contabilidad ("notascontable detalles"): ${err?.message || String(err)}`);
     }
     const pagosSinCliente = { filas: 0, valor: 0 };
     for (const p of pagos) {
@@ -3233,11 +3256,11 @@ exports.getSaldoTrasladosExternosBusint = onCall(
     }
 
     const clientes = [...porCliente.values()].map((c) => {
-      const saldoSoloValor = c.traslados - c.devoluciones - c.pagosValor;
-      const saldoConAjustes = c.traslados - c.devoluciones - c.pagosValor - c.pagosAjustes;
+      const saldoSoloValor = c.traslados - c.devoluciones + c.notas - c.pagosValor;
+      const saldoConAjustes = c.traslados - c.devoluciones + c.notas - c.pagosValor - c.pagosAjustes;
       const pendientes = c.docs
         .map((d) => {
-          const pagado = d.dev + d.pagadoValor + d.pagadoAjustes;
+          const pagado = d.dev - d.notas + d.pagadoValor + d.pagadoAjustes;
           return { nfact: d.nfact, fecha: d.fecha, valor: r2(d.valor), pagado: r2(pagado), saldo: r2(d.valor - pagado) };
         })
         .filter((d) => Math.abs(d.saldo) >= 1)
@@ -3249,6 +3272,7 @@ exports.getSaldoTrasladosExternosBusint = onCall(
         documentos: c.docs.length,
         traslados: r2(c.traslados),
         devoluciones: r2(c.devoluciones),
+        notas: r2(c.notas),
         pagosValor: r2(c.pagosValor),
         pagosAjustes: r2(c.pagosAjustes),
         pagosSinDocumento: r2(c.pagosSinDocumento),
@@ -3267,6 +3291,7 @@ exports.getSaldoTrasladosExternosBusint = onCall(
       tablaTraslados,
       tablaPagos,
       tablaDevoluciones,
+      tablaNotas,
       filasTraslados: docs.length,
       filasPagos: pagos.length,
       pagosSinCliente: { filas: pagosSinCliente.filas, valor: r2(pagosSinCliente.valor) },
