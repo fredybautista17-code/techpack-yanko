@@ -8463,10 +8463,31 @@ function credencialesTNS(empresa) {
 const _tnsTokenCachePorEmpresa = { yanko: { token: null, obtenidoEn: 0 }, indutex: { token: null, obtenidoEn: 0 } };
 const TNS_TOKEN_VIGENCIA_MS = 25 * 60 * 1000; // 25 min, conservador
 
-async function obtenerTokenTNS(empresa = "yanko") {
-  const cache = _tnsTokenCachePorEmpresa[empresa] || (_tnsTokenCachePorEmpresa[empresa] = { token: null, obtenidoEn: 0 });
+// (2026-10-14) Yanko e Indutex entran con el MISMO código de empresa y usuario, y
+// TNS parece dejar una sola sesión activa por usuario: al loguear "Indutex" se
+// invalidaba el token de "Yanko" (y al revés) → "401 La sesión ha caducado".
+// Por eso el token se guarda por CREDENCIALES (no por empresa), un solo login a
+// la vez, y llamarTNS reintenta una vez con login nuevo si TNS responde 401.
+const _tnsLoginEnCurso = {};
+function claveCacheTNS(empresa) {
+  try {
+    const c = credencialesTNS(empresa);
+    return `${c.codigoEmpresa}|${c.nombreUsuario}`;
+  } catch (e) {
+    return empresa;
+  }
+}
+async function obtenerTokenTNS(empresa = "yanko", { forzar = false } = {}) {
+  const clave = claveCacheTNS(empresa);
+  if (_tnsLoginEnCurso[clave]) return _tnsLoginEnCurso[clave];
+  const p = obtenerTokenTNSInterno(empresa, clave, forzar).finally(() => { delete _tnsLoginEnCurso[clave]; });
+  _tnsLoginEnCurso[clave] = p;
+  return p;
+}
+async function obtenerTokenTNSInterno(empresa, clave, forzar) {
+  const cache = _tnsTokenCachePorEmpresa[clave] || (_tnsTokenCachePorEmpresa[clave] = { token: null, obtenidoEn: 0 });
   const ahora = Date.now();
-  if (cache.token && ahora - cache.obtenidoEn < TNS_TOKEN_VIGENCIA_MS) {
+  if (!forzar && cache.token && ahora - cache.obtenidoEn < TNS_TOKEN_VIGENCIA_MS) {
     return cache.token;
   }
 
@@ -8562,15 +8583,24 @@ async function obtenerTokenTNS(empresa = "yanko") {
 // Llamada genérica autenticada contra la API de TNS — pensada para
 // reutilizarse cuando conectemos Contratos/Insertar, Novedades/Insertar, etc.
 async function llamarTNS(path, { method = "GET", body, empresa = "yanko" } = {}) {
-  const token = await obtenerTokenTNS(empresa);
-  const resp = await fetch(`${TNS_BASE_URL}${path}`, {
-    method,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  const pedir = async (forzar) => {
+    const token = await obtenerTokenTNS(empresa, { forzar });
+    return fetch(`${TNS_BASE_URL}${path}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  };
+  let resp = await pedir(false);
+  // 401 = token vencido o invalidado por otro login: se pide uno nuevo y se reintenta
+  // UNA vez (un 401 no ejecuta nada en TNS, así que reintentar es seguro).
+  if (resp.status === 401) {
+    logger.warn("TNS respondió 401: se renueva el token y se reintenta", { path, empresa });
+    resp = await pedir(true);
+  }
   const texto = await resp.text().catch(() => "");
   let data;
   try {
