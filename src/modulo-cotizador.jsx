@@ -7,6 +7,10 @@ import {
   REGEX_INSUMO_TERMO, num, versionVacia, calcularCotizacion, parsearArchivoCotizacion,
 } from "./cotizador-calculo";
 import { descargarCotizacionesExcel } from "./cotizador-excel";
+import {
+  FILAS_VINILO, IMPREVISTOS_PCT, filasViniloVacias, calcularVinilo, asignarFichaAVinilo, aplicarFilasAFila,
+  tituloVinilo, mesLargo, descargarViniloExcel,
+} from "./cotizador-vinilo";
 
 // ─── COTIZADOR ───────────────────────────────────────────────────────────────
 // (2026-10-06, a pedido de Fredy) Replica la hoja de costos de Excel
@@ -722,6 +726,194 @@ function ParametrosView({ parametros, clientesApp, currentUser, notify }) {
 }
 
 // ─── PANTALLA PRINCIPAL ──────────────────────────────────────────────────────
+// ─── MINICOTIZADOR DE VINILO / DTF ───────────────────────────────────────────
+// (2026-10-15, a pedido de Fredy) Ver src/cotizador-vinilo.js. Colección
+// Firestore "cotizador_vinilo": un doc por referencia+mes (id "{REF}_{aaaa-mm}")
+// y un doc "_estandar" con los valores de los procesos fijos (corte, espiga...).
+const SLOTS_INSUMO = FILAS_VINILO.filter((f) => f.tipo === "insumo");
+
+function MiniVinilo({ currentUser, notify, onPasar }) {
+  const [guardados, setGuardados] = useState([]);
+  const [ref, setRef] = useState("");
+  const [mes, setMes] = useState(hoyISO().slice(0, 7));
+  const [pct, setPct] = useState(IMPREVISTOS_PCT);
+  const [filas, setFilas] = useState(() => filasViniloVacias());
+  const [ficha, setFicha] = useState(null); // filas de la ficha de Busint
+  const [buscando, setBuscando] = useState(false);
+  const [aviso, setAviso] = useState("");
+  const [estandarAplicado, setEstandarAplicado] = useState(false);
+
+  useEffect(() => onSnapshot(collection(db, "cotizador_vinilo"), (s) => setGuardados(s.docs.map((d) => ({ ...d.data(), id: d.id }))), () => {}), []);
+
+  // Los procesos fijos arrancan con el estándar guardado (si existe).
+  useEffect(() => {
+    if (estandarAplicado) return;
+    const est = guardados.find((g) => g.id === "_estandar");
+    if (!est) return;
+    setEstandarAplicado(true);
+    setFilas((fs) => fs.map((f) => {
+      const e = (est.filas || []).find((x) => x.key === f.key);
+      return e && f.tipo === "proceso" ? { ...f, valor: e.valor, base: e.base } : f;
+    }));
+  }, [guardados, estandarAplicado]);
+
+  const calc = useMemo(() => calcularVinilo(filas, pct), [filas, pct]);
+  const cambiar = (key, campo, valor) => setFilas((fs) => fs.map((f) => (f.key === key ? { ...f, [campo]: valor } : f)));
+  const sinUbicar = useMemo(() => {
+    if (!ficha) return [];
+    return asignarFichaAVinilo(filas, ficha).sinUbicar;
+  }, [ficha, filas]);
+
+  async function traer() {
+    if (!ref.trim()) { notify?.("Escribe la referencia"); return; }
+    setBuscando(true); setAviso("");
+    try {
+      const r = await httpsCallable(functionsClient, "getFichaViniloBusintPorReferencia")({ ref: ref.trim() });
+      const d = r.data || {};
+      if (!d.encontrada) {
+        setFicha(null);
+        setAviso(`No encontré la referencia ${ref.trim()} en la ficha técnica de Busint (insumos dig). Revisa cómo está escrita o digita los valores a mano.`);
+      } else {
+        setFicha(d.filas || []);
+        const { filas: nuevas } = asignarFichaAVinilo(filas, d.filas || []);
+        setFilas(nuevas);
+        notify?.("Ficha traída de Busint");
+      }
+    } catch (e) {
+      setAviso("No se pudo consultar Busint: " + (e.message || e));
+    }
+    setBuscando(false);
+  }
+  function usarEn(x, key) {
+    setFilas((fs) => fs.map((f) => (f.key === key ? aplicarFilasAFila(f, [x]) : f)));
+  }
+  async function guardar() {
+    if (!normRef(ref)) { notify?.("Escribe la referencia para guardar"); return; }
+    await fsSet("cotizador_vinilo", `${normRef(ref)}_${mes}`, { ref: ref.trim(), mes, pct, filas, total: calc.total, actualizadoPor: currentUser?.name || "", actualizado: new Date().toISOString() });
+    notify?.("Minicotización guardada");
+  }
+  async function guardarEstandar() {
+    await fsSet("cotizador_vinilo", "_estandar", { filas: filas.filter((f) => f.tipo === "proceso").map((f) => ({ key: f.key, valor: f.valor, base: f.base })), actualizadoPor: currentUser?.name || "", actualizado: new Date().toISOString() });
+    notify?.("Valores de procesos guardados como estándar");
+  }
+  function cargar(g) {
+    setRef(g.ref || ""); setMes(g.mes || hoyISO().slice(0, 7)); setPct(g.pct ?? IMPREVISTOS_PCT); setFilas(g.filas || filasViniloVacias()); setFicha(null); setAviso("");
+  }
+  async function excel() {
+    try { await descargarViniloExcel({ ref, mes, filas, pct }); } catch (e) { notify?.("No se pudo generar el Excel: " + (e.message || e)); }
+  }
+
+  const lista = guardados.filter((g) => g.id !== "_estandar").sort((a, b) => String(b.actualizado || "").localeCompare(String(a.actualizado || "")));
+  const cel = { ...inp, textAlign: "right" };
+  const money = (n) => "$" + fmtDec(n);
+
+  return (
+    <div>
+      <Seccion titulo="🎨 Minicotizador de Vinilo / DTF" sub="Trae de Busint el aplique DTF, la alta, la poliamida y el vinilo reflectivo; los demás son procesos con valor fijo. TOTAL = costo por unidad + BASE.">
+        <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
+          <Campo label="Referencia" ancho={150}><input value={ref} onChange={(e) => setRef(e.target.value)} onKeyDown={(e) => e.key === "Enter" && traer()} placeholder="Ej: 98-5644" style={inp} /></Campo>
+          <Campo label="Mes" ancho={140}><input type="month" value={mes} onChange={(e) => setMes(e.target.value)} style={inp} /></Campo>
+          <Campo label="Imprevistos %" ancho={100}><input value={pct} onChange={(e) => setPct(e.target.value)} style={cel} /></Campo>
+          <button onClick={traer} disabled={buscando} style={{ ...btn(C.blue, C.white), opacity: buscando ? 0.6 : 1 }}>{buscando ? "Consultando Busint…" : "🔎 Traer de Busint"}</button>
+        </div>
+        {aviso && <div style={{ marginTop: 10, padding: "8px 12px", background: C.amberBg, color: C.amber, borderRadius: 8, fontSize: 13 }}>{aviso}</div>}
+      </Seccion>
+
+      <Seccion titulo={tituloVinilo(ref.trim(), mes)} sub="Los valores en gris vienen de Busint; todos se pueden corregir a mano.">
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 820 }}>
+            <thead>
+              <tr style={{ background: "#FFF9C4" }}>
+                <th style={th}>Proceso e insumo</th><th style={{ ...th, textAlign: "right" }}>Costo M.P</th><th style={{ ...th, textAlign: "right" }}>Promedio</th>
+                <th style={th}>U</th><th style={{ ...th, textAlign: "right" }}>Costo x U</th><th style={{ ...th, textAlign: "right" }}>Base</th><th style={{ ...th, textAlign: "right" }}>Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filas.map((f, i) => (
+                <tr key={f.key} style={{ borderTop: `1px solid ${C.border}` }}>
+                  <td style={{ ...td, minWidth: 220 }}>
+                    <div style={{ fontWeight: 700, fontSize: 13 }}>{f.nombre}</div>
+                    {f.fuente && <div style={{ fontSize: 11, color: f.fuente.startsWith("No está") ? C.amber : C.slate }}>{f.fuente}</div>}
+                  </td>
+                  {f.tipo === "insumo" ? (
+                    <>
+                      <td style={td}><input value={f.costoMP} onChange={(e) => cambiar(f.key, "costoMP", e.target.value)} style={cel} /></td>
+                      <td style={td}><input value={f.consumo} onChange={(e) => cambiar(f.key, "consumo", e.target.value)} style={cel} /></td>
+                      <td style={{ ...td, width: 60 }}><input value={f.unidad} onChange={(e) => cambiar(f.key, "unidad", e.target.value)} style={inp} /></td>
+                      <td style={{ ...td, textAlign: "right", fontSize: 13 }}>{money(calc.detalle[i].costoXU)}</td>
+                    </>
+                  ) : (
+                    <>
+                      <td style={td} /><td style={td} /><td style={td} />
+                      <td style={td}><input value={f.valor} onChange={(e) => cambiar(f.key, "valor", e.target.value)} style={cel} /></td>
+                    </>
+                  )}
+                  <td style={td}><input value={f.base} onChange={(e) => cambiar(f.key, "base", e.target.value)} style={cel} /></td>
+                  <td style={{ ...td, textAlign: "right", fontWeight: 800, fontSize: 13 }}>{money(calc.detalle[i].total)}</td>
+                </tr>
+              ))}
+              <tr style={{ borderTop: `2px solid ${C.ink}`, background: "#FFF9C4" }}>
+                <td colSpan={6} style={{ ...td, textAlign: "right", fontWeight: 800, padding: 8 }}>SUMA VINILO + DTF</td>
+                <td style={{ ...td, textAlign: "right", fontWeight: 800 }}>{money(calc.suma)}</td>
+              </tr>
+              <tr style={{ background: "#FFF9C4" }}>
+                <td colSpan={6} style={{ ...td, textAlign: "right", fontWeight: 800, padding: 8 }}>IMPREVISTOS {fmtDec(num(pct))}%</td>
+                <td style={{ ...td, textAlign: "right", fontWeight: 800 }}>{money(calc.imprevistos)}</td>
+              </tr>
+              <tr style={{ background: "#FFF176" }}>
+                <td colSpan={6} style={{ ...td, textAlign: "right", fontWeight: 900, padding: 8, fontSize: 15 }}>TOTAL</td>
+                <td style={{ ...td, textAlign: "right", fontWeight: 900, fontSize: 15 }}>{money(calc.total)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div style={{ display: "flex", gap: 10, marginTop: 14, flexWrap: "wrap" }}>
+          <button onClick={guardar} style={btn(C.green, C.white)}>💾 Guardar</button>
+          <button onClick={excel} style={btn(C.white, C.blue, C.blue)}>📤 Descargar Excel</button>
+          <button onClick={() => onPasar(ref, filas, calc)} style={btn(C.white, C.violet, C.violet)}>🧮 Pasar al cotizador</button>
+          <div style={{ flex: 1 }} />
+          <button onClick={guardarEstandar} title="Guarda los valores de corte, descartonado, espiga y bajada para las próximas referencias" style={btn(C.white, C.slate, C.border)}>Guardar procesos como estándar</button>
+        </div>
+      </Seccion>
+
+      {ficha && (
+        <Seccion titulo={`Ficha técnica en Busint (${ficha.length} filas)`} sub={sinUbicar.length ? `${sinUbicar.length} fila(s) no encajaron en ninguna línea: asígnalas a mano si corresponde.` : "Todas las filas encajaron en una línea."} plegable abierta={sinUbicar.length > 0}>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 640 }}>
+              <thead><tr><th style={th}>Insumo</th><th style={{ ...th, textAlign: "right" }}>Cant.</th><th style={{ ...th, textAlign: "right" }}>Costo</th><th style={th}>U</th><th style={th}>Usar en…</th></tr></thead>
+              <tbody>
+                {ficha.map((x) => (
+                  <tr key={x.id} style={{ borderTop: `1px solid ${C.border}` }}>
+                    <td style={{ ...td, fontSize: 13 }}>{x.insumo}{!x.enMaestro && <span style={{ marginLeft: 6 }}><Pastilla bg={C.amberBg} color={C.amber}>sin costo</Pastilla></span>}</td>
+                    <td style={{ ...td, textAlign: "right", fontSize: 13 }}>{fmtDec(x.cant)}</td>
+                    <td style={{ ...td, textAlign: "right", fontSize: 13 }}>{x.costo == null ? "—" : money(x.costo)}</td>
+                    <td style={{ ...td, fontSize: 12, color: C.slate }}>{x.unidad || ""}</td>
+                    <td style={td}>
+                      <select value="" onChange={(e) => e.target.value && usarEn(x, e.target.value)} style={{ ...inp, maxWidth: 230 }}>
+                        <option value="">—</option>
+                        {SLOTS_INSUMO.map((s) => <option key={s.key} value={s.key}>{s.nombre}</option>)}
+                      </select>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Seccion>
+      )}
+
+      <Seccion titulo={`Minicotizaciones guardadas (${lista.length})`} plegable abierta={false}>
+        {lista.length === 0 && <div style={{ fontSize: 13, color: C.slate }}>Aún no hay ninguna guardada.</div>}
+        {lista.map((g) => (
+          <div key={g.id} onClick={() => cargar(g)} style={{ display: "flex", gap: 12, padding: "8px 4px", borderTop: `1px solid ${C.border}`, cursor: "pointer", fontSize: 13 }}>
+            <b style={{ minWidth: 110 }}>{g.ref}</b><span style={{ color: C.slate, minWidth: 90 }}>{mesLargo(g.mes)}</span><span style={{ flex: 1, color: C.slate }}>{g.actualizadoPor || ""} · {fmtFecha(String(g.actualizado || "").slice(0, 10))}</span><b>{money(g.total)}</b>
+          </div>
+        ))}
+      </Seccion>
+    </div>
+  );
+}
+
 export default function CotizadorView({ currentUser, config, protos, capsulas, iniciarDesde, onIniciarConsumido, onAplicarPrecio, notify }) {
   const [tab, setTab] = useState("cotizaciones");
   const [cotizaciones, setCotizaciones] = useState([]);
@@ -775,6 +967,48 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
     setEdit(null);
     notify?.("Cotización eliminada");
   }
+  // Minicotizador de Vinilo / DTF -> cotización de la referencia (versión nueva).
+  async function pasarAlCotizador(ref, filas, calc) {
+    const k = normRef(ref);
+    if (!k) { notify?.("Escribe la referencia para pasarla al cotizador"); return; }
+    const existente = cotizaciones.find((c) => normRef(c.referencia) === k);
+    const base = existente ? limpio(existente) : cotNueva({ referencia: String(ref).trim() });
+    const ultima = base.versiones[base.versiones.length - 1];
+    const v = limpio(ultima.v);
+    v.procesos = v.procesos || [];
+    v.insumos = v.insumos || [];
+    const ponerProceso = (nombre, valor) => {
+      const i = v.procesos.findIndex((p) => normTxt(p.nombre) === normTxt(nombre));
+      if (i >= 0) v.procesos[i] = { ...v.procesos[i], valor };
+      else v.procesos.push({ nombre, valor, imp: true });
+    };
+    const ponerInsumo = (nombre, precio, consumo) => {
+      const i = v.insumos.findIndex((x) => normTxt(x.nombre) === normTxt(nombre));
+      const nuevo = { nombre, precio, consumo, termo: true };
+      if (i >= 0) v.insumos[i] = { ...v.insumos[i], ...nuevo };
+      else v.insumos.push(nuevo);
+    };
+    const PROC = { dtf: "Aplique DTF", corte: "Corte vinilo", descartonado: "Descartonado", espiga: "Espiga", bajada: "Bajada de vinilo" };
+    filas.forEach((f, i) => {
+      const total = Math.round(calc.detalle[i].total * 100) / 100;
+      if (PROC[f.key]) ponerProceso(PROC[f.key], total);
+      else ponerInsumo(f.nombre, num(f.costoMP) + num(f.base) / (num(f.consumo) || 1), num(f.consumo));
+    });
+    const nota = "Desde minicotizador Vinilo/DTF";
+    if (existente) {
+      const numero = base.versiones.reduce((m, x) => Math.max(m, x.numero), 0) + 1;
+      base.versiones.push({ id: uid(), numero, fecha: hoyISO(), nota, v });
+      base.activa = base.versiones.length - 1;
+    } else {
+      base.versiones[0] = { ...ultima, nota, v };
+      base.activa = 0;
+    }
+    await guardar(base);
+    setEdit({ ...base, existe: true });
+    setTab("cotizaciones");
+    notify?.(existente ? `Versión V${base.versiones[base.versiones.length - 1].numero} creada en la cotización ${base.referencia}` : `Cotización ${base.referencia} creada`);
+  }
+
   async function importarHojas(hojas, cliente) {
     const cli = cliente.trim() || "General";
     const porRef = new Map();
@@ -812,12 +1046,14 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
     <div style={{ padding: 20, background: C.canvas, minHeight: "100%" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
         <div style={{ fontWeight: 800, fontSize: 20, color: C.ink, flex: 1 }}>🧮 Cotizaciones</div>
-        {["cotizaciones", "parametros"].map((t) => (
-          <button key={t} onClick={() => setTab(t)} style={{ ...btn(tab === t ? C.ink : C.white, tab === t ? C.white : C.slate, tab === t ? C.ink : C.border) }}>{t === "cotizaciones" ? "Cotizaciones" : "⚙ Parámetros por cliente"}</button>
+        {["cotizaciones", "vinilo", "parametros"].map((t) => (
+          <button key={t} onClick={() => setTab(t)} style={{ ...btn(tab === t ? C.ink : C.white, tab === t ? C.white : C.slate, tab === t ? C.ink : C.border) }}>{t === "cotizaciones" ? "Cotizaciones" : t === "vinilo" ? "🎨 Vinilo / DTF" : "⚙ Parámetros por cliente"}</button>
         ))}
       </div>
 
       {tab === "parametros" && <ParametrosView parametros={parametros} clientesApp={clientesApp} currentUser={currentUser} notify={notify} />}
+
+      {tab === "vinilo" && <MiniVinilo currentUser={currentUser} notify={notify} onPasar={pasarAlCotizador} />}
 
       {tab === "cotizaciones" && (
         <div>
