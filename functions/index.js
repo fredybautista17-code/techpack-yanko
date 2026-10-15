@@ -3160,7 +3160,7 @@ exports.getSaldoTrasladosExternosBusint = onCall(
       const nfact = String(f.NFACT ?? "").trim();
       if (!porCliente.has(cod)) porCliente.set(cod, { codigo: cod, docs: [], traslados: 0, devoluciones: 0, notas: 0, notasOmitidas: 0, tieneFacturas: false, filasTras: [], sumaTras: 0, nFilasTras: 0, creditosSinTraslado: [], pagosValor: 0, pagosAjustes: 0, pagosSinDocumento: 0, pagosAtribuidosPorFactura: 0 });
       const c = porCliente.get(cod);
-      const d = { raw: JSON.stringify(f).slice(0, 600), nfact, fecha: aISO(f.Fechaini), valor: num(f.FACTOT), dev: 0, notas: 0, notasBrutas: 0, creditosTras: 0, creditosNotas: [], filasNotas: [], pagadoValor: 0, pagadoAjustes: 0 };
+      const d = { raw: JSON.stringify(f).slice(0, 600), nfact, fecha: aISO(f.Fechaini), valor: num(f.FACTOT), dev: 0, notas: 0, notasBrutas: 0, creditosTras: 0, creditosPagos: 0, creditosNotas: [], filasNotas: [], pagadoValor: 0, pagadoAjustes: 0 };
       c.docs.push(d);
       c.traslados += d.valor;
       docPorClave.set(`${cod}|${nfact}`, d);
@@ -3358,8 +3358,10 @@ exports.getSaldoTrasladosExternosBusint = onCall(
     } catch (e) {
       diagnosticoGlobal.push(`Error armando diagnóstico: ${String(e)}`);
     }
-    const tablaNotas = notasPorTabla.filter((t) => t.usadas > 0).map((t) => t.tabla).join(", ") || null;
+    let tablaNotas = notasPorTabla.filter((t) => t.usadas > 0).map((t) => t.tabla).join(", ") || null;
     const pagosSinCliente = { filas: 0, valor: 0 };
+    let usadasCreditosPagos = 0;
+    let sumaCreditosPagos = 0;
     for (const p of pagos) {
       let cod = String(p.Cod ?? "").trim();
       const nfact = String(p.Nfact ?? "").trim();
@@ -3386,11 +3388,23 @@ exports.getSaldoTrasladosExternosBusint = onCall(
       if (d) {
         d.pagadoValor += valor;
         d.pagadoAjustes += ajustes;
+        // Las notas de contabilidad aplicadas por recibo se guardan en la tabla de pagos, columna
+        // Credito (ej. Mary: recibo 200, Credito 59 y 1.384.997): Busint las muestra como nota negativa.
+        const cr = num(p.Credito);
+        if (cr > 0) {
+          d.creditosPagos += cr;
+          usadasCreditosPagos += 1;
+          sumaCreditosPagos += cr;
+        }
       } else {
         c.pagosSinDocumento += valor;
       }
     }
 
+    if (usadasCreditosPagos > 0) {
+      notasPorTabla.push({ tabla: `${tablaPagos} (columna Credito)`, filas: pagos.length, usadas: usadasCreditosPagos, suma: r2(-sumaCreditosPagos) });
+      tablaNotas = notasPorTabla.filter((t) => t.usadas > 0).map((t) => t.tabla).join(", ") || null;
+    }
     // Notas de contabilidad por traslado. Cliente SOLO de traslado (ej. Kamila Venezuela): cuentan todas
     // (débitos y créditos). Cliente que TAMBIÉN tiene facturas: los números de factura y de traslado
     // pueden coincidir, así que solo se acepta un CRÉDITO neto que cierre saldo abierto del traslado
@@ -3407,11 +3421,13 @@ exports.getSaldoTrasladosExternosBusint = onCall(
         if (c.tieneFacturas) {
           // Con facturas: las notas de contabilidad ("notascontable detalles") mezclan números de
           // facturas y de traslados y NO se usan; solo cuentan las notas crédito de traslados.
-          aceptada = d.creditosTras > 0 ? -Math.min(d.creditosTras, abierto) : 0;
+          const creditos = d.creditosTras + d.creditosPagos;
+          aceptada = creditos > 0 ? -Math.min(creditos, abierto) : 0;
         } else {
           // Solo traslado (ej. Kamila Venezuela): cuentan todas las notas de contabilidad, más las
           // notas crédito de traslados si las hay.
-          const tras = d.creditosTras > 0 ? -Math.min(d.creditosTras, Math.max(0, abierto + d.notasBrutas)) : 0;
+          const creditos = d.creditosTras + d.creditosPagos;
+          const tras = creditos > 0 ? -Math.min(creditos, Math.max(0, abierto + d.notasBrutas)) : 0;
           aceptada = d.notasBrutas + tras;
         }
         d.notas = aceptada;
