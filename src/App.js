@@ -8575,6 +8575,7 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
   const [modalFecha, setModalFecha] = useState(null);
   const [kindFecha, setKindFecha] = useState("todos");
   const [selFecha, setSelFecha] = useState([]);
+  const [clienteFecha, setClienteFecha] = useState(""); // "" = todos los clientes
   const [descargandoFecha, setDescargandoFecha] = useState(false);
   // Envío puntual abierto en ventana de detalle (dentro del listado "Envíos
   // incluidos en este grupo") — al agrupar por cápsula, esa lista muestra
@@ -8747,9 +8748,22 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
     return [...m.entries()].sort((a, b) => b[0].localeCompare(a[0]));
   })();
   const unidadesEnvio = (e) => e.items.reduce((s, it) => s + (Number(it.colombiaCantidad) || 0) + (Number(it.venezuelaCantidad) || 0), 0);
+  const claveClienteFecha = (e) => foldTexto((e.cliente || "").trim()) || "__sin_cliente__";
+  const enviosDiaTipo = modalFecha ? enriquecidos.filter((e) => diaDe(e) === modalFecha && (kindFecha === "todos" || e._kind === kindFecha)) : [];
+  const opcionesClienteFecha = (() => {
+    const m = new Map();
+    enviosDiaTipo.forEach((e) => {
+      const k = claveClienteFecha(e);
+      const o = m.get(k) || { key: k, nombre: (e.cliente || "").trim() || "Sin cliente", n: 0 };
+      o.n += 1;
+      m.set(k, o);
+    });
+    return [...m.values()].sort((a, b) => ((a.key === "__sin_cliente__") - (b.key === "__sin_cliente__")) || a.nombre.localeCompare(b.nombre));
+  })();
+  const clienteFechaActivo = opcionesClienteFecha.some((o) => o.key === clienteFecha) ? clienteFecha : "";
   const enviosDeFecha = modalFecha
-    ? enriquecidos
-        .filter((e) => diaDe(e) === modalFecha && (kindFecha === "todos" || e._kind === kindFecha))
+    ? enviosDiaTipo
+        .filter((e) => !clienteFechaActivo || claveClienteFecha(e) === clienteFechaActivo)
         .sort((a, b) => (a._kind === b._kind ? (a.coleccion || "").localeCompare(b.coleccion || "") : a._kind === "ref" ? -1 : 1))
     : [];
   const idsFecha = enviosDeFecha.map((e) => e.id);
@@ -8757,6 +8771,7 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
   function abrirDescargaFecha(iso) {
     setModalFecha(iso || diasConEnvios[0]?.[0] || hoyIso);
     setKindFecha("todos");
+    setClienteFecha("");
     setSelFecha([]);
   }
   function alternarSeleccion(id) {
@@ -8768,7 +8783,7 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
     try {
       await exportarEnviosPorFechaExcel({
         fecha: modalFecha,
-        nombreArchivo: `Envios_${modalFecha}${sufijo}.xlsx`,
+        nombreArchivo: `Envios_${modalFecha}${clienteFechaActivo ? "_" + (opcionesClienteFecha.find((o) => o.key === clienteFechaActivo)?.nombre || "cliente").replace(/[^a-zA-Z0-9]+/g, "_") : ""}${sufijo}.xlsx`,
         envios: lista.map((e) => ({
           tipo: e._kind === "proto" ? "Prototipo" : "Cápsula",
           coleccion: e.coleccion, cliente: e.cliente, numPedido: e.numPedido,
@@ -8876,6 +8891,19 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
             <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, textTransform: "uppercase", letterSpacing: "0.05em" }}>Fecha enviada</label>
             <input type="date" value={modalFecha} onChange={(e) => { if (e.target.value) { setModalFecha(e.target.value); setSelFecha([]); } }} style={{ padding: "7px 10px", border: `1.5px solid ${T.denim}`, borderRadius: 8, fontSize: 13, color: T.ink, background: T.white, fontFamily: "inherit" }} />
+            {opcionesClienteFecha.length > 0 && (
+              <>
+                <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, textTransform: "uppercase", letterSpacing: "0.05em", marginLeft: 8 }}>Cliente</label>
+                <select
+                  value={clienteFechaActivo}
+                  onChange={(e) => { setClienteFecha(e.target.value); setSelFecha([]); }}
+                  style={{ padding: "7px 10px", border: `1.5px solid ${clienteFechaActivo ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, background: T.white, fontFamily: "inherit", maxWidth: 240 }}
+                >
+                  <option value="">Todos los clientes ({opcionesClienteFecha.length})</option>
+                  {opcionesClienteFecha.map((o) => <option key={o.key} value={o.key}>{o.nombre} ({o.n})</option>)}
+                </select>
+              </>
+            )}
           </div>
           {diasConEnvios.length > 0 && (
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
@@ -8893,7 +8921,7 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
           </div>
           {!enviosDeFecha.length ? (
             <div style={{ textAlign: "center", padding: 28, color: T.slate, fontSize: 13, border: `1px dashed ${T.border}`, borderRadius: 10 }}>
-              No hay envíos {kindFecha === "proto" ? "de prototipos " : kindFecha === "ref" ? "de cápsulas " : ""}con fecha {fechaCorta(modalFecha) || modalFecha}.
+              No hay envíos {kindFecha === "proto" ? "de prototipos " : kindFecha === "ref" ? "de cápsulas " : ""}{clienteFechaActivo ? "de ese cliente " : ""}con fecha {fechaCorta(modalFecha) || modalFecha}.
             </div>
           ) : (
             <>
