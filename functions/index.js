@@ -3203,6 +3203,9 @@ exports.getSaldoTrasladosExternosBusint = onCall(
       const hoyBogota = new Date().toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
       const filasCartera = await consultarCatalogoBusint("ApiGen_CarteraFacturacionBusint", { FechaConsulta: hoyBogota });
       for (const f of filasCartera) {
+        // Solo cuenta como "tiene facturas" si hay un documento con saldo (la cartera en vivo
+        // también trae filas en cero, ej. Kamila Venezuela, que no tiene facturas abiertas).
+        if (Math.abs(num(f?.total)) < 0.5) continue;
         const c = porCliente.get(String(f?.codigoCliente ?? "").trim());
         if (c) c.tieneFacturas = true;
       }
