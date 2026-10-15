@@ -3453,6 +3453,14 @@ exports.getSaldoTrasladosExternosBusint = onCall(
           .filter((x) => Math.abs(x.abierto) >= 1);
         if (abiertos.length && abiertos.length <= 40 && Math.abs(saldoConAjustes) >= 1) {
           diagnostico = [`Código de traslado del cliente: ${c.codigo} · tiene facturas: ${c.tieneFacturas ? "sí" : "no"} · "notastras detalles": ${c.nFilasTras} filas, suma Precio ${fmt(c.sumaTras)}`, ...c.filasTras.map((x) => `   ${x}`), `${abiertos.length} traslado(s) abiertos. Notas sobre el mismo número de traslado (tabla · cuenta · débito / crédito):`];
+          // Pagos (tabla de pagos de traslados) que caen sobre cada traslado abierto: cliente o sin cliente.
+          for (const { d } of abiertos.slice(0, 12)) {
+            const filasPagos = pagos
+              .filter((p) => String(p?.Nfact ?? "").trim() === d.nfact && ["", "0", c.codigo].includes(String(p?.Cod ?? "").trim()))
+              .slice(0, 6);
+            diagnostico.push(`Pagos sobre el traslado ${d.nfact} en "${tablaPagos}": ${filasPagos.length ? "" : "ninguno"}`);
+            for (const fp of filasPagos) diagnostico.push(`   ${JSON.stringify(fp).slice(0, 420)}`);
+          }
           for (const { d } of abiertos.slice(0, 3)) diagnostico.push(`Fila del traslado ${d.nfact} en "cartera - tras": ${d.raw}`);
           for (const { d, abierto } of abiertos.slice(0, 25)) {
             const filas = d.filasNotas.map((f) => `${f.tabla.replace(" detalles", "")} ${f.puc} D${fmt(f.deb)}/C${fmt(f.cre)}`).join(" | ");
