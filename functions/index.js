@@ -3160,7 +3160,7 @@ exports.getSaldoTrasladosExternosBusint = onCall(
       const nfact = String(f.NFACT ?? "").trim();
       if (!porCliente.has(cod)) porCliente.set(cod, { codigo: cod, docs: [], traslados: 0, devoluciones: 0, notas: 0, notasOmitidas: 0, tieneFacturas: false, pagosValor: 0, pagosAjustes: 0, pagosSinDocumento: 0, pagosAtribuidosPorFactura: 0 });
       const c = porCliente.get(cod);
-      const d = { nfact, fecha: aISO(f.Fechaini), valor: num(f.FACTOT), dev: 0, notas: 0, pagadoValor: 0, pagadoAjustes: 0 };
+      const d = { nfact, fecha: aISO(f.Fechaini), valor: num(f.FACTOT), dev: 0, notas: 0, notasBrutas: 0, pagadoValor: 0, pagadoAjustes: 0 };
       c.docs.push(d);
       c.traslados += d.valor;
       docPorClave.set(`${cod}|${nfact}`, d);
@@ -3237,12 +3237,7 @@ exports.getSaldoTrasladosExternosBusint = onCall(
           const d = docPorClave.get(`${cod}|${String(n?.Nfact ?? "").trim()}`);
           if (!d) continue;
           const v = num(n?.Debito) - num(n?.Credito);
-          if (c.tieneFacturas) {
-            c.notasOmitidas += v;
-            continue;
-          }
-          c.notas += v;
-          d.notas += v;
+          d.notasBrutas += v; // se decide más abajo cuánto cuenta, cuando ya se conocen los pagos
           usadas += 1;
           suma += v;
         }
@@ -3284,6 +3279,24 @@ exports.getSaldoTrasladosExternosBusint = onCall(
       }
     }
 
+    // Notas de contabilidad por traslado. Cliente SOLO de traslado (ej. Kamila Venezuela): cuentan todas
+    // (débitos y créditos). Cliente que TAMBIÉN tiene facturas: los números de factura y de traslado
+    // pueden coincidir, así que solo se acepta un CRÉDITO neto que cierre saldo abierto del traslado
+    // (nunca más que lo que le queda por pagar) y se ignoran los débitos. Verificado con el reporte
+    // "Traslados por facturar extractos" de Kamila Colombia (101): 15 notas crédito sobre los traslados
+    // 77-92 por -$75.233.145 dejan el saldo de traslado en $0.
+    for (const c of porCliente.values()) {
+      for (const d of c.docs) {
+        let aceptada = d.notasBrutas;
+        if (c.tieneFacturas) {
+          const abierto = Math.max(0, d.valor - d.dev - d.pagadoValor - d.pagadoAjustes);
+          aceptada = d.notasBrutas < 0 ? -Math.min(-d.notasBrutas, abierto) : 0;
+        }
+        d.notas = aceptada;
+        c.notas += aceptada;
+        c.notasOmitidas += d.notasBrutas - aceptada;
+      }
+    }
     // Nombres desde el maestro de clientes de Busint.
     const nombrePorCodigo = new Map();
     try {
