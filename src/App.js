@@ -3868,6 +3868,37 @@ async function exportBitacoraEnvioToExcel(envio) {
   // community) no permite esto al generar el archivo. Se usa SOLO aquí, sin
   // tocar los demás exportadores de la app, que siguen igual con "xlsx".
   const XLSX = await import("xlsx-js-style");
+  const ws = construirHojaAnexoEnvio(XLSX, envio);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "ANEXO");
+  const nombreArchivo = `Envio_${(envio.coleccion || envio.cliente || "bitacora").replace(/[^a-zA-Z0-9]+/g, "_")}_${envio.fechaEnviado || today()}.xlsx`;
+  const fotos = envio.items.map((it, i) => ({ dataUrl: it.foto, col: 0, row: 4 + i })).filter((f) => f.dataUrl);
+  if (fotos.length) {
+    try {
+      const wbArrayBuffer = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+      const blob = await incrustarFotosEnXlsx(wbArrayBuffer, fotos);
+      if (blob) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = nombreArchivo;
+        a.click();
+        URL.revokeObjectURL(url);
+        return;
+      }
+    } catch (e) {
+      // Si algo falla armando las fotos, se sigue abajo con la descarga sin
+      // imágenes — mejor un Excel completo sin fotos que ninguno.
+    }
+  }
+  XLSX.writeFile(wb, nombreArchivo);
+}
+// (2026-10-15, a pedido de Fredy) Arma la hoja "ANEXO" de UN envío (mismo
+// layout de 17 columnas del archivo que el cliente ya conoce). Antes esto
+// vivía dentro de exportBitacoraEnvioToExcel; se separó para poder reusarla
+// en la descarga por fecha (exportarEnviosPorFechaExcel), que arma un solo
+// libro con una hoja ANEXO por cada envío del día.
+function construirHojaAnexoEnvio(XLSX, envio) {
   // Los campos de cantidad/precio se escriben como número (no texto) cuando
   // se puede — así el numFmt de moneda de más abajo realmente se ve en
   // Excel (un numFmt sobre una celda de texto no tiene efecto visual), y de
@@ -3987,14 +4018,188 @@ async function exportBitacoraEnvioToExcel(envio) {
       ws[addr].s = style;
     }
   }
+  return ws;
+}
+// Igual que incrustarFotosEnXlsx pero para un libro con VARIAS hojas:
+// hojas = [{ indice, fotos: [{dataUrl,col,row}] }], donde indice es la
+// posición (0-based) de la hoja en el libro. Cada hoja con fotos recibe su
+// propio drawingN.xml; las imágenes se numeran de corrido en todo el libro.
+async function incrustarFotosMultiHojaEnXlsx(wbArrayBuffer, hojas) {
+  const JSZip = (await import("jszip")).default;
+  const zip = await JSZip.loadAsync(wbArrayBuffer);
+  const parser = new DOMParser();
+  const sheetPaths = await mapaHojasARutaXlsx(zip, parser);
+  let contentTypesXml = await zip.file("[Content_Types].xml").async("text");
+  const extsUsadas = new Set();
+  let nImg = 0;
+  let nDrawing = 0;
+  for (const h of hojas || []) {
+    const validas = (h.fotos || []).filter((f) => typeof f.dataUrl === "string" && /^data:image\/\w+;base64,/.test(f.dataUrl));
+    const sheetPath = sheetPaths[h.indice];
+    if (!validas.length || !sheetPath) continue;
+    nDrawing++;
+    const sheetDir = sheetPath.slice(0, sheetPath.lastIndexOf("/"));
+    const sheetFile = sheetPath.slice(sheetPath.lastIndexOf("/") + 1);
+    const anchors = [];
+    const rels = [];
+    validas.forEach((foto, idx) => {
+      nImg++;
+      const m = /^data:(image\/\w+);base64,(.+)$/.exec(foto.dataUrl);
+      const bin = atob(m[2]);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const ext = m[1] === "image/jpeg" ? "jpeg" : m[1] === "image/gif" ? "gif" : "png";
+      extsUsadas.add(ext);
+      zip.file(`xl/media/image${nImg}.${ext}`, bytes);
+      const rId = `rIdImg${idx + 1}`;
+      anchors.push(`
+  <xdr:twoCellAnchor editAs="oneCell">
+    <xdr:from><xdr:col>${foto.col}</xdr:col><xdr:colOff>19050</xdr:colOff><xdr:row>${foto.row}</xdr:row><xdr:rowOff>19050</xdr:rowOff></xdr:from>
+    <xdr:to><xdr:col>${foto.col + 1}</xdr:col><xdr:colOff>-19050</xdr:colOff><xdr:row>${foto.row + (foto.rowSpan || 1)}</xdr:row><xdr:rowOff>-19050</xdr:rowOff></xdr:to>
+    <xdr:pic>
+      <xdr:nvPicPr>
+        <xdr:cNvPr id="${idx + 2}" name="Foto${nImg}"/>
+        <xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr>
+      </xdr:nvPicPr>
+      <xdr:blipFill>
+        <a:blip r:embed="${rId}"/>
+        <a:stretch><a:fillRect/></a:stretch>
+      </xdr:blipFill>
+      <xdr:spPr>
+        <a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></a:xfrm>
+        <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+      </xdr:spPr>
+    </xdr:pic>
+    <xdr:clientData/>
+  </xdr:twoCellAnchor>`);
+      rels.push(`<Relationship Id="${rId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image${nImg}.${ext}"/>`);
+    });
+    zip.file(`xl/drawings/drawing${nDrawing}.xml`, `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">${anchors.join("")}
+</xdr:wsDr>`);
+    zip.file(`xl/drawings/_rels/drawing${nDrawing}.xml.rels`, `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  ${rels.join("\n  ")}
+</Relationships>`);
+    const sheetRelsPath = `${sheetDir}/_rels/${sheetFile}.rels`;
+    const drawingRel = `<Relationship Id="rIdDrawing1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing${nDrawing}.xml"/>`;
+    let sheetRelsXml = await zip.file(sheetRelsPath)?.async("text");
+    sheetRelsXml = sheetRelsXml
+      ? sheetRelsXml.replace("</Relationships>", `${drawingRel}</Relationships>`)
+      : `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  ${drawingRel}
+</Relationships>`;
+    zip.file(sheetRelsPath, sheetRelsXml);
+    let sheetXml = await zip.file(sheetPath).async("text");
+    const drawingTag = `<drawing r:id="rIdDrawing1"/>`;
+    sheetXml = sheetXml.includes("<extLst")
+      ? sheetXml.replace("<extLst", `${drawingTag}<extLst`)
+      : sheetXml.replace("</worksheet>", `${drawingTag}</worksheet>`);
+    zip.file(sheetPath, sheetXml);
+    contentTypesXml = contentTypesXml.replace(
+      "</Types>",
+      `<Override PartName="/xl/drawings/drawing${nDrawing}.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/></Types>`
+    );
+  }
+  if (!nDrawing) return null;
+  extsUsadas.forEach((ext) => {
+    if (!contentTypesXml.includes(`Extension="${ext}"`)) {
+      const mimeCT = ext === "jpeg" ? "image/jpeg" : ext === "gif" ? "image/gif" : "image/png";
+      contentTypesXml = contentTypesXml.replace("</Types>", `<Default Extension="${ext}" ContentType="${mimeCT}"/></Types>`);
+    }
+  });
+  zip.file("[Content_Types].xml", contentTypesXml);
+  return zip.generateAsync({ type: "blob", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+}
+// (2026-10-15, a pedido de Fredy) Descarga por fecha de la Bitácora de
+// Envíos: UN solo Excel con una hoja "Resumen" (una fila por envío, con
+// enlace a su hoja) y una hoja ANEXO por cada envío incluido -- prototipos
+// y cápsulas mezclados si así se pidió -- con el mismo formato y fotos del
+// botón Exportar de cada tarjeta. `envios` = [{tipo, coleccion, cliente,
+// numPedido, fechaEnviado, fechaRecibidoCliente, empresaTransporte, guia,
+// cartaColores, items}].
+async function exportarEnviosPorFechaExcel({ fecha, envios, nombreArchivo }) {
+  const XLSX = await import("xlsx-js-style");
+  const COLOR_INK = "1A1A2E";
+  const COLOR_SEAM = "C8B8A2";
+  const COLOR_CANVAS = "F7F4F0";
+  const COLOR_BORDER = "E8E2DB";
+  const THIN = { style: "thin", color: { rgb: COLOR_BORDER } };
+  const BOX = { top: THIN, bottom: THIN, left: THIN, right: THIN };
+  const unidadesDe = (e) => e.items.reduce((s, it) => s + (Number(it.colombiaCantidad) || 0) + (Number(it.venezuelaCantidad) || 0), 0);
+  const nombresHoja = envios.map((e, i) => `${i + 1}-${e.coleccion || e.cliente || "Envio"}`.replace(/[\\/?*[\]:]/g, " ").trim().slice(0, 28));
+  const [fy, fm, fd] = String(fecha || "").split("-").map(Number);
+  const fechaLarga = fy ? new Date(fy, fm - 1, fd).toLocaleDateString("es-CO", { weekday: "long", day: "numeric", month: "long", year: "numeric" }) : (fecha || "");
+  const totalRefs = envios.reduce((s, e) => s + e.items.length, 0);
+  const totalUnid = envios.reduce((s, e) => s + unidadesDe(e), 0);
+  const nClientes = new Set(envios.map((e) => (e.cliente || "").trim().toLowerCase()).filter(Boolean)).size;
+  const encab = ["#", "TIPO", "COLECCIÓN", "CLIENTE", "N° PEDIDO", "REFERENCIAS", "UNIDADES", "EMPRESA TRANSPORTE", "N° GUÍA", "RECIBIDO CLIENTE", "HOJA"];
+  const aoa = [
+    ["ENVÍOS DEL DÍA", fechaLarga, "", "", "", "", "", "", "", "", ""],
+    ["Envíos", envios.length, "Referencias", totalRefs, "Unidades", totalUnid, "Clientes", nClientes, "", "", ""],
+    encab,
+    ...envios.map((e, i) => [i + 1, e.tipo || "", e.coleccion || "", e.cliente || "", e.numPedido || "", e.items.length, unidadesDe(e), e.empresaTransporte || "", e.guia || "", e.fechaRecibidoCliente || "", nombresHoja[i]]),
+  ];
+  const wsR = XLSX.utils.aoa_to_sheet(aoa);
+  wsR["!merges"] = [{ s: { r: 0, c: 1 }, e: { r: 0, c: 10 } }];
+  wsR["!cols"] = [{ wch: 5 }, { wch: 11 }, { wch: 28 }, { wch: 22 }, { wch: 11 }, { wch: 12 }, { wch: 11 }, { wch: 20 }, { wch: 14 }, { wch: 16 }, { wch: 28 }];
+  for (let r = 0; r < aoa.length; r++) {
+    for (let c = 0; c < encab.length; c++) {
+      const addr = XLSX.utils.encode_cell({ r, c });
+      if (!wsR[addr]) wsR[addr] = { t: "s", v: "" };
+      const centrada = [0, 1, 4, 5, 6, 9].includes(c);
+      let style = { border: BOX, alignment: { vertical: "center", horizontal: centrada ? "center" : "left", wrapText: true } };
+      if (r === 0) {
+        style.font = { bold: true, sz: 13, color: { rgb: COLOR_INK } };
+        style.fill = { patternType: "solid", fgColor: { rgb: COLOR_CANVAS } };
+      } else if (r === 1) {
+        const etiqueta = c % 2 === 0 && c <= 6;
+        style.font = { bold: etiqueta, sz: 11, color: { rgb: COLOR_INK } };
+        if (etiqueta) style.fill = { patternType: "solid", fgColor: { rgb: COLOR_CANVAS } };
+        style.alignment = { vertical: "center", horizontal: "left" };
+      } else if (r === 2) {
+        style.fill = { patternType: "solid", fgColor: { rgb: COLOR_INK } };
+        style.font = { bold: true, sz: 10, color: { rgb: COLOR_SEAM } };
+        style.alignment = { vertical: "center", horizontal: "center", wrapText: true };
+      } else {
+        style.fill = { patternType: "solid", fgColor: { rgb: (r - 3) % 2 === 0 ? "FFFFFF" : COLOR_CANVAS } };
+        style.font = { sz: 10, color: { rgb: COLOR_INK } };
+        if (c === 10) {
+          wsR[addr].l = { Target: `#'${nombresHoja[r - 3]}'!A1` };
+          style.font = { sz: 10, color: { rgb: "1F4E9E" }, underline: true };
+        }
+      }
+      wsR[addr].s = style;
+    }
+  }
+  wsR["!rows"] = [{ hpt: 24 }, { hpt: 20 }, { hpt: 24 }];
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "ANEXO");
-  const nombreArchivo = `Envio_${(envio.coleccion || envio.cliente || "bitacora").replace(/[^a-zA-Z0-9]+/g, "_")}_${envio.fechaEnviado || today()}.xlsx`;
-  const fotos = envio.items.map((it, i) => ({ dataUrl: it.foto, col: 0, row: 4 + i })).filter((f) => f.dataUrl);
-  if (fotos.length) {
+  XLSX.utils.book_append_sheet(wb, wsR, "Resumen");
+  envios.forEach((e, i) => {
+    const ws = construirHojaAnexoEnvio(XLSX, {
+      coleccion: e.coleccion, cliente: e.cliente, numPedido: e.numPedido,
+      fechaEnviado: e.fechaEnviado, fechaRecibidoCliente: e.fechaRecibidoCliente || "",
+      cartaColores: e.cartaColores, items: e.items,
+    });
+    XLSX.utils.book_append_sheet(wb, ws, nombresHoja[i]);
+  });
+  // Fotos: las que ya son data URL se incrustan directo; las que viven en
+  // Storage (link http) se bajan primero, si falla alguna se omite esa foto.
+  const aDataUrl = async (src) => {
+    if (typeof src !== "string" || !src) return "";
+    if (src.startsWith("data:")) return src;
+    if (/^https?:/.test(src)) { try { return await urlStorageADataUrl(src); } catch (err) { return ""; } }
+    return "";
+  };
+  const hojasFotos = await Promise.all(envios.map(async (e, i) => ({
+    indice: i + 1,
+    fotos: (await Promise.all(e.items.map(async (it, j) => ({ dataUrl: await aDataUrl(it.foto), col: 0, row: 4 + j })))).filter((f) => f.dataUrl),
+  })));
+  if (hojasFotos.some((h) => h.fotos.length)) {
     try {
       const wbArrayBuffer = XLSX.write(wb, { bookType: "xlsx", type: "array" });
-      const blob = await incrustarFotosEnXlsx(wbArrayBuffer, fotos);
+      const blob = await incrustarFotosMultiHojaEnXlsx(wbArrayBuffer, hojasFotos);
       if (blob) {
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
@@ -4004,9 +4209,8 @@ async function exportBitacoraEnvioToExcel(envio) {
         URL.revokeObjectURL(url);
         return;
       }
-    } catch (e) {
-      // Si algo falla armando las fotos, se sigue abajo con la descarga sin
-      // imágenes — mejor un Excel completo sin fotos que ninguno.
+    } catch (err) {
+      // Si algo falla armando las fotos, se descarga sin imágenes: mejor el Excel completo sin fotos que ninguno.
     }
   }
   XLSX.writeFile(wb, nombreArchivo);
@@ -8366,6 +8570,12 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
   const [desdeFiltro, setDesdeFiltro] = useState("");
   const [hastaFiltro, setHastaFiltro] = useState("");
   const [expandido, setExpandido] = useState(null);
+  // (2026-10-15, a pedido de Fredy) Descarga por fecha: modalFecha = día ISO
+  // elegido (null = cerrado); selFecha = ids de los envíos marcados.
+  const [modalFecha, setModalFecha] = useState(null);
+  const [kindFecha, setKindFecha] = useState("todos");
+  const [selFecha, setSelFecha] = useState([]);
+  const [descargandoFecha, setDescargandoFecha] = useState(false);
   // Envío puntual abierto en ventana de detalle (dentro del listado "Envíos
   // incluidos en este grupo") — al agrupar por cápsula, esa lista muestra
   // varios envíos idénticos a simple vista (misma fecha/transporte, cada uno
@@ -8520,6 +8730,56 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
       b.grupos.push(g);
     });
   }
+  // (2026-10-15, a pedido de Fredy) Descargar por fecha: todo lo enviado un
+  // día (prototipos y cápsulas), eligiendo uno, varios o el día completo.
+  // Trabaja sobre cada ENVÍO individual (no sobre los grupos por cápsula de
+  // abajo), porque un grupo puede juntar envíos de varios días.
+  const diaDe = (e) => (e.fechaEnviado || "").slice(0, 10);
+  const diasConEnvios = (() => {
+    const m = new Map();
+    enriquecidos.forEach((e) => {
+      const d = diaDe(e);
+      if (!d) return;
+      const o = m.get(d) || { proto: 0, ref: 0 };
+      o[e._kind] += 1;
+      m.set(d, o);
+    });
+    return [...m.entries()].sort((a, b) => b[0].localeCompare(a[0]));
+  })();
+  const unidadesEnvio = (e) => e.items.reduce((s, it) => s + (Number(it.colombiaCantidad) || 0) + (Number(it.venezuelaCantidad) || 0), 0);
+  const enviosDeFecha = modalFecha
+    ? enriquecidos
+        .filter((e) => diaDe(e) === modalFecha && (kindFecha === "todos" || e._kind === kindFecha))
+        .sort((a, b) => (a._kind === b._kind ? (a.coleccion || "").localeCompare(b.coleccion || "") : a._kind === "ref" ? -1 : 1))
+    : [];
+  const idsFecha = enviosDeFecha.map((e) => e.id);
+  const seleccionados = enviosDeFecha.filter((e) => selFecha.includes(e.id));
+  function abrirDescargaFecha(iso) {
+    setModalFecha(iso || diasConEnvios[0]?.[0] || hoyIso);
+    setKindFecha("todos");
+    setSelFecha([]);
+  }
+  function alternarSeleccion(id) {
+    setSelFecha((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
+  }
+  async function descargarEnviosFecha(lista, sufijo) {
+    if (!lista.length || descargandoFecha) return;
+    setDescargandoFecha(true);
+    try {
+      await exportarEnviosPorFechaExcel({
+        fecha: modalFecha,
+        nombreArchivo: `Envios_${modalFecha}${sufijo}.xlsx`,
+        envios: lista.map((e) => ({
+          tipo: e._kind === "proto" ? "Prototipo" : "Cápsula",
+          coleccion: e.coleccion, cliente: e.cliente, numPedido: e.numPedido,
+          fechaEnviado: e.fechaEnviado, fechaRecibidoCliente: e.fechaRecibidoCliente,
+          empresaTransporte: e.empresaTransporte, guia: e.guia, cartaColores: e.cartaColores, items: e.items,
+        })),
+      });
+    } finally {
+      setDescargandoFecha(false);
+    }
+  }
   // (2026-09-23, a pedido de Fredy) "Descargar todo" -- TODO el historial de
   // envíos (sin importar el filtro de Pendientes/Todos ni la búsqueda de
   // arriba), una fila por referencia por envío, con el estado ACTUAL
@@ -8608,6 +8868,74 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
           </div>
         </Modal>
       )}
+      {modalFecha && (
+        <Modal title="📅 Descargar envíos por fecha" onClose={() => setModalFecha(null)} width={680}>
+          <p style={{ margin: "0 0 12px", fontSize: 13, color: T.slate }}>
+            Elige el día en que se enviaron. Puedes descargar todo ese día, o marcar solo los envíos que quieras. Sale un solo Excel con una hoja de resumen y una hoja por cada envío (con fotos).
+          </p>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
+            <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, textTransform: "uppercase", letterSpacing: "0.05em" }}>Fecha enviada</label>
+            <input type="date" value={modalFecha} onChange={(e) => { if (e.target.value) { setModalFecha(e.target.value); setSelFecha([]); } }} style={{ padding: "7px 10px", border: `1.5px solid ${T.denim}`, borderRadius: 8, fontSize: 13, color: T.ink, background: T.white, fontFamily: "inherit" }} />
+          </div>
+          {diasConEnvios.length > 0 && (
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+              {diasConEnvios.slice(0, 10).map(([d, c]) => (
+                <button key={d} onClick={() => { setModalFecha(d); setSelFecha([]); }} style={{ padding: "4px 10px", borderRadius: 14, border: `1.5px solid ${modalFecha === d ? T.denim : T.border}`, background: modalFecha === d ? T.denimBg : T.white, color: modalFecha === d ? T.denim : T.ink, fontWeight: 700, fontSize: 11.5, cursor: "pointer", fontFamily: "inherit" }}>
+                  {fechaCorta(d)} · {c.proto + c.ref}
+                </button>
+              ))}
+            </div>
+          )}
+          <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
+            {[["todos", "Todos"], ["proto", "Prototipos"], ["ref", "Cápsulas"]].map(([v, label]) => (
+              <button key={v} onClick={() => { setKindFecha(v); setSelFecha([]); }} style={{ padding: "5px 12px", borderRadius: 6, border: `1.5px solid ${kindFecha === v ? T.ink : T.border}`, background: kindFecha === v ? T.ink : T.white, color: kindFecha === v ? T.white : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>{label}</button>
+            ))}
+          </div>
+          {!enviosDeFecha.length ? (
+            <div style={{ textAlign: "center", padding: 28, color: T.slate, fontSize: 13, border: `1px dashed ${T.border}`, borderRadius: 10 }}>
+              No hay envíos {kindFecha === "proto" ? "de prototipos " : kindFecha === "ref" ? "de cápsulas " : ""}con fecha {fechaCorta(modalFecha) || modalFecha}.
+            </div>
+          ) : (
+            <>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
+                <div style={{ fontSize: 12, color: T.slate }}>
+                  {enviosDeFecha.length} envío{enviosDeFecha.length !== 1 ? "s" : ""} · {enviosDeFecha.reduce((s, e) => s + e.items.length, 0)} ref · {fmtNum(enviosDeFecha.reduce((s, e) => s + unidadesEnvio(e), 0))} unid.
+                </div>
+                <button onClick={() => setSelFecha(seleccionados.length === enviosDeFecha.length ? [] : idsFecha)} style={{ background: "none", border: "none", color: T.denim, fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
+                  {seleccionados.length === enviosDeFecha.length ? "Quitar selección" : "Seleccionar todos"}
+                </button>
+              </div>
+              <div style={{ maxHeight: 300, overflowY: "auto", marginBottom: 14 }}>
+                {enviosDeFecha.map((e) => {
+                  const marcado = selFecha.includes(e.id);
+                  return (
+                    <label key={e.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 8, border: `1.5px solid ${marcado ? T.denim : T.border}`, background: marcado ? T.denimBg : T.canvas, marginBottom: 6, cursor: "pointer" }}>
+                      <input type="checkbox" checked={marcado} onChange={() => alternarSeleccion(e.id)} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontWeight: 700, fontSize: 13, color: T.ink, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                          {e.coleccion || "(Sin nombre de colección)"}
+                          <span style={{ fontSize: 10, fontWeight: 700, color: e._kind === "proto" ? T.violet : T.denim, background: e._kind === "proto" ? T.violetBg : T.denimBg, padding: "1px 8px", borderRadius: 10 }}>{e._kind === "proto" ? "Prototipo" : "Cápsula"}</span>
+                        </div>
+                        <div style={{ fontSize: 11.5, color: T.slate, marginTop: 2 }}>
+                          {e.cliente || "Sin cliente"} · {e.items.length} ref · {fmtNum(unidadesEnvio(e))} unid.{e.empresaTransporte ? ` · ${e.empresaTransporte}` : ""}
+                        </div>
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
+              <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", flexWrap: "wrap" }}>
+                <Btn variant="secondary" disabled={!seleccionados.length || descargandoFecha} onClick={() => descargarEnviosFecha(seleccionados, "_seleccion")}>
+                  📊 Descargar seleccionados ({seleccionados.length})
+                </Btn>
+                <Btn disabled={descargandoFecha} onClick={() => descargarEnviosFecha(enviosDeFecha, "")}>
+                  {descargandoFecha ? "Preparando Excel..." : `📊 Descargar fecha completa (${enviosDeFecha.length})`}
+                </Btn>
+              </div>
+            </>
+          )}
+        </Modal>
+      )}
       {declinadasEsteMes > 0 && onGoHistorial && (
         <div
           onClick={onGoHistorial}
@@ -8622,6 +8950,12 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
           <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Historial de colecciones/lotes enviados al cliente</p>
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <button
+            onClick={() => abrirDescargaFecha(null)}
+            disabled={!envios.length}
+            title="Descarga lo enviado en un día (uno, varios o todos los envíos de esa fecha)"
+            style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", background: envios.length ? T.denim : T.border, color: "white", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 12, cursor: envios.length ? "pointer" : "not-allowed", fontFamily: "inherit" }}
+          >📅 Descargar por fecha</button>
           <button
             onClick={exportarTodo}
             disabled={!envios.length}
@@ -8706,6 +9040,11 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
                     <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: "0.08em", color: T.slate, marginTop: 2 }}>{fi.mes} {fi.anio}</div>
                     <div style={{ fontSize: 11, color: T.slate, marginTop: 6 }}>{fi.semana}</div>
                     <div style={{ fontSize: 11, fontWeight: 700, marginTop: 3, color: sinRecibir ? cd.fg : T.slate }}>{textoHace(fi.dias)}</div>
+                    <button
+                      onClick={(ev) => { ev.stopPropagation(); abrirDescargaFecha(String(g.fechaMax).slice(0, 10)); }}
+                      title="Descargar todo lo enviado ese día"
+                      style={{ marginTop: 8, padding: "3px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.denim, fontWeight: 700, fontSize: 10.5, cursor: "pointer", fontFamily: "inherit" }}
+                    >⬇ Día</button>
                   </>
                 ) : (
                   <div style={{ fontSize: 12, fontWeight: 700, color: T.slate }}>Sin fecha</div>
@@ -8858,6 +9197,8 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
 // que usa la Bitácora de Envíos, agrupada por cápsula.
 function BitacoraAprobadosSinPedidoView({ capsulas, pedidos, onSelectRef, onVincularPedido, currentUser, soloLectura }) {
   const [busqueda, setBusqueda] = useState("");
+  // (2026-10-15, a pedido de Fredy) "capsula" = vista de siempre; "cliente" = agrupada por cliente.
+  const [vista, setVista] = useState("capsula");
   // Vincular a pedido a mano: cuando el cruce automático (por código exacto
   // de referencia) no encuentra el pedido — por formato distinto del código,
   // o porque el pedido quedó registrado bajo otro número tras reprogramarse
@@ -8881,6 +9222,18 @@ function BitacoraAprobadosSinPedidoView({ capsulas, pedidos, onSelectRef, onVinc
     .filter(({ cap, refs }) => refs.length > 0 && (!q || (cap.name || "").toLowerCase().includes(q) || (cap.cliente || "").toLowerCase().includes(q)))
     .sort((a, b) => (a.cap.name || "").localeCompare(b.cap.name || ""));
   const totalRefs = capsulasConSinPedido.reduce((s, c) => s + c.refs.length, 0);
+  // Agrupación por cliente (mismo nombre sin importar mayúsculas/tildes).
+  const clientesMap = new Map();
+  capsulasConSinPedido.forEach(({ cap, refs }) => {
+    const nombre = (cap.cliente || "").trim();
+    const key = nombre ? foldTexto(nombre) : "__sin_cliente__";
+    if (!clientesMap.has(key)) clientesMap.set(key, { key, nombre: nombre || "Sin cliente", sinCliente: !nombre, capsulas: [], totalRefs: 0 });
+    const c = clientesMap.get(key);
+    c.capsulas.push({ cap, refs });
+    c.totalRefs += refs.length;
+  });
+  const clientes = [...clientesMap.values()].sort((a, b) => (a.sinCliente - b.sinCliente) || (b.totalRefs - a.totalRefs) || a.nombre.localeCompare(b.nombre));
+  const totalClientes = clientes.filter((c) => !c.sinCliente).length;
   const bq = buscaPedido.trim().toLowerCase();
   const pedidosEncontrados = bq
     ? (pedidos || [])
@@ -8899,6 +9252,47 @@ function BitacoraAprobadosSinPedidoView({ capsulas, pedidos, onSelectRef, onVinc
     });
     setVinculando(null);
     setBuscaPedido("");
+  }
+  function tablaRefs(cap, refs) {
+    return (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: T.ink }}>
+                  {["Foto", "Ref", "Nombre", "Categoría", "Silueta", "Rango", "Tela", ""].map((h) => (
+                    <th key={h} style={{ padding: "8px 10px", color: T.white, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {refs.map((r, i) => (
+                  <tr
+                    key={r.id}
+                    style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}` }}
+                  >
+                    <td onClick={() => onSelectRef && onSelectRef(cap.id, r.id)} style={{ padding: "6px 10px", cursor: onSelectRef ? "pointer" : "default" }}>{r.image ? <img src={r.image} alt="" style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 4 }} /> : "—"}</td>
+                    <td onClick={() => onSelectRef && onSelectRef(cap.id, r.id)} style={{ padding: "6px 10px", fontWeight: 700, cursor: onSelectRef ? "pointer" : "default" }}>{r.reference || "—"}</td>
+                    <td onClick={() => onSelectRef && onSelectRef(cap.id, r.id)} style={{ padding: "6px 10px", cursor: onSelectRef ? "pointer" : "default" }}>{r.name || "—"}</td>
+                    <td onClick={() => onSelectRef && onSelectRef(cap.id, r.id)} style={{ padding: "6px 10px", cursor: onSelectRef ? "pointer" : "default" }}>{r.categoria || "—"}</td>
+                    <td onClick={() => onSelectRef && onSelectRef(cap.id, r.id)} style={{ padding: "6px 10px", cursor: onSelectRef ? "pointer" : "default" }}>{r.silueta || "—"}</td>
+                    <td onClick={() => onSelectRef && onSelectRef(cap.id, r.id)} style={{ padding: "6px 10px", cursor: onSelectRef ? "pointer" : "default" }}>{r.rango || r.tallas?.[0] || "—"}</td>
+                    <td onClick={() => onSelectRef && onSelectRef(cap.id, r.id)} style={{ padding: "6px 10px", cursor: onSelectRef ? "pointer" : "default" }}>{r.tipoTela || "—"}</td>
+                    <td style={{ padding: "6px 10px" }}>
+                      {!soloLectura && (
+                        <button
+                          onClick={() => setVinculando({ capId: cap.id, refId: r.id })}
+                          style={{ background: T.denimBg, border: "none", borderRadius: 6, padding: "4px 8px", color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap" }}
+                        >
+                          🔗 Vincular a pedido
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+    );
   }
   return (
     <div>
@@ -8943,54 +9337,59 @@ function BitacoraAprobadosSinPedidoView({ capsulas, pedidos, onSelectRef, onVinc
           style={{ padding: "9px 14px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, minWidth: 260, outline: "none", fontFamily: "inherit" }}
         />
       </div>
+      {capsulasConSinPedido.length > 0 && (
+        <>
+          <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+            <div style={{ padding: "10px 16px", borderRadius: 10, border: `1.5px solid ${T.denim}`, background: T.denimBg, minWidth: 150 }}>
+              <div style={{ fontSize: 11, color: T.denim, fontWeight: 700 }}>👤 Clientes con aprobados sin pedido</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: T.ink }}>{totalClientes}</div>
+              {clientesMap.has("__sin_cliente__") && <div style={{ fontSize: 11, color: T.slate }}>+ cápsulas sin cliente asignado</div>}
+            </div>
+            <div style={{ padding: "10px 16px", borderRadius: 10, border: `1px solid ${T.border}`, background: T.white, minWidth: 130 }}>
+              <div style={{ fontSize: 11, color: T.slate, fontWeight: 700 }}>🗂 Cápsulas</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: T.ink }}>{capsulasConSinPedido.length}</div>
+            </div>
+            <div style={{ padding: "10px 16px", borderRadius: 10, border: `1px solid ${T.border}`, background: T.white, minWidth: 130 }}>
+              <div style={{ fontSize: 11, color: T.slate, fontWeight: 700 }}>👗 Referencias sin pedido</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: T.ink }}>{totalRefs}</div>
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
+            {[["capsula", "🗂 Por cápsula"], ["cliente", "👤 Por cliente"]].map(([val, label]) => (
+              <button key={val} onClick={() => setVista(val)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${vista === val ? T.denim : T.border}`, background: vista === val ? T.denimBg : T.white, color: vista === val ? T.denim : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>{label}</button>
+            ))}
+          </div>
+        </>
+      )}
       {!capsulasConSinPedido.length && (
         <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>
           No hay referencias aprobadas sin usar en pedido. 🎉
         </div>
       )}
-      {capsulasConSinPedido.map(({ cap, refs }) => (
+      {vista === "capsula" && capsulasConSinPedido.map(({ cap, refs }) => (
         <div key={cap.id} style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, marginBottom: 16, overflow: "hidden" }}>
           <div style={{ padding: "16px 20px", background: T.canvas }}>
             <div style={{ fontWeight: 800, fontSize: 15, color: T.ink }}>🗂 {cap.name || "Cápsula"}</div>
             <div style={{ fontSize: 12, color: T.slate, marginTop: 2 }}>{cap.cliente || "Sin cliente"}{cap.season ? ` · ${cap.season}` : ""} · {refs.length} referencia{refs.length !== 1 ? "s" : ""} sin pedido</div>
           </div>
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-              <thead>
-                <tr style={{ background: T.ink }}>
-                  {["Foto", "Ref", "Nombre", "Categoría", "Silueta", "Rango", "Tela", ""].map((h) => (
-                    <th key={h} style={{ padding: "8px 10px", color: T.white, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {refs.map((r, i) => (
-                  <tr
-                    key={r.id}
-                    style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}` }}
-                  >
-                    <td onClick={() => onSelectRef && onSelectRef(cap.id, r.id)} style={{ padding: "6px 10px", cursor: onSelectRef ? "pointer" : "default" }}>{r.image ? <img src={r.image} alt="" style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 4 }} /> : "—"}</td>
-                    <td onClick={() => onSelectRef && onSelectRef(cap.id, r.id)} style={{ padding: "6px 10px", fontWeight: 700, cursor: onSelectRef ? "pointer" : "default" }}>{r.reference || "—"}</td>
-                    <td onClick={() => onSelectRef && onSelectRef(cap.id, r.id)} style={{ padding: "6px 10px", cursor: onSelectRef ? "pointer" : "default" }}>{r.name || "—"}</td>
-                    <td onClick={() => onSelectRef && onSelectRef(cap.id, r.id)} style={{ padding: "6px 10px", cursor: onSelectRef ? "pointer" : "default" }}>{r.categoria || "—"}</td>
-                    <td onClick={() => onSelectRef && onSelectRef(cap.id, r.id)} style={{ padding: "6px 10px", cursor: onSelectRef ? "pointer" : "default" }}>{r.silueta || "—"}</td>
-                    <td onClick={() => onSelectRef && onSelectRef(cap.id, r.id)} style={{ padding: "6px 10px", cursor: onSelectRef ? "pointer" : "default" }}>{r.rango || r.tallas?.[0] || "—"}</td>
-                    <td onClick={() => onSelectRef && onSelectRef(cap.id, r.id)} style={{ padding: "6px 10px", cursor: onSelectRef ? "pointer" : "default" }}>{r.tipoTela || "—"}</td>
-                    <td style={{ padding: "6px 10px" }}>
-                      {!soloLectura && (
-                        <button
-                          onClick={() => setVinculando({ capId: cap.id, refId: r.id })}
-                          style={{ background: T.denimBg, border: "none", borderRadius: 6, padding: "4px 8px", color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap" }}
-                        >
-                          🔗 Vincular a pedido
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          {tablaRefs(cap, refs)}
+        </div>
+      ))}
+      {vista === "cliente" && clientes.map((cl) => (
+        <div key={cl.key} style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, marginBottom: 16, overflow: "hidden" }}>
+          <div style={{ padding: "16px 20px", background: T.canvas }}>
+            <div style={{ fontWeight: 800, fontSize: 15, color: T.ink }}>👤 {cl.nombre}</div>
+            <div style={{ fontSize: 12, color: T.slate, marginTop: 2 }}>{cl.capsulas.length} cápsula{cl.capsulas.length !== 1 ? "s" : ""} · {cl.totalRefs} referencia{cl.totalRefs !== 1 ? "s" : ""} sin pedido</div>
           </div>
+          {cl.capsulas.map(({ cap, refs }) => (
+            <div key={cap.id} style={{ borderTop: `1px solid ${T.border}` }}>
+              <div style={{ padding: "10px 20px", fontSize: 12.5, fontWeight: 800, color: T.ink }}>
+                🗂 {cap.name || "Cápsula"}{cap.season ? ` · ${cap.season}` : ""}
+                <span style={{ color: T.slate, fontWeight: 600 }}> · {refs.length} ref sin pedido</span>
+              </div>
+              {tablaRefs(cap, refs)}
+            </div>
+          ))}
         </div>
       ))}
     </div>
