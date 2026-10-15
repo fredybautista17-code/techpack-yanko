@@ -3213,6 +3213,19 @@ exports.getSaldoTrasladosExternosBusint = onCall(
       advertencias.push(`No se pudo consultar la cartera de facturas para detectar clientes con facturas: ${err?.message || String(err)}`);
     }
     const notasPorTabla = [];
+    // Diagnóstico 2: valores (±1) de los traslados de clientes con facturas, para encontrar en
+    // CUALQUIER fila de notas (cualquier cliente/cuenta) una con débito o crédito igual.
+    const valoresDiag = new Set();
+    for (const c of porCliente.values()) {
+      if (!c.tieneFacturas) continue;
+      for (const d of c.docs) {
+        for (const base of [Math.round(d.valor), Math.round(d.valor - d.dev)]) {
+          if (base >= 1) { valoresDiag.add(base - 1); valoresDiag.add(base); valoresDiag.add(base + 1); }
+        }
+      }
+    }
+    const notasCandidatas = []; // { tabla, valor, raw }
+    const columnasNotas = {};
     const notasOtroCod = []; // diagnóstico: créditos cuenta 130505 con Cod que no es un cliente con traslados
     try {
       const swaggerResp = await fetch("https://api-yanko-bd.busint.info/swagger/v1/swagger.json");
@@ -3227,6 +3240,7 @@ exports.getSaldoTrasladosExternosBusint = onCall(
           continue;
         }
         const f0 = filas[0] || {};
+        columnasNotas[tabla] = Object.keys(f0).join(", ");
         if (!("Puc" in f0 && "Debito" in f0 && "Credito" in f0 && "Cod" in f0 && "Nfact" in f0)) continue;
         let usadas = 0;
         let suma = 0;
@@ -3237,6 +3251,14 @@ exports.getSaldoTrasladosExternosBusint = onCall(
           const nfN = String(n?.Nfact ?? "").trim();
           const deb = num(n?.Debito);
           const cre = num(n?.Credito);
+          for (const val of [Math.round(cre), Math.round(deb)]) {
+            if (val >= 1 && valoresDiag.has(val) && notasCandidatas.length < 3000) {
+              let raw = "";
+              try { raw = JSON.stringify(n).slice(0, 420); } catch (e) { raw = "?"; }
+              notasCandidatas.push({ tabla, valor: val, raw });
+              break;
+            }
+          }
           const c = porCliente.get(cod);
           if (!c) {
             if (es130505 && cre > 0 && notasOtroCod.length < 30000) notasOtroCod.push({ tabla, cod, nfact: nfN, cre });
@@ -3246,7 +3268,7 @@ exports.getSaldoTrasladosExternosBusint = onCall(
           if (d && d.filasNotas.length < 12) d.filasNotas.push({ tabla, puc, nfact: nfN, deb, cre });
           if (!es130505) continue;
           if (!d) {
-            if (cre > 0 && c.creditosSinTraslado.length < 40) c.creditosSinTraslado.push({ tabla, nfact: nfN, cre });
+            if (cre > 0 && c.creditosSinTraslado.length < 40) c.creditosSinTraslado.push({ tabla, nfact: nfN, cre, raw: c.creditosSinTraslado.length < 3 ? JSON.stringify(n).slice(0, 420) : null });
             continue;
           }
           const v = deb - cre;
@@ -3353,10 +3375,14 @@ exports.getSaldoTrasladosExternosBusint = onCall(
           for (const { d, abierto } of abiertos.slice(0, 25)) {
             const filas = d.filasNotas.map((f) => `${f.tabla.replace(" detalles", "")} ${f.puc} D${fmt(f.deb)}/C${fmt(f.cre)}`).join(" | ");
             let linea = `Traslado ${d.nfact} (saldo abierto ${fmt(abierto)}): ${filas || "sin notas con ese número"}`;
+            const iguales = notasCandidatas.filter((x) => Math.abs(x.valor - abierto) <= 1).slice(0, 3);
+            if (iguales.length) linea += ` · FILAS CON VALOR IGUAL: ${iguales.map((x) => `[${x.tabla}] ${x.raw}`).join(" || ")}`;
             const otros = notasOtroCod.filter((x) => Math.abs(x.cre - abierto) <= 1).slice(0, 3);
             if (otros.length) linea += ` · créditos de igual valor con OTRO Cod: ${otros.map((x) => `Cod ${x.cod} doc ${x.nfact} (${x.tabla.replace(" detalles", "")})`).join("; ")}`;
             diagnostico.push(linea);
           }
+          diagnostico.push(`Columnas de las tablas de notas: ${Object.entries(columnasNotas).map(([t, cols]) => `${t}: ${cols}`).join(" || ")}`);
+          for (const x of c.creditosSinTraslado.filter((y) => y.raw).slice(0, 3)) diagnostico.push(`Fila completa de ejemplo (crédito sin traslado) [${x.tabla}]: ${x.raw}`);
           if (c.creditosSinTraslado.length) {
             diagnostico.push(`Créditos 130505 de este cliente que NO caen sobre un traslado (${c.creditosSinTraslado.length}, primeros 12): ${c.creditosSinTraslado.slice(0, 12).map((x) => `doc ${x.nfact} C${fmt(x.cre)}`).join("; ")}`);
           }
