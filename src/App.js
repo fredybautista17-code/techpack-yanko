@@ -4222,7 +4222,7 @@ async function exportarEnviosPorFechaExcel({ fecha, envios, nombreArchivo }) {
 // ANEXO. Las filas ya vienen armadas (con el estado ACTUAL resuelto en
 // vivo) desde BitacoraEnviosView, que es quien tiene a mano
 // protos/capsulas para resolverlo -- esta función solo las escribe.
-async function exportarTodaBitacoraEnviosExcel(filas) {
+async function exportarTodaBitacoraEnviosExcel(filas, sufijoNombre = "") {
   const XLSX = await import("xlsx");
   function numOTexto(v) {
     if (v === "" || v === null || v === undefined) return "";
@@ -4249,7 +4249,7 @@ async function exportarTodaBitacoraEnviosExcel(filas) {
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   ws["!cols"] = encabezados.map((h) => ({ wch: h === "OBSERVACIONES CLIENTE" ? 30 : h === "COLECCIÓN" || h === "NOMBRE" ? 22 : 14 }));
   XLSX.utils.book_append_sheet(wb, ws, "Bitácora de Envíos");
-  XLSX.writeFile(wb, `Bitacora_Envios_${today()}.xlsx`);
+  XLSX.writeFile(wb, `Bitacora_Envios${sufijoNombre}_${today()}.xlsx`);
 }
 // Envuelve las dos bitácoras (Envíos / Aprobados sin Pedido) en pestañas
 // dentro de un solo ítem de menú "Bitácoras" — antes eran dos entradas
@@ -8568,6 +8568,7 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
   const [busqueda, setBusqueda] = useState("");
   const [mesFiltro, setMesFiltro] = useState("");
   const [desdeFiltro, setDesdeFiltro] = useState("");
+  const [clienteFiltro, setClienteFiltro] = useState(""); // "" = todos los clientes
   const [hastaFiltro, setHastaFiltro] = useState("");
   const [expandido, setExpandido] = useState(null);
   // (2026-10-15, a pedido de Fredy) Descarga por fecha: modalFecha = día ISO
@@ -8616,8 +8617,22 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
   });
   const q = busqueda.trim().toLowerCase();
   const mesDe = (e) => (e.fechaEnviado || "").slice(0, 7);
+  // (2026-10-15, a pedido de Fredy) Filtro por cliente de la Bitácora de Envíos.
+  const claveClienteEnvio = (e) => foldTexto((e.cliente || "").trim()) || "__sin_cliente__";
+  const opcionesClienteEnvio = (() => {
+    const m = new Map();
+    enriquecidos.forEach((e) => {
+      const k = claveClienteEnvio(e);
+      const o = m.get(k) || { key: k, nombre: (e.cliente || "").trim() || "Sin cliente", n: 0 };
+      o.n += 1;
+      m.set(k, o);
+    });
+    return [...m.values()].sort((a, b) => ((a.key === "__sin_cliente__") - (b.key === "__sin_cliente__")) || a.nombre.localeCompare(b.nombre));
+  })();
+  const clienteEnvioActivo = opcionesClienteEnvio.some((o) => o.key === clienteFiltro) ? clienteFiltro : "";
   const base = enriquecidos.filter(
     (e) =>
+      (!clienteEnvioActivo || claveClienteEnvio(e) === clienteEnvioActivo) &&
       (!q || (e.coleccion || "").toLowerCase().includes(q) || (e.cliente || "").toLowerCase().includes(q) || (e.numPedido || "").toLowerCase?.().includes(q)) &&
       (!mesFiltro || mesDe(e) === mesFiltro) &&
       (!desdeFiltro || (e.fechaEnviado || "").slice(0, 10) >= desdeFiltro) &&
@@ -8801,8 +8816,22 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
   // resuelto en vivo (liveItemFor) -- a diferencia del botón "Exportar" de
   // cada tarjeta (exportBitacoraEnvioToExcel), que solo exporta un
   // envío/grupo a la vez con el formato del ANEXO.
+  // (2026-10-15, a pedido de Fredy) Ahora respeta el cliente elegido y el
+  // rango Desde/Hasta: sin filtros baja todo; con cliente, solo ese cliente;
+  // con fechas, solo esas fechas (el mes, Pendientes/Todos, tipo y el
+  // buscador siguen sin afectar este botón).
+  const nombreClienteEnvio = opcionesClienteEnvio.find((o) => o.key === clienteEnvioActivo)?.nombre || "";
+  const textoRangoFechas = desdeFiltro && hastaFiltro
+    ? (desdeFiltro === hastaFiltro ? fechaCorta(desdeFiltro) : `${fechaCorta(desdeFiltro)} – ${fechaCorta(hastaFiltro)}`)
+    : desdeFiltro ? `desde ${fechaCorta(desdeFiltro)}` : hastaFiltro ? `hasta ${fechaCorta(hastaFiltro)}` : "";
+  const textoDescargar = [nombreClienteEnvio, textoRangoFechas].filter(Boolean).join(" · ");
   function exportarTodo() {
     const filas = [...envios]
+      .filter((e) =>
+        (!clienteEnvioActivo || claveClienteEnvio(e) === clienteEnvioActivo) &&
+        (!desdeFiltro || (e.fechaEnviado || "").slice(0, 10) >= desdeFiltro) &&
+        (!hastaFiltro || (e.fechaEnviado || "").slice(0, 10) <= hastaFiltro)
+      )
       .sort((a, b) => (b.fechaEnviado || "").localeCompare(a.fechaEnviado || ""))
       .flatMap((e) => {
         const tipo = e.items[0]?.kind === "proto" ? "Prototipo" : "Cápsula";
@@ -8820,7 +8849,9 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
           };
         });
       });
-    exportarTodaBitacoraEnviosExcel(filas);
+    const partesNombre = [nombreClienteEnvio, desdeFiltro && hastaFiltro ? (desdeFiltro === hastaFiltro ? desdeFiltro : `${desdeFiltro}_a_${hastaFiltro}`) : desdeFiltro ? `desde_${desdeFiltro}` : hastaFiltro ? `hasta_${hastaFiltro}` : ""]
+      .filter(Boolean).map((s) => s.replace(/[^a-zA-Z0-9-]+/g, "_"));
+    exportarTodaBitacoraEnviosExcel(filas, partesNombre.length ? `_${partesNombre.join("_")}` : "");
   }
   return (
     <div>
@@ -8987,9 +9018,9 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
           <button
             onClick={exportarTodo}
             disabled={!envios.length}
-            title="Descarga TODO el historial de envíos a Excel, sin importar el filtro de arriba"
+            title="Descarga a Excel el historial de envíos: todo si no hay cliente ni fechas elegidos; si hay, solo ese cliente y/o esas fechas"
             style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", background: envios.length ? "#217346" : T.border, color: "white", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 12, cursor: envios.length ? "pointer" : "not-allowed", whiteSpace: "nowrap" }}
-          >📊 Descargar todo</button>
+          >📊 {textoDescargar ? `Descargar ${textoDescargar}` : "Descargar todo"}</button>
           <input
             value={busqueda}
             onChange={(e) => setBusqueda(e.target.value)}
@@ -9010,6 +9041,16 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
           ))}
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          {opcionesClienteEnvio.length > 0 && (
+            <select
+              value={clienteEnvioActivo}
+              onChange={(e) => setClienteFiltro(e.target.value)}
+              style={{ padding: "8px 12px", border: `1.5px solid ${clienteEnvioActivo ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit", maxWidth: 240 }}
+            >
+              <option value="">Todos los clientes ({opcionesClienteEnvio.length})</option>
+              {opcionesClienteEnvio.map((o) => <option key={o.key} value={o.key}>{o.nombre} ({o.n})</option>)}
+            </select>
+          )}
           <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, textTransform: "uppercase", letterSpacing: "0.05em" }}>Desde</label>
           <input type="date" value={desdeFiltro} onChange={(e) => setDesdeFiltro(e.target.value)} style={{ padding: "7px 10px", border: `1.5px solid ${desdeFiltro ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, background: T.white, fontFamily: "inherit" }} />
           <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, textTransform: "uppercase", letterSpacing: "0.05em" }}>Hasta</label>
