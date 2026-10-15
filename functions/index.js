@@ -3160,7 +3160,7 @@ exports.getSaldoTrasladosExternosBusint = onCall(
       const nfact = String(f.NFACT ?? "").trim();
       if (!porCliente.has(cod)) porCliente.set(cod, { codigo: cod, docs: [], traslados: 0, devoluciones: 0, notas: 0, notasOmitidas: 0, tieneFacturas: false, creditosSinTraslado: [], pagosValor: 0, pagosAjustes: 0, pagosSinDocumento: 0, pagosAtribuidosPorFactura: 0 });
       const c = porCliente.get(cod);
-      const d = { nfact, fecha: aISO(f.Fechaini), valor: num(f.FACTOT), dev: 0, notas: 0, notasBrutas: 0, creditosNotas: [], filasNotas: [], pagadoValor: 0, pagadoAjustes: 0 };
+      const d = { raw: JSON.stringify(f).slice(0, 600), nfact, fecha: aISO(f.Fechaini), valor: num(f.FACTOT), dev: 0, notas: 0, notasBrutas: 0, creditosNotas: [], filasNotas: [], pagadoValor: 0, pagadoAjustes: 0 };
       c.docs.push(d);
       c.traslados += d.valor;
       docPorClave.set(`${cod}|${nfact}`, d);
@@ -3241,7 +3241,27 @@ exports.getSaldoTrasladosExternosBusint = onCall(
         }
         const f0 = filas[0] || {};
         columnasNotas[tabla] = Object.keys(f0).join(", ");
-        if (!("Puc" in f0 && "Debito" in f0 && "Credito" in f0 && "Cod" in f0 && "Nfact" in f0)) continue;
+        if (!("Puc" in f0 && "Debito" in f0 && "Credito" in f0 && "Cod" in f0 && "Nfact" in f0)) {
+          // Diagnóstico 3: tablas de notas con otras columnas (ej. "debito"/"credito" en minúscula,
+          // CtaContable en vez de Puc): solo se buscan filas con valor igual a un traslado abierto.
+          const lc = Object.keys(f0).map((k) => k.toLowerCase());
+          if (lc.includes("cod") && (lc.includes("debito") || lc.includes("credito"))) {
+            for (const n of filas) {
+              for (const k of Object.keys(n)) {
+                const lk = k.toLowerCase();
+                if (lk !== "debito" && lk !== "credito" && lk !== "precio" && lk !== "base") continue;
+                const val = Math.round(num(n[k]));
+                if (val >= 1 && valoresDiag.has(val) && notasCandidatas.length < 6000) {
+                  let raw = "";
+                  try { raw = JSON.stringify(n).slice(0, 420); } catch (e) { raw = "?"; }
+                  notasCandidatas.push({ tabla, valor: val, raw, campo: k });
+                  break;
+                }
+              }
+            }
+          }
+          continue;
+        }
         let usadas = 0;
         let suma = 0;
         for (const n of filas) {
@@ -3372,11 +3392,12 @@ exports.getSaldoTrasladosExternosBusint = onCall(
           .filter((x) => Math.abs(x.abierto) >= 1);
         if (abiertos.length) {
           diagnostico = [`${abiertos.length} traslado(s) abiertos. Notas sobre el mismo número de traslado (tabla · cuenta · débito / crédito):`];
+          for (const { d } of abiertos.slice(0, 3)) diagnostico.push(`Fila del traslado ${d.nfact} en "cartera - tras": ${d.raw}`);
           for (const { d, abierto } of abiertos.slice(0, 25)) {
             const filas = d.filasNotas.map((f) => `${f.tabla.replace(" detalles", "")} ${f.puc} D${fmt(f.deb)}/C${fmt(f.cre)}`).join(" | ");
             let linea = `Traslado ${d.nfact} (saldo abierto ${fmt(abierto)}): ${filas || "sin notas con ese número"}`;
-            const iguales = notasCandidatas.filter((x) => Math.abs(x.valor - abierto) <= 1).slice(0, 3);
-            if (iguales.length) linea += ` · FILAS CON VALOR IGUAL: ${iguales.map((x) => `[${x.tabla}] ${x.raw}`).join(" || ")}`;
+            const iguales = notasCandidatas.filter((x) => Math.abs(x.valor - abierto) <= 1).slice(0, 5);
+            if (iguales.length) linea += ` · FILAS CON VALOR IGUAL: ${iguales.map((x) => `[${x.tabla}${x.campo ? "." + x.campo : ""}] ${x.raw}`).join(" || ")}`;
             const otros = notasOtroCod.filter((x) => Math.abs(x.cre - abierto) <= 1).slice(0, 3);
             if (otros.length) linea += ` · créditos de igual valor con OTRO Cod: ${otros.map((x) => `Cod ${x.cod} doc ${x.nfact} (${x.tabla.replace(" detalles", "")})`).join("; ")}`;
             diagnostico.push(linea);
