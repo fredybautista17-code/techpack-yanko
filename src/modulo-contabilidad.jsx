@@ -6295,6 +6295,14 @@ function SaldosClientesView({ currentUser }) {
               {Math.abs(t.pagosSinDocumento) >= 1 && <>Pagos sin factura identificada: {m(t.pagosSinDocumento)}. </>}
               {traslados?.pagosSinCliente?.filas > 0 && <>Hay {traslados.pagosSinCliente.filas} pago(s) sin cliente ({m(traslados.pagosSinCliente.valor)}) que no se asignaron a nadie.</>}
             </div>
+            {traslados?.diagnosticoGlobal?.length > 0 && (
+              <details style={{ marginBottom: 10, fontSize: 11, color: C.slate }}>
+                <summary style={{ cursor: "pointer", fontWeight: 700 }}>Diagnóstico: notas de traslados (para revisión)</summary>
+                <div style={{ marginTop: 6, lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word", background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 8, padding: 8 }}>
+                  {traslados.diagnosticoGlobal.map((l, i) => <div key={i}>{l}</div>)}
+                </div>
+              </details>
+            )}
             {t.diagnostico && t.diagnostico.length > 0 && (
               <details style={{ marginBottom: 10, fontSize: 11.5, color: C.slate }}>
                 <summary style={{ cursor: "pointer", fontWeight: 700 }}>Diagnóstico de notas (para revisión)</summary>

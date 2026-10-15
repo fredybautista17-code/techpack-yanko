@@ -3226,7 +3226,12 @@ exports.getSaldoTrasladosExternosBusint = onCall(
     }
     const notasCandidatas = []; // { tabla, valor, raw }
     const columnasNotas = {};
-    const notasOtroCod = []; // diagnóstico: créditos cuenta 130505 con Cod que no es un cliente con traslados
+    const notasOtroCod = [];
+    // Diagnóstico 4: tablas "notastras*" (notas de traslados): muestras por cliente y cabeceras.
+    const CODS_DIAG = ["101", "116", "124"];
+    const muestrasTras = {}; // tabla -> { cod -> { filas, precio, ejemplos[] } }
+    const cabecerasTras = {}; // tabla -> filas
+ // diagnóstico: créditos cuenta 130505 con Cod que no es un cliente con traslados
     try {
       const swaggerResp = await fetch("https://api-yanko-bd.busint.info/swagger/v1/swagger.json");
       const swagger = await swaggerResp.json();
@@ -3245,6 +3250,21 @@ exports.getSaldoTrasladosExternosBusint = onCall(
           // Diagnóstico 3: tablas de notas con otras columnas (ej. "debito"/"credito" en minúscula,
           // CtaContable en vez de Puc): solo se buscan filas con valor igual a un traslado abierto.
           const lc = Object.keys(f0).map((k) => k.toLowerCase());
+          if (/notastras/i.test(tabla)) {
+            if (lc.includes("cod")) {
+              const mt = (muestrasTras[tabla] = {});
+              for (const n of filas) {
+                const cd = String(n?.Cod ?? n?.cod ?? "").trim();
+                if (!CODS_DIAG.includes(cd)) continue;
+                const m = (mt[cd] = mt[cd] || { filas: 0, precio: 0, ejemplos: [] });
+                m.filas += 1;
+                m.precio += num(n?.Precio);
+                if (m.ejemplos.length < 8) m.ejemplos.push(JSON.stringify(n).slice(0, 380));
+              }
+            } else {
+              cabecerasTras[tabla] = filas;
+            }
+          }
           if (lc.includes("cod") && (lc.includes("debito") || lc.includes("credito"))) {
             for (const n of filas) {
               for (const k of Object.keys(n)) {
@@ -3301,6 +3321,24 @@ exports.getSaldoTrasladosExternosBusint = onCall(
       }
     } catch (err) {
       advertencias.push(`No se pudieron leer las notas de contabilidad: ${err?.message || String(err)}`);
+    }
+    const diagnosticoGlobal = [];
+    try {
+      for (const [tabla, porCod] of Object.entries(muestrasTras)) {
+        for (const [cd, m] of Object.entries(porCod)) {
+          diagnosticoGlobal.push(`[${tabla}] Cod ${cd}: ${m.filas} filas, suma Precio ${Math.round(m.precio).toLocaleString("es-CO")}`);
+          for (const ej of m.ejemplos) diagnosticoGlobal.push(`   ${ej}`);
+          const ndocs = new Set(m.ejemplos.map((e) => { try { return String(JSON.parse(e).Ndoc); } catch (er) { return null; } }).filter(Boolean));
+          for (const [tc, hs] of Object.entries(cabecerasTras)) {
+            for (const h of hs) {
+              if (ndocs.has(String(h?.Ndoc ?? h?.ndoc ?? ""))) diagnosticoGlobal.push(`   CABECERA [${tc}] ${JSON.stringify(h).slice(0, 380)}`);
+            }
+          }
+        }
+      }
+      diagnosticoGlobal.push(`Tablas notastras leídas: detalle=${Object.keys(muestrasTras).join(", ") || "ninguna"}; cabecera=${Object.keys(cabecerasTras).join(", ") || "ninguna"}`);
+    } catch (e) {
+      diagnosticoGlobal.push(`Error armando diagnóstico: ${String(e)}`);
     }
     const tablaNotas = notasPorTabla.filter((t) => t.usadas > 0).map((t) => t.tabla).join(", ") || null;
     const pagosSinCliente = { filas: 0, valor: 0 };
@@ -3439,6 +3477,7 @@ exports.getSaldoTrasladosExternosBusint = onCall(
       tablaDevoluciones,
       tablaNotas,
       notasPorTabla,
+      diagnosticoGlobal,
       filasTraslados: docs.length,
       filasPagos: pagos.length,
       pagosSinCliente: { filas: pagosSinCliente.filas, valor: r2(pagosSinCliente.valor) },
