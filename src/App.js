@@ -9195,10 +9195,13 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
 // misma señal que ya usa Historial con el badge "🚫 Sin pedido", pero acá
 // presentada con el mismo formato de tabla (foto/ref/nombre/categoría/...)
 // que usa la Bitácora de Envíos, agrupada por cápsula.
-function BitacoraAprobadosSinPedidoView({ capsulas, pedidos, onSelectRef, onVincularPedido, currentUser, soloLectura }) {
+function BitacoraAprobadosSinPedidoView({ capsulas, protos, pedidos, onSelectRef, onSelectProto, onVincularPedido, onVincularProto, currentUser, soloLectura }) {
   const [busqueda, setBusqueda] = useState("");
   // (2026-10-15, a pedido de Fredy) "capsula" = vista de siempre; "cliente" = agrupada por cliente.
   const [vista, setVista] = useState("capsula");
+  // (2026-10-15, a pedido de Fredy) Filtro por tipo (todos / cápsulas / prototipos) y por cliente.
+  const [tipoFiltro, setTipoFiltro] = useState("todos");
+  const [clienteSel, setClienteSel] = useState("");
   // Vincular a pedido a mano: cuando el cruce automático (por código exacto
   // de referencia) no encuentra el pedido — por formato distinto del código,
   // o porque el pedido quedó registrado bajo otro número tras reprogramarse
@@ -9214,24 +9217,50 @@ function BitacoraAprobadosSinPedidoView({ capsulas, pedidos, onSelectRef, onVinc
     return (pedidos || []).some((p) => (p.referencias || []).some((r) => String(r.ref || "").trim().toLowerCase() === target));
   }
   const q = busqueda.trim().toLowerCase();
-  const capsulasConSinPedido = (capsulas || [])
+  const clienteDe = (x) => String(x.cliente || x.colores?.[0] || "").trim();
+  const claveCliente = (nombre) => (nombre ? foldTexto(nombre) : "__sin_cliente__");
+  // Cápsulas: referencias aprobadas que nunca entraron a un pedido.
+  const capsAll = (capsulas || [])
     .map((cap) => ({
       cap,
       refs: (cap.referencias || []).filter((r) => r.status === "aprobado" && !usedInPedido(r.reference) && !r.pedidoVinculado),
     }))
     .filter(({ cap, refs }) => refs.length > 0 && (!q || (cap.name || "").toLowerCase().includes(q) || (cap.cliente || "").toLowerCase().includes(q)))
     .sort((a, b) => (a.cap.name || "").localeCompare(b.cap.name || ""));
-  const totalRefs = capsulasConSinPedido.reduce((s, c) => s + c.refs.length, 0);
+  // Prototipos: misma regla (aprobado, sin pedido por código y sin vínculo a mano).
+  const protosAll = (protos || [])
+    .filter((p) => p.status === "aprobado" && !usedInPedido(p.reference) && !p.pedidoVinculado)
+    .filter((p) => !q || (p.name || "").toLowerCase().includes(q) || clienteDe(p).toLowerCase().includes(q) || (p.reference || "").toLowerCase().includes(q))
+    .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+  const nCapsRefs = capsAll.reduce((s, c) => s + c.refs.length, 0);
+  const nProtos = protosAll.length;
+  const capsTipo = tipoFiltro === "proto" ? [] : capsAll;
+  const protosTipo = tipoFiltro === "ref" ? [] : protosAll;
+  // Opciones del filtro de cliente (según búsqueda y tipo elegidos), con su conteo.
+  const opcionesMap = new Map();
+  const sumaOpcion = (nombre, n) => {
+    const key = claveCliente(nombre);
+    const o = opcionesMap.get(key) || { key, nombre: nombre || "Sin cliente", n: 0 };
+    o.n += n;
+    opcionesMap.set(key, o);
+  };
+  capsTipo.forEach(({ cap, refs }) => sumaOpcion((cap.cliente || "").trim(), refs.length));
+  protosTipo.forEach((p) => sumaOpcion(clienteDe(p), 1));
+  const opcionesCliente = [...opcionesMap.values()].sort((a, b) => ((a.key === "__sin_cliente__") - (b.key === "__sin_cliente__")) || a.nombre.localeCompare(b.nombre));
+  const clienteActivo = opcionesMap.has(clienteSel) ? clienteSel : "";
+  const capsulasConSinPedido = capsTipo.filter(({ cap }) => !clienteActivo || claveCliente((cap.cliente || "").trim()) === clienteActivo);
+  const protosSinPedido = protosTipo.filter((p) => !clienteActivo || claveCliente(clienteDe(p)) === clienteActivo);
+  const totalRefs = capsulasConSinPedido.reduce((s, c) => s + c.refs.length, 0) + protosSinPedido.length;
+  const hayDatos = capsulasConSinPedido.length > 0 || protosSinPedido.length > 0;
   // Agrupación por cliente (mismo nombre sin importar mayúsculas/tildes).
   const clientesMap = new Map();
-  capsulasConSinPedido.forEach(({ cap, refs }) => {
-    const nombre = (cap.cliente || "").trim();
-    const key = nombre ? foldTexto(nombre) : "__sin_cliente__";
-    if (!clientesMap.has(key)) clientesMap.set(key, { key, nombre: nombre || "Sin cliente", sinCliente: !nombre, capsulas: [], totalRefs: 0 });
-    const c = clientesMap.get(key);
-    c.capsulas.push({ cap, refs });
-    c.totalRefs += refs.length;
-  });
+  const clienteGrupo = (nombre) => {
+    const key = claveCliente(nombre);
+    if (!clientesMap.has(key)) clientesMap.set(key, { key, nombre: nombre || "Sin cliente", sinCliente: !nombre, capsulas: [], protos: [], totalRefs: 0 });
+    return clientesMap.get(key);
+  };
+  capsulasConSinPedido.forEach(({ cap, refs }) => { const c = clienteGrupo((cap.cliente || "").trim()); c.capsulas.push({ cap, refs }); c.totalRefs += refs.length; });
+  protosSinPedido.forEach((p) => { const c = clienteGrupo(clienteDe(p)); c.protos.push(p); c.totalRefs += 1; });
   const clientes = [...clientesMap.values()].sort((a, b) => (a.sinCliente - b.sinCliente) || (b.totalRefs - a.totalRefs) || a.nombre.localeCompare(b.nombre));
   const totalClientes = clientes.filter((c) => !c.sinCliente).length;
   const bq = buscaPedido.trim().toLowerCase();
@@ -9242,7 +9271,8 @@ function BitacoraAprobadosSinPedidoView({ capsulas, pedidos, onSelectRef, onVinc
     : [];
   function confirmarVinculo(pedido) {
     if (!vinculando) return;
-    onVincularPedido(vinculando.capId, vinculando.refId, {
+    const enviar = vinculando.esProto ? (patch) => onVincularProto && onVincularProto(vinculando.refId, patch) : (patch) => onVincularPedido(vinculando.capId, vinculando.refId, patch);
+    enviar({
       pedidoVinculado: {
         numero: pedido.numero,
         cliente: pedido.cliente || "",
@@ -9254,12 +9284,15 @@ function BitacoraAprobadosSinPedidoView({ capsulas, pedidos, onSelectRef, onVinc
     setBuscaPedido("");
   }
   function tablaRefs(cap, refs) {
+    const abrir = (r) => (cap.esProtos ? onSelectProto && onSelectProto(r.id) : onSelectRef && onSelectRef(cap.id, r.id));
+    const clicable = cap.esProtos ? !!onSelectProto : !!onSelectRef;
+    const conCliente = !!cap.mostrarCliente;
     return (
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
               <thead>
                 <tr style={{ background: T.ink }}>
-                  {["Foto", "Ref", "Nombre", "Categoría", "Silueta", "Rango", "Tela", ""].map((h) => (
+                  {["Foto", "Ref", "Nombre", ...(conCliente ? ["Cliente"] : []), "Categoría", "Silueta", "Rango", "Tela", ""].map((h) => (
                     <th key={h} style={{ padding: "8px 10px", color: T.white, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
                   ))}
                 </tr>
@@ -9270,17 +9303,18 @@ function BitacoraAprobadosSinPedidoView({ capsulas, pedidos, onSelectRef, onVinc
                     key={r.id}
                     style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}` }}
                   >
-                    <td onClick={() => onSelectRef && onSelectRef(cap.id, r.id)} style={{ padding: "6px 10px", cursor: onSelectRef ? "pointer" : "default" }}>{r.image ? <img src={r.image} alt="" style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 4 }} /> : "—"}</td>
-                    <td onClick={() => onSelectRef && onSelectRef(cap.id, r.id)} style={{ padding: "6px 10px", fontWeight: 700, cursor: onSelectRef ? "pointer" : "default" }}>{r.reference || "—"}</td>
-                    <td onClick={() => onSelectRef && onSelectRef(cap.id, r.id)} style={{ padding: "6px 10px", cursor: onSelectRef ? "pointer" : "default" }}>{r.name || "—"}</td>
-                    <td onClick={() => onSelectRef && onSelectRef(cap.id, r.id)} style={{ padding: "6px 10px", cursor: onSelectRef ? "pointer" : "default" }}>{r.categoria || "—"}</td>
-                    <td onClick={() => onSelectRef && onSelectRef(cap.id, r.id)} style={{ padding: "6px 10px", cursor: onSelectRef ? "pointer" : "default" }}>{r.silueta || "—"}</td>
-                    <td onClick={() => onSelectRef && onSelectRef(cap.id, r.id)} style={{ padding: "6px 10px", cursor: onSelectRef ? "pointer" : "default" }}>{r.rango || r.tallas?.[0] || "—"}</td>
-                    <td onClick={() => onSelectRef && onSelectRef(cap.id, r.id)} style={{ padding: "6px 10px", cursor: onSelectRef ? "pointer" : "default" }}>{r.tipoTela || "—"}</td>
+                    <td onClick={() => abrir(r)} style={{ padding: "6px 10px", cursor: clicable ? "pointer" : "default" }}>{r.image ? <img src={r.image} alt="" style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 4 }} /> : "—"}</td>
+                    <td onClick={() => abrir(r)} style={{ padding: "6px 10px", fontWeight: 700, cursor: clicable ? "pointer" : "default" }}>{r.reference || "—"}</td>
+                    <td onClick={() => abrir(r)} style={{ padding: "6px 10px", cursor: clicable ? "pointer" : "default" }}>{r.name || "—"}</td>
+                    {conCliente && <td onClick={() => abrir(r)} style={{ padding: "6px 10px", cursor: clicable ? "pointer" : "default" }}>{clienteDe(r) || "—"}</td>}
+                    <td onClick={() => abrir(r)} style={{ padding: "6px 10px", cursor: clicable ? "pointer" : "default" }}>{r.categoria || "—"}</td>
+                    <td onClick={() => abrir(r)} style={{ padding: "6px 10px", cursor: clicable ? "pointer" : "default" }}>{r.silueta || "—"}</td>
+                    <td onClick={() => abrir(r)} style={{ padding: "6px 10px", cursor: clicable ? "pointer" : "default" }}>{r.rango || r.tallas?.[0] || "—"}</td>
+                    <td onClick={() => abrir(r)} style={{ padding: "6px 10px", cursor: clicable ? "pointer" : "default" }}>{r.tipoTela || "—"}</td>
                     <td style={{ padding: "6px 10px" }}>
                       {!soloLectura && (
                         <button
-                          onClick={() => setVinculando({ capId: cap.id, refId: r.id })}
+                          onClick={() => setVinculando({ capId: cap.id, refId: r.id, esProto: !!cap.esProtos })}
                           style={{ background: T.denimBg, border: "none", borderRadius: 6, padding: "4px 8px", color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap" }}
                         >
                           🔗 Vincular a pedido
@@ -9328,42 +9362,65 @@ function BitacoraAprobadosSinPedidoView({ capsulas, pedidos, onSelectRef, onVinc
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Bitácora de Aprobados sin Pedido</h2>
-          <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Cápsulas con referencias aprobadas que nunca se usaron en un pedido — {totalRefs} referencia{totalRefs !== 1 ? "s" : ""}</p>
+          <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Referencias de cápsulas y prototipos aprobados que nunca se usaron en un pedido — {totalRefs} en total</p>
         </div>
-        <input
-          value={busqueda}
-          onChange={(e) => setBusqueda(e.target.value)}
-          placeholder="Buscar por cápsula o cliente..."
-          style={{ padding: "9px 14px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, minWidth: 260, outline: "none", fontFamily: "inherit" }}
-        />
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          {opcionesCliente.length > 0 && (
+            <select
+              value={clienteActivo}
+              onChange={(e) => setClienteSel(e.target.value)}
+              style={{ padding: "9px 12px", border: `1.5px solid ${clienteActivo ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit", maxWidth: 260 }}
+            >
+              <option value="">Todos los clientes ({opcionesCliente.length})</option>
+              {opcionesCliente.map((o) => <option key={o.key} value={o.key}>{o.nombre} ({o.n})</option>)}
+            </select>
+          )}
+          <input
+            value={busqueda}
+            onChange={(e) => setBusqueda(e.target.value)}
+            placeholder="Buscar por cápsula, prototipo o cliente..."
+            style={{ padding: "9px 14px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, minWidth: 260, outline: "none", fontFamily: "inherit" }}
+          />
+        </div>
       </div>
-      {capsulasConSinPedido.length > 0 && (
+      {nCapsRefs + nProtos > 0 && (
         <>
           <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
             <div style={{ padding: "10px 16px", borderRadius: 10, border: `1.5px solid ${T.denim}`, background: T.denimBg, minWidth: 150 }}>
               <div style={{ fontSize: 11, color: T.denim, fontWeight: 700 }}>👤 Clientes con aprobados sin pedido</div>
               <div style={{ fontSize: 20, fontWeight: 800, color: T.ink }}>{totalClientes}</div>
-              {clientesMap.has("__sin_cliente__") && <div style={{ fontSize: 11, color: T.slate }}>+ cápsulas sin cliente asignado</div>}
+              {clientesMap.has("__sin_cliente__") && <div style={{ fontSize: 11, color: T.slate }}>+ piezas sin cliente asignado</div>}
             </div>
             <div style={{ padding: "10px 16px", borderRadius: 10, border: `1px solid ${T.border}`, background: T.white, minWidth: 130 }}>
               <div style={{ fontSize: 11, color: T.slate, fontWeight: 700 }}>🗂 Cápsulas</div>
               <div style={{ fontSize: 20, fontWeight: 800, color: T.ink }}>{capsulasConSinPedido.length}</div>
             </div>
             <div style={{ padding: "10px 16px", borderRadius: 10, border: `1px solid ${T.border}`, background: T.white, minWidth: 130 }}>
-              <div style={{ fontSize: 11, color: T.slate, fontWeight: 700 }}>👗 Referencias sin pedido</div>
+              <div style={{ fontSize: 11, color: T.slate, fontWeight: 700 }}>🧪 Prototipos</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: T.ink }}>{protosSinPedido.length}</div>
+            </div>
+            <div style={{ padding: "10px 16px", borderRadius: 10, border: `1px solid ${T.border}`, background: T.white, minWidth: 130 }}>
+              <div style={{ fontSize: 11, color: T.slate, fontWeight: 700 }}>👗 Total sin pedido</div>
               <div style={{ fontSize: 20, fontWeight: 800, color: T.ink }}>{totalRefs}</div>
             </div>
           </div>
-          <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
-            {[["capsula", "🗂 Por cápsula"], ["cliente", "👤 Por cliente"]].map(([val, label]) => (
-              <button key={val} onClick={() => setVista(val)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${vista === val ? T.denim : T.border}`, background: vista === val ? T.denimBg : T.white, color: vista === val ? T.denim : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>{label}</button>
-            ))}
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {[["todos", `Todos (${nCapsRefs + nProtos})`], ["ref", `Cápsulas (${nCapsRefs})`], ["proto", `Prototipos (${nProtos})`]].map(([val, label]) => (
+                <button key={val} onClick={() => setTipoFiltro(val)} style={{ padding: "5px 12px", borderRadius: 6, border: `1.5px solid ${tipoFiltro === val ? T.ink : T.border}`, background: tipoFiltro === val ? T.ink : T.white, color: tipoFiltro === val ? T.white : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>{label}</button>
+              ))}
+            </div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {[["capsula", "🗂 Por cápsula"], ["cliente", "👤 Por cliente"]].map(([val, label]) => (
+                <button key={val} onClick={() => setVista(val)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${vista === val ? T.denim : T.border}`, background: vista === val ? T.denimBg : T.white, color: vista === val ? T.denim : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>{label}</button>
+              ))}
+            </div>
           </div>
         </>
       )}
-      {!capsulasConSinPedido.length && (
+      {!hayDatos && (
         <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>
-          No hay referencias aprobadas sin usar en pedido. 🎉
+          {nCapsRefs + nProtos > 0 ? "No hay aprobados sin pedido con ese filtro." : "No hay referencias ni prototipos aprobados sin usar en pedido. 🎉"}
         </div>
       )}
       {vista === "capsula" && capsulasConSinPedido.map(({ cap, refs }) => (
@@ -9375,11 +9432,20 @@ function BitacoraAprobadosSinPedidoView({ capsulas, pedidos, onSelectRef, onVinc
           {tablaRefs(cap, refs)}
         </div>
       ))}
+      {vista === "capsula" && protosSinPedido.length > 0 && (
+        <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, marginBottom: 16, overflow: "hidden" }}>
+          <div style={{ padding: "16px 20px", background: T.canvas }}>
+            <div style={{ fontWeight: 800, fontSize: 15, color: T.ink }}>🧪 Prototipos</div>
+            <div style={{ fontSize: 12, color: T.slate, marginTop: 2 }}>{protosSinPedido.length} prototipo{protosSinPedido.length !== 1 ? "s" : ""} aprobado{protosSinPedido.length !== 1 ? "s" : ""} sin pedido</div>
+          </div>
+          {tablaRefs({ id: "__protos__", esProtos: true, mostrarCliente: true }, protosSinPedido)}
+        </div>
+      )}
       {vista === "cliente" && clientes.map((cl) => (
         <div key={cl.key} style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, marginBottom: 16, overflow: "hidden" }}>
           <div style={{ padding: "16px 20px", background: T.canvas }}>
             <div style={{ fontWeight: 800, fontSize: 15, color: T.ink }}>👤 {cl.nombre}</div>
-            <div style={{ fontSize: 12, color: T.slate, marginTop: 2 }}>{cl.capsulas.length} cápsula{cl.capsulas.length !== 1 ? "s" : ""} · {cl.totalRefs} referencia{cl.totalRefs !== 1 ? "s" : ""} sin pedido</div>
+            <div style={{ fontSize: 12, color: T.slate, marginTop: 2 }}>{cl.capsulas.length} cápsula{cl.capsulas.length !== 1 ? "s" : ""} · {cl.protos.length} prototipo{cl.protos.length !== 1 ? "s" : ""} · {cl.totalRefs} sin pedido en total</div>
           </div>
           {cl.capsulas.map(({ cap, refs }) => (
             <div key={cap.id} style={{ borderTop: `1px solid ${T.border}` }}>
@@ -9390,6 +9456,15 @@ function BitacoraAprobadosSinPedidoView({ capsulas, pedidos, onSelectRef, onVinc
               {tablaRefs(cap, refs)}
             </div>
           ))}
+          {cl.protos.length > 0 && (
+            <div style={{ borderTop: `1px solid ${T.border}` }}>
+              <div style={{ padding: "10px 20px", fontSize: 12.5, fontWeight: 800, color: T.ink }}>
+                🧪 Prototipos
+                <span style={{ color: T.slate, fontWeight: 600 }}> · {cl.protos.length} sin pedido</span>
+              </div>
+              {tablaRefs({ id: "__protos__", esProtos: true }, cl.protos)}
+            </div>
+          )}
         </div>
       ))}
     </div>
@@ -18451,7 +18526,9 @@ function AppInner() {
                 historial={historial}
                 onGoHistorial={() => { setHistorialFiltroInicial({ resultado: "declinado", tipo: "todos" }); setView("historial"); }}
                 onSelectRef={(capId, refId) => { setSelCapId(capId); setSelRefId(refId); setView("ref-detail"); }}
+                onSelectProto={(id) => { setSelProtoId(id); setView("proto-detail"); }}
                 onVincularPedido={(capId, refId, patch) => updateRef(capId, refId, patch)}
+                onVincularProto={(id, patch) => updateProto(id, patch)}
                 currentUser={currentUser}
                 soloLectura={esClienteSoloLectura}
               />
