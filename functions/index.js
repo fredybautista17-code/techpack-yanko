@@ -3160,7 +3160,7 @@ exports.getSaldoTrasladosExternosBusint = onCall(
       const nfact = String(f.NFACT ?? "").trim();
       if (!porCliente.has(cod)) porCliente.set(cod, { codigo: cod, docs: [], traslados: 0, devoluciones: 0, notas: 0, notasOmitidas: 0, tieneFacturas: false, pagosValor: 0, pagosAjustes: 0, pagosSinDocumento: 0, pagosAtribuidosPorFactura: 0 });
       const c = porCliente.get(cod);
-      const d = { nfact, fecha: aISO(f.Fechaini), valor: num(f.FACTOT), dev: 0, notas: 0, notasBrutas: 0, pagadoValor: 0, pagadoAjustes: 0 };
+      const d = { nfact, fecha: aISO(f.Fechaini), valor: num(f.FACTOT), dev: 0, notas: 0, notasBrutas: 0, creditosNotas: [], pagadoValor: 0, pagadoAjustes: 0 };
       c.docs.push(d);
       c.traslados += d.valor;
       docPorClave.set(`${cod}|${nfact}`, d);
@@ -3238,6 +3238,7 @@ exports.getSaldoTrasladosExternosBusint = onCall(
           if (!d) continue;
           const v = num(n?.Debito) - num(n?.Credito);
           d.notasBrutas += v; // se decide más abajo cuánto cuenta, cuando ya se conocen los pagos
+          if (v < 0) d.creditosNotas.push(-v); // notas crédito individuales (para clientes con facturas)
           usadas += 1;
           suma += v;
         }
@@ -3289,8 +3290,13 @@ exports.getSaldoTrasladosExternosBusint = onCall(
       for (const d of c.docs) {
         let aceptada = d.notasBrutas;
         if (c.tieneFacturas) {
+          // Los números de factura y de traslado pueden coincidir, así que el neto (débitos - créditos)
+          // mezcla notas de facturas con notas del traslado. Solo se acepta si una nota crédito, o la
+          // suma de las notas crédito, cierra EXACTAMENTE (±$1) el saldo abierto del traslado.
           const abierto = Math.max(0, d.valor - d.dev - d.pagadoValor - d.pagadoAjustes);
-          aceptada = d.notasBrutas < 0 ? -Math.min(-d.notasBrutas, abierto) : 0;
+          const sumaCreditos = d.creditosNotas.reduce((x, y) => x + y, 0);
+          const cierra = abierto >= 1 && (d.creditosNotas.some((x) => Math.abs(x - abierto) <= 1) || Math.abs(sumaCreditos - abierto) <= 1);
+          aceptada = cierra ? -abierto : 0;
         }
         d.notas = aceptada;
         c.notas += aceptada;
