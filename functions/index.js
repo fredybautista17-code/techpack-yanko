@@ -3158,9 +3158,9 @@ exports.getSaldoTrasladosExternosBusint = onCall(
       const cod = String(f.CODIGO ?? "").trim();
       if (!cod || cod === "0") continue;
       const nfact = String(f.NFACT ?? "").trim();
-      if (!porCliente.has(cod)) porCliente.set(cod, { codigo: cod, docs: [], traslados: 0, devoluciones: 0, notas: 0, notasOmitidas: 0, tieneFacturas: false, pagosValor: 0, pagosAjustes: 0, pagosSinDocumento: 0, pagosAtribuidosPorFactura: 0 });
+      if (!porCliente.has(cod)) porCliente.set(cod, { codigo: cod, docs: [], traslados: 0, devoluciones: 0, notas: 0, notasOmitidas: 0, tieneFacturas: false, creditosSinTraslado: [], pagosValor: 0, pagosAjustes: 0, pagosSinDocumento: 0, pagosAtribuidosPorFactura: 0 });
       const c = porCliente.get(cod);
-      const d = { nfact, fecha: aISO(f.Fechaini), valor: num(f.FACTOT), dev: 0, notas: 0, notasBrutas: 0, creditosNotas: [], pagadoValor: 0, pagadoAjustes: 0 };
+      const d = { nfact, fecha: aISO(f.Fechaini), valor: num(f.FACTOT), dev: 0, notas: 0, notasBrutas: 0, creditosNotas: [], filasNotas: [], pagadoValor: 0, pagadoAjustes: 0 };
       c.docs.push(d);
       c.traslados += d.valor;
       docPorClave.set(`${cod}|${nfact}`, d);
@@ -3213,6 +3213,7 @@ exports.getSaldoTrasladosExternosBusint = onCall(
       advertencias.push(`No se pudo consultar la cartera de facturas para detectar clientes con facturas: ${err?.message || String(err)}`);
     }
     const notasPorTabla = [];
+    const notasOtroCod = []; // diagnóstico: créditos cuenta 130505 con Cod que no es un cliente con traslados
     try {
       const swaggerResp = await fetch("https://api-yanko-bd.busint.info/swagger/v1/swagger.json");
       const swagger = await swaggerResp.json();
@@ -3230,13 +3231,25 @@ exports.getSaldoTrasladosExternosBusint = onCall(
         let usadas = 0;
         let suma = 0;
         for (const n of filas) {
-          if (!String(n?.Puc || "").trim().startsWith("130505")) continue;
+          const puc = String(n?.Puc || "").trim();
+          const es130505 = puc.startsWith("130505");
           const cod = String(n?.Cod ?? "").trim();
+          const nfN = String(n?.Nfact ?? "").trim();
+          const deb = num(n?.Debito);
+          const cre = num(n?.Credito);
           const c = porCliente.get(cod);
-          if (!c) continue;
-          const d = docPorClave.get(`${cod}|${String(n?.Nfact ?? "").trim()}`);
-          if (!d) continue;
-          const v = num(n?.Debito) - num(n?.Credito);
+          if (!c) {
+            if (es130505 && cre > 0 && notasOtroCod.length < 30000) notasOtroCod.push({ tabla, cod, nfact: nfN, cre });
+            continue;
+          }
+          const d = docPorClave.get(`${cod}|${nfN}`);
+          if (d && d.filasNotas.length < 12) d.filasNotas.push({ tabla, puc, nfact: nfN, deb, cre });
+          if (!es130505) continue;
+          if (!d) {
+            if (cre > 0 && c.creditosSinTraslado.length < 40) c.creditosSinTraslado.push({ tabla, nfact: nfN, cre });
+            continue;
+          }
+          const v = deb - cre;
           d.notasBrutas += v; // se decide más abajo cuánto cuenta, cuando ya se conocen los pagos
           if (v < 0) d.creditosNotas.push(-v); // notas crédito individuales (para clientes con facturas)
           usadas += 1;
@@ -3327,7 +3340,30 @@ exports.getSaldoTrasladosExternosBusint = onCall(
         .filter((d) => Math.abs(d.saldo) >= 1)
         .sort((a, b) => (a.fecha || "").localeCompare(b.fecha || ""));
       const fechas = c.docs.map((d) => d.fecha).filter(Boolean).sort();
+      // Diagnóstico de notas (solo clientes con facturas y traslados abiertos): muestra qué filas de
+      // notas hay sobre cada traslado abierto, para ajustar la regla con datos reales.
+      let diagnostico = null;
+      if (c.tieneFacturas) {
+        const fmt = (x) => Math.round(x).toLocaleString("es-CO");
+        const abiertos = c.docs
+          .map((d) => ({ d, abierto: d.valor - d.dev - d.pagadoValor - d.pagadoAjustes }))
+          .filter((x) => Math.abs(x.abierto) >= 1);
+        if (abiertos.length) {
+          diagnostico = [`${abiertos.length} traslado(s) abiertos. Notas sobre el mismo número de traslado (tabla · cuenta · débito / crédito):`];
+          for (const { d, abierto } of abiertos.slice(0, 25)) {
+            const filas = d.filasNotas.map((f) => `${f.tabla.replace(" detalles", "")} ${f.puc} D${fmt(f.deb)}/C${fmt(f.cre)}`).join(" | ");
+            let linea = `Traslado ${d.nfact} (saldo abierto ${fmt(abierto)}): ${filas || "sin notas con ese número"}`;
+            const otros = notasOtroCod.filter((x) => Math.abs(x.cre - abierto) <= 1).slice(0, 3);
+            if (otros.length) linea += ` · créditos de igual valor con OTRO Cod: ${otros.map((x) => `Cod ${x.cod} doc ${x.nfact} (${x.tabla.replace(" detalles", "")})`).join("; ")}`;
+            diagnostico.push(linea);
+          }
+          if (c.creditosSinTraslado.length) {
+            diagnostico.push(`Créditos 130505 de este cliente que NO caen sobre un traslado (${c.creditosSinTraslado.length}, primeros 12): ${c.creditosSinTraslado.slice(0, 12).map((x) => `doc ${x.nfact} C${fmt(x.cre)}`).join("; ")}`);
+          }
+        }
+      }
       return {
+        diagnostico,
         codigo: c.codigo,
         nombre: nombrePorCodigo.get(c.codigo) || `Cliente ${c.codigo}`,
         documentos: c.docs.length,
