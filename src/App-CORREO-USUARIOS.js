@@ -2721,6 +2721,8 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
   const [kindFiltro, setKindFiltro] = useState("todos");
   const [busqueda, setBusqueda] = useState("");
   const [mesFiltro, setMesFiltro] = useState("");
+  const [desdeFiltro, setDesdeFiltro] = useState("");
+  const [hastaFiltro, setHastaFiltro] = useState("");
   const [expandido, setExpandido] = useState(null);
   // Envío puntual abierto en ventana de detalle (dentro del listado "Envíos
   // incluidos en este grupo") — al agrupar por cápsula, esa lista muestra
@@ -2764,7 +2766,9 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
   const base = enriquecidos.filter(
     (e) =>
       (!q || (e.coleccion || "").toLowerCase().includes(q) || (e.cliente || "").toLowerCase().includes(q) || (e.numPedido || "").toLowerCase?.().includes(q)) &&
-      (!mesFiltro || mesDe(e) === mesFiltro)
+      (!mesFiltro || mesDe(e) === mesFiltro) &&
+      (!desdeFiltro || (e.fechaEnviado || "").slice(0, 10) >= desdeFiltro) &&
+      (!hastaFiltro || (e.fechaEnviado || "").slice(0, 10) <= hastaFiltro)
   );
   // Agrupa por cápsula (mismo capsulaId) los envíos que se mandaron por
   // separado — antes cada clic en "Enviado" de UNA sola referencia (desde su
@@ -2823,6 +2827,57 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
   const declinadasEsteMes = (historial || []).filter((h) => h.resultado === "declinado" && h.mes === mesActual).length;
   const mesesDisponibles = [...new Set(envios.map((e) => mesDe(e)).filter(Boolean))].sort((a, b) => b.localeCompare(a));
   function labelMes(m) { return new Date(m + "-02").toLocaleDateString("es-CO", { month: "long", year: "numeric" }); }
+  // --- Fechas de la Bitácora (fecha grande, días desde el envío y agrupación por semana) ---
+  const MESES_CORTOS = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
+  const hoyLocal = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate());
+  const aFechaLocal = (iso) => {
+    const [y, m, d] = String(iso || "").slice(0, 10).split("-").map(Number);
+    return y && m && d ? new Date(y, m - 1, d) : null;
+  };
+  const aIsoLocal = (f) => `${f.getFullYear()}-${String(f.getMonth() + 1).padStart(2, "0")}-${String(f.getDate()).padStart(2, "0")}`;
+  function infoFecha(iso) {
+    const f = aFechaLocal(iso);
+    if (!f) return null;
+    return {
+      dia: f.getDate(),
+      mes: MESES_CORTOS[f.getMonth()].toUpperCase(),
+      anio: f.getFullYear(),
+      semana: f.toLocaleDateString("es-CO", { weekday: "long" }),
+      dias: Math.round((hoyLocal - f) / 86400000),
+    };
+  }
+  const fechaCorta = (iso) => { const f = aFechaLocal(iso); return f ? `${f.getDate()} ${MESES_CORTOS[f.getMonth()]}` : ""; };
+  const textoHace = (d) => (d <= 0 ? "hoy" : d === 1 ? "ayer" : `hace ${d} días`);
+  // Color según el atraso: gris hasta 7 días, ámbar de 8 a 14, rojo desde 15 (mismo umbral de las pendientes).
+  const colorDias = (d) => (d >= 15 ? { bg: T.coralBg, fg: T.coral } : d >= 8 ? { bg: T.amberBg, fg: T.amber } : { bg: T.canvas, fg: T.slate });
+  const lunesDe = (iso) => {
+    const f = aFechaLocal(iso);
+    if (!f) return null;
+    f.setDate(f.getDate() - ((f.getDay() + 6) % 7));
+    return aIsoLocal(f);
+  };
+  const rangoSemana = (lunesIso) => {
+    const a = aFechaLocal(lunesIso);
+    const b = new Date(a.getFullYear(), a.getMonth(), a.getDate() + 6);
+    return a.getMonth() === b.getMonth() ? `${a.getDate()} al ${b.getDate()} ${MESES_CORTOS[b.getMonth()]}` : `${a.getDate()} ${MESES_CORTOS[a.getMonth()]} al ${b.getDate()} ${MESES_CORTOS[b.getMonth()]}`;
+  };
+  const lunesHoy = lunesDe(aIsoLocal(hoyLocal));
+  const lunesPasado = lunesDe(aIsoLocal(new Date(hoyLocal.getFullYear(), hoyLocal.getMonth(), hoyLocal.getDate() - 7)));
+  // En "Pendientes" se mantiene el orden por días esperando (sin encabezados); en "Todos" se separa por semana de envío.
+  const bloques = [];
+  if (subTab === "pendientes") {
+    if (filtrados.length) bloques.push({ key: "todos", label: null, grupos: filtrados });
+  } else {
+    filtrados.forEach((g) => {
+      const lunes = lunesDe(g.fechaMax) || "sin-fecha";
+      let b = bloques[bloques.length - 1];
+      if (!b || b.key !== lunes) {
+        b = { key: lunes, grupos: [], label: lunes === "sin-fecha" ? "Sin fecha de envío" : lunes === lunesHoy ? "Esta semana" : lunes === lunesPasado ? "Semana pasada" : `Semana del ${rangoSemana(lunes)}`, rango: lunes !== "sin-fecha" && (lunes === lunesHoy || lunes === lunesPasado) ? rangoSemana(lunes) : "" };
+        bloques.push(b);
+      }
+      b.grupos.push(g);
+    });
+  }
   return (
     <div>
       {envioDetalle && (
@@ -2914,12 +2969,21 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
             <button key={v} onClick={() => setKindFiltro(v)} style={{ padding: "5px 12px", borderRadius: 6, border: `1.5px solid ${kindFiltro === v ? T.ink : T.border}`, background: kindFiltro === v ? T.ink : T.white, color: kindFiltro === v ? T.white : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
           ))}
         </div>
-        {mesesDisponibles.length > 0 && (
-          <select value={mesFiltro} onChange={(e) => setMesFiltro(e.target.value)} style={{ padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit", textTransform: "capitalize" }}>
-            <option value="">Todos los meses</option>
-            {mesesDisponibles.map((m) => <option key={m} value={m}>{labelMes(m)}</option>)}
-          </select>
-        )}
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, textTransform: "uppercase", letterSpacing: "0.05em" }}>Desde</label>
+          <input type="date" value={desdeFiltro} onChange={(e) => setDesdeFiltro(e.target.value)} style={{ padding: "7px 10px", border: `1.5px solid ${desdeFiltro ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, background: T.white, fontFamily: "inherit" }} />
+          <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, textTransform: "uppercase", letterSpacing: "0.05em" }}>Hasta</label>
+          <input type="date" value={hastaFiltro} onChange={(e) => setHastaFiltro(e.target.value)} style={{ padding: "7px 10px", border: `1.5px solid ${hastaFiltro ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, background: T.white, fontFamily: "inherit" }} />
+          {(desdeFiltro || hastaFiltro) && (
+            <button onClick={() => { setDesdeFiltro(""); setHastaFiltro(""); }} style={{ padding: "7px 10px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 12, fontWeight: 700, color: T.slate, background: T.white, cursor: "pointer", fontFamily: "inherit" }}>Limpiar fechas</button>
+          )}
+          {mesesDisponibles.length > 0 && (
+            <select value={mesFiltro} onChange={(e) => setMesFiltro(e.target.value)} style={{ padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit", textTransform: "capitalize" }}>
+              <option value="">Todos los meses</option>
+              {mesesDisponibles.map((m) => <option key={m} value={m}>{labelMes(m)}</option>)}
+            </select>
+          )}
+        </div>
       </div>
       {!filtrados.length && (
         <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>
@@ -2930,31 +2994,77 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
             : "Ningún envío coincide con la búsqueda."}
         </div>
       )}
-      {filtrados.map((g) => {
+      {bloques.map((b) => (
+      <React.Fragment key={b.key}>
+      {b.label && (
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8, margin: "22px 0 10px", paddingBottom: 6, borderBottom: `1.5px solid ${T.border}` }}>
+          <div style={{ fontSize: 14, fontWeight: 800, color: T.ink }}>{b.label}{b.rango ? <span style={{ fontWeight: 600, color: T.slate }}> · {b.rango}</span> : null}</div>
+          <div style={{ fontSize: 12, color: T.slate }}>
+            {b.grupos.reduce((s, g) => s + g.totalEnvios, 0)} envío{b.grupos.reduce((s, g) => s + g.totalEnvios, 0) !== 1 ? "s" : ""} · {b.grupos.reduce((s, g) => s + g.items.length, 0)} ref · {fmtNum(b.grupos.reduce((s, g) => s + g.totalUnidades, 0))} unid.
+          </div>
+        </div>
+      )}
+      {b.grupos.map((g) => {
         const abierto = expandido === g.key;
+        const fi = infoFecha(g.fechaMax);
+        const fechasEnvio = [...new Set(g.envios.map((e) => e.fechaEnviado).filter(Boolean))].sort();
+        const fechaRecibida = g.envios.map((e) => e.fechaRecibidoCliente).filter(Boolean).sort().pop();
+        const sinRecibir = g.recibidosCount === 0;
+        const cd = fi ? colorDias(fi.dias) : null;
+        const nombresRefs = [...new Set(g.items.map((it) => it.nombre || it.referencia).filter(Boolean))];
+        const telasRefs = [...new Set(g.items.map((it) => it.tela).filter(Boolean))];
+        const soloUnaIgual = g.items.length === 1 && nombresRefs[0] === g.coleccion;
+        const conFoto = g.items.slice(0, 5);
         return (
           <div key={g.key} style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, marginBottom: 16, overflow: "hidden" }}>
             <div
               onClick={() => setExpandido(abierto ? null : g.key)}
-              style={{ padding: "16px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", background: T.canvas, cursor: "pointer", flexWrap: "wrap", gap: 10 }}
+              style={{ display: "flex", alignItems: "stretch", background: T.white, cursor: "pointer", flexWrap: "wrap" }}
             >
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <span style={{ fontSize: 20 }}>{abierto ? "📂" : "📁"}</span>
-                <div>
-                  <div style={{ fontWeight: 800, fontSize: 15, color: T.ink, display: "flex", alignItems: "center", gap: 8 }}>
-                    {g.coleccion || "(Sin nombre de colección)"}
-                    <span style={{ fontSize: 10, fontWeight: 700, color: g.kind === "proto" ? T.violet : T.denim, background: g.kind === "proto" ? T.violetBg : T.denimBg, padding: "1px 8px", borderRadius: 10 }}>
-                      {g.kind === "proto" ? "Prototipo" : "Cápsula"}
-                    </span>
-                  </div>
-                  <div style={{ fontSize: 12, color: T.slate }}>
-                    {g.cliente || "Sin cliente"} · {g.items.length} ref · {fmtNum(g.totalUnidades)} unid. · Enviado {g.fechaMin === g.fechaMax ? g.fechaMin : `${g.fechaMin} – ${g.fechaMax}`}
-                    {g.totalEnvios > 1 ? ` · ${g.totalEnvios} envíos` : ""}
-                    {g.numPedido ? ` · Pedido ${g.numPedido}` : ""}
-                  </div>
-                </div>
+              <div style={{ width: 104, flexShrink: 0, background: T.canvas, borderRight: `1px solid ${T.border}`, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "10px 6px", textAlign: "center" }}>
+                {fi ? (
+                  <>
+                    <div style={{ fontSize: 34, fontWeight: 800, lineHeight: 1, color: T.ink }}>{fi.dia}</div>
+                    <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: "0.08em", color: T.slate, marginTop: 2 }}>{fi.mes} {fi.anio}</div>
+                    <div style={{ fontSize: 11, color: T.slate, marginTop: 6 }}>{fi.semana}</div>
+                    <div style={{ fontSize: 11, fontWeight: 700, marginTop: 3, color: sinRecibir ? cd.fg : T.slate }}>{textoHace(fi.dias)}</div>
+                  </>
+                ) : (
+                  <div style={{ fontSize: 12, fontWeight: 700, color: T.slate }}>Sin fecha</div>
+                )}
               </div>
-              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <div style={{ flex: 1, minWidth: 260, padding: "14px 18px" }}>
+                <div style={{ fontWeight: 800, fontSize: 15, color: T.ink, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 12, color: T.slate }}>{abierto ? "▾" : "▸"}</span>
+                  {g.coleccion || "(Sin nombre de colección)"}
+                  <span style={{ fontSize: 10, fontWeight: 700, color: g.kind === "proto" ? T.violet : T.denim, background: g.kind === "proto" ? T.violetBg : T.denimBg, padding: "1px 8px", borderRadius: 10 }}>
+                    {g.kind === "proto" ? "Prototipo" : "Cápsula"}
+                  </span>
+                </div>
+                <div style={{ fontSize: 12, color: T.slate, marginTop: 3 }}>
+                  {g.cliente || "Sin cliente"} · {g.items.length} ref · {fmtNum(g.totalUnidades)} unid.
+                  {g.totalEnvios > 1 ? ` · ${g.totalEnvios} envíos${fechasEnvio.length > 1 ? `: ${fechasEnvio.map(fechaCorta).join(", ")}` : ""}` : ""}
+                  {g.numPedido ? ` · Pedido ${g.numPedido}` : ""}
+                </div>
+                {g.items.length > 0 && (
+                  <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 10 }}>
+                    {conFoto.map((it, i) => (
+                      it.foto
+                        ? <img key={`${it.itemId}-${i}`} src={it.foto} alt="" title={it.nombre || it.referencia} style={{ width: 38, height: 38, objectFit: "cover", borderRadius: 6, border: `1px solid ${T.border}` }} />
+                        : <div key={`${it.itemId}-${i}`} title={it.nombre || it.referencia} style={{ width: 38, height: 38, borderRadius: 6, border: `1px solid ${T.border}`, background: T.denimBg, color: T.denim, display: "grid", placeItems: "center", fontSize: 9, fontWeight: 700 }}>{String(it.referencia || it.nombre || "?").slice(0, 3).toUpperCase()}</div>
+                    ))}
+                    {g.items.length > conFoto.length && <span style={{ fontSize: 12, fontWeight: 700, color: T.slate, marginLeft: 4 }}>+{g.items.length - conFoto.length}</span>}
+                  </div>
+                )}
+                {(!soloUnaIgual && nombresRefs.length > 0) || telasRefs.length > 0 ? (
+                  <div style={{ fontSize: 12, color: T.ink, marginTop: 6, opacity: 0.85 }}>
+                    {!soloUnaIgual && nombresRefs.length > 0 ? nombresRefs.slice(0, 4).join(" · ") + (nombresRefs.length > 4 ? ` · +${nombresRefs.length - 4} más` : "") : ""}
+                    {!soloUnaIgual && nombresRefs.length > 0 && telasRefs.length > 0 ? " — " : ""}
+                    {telasRefs.length > 0 ? `Tela: ${telasRefs.slice(0, 3).join(", ")}${telasRefs.length > 3 ? "…" : ""}` : ""}
+                  </div>
+                ) : null}
+              </div>
+              <div style={{ padding: "14px 18px", display: "flex", flexDirection: "column", alignItems: "flex-end", justifyContent: "center", gap: 8 }}>
                 {g.pendientesTotal > 0 ? (
                   <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: g.diasMax >= 15 ? T.coralBg : T.amberBg, color: g.diasMax >= 15 ? T.coral : T.amber }}>
                     ⏳ {g.pendientesTotal} sin resolver{g.diasMax != null ? ` · ${g.diasMax}d esperando` : ""}
@@ -2962,9 +3072,17 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
                 ) : (
                   <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: T.jadeBg, color: T.jade }}>✓ Todo resuelto</span>
                 )}
-                <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: g.recibidosCount === g.totalEnvios ? T.jadeBg : T.amberBg, color: g.recibidosCount === g.totalEnvios ? T.jade : T.amber }}>
-                  {g.recibidosCount === g.totalEnvios ? "✓ Recibido" : g.recibidosCount > 0 ? `⏳ ${g.recibidosCount}/${g.totalEnvios} recibidos` : "⏳ Sin confirmar recibido"}
-                </span>
+                {g.recibidosCount === g.totalEnvios ? (
+                  <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: T.jadeBg, color: T.jade }}>
+                    ✓ Recibido{fechaRecibida ? ` · ${fechaCorta(fechaRecibida)}` : ""}
+                  </span>
+                ) : g.recibidosCount > 0 ? (
+                  <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: T.amberBg, color: T.amber }}>⏳ {g.recibidosCount}/{g.totalEnvios} recibidos</span>
+                ) : (
+                  <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: cd ? cd.bg : T.amberBg, color: cd ? cd.fg : T.amber }}>
+                    ⏳ {fi ? `Enviado ${textoHace(fi.dias)} · ` : ""}sin confirmar recibido
+                  </span>
+                )}
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
@@ -3049,6 +3167,8 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
           </div>
         );
       })}
+      </React.Fragment>
+      ))}
     </div>
   );
 }
