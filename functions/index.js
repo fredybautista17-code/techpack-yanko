@@ -3447,6 +3447,48 @@ exports.getSaldoTrasladosExternosBusint = onCall(
     } catch (err) {
       advertencias.push(`No se pudieron traer los nombres desde ApiGen_Clientes: ${err?.message || String(err)}`);
     }
+    // Clientes sin nombre en el maestro (ej. código 131): se buscan en las tablas de clientes de la
+    // base de Busint (tablas con "client" o "tercero" en el nombre y columnas de código y nombre).
+    const fuenteNombres = [];
+    const faltantes = new Set([...porCliente.keys()].filter((cod) => !nombrePorCodigo.has(cod)));
+    if (faltantes.size) {
+      try {
+        const swaggerResp2 = await fetch("https://api-yanko-bd.busint.info/swagger/v1/swagger.json");
+        const swagger2 = await swaggerResp2.json();
+        const enumList2 = swagger2.paths["/api/Query"].post.parameters.find((p) => p.name === "tableName").schema.enum;
+        const tablasCli = enumList2.filter((t) => /client|tercero/i.test(t)).slice(0, 8);
+        for (const tabla of tablasCli) {
+          let filas;
+          try {
+            filas = await consultarTablaBusintBDCompleta(tabla);
+          } catch (e) {
+            continue;
+          }
+          if (!filas.length) continue;
+          const keys = Object.keys(filas[0]);
+          const kCod = keys.find((k) => /^(codigo|cod|codcliente|codigocliente)$/i.test(k));
+          const kNom = keys.find((k) => /^(nombre|nombres|razon|razonsocial|nombreorazonsocial|nombrecompleto|nombrecorto|nombrecliente)$/i.test(k)) || keys.find((k) => /nombre|razon/i.test(k));
+          if (!kCod || !kNom) {
+            fuenteNombres.push({ tabla, columnas: keys.slice(0, 25).join(", "), encontrados: 0, nota: "sin columnas de código y nombre" });
+            continue;
+          }
+          let n = 0;
+          for (const f of filas) {
+            const cod = String(f[kCod] ?? "").trim();
+            const nom = String(f[kNom] ?? "").trim();
+            if (cod && nom && faltantes.has(cod) && !nombrePorCodigo.has(cod)) {
+              nombrePorCodigo.set(cod, nom);
+              n += 1;
+            }
+          }
+          fuenteNombres.push({ tabla, columnas: `${kCod} / ${kNom}`, encontrados: n });
+        }
+      } catch (err) {
+        advertencias.push(`No se pudieron buscar nombres de clientes en la base de Busint: ${err?.message || String(err)}`);
+      }
+      const sinNombre = [...faltantes].filter((cod) => !nombrePorCodigo.has(cod));
+      diagnosticoGlobal.push(`Clientes sin nombre en el maestro: ${[...faltantes].join(", ")} · sin nombre tras buscar en tablas de clientes: ${sinNombre.join(", ") || "ninguno"} · fuentes: ${fuenteNombres.map((x) => `${x.tabla} (${x.columnas}; ${x.encontrados})`).join(" || ") || "ninguna"}`);
+    }
 
     const clientes = [...porCliente.values()].map((c) => {
       const saldoSoloValor = c.traslados - c.devoluciones + c.notas - c.pagosValor;
@@ -3525,6 +3567,7 @@ exports.getSaldoTrasladosExternosBusint = onCall(
       tablaNotas,
       notasPorTabla,
       diagnosticoGlobal,
+      fuenteNombres,
       filasTraslados: docs.length,
       filasPagos: pagos.length,
       pagosSinCliente: { filas: pagosSinCliente.filas, valor: r2(pagosSinCliente.valor) },
