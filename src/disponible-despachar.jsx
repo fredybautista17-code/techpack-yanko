@@ -22,12 +22,16 @@ const ESTADOS = {
 };
 const VIOLETA_FILA = "FFFAF7FD";
 
-// Precio escrito a mano en la preorden ("28.500", "$28,500", "28500")
+// Precio escrito a mano en la preorden ("28.500", "$28,500", "28500",
+// "18.823,529", "18823.529"). (2026-10-15, a pedido de Fredy) El punto solo
+// cuenta como separador de miles si los miles vienen bien agrupados
+// (1-3 dígitos y luego grupos de 3); antes cualquier ".ddd" se tomaba como
+// miles y "18823.529" (decimal con punto) se leía como 18.823.529.
 function numeroPrecio(v) {
   let t = String(v ?? "").replace(/[^\d.,-]/g, "");
   if (!t) return 0;
-  if (/\.\d{3}(?!\d)/.test(t) && !/,\d{3}(?!\d)/.test(t)) t = t.replace(/\./g, "").replace(",", ".");
-  else if (/,\d{3}(?!\d)/.test(t)) t = t.replace(/,/g, "");
+  if (/^-?\d{1,3}(\.\d{3})+(,\d+)?$/.test(t)) t = t.replace(/\./g, "").replace(",", ".");
+  else if (/^-?\d{1,3}(,\d{3})+(\.\d+)?$/.test(t)) t = t.replace(/,/g, "");
   else t = t.replace(",", ".");
   const n = Number(t);
   return Number.isFinite(n) ? n : 0;
