@@ -3160,7 +3160,7 @@ exports.getSaldoTrasladosExternosBusint = onCall(
       const nfact = String(f.NFACT ?? "").trim();
       if (!porCliente.has(cod)) porCliente.set(cod, { codigo: cod, docs: [], traslados: 0, devoluciones: 0, notas: 0, notasOmitidas: 0, tieneFacturas: false, creditosSinTraslado: [], pagosValor: 0, pagosAjustes: 0, pagosSinDocumento: 0, pagosAtribuidosPorFactura: 0 });
       const c = porCliente.get(cod);
-      const d = { raw: JSON.stringify(f).slice(0, 600), nfact, fecha: aISO(f.Fechaini), valor: num(f.FACTOT), dev: 0, notas: 0, notasBrutas: 0, creditosNotas: [], filasNotas: [], pagadoValor: 0, pagadoAjustes: 0 };
+      const d = { raw: JSON.stringify(f).slice(0, 600), nfact, fecha: aISO(f.Fechaini), valor: num(f.FACTOT), dev: 0, notas: 0, notasBrutas: 0, creditosTras: 0, creditosNotas: [], filasNotas: [], pagadoValor: 0, pagadoAjustes: 0 };
       c.docs.push(d);
       c.traslados += d.valor;
       docPorClave.set(`${cod}|${nfact}`, d);
@@ -3253,14 +3253,26 @@ exports.getSaldoTrasladosExternosBusint = onCall(
           if (/notastras/i.test(tabla)) {
             if (lc.includes("cod")) {
               const mt = (muestrasTras[tabla] = {});
+              let usadasTras = 0;
+              let sumaTras = 0;
               for (const n of filas) {
                 const cd = String(n?.Cod ?? n?.cod ?? "").trim();
+                // Notas crédito de traslados ("notastras detalles": Nfact = traslado, Precio = valor).
+                // Se usan para clientes que también tienen facturas (ver cierre más abajo).
+                const dT = docPorClave.get(`${cd}|${String(n?.Nfact ?? n?.nfact ?? "").trim()}`);
+                if (dT) {
+                  const pr = num(n?.Precio);
+                  dT.creditosTras += pr;
+                  usadasTras += 1;
+                  sumaTras += pr;
+                }
                 if (!CODS_DIAG.includes(cd)) continue;
                 const m = (mt[cd] = mt[cd] || { filas: 0, precio: 0, ejemplos: [] });
                 m.filas += 1;
                 m.precio += num(n?.Precio);
                 if (m.ejemplos.length < 8) m.ejemplos.push(JSON.stringify(n).slice(0, 380));
               }
+              notasPorTabla.push({ tabla, filas: filas.length, usadas: usadasTras, suma: r2(sumaTras) });
             } else {
               cabecerasTras[tabla] = filas;
             }
@@ -3383,17 +3395,17 @@ exports.getSaldoTrasladosExternosBusint = onCall(
       for (const d of c.docs) {
         let aceptada = d.notasBrutas;
         if (c.tieneFacturas) {
-          // Los números de factura y de traslado pueden coincidir, así que el neto (débitos - créditos)
-          // mezcla notas de facturas con notas del traslado. Solo se acepta si una nota crédito, o la
-          // suma de las notas crédito, cierra EXACTAMENTE (±$1) el saldo abierto del traslado.
+          // Los números de factura y de traslado pueden coincidir, así que las notas de contabilidad
+          // ("notascontable detalles") mezclan notas de facturas con las del traslado y NO se usan.
+          // Las notas crédito de traslados están en "notastras detalles" (Nfact = traslado, Precio =
+          // valor): se restan hasta el saldo que le queda abierto al traslado.
+          // Verificado con Kamila Colombia (101): suma $75.233.145 = notas crédito del extracto.
           const abierto = Math.max(0, d.valor - d.dev - d.pagadoValor - d.pagadoAjustes);
-          const sumaCreditos = d.creditosNotas.reduce((x, y) => x + y, 0);
-          const cierra = abierto >= 1 && (d.creditosNotas.some((x) => Math.abs(x - abierto) <= 1) || Math.abs(sumaCreditos - abierto) <= 1);
-          aceptada = cierra ? -abierto : 0;
+          aceptada = d.creditosTras > 0 ? -Math.min(d.creditosTras, abierto) : 0;
         }
         d.notas = aceptada;
         c.notas += aceptada;
-        c.notasOmitidas += d.notasBrutas - aceptada;
+        c.notasOmitidas += c.tieneFacturas ? d.notasBrutas : d.notasBrutas - aceptada;
       }
     }
     // Nombres desde el maestro de clientes de Busint.
