@@ -10267,13 +10267,14 @@ exports.getOrdenesCompraBusint = onCall(
   },
   async (request) => {
     await verificarLlamadorEsAdmin(request);
-    let cabeceras, detalles, proveedores, componentes;
+    let cabeceras, detalles, proveedores, componentes, detallesDxc;
     try {
-      [cabeceras, detalles, proveedores, componentes] = await Promise.all([
+      [cabeceras, detalles, proveedores, componentes, detallesDxc] = await Promise.all([
         consultarTablaBusintBDCompleta("orden de compra"),
         consultarTablaBusintBDCompleta("orden de compra detalles"),
         consultarTablaBusintBDCompleta("maestro de proveedores"),
         consultarTablaBusintBDCompleta("estandar componentes prod"),
+        consultarTablaBusintBDCompleta("orden de compra detallesdxc"),
       ]);
     } catch (err) {
       logger.error("Error consultando Busint BD (getOrdenesCompraBusint)", { error: String(err) });
@@ -10293,12 +10294,27 @@ exports.getOrdenesCompraBusint = onCall(
       if (!lineasPorOrden.has(oc)) lineasPorOrden.set(oc, []);
       lineasPorOrden.get(oc).push([cod, num(d.Cant), num(d.Costo), num(d.Dsc)]);
     });
+    // "Dado por cumplido" en Busint: la cabecera trae DadoPorCumplido / FechaDxC / UsuarioDxC y las líneas de las órdenes
+    // ya cerradas se copian a "orden de compra detallesdxc". Una orden cuenta como cumplida si tiene fecha de cumplimiento,
+    // una marca en DadoPorCumplido (que no sea 0/N/NO/FALSE) o aparece en esa tabla. `dx` lleva el valor crudo para poder verificarlo.
+    const enDxc = new Set();
+    detallesDxc.forEach((d) => { const k = clave(d?.NumOC); if (k) enDxc.add(k); });
     const ordenes = [];
+    let cumplidas = 0;
     cabeceras.forEach((c) => {
       const n = clave(c?.NumOC);
       if (!n) return;
       const prov = clave(c?.codprove);
+      const marcaDxc = c.DadoPorCumplido;
+      const textoMarca = String(marcaDxc ?? "").trim();
+      const fechaDxc = fechaBDaISO(c.FechaDxC) || null;
+      const marcada = textoMarca !== "" && !["0", "N", "NO", "FALSE", "NULL"].includes(textoMarca.toUpperCase());
+      const dx = fechaDxc || marcada || enDxc.has(n)
+        ? { f: fechaDxc, u: String(c.UsuarioDxC ?? "").trim(), v: textoMarca, t: enDxc.has(n) }
+        : null;
+      if (dx) cumplidas += 1;
       ordenes.push({
+        dx,
         n: Number(n),
         p: prov,
         pn: nombreProv.get(prov) || (prov ? `Proveedor ${prov}` : ""),
@@ -10316,7 +10332,8 @@ exports.getOrdenesCompraBusint = onCall(
       if (nombre) insumos[cod] = nombre;
     });
     ordenes.sort((a, b) => b.n - a.n);
-    logger.info("getOrdenesCompraBusint", { ordenes: ordenes.length, lineas: detalles.length, insumosConNombre: Object.keys(insumos).length, insumosUsados: codigosUsados.size });
+    const valoresDxc = [...new Set(ordenes.filter((o) => o.dx).map((o) => o.dx.v || (o.dx.f ? "(fecha)" : o.dx.t ? "(en detallesdxc)" : "")))];
+    logger.info("getOrdenesCompraBusint", { ordenes: ordenes.length, lineas: detalles.length, cumplidas, valoresDxc, insumosConNombre: Object.keys(insumos).length, insumosUsados: codigosUsados.size });
     return { ok: true, generado: new Date().toISOString(), ordenes, insumos };
   }
 );

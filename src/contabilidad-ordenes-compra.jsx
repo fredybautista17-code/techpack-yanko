@@ -1,6 +1,6 @@
 // ─── CONTABILIDAD → 🛒 ÓRDENES DE COMPRA (2026-10-16, a pedido de Fredy) ─────────
 // Trae de Busint las órdenes de compra (cabecera + líneas) con la función
-// getOrdenesCompraBusint y muestra: vencidas / pendientes por recibir, historial,
+// getOrdenesCompraBusint y muestra: vigentes y vencidas (por recibir), historial,
 // historial de precio por insumo y control de costo (sube o baja frente a la compra anterior).
 // Busint NO dice si la mercancía ya llegó, así que "recibida" se marca a mano
 // (colección contabilidad_ordenes_compra_recibidas, un documento por orden). Para no llenar
@@ -8,7 +8,7 @@
 // dentro de la ventana elegida (60 días por defecto); las anteriores quedan en el Historial.
 // Precio neto = precio unitario − descuento, SIN IVA (para comparar entre compras).
 import { useState, useEffect, useMemo } from "react";
-import { collection, onSnapshot, doc, setDoc, deleteDoc } from "firebase/firestore";
+import { collection, onSnapshot, doc, setDoc, deleteDoc, writeBatch } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 
 const IVA = 0.19; // la cabecera de Busint trae 16 pero el PDF de la orden calcula 19 %
@@ -26,7 +26,9 @@ export default function OrdenesCompraView({ db, functionsClient, currentUser, C,
   const [cargando, setCargando] = useState(!cacheDatos);
   const [error, setError] = useState("");
   const [marcas, setMarcas] = useState({});
-  const [tab, setTab] = useState("pendientes");
+  const [tab, setTab] = useState("vigentes");
+  const [seleccion, setSeleccion] = useState({});
+  const [diasBloque, setDiasBloque] = useState(30);
   const [q, setQ] = useState("");
   const [prov, setProv] = useState("");
   const [desde, setDesde] = useState("");
@@ -104,9 +106,11 @@ export default function OrdenesCompraView({ db, functionsClient, currentUser, C,
     const marca = marcas[String(o.n)];
     if (marca) {
       const dif = o.ff && marca.fecha ? diasEntre(o.ff, marca.fecha) : null;
+      if (marca.bloque) return { clave: "recibida", txt: "Recibida (confirmada en bloque)", bg: C.canvas, color: C.slate, borde: C.border, dias: 0 };
       const txt = dif === null ? `Recibida ${fmtF(marca.fecha)}` : dif > 0 ? `Recibida ${fmtF(marca.fecha)} · ${plural(dif, "día", "días")} tarde` : dif < 0 ? `Recibida ${fmtF(marca.fecha)} · ${plural(-dif, "día", "días")} antes` : `Recibida ${fmtF(marca.fecha)} · a tiempo`;
       return { clave: "recibida", txt, bg: C.canvas, color: C.slate, borde: C.border, dias: 0 };
     }
+    if (o.dx) return { clave: "cumplida", txt: `Cumplida en Busint${o.dx.f ? ` ${fmtF(o.dx.f)}` : ""}`, bg: C.blueBg, color: C.blue, borde: "#C9D9EA", dias: 0 };
     if (!o.ff) return { clave: "sinfecha", txt: "Sin fecha de entrega", bg: C.canvas, color: C.slate, borde: C.border, dias: 0 };
     const d = diasEntre(hoy, o.ff); // >0 faltan, <0 vencida
     if (d < 0) {
@@ -130,9 +134,12 @@ export default function OrdenesCompraView({ db, functionsClient, currentUser, C,
   }
   const pendientes = conEstado.filter((o) => ["vencida", "porvencer", "atiempo", "sinfecha"].includes(o.est.clave) && !marcas[String(o.n)]);
   const vencidas = pendientes.filter((o) => o.est.clave === "vencida");
+  const vigentes = pendientes.filter((o) => o.est.clave !== "vencida");
+  const cumplidasBusint = conEstado.filter((o) => o.est.clave === "cumplida");
+  const cumplidasQueVencerian = cumplidasBusint.filter((o) => o.ff && o.ff < hoy && o.ff >= sumarDias(hoy, -ventana));
   const porVencer7 = pendientes.filter((o) => o.est.clave === "porvencer");
   const ordenarPend = (a, b) => (a.ff || "9999").localeCompare(b.ff || "9999") || a.n - b.n;
-  const listaPend = (tab === "vencidas" ? vencidas : pendientes).filter(pasaFiltros).sort(ordenarPend);
+  const listaPend = (tab === "vencidas" ? vencidas : vigentes).filter(pasaFiltros).sort(ordenarPend);
   const listaHist = conEstado.filter(pasaFiltros).sort((a, b) => b.n - a.n);
   const mesActual = hoy.slice(0, 7), mesAnterior = sumarDias(`${mesActual}-01`, -1).slice(0, 7);
   const comprasMes = (mes) => ordenes.filter((o) => (o.fi || "").startsWith(mes)).reduce((s, o) => s + o.base, 0);
@@ -147,6 +154,21 @@ export default function OrdenesCompraView({ db, functionsClient, currentUser, C,
   async function quitarMarca(o) {
     if (!window.confirm(`¿Quitar la marca de recibida de la orden ${o.n}?`)) return;
     await deleteDoc(doc(db, "contabilidad_ordenes_compra_recibidas", String(o.n)));
+  }
+  async function marcarEnBloque(lista, motivo) {
+    if (!lista.length) { window.alert("No hay órdenes para marcar."); return; }
+    if (!window.confirm(`${motivo}\n\nSe marcarán ${lista.length} órdenes como recibidas (confirmadas en bloque), usando su fecha de entrega como fecha de llegada. No cuentan en las estadísticas de a tiempo o tarde. ¿Continuar?`)) return;
+    try {
+      const marcadaEn = new Date().toISOString();
+      for (let i = 0; i < lista.length; i += 400) {
+        const lote = writeBatch(db);
+        lista.slice(i, i + 400).forEach((o) => lote.set(doc(db, "contabilidad_ordenes_compra_recibidas", String(o.n)), { fecha: o.ff, por: currentUser?.name || "", marcadaEn, bloque: true }));
+        await lote.commit();
+      }
+      setSeleccion({});
+    } catch (err) {
+      window.alert(`No se pudieron marcar: ${err?.message || err}`);
+    }
   }
   async function exportar(filas, nombre) {
     const XLSX = await import("xlsx");
@@ -178,7 +200,7 @@ export default function OrdenesCompraView({ db, functionsClient, currentUser, C,
     return (
       <div style={{ border: "1.5px solid #C9D9EA", borderRadius: 14, background: C.white, overflow: "hidden" }}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 14, padding: "14px 18px", background: "#F6F9FC", borderBottom: "1px solid #D9E4F0" }}>
-          {[["Proveedor", o.pn || "—", `Código ${o.p || "—"}`], ["Fecha de la orden", fmtF(o.fi)], ["Fecha de entrega", fmtF(o.ff), o.est.clave === "vencida" ? o.est.txt : ""], ["Elaboró", o.u || "—"]].map(([l, v, s]) => (
+          {[["Proveedor", o.pn || "—", `Código ${o.p || "—"}`], ["Fecha de la orden", fmtF(o.fi)], ["Fecha de entrega", fmtF(o.ff), o.est.clave === "vencida" ? o.est.txt : ""], ["Elaboró", o.u || "—"], ...(o.dx ? [["Cumplida en Busint", o.dx.f ? fmtF(o.dx.f) : "Sí", o.dx.u ? `por ${o.dx.u}` : ""]] : [])].map(([l, v, s]) => (
             <div key={l}><div style={{ fontSize: 11, letterSpacing: 0.5, textTransform: "uppercase", color: C.slate, fontWeight: 700 }}>{l}</div><div style={{ fontSize: 14, fontWeight: 700, color: l === "Fecha de entrega" && o.est.clave === "vencida" ? C.red : C.ink }}>{v}</div>{s ? <div style={{ fontSize: 11.5, color: l === "Fecha de entrega" ? C.red : C.slate }}>{s}</div> : null}</div>
           ))}
         </div>
@@ -214,25 +236,26 @@ export default function OrdenesCompraView({ db, functionsClient, currentUser, C,
     );
   }
 
-  function TablaOrdenes({ lista, conPaginacion }) {
+  function TablaOrdenes({ lista, conPaginacion, seleccionable }) {
     const visibles = conPaginacion ? lista.slice(0, limite) : lista;
     return (
       <div>
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead><tr><th style={th}>Orden</th><th style={th}>Proveedor</th><th style={th}>Fecha orden</th><th style={th}>Entrega</th><th style={th}>Estado</th><th style={{ ...th, textAlign: "right" }}>Unidades</th><th style={{ ...th, textAlign: "right" }}>Base sin IVA</th><th style={{ ...th, textAlign: "right" }}>IVA</th><th style={{ ...th, textAlign: "right" }}>Neto a pagar</th><th style={th} /></tr></thead>
+            <thead><tr>{seleccionable && <th style={th}><input type="checkbox" aria-label="Seleccionar todas" checked={lista.length > 0 && lista.every((o) => seleccion[o.n])} onChange={(e) => { const m = {}; if (e.target.checked) lista.forEach((o) => { m[o.n] = true; }); setSeleccion(m); }} /></th>}<th style={th}>Orden</th><th style={th}>Proveedor</th><th style={th}>Fecha orden</th><th style={th}>Entrega</th><th style={th}>Estado</th><th style={{ ...th, textAlign: "right" }}>Unidades</th><th style={{ ...th, textAlign: "right" }}>Base sin IVA</th><th style={{ ...th, textAlign: "right" }}>IVA</th><th style={{ ...th, textAlign: "right" }}>Neto a pagar</th><th style={th} /></tr></thead>
             <tbody>
               {visibles.map((o) => (
                 <tr key={o.n} onClick={() => setAbierta(abierta === o.n ? null : o.n)} style={{ cursor: "pointer", background: abierta === o.n ? "#EEF4FA" : o.est.clave === "vencida" ? "#FFF8F6" : "transparent" }}>
+                  {seleccionable && <td style={td} onClick={(e) => e.stopPropagation()}><input type="checkbox" aria-label={`Seleccionar orden ${o.n}`} checked={!!seleccion[o.n]} onChange={(e) => setSeleccion({ ...seleccion, [o.n]: e.target.checked })} /></td>}
                   <td style={{ ...td, fontWeight: 800 }}>{o.n}</td><td style={td}>{o.pn || "—"}</td><td style={td}>{fmtF(o.fi)}</td><td style={td}>{fmtF(o.ff)}</td>
                   <td style={td}><Pastilla est={o.est} /></td>
                   <td style={{ ...td, ...num }}>{o.unidades.toLocaleString("es-CO")}</td><td style={{ ...td, ...num }}>{fmtCOP(o.base)}</td><td style={{ ...td, ...num }}>{fmtCOP(o.iva)}</td><td style={{ ...td, ...num, fontWeight: 800 }}>{fmtCOP(o.total)}</td>
                   <td style={td} onClick={(e) => e.stopPropagation()}>
-                    {marcas[String(o.n)] ? <Btn variant="ghost" small onClick={() => quitarMarca(o)}>Quitar recibida</Btn> : <Btn variant="secondary" small onClick={() => marcarRecibida(o)}>✔ Marcar recibida</Btn>}
+                    {marcas[String(o.n)] ? <Btn variant="ghost" small onClick={() => quitarMarca(o)}>Quitar recibida</Btn> : o.est.clave === "cumplida" ? null : <Btn variant="secondary" small onClick={() => marcarRecibida(o)}>✔ Marcar recibida</Btn>}
                   </td>
                 </tr>
               ))}
-              {!visibles.length && <tr><td colSpan={10} style={{ ...td, color: C.slate, textAlign: "center", padding: 24 }}>No hay órdenes con esos filtros.</td></tr>}
+              {!visibles.length && <tr><td colSpan={11} style={{ ...td, color: C.slate, textAlign: "center", padding: 24 }}>No hay órdenes con esos filtros.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -259,15 +282,15 @@ export default function OrdenesCompraView({ db, functionsClient, currentUser, C,
   const listaNavegable = tab === "historial" ? listaHist : listaPend;
   const posAbierta = ordenAbierta ? listaNavegable.findIndex((o) => o.n === ordenAbierta.n) : -1;
   const irA = (delta) => { const o = listaNavegable[posAbierta + delta]; if (o) setAbierta(o.n); };
-  const tabs = [["vencidas", `⚠ Vencidas (${vencidas.length})`], ["pendientes", `Pendientes (${pendientes.length})`], ["historial", `Historial (${ordenes.length.toLocaleString("es-CO")})`], ["insumo", "Por insumo"], ["costo", "Control de costo"]];
-  const mostrarFiltroBase = tab === "vencidas" || tab === "pendientes" || tab === "historial";
+  const tabs = [["vigentes", `Vigentes (${vigentes.length})`], ["vencidas", `⚠ Vencidas (${vencidas.length})`], ["historial", `Historial (${ordenes.length.toLocaleString("es-CO")})`], ["insumo", "Por insumo"], ["costo", "Control de costo"]];
+  const mostrarFiltroBase = tab === "vencidas" || tab === "vigentes" || tab === "historial";
 
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12, marginBottom: 6 }}>
         <div>
           <div style={{ fontSize: 22, fontWeight: 800, color: C.ink, marginBottom: 4 }}>🛒 Órdenes de compra</div>
-          <div style={{ fontSize: 13, color: C.slate, maxWidth: 700 }}>Lo que se le pidió a cada proveedor, cuándo debe llegar y cuánto cuesta (datos de Busint). Las vencidas salen primero. Busint no dice si ya llegó la mercancía: márcala como recibida con el botón de cada orden.</div>
+          <div style={{ fontSize: 13, color: C.slate, maxWidth: 700 }}>Lo que se le pidió a cada proveedor, cuándo debe llegar y cuánto cuesta (datos de Busint). Vigentes son las que aún están dentro de su fecha de entrega. Las que Busint ya dio por cumplidas salen solas; para el resto, márcalas como recibidas con el botón de cada orden o en bloque desde Vencidas.</div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           {datos?.generado && <span style={{ fontSize: 12, color: C.slate }}>Datos de Busint: {new Date(datos.generado).toLocaleString("es-CO", { timeZone: "America/Bogota" })}</span>}
@@ -284,11 +307,12 @@ export default function OrdenesCompraView({ db, functionsClient, currentUser, C,
             ))}
           </div>
 
-          {(tab === "vencidas" || tab === "pendientes") && (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 12, marginBottom: 14 }}>
-              <Kpi tono={vencidas.length ? "rojo" : ""} titulo="Vencidas" valor={plural(vencidas.length, "orden", "órdenes")} detalle={vencidas.length ? `${fmtCOP(vencidas.reduce((s, o) => s + o.base, 0))} sin IVA · la más antigua hace ${-Math.min(...vencidas.map((o) => o.est.dias))} días` : "Nada vencido"} />
-              <Kpi tono={porVencer7.length ? "ambar" : ""} titulo="Vencen en 7 días" valor={plural(porVencer7.length, "orden", "órdenes")} detalle={fmtCOP(porVencer7.reduce((s, o) => s + o.base, 0)) + " sin IVA"} />
-              <Kpi titulo="Pendientes en total" valor={plural(pendientes.length, "orden", "órdenes")} detalle={`${fmtCOP(pendientes.reduce((s, o) => s + o.base, 0))} sin IVA · ${new Set(pendientes.map((o) => o.pn)).size} proveedores`} />
+          {(tab === "vencidas" || tab === "vigentes") && (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12, marginBottom: 14 }}>
+              <Kpi titulo="Vigentes" valor={plural(vigentes.length, "orden", "órdenes")} detalle={`${fmtCOP(vigentes.reduce((s2, o) => s2 + o.base, 0))} sin IVA · ${new Set(vigentes.map((o) => o.pn)).size} proveedores`} />
+              <Kpi tono={porVencer7.length ? "ambar" : ""} titulo="Vencen en 7 días" valor={plural(porVencer7.length, "orden", "órdenes")} detalle={fmtCOP(porVencer7.reduce((s2, o) => s2 + o.base, 0)) + " sin IVA"} />
+              <Kpi tono={vencidas.length ? "rojo" : ""} titulo="Vencidas" valor={plural(vencidas.length, "orden", "órdenes")} detalle={vencidas.length ? `${fmtCOP(vencidas.reduce((s2, o) => s2 + o.base, 0))} sin IVA · la más antigua hace ${-Math.min(...vencidas.map((o) => o.est.dias))} días` : "Nada vencido"} />
+              <Kpi titulo="Cumplidas en Busint" valor={cumplidasBusint.length.toLocaleString("es-CO")} detalle={`${plural(cumplidasQueVencerian.length, "ya había pasado", "ya habían pasado")} su fecha de entrega en los últimos ${ventana} días: sin esto saldrían vencidas`} />
               <Kpi titulo={`Compras de ${new Date(`${mesActual}-15`).toLocaleDateString("es-CO", { month: "long" })}`} valor={fmtCOP(comprasMes(mesActual))} detalle={variacionMes === null ? "sin base de comparación" : `${variacionMes >= 0 ? "▲" : "▼"} ${Math.abs(variacionMes).toLocaleString("es-CO", { maximumFractionDigits: 1 })} % vs mes anterior (sin IVA)`} />
             </div>
           )}
@@ -302,7 +326,7 @@ export default function OrdenesCompraView({ db, functionsClient, currentUser, C,
                 <label style={{ fontSize: 12, color: C.slate }}>hasta <input type="date" value={hasta} onChange={(e) => setHasta(e.target.value)} style={campo} /></label>
               </>
             )}
-            {(tab === "vencidas" || tab === "pendientes") && (
+            {(tab === "vencidas" || tab === "vigentes") && (
               <label style={{ fontSize: 12, color: C.slate }} title="Las órdenes sin marcar que vencieron antes de esta ventana no cuentan como vencidas: quedan en el Historial como «sin confirmar»">Vigilar vencidas de los últimos <select value={ventana} onChange={(e) => setVentana(Number(e.target.value))} style={campo}>{[30, 60, 90, 180, 365].map((d) => <option key={d} value={d}>{d} días</option>)}</select></label>
             )}
             {tab === "costo" && (
@@ -311,13 +335,24 @@ export default function OrdenesCompraView({ db, functionsClient, currentUser, C,
                 <label style={{ fontSize: 12.5, color: C.ink, fontWeight: 600 }}><input type="checkbox" checked={soloSubieron} onChange={(e) => setSoloSubieron(e.target.checked)} /> Solo los que subieron</label>
               </>
             )}
-            {(tab === "vencidas" || tab === "pendientes") && <Btn variant="secondary" small onClick={() => exportar(filasOrdenes(listaPend), "Ordenes de compra pendientes")}>⬇ Exportar a Excel</Btn>}
+            {(tab === "vencidas" || tab === "vigentes") && <Btn variant="secondary" small onClick={() => exportar(filasOrdenes(listaPend), tab === "vencidas" ? "Ordenes de compra vencidas" : "Ordenes de compra vigentes")}>⬇ Exportar a Excel</Btn>}
+            {tab === "vencidas" && (() => {
+              const elegidas = listaPend.filter((o) => seleccion[o.n]);
+              const viejas = vencidas.filter((o) => -o.est.dias > diasBloque);
+              return (
+                <>
+                  <Btn variant="success" small disabled={!elegidas.length} onClick={() => marcarEnBloque(elegidas, "Las órdenes seleccionadas llegaron.")}>✔ Marcar seleccionadas como recibidas ({elegidas.length})</Btn>
+                  <label style={{ fontSize: 12, color: C.slate }}>Marcar recibidas las vencidas de hace más de <select value={diasBloque} onChange={(e) => setDiasBloque(Number(e.target.value))} style={campo}>{[7, 15, 30, 45, 60, 90].map((d) => <option key={d} value={d}>{d} días</option>)}</select></label>
+                  <Btn variant="secondary" small disabled={!viejas.length} onClick={() => marcarEnBloque(viejas, `Todas las vencidas de hace más de ${diasBloque} días (de todos los proveedores) ya llegaron.`)}>Marcar {viejas.length}</Btn>
+                </>
+              );
+            })()}
             {tab === "historial" && <Btn variant="secondary" small onClick={() => exportar(filasOrdenes(listaHist), "Historial ordenes de compra")}>⬇ Exportar a Excel</Btn>}
             {tab === "costo" && <Btn variant="secondary" small onClick={() => exportar(cambios.map((c) => ({ Cód: c.cod, Insumo: c.nombre, "Precio anterior": Math.round(c.ant.neto), "Fecha anterior": fmtF(c.ant.fecha), "Precio ahora": Math.round(c.ult.neto), "Fecha ahora": fmtF(c.ult.fecha), "Cambio %": Math.round(c.pct * 10) / 10, Proveedor: c.ult.prov })), "Control de costo compras")}>⬇ Exportar a Excel</Btn>}
           </div>
 
           <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 16, padding: 14 }}>
-            {(tab === "vencidas" || tab === "pendientes") && <TablaOrdenes lista={listaPend} />}
+            {(tab === "vencidas" || tab === "vigentes") && <TablaOrdenes lista={listaPend} seleccionable={tab === "vencidas"} />}
             {tab === "historial" && <TablaOrdenes lista={listaHist} conPaginacion />}
 
             {tab === "insumo" && (
@@ -405,6 +440,7 @@ export default function OrdenesCompraView({ db, functionsClient, currentUser, C,
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
               {marcas[String(ordenAbierta.n)]
                 ? <Btn variant="ghost" onClick={() => quitarMarca(ordenAbierta)}>Quitar recibida</Btn>
+                : ordenAbierta.est.clave === "cumplida" ? <span style={{ alignSelf: "center", fontSize: 12.5, color: C.blue, fontWeight: 700 }}>Busint ya la dio por cumplida</span>
                 : <Btn variant="success" onClick={() => marcarRecibida(ordenAbierta)}>✔ Marcar recibida</Btn>}
               <Btn variant="secondary" onClick={() => setAbierta(null)}>Cerrar</Btn>
             </div>
