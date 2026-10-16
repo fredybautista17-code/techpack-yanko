@@ -223,7 +223,7 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
   const ver = cot.versiones[cot.activa];
   const calc = useMemo(() => calcularCotizacion(ver.v), [ver.v]);
   const estadoV = ver.estado || "borrador";
-  const bloqueada = estadoV === "aprobacion" || estadoV === "aprobada"; // no se edita mientras espera o ya fue aprobada
+  const bloqueada = (estadoV === "aprobacion" && !puedeAprobar) || estadoV === "aprobada"; // quien envía no edita mientras espera; el aprobador sí; una aprobada se cambia con versión nueva
 
   function mutar(fn) {
     setCot((c) => {
@@ -285,7 +285,15 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
   }
   async function guardar() {
     if (!String(cot.referencia).trim()) { notify?.("Escribe la referencia antes de guardar"); return; }
-    await onGuardar(cot);
+    let a = cot;
+    // Si el aprobador corrigió una versión que espera aprobación, el precio enviado se actualiza.
+    if (estadoV === "aprobacion" && puedeAprobar && ver.precio !== calc.precioAplicar) {
+      a = limpio(cot);
+      a.versiones[a.activa].precio = calc.precioAplicar;
+      a.historial = [...(a.historial || []), { fecha: new Date().toISOString(), quien: usuario || "—", v: ver.numero, txt: `ajustó la V${ver.numero} en aprobación (${fmtCOP(calc.precioAplicar)} con IVA)` }];
+      setCot(a);
+    }
+    await onGuardar(a);
     setSucio(false);
     notify?.("Cotización guardada");
   }
@@ -453,7 +461,9 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
             <b style={{ color: C.amber }}>{puedeAprobar ? "Esta versión espera tu aprobación." : "Esta versión espera aprobación."}</b>{" "}
             Enviada por {ver.envio?.por || "—"}{ver.envio?.fecha ? ` el ${fmtFecha(ver.envio.fecha.slice(0, 10))}` : ""}.{" "}
             {puedeAprobar ? (vinculoActual ? <>Al aprobarla, <b>{fmtCOP(calc.precioAplicar)}</b> pasa solo como precio de <b>{vinculoActual.label}</b>.</> : "No tiene prototipo ni cápsula vinculado: puedes elegirlo al aprobar.") : "No se puede editar hasta que la aprueben o la devuelvan."}
+            {puedeAprobar && " Como aprobador puedes corregirla aquí mismo; al guardar se actualiza el precio enviado."}
           </div>
+          {!sucio && <button onClick={retirarEnvio} style={btn(C.white, C.amber, C.amber)}>Retirar de aprobación</button>}
         </div>
       )}
       {estadoV === "aprobada" && (
@@ -463,6 +473,7 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
             <b style={{ color: C.green }}>Versión aprobada</b>{ver.decision?.por ? ` por ${ver.decision.por}` : ""}{ver.decision?.fecha ? ` el ${fmtFecha(ver.decision.fecha.slice(0, 10))}` : ""}.
             {cot.precioAplicado && cot.precioAplicado.version === ver.numero ? ` ${fmtCOP(cot.precioAplicado.valor)} aplicado a ${cot.precioAplicado.destino}.` : ""} Para cambiar algo, crea una versión nueva (volverá a pasar por aprobación).
           </div>
+          <button onClick={nuevaVersion} style={btn(C.white, C.green, C.green)}>+ Crear versión nueva para editar</button>
         </div>
       )}
       {estadoV === "devuelta" && (
