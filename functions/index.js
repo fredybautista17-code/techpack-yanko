@@ -1393,7 +1393,9 @@ async function subirArchivoADropbox(buffer, rutaDestino, intento = 1) {
     headers: {
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/octet-stream",
-      "Dropbox-API-Arg": JSON.stringify({ path: rutaDestino, mode: "overwrite", mute: true }),
+      // Las cabeceras HTTP solo admiten ASCII: Dropbox exige escapar las letras con tilde y la Ñ como \uXXXX
+      // (sin esto "COTIZACION DE DISEÑO" se guardaba como "DISE�O" y creaba otra carpeta distinta).
+      "Dropbox-API-Arg": JSON.stringify({ path: rutaDestino, mode: "overwrite", mute: true }).replace(/[\u007f-\uffff]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`),
     },
     body: buffer,
   });
