@@ -136,3 +136,25 @@ export async function descargarViniloExcel({ ref, mes, filas, pct }) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
+
+// ─── BASES REGISTRADAS (2026-10-16, a pedido de Fredy) ───────────────────────
+// Registro del valor BASE de cada fila (y del valor de los procesos fijos) con
+// vigencia: cada cambio es un registro nuevo {key, desde, valor, base, nota, por,
+// creado}; nada se borra, así se sabe qué base regía en cada mes.
+// Registro vigente de una fila en una fecha (aaaa-mm-dd): el de "desde" más reciente
+// que no pase de esa fecha (si hay dos el mismo día, el último registrado).
+export function baseVigente(registros, key, fechaISO) {
+  return (registros || [])
+    .filter((r) => r.key === key && String(r.desde || "") <= fechaISO)
+    .sort((a, b) => String(b.desde).localeCompare(String(a.desde)) || String(b.creado || "").localeCompare(String(a.creado || "")))[0] || null;
+}
+// Llena BASE (y el valor de los procesos) de las filas con lo vigente en la fecha.
+// "estandar" = valores guardados antes de existir este registro (solo procesos, si la fila no tiene registro).
+export function aplicarBases(filas, registros, fechaISO, estandar) {
+  return (filas || []).map((f) => {
+    const r = baseVigente(registros, f.key, fechaISO);
+    if (r) return { ...f, base: r.base ?? f.base, ...(f.tipo === "proceso" && r.valor != null ? { valor: r.valor } : {}) };
+    const e = f.tipo === "proceso" ? (estandar || []).find((x) => x.key === f.key) : null;
+    return e ? { ...f, valor: e.valor, base: e.base } : f;
+  });
+}

@@ -9,7 +9,7 @@ import {
 import { descargarCotizacionesExcel } from "./cotizador-excel";
 import {
   FILAS_VINILO, IMPREVISTOS_PCT, filasViniloVacias, calcularVinilo, aplicarInsumoAFila,
-  tituloVinilo, mesLargo, descargarViniloExcel,
+  tituloVinilo, mesLargo, descargarViniloExcel, baseVigente, aplicarBases,
 } from "./cotizador-vinilo";
 
 // ─── COTIZADOR ───────────────────────────────────────────────────────────────
@@ -1064,20 +1064,19 @@ function MiniVinilo({ currentUser, notify, onPasar }) {
   const [filas, setFilas] = useState(() => filasViniloVacias());
   const [buscandoFila, setBuscandoFila] = useState(null); // fila que está eligiendo insumo de Busint
   const [estandarAplicado, setEstandarAplicado] = useState(false);
+  const [bases, setBases] = useState(null); // registros de "Bases Vinilo y DTF" (null = cargando)
+  const [guardadosListo, setGuardadosListo] = useState(false);
 
-  useEffect(() => onSnapshot(collection(db, "cotizador_vinilo"), (s) => setGuardados(s.docs.map((d) => ({ ...d.data(), id: d.id }))), () => {}), []);
+  useEffect(() => onSnapshot(collection(db, "cotizador_vinilo"), (s) => { setGuardados(s.docs.map((d) => ({ ...d.data(), id: d.id }))); setGuardadosListo(true); }, () => setGuardadosListo(true)), []);
+  useEffect(() => onSnapshot(collection(db, "cotizador_bases"), (s) => setBases(s.docs.find((d) => d.id === "vinilo")?.data().registros || []), () => setBases([])), []);
 
-  // Los procesos fijos arrancan con el estándar guardado (si existe).
+  const estandarViejo = guardados.find((g) => g.id === "_estandar")?.filas;
+  // La hoja nueva arranca con las bases vigentes en su mes (y, si una fila aún no tiene registro, con el estándar anterior).
   useEffect(() => {
-    if (estandarAplicado) return;
-    const est = guardados.find((g) => g.id === "_estandar");
-    if (!est) return;
+    if (estandarAplicado || bases === null || !guardadosListo) return;
     setEstandarAplicado(true);
-    setFilas((fs) => fs.map((f) => {
-      const e = (est.filas || []).find((x) => x.key === f.key);
-      return e && f.tipo === "proceso" ? { ...f, valor: e.valor, base: e.base } : f;
-    }));
-  }, [guardados, estandarAplicado]);
+    setFilas((fs) => aplicarBases(fs, bases, `${mes}-31`, estandarViejo));
+  }, [bases, guardadosListo, estandarAplicado]); // eslint-disable-line
 
   const calc = useMemo(() => calcularVinilo(filas, pct), [filas, pct]);
   const cambiar = (key, campo, valor) => setFilas((fs) => fs.map((f) => (f.key === key ? { ...f, [campo]: valor } : f)));
@@ -1086,9 +1085,9 @@ function MiniVinilo({ currentUser, notify, onPasar }) {
     await fsSet("cotizador_vinilo", `${normRef(ref)}_${mes}`, { ref: ref.trim(), mes, pct, filas, total: calc.total, actualizadoPor: currentUser?.name || "", actualizado: new Date().toISOString() });
     notify?.("Minicotización guardada");
   }
-  async function guardarEstandar() {
-    await fsSet("cotizador_vinilo", "_estandar", { filas: filas.filter((f) => f.tipo === "proceso").map((f) => ({ key: f.key, valor: f.valor, base: f.base })), actualizadoPor: currentUser?.name || "", actualizado: new Date().toISOString() });
-    notify?.("Valores de procesos guardados como estándar");
+  function aplicarBasesVigentes() {
+    setFilas((fs) => aplicarBases(fs, bases || [], `${mes}-31`, estandarViejo));
+    notify?.(`Bases vigentes en ${mesLargo(mes)} aplicadas`);
   }
   function cargar(g) {
     setRef(g.ref || ""); setMes(g.mes || hoyISO().slice(0, 7)); setPct(g.pct ?? IMPREVISTOS_PCT); setFilas(g.filas || filasViniloVacias());
@@ -1111,7 +1110,7 @@ function MiniVinilo({ currentUser, notify, onPasar }) {
         </div>
       </Seccion>
 
-      <Seccion titulo={tituloVinilo(ref.trim(), mes)} sub="El costo M.P viene del costo promedio del inventario de Busint (🔎); todo se puede corregir a mano.">
+      <Seccion titulo={tituloVinilo(ref.trim(), mes)} sub="El costo M.P viene del costo promedio del inventario de Busint (🔎); el BASE viene de «Bases Vinilo y DTF» (el vigente en el mes). Todo se puede corregir a mano.">
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 820 }}>
             <thead>
@@ -1167,7 +1166,7 @@ function MiniVinilo({ currentUser, notify, onPasar }) {
           <button onClick={excel} style={btn(C.white, C.blue, C.blue)}>📤 Descargar Excel</button>
           <button onClick={() => onPasar(ref, filas, calc)} style={btn(C.white, C.violet, C.violet)}>🧮 Pasar al cotizador</button>
           <div style={{ flex: 1 }} />
-          <button onClick={guardarEstandar} title="Guarda los valores de corte, descartonado, espiga y bajada para las próximas referencias" style={btn(C.white, C.slate, C.border)}>Guardar procesos como estándar</button>
+          <button onClick={aplicarBasesVigentes} title="Vuelve a poner el BASE (y el valor de los procesos) que rige en el mes de esta hoja, según «Bases Vinilo y DTF»" style={btn(C.white, C.slate, C.border)}>↻ Aplicar bases vigentes</button>
         </div>
       </Seccion>
 
@@ -1188,6 +1187,98 @@ function MiniVinilo({ currentUser, notify, onPasar }) {
     </div>
   );
 }
+
+// ─── BASES VINILO Y DTF ──────────────────────────────────────────────────────
+// (2026-10-16, a pedido de Fredy) Registro del valor BASE de cada concepto del
+// minicotizador, con vigencia e historial. Colección "cotizador_bases", doc
+// "vinilo": { registros: [{id, key, desde, valor, base, nota, por, creado}] }.
+// Solo cambia bases quien aprueba cotizaciones (o el admin); los demás las ven.
+function BasesVinilo({ currentUser, puedeEditar, notify }) {
+  const [registros, setRegistros] = useState([]);
+  const [cargado, setCargado] = useState(false);
+  const [abierto, setAbierto] = useState(null);
+  const [editando, setEditando] = useState(null);
+  const [form, setForm] = useState({ desde: hoyISO(), valor: "", base: "", nota: "" });
+  useEffect(() => onSnapshot(collection(db, "cotizador_bases"), (s) => { setRegistros(s.docs.find((d) => d.id === "vinilo")?.data().registros || []); setCargado(true); }, () => setCargado(true)), []);
+  const hoy = hoyISO();
+  const money = (n) => "$" + fmtDec(n);
+  const cel = { ...inp, textAlign: "right" };
+  function abrirForm(f) {
+    const v = baseVigente(registros, f.key, hoy);
+    setForm({ desde: hoy, valor: f.tipo === "proceso" ? String(v?.valor ?? f.valor ?? "") : "", base: v?.base != null ? String(v.base) : "", nota: "" });
+    setEditando(f.key);
+  }
+  async function registrar(f) {
+    if (!puedeEditar) { notify?.("Tu rol no puede cambiar las bases"); return; }
+    if (!form.desde) { notify?.("Indica desde qué fecha rige"); return; }
+    if (String(form.base).trim() === "") { notify?.("Escribe el valor BASE (puede ser 0)"); return; }
+    const reg = { id: uid(), key: f.key, desde: form.desde, valor: f.tipo === "proceso" && String(form.valor).trim() !== "" ? num(form.valor) : null, base: num(form.base), nota: form.nota.trim(), por: currentUser?.name || "", creado: new Date().toISOString() };
+    await fsSet("cotizador_bases", "vinilo", { registros: [...registros, reg], actualizadoPor: currentUser?.name || "", actualizado: new Date().toISOString() });
+    setEditando(null);
+    setAbierto(f.key);
+    notify?.(`Base de ${f.nombre} registrada desde ${fmtFecha(form.desde)}`);
+  }
+  return (
+    <div>
+      <Seccion titulo="▦ Bases Vinilo y DTF" sub="El BASE es «lo que siempre cuesta hacerlo»: TOTAL = costo × consumo + BASE. Cada cambio queda registrado con la fecha desde la que rige; el minicotizador toma el vigente en el mes de la hoja.">
+        {!puedeEditar && <div style={{ fontSize: 12, color: C.slate, marginBottom: 8 }}>Solo quien aprueba cotizaciones puede cambiar las bases. Aquí las puedes consultar.</div>}
+        {cargado && registros.length === 0 && <div style={{ fontSize: 13, color: C.amber, background: C.amberBg, borderRadius: 8, padding: "8px 12px", marginBottom: 10 }}>Todavía no hay bases registradas: el minicotizador usa BASE 0 y los valores estándar de los procesos. Registra la primera de cada concepto.</div>}
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 720 }}>
+            <thead><tr><th style={th}>Concepto</th><th style={{ ...th, textAlign: "right" }}>Valor del proceso</th><th style={{ ...th, textAlign: "right" }}>BASE vigente</th><th style={th}>Rige desde</th><th /></tr></thead>
+            <tbody>
+              {FILAS_VINILO.map((f) => {
+                const v = baseVigente(registros, f.key, hoy);
+                const historial = registros.filter((r) => r.key === f.key).sort((a, b) => String(b.desde).localeCompare(String(a.desde)) || String(b.creado || "").localeCompare(String(a.creado || "")));
+                return (
+                  <FragmentFila key={f.key}>
+                    <tr style={{ borderTop: `1px solid ${C.border}` }}>
+                      <td style={{ ...td, padding: "10px 6px" }}><div style={{ fontWeight: 700, fontSize: 13 }}>{f.nombre}</div><div style={{ fontSize: 11, color: C.slate }}>{f.tipo === "proceso" ? "Proceso" : "Insumo (Busint)"}</div></td>
+                      <td style={{ ...td, textAlign: "right" }}>{f.tipo === "proceso" ? (v?.valor != null ? money(v.valor) : <span style={{ color: C.slate }}>{money(f.valor)} (estándar)</span>) : "—"}</td>
+                      <td style={{ ...td, textAlign: "right", fontWeight: 800 }}>{v ? money(v.base) : <span style={{ color: C.amber, fontWeight: 600 }}>Sin registrar</span>}</td>
+                      <td style={{ ...td, fontSize: 12, color: C.slate }}>{v ? fmtFecha(v.desde) : "—"}</td>
+                      <td style={{ ...td, textAlign: "right", whiteSpace: "nowrap" }}>
+                        <button onClick={() => setAbierto(abierto === f.key ? null : f.key)} style={{ ...btn(C.white, C.slate, C.border), padding: "4px 10px", fontSize: 12 }}>{abierto === f.key ? "▾" : "▸"} Historial ({historial.length})</button>{" "}
+                        {puedeEditar && <button onClick={() => (editando === f.key ? setEditando(null) : abrirForm(f))} style={{ ...btn(C.blueBg, C.blue, C.blue), padding: "4px 10px", fontSize: 12 }}>✏ Cambiar</button>}
+                      </td>
+                    </tr>
+                    {editando === f.key && (
+                      <tr><td colSpan={5} style={{ padding: "0 6px 12px" }}>
+                        <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", background: C.field, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12 }}>
+                          <Campo label="Rige desde" ancho={150}><input type="date" value={form.desde} onChange={(e) => setForm({ ...form, desde: e.target.value })} style={inp} /></Campo>
+                          {f.tipo === "proceso" && <Campo label="Valor del proceso" ancho={130}><input value={form.valor} onChange={(e) => setForm({ ...form, valor: e.target.value })} style={cel} /></Campo>}
+                          <Campo label="BASE" ancho={130}><input value={form.base} onChange={(e) => setForm({ ...form, base: e.target.value })} style={cel} /></Campo>
+                          <Campo label="Nota (opcional)" ancho={240}><input value={form.nota} onChange={(e) => setForm({ ...form, nota: e.target.value })} placeholder="Ej.: subió el operario" style={inp} /></Campo>
+                          <button onClick={() => registrar(f)} style={btn(C.green, C.white)}>Registrar</button>
+                          <button onClick={() => setEditando(null)} style={btn(C.white, C.slate, C.border)}>Cancelar</button>
+                        </div>
+                      </td></tr>
+                    )}
+                    {abierto === f.key && (
+                      <tr><td colSpan={5} style={{ padding: "0 6px 12px" }}>
+                        {historial.length === 0 && <div style={{ fontSize: 12, color: C.slate }}>Sin registros todavía.</div>}
+                        {historial.map((r) => (
+                          <div key={r.id} style={{ display: "flex", gap: 12, fontSize: 12, padding: "4px 0", borderTop: `1px dashed ${C.border}`, alignItems: "center", flexWrap: "wrap" }}>
+                            <b style={{ minWidth: 70 }}>{fmtFecha(r.desde)}</b>
+                            <span style={{ minWidth: 110 }}>BASE {money(r.base)}</span>
+                            {r.valor != null && <span style={{ minWidth: 120 }}>Proceso {money(r.valor)}</span>}
+                            <span style={{ flex: 1, color: C.slate }}>{r.nota || ""}{r.nota && r.por ? " · " : ""}{r.por || ""}</span>
+                            {v && v.id === r.id && <Pastilla bg={C.greenBg} color={C.green}>vigente hoy</Pastilla>}
+                          </div>
+                        ))}
+                      </td></tr>
+                    )}
+                  </FragmentFila>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </Seccion>
+    </div>
+  );
+}
+const FragmentFila = ({ children }) => <>{children}</>;
 
 // ─── INICIO (DASHBOARD) DEL MÓDULO DE COTIZACIONES ───────────────────────────
 // (2026-10-16, a pedido de Fredy) Pantalla de entrada del módulo, como la de
@@ -1290,6 +1381,7 @@ function InicioCotizaciones({ cotizaciones, minis, cargado, puedeAprobar, puedeB
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))", gap: 12, marginBottom: 16 }}>
         <Acceso icono="🧮" bg={C.blueBg} titulo="Cotizaciones" desc="Crear, versionar y aplicar precios" tab="cotizaciones" />
         <Acceso icono="🎨" bg={C.amberBg} titulo="Vinilo / DTF" desc="Minicotizador con datos de Busint" tab="vinilo" />
+        <Acceso icono="▦" bg={C.greenBg} titulo="Bases Vinilo y DTF" desc="Valor BASE de cada proceso, con vigencia" tab="bases" />
         <Acceso icono="⚙" bg={C.violetBg} titulo="Parámetros por cliente" desc="Impuestos, administrativos y procesos" tab="parametros" />
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(320px,1fr))", gap: 12 }}>
@@ -1337,7 +1429,7 @@ function InicioCotizaciones({ cotizaciones, minis, cargado, puedeAprobar, puedeB
 }
 
 // Menú vertical del módulo (mismo estilo que Bodega): azul marino, activo en beige.
-const ITEMS_MENU = [["inicio", "◉", "Inicio"], ["cotizaciones", "▤", "Cotizaciones"], ["aprobar", "✓", "Por aprobar"], ["vinilo", "◈", "Vinilo / DTF"], ["parametros", "⚙", "Parámetros por cliente"]];
+const ITEMS_MENU = [["inicio", "◉", "Inicio"], ["cotizaciones", "▤", "Cotizaciones"], ["aprobar", "✓", "Por aprobar"], ["vinilo", "◈", "Vinilo / DTF"], ["bases", "▦", "Bases Vinilo y DTF"], ["parametros", "⚙", "Parámetros por cliente"]];
 function MenuCotizaciones({ activo, onIr, onVolver, onLogout, currentUser, nAprobar, puedeAprobar }) {
   const inicial = String(currentUser?.name || "?").trim().charAt(0).toUpperCase();
   return (
@@ -1519,7 +1611,7 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
     if (edit && edSucio && !window.confirm("Hay cambios sin guardar en la cotización. ¿Salir sin guardar?")) return;
     setEdit(null); setEdSucio(false); setFiltroEstado(null); setTab(t);
   }
-  const TITULOS = { inicio: "Inicio", cotizaciones: "Cotizaciones", vinilo: "Vinilo / DTF", parametros: "Parámetros por cliente", aprobar: puedeAprobar ? "Por aprobar" : "En aprobación" };
+  const TITULOS = { inicio: "Inicio", cotizaciones: "Cotizaciones", vinilo: "Vinilo / DTF", bases: "Bases Vinilo y DTF", parametros: "Parámetros por cliente", aprobar: puedeAprobar ? "Por aprobar" : "En aprobación" };
   return (
     <div className="cotz-root" style={{ display: "flex", minHeight: "100vh", background: C.canvas, fontFamily: FUENTE, color: C.ink }}>
       <MenuCotizaciones activo={edit ? "cotizaciones" : tab} onIr={irA} onVolver={onVolver} onLogout={onLogout} currentUser={currentUser} nAprobar={cotizaciones.filter((c) => estadoUltima(c) === "aprobacion").length} puedeAprobar={puedeAprobar} />
@@ -1544,6 +1636,7 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
       )}
 
       {tab === "vinilo" && <MiniVinilo currentUser={currentUser} notify={notify} onPasar={pasarAlCotizador} />}
+      {tab === "bases" && <BasesVinilo currentUser={currentUser} puedeEditar={puedeAprobar} notify={notify} />}
 
       {(tab === "cotizaciones" || tab === "aprobar") && (
         <div>
