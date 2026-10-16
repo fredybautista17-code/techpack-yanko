@@ -758,7 +758,7 @@ function ModalVincular({ cot, protos, capsulas, precio, onElegir, onSoloVincular
       <div onClick={(e) => e.stopPropagation()} style={{ background: C.white, borderRadius: 14, width: "min(640px, 100%)", maxHeight: "86vh", display: "flex", flexDirection: "column" }}>
         <div style={{ padding: "16px 18px", borderBottom: `1px solid ${C.border}` }}>
           <div style={{ fontWeight: 800, fontSize: 16 }}>{onElegir ? `Aplicar ${fmtCOP(precio)} (con IVA)` : "Vincular a prototipo o cápsula"}</div>
-          <div style={{ fontSize: 12, color: C.slate, margin: "2px 0 10px" }}>{onElegir ? "Elige el prototipo o la referencia de cápsula que recibe este precio. «Aplicar» aprueba la versión y pone el precio." : "Elige a cuál prototipo o referencia de cápsula corresponde. El precio se aplicará cuando lo apruebe quien tiene el permiso."}</div>
+          <div style={{ fontSize: 12, color: C.slate, margin: "2px 0 10px" }}>{onElegir ? "Elige el prototipo o la referencia de cápsula que recibe este precio. Haz clic en una fila para vincularla. «Aplicar» además aprueba la versión y pone el precio." : "Haz clic en el prototipo o la referencia de cápsula que corresponde. El precio se aplicará cuando lo apruebe quien tiene el permiso."}</div>
           <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar por referencia o nombre…" style={inp} />
         </div>
         <div style={{ overflowY: "auto", padding: 8 }}>
@@ -766,14 +766,14 @@ function ModalVincular({ cot, protos, capsulas, precio, onElegir, onSoloVincular
           {filtradas.map((o) => {
             const igual = normRef(o.reference) === normRef(cot.referencia) && o.reference;
             return (
-              <div key={o.kind + o.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 8, borderBottom: `1px solid ${C.border}`, background: igual ? C.greenBg : "transparent" }}>
+              <div key={o.kind + o.id} onClick={() => onSoloVincular(o)} title="Clic para vincular" style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 8, borderBottom: `1px solid ${C.border}`, background: igual ? C.greenBg : "transparent", cursor: "pointer" }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 13, fontWeight: 700, color: C.ink, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{o.kind === "proto" ? "⬡" : "⬢"} {o.label}</div>
                   <div style={{ fontSize: 11, color: C.slate }}>{o.kind === "proto" ? "Prototipo" : "Referencia de cápsula"}{o.cliente ? ` · ${o.cliente}` : ""}{o.precioActual != null ? ` · precio actual ${fmtCOP(o.precioActual)}` : " · sin precio"}</div>
                 </div>
                 {igual && <Pastilla bg={C.green} color={C.white}>misma ref.</Pastilla>}
-                <button onClick={() => onSoloVincular(o)} style={{ ...btn(C.white, C.slate, C.border), fontWeight: 500, fontSize: 12 }}>Solo vincular</button>
-                {onElegir && <button onClick={() => onElegir(o)} style={{ ...btn(C.green, C.white), fontSize: 12 }}>Aplicar</button>}
+                <button onClick={(e) => { e.stopPropagation(); onSoloVincular(o); }} style={{ ...btn(C.white, C.slate, C.border), fontWeight: 500, fontSize: 12 }}>{onElegir ? "Solo vincular" : "Vincular"}</button>
+                {onElegir && <button onClick={(e) => { e.stopPropagation(); onElegir(o); }} style={{ ...btn(C.green, C.white), fontSize: 12 }}>Aplicar</button>}
               </div>
             );
           })}
