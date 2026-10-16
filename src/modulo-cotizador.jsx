@@ -170,6 +170,12 @@ async function descargarExcel(lista, nombre, imagen, notify) {
 function volcarVinilo(v, filas, calc) {
   v.procesos = v.procesos || [];
   v.insumos = v.insumos || [];
+  // Una fila que ya no se usa (sin «Usa» o en 0) se quita de la cotización si venía del vinilo
+  // (o si quedó en 0); un valor que el usuario puso a mano en una fila sin marca no se toca.
+  const quitar = (lista, nombre, valorDe) => {
+    const i = lista.findIndex((x) => normTxt(x.nombre) === normTxt(nombre));
+    if (i >= 0 && (lista[i].vinilo || !(valorDe(lista[i]) > 0))) lista.splice(i, 1);
+  };
   const ponerProceso = (nombre, valor) => {
     const i = v.procesos.findIndex((p) => normTxt(p.nombre) === normTxt(nombre));
     if (i >= 0) v.procesos[i] = { ...v.procesos[i], valor, vinilo: true };
@@ -177,7 +183,6 @@ function volcarVinilo(v, filas, calc) {
   };
   const ponerInsumo = (nombre, precio, consumo, codigo) => {
     const i = v.insumos.findIndex((x) => normTxt(x.nombre) === normTxt(nombre));
-    if (i < 0 && !(num(consumo) > 0)) return; // una fila de insumo sin consumo no se agrega
     const nuevo = { nombre, precio, consumo, termo: true, vinilo: true, ...(codigo ? { codigo } : {}) };
     if (i >= 0) v.insumos[i] = { ...v.insumos[i], ...nuevo };
     else v.insumos.push(nuevo);
@@ -185,8 +190,12 @@ function volcarVinilo(v, filas, calc) {
   const PROC = { dtf: "Aplique DTF", corte: "Corte vinilo", descartonado: "Descartonado", espiga: "Espiga", bajada: "Bajada de vinilo" };
   filas.forEach((f, i) => {
     const total = Math.round(calc.detalle[i].total * 100) / 100;
-    if (PROC[f.key]) ponerProceso(PROC[f.key], total);
-    else ponerInsumo(f.nombre, num(f.costoMP) + num(f.base) / (num(f.consumo) || 1), num(f.consumo), f.codigo);
+    if (PROC[f.key]) {
+      if (f.usa !== false && total > 0) ponerProceso(PROC[f.key], total);
+      else quitar(v.procesos, PROC[f.key], (p) => num(p.valor));
+    } else if (f.usa !== false && num(f.consumo) > 0) {
+      ponerInsumo(f.nombre, num(f.costoMP) + num(f.base) / (num(f.consumo) || 1), num(f.consumo), f.codigo);
+    } else quitar(v.insumos, f.nombre, (x) => num(x.precio) * num(x.consumo));
   });
   return v;
 }
@@ -1216,16 +1225,17 @@ function MiniVinilo({ currentUser, notify, onPasar, refInicial, inicialId, etiqu
 
       <Seccion titulo={tituloVinilo(ref.trim(), mes)} sub="El costo M.P viene del costo promedio del inventario de Busint (🔎); el BASE viene de «Bases Vinilo y DTF» (el vigente en el mes). Todo se puede corregir a mano.">
         <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 820 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 860 }}>
             <thead>
               <tr style={{ background: "#FFF9C4" }}>
-                <th style={th}>Proceso e insumo</th><th style={{ ...th, textAlign: "right" }}>Costo M.P</th><th style={{ ...th, textAlign: "right" }}>Promedio</th>
+                <th style={{ ...th, textAlign: "center" }}>Usa</th><th style={th}>Proceso e insumo</th><th style={{ ...th, textAlign: "right" }}>Costo M.P</th><th style={{ ...th, textAlign: "right" }}>Promedio</th>
                 <th style={th}>U</th><th style={{ ...th, textAlign: "right" }}>Costo x U</th><th style={{ ...th, textAlign: "right" }}>Base</th><th style={{ ...th, textAlign: "right" }}>Total</th>
               </tr>
             </thead>
             <tbody>
               {filas.map((f, i) => (
-                <tr key={f.key} style={{ borderTop: `1px solid ${C.border}` }}>
+                <tr key={f.key} style={{ borderTop: `1px solid ${C.border}`, opacity: f.usa === false ? 0.45 : 1 }}>
+                  <td style={{ ...td, textAlign: "center", width: 44 }}><input type="checkbox" title="Si no la marcas, esta fila no suma ni pasa a la cotización" checked={f.usa !== false} onChange={(e) => cambiar(f.key, "usa", e.target.checked)} /></td>
                   <td style={{ ...td, minWidth: 220 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       <div style={{ fontWeight: 700, fontSize: 13, flex: 1 }}>{f.nombre}</div>
@@ -1251,15 +1261,15 @@ function MiniVinilo({ currentUser, notify, onPasar, refInicial, inicialId, etiqu
                 </tr>
               ))}
               <tr style={{ borderTop: `2px solid ${C.ink}`, background: "#FFF9C4" }}>
-                <td colSpan={6} style={{ ...td, textAlign: "right", fontWeight: 800, padding: 8 }}>SUMA VINILO + DTF</td>
+                <td colSpan={7} style={{ ...td, textAlign: "right", fontWeight: 800, padding: 8 }}>SUMA VINILO + DTF</td>
                 <td style={{ ...td, textAlign: "right", fontWeight: 800 }}>{money(calc.suma)}</td>
               </tr>
               <tr style={{ background: "#FFF9C4" }}>
-                <td colSpan={6} style={{ ...td, textAlign: "right", fontWeight: 800, padding: 8 }}>IMPREVISTOS {fmtDec(num(pct))}%</td>
+                <td colSpan={7} style={{ ...td, textAlign: "right", fontWeight: 800, padding: 8 }}>IMPREVISTOS {fmtDec(num(pct))}%</td>
                 <td style={{ ...td, textAlign: "right", fontWeight: 800 }}>{money(calc.imprevistos)}</td>
               </tr>
               <tr style={{ background: "#FFF176" }}>
-                <td colSpan={6} style={{ ...td, textAlign: "right", fontWeight: 900, padding: 8, fontSize: 15 }}>TOTAL</td>
+                <td colSpan={7} style={{ ...td, textAlign: "right", fontWeight: 900, padding: 8, fontSize: 15 }}>TOTAL</td>
                 <td style={{ ...td, textAlign: "right", fontWeight: 900, fontSize: 15 }}>{money(calc.total)}</td>
               </tr>
             </tbody>

@@ -28,7 +28,7 @@ export const FILAS_VINILO = [
 
 export function filasViniloVacias() {
   return FILAS_VINILO.map((f) => ({
-    key: f.key, nombre: f.nombre, tipo: f.tipo,
+    key: f.key, nombre: f.nombre, tipo: f.tipo, usa: true,
     codigo: "", costoMP: "", unidad: "", consumo: f.tipo === "insumo" ? "" : "",
     valor: f.tipo === "proceso" ? f.valor : "", base: 0, fuente: f.tipo === "proceso" ? "Valor fijo" : "",
   }));
@@ -36,6 +36,7 @@ export function filasViniloVacias() {
 
 export function calcularVinilo(filas, pct = IMPREVISTOS_PCT) {
   const detalle = (filas || []).map((f) => {
+    if (f.usa === false) return { costoXU: 0, total: 0, omitida: true }; // fila sin marcar «Usa»: no suma
     const costoXU = f.tipo === "proceso" ? num(f.valor) : num(f.costoMP) * num(f.consumo);
     return { costoXU, total: costoXU + num(f.base) };
   });
@@ -69,7 +70,8 @@ export function mesLargo(mes) {
 }
 
 // Descarga la hoja en el formato amarillo de Fredy.
-export async function descargarViniloExcel({ ref, mes, filas, pct }) {
+export async function descargarViniloExcel({ ref, mes, filas: todas, pct }) {
+  const filas = (todas || []).filter((f) => f.usa !== false); // las filas sin marcar «Usa» no van en la hoja
   const m = await import("exceljs/dist/exceljs.min.js");
   const ExcelJS = m.default || m;
   const wb = new ExcelJS.Workbook();
