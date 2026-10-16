@@ -10075,7 +10075,7 @@ exports.cierreAutomaticoNocturno = onSchedule(
 // (2026-10-16, a pedido de Fredy) Cotizaciones aprobadas -> Dropbox.
 // Al aprobar una versión, el Cotizador arma el Excel de esa versión (con el formato
 // de siempre) y lo manda aquí; se guarda en
-//   {carpeta raíz}/{REF}/{REF} V{n} {aaaa-mm-dd}.xlsx
+//   {carpeta raíz}/{REF} V{n} {aaaa-mm-dd}.xlsx   (sin subcarpetas)
 // (si la misma versión se vuelve a enviar el mismo día, el archivo se reemplaza).
 // Reutiliza la app de Dropbox y los secretos que ya usa "Dado por Cumplido"
 // (DROPBOX_APP_KEY / DROPBOX_APP_SECRET / DROPBOX_REFRESH_TOKEN): no hay nada nuevo que configurar.
@@ -10150,7 +10150,7 @@ exports.subirCotizacionADropbox = onCall(
     if (!buffer.length || buffer.length > 8 * 1024 * 1024) throw new HttpsError("invalid-argument", "El archivo está vacío o pesa más de 8 MB.");
 
     const raiz = await resolverRaizCotizacionesDropbox();
-    const ruta = `${raiz}/${carpeta}/${carpeta} V${version} ${fecha}.xlsx`;
+    const ruta = `${raiz}/${carpeta} V${version} ${fecha}.xlsx`; // directo en la carpeta de aprobadas, sin subcarpeta por referencia
     try {
       await subirArchivoADropbox(buffer, ruta);
     } catch (err) {
