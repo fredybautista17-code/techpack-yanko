@@ -242,6 +242,8 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
   const [telaBusint, setTelaBusint] = useState(null); // índice de la fila de tela que busca precio
   const [insBusint, setInsBusint] = useState(null); // índice de la fila de insumo que busca precio en Busint
   const codOrig = useRef("");
+  const [viniloGrande, setViniloGrande] = useState(() => { try { return localStorage.getItem("cotizador_vinilo_grande") === "1"; } catch (e) { return false; } }); // ventana de Vinilo / DTF en pantalla casi completa
+  const alternarViniloGrande = () => setViniloGrande((g) => { try { localStorage.setItem("cotizador_vinilo_grande", g ? "0" : "1"); } catch (e) { /* sin almacenamiento */ } return !g; });
   const [viniloModal, setViniloModal] = useState(null); // {id} = hoja de Vinilo / DTF abierta sobre esta cotización
   const ver = cot.versiones[cot.activa];
   const calc = useMemo(() => calcularCotizacion(ver.v), [ver.v]);
@@ -804,10 +806,11 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
           onSoloVincular={(dest) => { const campos = camposDeDestino(dest); mutar((n) => { n.vinculo = dest; Object.assign(n, campos); }); setVincular(false); }} />
       )}
       {viniloModal && (
-        <div onClick={() => setViniloModal(null)} style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,.55)", zIndex: 900, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: 16, overflowY: "auto" }}>
-          <div onClick={(e) => e.stopPropagation()} style={{ background: C.canvas, borderRadius: 16, width: "min(1100px, 100%)", padding: 16, fontFamily: FUENTE }}>
-            <div style={{ display: "flex", alignItems: "center", marginBottom: 10 }}>
+        <div onClick={() => setViniloModal(null)} style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,.55)", zIndex: 900, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: viniloGrande ? 8 : 16, overflowY: viniloGrande ? "hidden" : "auto" }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: C.canvas, borderRadius: 16, width: viniloGrande ? "100%" : "min(1100px, 100%)", ...(viniloGrande ? { height: "100%", overflowY: "auto" } : {}), padding: 16, fontFamily: FUENTE }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, position: "sticky", top: -16, zIndex: 5, background: C.canvas, padding: "6px 0" }}>
               <div style={{ flex: 1, fontWeight: 800, fontSize: 16 }}>Vinilo / DTF para {cot.referencia || "esta cotización"} · V{ver.numero}</div>
+              <button onClick={alternarViniloGrande} title={viniloGrande ? "Volver al tamaño normal" : "Ocupar casi toda la pantalla"} style={btn(C.white, C.blue, C.blue)}>{viniloGrande ? "⤡ Reducir" : "⤢ Agrandar"}</button>
               <button onClick={() => setViniloModal(null)} style={btn(C.white, C.slate, C.border)}>Cerrar</button>
             </div>
             <MiniVinilo currentUser={{ name: usuario }} notify={notify} refInicial={cot.referencia} inicialId={viniloModal.id} etiquetaPasar="✔ Usar en esta cotización" onPasar={usarVinilo} puedeBorrar={puedeBorrar} />
