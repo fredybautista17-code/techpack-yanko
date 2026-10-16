@@ -65,6 +65,14 @@ export const PROCESOS_BASE = [
   { nombre: "Postura de Dije", imp: false },
   { nombre: "Proceso Adicional", imp: false },
 ];
+// Insumos básicos que aparecen ya cargados en cada cotización nueva (se editan
+// por cliente en Parámetros). Sin precio: se llena en la ficha o con Busint.
+export const INSUMOS_BASE = [
+  { nombre: "Hilo", precio: "", consumo: 1, termo: false },
+  { nombre: "Etiqueta de marca", precio: "", consumo: 1, termo: false },
+  { nombre: "Etiqueta de talla y composición", precio: "", consumo: 1, termo: false },
+  { nombre: "Bolsa de empaque", precio: "", consumo: 1, termo: false },
+];
 export const REGEX_INSUMO_TERMO = /vinilo|dtf|poliamida|fast\s?dry|vad/i;
 
 export function num(x) {

@@ -3,7 +3,7 @@ import { initializeApp, getApps } from "firebase/app";
 import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import {
-  TASAS_BASE, ETIQUETAS_TASAS, FIJOS_BASE, ETIQUETAS_FIJOS, PROCESOS_BASE,
+  TASAS_BASE, ETIQUETAS_TASAS, FIJOS_BASE, ETIQUETAS_FIJOS, PROCESOS_BASE, INSUMOS_BASE,
   REGEX_INSUMO_TERMO, num, versionVacia, calcularCotizacion, parsearArchivoCotizacion,
 } from "./cotizador-calculo";
 import { descargarCotizacionesExcel } from "./cotizador-excel";
@@ -84,7 +84,15 @@ function fichaCompleta(f) {
     tasas: { ...TASAS_BASE, ...(f?.tasas || {}) },
     fijos: { ...FIJOS_BASE, ...(f?.fijos || {}) },
     procesos: Array.isArray(f?.procesos) && f.procesos.length ? f.procesos : PROCESOS_BASE.map((p) => ({ ...p })),
+    insumos: Array.isArray(f?.insumos) ? f.insumos : INSUMOS_BASE.map((x) => ({ ...x })),
   };
+}
+// Insumos básicos de la ficha, listos para ponerlos en una versión nueva.
+// «basico» marca los que vienen de la ficha (al cambiar de cliente se reemplazan).
+function insumosDesdeFicha(ficha) {
+  return (ficha.insumos || []).filter((x) => String(x.nombre || "").trim()).map((x) => ({
+    nombre: x.nombre, precio: x.precio ?? "", consumo: x.consumo ?? 1, termo: !!x.termo, codigo: x.codigo || "", basico: true,
+  }));
 }
 function buscarFicha(parametros, cliente) {
   const n = normTxt(cliente);
@@ -97,6 +105,7 @@ function versionDesdeFicha(ficha) {
   v.tasas = { ...ficha.tasas };
   v.fijos = { ...ficha.fijos };
   v.procesos = ficha.procesos.map((p) => ({ nombre: p.nombre, valor: "", imp: !!p.imp }));
+  v.insumos = insumosDesdeFicha(ficha);
   return v;
 }
 
@@ -144,6 +153,7 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
   useEffect(() => { onSucio?.(sucio); }, [sucio]); // eslint-disable-line
   const [vincular, setVincular] = useState(false);
   const [telaBusint, setTelaBusint] = useState(null); // índice de la fila de tela que busca precio
+  const [insBusint, setInsBusint] = useState(null); // índice de la fila de insumo que busca precio en Busint
   const ver = cot.versiones[cot.activa];
   const calc = useMemo(() => calcularCotizacion(ver.v), [ver.v]);
 
@@ -169,6 +179,8 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
         const v = n.versiones[n.activa].v;
         v.tasas = { ...f.tasas };
         v.fijos = { ...f.fijos };
+        // Insumos básicos del nuevo cliente (los que agregó a mano se conservan).
+        v.insumos = [...insumosDesdeFicha(f), ...(v.insumos || []).filter((x) => !x.basico)];
       }
     });
   }
@@ -320,6 +332,10 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
           {/* INSUMOS */}
           <Seccion titulo="2 · Insumos" sub="Marca «Imprevistos» en los insumos de termofijación / vinilo / DTF: sobre ellos se cobra el % de imprevistos."
             derecha={<button onClick={() => setV((v) => { v.insumos.push({ nombre: "", precio: "", consumo: 1, termo: false }); })} style={btn(C.blueBg, C.blue, C.blue)}>+ Insumo</button>}>
+            {insBusint !== null && insumos[insBusint] && (
+              <ModalInsumoBusint inicial={insumos[insBusint].nombre} titulo={insumos[insBusint].nombre || "insumo"} onClose={() => setInsBusint(null)}
+                onElegir={(x) => { const i = insBusint; setInsBusint(null); setV((v) => { const it = v.insumos[i]; if (!it) return; it.precio = x.promedio > 0 ? x.promedio : (x.costo > 0 ? x.costo : it.precio); it.codigo = x.codcomp || ""; if (!String(it.nombre || "").trim()) it.nombre = x.componente; }); }} />
+            )}
             {insumos.length === 0 && <div style={{ fontSize: 13, color: C.slate, padding: "6px 0" }}>Sin insumos todavía.</div>}
             {insumos.length > 0 && (
               <div style={{ overflowX: "auto" }}>
@@ -328,7 +344,13 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
                   <tbody>
                     {insumos.map((it, i) => (
                       <tr key={i}>
-                        <td style={td}><input value={it.nombre} onChange={(e) => setV((v) => { v.insumos[i].nombre = e.target.value; if (!v.insumos[i].termoManual) v.insumos[i].termo = REGEX_INSUMO_TERMO.test(e.target.value); })} style={{ ...inp, minWidth: 190 }} placeholder="Hilo, etiqueta, vinilo…" /></td>
+                        <td style={td}>
+                          <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                            <button title="Traer precio promedio y código desde el inventario de Busint" onClick={() => setInsBusint(i)} style={{ border: `1px solid ${C.border}`, background: C.field, borderRadius: 8, cursor: "pointer", padding: "6px 8px" }}>🔎</button>
+                            <input value={it.nombre} onChange={(e) => setV((v) => { v.insumos[i].nombre = e.target.value; if (!v.insumos[i].termoManual) v.insumos[i].termo = REGEX_INSUMO_TERMO.test(e.target.value); })} style={{ ...inp, minWidth: 170 }} placeholder="Hilo, etiqueta, vinilo…" />
+                          </div>
+                          {it.codigo && <div style={{ fontSize: 11, color: C.slate, margin: "2px 0 0 38px" }}>cód. Busint {it.codigo}</div>}
+                        </td>
                         <td style={td}>{celdaNum(it.precio, (x) => setV((v) => { v.insumos[i].precio = x; }))}</td>
                         <td style={td}>{celdaNum(it.consumo, (x) => setV((v) => { v.insumos[i].consumo = x; }), 70)}</td>
                         <td style={{ ...td, textAlign: "center" }}><input type="checkbox" checked={!!it.termo} onChange={(e) => setV((v) => { v.insumos[i].termo = e.target.checked; v.insumos[i].termoManual = true; })} /></td>
@@ -676,19 +698,20 @@ function ParametrosView({ parametros, clientesApp, currentUser, notify }) {
   const [selId, setSelId] = useState("general");
   const [nuevo, setNuevo] = useState("");
   const [borrador, setBorrador] = useState(null);
+  const [insBusintPar, setInsBusintPar] = useState(null);
   const actual = lista.find((f) => f.id === selId) || lista[0];
   useEffect(() => { setBorrador(actual ? limpio(actual) : null); }, [selId, actual?.guardada, parametros]); // eslint-disable-line
   if (!borrador) return null;
   const setB = (fn) => setBorrador((b) => { const n = limpio(b); fn(n); return n; });
   async function guardar() {
-    await fsSet("cotizador_parametros", borrador.id, { id: borrador.id, nombre: borrador.nombre, tasas: borrador.tasas, fijos: borrador.fijos, procesos: borrador.procesos, actualizadoPor: currentUser?.name || "", actualizado: new Date().toISOString() });
+    await fsSet("cotizador_parametros", borrador.id, { id: borrador.id, nombre: borrador.nombre, tasas: borrador.tasas, fijos: borrador.fijos, procesos: borrador.procesos, insumos: borrador.insumos || [], actualizadoPor: currentUser?.name || "", actualizado: new Date().toISOString() });
     notify?.(`Ficha "${borrador.nombre}" guardada. Las cotizaciones nuevas la usarán; las ya guardadas no cambian.`);
   }
   async function agregarCliente() {
     const n = nuevo.trim();
     if (!n) return;
     const id = slug(n);
-    await fsSet("cotizador_parametros", id, { id, nombre: n, tasas: { ...TASAS_BASE }, fijos: { ...FIJOS_BASE }, procesos: PROCESOS_BASE.map((p) => ({ ...p })), actualizadoPor: currentUser?.name || "", actualizado: new Date().toISOString() });
+    await fsSet("cotizador_parametros", id, { id, nombre: n, tasas: { ...TASAS_BASE }, fijos: { ...FIJOS_BASE }, procesos: PROCESOS_BASE.map((p) => ({ ...p })), insumos: INSUMOS_BASE.map((x) => ({ ...x })), actualizadoPor: currentUser?.name || "", actualizado: new Date().toISOString() });
     setNuevo(""); setSelId(id);
   }
   async function borrarFicha() {
@@ -740,6 +763,38 @@ function ParametrosView({ parametros, clientesApp, currentUser, notify }) {
               <button onClick={() => setB((b) => { b.procesos.splice(i, 1); })} style={{ border: "none", background: "none", cursor: "pointer", color: C.red, fontSize: 16 }}>×</button>
             </div>
           ))}
+        </Seccion>
+        <Seccion titulo="Insumos básicos" sub="Ya aparecen cargados en cada cotización nueva de este cliente, para que nadie tenga que agregarlos. Precio fijo o con 🔎 desde Busint (promedio). «Imprev.» = va en la base de imprevistos."
+          derecha={<button onClick={() => setB((b) => { b.insumos = b.insumos || []; b.insumos.push({ nombre: "", precio: "", consumo: 1, termo: false }); })} style={btn(C.blueBg, C.blue, C.blue)}>+ Insumo</button>}>
+          {insBusintPar !== null && borrador.insumos?.[insBusintPar] && (
+            <ModalInsumoBusint inicial={borrador.insumos[insBusintPar].nombre} titulo={borrador.insumos[insBusintPar].nombre || "insumo"} onClose={() => setInsBusintPar(null)}
+              onElegir={(x) => { const i = insBusintPar; setInsBusintPar(null); setB((b) => { const it = b.insumos[i]; if (!it) return; it.precio = x.promedio > 0 ? x.promedio : (x.costo > 0 ? x.costo : it.precio); it.codigo = x.codcomp || ""; if (!String(it.nombre || "").trim()) it.nombre = x.componente; }); }} />
+          )}
+          {(borrador.insumos || []).length === 0 && <div style={{ fontSize: 13, color: C.slate }}>Sin insumos básicos: las cotizaciones nuevas de este cliente arrancan sin insumos.</div>}
+          {(borrador.insumos || []).length > 0 && (
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 560 }}>
+                <thead><tr><th style={th}>Insumo</th><th style={th}>Precio</th><th style={th}>Consumo</th><th style={th}>Imprev.</th><th /></tr></thead>
+                <tbody>
+                  {borrador.insumos.map((it, i) => (
+                    <tr key={i}>
+                      <td style={td}>
+                        <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                          <button title="Traer precio promedio y código desde Busint" onClick={() => setInsBusintPar(i)} style={{ border: `1px solid ${C.border}`, background: C.field, borderRadius: 8, cursor: "pointer", padding: "6px 8px" }}>🔎</button>
+                          <input value={it.nombre} onChange={(e) => setB((b) => { b.insumos[i].nombre = e.target.value; })} style={{ ...inp, minWidth: 190 }} />
+                        </div>
+                        {it.codigo && <div style={{ fontSize: 11, color: C.slate, margin: "2px 0 0 38px" }}>cód. Busint {it.codigo}</div>}
+                      </td>
+                      <td style={td}><input type="text" inputMode="decimal" value={it.precio ?? ""} onChange={(e) => setB((b) => { b.insumos[i].precio = e.target.value; })} style={{ ...inp, width: 100, textAlign: "right" }} /></td>
+                      <td style={td}><input type="text" inputMode="decimal" value={it.consumo ?? ""} onChange={(e) => setB((b) => { b.insumos[i].consumo = e.target.value; })} style={{ ...inp, width: 70, textAlign: "right" }} /></td>
+                      <td style={{ ...td, textAlign: "center" }}><input type="checkbox" checked={!!it.termo} onChange={(e) => setB((b) => { b.insumos[i].termo = e.target.checked; })} /></td>
+                      <td style={td}><button onClick={() => setB((b) => { b.insumos.splice(i, 1); })} style={{ border: "none", background: "none", cursor: "pointer", color: C.red, fontSize: 16 }}>×</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </Seccion>
       </div>
     </div>
