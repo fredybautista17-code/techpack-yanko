@@ -10596,7 +10596,7 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
     </div>
   );
 }
-function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, canAccessPlaneacion, canAccessPlanta, canAccessBodega, canAccessNomina, canAccessDiseno, canAccessPedidosArea, canAccessKpis, canAccessInformes, canAccessAreas, canAccessCotizador, onGoArea, protos, capsulas, pedidos }) {
+function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, canAccessPlaneacion, canAccessPlanta, canAccessBodega, canAccessNomina, canAccessDiseno, canAccessPedidosArea, canAccessKpis, canAccessInformes, canAccessAreas, canAccessCotizador, cotPorAprobar, onGoArea, protos, capsulas, pedidos }) {
   const hoy = new Date();
   const protosEnProceso = protos.filter((p) => p.status === "en_proceso").length;
   const pedidosActivos = pedidos.filter((p) => p.estado === "activo" || p.estado === "terminado").length;
@@ -10624,7 +10624,7 @@ function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, c
     },
     {
       id: "cotizaciones_area", icon: "🧮", label: "Cotizaciones", desc: "Cotizar prototipos y referencias, aplicar precios y el minicotizador de Vinilo / DTF", color: T.denim, bg: T.denimBg,
-      stats: [],
+      stats: cotPorAprobar > 0 ? [{ label: "Por aprobar", value: cotPorAprobar, alert: true }] : [],
       permiso: canAccessCotizador,
     },
     {
@@ -18137,6 +18137,14 @@ function AppInner() {
   // (2026-10-16, a pedido de Fredy) Borrar y aprobar cotizaciones: permisos aparte por rol (el admin siempre).
   const canBorrarCotizacion = canAccessCotizador && moduloVisible(userRoleData, "cotizador_borrar", currentUser?.isAdmin);
   const canAprobarCotizacion = canAccessCotizador && moduloVisible(userRoleData, "cotizador_aprobar", currentUser?.isAdmin);
+  // (2026-10-16) Cuántas cotizaciones esperan aprobación (solo para quien aprueba): tarjeta del Inicio.
+  const [cotPorAprobar, setCotPorAprobar] = useState(0);
+  useEffect(() => {
+    if (!canAprobarCotizacion) { setCotPorAprobar(0); return undefined; }
+    return onSnapshot(collection(db, "cotizaciones"), (snap) => {
+      setCotPorAprobar(snap.docs.filter((d) => { const vs = d.data().versiones || []; return vs[vs.length - 1]?.estado === "aprobacion"; }).length);
+    }, () => {});
+  }, [canAprobarCotizacion]);
   const canAccessBitacora = moduloVisible(userRoleData, "bitacora", currentUser?.isAdmin) && moduloVisibleParaCliente(currentUser, "bitacora");
   // (2026-09-24, a pedido de Fredy) "Producción": pantalla pensada para
   // exponerse directamente a un usuario Cliente puntual (agrupado por
@@ -18552,7 +18560,7 @@ function AppInner() {
         <div style={{ flex: 1, padding: "28px 32px", overflow: "auto" }}>
           <div style={{ maxWidth: 1020, margin: "0 auto" }}>
             {view === "dashboard" && (
-              <HomeView currentUser={currentUser} perms={perms} canAccessCorte={canAccessCorte} canAccessContabilidad={canAccessContabilidad} canAccessPlaneacion={canAccessPlaneacion} canAccessPlanta={canAccessPlanta} canAccessBodega={canAccessBodega} canAccessNomina={canAccessNomina} canAccessDiseno={canAccessDiseno} canAccessPedidosArea={canAccessPedidosArea} canAccessKpis={canAccessKpis} canAccessInformes={canAccessInformes} canAccessAreas={canAccessAreas} canAccessCotizador={canAccessCotizador}
+              <HomeView cotPorAprobar={cotPorAprobar} currentUser={currentUser} perms={perms} canAccessCorte={canAccessCorte} canAccessContabilidad={canAccessContabilidad} canAccessPlaneacion={canAccessPlaneacion} canAccessPlanta={canAccessPlanta} canAccessBodega={canAccessBodega} canAccessNomina={canAccessNomina} canAccessDiseno={canAccessDiseno} canAccessPedidosArea={canAccessPedidosArea} canAccessKpis={canAccessKpis} canAccessInformes={canAccessInformes} canAccessAreas={canAccessAreas} canAccessCotizador={canAccessCotizador}
                 onGoArea={(id) => {
                   if (id === "contabilidad_area") { setModuloActivo("contabilidad"); }
                   else if (id === "cotizaciones_area") { setModuloActivo("cotizaciones"); }

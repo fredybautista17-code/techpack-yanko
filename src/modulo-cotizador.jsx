@@ -146,16 +146,28 @@ async function descargarExcel(lista, nombre, imagen, notify) {
   }
 }
 
+// ─── APROBACIÓN (2026-10-16) ─────────────────────────────────────────────────
+// Cada versión tiene un estado: sin estado/"borrador" -> "aprobacion" (enviada) ->
+// "aprobada" o "devuelta". Quien tiene el permiso cotizador_aprobar aprueba y el
+// precio con IVA se aplica solo al prototipo / referencia vinculada.
+const ultimaVersion = (c) => c.versiones?.[c.versiones.length - 1];
+const estadoUltima = (c) => ultimaVersion(c)?.estado || "borrador";
+const ICONO_ESTADO = { aprobacion: "⏳", aprobada: "✔", devuelta: "↩" };
+
 // ─── EDITOR DE UNA COTIZACIÓN ────────────────────────────────────────────────
-function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onGuardar, onVolver, onEliminar, onAplicar, onSucio, puedeBorrar, notify }) {
+function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onGuardar, onVolver, onEliminar, onAplicar, onSucio, puedeBorrar, puedeAprobar, usuario, notify }) {
   const [cot, setCot] = useState(inicial);
   const [sucio, setSucio] = useState(false);
   useEffect(() => { onSucio?.(sucio); }, [sucio]); // eslint-disable-line
   const [vincular, setVincular] = useState(false);
+  const [devolviendo, setDevolviendo] = useState(false);
+  const [comentario, setComentario] = useState("");
   const [telaBusint, setTelaBusint] = useState(null); // índice de la fila de tela que busca precio
   const [insBusint, setInsBusint] = useState(null); // índice de la fila de insumo que busca precio en Busint
   const ver = cot.versiones[cot.activa];
   const calc = useMemo(() => calcularCotizacion(ver.v), [ver.v]);
+  const estadoV = ver.estado || "borrador";
+  const bloqueada = estadoV === "aprobacion" || estadoV === "aprobada"; // no se edita mientras espera o ya fue aprobada
 
   function mutar(fn) {
     setCot((c) => {
@@ -218,20 +230,64 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
     setSucio(false);
     notify?.("Cotización guardada");
   }
-  async function aplicarA(destino) {
+  // ── Flujo de aprobación ──
+  function conEvento(n, txt) {
+    n.historial = [...(n.historial || []), { fecha: new Date().toISOString(), quien: usuario || "—", v: n.versiones[n.activa].numero, txt }];
+  }
+  async function persistir(n, msg) {
+    await onGuardar(n);
+    setCot(n);
+    setSucio(false);
+    if (msg) notify?.(msg);
+  }
+  async function enviarAprobacion() {
+    if (!String(cot.referencia).trim()) { notify?.("Escribe la referencia antes de enviar a aprobación"); return; }
     const valor = calc.precioAplicar;
     if (!(valor > 0)) { notify?.("El precio es 0 — completa los costos primero"); return; }
-    const actualizado = {
-      ...limpio(cot),
-      vinculo: destino,
-      precioAplicado: { valor, fecha: hoyISO(), version: ver.numero, destino: destino.label },
-    };
-    await onGuardar(actualizado);
-    await onAplicar(destino, valor);
-    setCot(actualizado);
+    const n = limpio(cot);
+    const vv = n.versiones[n.activa];
+    vv.estado = "aprobacion"; vv.envio = { por: usuario || "", fecha: new Date().toISOString() }; vv.precio = valor; delete vv.decision;
+    conEvento(n, `envió la V${vv.numero} a aprobación (${fmtCOP(valor)} con IVA)`);
+    await persistir(n, `V${vv.numero} enviada a aprobación`);
+  }
+  async function retirarEnvio() {
+    const n = limpio(cot);
+    const vv = n.versiones[n.activa];
+    vv.estado = "borrador"; delete vv.envio;
+    conEvento(n, `retiró la V${vv.numero} de aprobación`);
+    await persistir(n, `V${vv.numero} retirada de aprobación`);
+  }
+  // Aprueba la versión activa y, si hay destino, aplica el precio con IVA a ese prototipo / referencia.
+  async function aprobarYAplicar(destino) {
+    const valor = calc.precioAplicar;
+    if (!(valor > 0)) { notify?.("El precio es 0 — completa los costos primero"); return; }
+    const n = limpio(cot);
+    const vv = n.versiones[n.activa];
+    vv.estado = "aprobada"; vv.decision = { por: usuario || "", fecha: new Date().toISOString(), comentario: "" }; vv.precio = valor;
+    if (destino) {
+      n.vinculo = destino;
+      n.precioAplicado = { valor, fecha: hoyISO(), version: vv.numero, destino: destino.label };
+    }
+    conEvento(n, destino ? `aprobó la V${vv.numero} y aplicó ${fmtCOP(valor)} a ${destino.label}` : `aprobó la V${vv.numero} (${fmtCOP(valor)}, sin destino para aplicar)`);
+    await onGuardar(n);
+    if (destino) await onAplicar(destino, valor);
+    setCot(n);
     setSucio(false);
     setVincular(false);
-    notify?.(`${fmtCOP(valor)} (con IVA) aplicado a ${destino.label}`);
+    notify?.(destino ? `${fmtCOP(valor)} (con IVA) aprobado y aplicado a ${destino.label}` : `V${vv.numero} aprobada`);
+  }
+  function pedirAprobar(destino) {
+    const txt = destino ? `¿Aprobar la V${ver.numero} y aplicar ${fmtCOP(calc.precioAplicar)} (con IVA) a ${destino.label}?` : `¿Aprobar la V${ver.numero} sin aplicar el precio a ningún prototipo?`;
+    if (window.confirm(txt)) aprobarYAplicar(destino);
+  }
+  async function devolver() {
+    if (!comentario.trim()) { notify?.("Escribe qué debe corregir quien la envió"); return; }
+    const n = limpio(cot);
+    const vv = n.versiones[n.activa];
+    vv.estado = "devuelta"; vv.decision = { por: usuario || "", fecha: new Date().toISOString(), comentario: comentario.trim() };
+    conEvento(n, `devolvió la V${vv.numero}: «${comentario.trim()}»`);
+    await persistir(n, `V${vv.numero} devuelta`);
+    setDevolviendo(false); setComentario("");
   }
 
   // Filas de telas / insumos / procesos
@@ -280,24 +336,52 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
         </Campo>
       </div>
 
+      {estadoV === "aprobacion" && (
+        <div style={{ display: "flex", alignItems: "center", gap: 12, background: C.amberBg, border: "1.5px solid #F0CF95", borderRadius: 14, padding: "12px 16px", marginBottom: 14 }}>
+          <span style={{ fontSize: 20 }}>⏳</span>
+          <div style={{ flex: 1, fontSize: 13 }}>
+            <b style={{ color: C.amber }}>{puedeAprobar ? "Esta versión espera tu aprobación." : "Esta versión espera aprobación."}</b>{" "}
+            Enviada por {ver.envio?.por || "—"}{ver.envio?.fecha ? ` el ${fmtFecha(ver.envio.fecha.slice(0, 10))}` : ""}.{" "}
+            {puedeAprobar ? (vinculoActual ? <>Al aprobarla, <b>{fmtCOP(calc.precioAplicar)}</b> pasa solo como precio de <b>{vinculoActual.label}</b>.</> : "No tiene prototipo ni cápsula vinculado: puedes elegirlo al aprobar.") : "No se puede editar hasta que la aprueben o la devuelvan."}
+          </div>
+        </div>
+      )}
+      {estadoV === "aprobada" && (
+        <div style={{ display: "flex", alignItems: "center", gap: 12, background: C.greenBg, border: "1.5px solid #B9E3CF", borderRadius: 14, padding: "12px 16px", marginBottom: 14 }}>
+          <span style={{ fontSize: 20 }}>✔</span>
+          <div style={{ flex: 1, fontSize: 13 }}>
+            <b style={{ color: C.green }}>Versión aprobada</b>{ver.decision?.por ? ` por ${ver.decision.por}` : ""}{ver.decision?.fecha ? ` el ${fmtFecha(ver.decision.fecha.slice(0, 10))}` : ""}.
+            {cot.precioAplicado && cot.precioAplicado.version === ver.numero ? ` ${fmtCOP(cot.precioAplicado.valor)} aplicado a ${cot.precioAplicado.destino}.` : ""} Para cambiar algo, crea una versión nueva (volverá a pasar por aprobación).
+          </div>
+        </div>
+      )}
+      {estadoV === "devuelta" && (
+        <div style={{ display: "flex", alignItems: "center", gap: 12, background: C.redBg, border: "1.5px solid #F3B9B1", borderRadius: 14, padding: "12px 16px", marginBottom: 14 }}>
+          <span style={{ fontSize: 20 }}>↩</span>
+          <div style={{ flex: 1, fontSize: 13 }}>
+            <b style={{ color: C.red }}>Devuelta{ver.decision?.por ? ` por ${ver.decision.por}` : ""}.</b> {ver.decision?.comentario ? `«${ver.decision.comentario}»` : ""} Corrige y vuelve a enviarla a aprobación.
+          </div>
+        </div>
+      )}
+
       {/* Pestañas de versión */}
       <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 14, flexWrap: "wrap" }}>
         {cot.versiones.map((vv, i) => (
           <button key={vv.id} onClick={() => mutar((n) => { n.activa = i; })}
             style={{ padding: "7px 14px", borderRadius: 20, cursor: "pointer", fontWeight: 700, fontSize: 13, fontFamily: "inherit", border: `1.5px solid ${i === cot.activa ? C.navy : C.border}`, background: i === cot.activa ? C.navy : C.white, color: i === cot.activa ? C.white : C.slate }}>
-            V{vv.numero} <span style={{ fontWeight: 500, opacity: 0.8 }}>· {fmtFecha(vv.fecha)}</span>
+            V{vv.numero} <span style={{ fontWeight: 500, opacity: 0.8 }}>· {fmtFecha(vv.fecha)}</span>{ICONO_ESTADO[vv.estado] ? ` ${ICONO_ESTADO[vv.estado]}` : ""}
           </button>
         ))}
         <button onClick={nuevaVersion} style={btn(C.blueBg, C.blue, C.blue)}>+ Nueva versión</button>
-        {cot.versiones.length > 1 && <button onClick={borrarVersion} style={{ ...btn(C.white, C.slate, C.border), fontWeight: 500 }}>Borrar V{ver.numero}</button>}
+        {cot.versiones.length > 1 && <button onClick={borrarVersion} disabled={bloqueada} style={{ ...btn(C.white, C.slate, C.border), fontWeight: 500 }}>Borrar V{ver.numero}</button>}
         <div style={{ display: "flex", gap: 8, alignItems: "center", marginLeft: "auto" }}>
-          <input type="date" value={ver.fecha || ""} onChange={(e) => mutar((n) => { n.versiones[n.activa].fecha = e.target.value; })} style={{ ...inp, width: 150 }} />
-          <input value={ver.nota || ""} onChange={(e) => mutar((n) => { n.versiones[n.activa].nota = e.target.value; })} placeholder="Nota de la versión (qué cambió)" style={{ ...inp, width: 260 }} />
+          <input type="date" disabled={bloqueada} value={ver.fecha || ""} onChange={(e) => mutar((n) => { n.versiones[n.activa].fecha = e.target.value; })} style={{ ...inp, width: 150 }} />
+          <input disabled={bloqueada} value={ver.nota || ""} onChange={(e) => mutar((n) => { n.versiones[n.activa].nota = e.target.value; })} placeholder="Nota de la versión (qué cambió)" style={{ ...inp, width: 260 }} />
         </div>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 340px", gap: 16, alignItems: "start" }} className="cotizador-grid">
-        <div style={{ minWidth: 0 }}>
+        <fieldset disabled={bloqueada} style={{ minWidth: 0, border: 0, margin: 0, padding: 0 }}>
           {/* TELAS */}
           <Seccion titulo="1 · Telas" sub="Precio por metro = precio por kilo ÷ rendimiento (m por kilo). Costo por prenda = consumo (m) × precio por metro."
             derecha={<button onClick={() => setV((v) => { v.telas.push({ material: "", precioKg: "", rendimiento: 1, ancho: "", consumo: "" }); })} style={btn(C.blueBg, C.blue, C.blue)}>+ Tela</button>}>
@@ -410,7 +494,19 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
               ))}
             </div>
           </Seccion>
-        </div>
+
+          {(cot.historial || []).length > 0 && (
+            <Seccion plegable abierta={false} titulo="Historial de aprobación" sub={`${cot.historial.length} movimiento(s)`}>
+              <div style={{ borderLeft: `2px solid ${C.border}`, marginLeft: 6, paddingLeft: 16 }}>
+                {[...cot.historial].reverse().map((h, i) => (
+                  <div key={i} style={{ padding: "5px 0", fontSize: 13 }}>
+                    <b>{h.quien}</b> {h.txt} <span style={{ color: C.slate, fontSize: 11 }}>· {fmtFecha(String(h.fecha).slice(0, 10))} {String(h.fecha).slice(11, 16)}</span>
+                  </div>
+                ))}
+              </div>
+            </Seccion>
+          )}
+        </fieldset>
 
         {/* PANEL DE RESULTADOS */}
         <div style={{ position: "sticky", top: 12 }}>
@@ -437,7 +533,7 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
             })()}
             <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 14 }}>
               <div style={{ fontSize: 12, opacity: 0.8 }}>Margen esperado</div>
-              <input type="text" inputMode="decimal" value={ver.v.margen ?? ""} onChange={(e) => setV((v) => { v.margen = e.target.value; })} style={{ ...inp, width: 70, textAlign: "right" }} />
+              <input type="text" inputMode="decimal" disabled={bloqueada} value={ver.v.margen ?? ""} onChange={(e) => setV((v) => { v.margen = e.target.value; })} style={{ ...inp, width: 70, textAlign: "right" }} />
               <div style={{ fontSize: 11, opacity: 0.6 }}>0,05 = 5%</div>
             </div>
             <div style={{ fontSize: 12, marginTop: 8, opacity: 0.85 }}>Utilidad por prenda: <b>{fmtCOP(calc.escMargen.utilidad)}</b></div>
@@ -446,11 +542,38 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
                 Excel (sin IVA): {fmtCOP(ver.excelPrecio)} {Math.abs(ver.excelPrecio - calc.escMargen.precioSinIva) < 1 ? "✓ coincide" : "≠ difiere"}
               </div>
             )}
-            <button onClick={() => (vinculoActual ? aplicarA(vinculoActual) : setVincular(true))}
-              style={{ ...btn(C.seam, C.ink), width: "100%", marginTop: 16, padding: "12px 14px" }}>
-              {vinculoActual ? `Aplicar ${fmtCOP(calc.precioAplicar)} a ${vinculoActual.label.length > 26 ? vinculoActual.label.slice(0, 26) + "…" : vinculoActual.label}` : `Aplicar ${fmtCOP(calc.precioAplicar)} a un prototipo / cápsula`}
-            </button>
-            {vinculoActual && <button onClick={() => setVincular(true)} style={{ ...btn("transparent", C.white, "rgba(255,255,255,.3)"), width: "100%", marginTop: 8, fontWeight: 500, fontSize: 12 }}>Cambiar destino</button>}
+            {puedeAprobar ? (
+              estadoV === "aprobada" ? (
+                <div style={{ marginTop: 16, padding: "12px 14px", borderRadius: 12, background: "rgba(45,158,107,.25)", fontSize: 13, fontWeight: 700 }}>✔ Versión aprobada</div>
+              ) : (
+                <>
+                  <button onClick={() => (vinculoActual ? pedirAprobar(vinculoActual) : setVincular(true))}
+                    style={{ ...btn(C.seam, C.ink), width: "100%", marginTop: 16, padding: "12px 14px" }}>
+                    {vinculoActual ? `✔ Aprobar y aplicar ${fmtCOP(calc.precioAplicar)} a ${vinculoActual.label.length > 24 ? vinculoActual.label.slice(0, 24) + "…" : vinculoActual.label}` : `✔ Aprobar y aplicar ${fmtCOP(calc.precioAplicar)} a un prototipo / cápsula`}
+                  </button>
+                  {!vinculoActual && <button onClick={() => pedirAprobar(null)} style={{ ...btn("transparent", C.white, "rgba(255,255,255,.3)"), width: "100%", marginTop: 8, fontWeight: 500, fontSize: 12 }}>Aprobar sin aplicar el precio</button>}
+                  {estadoV === "aprobacion" && <button onClick={() => setDevolviendo(true)} style={{ ...btn("transparent", "#E4E1F5", "#6a6a90"), width: "100%", marginTop: 8 }}>↩ Devolver con comentario</button>}
+                  {vinculoActual && <button onClick={() => setVincular(true)} style={{ ...btn("transparent", C.white, "rgba(255,255,255,.3)"), width: "100%", marginTop: 8, fontWeight: 500, fontSize: 12 }}>Cambiar destino</button>}
+                </>
+              )
+            ) : (
+              estadoV === "aprobada" ? (
+                <div style={{ marginTop: 16, padding: "12px 14px", borderRadius: 12, background: "rgba(45,158,107,.25)", fontSize: 13, fontWeight: 700 }}>✔ Versión aprobada</div>
+              ) : estadoV === "aprobacion" ? (
+                <>
+                  <div style={{ marginTop: 16, padding: "12px 14px", borderRadius: 12, background: "rgba(242,184,75,.22)", fontSize: 13, fontWeight: 700 }}>⏳ Esperando aprobación</div>
+                  <button onClick={retirarEnvio} style={{ ...btn("transparent", C.white, "rgba(255,255,255,.3)"), width: "100%", marginTop: 8, fontWeight: 500, fontSize: 12 }}>Retirar de aprobación</button>
+                </>
+              ) : (
+                <>
+                  <button onClick={enviarAprobacion} style={{ ...btn(C.seam, C.ink), width: "100%", marginTop: 16, padding: "12px 14px" }}>
+                    {estadoV === "devuelta" ? "Corregir y volver a enviar a aprobación" : "Enviar a aprobación"}
+                  </button>
+                  <div style={{ fontSize: 11, opacity: 0.7, marginTop: 8 }}>El precio se aplica al prototipo / cápsula cuando lo apruebe quien tiene el permiso.</div>
+                  {vinculoActual && <button onClick={() => setVincular(true)} style={{ ...btn("transparent", C.white, "rgba(255,255,255,.3)"), width: "100%", marginTop: 8, fontWeight: 500, fontSize: 12 }}>Cambiar destino</button>}
+                </>
+              )
+            )}
             {cot.precioAplicado && (
               <div style={{ fontSize: 11, marginTop: 10, opacity: 0.75 }}>Último aplicado: {fmtCOP(cot.precioAplicado.valor)} (V{cot.precioAplicado.version}) a {cot.precioAplicado.destino} el {fmtFecha(cot.precioAplicado.fecha)}</div>
             )}
@@ -498,8 +621,21 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
       )}
       {vincular && (
         <ModalVincular cot={cot} protos={protos} capsulas={capsulas} precio={calc.precioAplicar} onClose={() => setVincular(false)}
-          onElegir={(dest) => aplicarA(dest)}
+          onElegir={puedeAprobar ? (dest) => aprobarYAplicar(dest) : undefined}
           onSoloVincular={(dest) => { setCab("vinculo", dest); setVincular(false); }} />
+      )}
+      {devolviendo && (
+        <div onClick={() => setDevolviendo(false)} style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,.55)", zIndex: 1000, display: "grid", placeItems: "center", padding: 16 }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: C.white, borderRadius: 14, width: "min(480px, 100%)", padding: 20 }}>
+            <div style={{ fontWeight: 800, fontSize: 16 }}>Devolver la V{ver.numero}</div>
+            <div style={{ fontSize: 12, color: C.slate, margin: "2px 0 10px" }}>Escribe qué debe corregir quien la envió. La versión queda editable otra vez.</div>
+            <textarea autoFocus rows={4} value={comentario} onChange={(e) => setComentario(e.target.value)} placeholder="Ej.: Revisa el consumo del cordón, parece alto." style={{ ...inp, resize: "vertical" }} />
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12 }}>
+              <button onClick={() => setDevolviendo(false)} style={btn(C.white, C.slate, C.border)}>Cancelar</button>
+              <button onClick={devolver} style={btn(C.red, C.white)}>↩ Devolver</button>
+            </div>
+          </div>
+        </div>
       )}
       <style>{`@media (max-width: 1000px) { .cotizador-grid { grid-template-columns: minmax(0,1fr) !important; } }`}</style>
     </div>
@@ -585,8 +721,8 @@ function ModalVincular({ cot, protos, capsulas, precio, onElegir, onSoloVincular
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,.55)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
       <div onClick={(e) => e.stopPropagation()} style={{ background: C.white, borderRadius: 14, width: "min(640px, 100%)", maxHeight: "86vh", display: "flex", flexDirection: "column" }}>
         <div style={{ padding: "16px 18px", borderBottom: `1px solid ${C.border}` }}>
-          <div style={{ fontWeight: 800, fontSize: 16 }}>Aplicar {fmtCOP(precio)} (con IVA)</div>
-          <div style={{ fontSize: 12, color: C.slate, margin: "2px 0 10px" }}>Elige el prototipo o la referencia de cápsula que recibe este precio.</div>
+          <div style={{ fontWeight: 800, fontSize: 16 }}>{onElegir ? `Aplicar ${fmtCOP(precio)} (con IVA)` : "Vincular a prototipo o cápsula"}</div>
+          <div style={{ fontSize: 12, color: C.slate, margin: "2px 0 10px" }}>{onElegir ? "Elige el prototipo o la referencia de cápsula que recibe este precio. «Aplicar» aprueba la versión y pone el precio." : "Elige a cuál prototipo o referencia de cápsula corresponde. El precio se aplicará cuando lo apruebe quien tiene el permiso."}</div>
           <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar por referencia o nombre…" style={inp} />
         </div>
         <div style={{ overflowY: "auto", padding: 8 }}>
@@ -601,7 +737,7 @@ function ModalVincular({ cot, protos, capsulas, precio, onElegir, onSoloVincular
                 </div>
                 {igual && <Pastilla bg={C.green} color={C.white}>misma ref.</Pastilla>}
                 <button onClick={() => onSoloVincular(o)} style={{ ...btn(C.white, C.slate, C.border), fontWeight: 500, fontSize: 12 }}>Solo vincular</button>
-                <button onClick={() => onElegir(o)} style={{ ...btn(C.green, C.white), fontSize: 12 }}>Aplicar</button>
+                {onElegir && <button onClick={() => onElegir(o)} style={{ ...btn(C.green, C.white), fontSize: 12 }}>Aplicar</button>}
               </div>
             );
           })}
@@ -999,6 +1135,9 @@ function MiniVinilo({ currentUser, notify, onPasar }) {
 // cotizaciones. Todo sale de las cotizaciones guardadas (nada se escribe aquí).
 const DIAS_SIN_CAMBIOS = 30;
 function estadoCotizacion(c) {
+  const e = estadoUltima(c);
+  if (e === "aprobacion") return { txt: "En aprobación", bg: C.amberBg, color: C.amber };
+  if (e === "devuelta") return { txt: "Devuelta", bg: C.redBg, color: C.red };
   if (c.precioAplicado) return { txt: "Aplicado", bg: C.greenBg, color: C.green };
   if (c.vinculo) return { txt: "Vinculada", bg: C.blueBg, color: C.blue };
   return { txt: "Sin aplicar", bg: C.amberBg, color: C.amber };
@@ -1013,7 +1152,7 @@ function AccionesCotizacion({ c, onEditar, onBorrar, puedeBorrar }) {
     </div>
   );
 }
-function InicioCotizaciones({ cotizaciones, minis, cargado, puedeBorrar, onBorrar, onIr, onNueva, onFiltro, onAbrir }) {
+function InicioCotizaciones({ cotizaciones, minis, cargado, puedeAprobar, puedeBorrar, onBorrar, onIr, onNueva, onFiltro, onAbrir }) {
   const hoy = new Date();
   const mesActual = hoyISO().slice(0, 7);
   const clientes = new Set(cotizaciones.map((c) => c.cliente || "General"));
@@ -1026,6 +1165,8 @@ function InicioCotizaciones({ cotizaciones, minis, cargado, puedeBorrar, onBorra
     const f = c.actualizado ? new Date(c.actualizado) : null;
     return f && (hoy - f) / 86400000 > DIAS_SIN_CAMBIOS;
   }).length;
+  const porAprobar = cotizaciones.filter((c) => estadoUltima(c) === "aprobacion");
+  const devueltas = cotizaciones.filter((c) => estadoUltima(c) === "devuelta").length;
   const ultimas = [...cotizaciones].sort((a, b) => String(b.actualizado || "").localeCompare(String(a.actualizado || ""))).slice(0, 6);
   const mesLbl = hoy.toLocaleDateString("es-CO", { month: "long", year: "numeric" });
 
@@ -1051,11 +1192,41 @@ function InicioCotizaciones({ cotizaciones, minis, cargado, puedeBorrar, onBorra
   return (
     <div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: 12, marginBottom: 16 }}>
+        <div onClick={() => porAprobar.length > 0 && onFiltro("porAprobar")} style={{ background: porAprobar.length ? C.amberBg : C.white, border: `1px solid ${porAprobar.length ? "#EBD3A0" : C.border}`, borderRadius: 12, padding: "14px 16px", cursor: porAprobar.length ? "pointer" : "default" }}>
+          <div style={{ fontSize: 11, color: C.amber, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4 }}>{puedeAprobar ? "Por aprobar" : "En aprobación"}</div>
+          <div style={{ fontSize: 28, fontWeight: 900, marginTop: 4, color: C.amber }}>{cargado ? porAprobar.length : "…"}</div>
+          <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>{puedeAprobar ? "esperan tu aprobación" : "esperan que las aprueben"}</div>
+        </div>
         <Ficha label="Cotizaciones" valor={cotizaciones.length} sub={`${clientes.size} cliente(s) · ${nVersiones} versiones`} />
         <Ficha label="Versiones este mes" valor={versionesMes} sub={mesLbl} />
         <Ficha label="Precio ya aplicado" valor={aplicadas} sub="en prototipos y cápsulas" color={C.green} />
         <Ficha label="Pendientes de aplicar" valor={sinAplicar} sub="cotizadas sin precio aplicado" color={C.amber} />
       </div>
+      {porAprobar.length > 0 && (
+        <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden", marginBottom: 16 }}>
+          <div style={{ display: "flex", padding: "12px 16px" }}><div style={{ fontWeight: 800, fontSize: 14, flex: 1 }}>{puedeAprobar ? "Esperan tu aprobación" : "En espera de aprobación"}</div><div style={{ color: C.slate, fontSize: 12 }}>{porAprobar.length} pendiente(s)</div></div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 560 }}>
+              <thead><tr><th style={{ ...th, padding: "6px 16px" }}>Referencia</th><th style={th}>Enviada por</th><th style={th}>Destino</th><th style={{ ...th, textAlign: "right" }}>Precio con IVA</th><th style={th} /></tr></thead>
+              <tbody>
+                {porAprobar.map((c) => {
+                  const ult = ultimaVersion(c);
+                  const r = ult ? calcularCotizacion(ult.v) : null;
+                  return (
+                    <tr key={c.id} onClick={() => onAbrir(c)} style={{ borderTop: `1px solid ${C.border}`, cursor: "pointer" }}>
+                      <td style={{ padding: "9px 16px", fontWeight: 800 }}>{c.referencia || "—"} <span style={{ color: C.slate, fontWeight: 500 }}>V{ult?.numero}</span></td>
+                      <td style={td}>{ult?.envio?.por || "—"}{ult?.envio?.fecha ? <span style={{ color: C.slate }}> · {fmtFecha(ult.envio.fecha.slice(0, 10)).slice(0, 5)}</span> : null}</td>
+                      <td style={{ ...td, color: c.vinculo ? C.ink : C.slate }}>{c.vinculo?.label || "Sin vincular"}</td>
+                      <td style={{ ...td, textAlign: "right", fontWeight: 800 }}>{r ? fmtCOP(r.precioAplicar) : "—"}</td>
+                      <td style={{ ...td, textAlign: "right", paddingRight: 16 }}><span style={{ background: C.navy, color: C.white, padding: "5px 12px", borderRadius: 8, fontSize: 12, fontWeight: 700 }}>{puedeAprobar ? "Revisar" : "Ver"}</span></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))", gap: 12, marginBottom: 16 }}>
         <Acceso icono="🧮" bg={C.blueBg} titulo="Cotizaciones" desc="Crear, versionar y aplicar precios" tab="cotizaciones" />
         <Acceso icono="🎨" bg={C.amberBg} titulo="Vinilo / DTF" desc="Minicotizador con datos de Busint" tab="vinilo" />
@@ -1093,6 +1264,8 @@ function InicioCotizaciones({ cotizaciones, minis, cargado, puedeBorrar, onBorra
         </div>
         <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden", alignSelf: "start" }}>
           <div style={{ fontWeight: 800, fontSize: 14, padding: "12px 16px" }}>Por atender</div>
+          <Pendiente n={porAprobar.length} bg={C.amberBg} color={C.amber} texto={puedeAprobar ? "Esperan tu aprobación" : "En espera de aprobación"} filtro="porAprobar" />
+          <Pendiente n={devueltas} bg={C.redBg} color={C.red} texto="Devueltas para corregir" filtro="devueltas" />
           <Pendiente n={sinAplicar} bg={C.amberBg} color={C.amber} texto="Cotizadas sin precio aplicado" filtro="sinAplicar" />
           <Pendiente n={sinVincular} bg={C.redBg} color={C.red} texto="Sin vincular a prototipo ni cápsula" filtro="sinVincular" />
           <Pendiente n={viejas} bg={C.blueBg} color={C.blue} texto={`Con más de ${DIAS_SIN_CAMBIOS} días sin cambios`} filtro="viejas" />
@@ -1104,8 +1277,8 @@ function InicioCotizaciones({ cotizaciones, minis, cargado, puedeBorrar, onBorra
 }
 
 // Menú vertical del módulo (mismo estilo que Bodega): azul marino, activo en beige.
-const ITEMS_MENU = [["inicio", "◉", "Inicio"], ["cotizaciones", "▤", "Cotizaciones"], ["vinilo", "◈", "Vinilo / DTF"], ["parametros", "⚙", "Parámetros por cliente"]];
-function MenuCotizaciones({ activo, onIr, onVolver, onLogout, currentUser }) {
+const ITEMS_MENU = [["inicio", "◉", "Inicio"], ["cotizaciones", "▤", "Cotizaciones"], ["aprobar", "✓", "Por aprobar"], ["vinilo", "◈", "Vinilo / DTF"], ["parametros", "⚙", "Parámetros por cliente"]];
+function MenuCotizaciones({ activo, onIr, onVolver, onLogout, currentUser, nAprobar, puedeAprobar }) {
   const inicial = String(currentUser?.name || "?").trim().charAt(0).toUpperCase();
   return (
     <div className="cotz-side" style={{ width: 268, flexShrink: 0, background: C.navy, color: "#C9C8DE", padding: "18px 14px", display: "flex", flexDirection: "column", position: "sticky", top: 0, height: "100vh", alignSelf: "flex-start", boxSizing: "border-box" }}>
@@ -1125,7 +1298,8 @@ function MenuCotizaciones({ activo, onIr, onVolver, onLogout, currentUser }) {
           const on = activo === id;
           return (
             <button key={id} onClick={() => onIr(id)} style={{ display: "flex", alignItems: "center", gap: 12, width: "100%", padding: "11px 12px", border: "none", borderRadius: 10, marginBottom: 3, fontSize: 14, fontFamily: "inherit", cursor: "pointer", textAlign: "left", background: on ? C.seam : "transparent", color: on ? C.ink : "#C9C8DE", fontWeight: on ? 800 : 500 }}>
-              <span style={{ width: 18, textAlign: "center", fontSize: 15, color: on ? C.ink : "#8B8AAE" }}>{icono}</span>{texto}
+              <span style={{ width: 18, textAlign: "center", fontSize: 15, color: on ? C.ink : "#8B8AAE" }}>{icono}</span>{id === "aprobar" && !puedeAprobar ? "En aprobación" : texto}
+              {id === "aprobar" && nAprobar > 0 && <span style={{ marginLeft: "auto", background: C.amber, color: "#fff", borderRadius: 10, minWidth: 22, height: 20, padding: "0 6px", display: "grid", placeItems: "center", fontSize: 11, fontWeight: 800 }}>{nAprobar}</span>}
             </button>
           );
         })}
@@ -1266,8 +1440,11 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
     notify?.(`${hojas.length} versión(es) importada(s)`);
   }
 
-  const FILTROS_TXT = { sinAplicar: "Cotizadas sin precio aplicado", sinVincular: "Sin vincular a prototipo ni cápsula", viejas: "Con más de 30 días sin cambios" };
+  const FILTROS_TXT = { porAprobar: "Esperan aprobación", devueltas: "Devueltas para corregir", sinAplicar: "Cotizadas sin precio aplicado", sinVincular: "Sin vincular a prototipo ni cápsula", viejas: "Con más de 30 días sin cambios" };
   const pasaFiltro = (c) => {
+    const fe = tab === "aprobar" ? "porAprobar" : filtroEstado;
+    if (fe === "porAprobar") return estadoUltima(c) === "aprobacion";
+    if (fe === "devueltas") return estadoUltima(c) === "devuelta";
     if (filtroEstado === "sinAplicar") return !c.precioAplicado;
     if (filtroEstado === "sinVincular") return !c.vinculo && !c.precioAplicado;
     if (filtroEstado === "viejas") return !!c.actualizado && (Date.now() - new Date(c.actualizado).getTime()) / 86400000 > 30;
@@ -1282,14 +1459,14 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
     if (edit && edSucio && !window.confirm("Hay cambios sin guardar en la cotización. ¿Salir sin guardar?")) return;
     setEdit(null); setEdSucio(false); setFiltroEstado(null); setTab(t);
   }
-  const TITULOS = { inicio: "Inicio", cotizaciones: "Cotizaciones", vinilo: "Vinilo / DTF", parametros: "Parámetros por cliente" };
+  const TITULOS = { inicio: "Inicio", cotizaciones: "Cotizaciones", vinilo: "Vinilo / DTF", parametros: "Parámetros por cliente", aprobar: puedeAprobar ? "Por aprobar" : "En aprobación" };
   return (
     <div className="cotz-root" style={{ display: "flex", minHeight: "100vh", background: C.canvas, fontFamily: FUENTE, color: C.ink }}>
-      <MenuCotizaciones activo={edit ? "cotizaciones" : tab} onIr={irA} onVolver={onVolver} onLogout={onLogout} currentUser={currentUser} />
+      <MenuCotizaciones activo={edit ? "cotizaciones" : tab} onIr={irA} onVolver={onVolver} onLogout={onLogout} currentUser={currentUser} nAprobar={cotizaciones.filter((c) => estadoUltima(c) === "aprobacion").length} puedeAprobar={puedeAprobar} />
       <div style={{ flex: 1, minWidth: 0, padding: "24px 34px", boxSizing: "border-box" }}>
       {edit ? (
         <CotizacionEditor key={edit.id} inicial={edit} parametros={parametros} clientes={clientesApp} protos={protos} capsulas={capsulas}
-          onGuardar={guardar} onVolver={() => { setEdit(null); setEdSucio(false); }} onEliminar={pedirBorrar} puedeBorrar={puedeBorrar} onSucio={setEdSucio} notify={notify}
+          onGuardar={guardar} onVolver={() => { setEdit(null); setEdSucio(false); }} onEliminar={pedirBorrar} puedeBorrar={puedeBorrar} onSucio={setEdSucio} puedeAprobar={puedeAprobar} usuario={currentUser?.name || ""} notify={notify}
           onAplicar={(destino, valor) => onAplicarPrecio(destino, valor)} />
       ) : (
       <>
@@ -1301,16 +1478,16 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
       {tab === "parametros" && <ParametrosView parametros={parametros} clientesApp={clientesApp} currentUser={currentUser} notify={notify} />}
 
       {tab === "inicio" && (
-        <InicioCotizaciones cotizaciones={cotizaciones} minis={minis} cargado={cargado} puedeBorrar={puedeBorrar} onBorrar={pedirBorrar}
+        <InicioCotizaciones cotizaciones={cotizaciones} minis={minis} cargado={cargado} puedeAprobar={puedeAprobar} puedeBorrar={puedeBorrar} onBorrar={pedirBorrar}
           onIr={(t) => { setFiltroEstado(null); setTab(t); }} onNueva={() => setEdit(cotNueva())}
           onFiltro={(f) => { setFiltroEstado(f); setTab("cotizaciones"); }} onAbrir={(c) => setEdit({ ...limpio(c), existe: true })} />
       )}
 
       {tab === "vinilo" && <MiniVinilo currentUser={currentUser} notify={notify} onPasar={pasarAlCotizador} />}
 
-      {tab === "cotizaciones" && (
+      {(tab === "cotizaciones" || tab === "aprobar") && (
         <div>
-          {filtroEstado && (
+          {tab === "cotizaciones" && filtroEstado && (
             <div style={{ marginBottom: 10 }}>
               <span onClick={() => setFiltroEstado(null)} style={{ display: "inline-flex", gap: 8, alignItems: "center", padding: "5px 12px", borderRadius: 14, background: C.amberBg, color: C.amber, fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Filtro: {FILTROS_TXT[filtroEstado]} ✕</span>
             </div>
@@ -1318,16 +1495,18 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
           <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
             <input value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder="Buscar por referencia, nombre o cliente…" style={{ ...inp, maxWidth: 340 }} />
             <div style={{ flex: 1 }} />
+            {tab === "cotizaciones" && <>
             <button onClick={() => setImportar(true)} style={btn(C.white, C.blue, C.blue)}>📥 Importar Excel</button>
             <button disabled={!filtradas.length} onClick={() => descargarExcel(filtradas, `Cotizaciones ${hoyISO()}.xlsx`, null, notify)} style={{ ...btn(C.white, C.blue, C.blue), opacity: filtradas.length ? 1 : 0.4 }}>📤 Descargar Excel ({filtradas.length})</button>
             <button onClick={() => setEdit(cotNueva())} style={btn(C.green, C.white)}>+ Nueva cotización</button>
+            </>}
           </div>
           <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 860 }}>
-              <thead><tr><th style={{ ...th, padding: 12 }}>Referencia</th><th style={th}>Nombre</th><th style={th}>Cliente</th><th style={th}>Versiones</th><th style={{ ...th, textAlign: "right" }}>Precio con IVA (última)</th><th style={th}>Aplicado a</th><th style={th} /></tr></thead>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 960 }}>
+              <thead><tr><th style={{ ...th, padding: 12 }}>Referencia</th><th style={th}>Nombre</th><th style={th}>Cliente</th><th style={th}>Versiones</th><th style={{ ...th, textAlign: "right" }}>Precio con IVA (última)</th><th style={th}>Estado</th><th style={th}>Aplicado a</th><th style={th} /></tr></thead>
               <tbody>
-                {!cargado && <tr><td colSpan={7} style={{ padding: 24, textAlign: "center", color: C.slate }}>Cargando…</td></tr>}
-                {cargado && filtradas.length === 0 && <tr><td colSpan={7} style={{ padding: 28, textAlign: "center", color: C.slate, fontSize: 13 }}>{cotizaciones.length ? "Ninguna cotización coincide con la búsqueda." : "Aún no hay cotizaciones. Crea una nueva o importa tu Excel (cada hoja = una versión)."}</td></tr>}
+                {!cargado && <tr><td colSpan={8} style={{ padding: 24, textAlign: "center", color: C.slate }}>Cargando…</td></tr>}
+                {cargado && filtradas.length === 0 && <tr><td colSpan={8} style={{ padding: 28, textAlign: "center", color: C.slate, fontSize: 13 }}>{tab === "aprobar" ? "No hay cotizaciones esperando aprobación." : cotizaciones.length ? "Ninguna cotización coincide con la búsqueda." : "Aún no hay cotizaciones. Crea una nueva o importa tu Excel (cada hoja = una versión)."}</td></tr>}
                 {filtradas.map((c) => {
                   const ult = c.versiones?.[c.versiones.length - 1];
                   const r = ult ? calcularCotizacion(ult.v) : null;
@@ -1338,6 +1517,7 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
                       <td style={{ ...td, fontSize: 13 }}>{c.cliente || "General"}</td>
                       <td style={{ ...td, fontSize: 12, color: C.slate }}>{c.versiones?.length || 0} · V{ult?.numero} {fmtFecha(ult?.fecha)}</td>
                       <td style={{ ...td, textAlign: "right", fontWeight: 800 }}>{r ? fmtCOP(r.precioAplicar) : "—"}</td>
+                      <td style={td}>{(() => { const e = estadoCotizacion(c); return <Pastilla bg={e.bg} color={e.color}>{e.txt}</Pastilla>; })()}</td>
                       <td style={{ ...td, fontSize: 12 }}>
                         {c.precioAplicado ? <span style={{ color: C.green, fontWeight: 700 }}>{fmtCOP(c.precioAplicado.valor)} → {c.precioAplicado.destino}</span> : c.vinculo ? <span style={{ color: C.slate }}>Vinculado: {c.vinculo.label}</span> : <span style={{ color: C.slate }}>—</span>}
                       </td>
