@@ -1,9 +1,9 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { initializeApp, getApps } from "firebase/app";
 import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import {
-  TASAS_BASE, ETIQUETAS_TASAS, FIJOS_BASE, ETIQUETAS_FIJOS, PROCESOS_BASE, INSUMOS_BASE,
+  TASAS_BASE, ETIQUETAS_TASAS, FIJOS_BASE, ETIQUETAS_FIJOS, PROCESOS_BASE, INSUMOS_BASE, insumosSugeridos,
   REGEX_INSUMO_TERMO, num, versionVacia, calcularCotizacion, parsearArchivoCotizacion,
 } from "./cotizador-calculo";
 import { descargarCotizacionesExcel } from "./cotizador-excel";
@@ -84,7 +84,7 @@ function fichaCompleta(f) {
     tasas: { ...TASAS_BASE, ...(f?.tasas || {}) },
     fijos: { ...FIJOS_BASE, ...(f?.fijos || {}) },
     procesos: Array.isArray(f?.procesos) && f.procesos.length ? f.procesos : PROCESOS_BASE.map((p) => ({ ...p })),
-    insumos: Array.isArray(f?.insumos) ? f.insumos : INSUMOS_BASE.map((x) => ({ ...x })),
+    insumos: Array.isArray(f?.insumos) ? f.insumos : (insumosSugeridos(f?.nombre) || INSUMOS_BASE.map((x) => ({ ...x }))),
   };
 }
 // Insumos básicos de la ficha, listos para ponerlos en una versión nueva.
@@ -96,9 +96,27 @@ function insumosDesdeFicha(ficha) {
 }
 function buscarFicha(parametros, cliente) {
   const n = normTxt(cliente);
-  const f = (parametros || []).find((p) => normTxt(p.nombre) === n) || (parametros || []).find((p) => p.id === "general");
-  return fichaCompleta(f);
+  const propia = (parametros || []).find((p) => normTxt(p.nombre) === n);
+  if (propia) return fichaCompleta(propia);
+  // Cliente sin ficha propia: parámetros de General, pero con los insumos de sus cotizaciones si los hay.
+  const ficha = fichaCompleta((parametros || []).find((p) => p.id === "general"));
+  const sug = insumosSugeridos(cliente);
+  if (sug) { ficha.insumos = sug; ficha.nombre = cliente; }
+  return ficha;
 }
+// Busca un código de Busint en el inventario. Solo rellena si coincide con UN insumo
+// (los códigos con espacios o guiones, como «3731 - 3732», quedan como texto libre).
+async function buscarInsumoPorCodigo(codigo) {
+  const c = String(codigo || "").trim();
+  if (!c || !/^[A-Za-z0-9]+$/.test(c)) return { estado: "libre" };
+  try {
+    const cat = await cargarCatalogoInsumos();
+    const hit = cat.filter((x) => String(x.codcomp ?? "").trim() === c);
+    if (hit.length === 1) return { estado: "ok", x: hit[0] };
+    return { estado: hit.length ? "varios" : "nada" };
+  } catch (e) { return { estado: "error", msg: e.message || String(e) }; }
+}
+function precioBusint(x) { return x.promedio > 0 ? x.promedio : (x.costo > 0 ? x.costo : null); }
 // Nueva versión en blanco con los parámetros de la ficha del cliente.
 function versionDesdeFicha(ficha) {
   const v = versionVacia();
@@ -164,6 +182,7 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
   const [comentario, setComentario] = useState("");
   const [telaBusint, setTelaBusint] = useState(null); // índice de la fila de tela que busca precio
   const [insBusint, setInsBusint] = useState(null); // índice de la fila de insumo que busca precio en Busint
+  const codOrig = useRef("");
   const ver = cot.versiones[cot.activa];
   const calc = useMemo(() => calcularCotizacion(ver.v), [ver.v]);
   const estadoV = ver.estado || "borrador";
@@ -201,6 +220,9 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
     setV((v) => {
       v.tasas = { ...f.tasas };
       v.fijos = { ...f.fijos };
+      // Suma los insumos del cliente que esta versión no tenga (no pisa los que ya están).
+      v.insumos = v.insumos || [];
+      insumosDesdeFicha(f).forEach((x) => { if (!v.insumos.some((y) => normTxt(y.nombre) === normTxt(x.nombre))) v.insumos.push(x); });
       // Solo ajusta el indicador de imprevistos de los procesos que ya existen.
       v.procesos.forEach((p) => {
         const base = f.procesos.find((x) => normTxt(x.nombre) === normTxt(p.nombre));
@@ -230,6 +252,20 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
     setSucio(false);
     notify?.("Cotización guardada");
   }
+  // Al escribir un código de Busint en un insumo: si coincide con uno solo, trae su precio (y el nombre si está vacío).
+  async function autollenarCodigo(i) {
+    const cod = insumos[i]?.codigo;
+    if (String(cod || "").trim() === codOrig.current) return;
+    const r = await buscarInsumoPorCodigo(cod);
+    if (r.estado === "ok") {
+      const p = precioBusint(r.x);
+      setV((v) => { const it = v.insumos[i]; if (!it) return; if (p != null) it.precio = p; if (!String(it.nombre || "").trim()) it.nombre = r.x.componente; });
+      notify?.(`Cód. ${String(cod).trim()}: ${r.x.componente}${p != null ? ` · promedio ${fmtCOP(p)}` : " · sin precio en Busint"}`);
+    } else if (r.estado === "nada") notify?.(`El código ${String(cod).trim()} no está en el inventario de Busint; queda como lo escribiste.`);
+    else if (r.estado === "varios") notify?.(`El código ${String(cod).trim()} coincide con varios insumos de Busint; usa la lupa para elegir.`);
+    else if (r.estado === "error") notify?.("No se pudo consultar Busint: " + r.msg);
+  }
+
   // ── Flujo de aprobación ──
   function conEvento(n, txt) {
     n.historial = [...(n.historial || []), { fecha: new Date().toISOString(), quien: usuario || "—", v: n.versiones[n.activa].numero, txt }];
@@ -423,8 +459,8 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
             {insumos.length === 0 && <div style={{ fontSize: 13, color: C.slate, padding: "6px 0" }}>Sin insumos todavía.</div>}
             {insumos.length > 0 && (
               <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 560 }}>
-                  <thead><tr><th style={th}>Insumo</th><th style={th}>Precio</th><th style={th}>Consumo</th><th style={th}>Imprevistos</th><th style={{ ...th, textAlign: "right" }}>$ prenda</th><th /></tr></thead>
+                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 660 }}>
+                  <thead><tr><th style={th}>Insumo</th><th style={th}>Cód.</th><th style={th}>Precio</th><th style={th}>Consumo</th><th style={th}>Imprevistos</th><th style={{ ...th, textAlign: "right" }}>$ prenda</th><th /></tr></thead>
                   <tbody>
                     {insumos.map((it, i) => (
                       <tr key={i}>
@@ -433,8 +469,8 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
                             <button title="Traer precio promedio y código desde el inventario de Busint" onClick={() => setInsBusint(i)} style={{ border: `1px solid ${C.border}`, background: C.field, borderRadius: 8, cursor: "pointer", padding: "6px 8px" }}>🔎</button>
                             <input value={it.nombre} onChange={(e) => setV((v) => { v.insumos[i].nombre = e.target.value; if (!v.insumos[i].termoManual) v.insumos[i].termo = REGEX_INSUMO_TERMO.test(e.target.value); })} style={{ ...inp, minWidth: 170 }} placeholder="Hilo, etiqueta, vinilo…" />
                           </div>
-                          {it.codigo && <div style={{ fontSize: 11, color: C.slate, margin: "2px 0 0 38px" }}>cód. Busint {it.codigo}</div>}
                         </td>
+                        <td style={td}><input value={it.codigo || ""} onFocus={() => { codOrig.current = String(it.codigo || "").trim(); }} onBlur={() => autollenarCodigo(i)} onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }} onChange={(e) => setV((v) => { v.insumos[i].codigo = e.target.value; })} style={{ ...inp, width: 96 }} placeholder="Código" /></td>
                         <td style={td}>{celdaNum(it.precio, (x) => setV((v) => { v.insumos[i].precio = x; }))}</td>
                         <td style={td}>{celdaNum(it.consumo, (x) => setV((v) => { v.insumos[i].consumo = x; }), 70)}</td>
                         <td style={{ ...td, textAlign: "center" }}><input type="checkbox" checked={!!it.termo} onChange={(e) => setV((v) => { v.insumos[i].termo = e.target.checked; v.insumos[i].termoManual = true; })} /></td>
@@ -443,7 +479,7 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
                       </tr>
                     ))}
                   </tbody>
-                  <tfoot><tr><td colSpan={4} style={{ ...td, textAlign: "right", fontWeight: 700, color: C.slate }}>Total insumos</td><td style={{ ...td, textAlign: "right", fontWeight: 800 }}>{fmtDec(calc.insumosTotal)}</td><td /></tr></tfoot>
+                  <tfoot><tr><td colSpan={5} style={{ ...td, textAlign: "right", fontWeight: 700, color: C.slate }}>Total insumos</td><td style={{ ...td, textAlign: "right", fontWeight: 800 }}>{fmtDec(calc.insumosTotal)}</td><td /></tr></tfoot>
                 </table>
               </div>
             )}
@@ -816,7 +852,7 @@ function ModalImportar({ cotizaciones, parametros, clientes, onImportar, onClose
 
 // ─── PARÁMETROS POR CLIENTE ──────────────────────────────────────────────────
 function ParametrosView({ parametros, clientesApp, currentUser, notify }) {
-  const fichasVirtuales = ["General", "Kamila", "Surtiexport"];
+  const fichasVirtuales = ["General", "Kamila", "Surtiexport", "Conbot", "Goldmark", "Mary Bautista"];
   const lista = useMemo(() => {
     const out = [];
     const vistos = new Set();
@@ -835,6 +871,7 @@ function ParametrosView({ parametros, clientesApp, currentUser, notify }) {
   const [nuevo, setNuevo] = useState("");
   const [borrador, setBorrador] = useState(null);
   const [insBusintPar, setInsBusintPar] = useState(null);
+  const codOrigPar = useRef("");
   const actual = lista.find((f) => f.id === selId) || lista[0];
   useEffect(() => { setBorrador(actual ? limpio(actual) : null); }, [selId, actual?.guardada, parametros]); // eslint-disable-line
   if (!borrador) return null;
@@ -842,6 +879,24 @@ function ParametrosView({ parametros, clientesApp, currentUser, notify }) {
   async function guardar() {
     await fsSet("cotizador_parametros", borrador.id, { id: borrador.id, nombre: borrador.nombre, tasas: borrador.tasas, fijos: borrador.fijos, procesos: borrador.procesos, insumos: borrador.insumos || [], actualizadoPor: currentUser?.name || "", actualizado: new Date().toISOString() });
     notify?.(`Ficha "${borrador.nombre}" guardada. Las cotizaciones nuevas la usarán; las ya guardadas no cambian.`);
+  }
+  async function autollenarCodigoPar(i) {
+    const cod = borrador.insumos?.[i]?.codigo;
+    if (String(cod || "").trim() === codOrigPar.current) return;
+    const r = await buscarInsumoPorCodigo(cod);
+    if (r.estado === "ok") {
+      const p = precioBusint(r.x);
+      setB((b) => { const it = b.insumos[i]; if (!it) return; if (p != null) it.precio = p; if (!String(it.nombre || "").trim()) it.nombre = r.x.componente; });
+      notify?.(`Cód. ${String(cod).trim()}: ${r.x.componente}${p != null ? ` · promedio ${fmtCOP(p)}` : " · sin precio en Busint"}`);
+    } else if (r.estado === "nada") notify?.(`El código ${String(cod).trim()} no está en el inventario de Busint; queda como lo escribiste.`);
+    else if (r.estado === "varios") notify?.(`El código ${String(cod).trim()} coincide con varios insumos de Busint; usa la lupa para elegir.`);
+    else if (r.estado === "error") notify?.("No se pudo consultar Busint: " + r.msg);
+  }
+  function cargarSugeridos() {
+    const sug = insumosSugeridos(borrador.nombre);
+    if (!sug) return;
+    if ((borrador.insumos || []).some((x) => String(x.nombre || "").trim()) && !window.confirm(`¿Reemplazar los insumos básicos de ${borrador.nombre} por los de sus cotizaciones (${sug.length})? Después debes guardar la ficha.`)) return;
+    setB((b) => { b.insumos = sug; });
   }
   async function agregarCliente() {
     const n = nuevo.trim();
@@ -901,7 +956,10 @@ function ParametrosView({ parametros, clientesApp, currentUser, notify }) {
           ))}
         </Seccion>
         <Seccion titulo="Insumos básicos" sub="Ya aparecen cargados en cada cotización nueva de este cliente, para que nadie tenga que agregarlos. Precio fijo o con 🔎 desde Busint (promedio). «Imprev.» = va en la base de imprevistos."
-          derecha={<button onClick={() => setB((b) => { b.insumos = b.insumos || []; b.insumos.push({ nombre: "", precio: "", consumo: 1, termo: false }); })} style={btn(C.blueBg, C.blue, C.blue)}>+ Insumo</button>}>
+          derecha={<div style={{ display: "flex", gap: 8 }}>
+            {insumosSugeridos(borrador.nombre) && <button onClick={cargarSugeridos} title="Carga los insumos que salen en las cotizaciones de este cliente" style={btn(C.white, C.violet, C.violet)}>↻ Insumos de sus cotizaciones</button>}
+            <button onClick={() => setB((b) => { b.insumos = b.insumos || []; b.insumos.push({ nombre: "", precio: "", consumo: 1, termo: false }); })} style={btn(C.blueBg, C.blue, C.blue)}>+ Insumo</button>
+          </div>}>
           {insBusintPar !== null && borrador.insumos?.[insBusintPar] && (
             <ModalInsumoBusint inicial={borrador.insumos[insBusintPar].nombre} titulo={borrador.insumos[insBusintPar].nombre || "insumo"} onClose={() => setInsBusintPar(null)}
               onElegir={(x) => { const i = insBusintPar; setInsBusintPar(null); setB((b) => { const it = b.insumos[i]; if (!it) return; it.precio = x.promedio > 0 ? x.promedio : (x.costo > 0 ? x.costo : it.precio); it.codigo = x.codcomp || ""; if (!String(it.nombre || "").trim()) it.nombre = x.componente; }); }} />
@@ -909,8 +967,8 @@ function ParametrosView({ parametros, clientesApp, currentUser, notify }) {
           {(borrador.insumos || []).length === 0 && <div style={{ fontSize: 13, color: C.slate }}>Sin insumos básicos: las cotizaciones nuevas de este cliente arrancan sin insumos.</div>}
           {(borrador.insumos || []).length > 0 && (
             <div style={{ overflowX: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 560 }}>
-                <thead><tr><th style={th}>Insumo</th><th style={th}>Precio</th><th style={th}>Consumo</th><th style={th}>Imprev.</th><th /></tr></thead>
+              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 700 }}>
+                <thead><tr><th style={th}>Insumo</th><th style={th}>Cód.</th><th style={th}>Precio</th><th style={th}>Consumo</th><th style={{ ...th, textAlign: "right" }}>Total</th><th style={th}>Imprev.</th><th /></tr></thead>
                 <tbody>
                   {borrador.insumos.map((it, i) => (
                     <tr key={i}>
@@ -919,15 +977,17 @@ function ParametrosView({ parametros, clientesApp, currentUser, notify }) {
                           <button title="Traer precio promedio y código desde Busint" onClick={() => setInsBusintPar(i)} style={{ border: `1px solid ${C.border}`, background: C.field, borderRadius: 8, cursor: "pointer", padding: "6px 8px" }}>🔎</button>
                           <input value={it.nombre} onChange={(e) => setB((b) => { b.insumos[i].nombre = e.target.value; })} style={{ ...inp, minWidth: 190 }} />
                         </div>
-                        {it.codigo && <div style={{ fontSize: 11, color: C.slate, margin: "2px 0 0 38px" }}>cód. Busint {it.codigo}</div>}
                       </td>
+                      <td style={td}><input value={it.codigo || ""} onFocus={() => { codOrigPar.current = String(it.codigo || "").trim(); }} onBlur={() => autollenarCodigoPar(i)} onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }} onChange={(e) => setB((b) => { b.insumos[i].codigo = e.target.value; })} style={{ ...inp, width: 100 }} placeholder="Código" /></td>
                       <td style={td}><input type="text" inputMode="decimal" value={it.precio ?? ""} onChange={(e) => setB((b) => { b.insumos[i].precio = e.target.value; })} style={{ ...inp, width: 100, textAlign: "right" }} /></td>
                       <td style={td}><input type="text" inputMode="decimal" value={it.consumo ?? ""} onChange={(e) => setB((b) => { b.insumos[i].consumo = e.target.value; })} style={{ ...inp, width: 70, textAlign: "right" }} /></td>
+                      <td style={{ ...td, textAlign: "right", fontWeight: 700 }}>{fmtDec(num(it.precio) * num(it.consumo))}</td>
                       <td style={{ ...td, textAlign: "center" }}><input type="checkbox" checked={!!it.termo} onChange={(e) => setB((b) => { b.insumos[i].termo = e.target.checked; })} /></td>
                       <td style={td}><button onClick={() => setB((b) => { b.insumos.splice(i, 1); })} style={{ border: "none", background: "none", cursor: "pointer", color: C.red, fontSize: 16 }}>×</button></td>
                     </tr>
                   ))}
                 </tbody>
+                <tfoot><tr><td colSpan={4} style={{ ...td, textAlign: "right", fontWeight: 700, color: C.slate }}>Total insumos</td><td style={{ ...td, textAlign: "right", fontWeight: 800 }}>{fmtDec(borrador.insumos.reduce((a, it) => a + num(it.precio) * num(it.consumo), 0))}</td><td colSpan={2} /></tr></tfoot>
               </table>
             </div>
           )}

@@ -73,6 +73,38 @@ export const INSUMOS_BASE = [
   { nombre: "Etiqueta de talla y composición", precio: "", consumo: 1, termo: false },
   { nombre: "Bolsa de empaque", precio: "", consumo: 1, termo: false },
 ];
+// Insumos de cada cliente, tomados de sus cotizaciones (2026-10-16, a pedido de
+// Fredy). Precios fijos tal como están en sus hojas. El código es texto libre
+// (hay insumos con dos códigos o sin código). Se precargan al elegir el cliente.
+const ins = (codigo, nombre, precio, consumo, termo = false) => ({ codigo, nombre, precio, consumo, termo });
+export const INSUMOS_CLIENTES = [
+  { claves: ["kamila"], insumos: [
+    ins("4810", "MLLANYL87%PL-13%EA", 50, 1), ins("3744", "ETIQ KAM ATHLETI #2 X2", 130, 1),
+    ins("4622", "BOLSA ZIPPER KAMILA", 1, 1), ins("343", "BOLSA DOCENA 14X22", 200, 0.09),
+    ins("17", "VINILO REFLECTIVO", 38000, 0.0004, true), ins("3731 - 3732", "VINILO ALTA - K 1CM ALTA DN", 93, 1, true),
+    ins("312", "ELASTICO 5 CM", 432.9, 0.71), ins("5046", "CORD-T.SEN_SP MARRON 130CM", 360, 1), ins("", "CIF", 250, 1),
+  ] },
+  { claves: ["mary", "mary bautista"], insumos: [
+    ins("4715", "MLLANYL96%PL4%SP", 50, 1), ins("4455", "ETIQ.ALMENDRA3x10cm", 90, 1),
+    ins("343", "BOLSA DOCENA 14X22", 210, 0.09), ins("", "CIF", 250, 1),
+  ] },
+  { claves: ["conbot"], insumos: [
+    ins("4808", "MLLANYL87%PL-13%EA", 50, 1), ins("4449", "ETIQ.INFANTIL-PACK1X2", 95, 1), ins("4371", "MLLANYLC.A.100%PL", 30, 1),
+    ins("343", "BOLSA DOCENA 14X22", 200, 0.16), ins("341", "BOLSA INDIVIDUAL 9X12", 80, 1),
+    ins("17", "VINILO REFLECTIVO", 38000, 0.001, true), ins("312", "ELASTICO 5 CM", 460, 1.3), ins("", "CIF", 250, 1),
+  ] },
+  { claves: ["goldmark", "gold mark"], insumos: [
+    ins("4395", "MLLANYLG.A.65%AG35%PL", 30, 1), ins("4446", "ETIQ.GM-CAB4X8cm", 95, 1),
+    ins("345", "BOLSA DOCENA 18X24", 295, 0.08), ins("2708", "POLIAMIDA GOLDMARK", 39, 1, true), ins("", "CIF", 160, 1),
+  ] },
+];
+// Insumos sugeridos para un cliente (por palabras de su nombre), o null si no hay.
+export function insumosSugeridos(cliente) {
+  const n = String(cliente || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  if (!n.trim()) return null;
+  const f = INSUMOS_CLIENTES.find((c) => c.claves.some((k) => new RegExp("\\b" + k + "\\b").test(n)));
+  return f ? f.insumos.map((x) => ({ ...x })) : null;
+}
 export const REGEX_INSUMO_TERMO = /vinilo|dtf|poliamida|fast\s?dry|vad/i;
 
 export function num(x) {
@@ -190,7 +222,8 @@ export function parsearHojaCotizacion(ws, nombreHoja) {
   for (let r = 19; r <= 38; r++) {
     const nombre = String(celda(ws, `C${r}`) ?? "").trim();
     if (!nombre) continue;
-    insumos.push({ nombre, precio: num(celda(ws, `D${r}`)), consumo: num(celda(ws, `E${r}`)), termo: r >= 24 && r <= 30 });
+    const cod = String(celda(ws, `B${r}`) ?? "").trim();
+    insumos.push({ nombre, codigo: cod && cod !== "0" ? cod : "", precio: num(celda(ws, `D${r}`)), consumo: num(celda(ws, `E${r}`)), termo: r >= 24 && r <= 30 });
   }
   const procesos = [];
   for (let r = 42; r <= 55; r++) {

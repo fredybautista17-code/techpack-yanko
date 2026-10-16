@@ -73,6 +73,7 @@ function llenarHoja(ws, cot, ver) {
   FILAS_INSUMOS.forEach((r, i) => {
     const it = insumos[i];
     if (it) {
+      val(`B${r}`, it.codigo ? String(it.codigo) : null);
       val(`C${r}`, it.nombre || "");
       val(`D${r}`, num(it.precio));
       val(`E${r}`, num(it.consumo));
