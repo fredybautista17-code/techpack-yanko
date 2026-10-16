@@ -154,12 +154,24 @@ export async function generarLibroCotizaciones(ExcelJS, plantilla, lista, opcion
   const usados = new Set(["resumen"]);
   const avisos = [];
   const hojas = [];
-  (lista || []).forEach((cot) => (cot.versiones || []).forEach((ver) => {
-    const nombre = nombreHojaUnico(lista.length === 1 ? `V${ver.numero}` : `${cot.referencia || "cot"} V${ver.numero}`, usados);
+  (lista || []).forEach((cot) => (cot.versiones || []).filter((ver) => !opciones.soloAprobadas || ver.estado === "aprobada").forEach((ver) => {
+    const esDef = opciones.definitivaNumero === ver.numero;
+    const base = lista.length === 1 ? `V${ver.numero}${esDef ? " DEFINITIVA" : ""}` : `${cot.referencia || "cot"} V${ver.numero}`;
+    const nombre = nombreHojaUnico(base, usados);
     const ws = wb.addWorksheet(nombre);
     ws.model = Object.assign(structuredClone(modelo), { mergeCells: modelo.merges, name: nombre });
     const av = llenarHoja(ws, cot, ver);
     av.forEach((a) => { if (!avisos.includes(a)) avisos.push(a); });
+    // Línea de encabezado: versión, fecha de aprobación y carpeta de Dropbox donde queda guardada.
+    const leyenda = opciones.leyenda ? opciones.leyenda(cot, ver, esDef) : "";
+    if (leyenda) {
+      const c = ws.getCell("D1");
+      c.value = leyenda;
+      c.font = { bold: true, size: 12, color: { argb: esDef ? "FF14532D" : "FF1E3A5F" } };
+      c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: esDef ? "FFD1FAE5" : "FFE0ECF8" } };
+      c.alignment = { vertical: "middle", horizontal: "left" };
+      ws.properties = { ...(ws.properties || {}), tabColor: { argb: esDef ? "FF2D9E6B" : "FF2B5C8A" } };
+    }
     if (opciones.imagen && cot === opciones.imagen.cot) {
       const idImg = wb.addImage({ base64: opciones.imagen.base64, extension: opciones.imagen.extension });
       const w = 560;
@@ -206,7 +218,7 @@ function medirImagen(dataUrl) {
 }
 
 // Arma el libro (con la plantilla del servidor y la foto opcional) y devuelve el buffer del .xlsx.
-async function construirExcelCotizaciones(lista, imagenDataUrl) {
+async function construirExcelCotizaciones(lista, imagenDataUrl, opcionesLibro = {}) {
   const m = await import("exceljs/dist/exceljs.min.js");
   const ExcelJS = m.default || m;
   const resp = await fetch(`${process.env.PUBLIC_URL || ""}/plantilla-cotizacion.xlsx`);
@@ -218,7 +230,7 @@ async function construirExcelCotizaciones(lista, imagenDataUrl) {
     const medidas = mt ? await medirImagen(imagenDataUrl) : null;
     if (mt && medidas) imagen = { cot: lista[0], base64: imagenDataUrl, extension: mt[1].toLowerCase() === "png" ? "png" : mt[1].toLowerCase() === "gif" ? "gif" : "jpeg", ...medidas };
   }
-  const { wb, avisos } = await generarLibroCotizaciones(ExcelJS, plantilla, lista, { imagen });
+  const { wb, avisos } = await generarLibroCotizaciones(ExcelJS, plantilla, lista, { ...opcionesLibro, imagen });
   return { buf: await wb.xlsx.writeBuffer(), avisos };
 }
 
@@ -238,12 +250,44 @@ export async function descargarCotizacionesExcel(lista, nombreArchivo, opciones 
   return avisos;
 }
 
-// Excel de UNA versión de una cotización, en base64 (sin descargarlo): para mandarlo a Dropbox.
-export async function excelVersionBase64(cot, numeroVersion, imagenDataUrl) {
-  const ver = (cot.versiones || []).find((v) => v.numero === numeroVersion) || (cot.versiones || [])[(cot.versiones || []).length - 1];
-  if (!ver) throw new Error("La cotización no tiene versiones");
-  const una = { ...cot, versiones: [ver] };
-  const { buf } = await construirExcelCotizaciones([una], imagenDataUrl);
+// ─── Libro de Dropbox: UNA hoja por cada versión aprobada ────────────────────
+// (2026-10-16, a pedido de Fredy) En Dropbox queda un solo libro por referencia ("807.xlsx") con una
+// hoja por versión aprobada (V1, V2...). Se arma completo desde lo guardado en ATLAS cada vez que se
+// aprueba, así que no hace falta bajar el archivo anterior de Dropbox.
+export const CARPETA_DISENO = "COTIZACION DE DISEÑO";
+export const CARPETA_DEFINITIVA = "COTIZACIONES APROBADAS";
+
+// dd/mm/aaaa en hora de Colombia a partir de un texto ISO (con o sin hora).
+export function fechaColombia(iso) {
+  const t = String(iso || "");
+  if (!t) return "";
+  let ymd = t.slice(0, 10);
+  if (t.length > 10) {
+    const d = new Date(t);
+    if (!Number.isNaN(d.getTime())) ymd = d.toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
+  }
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd);
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : t;
+}
+
+// opcionesDef = { numero, lote, fecha } cuando es el libro de "Dado por Cumplido"; sin él es el de DISEÑO.
+export function leyendaCotizacion(ver, opcionesDef) {
+  const aprobada = fechaColombia(ver.decision?.fecha || ver.fecha);
+  if (!opcionesDef) return `V${ver.numero} · Aprobada ${aprobada} · Guardada en: ${CARPETA_DISENO}`;
+  if (ver.numero === opcionesDef.numero) {
+    return `DEFINITIVA · V${ver.numero} · Dado por cumplido ${fechaColombia(opcionesDef.fecha)}${opcionesDef.lote ? ` · LOTE ${opcionesDef.lote}` : ""} · Guardada en: ${CARPETA_DEFINITIVA}`;
+  }
+  return `V${ver.numero} · Aprobada ${aprobada} · Versión anterior (no es la definitiva) · Guardada en: ${CARPETA_DEFINITIVA}`;
+}
+
+// Libro en base64 con las versiones aprobadas de una cotización. opcionesDef: ver leyendaCotizacion.
+export async function excelLibroBase64(cot, imagenDataUrl, opcionesDef) {
+  if (!(cot.versiones || []).some((v) => v.estado === "aprobada")) throw new Error("La cotización no tiene versiones aprobadas");
+  const { buf } = await construirExcelCotizaciones([cot], imagenDataUrl, {
+    soloAprobadas: true,
+    definitivaNumero: opcionesDef ? opcionesDef.numero : null,
+    leyenda: (c, ver) => leyendaCotizacion(ver, opcionesDef),
+  });
   const dataUrl = await new Promise((resolve, reject) => {
     const fr = new FileReader();
     fr.onload = () => resolve(fr.result);
@@ -251,4 +295,13 @@ export async function excelVersionBase64(cot, numeroVersion, imagenDataUrl) {
     fr.readAsDataURL(new Blob([buf]));
   });
   return String(dataUrl).split(",")[1] || "";
+}
+
+// Nombre del libro (sin .xlsx): el mismo que ya se usó en DISEÑO si existe, si no la referencia.
+export function nombreLibroDropbox(cot, referenciaAlternativa) {
+  for (const v of cot.versiones || []) {
+    const base = String(v.dropbox?.ruta || "").split("/").pop().replace(/\.xlsx$/i, "");
+    if (base && !/ V\d+ \d{4}-\d{2}-\d{2}$/.test(base)) return base;
+  }
+  return String(referenciaAlternativa || "").trim();
 }

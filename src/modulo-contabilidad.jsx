@@ -3062,6 +3062,7 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases, puedeSincroni
   const [loading, setLoading] = useState(true);
   const [sincronizando, setSincronizando] = useState(false);
   const [aprobandoId, setAprobandoId] = useState(null);
+  const [guardandoDefId, setGuardandoDefId] = useState(null); // lote cuya cotización definitiva se está subiendo a Dropbox
   const [mostrarConfig, setMostrarConfig] = useState(false);
   const [vistaDadoPorCumplido, setVistaDadoPorCumplido] = useState("pendientes");
   const [busquedaDadoPorCumplido, setBusquedaDadoPorCumplido] = useState("");
@@ -3396,15 +3397,75 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases, puedeSincroni
     setVaciandoHistorico(false);
   }
 
+  // (2026-10-16, a pedido de Fredy) Al aprobar el lote queda guardada la cotización DEFINITIVA de su
+  // referencia en Dropbox: carpeta COTIZACIONES APROBADAS, un libro {REF}.xlsx con una hoja por cada versión
+  // aprobada y la última marcada como DEFINITIVA (con el # de lote y la fecha). La cotización se busca por la
+  // referencia del lote (la de la cotización o la del prototipo/referencia vinculado). Devuelve { ok, mensaje }.
+  async function guardarCotizacionDefinitiva(lote, fechaIso) {
+    const refN = normalizarRefComparacion(lote.referencia);
+    if (!refN) return { ok: false, mensaje: "el lote no tiene referencia" };
+    const snap = await getDocs(collection(db, "cotizaciones"));
+    const ultimaDecision = (c) => (c.versiones || []).filter((v) => v.estado === "aprobada").map((v) => String(v.decision?.fecha || v.fecha || "")).sort().pop() || "";
+    const candidatas = snap.docs
+      .map((d) => ({ ...d.data(), id: d.id }))
+      .filter((c) => (c.versiones || []).some((v) => v.estado === "aprobada") &&
+        [c.referencia, c.vinculo?.reference].map(normalizarRefComparacion).filter(Boolean).includes(refN))
+      .sort((a, b) => ultimaDecision(b).localeCompare(ultimaDecision(a)));
+    const cot = candidatas[0];
+    if (!cot) return { ok: false, mensaje: `no encontré una cotización aprobada para la referencia ${lote.referencia}` };
+    const aprobadas = (cot.versiones || []).filter((v) => v.estado === "aprobada");
+    const ver = aprobadas.reduce((a, b) => (b.numero > a.numero ? b : a));
+    const m = await import("./cotizador-excel");
+    const fecha = fechaIso || new Date().toISOString();
+    const archivoBase64 = await m.excelLibroBase64(cot, null, { numero: ver.numero, lote: lote.numLote, fecha });
+    const refCot = String(cot.referencia || "").trim();
+    const nombre = m.nombreLibroDropbox(cot, refCot && refCot !== "-" ? refCot : lote.referencia);
+    const r = await httpsCallable(functionsClient, "subirCotizacionADropbox")({ destino: "definitiva", carpeta: nombre, archivoBase64 });
+    const ruta = r.data?.ruta || "";
+    const marca = { ruta, fecha: new Date().toISOString(), version: ver.numero, lote: lote.numLote || "", por: currentUser?.name || "" };
+    await fsSave("cotizaciones", cot.id, { definitiva: marca });
+    await fsSave("dado_por_cumplido_lotes", lote.id, { cotizacionDropbox: { ruta, version: ver.numero, fecha: marca.fecha } });
+    return { ok: true, mensaje: `V${ver.numero} de la cotización de ${nombre} guardada como definitiva en Dropbox (${ruta})` };
+  }
+  async function reintentarCotizacionDefinitiva(lote) {
+    setGuardandoDefId(lote.id);
+    try {
+      const fa = lote.fechaAprobacion;
+      const fechaIso = fa && typeof fa.toDate === "function" ? fa.toDate().toISOString() : undefined;
+      const r = await guardarCotizacionDefinitiva(lote, fechaIso);
+      alert(r.ok ? `Listo: ${r.mensaje}` : `No se guardó la cotización definitiva: ${r.mensaje}.`);
+    } catch (err) {
+      alert("No se pudo guardar la cotización definitiva en Dropbox: " + (err?.message || err));
+    } finally {
+      setGuardandoDefId(null);
+    }
+  }
+
   async function aprobar(id) {
     setAprobandoId(id);
+    let aprobado = false;
     try {
       const llamar = httpsCallable(functionsClient, "aprobarDadoPorCumplido");
       await llamar({ id });
+      aprobado = true;
     } catch (err) {
       alert("No se pudo aprobar: " + (err?.message || err));
     } finally {
       setAprobandoId(null);
+    }
+    if (!aprobado) return;
+    // Con el lote ya aprobado, la cotización definitiva de su referencia se guarda en Dropbox.
+    // Si algo falla, el lote queda aprobado igual y se puede reintentar desde el Histórico.
+    const lote = lotes.find((l) => l.id === id);
+    if (!lote) return;
+    setGuardandoDefId(id);
+    try {
+      const r = await guardarCotizacionDefinitiva(lote);
+      alert(r.ok ? `Lote aprobado. ${r.mensaje}.` : `Lote aprobado. No se guardó la cotización definitiva en Dropbox: ${r.mensaje}.`);
+    } catch (err) {
+      alert("Lote aprobado, pero no se pudo guardar la cotización definitiva en Dropbox: " + (err?.message || err) + "\nPuedes reintentarlo desde el Histórico con el botón «☁ Cotización».");
+    } finally {
+      setGuardandoDefId(null);
     }
   }
 
@@ -3739,6 +3800,11 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases, puedeSincroni
               <span><strong style={{ color: C.ink }}>Lote {l.numLote}</strong> — {l.referencia} — {l.cliente} — {l.fecha}</span>
               <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
                 <span style={{ color: l.ganancia >= 0 ? C.green : C.red, fontWeight: 700 }}>{fmtPesos(l.ganancia)} ({fmtPct(l.gananciaPctLote)})</span>
+                {l.cotizacionDropbox ? (
+                  <span title={l.cotizacionDropbox.ruta} style={{ color: C.green, fontWeight: 700 }}>☁ Cotización definitiva V{l.cotizacionDropbox.version}</span>
+                ) : l.fechaAprobacion ? (
+                  <Btn variant="ghost" small onClick={() => reintentarCotizacionDefinitiva(l)} disabled={guardandoDefId === l.id}>{guardandoDefId === l.id ? "Subiendo..." : "☁ Cotización"}</Btn>
+                ) : null}
                 {isAdmin && (
                   <Btn variant="ghost" small onClick={() => eliminarLoteHistorico(l)}>🗑</Btn>
                 )}

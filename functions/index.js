@@ -10072,21 +10072,35 @@ exports.cierreAutomaticoNocturno = onSchedule(
 );
 
 // ─────────────────────────────────────────────────────────────────────────
-// (2026-10-16, a pedido de Fredy) Cotizaciones aprobadas -> Dropbox.
-// Al aprobar una versión, el Cotizador arma el Excel de esa versión (con el formato
-// de siempre) y lo manda aquí; se guarda en
-//   {carpeta raíz}/{REF} V{n} {aaaa-mm-dd}.xlsx   (sin subcarpetas)
-// (si la misma versión se vuelve a enviar el mismo día, el archivo se reemplaza).
+// (2026-10-16, a pedido de Fredy) Cotizaciones aprobadas -> Dropbox, en dos etapas:
+//   1) Al aprobar la cotización:  destino "diseno"      -> .../COTIZACIONES/COTIZACION DE DISEÑO/{REF}.xlsx
+//   2) Al aprobar el lote en "Dado por Cumplido": destino "definitiva" -> .../COTIZACIONES/COTIZACIONES APROBADAS/{REF}.xlsx
+// El archivo es UN libro por referencia con una hoja por versión aprobada (V1, V2...). El navegador lo arma
+// completo (con la plantilla de siempre) y lo manda aquí; si ya existía, se reemplaza.
 // Reutiliza la app de Dropbox y los secretos que ya usa "Dado por Cumplido"
 // (DROPBOX_APP_KEY / DROPBOX_APP_SECRET / DROPBOX_REFRESH_TOKEN): no hay nada nuevo que configurar.
-// La carpeta raíz se puede cambiar sin publicar nada: documento Firestore
-// `config/cotizador_dropbox` con el campo `ruta` (ej. "/CENTRO ADMINISTRATIVO YANKO/COTIZACIONES/COTIZACIONES APROBADAS").
+// Las carpetas se pueden cambiar sin publicar nada: documento Firestore `config/cotizador_dropbox` con los
+// campos `rutaDiseno` y/o `rutaDefinitiva` (la `ruta` antigua también vale para la definitiva).
 // La ruta de la API de Dropbox va desde la raíz de la carpeta personal de Fredy, no desde C:\...\FREDY Dropbox.
-const RUTAS_COTIZACIONES_DROPBOX = [
-  "/CENTRO ADMINISTRATIVO YANKO/COTIZACIONES/COTIZACIONES APROBADAS",
-  "/FREDY bautista/CENTRO ADMINISTRATIVO YANKO/COTIZACIONES/COTIZACIONES APROBADAS",
-];
-let raizCotizacionesDropboxCache = null;
+const DESTINOS_COTIZACIONES_DROPBOX = {
+  diseno: {
+    nombre: "COTIZACION DE DISEÑO",
+    campos: ["rutaDiseno"],
+    rutas: [
+      "/CENTRO ADMINISTRATIVO YANKO/COTIZACIONES/COTIZACION DE DISEÑO",
+      "/FREDY bautista/CENTRO ADMINISTRATIVO YANKO/COTIZACIONES/COTIZACION DE DISEÑO",
+    ],
+  },
+  definitiva: {
+    nombre: "COTIZACIONES APROBADAS",
+    campos: ["rutaDefinitiva", "ruta"],
+    rutas: [
+      "/CENTRO ADMINISTRATIVO YANKO/COTIZACIONES/COTIZACIONES APROBADAS",
+      "/FREDY bautista/CENTRO ADMINISTRATIVO YANKO/COTIZACIONES/COTIZACIONES APROBADAS",
+    ],
+  },
+};
+const raicesCotizacionesDropboxCache = {};
 
 async function llamarDropboxJson(endpoint, cuerpo) {
   const accessToken = await obtenerTokenAccesoDropbox();
@@ -10101,12 +10115,15 @@ async function llamarDropboxJson(endpoint, cuerpo) {
   return { ok: resp.ok, status: resp.status, json, texto };
 }
 
-async function resolverRaizCotizacionesDropbox() {
-  if (raizCotizacionesDropboxCache) return raizCotizacionesDropboxCache;
-  let candidatas = [...RUTAS_COTIZACIONES_DROPBOX];
+async function resolverRaizCotizacionesDropbox(destino) {
+  if (raicesCotizacionesDropboxCache[destino]) return raicesCotizacionesDropboxCache[destino];
+  const cfgDestino = DESTINOS_COTIZACIONES_DROPBOX[destino];
+  let candidatas = [...cfgDestino.rutas];
   try {
     const cfg = await db.collection("config").doc("cotizador_dropbox").get();
-    const ruta = cfg.exists ? String(cfg.data()?.ruta || "").trim() : "";
+    const datos = cfg.exists ? cfg.data() || {} : {};
+    const campo = cfgDestino.campos.find((c) => String(datos[c] || "").trim());
+    const ruta = campo ? String(datos[campo]).trim() : "";
     if (ruta) candidatas = [ruta.startsWith("/") ? ruta : `/${ruta}`];
   } catch (e) {
     logger.warn("No se pudo leer config/cotizador_dropbox; se usan las rutas por defecto", { error: String(e) });
@@ -10114,8 +10131,8 @@ async function resolverRaizCotizacionesDropbox() {
   for (const ruta of candidatas) {
     const r = await llamarDropboxJson("files/get_metadata", { path: ruta });
     if (r.ok && r.json?.[".tag"] === "folder") {
-      raizCotizacionesDropboxCache = r.json.path_display || ruta;
-      return raizCotizacionesDropboxCache;
+      raicesCotizacionesDropboxCache[destino] = r.json.path_display || ruta;
+      return raicesCotizacionesDropboxCache[destino];
     }
   }
   // No se encontró: se listan las carpetas de la raíz para saber cuál es la ruta correcta.
@@ -10123,9 +10140,9 @@ async function resolverRaizCotizacionesDropbox() {
   const nombres = (lista.json?.entries || []).filter((x) => x[".tag"] === "folder").map((x) => x.name).slice(0, 20);
   throw new HttpsError(
     "failed-precondition",
-    `No encontré la carpeta de cotizaciones aprobadas en Dropbox. Probé: ${candidatas.join(" | ")}. ` +
+    `No encontré la carpeta ${cfgDestino.nombre} en Dropbox. Probé: ${candidatas.join(" | ")}. ` +
       `Carpetas que veo en la raíz: ${nombres.length ? nombres.join(", ") : "ninguna (¿la app de Dropbox solo tiene acceso a su propia carpeta?)"}. ` +
-      "Para fijar la ruta correcta crea el documento config/cotizador_dropbox con el campo ruta."
+      `Para fijar la ruta correcta crea el documento config/cotizador_dropbox con el campo ${cfgDestino.campos[0]}.`
   );
 }
 
@@ -10139,25 +10156,22 @@ exports.subirCotizacionADropbox = onCall(
     if (!request.auth) throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
     const d = request.data || {};
     const limpiaSegmento = (t) => String(t || "").replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, " ").trim().replace(/^\.+/, "").slice(0, 80);
-    const carpeta = limpiaSegmento(d.carpeta);
-    const version = Number.parseInt(d.version, 10);
-    const fecha = String(d.fecha || "");
-    if (!carpeta) throw new HttpsError("invalid-argument", "Falta la referencia (o el # Prototipo) para nombrar la carpeta.");
-    if (!(version > 0)) throw new HttpsError("invalid-argument", "Falta el número de versión.");
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) throw new HttpsError("invalid-argument", "La fecha de la versión no es válida.");
+    const destino = d.destino === "definitiva" ? "definitiva" : "diseno";
+    const nombre = limpiaSegmento(d.carpeta);
+    if (!nombre) throw new HttpsError("invalid-argument", "Falta la referencia (o el # Prototipo) para nombrar el libro.");
     if (typeof d.archivoBase64 !== "string" || !d.archivoBase64) throw new HttpsError("invalid-argument", "Falta el archivo Excel.");
     const buffer = Buffer.from(d.archivoBase64, "base64");
     if (!buffer.length || buffer.length > 8 * 1024 * 1024) throw new HttpsError("invalid-argument", "El archivo está vacío o pesa más de 8 MB.");
 
-    const raiz = await resolverRaizCotizacionesDropbox();
-    const ruta = `${raiz}/${carpeta} V${version} ${fecha}.xlsx`; // directo en la carpeta de aprobadas, sin subcarpeta por referencia
+    const raiz = await resolverRaizCotizacionesDropbox(destino);
+    const ruta = `${raiz}/${nombre}.xlsx`; // un libro por referencia, directo en la carpeta (sin subcarpetas)
     try {
       await subirArchivoADropbox(buffer, ruta);
     } catch (err) {
-      logger.error("No se pudo subir la cotización a Dropbox", { ruta, error: String(err) });
+      logger.error("No se pudo subir la cotización a Dropbox", { ruta, destino, error: String(err) });
       throw new HttpsError("unavailable", `No se pudo subir a Dropbox: ${err?.message || String(err)}`);
     }
-    logger.info("Cotización subida a Dropbox", { ruta, bytes: buffer.length, por: request.auth?.token?.email || request.auth?.uid || "" });
-    return { ok: true, ruta };
+    logger.info("Cotización subida a Dropbox", { ruta, destino, bytes: buffer.length, por: request.auth?.token?.email || request.auth?.uid || "" });
+    return { ok: true, ruta, destino };
   }
 );

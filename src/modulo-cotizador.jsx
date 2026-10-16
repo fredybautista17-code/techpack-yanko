@@ -6,7 +6,7 @@ import {
   TASAS_BASE, ETIQUETAS_TASAS, FIJOS_BASE, ETIQUETAS_FIJOS, PROCESOS_BASE, INSUMOS_BASE, insumosSugeridos,
   REGEX_INSUMO_TERMO, num, versionVacia, calcularCotizacion, parsearArchivoCotizacion,
 } from "./cotizador-calculo";
-import { descargarCotizacionesExcel, excelVersionBase64 } from "./cotizador-excel";
+import { descargarCotizacionesExcel, excelLibroBase64, CARPETA_DISENO } from "./cotizador-excel";
 import {
   FILAS_VINILO, IMPREVISTOS_PCT, filasViniloVacias, calcularVinilo, aplicarInsumoAFila,
   tituloVinilo, mesLargo, descargarViniloExcel, baseVigente, aplicarBases, normalizarFilas, grupoFila,
@@ -421,26 +421,30 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
     conEvento(n, `retiró la V${vv.numero} de aprobación`);
     await persistir(n, `V${vv.numero} retirada de aprobación`);
   }
-  // Guarda el Excel de la versión activa en Dropbox: {carpeta raíz}/{REF}/{REF} V{n} {fecha}.xlsx (lo hace una función
-  // de la nube con la app de Dropbox que ya usa "Dado por Cumplido"). Si falla, la versión sigue como estaba.
+  // Guarda en Dropbox el libro de la cotización: UN archivo por referencia ({REF}.xlsx) en la carpeta
+  // COTIZACION DE DISEÑO, con una hoja por cada versión aprobada (V1, V2...). Se arma completo cada vez y
+  // reemplaza al anterior (lo hace una función de la nube con la app de Dropbox que ya usa "Dado por
+  // Cumplido"). Si falla, la versión sigue como estaba.
   async function enviarDropbox(base) {
     const c0 = base || cot;
-    const ver0 = c0.versiones[c0.activa];
     const vin = c0.vinculo;
     let destino = null;
     if (vin?.kind === "proto") destino = (protos || []).find((p) => p.id === vin.id);
     else if (vin) destino = (capsulas || []).find((x) => x.id === vin.capsulaId)?.referencias?.find((r) => r.id === vin.id);
     const carpeta = refReal(c0.referencia) || textoRef(destino);
     if (!carpeta) { notify?.("Escribe la referencia de la cotización para guardarla en Dropbox"); return false; }
+    const nAprobadas = (c0.versiones || []).filter((v) => v.estado === "aprobada").length;
+    if (!nAprobadas) { notify?.("Esta cotización todavía no tiene versiones aprobadas para guardar en Dropbox"); return false; }
     setSubiendoDropbox(true);
     try {
-      const archivoBase64 = await excelVersionBase64(c0, ver0.numero, imagenVinculada(c0));
-      const r = await httpsCallable(functionsClient, "subirCotizacionADropbox")({ carpeta, version: ver0.numero, fecha: ver0.fecha || hoyISO(), archivoBase64 });
+      const archivoBase64 = await excelLibroBase64(c0, imagenVinculada(c0));
+      const r = await httpsCallable(functionsClient, "subirCotizacionADropbox")({ destino: "diseno", carpeta, archivoBase64 });
       const ruta = r.data?.ruta || "";
       const n = limpio(c0);
-      n.versiones[n.activa].dropbox = { ruta, fecha: new Date().toISOString(), por: usuario || "" };
-      conEvento(n, `guardó la V${ver0.numero} en Dropbox (${ruta})`);
-      await persistir(n, `V${ver0.numero} guardada en Dropbox: ${ruta}`);
+      const marca = { ruta, fecha: new Date().toISOString(), por: usuario || "" };
+      n.versiones.forEach((v) => { if (v.estado === "aprobada") v.dropbox = marca; });
+      conEvento(n, `guardó en Dropbox el libro con ${nAprobadas} versión(es) aprobada(s) (${ruta})`);
+      await persistir(n, `Libro con ${nAprobadas} versión(es) guardado en Dropbox: ${ruta}`);
       return true;
     } catch (e) {
       notify?.(`No se pudo guardar en Dropbox: ${e?.message || e}. La versión sigue igual; usa «Enviar a Dropbox» para reintentar.`);
@@ -566,7 +570,7 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
             {cot.precioAplicado && cot.precioAplicado.version === ver.numero ? ` ${fmtCOP(cot.precioAplicado.valor)} aplicado a ${cot.precioAplicado.destino}.` : ""} Para cambiar algo, crea una versión nueva (volverá a pasar por aprobación).
             {ver.dropbox && <div style={{ marginTop: 4, color: C.slate }}>☁ En Dropbox: {ver.dropbox.ruta}</div>}
           </div>
-          <button onClick={() => enviarDropbox()} disabled={subiendoDropbox} title={ver.dropbox ? `Ya está en Dropbox: ${ver.dropbox.ruta}` : "Guarda el Excel de esta versión en la carpeta de cotizaciones aprobadas"} style={{ ...btn(C.white, C.blue, C.blue), opacity: subiendoDropbox ? 0.5 : 1 }}>{subiendoDropbox ? "Subiendo…" : ver.dropbox ? "☁ Reenviar a Dropbox" : "☁ Enviar a Dropbox"}</button>
+          <button onClick={() => enviarDropbox()} disabled={subiendoDropbox} title={ver.dropbox ? `Ya está en Dropbox: ${ver.dropbox.ruta}` : `Guarda el libro con las versiones aprobadas (una hoja por versión) en la carpeta ${CARPETA_DISENO}`} style={{ ...btn(C.white, C.blue, C.blue), opacity: subiendoDropbox ? 0.5 : 1 }}>{subiendoDropbox ? "Subiendo…" : ver.dropbox ? "☁ Reenviar a Dropbox" : "☁ Enviar a Dropbox"}</button>
           {puedeAprobar && <button onClick={reabrir} style={btn(C.white, C.amber, C.amber)}>Reabrir esta versión</button>}
           <button onClick={nuevaVersion} style={btn(C.white, C.green, C.green)}>+ Crear versión nueva para editar</button>
         </div>
@@ -1832,7 +1836,7 @@ function HistorialCotizaciones({ cotizaciones, protos, capsulas, cargado, onAbri
                 <td style={td}><Pastilla bg={f.est.bg} color={f.est.color}>{f.est.txt}</Pastilla></td>
                 <td style={{ ...td, textAlign: "right", fontWeight: 800 }}>{f.precio > 0 ? fmtCOP(f.precio) : "—"}</td>
                 <td style={{ ...td, fontSize: 12, color: C.slate, whiteSpace: "nowrap" }}>V{f.ultNum} · {f.nVer} en total</td>
-                <td style={td}>{f.dbx === "ok" ? <Pastilla bg={C.greenBg} color={C.green}>☁ En Dropbox</Pastilla> : f.dbx === "falta" ? <Pastilla bg={C.amberBg} color={C.amber}>Sin subir</Pastilla> : <span style={{ fontSize: 12, color: C.slate }}>—</span>}</td>
+                <td style={td}><div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>{f.dbx === "ok" ? <Pastilla bg={C.greenBg} color={C.green}>☁ Diseño</Pastilla> : f.dbx === "falta" ? <Pastilla bg={C.amberBg} color={C.amber}>Sin subir</Pastilla> : <span style={{ fontSize: 12, color: C.slate }}>—</span>}{f.c.definitiva && <Pastilla bg={C.blueBg} color={C.blue}>✔ Definitiva V{f.c.definitiva.version}</Pastilla>}</div></td>
                 <td style={{ ...td, paddingRight: 12 }}><AccionesCotizacion c={f.c} onEditar={onAbrir} onBorrar={onBorrar} puedeBorrar={puedeBorrar} /></td>
               </tr>
             ))}
