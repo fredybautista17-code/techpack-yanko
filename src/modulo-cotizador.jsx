@@ -208,6 +208,20 @@ const ultimaVersion = (c) => c.versiones?.[c.versiones.length - 1];
 const estadoUltima = (c) => ultimaVersion(c)?.estado || "borrador";
 const ICONO_ESTADO = { aprobacion: "⏳", aprobada: "✔", devuelta: "↩" };
 
+// Referencia a mostrar de un prototipo / referencia de cápsula: su REF o, si aún no la tiene, su # Prototipo.
+const textoRef = (x) => String(x?.reference || "").trim() || String(x?.numPrototipo || "").trim();
+// Etiqueta del vínculo tomada en vivo del prototipo / cápsula (así los vínculos viejos con "-" también se corrigen).
+function etiquetaVinculo(v, protos, capsulas) {
+  if (!v) return "";
+  if (v.kind === "proto") {
+    const p = (protos || []).find((x) => x.id === v.id);
+    return p ? `${textoRef(p) || "s/ref"} · ${p.name || ""}`.trim() : v.label;
+  }
+  const cap = (capsulas || []).find((c) => c.id === v.capsulaId);
+  const r = cap?.referencias?.find((x) => x.id === v.id);
+  return r ? `${textoRef(r) || "s/ref"} · ${r.name || ""} — ${cap.name}` : v.label;
+}
+
 // ─── EDITOR DE UNA COTIZACIÓN ────────────────────────────────────────────────
 function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsulas, cotizaciones, onGuardar, onVolver, onEliminar, onAplicar, onSucio, puedeBorrar, puedeAprobar, usuario, notify }) {
   const [cot, setCot] = useState(inicial);
@@ -427,7 +441,7 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
     <input type="text" inputMode="decimal" value={valor ?? ""} onChange={(e) => onChange(e.target.value)} style={{ ...inp, width: ancho || 90, textAlign: "right" }} />
   );
   const tasasEdit = Object.keys(ETIQUETAS_TASAS);
-  const vinculoActual = cot.vinculo;
+  const vinculoActual = cot.vinculo ? { ...cot.vinculo, label: etiquetaVinculo(cot.vinculo, protos, capsulas) } : null;
   // Foto del prototipo / referencia vinculada: va en el Excel, como en la hoja original.
   function imagenVinculada() {
     const vi = cot.vinculo;
@@ -875,8 +889,8 @@ function ModalVincular({ cot, protos, capsulas, cotizaciones, precio, onElegir, 
   const [soloSin, setSoloSin] = useState(true);
   const opciones = useMemo(() => {
     const lista = [];
-    (protos || []).filter((p) => !p.eliminado).forEach((p) => lista.push({ kind: "proto", id: p.id, nombre: p.name || "", label: `${p.reference || "s/ref"} · ${p.name || ""}`.trim(), reference: p.reference || "", cliente: p.cliente || p.colores?.[0] || "", precioActual: p.precioCotizacion }));
-    (capsulas || []).filter((c) => !c.eliminado).forEach((cap) => (cap.referencias || []).forEach((r) => lista.push({ kind: "ref", id: r.id, nombre: r.name || "", capsulaId: cap.id, label: `${r.reference || "s/ref"} · ${r.name || ""} — ${cap.name}`, reference: r.reference || "", cliente: cap.cliente || "", precioActual: r.precioCotizacion })));
+    (protos || []).filter((p) => !p.eliminado).forEach((p) => lista.push({ kind: "proto", id: p.id, nombre: p.name || "", label: `${textoRef(p) || "s/ref"} · ${p.name || ""}`.trim(), reference: textoRef(p), cliente: p.cliente || p.colores?.[0] || "", precioActual: p.precioCotizacion }));
+    (capsulas || []).filter((c) => !c.eliminado).forEach((cap) => (cap.referencias || []).forEach((r) => lista.push({ kind: "ref", id: r.id, nombre: r.name || "", capsulaId: cap.id, label: `${textoRef(r) || "s/ref"} · ${r.name || ""} — ${cap.name}`, reference: textoRef(r), cliente: cap.cliente || "", precioActual: r.precioCotizacion })));
     return lista;
   }, [protos, capsulas]);
   // Una fila "tiene cotización" si otra cotización ya está vinculada a ella o si ya tiene precio de cotización.
@@ -1486,7 +1500,7 @@ function AccionesCotizacion({ c, onEditar, onBorrar, puedeBorrar }) {
     </div>
   );
 }
-function InicioCotizaciones({ cotizaciones, minis, cargado, puedeAprobar, puedeBorrar, onBorrar, onIr, onNueva, onFiltro, onAbrir }) {
+function InicioCotizaciones({ protos, capsulas, cotizaciones, minis, cargado, puedeAprobar, puedeBorrar, onBorrar, onIr, onNueva, onFiltro, onAbrir }) {
   const hoy = new Date();
   const mesActual = hoyISO().slice(0, 7);
   const clientes = new Set(cotizaciones.map((c) => c.cliente || "General"));
@@ -1550,7 +1564,7 @@ function InicioCotizaciones({ cotizaciones, minis, cargado, puedeAprobar, puedeB
                     <tr key={c.id} onClick={() => onAbrir(c)} style={{ borderTop: `1px solid ${C.border}`, cursor: "pointer" }}>
                       <td style={{ padding: "9px 16px", fontWeight: 800 }}>{c.referencia || "—"} <span style={{ color: C.slate, fontWeight: 500 }}>V{ult?.numero}</span></td>
                       <td style={td}>{ult?.envio?.por || "—"}{ult?.envio?.fecha ? <span style={{ color: C.slate }}> · {fmtFecha(ult.envio.fecha.slice(0, 10)).slice(0, 5)}</span> : null}</td>
-                      <td style={{ ...td, color: c.vinculo ? C.ink : C.slate }}>{c.vinculo?.label || "Sin vincular"}</td>
+                      <td style={{ ...td, color: c.vinculo ? C.ink : C.slate }}>{c.vinculo ? etiquetaVinculo(c.vinculo, protos, capsulas) : "Sin vincular"}</td>
                       <td style={{ ...td, textAlign: "right", fontWeight: 800 }}>{r ? fmtCOP(r.precioAplicar) : "—"}</td>
                       <td style={{ ...td, textAlign: "right", paddingRight: 16 }}><span style={{ background: C.navy, color: C.white, padding: "5px 12px", borderRadius: 8, fontSize: 12, fontWeight: 700 }}>{puedeAprobar ? "Revisar" : "Ver"}</span></td>
                     </tr>
@@ -1796,7 +1810,7 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
       {tab === "parametros" && <ParametrosView parametros={parametros} clientesApp={clientesApp} currentUser={currentUser} notify={notify} />}
 
       {tab === "inicio" && (
-        <InicioCotizaciones cotizaciones={cotizaciones} minis={minis} cargado={cargado} puedeAprobar={puedeAprobar} puedeBorrar={puedeBorrar} onBorrar={pedirBorrar}
+        <InicioCotizaciones protos={protos} capsulas={capsulas} cotizaciones={cotizaciones} minis={minis} cargado={cargado} puedeAprobar={puedeAprobar} puedeBorrar={puedeBorrar} onBorrar={pedirBorrar}
           onIr={(t) => { setFiltroEstado(null); setTab(t); }} onNueva={() => setEdit(cotNueva())}
           onFiltro={(f) => { setFiltroEstado(f); setTab("cotizaciones"); }} onAbrir={(c) => setEdit({ ...limpio(c), existe: true })} />
       )}
@@ -1838,7 +1852,7 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
                       <td style={{ ...td, textAlign: "right", fontWeight: 800 }}>{r ? fmtCOP(r.precioAplicar) : "—"}</td>
                       <td style={td}>{(() => { const e = estadoCotizacion(c); return <Pastilla bg={e.bg} color={e.color}>{e.txt}</Pastilla>; })()}</td>
                       <td style={{ ...td, fontSize: 12 }}>
-                        {c.precioAplicado ? <span style={{ color: C.green, fontWeight: 700 }}>{fmtCOP(c.precioAplicado.valor)} → {c.precioAplicado.destino}</span> : c.vinculo ? <span style={{ color: C.slate }}>Vinculado: {c.vinculo.label}</span> : <span style={{ color: C.slate }}>—</span>}
+                        {c.precioAplicado ? <span style={{ color: C.green, fontWeight: 700 }}>{fmtCOP(c.precioAplicado.valor)} → {c.precioAplicado.destino}</span> : c.vinculo ? <span style={{ color: C.slate }}>Vinculado: {etiquetaVinculo(c.vinculo, protos, capsulas)}</span> : <span style={{ color: C.slate }}>—</span>}
                       </td>
                       <td style={{ ...td, paddingRight: 12 }}><AccionesCotizacion c={c} onEditar={(x) => setEdit({ ...limpio(x), existe: true })} onBorrar={pedirBorrar} puedeBorrar={puedeBorrar} /></td>
                     </tr>
