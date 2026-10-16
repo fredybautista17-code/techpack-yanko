@@ -215,6 +215,8 @@ const ultimaVersion = (c) => c.versiones?.[c.versiones.length - 1];
 const estadoUltima = (c) => ultimaVersion(c)?.estado || "borrador";
 const ICONO_ESTADO = { aprobacion: "⏳", aprobada: "✔", devuelta: "↩" };
 
+// Cliente de una cápsula: el suyo o, si no tiene, el de alguna de sus referencias (igual que en ATLAS).
+const clienteCapsula = (cap) => cap.cliente || (cap.referencias || []).map((r) => r.cliente || r.colores?.[0]).find(Boolean) || "";
 // Referencia a mostrar de un prototipo / referencia de cápsula: su REF o, si aún no la tiene, su # Prototipo.
 // Un REF que solo es un guion o «s/ref» (relleno, no una referencia real) cuenta como vacío.
 const refReal = (t) => { const v = String(t ?? "").trim(); return /^[\s\-–—_.]*$/.test(v) || /^(s\/ref|sin ref|n\/a|na)$/i.test(v) ? "" : v; };
@@ -359,6 +361,27 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
 
   // Al elegir el prototipo / referencia de cápsula se llenan la referencia y el nombre de la cotización
   // (el nombre solo si está vacío; la referencia pide confirmar si ya tenía otra distinta).
+  // Cliente del prototipo / cápsula vinculado: si la cotización está en «General» o sin cliente lo toma
+  // solo; si ya tiene otro, pregunta. Devuelve el cliente nuevo o null (llamar fuera de mutar).
+  function decidirCliente(dest) {
+    const nuevo = String(dest?.cliente || "").trim();
+    const actual = String(cot.cliente || "").trim();
+    if (!nuevo || normTxt(nuevo) === normTxt(actual)) return null;
+    if (actual && normTxt(actual) !== "general" && !window.confirm(`El destino es del cliente «${nuevo}» y la cotización dice «${actual}». ¿Cambiar el cliente a ${nuevo}?`)) return null;
+    return nuevo;
+  }
+  // Pone el cliente nuevo; en una cotización sin guardar también carga sus parámetros (igual que al escogerlo a mano).
+  function ponerCliente(n, nuevo) {
+    if (!nuevo) return;
+    n.cliente = nuevo;
+    if (!inicial.existe) {
+      const f = buscarFicha(parametros, nuevo);
+      const v = n.versiones[n.activa].v;
+      v.tasas = { ...f.tasas };
+      v.fijos = { ...f.fijos };
+      v.insumos = [...insumosDesdeFicha(f), ...(v.insumos || []).filter((x) => !x.basico)];
+    }
+  }
   function camposDeDestino(dest) {
     const out = {};
     const ref = String(dest.reference || "").trim();
@@ -403,7 +426,9 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
     if (!(valor > 0)) { notify?.("El precio es 0 — completa los costos primero"); return; }
     const mismoDestino = destino && cot.vinculo && cot.vinculo.id === destino.id && cot.vinculo.kind === destino.kind;
     const campos = destino && !mismoDestino ? camposDeDestino(destino) : {};
+    const clienteNuevo = destino && !mismoDestino ? decidirCliente(destino) : null;
     const n = { ...limpio(cot), ...campos };
+    ponerCliente(n, clienteNuevo);
     const vv = n.versiones[n.activa];
     vv.estado = "aprobada"; vv.decision = { por: usuario || "", fecha: new Date().toISOString(), comentario: "" }; vv.precio = valor;
     if (destino) {
@@ -803,7 +828,7 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
       {vincular && (
         <ModalVincular cot={cot} protos={protos} capsulas={capsulas} cotizaciones={cotizaciones} precio={calc.precioAplicar} onClose={() => setVincular(false)}
           onElegir={puedeAprobar && vincular === "aprobar" ? (dest) => pedirAprobar(dest) : undefined}
-          onSoloVincular={(dest) => { const campos = camposDeDestino(dest); mutar((n) => { n.vinculo = dest; Object.assign(n, campos); }); setVincular(false); }} />
+          onSoloVincular={(dest) => { const campos = camposDeDestino(dest); const clienteNuevo = decidirCliente(dest); mutar((n) => { n.vinculo = dest; Object.assign(n, campos); ponerCliente(n, clienteNuevo); }); setVincular(false); }} />
       )}
       {viniloModal && (
         <div onClick={() => setViniloModal(null)} style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,.55)", zIndex: 900, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: viniloGrande ? 8 : 16, overflowY: viniloGrande ? "hidden" : "auto" }}>
@@ -902,7 +927,7 @@ function ModalVincular({ cot, protos, capsulas, cotizaciones, precio, onElegir, 
   const opciones = useMemo(() => {
     const lista = [];
     (protos || []).filter((p) => !p.eliminado).forEach((p) => lista.push({ kind: "proto", id: p.id, nombre: p.name || "", label: `${textoRef(p) || "s/ref"} · ${p.name || ""}`.trim(), reference: textoRef(p), cliente: p.cliente || p.colores?.[0] || "", precioActual: p.precioCotizacion }));
-    (capsulas || []).filter((c) => !c.eliminado).forEach((cap) => (cap.referencias || []).forEach((r) => lista.push({ kind: "ref", id: r.id, nombre: r.name || "", capsulaId: cap.id, label: `${textoRef(r) || "s/ref"} · ${r.name || ""} — ${cap.name}`, reference: textoRef(r), cliente: cap.cliente || "", precioActual: r.precioCotizacion })));
+    (capsulas || []).filter((c) => !c.eliminado).forEach((cap) => (cap.referencias || []).forEach((r) => lista.push({ kind: "ref", id: r.id, nombre: r.name || "", capsulaId: cap.id, label: `${textoRef(r) || "s/ref"} · ${r.name || ""} — ${cap.name}`, reference: textoRef(r), cliente: clienteCapsula(cap), precioActual: r.precioCotizacion })));
     return lista;
   }, [protos, capsulas]);
   // Una fila "tiene cotización" si otra cotización ya está vinculada a ella o si ya tiene precio de cotización.
