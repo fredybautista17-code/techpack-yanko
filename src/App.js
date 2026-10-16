@@ -18406,6 +18406,7 @@ function AppInner() {
       <CotizadorView currentUser={currentUser} config={config} protos={protosVisibles} capsulas={capsulasVisibles}
         iniciarDesde={cotizadorInicio} onIniciarConsumido={() => setCotizadorInicio(null)}
         onAplicarPrecio={aplicarPrecioCotizador} onVolver={() => setModuloActivo("diseno")}
+        onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }}
         notify={(msg) => notify({ id: uid(), icon: "🧮", title: "Cotizador", msg })} />
     );
   }

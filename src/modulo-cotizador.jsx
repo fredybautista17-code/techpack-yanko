@@ -56,10 +56,12 @@ function cargarTelasBusint(forzar) {
   return telasBusintPromesa;
 }
 const C = {
-  ink: "#1A1A2E", slate: "#5A5A7A", border: "#E8E2DB", canvas: "#F7F4F0", white: "#FFFFFF", seam: "#C8B8A2", seamDark: "#9E8870",
+  ink: "#1A1A2E", slate: "#6B6B88", border: "#E9E3DB", canvas: "#F6F3EF", white: "#FFFFFF", seam: "#C8B8A2", seamDark: "#9E8870", navy: "#1E2142", navy2: "#2A2E58", field: "#FAF8F5",
   green: "#2D9E6B", greenBg: "#EBF7F2", red: "#E85D4A", redBg: "#FDF0EE", blue: "#3D6B9E", blueBg: "#EBF1F7",
   amber: "#C47C1A", amberBg: "#FDF5E6", violet: "#7B5EA7", violetBg: "#F3EEF9",
 };
+// Misma tipografía que el resto de ATLAS (este módulo se abre a pantalla completa, fuera del contenedor que la define).
+const FUENTE = "'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif";
 const uid = () => Math.random().toString(36).slice(2, 9);
 const hoyISO = () => new Date().toISOString().slice(0, 10);
 const fmtCOP = (n) => "$" + Math.round(Number(n) || 0).toLocaleString("es-CO");
@@ -70,10 +72,10 @@ const normRef = (v) => String(v || "").trim().toUpperCase().replace(/-/g, "");
 const normTxt = (v) => String(v || "").normalize("NFD").replace(/[̀-ͯ]/g, "").trim().toLowerCase();
 const slug = (v) => normTxt(v).replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || uid();
 
-const inp = { width: "100%", padding: "6px 8px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 13, background: C.white, color: C.ink, boxSizing: "border-box" };
+const inp = { width: "100%", padding: "8px 10px", border: `1px solid ${C.border}`, borderRadius: 10, fontSize: 13, background: C.field, color: C.ink, boxSizing: "border-box", fontFamily: "inherit" };
 const th = { textAlign: "left", fontSize: 11, color: C.slate, fontWeight: 700, padding: "6px 6px", textTransform: "uppercase", letterSpacing: 0.4 };
 const td = { padding: "4px 4px", verticalAlign: "middle" };
-const btn = (bg, color, border) => ({ padding: "8px 14px", background: bg, color, border: `1.5px solid ${border || bg}`, borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: "pointer" });
+const btn = (bg, color, border) => ({ padding: "8px 14px", background: bg, color, border: `1.5px solid ${border || bg}`, borderRadius: 10, fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" });
 
 // Ficha de parámetros de un cliente: lo guardado, completado con los valores base.
 function fichaCompleta(f) {
@@ -112,15 +114,15 @@ function Campo({ label, children, ancho }) {
 function Seccion({ titulo, sub, children, derecha, abierta = true, plegable }) {
   const [open, setOpen] = useState(abierta);
   return (
-    <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, marginBottom: 14 }}>
-      <div onClick={plegable ? () => setOpen(!open) : undefined} style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", cursor: plegable ? "pointer" : "default" }}>
+    <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 16, marginBottom: 14, boxShadow: "0 1px 2px rgba(26,26,46,.04), 0 4px 14px rgba(26,26,46,.03)" }}>
+      <div onClick={plegable ? () => setOpen(!open) : undefined} style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 20px", cursor: plegable ? "pointer" : "default" }}>
         <div style={{ flex: 1 }}>
-          <div style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>{plegable ? (open ? "▾ " : "▸ ") : ""}{titulo}</div>
+          <div style={{ fontWeight: 800, fontSize: 15, color: C.ink }}>{plegable ? (open ? "▾ " : "▸ ") : ""}{titulo}</div>
           {sub && <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>{sub}</div>}
         </div>
         {derecha}
       </div>
-      {open && <div style={{ padding: "0 16px 14px" }}>{children}</div>}
+      {open && <div style={{ padding: "0 20px 16px" }}>{children}</div>}
     </div>
   );
 }
@@ -136,9 +138,10 @@ async function descargarExcel(lista, nombre, imagen, notify) {
 }
 
 // ─── EDITOR DE UNA COTIZACIÓN ────────────────────────────────────────────────
-function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onGuardar, onVolver, onEliminar, onAplicar, notify }) {
+function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onGuardar, onVolver, onEliminar, onAplicar, onSucio, notify }) {
   const [cot, setCot] = useState(inicial);
   const [sucio, setSucio] = useState(false);
+  useEffect(() => { onSucio?.(sucio); }, [sucio]); // eslint-disable-line
   const [vincular, setVincular] = useState(false);
   const [telaBusint, setTelaBusint] = useState(null); // índice de la fila de tela que busca precio
   const ver = cot.versiones[cot.activa];
@@ -241,7 +244,8 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
         <button onClick={() => { if (!sucio || window.confirm("Hay cambios sin guardar. ¿Salir sin guardar?")) onVolver(); }} style={btn(C.white, C.slate, C.border)}>← Cotizaciones</button>
-        <div style={{ fontWeight: 800, fontSize: 18, color: C.ink }}>🧮 {cot.referencia || "Nueva cotización"} {cot.nombre ? <span style={{ color: C.slate, fontWeight: 600 }}>· {cot.nombre}</span> : null}</div>
+        <div style={{ fontWeight: 800, fontSize: 26, letterSpacing: -0.4, color: C.ink }}>{cot.referencia || "Nueva cotización"} {cot.nombre ? <span style={{ color: C.slate, fontWeight: 600, fontSize: 16 }}>· {cot.nombre}</span> : null}</div>
+        {cot.precioAplicado && <Pastilla bg={C.greenBg} color={C.green}>Aplicado a {cot.precioAplicado.destino}</Pastilla>}
         {sucio && <Pastilla bg={C.amberBg} color={C.amber}>Cambios sin guardar</Pastilla>}
         <div style={{ flex: 1 }} />
         {cot.id && inicial.existe && <button onClick={() => { if (window.confirm("¿Eliminar esta cotización con todas sus versiones?")) onEliminar(cot); }} style={btn(C.white, C.red, C.red)}>Eliminar</button>}
@@ -249,7 +253,7 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
         <button onClick={guardar} style={btn(C.green, C.white)}>💾 Guardar versión</button>
       </div>
 
-      <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, marginBottom: 14, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 12 }}>
+      <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 16, padding: "14px 18px", marginBottom: 14, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 14, boxShadow: "0 1px 2px rgba(26,26,46,.04), 0 4px 14px rgba(26,26,46,.03)" }}>
         <Campo label="Referencia"><input value={cot.referencia} onChange={(e) => setCab("referencia", e.target.value)} style={inp} placeholder="975093" /></Campo>
         <Campo label="Nombre / descripción"><input value={cot.nombre} onChange={(e) => setCab("nombre", e.target.value)} style={inp} placeholder="Camiseta ..." /></Campo>
         <Campo label="Cliente">
@@ -268,7 +272,7 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
       <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 14, flexWrap: "wrap" }}>
         {cot.versiones.map((vv, i) => (
           <button key={vv.id} onClick={() => mutar((n) => { n.activa = i; })}
-            style={{ padding: "7px 14px", borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13, border: `1.5px solid ${i === cot.activa ? C.ink : C.border}`, background: i === cot.activa ? C.ink : C.white, color: i === cot.activa ? C.white : C.slate }}>
+            style={{ padding: "7px 14px", borderRadius: 20, cursor: "pointer", fontWeight: 700, fontSize: 13, fontFamily: "inherit", border: `1.5px solid ${i === cot.activa ? C.navy : C.border}`, background: i === cot.activa ? C.navy : C.white, color: i === cot.activa ? C.white : C.slate }}>
             V{vv.numero} <span style={{ fontWeight: 500, opacity: 0.8 }}>· {fmtFecha(vv.fecha)}</span>
           </button>
         ))}
@@ -388,11 +392,28 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
 
         {/* PANEL DE RESULTADOS */}
         <div style={{ position: "sticky", top: 12 }}>
-          <div style={{ background: C.ink, color: C.white, borderRadius: 12, padding: 16, marginBottom: 12 }}>
+          <div style={{ background: C.navy, color: C.white, borderRadius: 18, padding: 22, marginBottom: 14 }}>
             <div style={{ fontSize: 11, letterSpacing: 0.6, opacity: 0.7, fontWeight: 700 }}>PRECIO DE VENTA · V{ver.numero}</div>
-            <div style={{ fontSize: 30, fontWeight: 800, marginTop: 4 }}>{fmtCOP(calc.escMargen.precioConIva)}</div>
+            <div style={{ fontSize: 42, fontWeight: 800, letterSpacing: -1.5, marginTop: 6 }}>{fmtCOP(calc.escMargen.precioConIva)}</div>
             <div style={{ fontSize: 12, opacity: 0.75 }}>con IVA {fmtPct(ver.v.tasas.iva)} · sin IVA {fmtCOP(calc.escMargen.precioSinIva)}</div>
-            <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 12 }}>
+            {(() => {
+              const total = calc.escMargen.precioSinIva;
+              if (!(total > 0)) return null;
+              const partes = [["Telas", calc.telasTotal, "#C8B8A2"], ["Insumos", calc.insumosTotal, "#9E8870"], ["Procesos", calc.procesosTotal, "#6F6A8E"]];
+              const resto = Math.max(0, total - partes.reduce((a, x) => a + x[1], 0));
+              const todas = [...partes, ["Impuestos, fijos y utilidad", resto, "#E8E1D4"]];
+              return (
+                <div style={{ marginTop: 16 }}>
+                  <div style={{ display: "flex", height: 9, borderRadius: 6, overflow: "hidden", gap: 2 }}>
+                    {todas.map(([et, val, col]) => <span key={et} style={{ width: `${Math.max(0, (val / total) * 100)}%`, background: col }} />)}
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 12px", fontSize: 11, opacity: 0.85, marginTop: 8 }}>
+                    {todas.map(([et, val, col]) => <span key={et}><i style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: col, marginRight: 5 }} />{et} {Math.round((val / total) * 100)}%</span>)}
+                  </div>
+                </div>
+              );
+            })()}
+            <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 14 }}>
               <div style={{ fontSize: 12, opacity: 0.8 }}>Margen esperado</div>
               <input type="text" inputMode="decimal" value={ver.v.margen ?? ""} onChange={(e) => setV((v) => { v.margen = e.target.value; })} style={{ ...inp, width: 70, textAlign: "right" }} />
               <div style={{ fontSize: 11, opacity: 0.6 }}>0,05 = 5%</div>
@@ -404,7 +425,7 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
               </div>
             )}
             <button onClick={() => (vinculoActual ? aplicarA(vinculoActual) : setVincular(true))}
-              style={{ ...btn(C.green, C.white), width: "100%", marginTop: 14, padding: "11px 14px" }}>
+              style={{ ...btn(C.seam, C.ink), width: "100%", marginTop: 16, padding: "12px 14px" }}>
               {vinculoActual ? `Aplicar ${fmtCOP(calc.precioAplicar)} a ${vinculoActual.label.length > 26 ? vinculoActual.label.slice(0, 26) + "…" : vinculoActual.label}` : `Aplicar ${fmtCOP(calc.precioAplicar)} a un prototipo / cápsula`}
             </button>
             {vinculoActual && <button onClick={() => setVincular(true)} style={{ ...btn("transparent", C.white, "rgba(255,255,255,.3)"), width: "100%", marginTop: 8, fontWeight: 500, fontSize: 12 }}>Cambiar destino</button>}
@@ -413,7 +434,7 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
             )}
           </div>
 
-          <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: 14, fontSize: 13 }}>
+          <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 16, padding: "16px 18px", fontSize: 13 }}>
             <div style={{ fontWeight: 800, marginBottom: 8, color: C.ink }}>Cómo se arma el costo</div>
             {[
               ["Telas", calc.telasTotal], ["Insumos", calc.insumosTotal], ["Procesos + imprevistos", calc.procesosTotal],
@@ -428,7 +449,7 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
             ))}
           </div>
 
-          <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: 14, marginTop: 12, fontSize: 13 }}>
+          <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 16, padding: "16px 18px", marginTop: 14, fontSize: 13 }}>
             <div style={{ fontWeight: 800, marginBottom: 8, color: C.ink }}>Otros escenarios</div>
             <div style={{ color: C.slate, fontSize: 12, marginBottom: 2 }}>Precio tradicional (base {fmtDec(ver.v.tasas.baseUtilidad)})</div>
             <div style={{ fontWeight: 700, marginBottom: 10 }}>{fmtCOP(calc.precioBase)} sin IVA · {fmtCOP(calc.precioBaseConIva)} con IVA</div>
@@ -1016,7 +1037,42 @@ function InicioCotizaciones({ cotizaciones, minis, cargado, onIr, onNueva, onFil
   );
 }
 
-export default function CotizadorView({ currentUser, config, protos, capsulas, iniciarDesde, onIniciarConsumido, onAplicarPrecio, onVolver, notify }) {
+// Menú vertical del módulo (mismo estilo que Bodega): azul marino, activo en beige.
+const ITEMS_MENU = [["inicio", "◉", "Inicio"], ["cotizaciones", "▤", "Cotizaciones"], ["vinilo", "◈", "Vinilo / DTF"], ["parametros", "⚙", "Parámetros por cliente"]];
+function MenuCotizaciones({ activo, onIr, onVolver, onLogout, currentUser }) {
+  const inicial = String(currentUser?.name || "?").trim().charAt(0).toUpperCase();
+  return (
+    <div className="cotz-side" style={{ width: 268, flexShrink: 0, background: C.navy, color: "#C9C8DE", padding: "18px 14px", display: "flex", flexDirection: "column", position: "sticky", top: 0, height: "100vh", alignSelf: "flex-start", boxSizing: "border-box" }}>
+      <div style={{ padding: "0 6px 14px" }}>
+        <div style={{ fontSize: 18, fontWeight: 800, color: "#fff" }}>🧮 Cotizaciones</div>
+        <div style={{ letterSpacing: 1.6, color: "#8B8AAE", fontSize: 11, fontWeight: 600 }}>PRECIOS</div>
+      </div>
+      <div style={{ background: C.navy2, borderRadius: 12, padding: 12, display: "flex", gap: 10, alignItems: "center", margin: "6px 0 16px" }}>
+        <div style={{ width: 36, height: 36, borderRadius: "50%", background: C.seam, color: C.ink, display: "grid", placeItems: "center", fontWeight: 800 }}>{inicial}</div>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ color: "#fff", fontWeight: 700, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{currentUser?.name || "Usuario"}</div>
+          <div style={{ color: "#8B8AAE", fontSize: 11 }}>{currentUser?.role || ""}</div>
+        </div>
+      </div>
+      <div className="cotz-items">
+        {ITEMS_MENU.map(([id, icono, texto]) => {
+          const on = activo === id;
+          return (
+            <button key={id} onClick={() => onIr(id)} style={{ display: "flex", alignItems: "center", gap: 12, width: "100%", padding: "11px 12px", border: "none", borderRadius: 10, marginBottom: 3, fontSize: 14, fontFamily: "inherit", cursor: "pointer", textAlign: "left", background: on ? C.seam : "transparent", color: on ? C.ink : "#C9C8DE", fontWeight: on ? 800 : 500 }}>
+              <span style={{ width: 18, textAlign: "center", fontSize: 15, color: on ? C.ink : "#8B8AAE" }}>{icono}</span>{texto}
+            </button>
+          );
+        })}
+      </div>
+      <div style={{ flex: 1 }} className="cotz-sp" />
+      {onVolver && <button onClick={onVolver} style={{ background: "none", border: "none", color: "#8B8AAE", padding: "8px 12px", textAlign: "left", cursor: "pointer", fontFamily: "inherit", fontSize: 13 }}>← Volver al Inicio</button>}
+      {onLogout && <button onClick={onLogout} style={{ background: "none", border: "none", color: "#E8786A", fontWeight: 700, padding: "8px 12px", textAlign: "left", cursor: "pointer", fontFamily: "inherit", fontSize: 13 }}>⏏ Cerrar sesión</button>}
+    </div>
+  );
+}
+
+export default function CotizadorView({ currentUser, config, protos, capsulas, iniciarDesde, onIniciarConsumido, onAplicarPrecio, onVolver, onLogout, notify }) {
+  const [edSucio, setEdSucio] = useState(false); // el editor abierto tiene cambios sin guardar
   const [tab, setTab] = useState("inicio");
   const [minis, setMinis] = useState([]); // minicotizaciones de vinilo guardadas (solo para el conteo del inicio)
   const [filtroEstado, setFiltroEstado] = useState(null); // "sinAplicar" | "sinVincular" | "viejas"
@@ -1146,23 +1202,24 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
     .filter((c) => !busqueda || normTxt(`${c.referencia} ${c.nombre} ${c.cliente}`).includes(normTxt(busqueda)) || normRef(c.referencia).includes(normRef(busqueda)))
     .sort((a, b) => String(b.actualizado || "").localeCompare(String(a.actualizado || "")));
 
-  if (edit) {
-    return (
-      <div style={{ padding: 20, background: C.canvas, minHeight: "100%" }}>
-        <CotizacionEditor key={edit.id} inicial={edit} parametros={parametros} clientes={clientesApp} protos={protos} capsulas={capsulas}
-          onGuardar={guardar} onVolver={() => setEdit(null)} onEliminar={eliminar} notify={notify}
-          onAplicar={(destino, valor) => onAplicarPrecio(destino, valor)} />
-      </div>
-    );
+  function irA(t) {
+    if (edit && edSucio && !window.confirm("Hay cambios sin guardar en la cotización. ¿Salir sin guardar?")) return;
+    setEdit(null); setEdSucio(false); setFiltroEstado(null); setTab(t);
   }
+  const TITULOS = { inicio: "Inicio", cotizaciones: "Cotizaciones", vinilo: "Vinilo / DTF", parametros: "Parámetros por cliente" };
   return (
-    <div style={{ padding: 20, background: C.canvas, minHeight: "100%" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
-        {onVolver && <button onClick={onVolver} style={btn(C.white, C.slate, C.border)}>← Volver a ATLAS</button>}
-        <div style={{ fontWeight: 800, fontSize: 20, color: C.ink, flex: 1 }}>🧮 Módulo de Cotizaciones</div>
-        {["inicio", "cotizaciones", "vinilo", "parametros"].map((t) => (
-          <button key={t} onClick={() => { setTab(t); if (t !== "cotizaciones") setFiltroEstado(null); }} style={{ ...btn(tab === t ? C.ink : C.white, tab === t ? C.white : C.slate, tab === t ? C.ink : C.border) }}>{t === "inicio" ? "🏠 Inicio" : t === "cotizaciones" ? "Cotizaciones" : t === "vinilo" ? "🎨 Vinilo / DTF" : "⚙ Parámetros por cliente"}</button>
-        ))}
+    <div className="cotz-root" style={{ display: "flex", minHeight: "100vh", background: C.canvas, fontFamily: FUENTE, color: C.ink }}>
+      <MenuCotizaciones activo={edit ? "cotizaciones" : tab} onIr={irA} onVolver={onVolver} onLogout={onLogout} currentUser={currentUser} />
+      <div style={{ flex: 1, minWidth: 0, padding: "24px 34px", boxSizing: "border-box" }}>
+      {edit ? (
+        <CotizacionEditor key={edit.id} inicial={edit} parametros={parametros} clientes={clientesApp} protos={protos} capsulas={capsulas}
+          onGuardar={guardar} onVolver={() => { setEdit(null); setEdSucio(false); }} onEliminar={eliminar} onSucio={setEdSucio} notify={notify}
+          onAplicar={(destino, valor) => onAplicarPrecio(destino, valor)} />
+      ) : (
+      <>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 18 }}>
+        <div style={{ fontWeight: 800, fontSize: 26, letterSpacing: -0.4 }}>{TITULOS[tab]}</div>
+        <div style={{ color: C.slate, fontWeight: 600 }}>· Cotizaciones</div>
       </div>
 
       {tab === "parametros" && <ParametrosView parametros={parametros} clientesApp={clientesApp} currentUser={currentUser} notify={notify} />}
@@ -1217,6 +1274,10 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
         </div>
       )}
       {importar && <ModalImportar cotizaciones={cotizaciones} parametros={parametros} clientes={clientesApp} onImportar={importarHojas} onClose={() => setImportar(false)} />}
+      </>
+      )}
+      </div>
+      <style>{`@media (max-width: 900px) { .cotz-root { flex-direction: column !important; } .cotz-side { width: auto !important; height: auto !important; position: static !important; } .cotz-sp { display: none; } }`}</style>
     </div>
   );
 }
