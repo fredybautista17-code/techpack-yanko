@@ -787,7 +787,7 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
               <div style={{ flex: 1, fontWeight: 800, fontSize: 16 }}>Vinilo / DTF para {cot.referencia || "esta cotización"} · V{ver.numero}</div>
               <button onClick={() => setViniloModal(null)} style={btn(C.white, C.slate, C.border)}>Cerrar</button>
             </div>
-            <MiniVinilo currentUser={{ name: usuario }} notify={notify} refInicial={cot.referencia} inicialId={viniloModal.id} etiquetaPasar="✔ Usar en esta cotización" onPasar={usarVinilo} />
+            <MiniVinilo currentUser={{ name: usuario }} notify={notify} refInicial={cot.referencia} inicialId={viniloModal.id} etiquetaPasar="✔ Usar en esta cotización" onPasar={usarVinilo} puedeBorrar={puedeBorrar} />
           </div>
         </div>
       )}
@@ -1203,7 +1203,7 @@ function ModalInsumoBusint({ inicial, titulo, onElegir, onClose }) {
     </div>
   );
 }
-function MiniVinilo({ currentUser, notify, onPasar, refInicial, inicialId, etiquetaPasar }) {
+function MiniVinilo({ currentUser, notify, onPasar, refInicial, inicialId, etiquetaPasar, puedeBorrar }) {
   const [guardados, setGuardados] = useState([]);
   const [ref, setRef] = useState(refInicial || "");
   const [mes, setMes] = useState(hoyISO().slice(0, 7));
@@ -1244,6 +1244,17 @@ function MiniVinilo({ currentUser, notify, onPasar, refInicial, inicialId, etiqu
   }
   function cargar(g) {
     setRef(g.ref || ""); setMes(g.mes || hoyISO().slice(0, 7)); setPct(g.pct ?? IMPREVISTOS_PCT); setFilas(g.filas || filasViniloVacias());
+  }
+  // Borra una minicotización guardada (la hoja exacta de la fila). Pide confirmación.
+  async function borrarGuardada(g) {
+    if (!puedeBorrar) { notify?.("Tu rol no tiene permiso para borrar"); return; }
+    if (!window.confirm(`¿Borrar la minicotización ${g.ref} de ${mesLargo(g.mes)} (${money(g.total)})?\n\nNo se puede deshacer. Si alguna cotización la tenía adjunta, conserva los valores ya pasados.`)) return;
+    try {
+      await fsDel("cotizador_vinilo", g.id);
+      // Si era la hoja abierta en pantalla, el formulario vuelve a empezar.
+      if (`${normRef(ref)}_${mes}` === g.id) { setRef(refInicial || ""); setFilas(aplicarBases(filasViniloVacias(), bases || [], `${mes}-31`, estandarViejo)); }
+      notify?.(`Minicotización ${g.ref} borrada`);
+    } catch (e) { notify?.("No se pudo borrar: " + (e.message || e)); }
   }
   async function excel() {
     try { await descargarViniloExcel({ ref, mes, filas, pct }); } catch (e) { notify?.("No se pudo generar el Excel: " + (e.message || e)); }
@@ -1329,6 +1340,7 @@ function MiniVinilo({ currentUser, notify, onPasar, refInicial, inicialId, etiqu
         {lista.map((g) => (
           <div key={g.id} onClick={() => cargar(g)} style={{ display: "flex", gap: 12, padding: "8px 4px", borderTop: `1px solid ${C.border}`, cursor: "pointer", fontSize: 13 }}>
             <b style={{ minWidth: 110 }}>{g.ref}</b><span style={{ color: C.slate, minWidth: 90 }}>{mesLargo(g.mes)}</span><span style={{ flex: 1, color: C.slate }}>{g.actualizadoPor || ""} · {fmtFecha(String(g.actualizado || "").slice(0, 10))}</span><b>{money(g.total)}</b>
+            {puedeBorrar && <button onClick={(e) => { e.stopPropagation(); borrarGuardada(g); }} title="Borrar esta minicotización" style={{ ...btn(C.white, C.red, C.red), padding: "3px 10px", fontSize: 12 }}>🗑 Borrar</button>}
           </div>
         ))}
       </Seccion>
@@ -1789,7 +1801,7 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
           onFiltro={(f) => { setFiltroEstado(f); setTab("cotizaciones"); }} onAbrir={(c) => setEdit({ ...limpio(c), existe: true })} />
       )}
 
-      {tab === "vinilo" && <MiniVinilo currentUser={currentUser} notify={notify} onPasar={pasarAlCotizador} />}
+      {tab === "vinilo" && <MiniVinilo currentUser={currentUser} notify={notify} onPasar={pasarAlCotizador} puedeBorrar={puedeBorrar} />}
       {tab === "bases" && <BasesVinilo currentUser={currentUser} puedeEditar={puedeAprobar} notify={notify} />}
 
       {(tab === "cotizaciones" || tab === "aprobar") && (
