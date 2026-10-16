@@ -138,7 +138,7 @@ async function descargarExcel(lista, nombre, imagen, notify) {
 }
 
 // ─── EDITOR DE UNA COTIZACIÓN ────────────────────────────────────────────────
-function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onGuardar, onVolver, onEliminar, onAplicar, onSucio, notify }) {
+function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onGuardar, onVolver, onEliminar, onAplicar, onSucio, puedeBorrar, notify }) {
   const [cot, setCot] = useState(inicial);
   const [sucio, setSucio] = useState(false);
   useEffect(() => { onSucio?.(sucio); }, [sucio]); // eslint-disable-line
@@ -248,7 +248,7 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
         {cot.precioAplicado && <Pastilla bg={C.greenBg} color={C.green}>Aplicado a {cot.precioAplicado.destino}</Pastilla>}
         {sucio && <Pastilla bg={C.amberBg} color={C.amber}>Cambios sin guardar</Pastilla>}
         <div style={{ flex: 1 }} />
-        {cot.id && inicial.existe && <button onClick={() => { if (window.confirm("¿Eliminar esta cotización con todas sus versiones?")) onEliminar(cot); }} style={btn(C.white, C.red, C.red)}>Eliminar</button>}
+        {cot.id && inicial.existe && puedeBorrar && <button onClick={() => onEliminar(cot)} style={btn(C.white, C.red, C.red)}>Eliminar</button>}
         <button onClick={() => descargarExcel([cot], `Cotizacion ${String(cot.referencia || "nueva").replace(/[\\/:*?"<>|]/g, "-")}.xlsx`, imagenVinculada(), notify)} style={btn(C.white, C.blue, C.blue)}>📥 Descargar Excel</button>
         <button onClick={guardar} style={btn(C.green, C.white)}>💾 Guardar versión</button>
       </div>
@@ -948,7 +948,17 @@ function estadoCotizacion(c) {
   if (c.vinculo) return { txt: "Vinculada", bg: C.blueBg, color: C.blue };
   return { txt: "Sin aplicar", bg: C.amberBg, color: C.amber };
 }
-function InicioCotizaciones({ cotizaciones, minis, cargado, onIr, onNueva, onFiltro, onAbrir }) {
+// Botones de cada fila: Editar (todos) y Borrar (solo roles con el permiso).
+function AccionesCotizacion({ c, onEditar, onBorrar, puedeBorrar }) {
+  const chico = { padding: "4px 10px", fontSize: 12 };
+  return (
+    <div onClick={(e) => e.stopPropagation()} style={{ display: "flex", gap: 6, justifyContent: "flex-end", whiteSpace: "nowrap" }}>
+      <button onClick={() => onEditar(c)} style={{ ...btn(C.white, C.navy, C.border), ...chico }}>✏ Editar</button>
+      {puedeBorrar && <button onClick={() => onBorrar(c)} style={{ ...btn(C.white, C.red, C.red), ...chico }}>🗑 Borrar</button>}
+    </div>
+  );
+}
+function InicioCotizaciones({ cotizaciones, minis, cargado, puedeBorrar, onBorrar, onIr, onNueva, onFiltro, onAbrir }) {
   const hoy = new Date();
   const mesActual = hoyISO().slice(0, 7);
   const clientes = new Set(cotizaciones.map((c) => c.cliente || "General"));
@@ -1003,10 +1013,10 @@ function InicioCotizaciones({ cotizaciones, minis, cargado, onIr, onNueva, onFil
             <button onClick={onNueva} style={{ ...btn(C.green, C.white), padding: "6px 12px" }}>+ Nueva cotización</button>
           </div>
           <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 480 }}>
-              <thead><tr><th style={{ ...th, padding: "6px 16px" }}>Referencia</th><th style={th}>Cliente</th><th style={th}>Versión</th><th style={{ ...th, textAlign: "right" }}>Precio con IVA</th><th style={th}>Estado</th></tr></thead>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 560 }}>
+              <thead><tr><th style={{ ...th, padding: "6px 16px" }}>Referencia</th><th style={th}>Cliente</th><th style={th}>Versión</th><th style={{ ...th, textAlign: "right" }}>Precio con IVA</th><th style={th}>Estado</th><th style={th} /></tr></thead>
               <tbody>
-                {cargado && ultimas.length === 0 && <tr><td colSpan={5} style={{ padding: 20, textAlign: "center", color: C.slate }}>Aún no hay cotizaciones.</td></tr>}
+                {cargado && ultimas.length === 0 && <tr><td colSpan={6} style={{ padding: 20, textAlign: "center", color: C.slate }}>Aún no hay cotizaciones.</td></tr>}
                 {ultimas.map((c) => {
                   const ult = c.versiones?.[c.versiones.length - 1];
                   const r = ult ? calcularCotizacion(ult.v) : null;
@@ -1018,6 +1028,7 @@ function InicioCotizaciones({ cotizaciones, minis, cargado, onIr, onNueva, onFil
                       <td style={{ ...td, color: C.slate }}>V{ult?.numero} · {fmtFecha(ult?.fecha).slice(0, 5)}</td>
                       <td style={{ ...td, textAlign: "right", fontWeight: 800 }}>{r ? fmtCOP(r.precioAplicar) : "—"}</td>
                       <td style={td}><Pastilla bg={e.bg} color={e.color}>{e.txt}</Pastilla></td>
+                      <td style={{ ...td, paddingRight: 8 }}><AccionesCotizacion c={c} onEditar={onAbrir} onBorrar={onBorrar} puedeBorrar={puedeBorrar} /></td>
                     </tr>
                   );
                 })}
@@ -1071,7 +1082,7 @@ function MenuCotizaciones({ activo, onIr, onVolver, onLogout, currentUser }) {
   );
 }
 
-export default function CotizadorView({ currentUser, config, protos, capsulas, iniciarDesde, onIniciarConsumido, onAplicarPrecio, onVolver, onLogout, notify }) {
+export default function CotizadorView({ currentUser, config, protos, capsulas, iniciarDesde, onIniciarConsumido, onAplicarPrecio, onVolver, onLogout, puedeBorrar, puedeAprobar, notify }) {
   const [edSucio, setEdSucio] = useState(false); // el editor abierto tiene cambios sin guardar
   const [tab, setTab] = useState("inicio");
   const [minis, setMinis] = useState([]); // minicotizaciones de vinilo guardadas (solo para el conteo del inicio)
@@ -1126,7 +1137,17 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
   async function eliminar(cot) {
     await fsDel("cotizaciones", cot.id);
     setEdit(null);
+    setEdSucio(false);
     notify?.("Cotización eliminada");
+  }
+  // Borrar pide confirmación con el nombre, las versiones que se pierden y si ya tenía precio aplicado.
+  async function pedirBorrar(cot) {
+    if (!puedeBorrar) { notify?.("Tu rol no tiene permiso para borrar cotizaciones"); return; }
+    const n = cot.versiones?.length || 0;
+    const nombre = `${cot.referencia || "sin referencia"}${cot.nombre ? " · " + cot.nombre : ""}`;
+    const aviso = cot.precioAplicado ? `\n\nOjo: ya tenía un precio aplicado (${fmtCOP(cot.precioAplicado.valor)} a ${cot.precioAplicado.destino}). Ese precio NO cambia en el prototipo; solo se pierde el historial de la cotización.` : "";
+    if (!window.confirm(`¿Borrar la cotización ${nombre}?\n\nSe pierden sus ${n} versión(es). No se puede deshacer.${aviso}`)) return;
+    await eliminar(cot);
   }
   // Minicotizador de Vinilo / DTF -> cotización de la referencia (versión nueva).
   async function pasarAlCotizador(ref, filas, calc) {
@@ -1213,7 +1234,7 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
       <div style={{ flex: 1, minWidth: 0, padding: "24px 34px", boxSizing: "border-box" }}>
       {edit ? (
         <CotizacionEditor key={edit.id} inicial={edit} parametros={parametros} clientes={clientesApp} protos={protos} capsulas={capsulas}
-          onGuardar={guardar} onVolver={() => { setEdit(null); setEdSucio(false); }} onEliminar={eliminar} onSucio={setEdSucio} notify={notify}
+          onGuardar={guardar} onVolver={() => { setEdit(null); setEdSucio(false); }} onEliminar={pedirBorrar} puedeBorrar={puedeBorrar} onSucio={setEdSucio} notify={notify}
           onAplicar={(destino, valor) => onAplicarPrecio(destino, valor)} />
       ) : (
       <>
@@ -1225,7 +1246,7 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
       {tab === "parametros" && <ParametrosView parametros={parametros} clientesApp={clientesApp} currentUser={currentUser} notify={notify} />}
 
       {tab === "inicio" && (
-        <InicioCotizaciones cotizaciones={cotizaciones} minis={minis} cargado={cargado}
+        <InicioCotizaciones cotizaciones={cotizaciones} minis={minis} cargado={cargado} puedeBorrar={puedeBorrar} onBorrar={pedirBorrar}
           onIr={(t) => { setFiltroEstado(null); setTab(t); }} onNueva={() => setEdit(cotNueva())}
           onFiltro={(f) => { setFiltroEstado(f); setTab("cotizaciones"); }} onAbrir={(c) => setEdit({ ...limpio(c), existe: true })} />
       )}
@@ -1247,11 +1268,11 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
             <button onClick={() => setEdit(cotNueva())} style={btn(C.green, C.white)}>+ Nueva cotización</button>
           </div>
           <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
-              <thead><tr><th style={{ ...th, padding: 12 }}>Referencia</th><th style={th}>Nombre</th><th style={th}>Cliente</th><th style={th}>Versiones</th><th style={{ ...th, textAlign: "right" }}>Precio con IVA (última)</th><th style={th}>Aplicado a</th></tr></thead>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 860 }}>
+              <thead><tr><th style={{ ...th, padding: 12 }}>Referencia</th><th style={th}>Nombre</th><th style={th}>Cliente</th><th style={th}>Versiones</th><th style={{ ...th, textAlign: "right" }}>Precio con IVA (última)</th><th style={th}>Aplicado a</th><th style={th} /></tr></thead>
               <tbody>
-                {!cargado && <tr><td colSpan={6} style={{ padding: 24, textAlign: "center", color: C.slate }}>Cargando…</td></tr>}
-                {cargado && filtradas.length === 0 && <tr><td colSpan={6} style={{ padding: 28, textAlign: "center", color: C.slate, fontSize: 13 }}>{cotizaciones.length ? "Ninguna cotización coincide con la búsqueda." : "Aún no hay cotizaciones. Crea una nueva o importa tu Excel (cada hoja = una versión)."}</td></tr>}
+                {!cargado && <tr><td colSpan={7} style={{ padding: 24, textAlign: "center", color: C.slate }}>Cargando…</td></tr>}
+                {cargado && filtradas.length === 0 && <tr><td colSpan={7} style={{ padding: 28, textAlign: "center", color: C.slate, fontSize: 13 }}>{cotizaciones.length ? "Ninguna cotización coincide con la búsqueda." : "Aún no hay cotizaciones. Crea una nueva o importa tu Excel (cada hoja = una versión)."}</td></tr>}
                 {filtradas.map((c) => {
                   const ult = c.versiones?.[c.versiones.length - 1];
                   const r = ult ? calcularCotizacion(ult.v) : null;
@@ -1265,6 +1286,7 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
                       <td style={{ ...td, fontSize: 12 }}>
                         {c.precioAplicado ? <span style={{ color: C.green, fontWeight: 700 }}>{fmtCOP(c.precioAplicado.valor)} → {c.precioAplicado.destino}</span> : c.vinculo ? <span style={{ color: C.slate }}>Vinculado: {c.vinculo.label}</span> : <span style={{ color: C.slate }}>—</span>}
                       </td>
+                      <td style={{ ...td, paddingRight: 12 }}><AccionesCotizacion c={c} onEditar={(x) => setEdit({ ...limpio(x), existe: true })} onBorrar={pedirBorrar} puedeBorrar={puedeBorrar} /></td>
                     </tr>
                   );
                 })}
