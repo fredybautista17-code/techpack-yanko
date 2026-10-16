@@ -315,6 +315,19 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
     notify?.("Filas de Vinilo / DTF actualizadas con la hoja");
   }
 
+  // Al elegir el prototipo / referencia de cápsula se llenan la referencia y el nombre de la cotización
+  // (el nombre solo si está vacío; la referencia pide confirmar si ya tenía otra distinta).
+  function camposDeDestino(dest) {
+    const out = {};
+    const ref = String(dest.reference || "").trim();
+    const actual = String(cot.referencia || "").trim();
+    if (ref && normRef(actual) !== normRef(ref)) {
+      if (!actual || window.confirm(`La cotización tiene la referencia «${actual}» y el destino es «${ref}». ¿Cambiar la referencia a ${ref}?`)) out.referencia = ref;
+    }
+    if (!String(cot.nombre || "").trim() && dest.nombre) out.nombre = dest.nombre;
+    return out;
+  }
+
   // ── Flujo de aprobación ──
   function conEvento(n, txt) {
     n.historial = [...(n.historial || []), { fecha: new Date().toISOString(), quien: usuario || "—", v: n.versiones[n.activa].numero, txt }];
@@ -346,7 +359,9 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
   async function aprobarYAplicar(destino) {
     const valor = calc.precioAplicar;
     if (!(valor > 0)) { notify?.("El precio es 0 — completa los costos primero"); return; }
-    const n = limpio(cot);
+    const mismoDestino = destino && cot.vinculo && cot.vinculo.id === destino.id && cot.vinculo.kind === destino.kind;
+    const campos = destino && !mismoDestino ? camposDeDestino(destino) : {};
+    const n = { ...limpio(cot), ...campos };
     const vv = n.versiones[n.activa];
     vv.estado = "aprobada"; vv.decision = { por: usuario || "", fecha: new Date().toISOString(), comentario: "" }; vv.precio = valor;
     if (destino) {
@@ -730,7 +745,7 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
       {vincular && (
         <ModalVincular cot={cot} protos={protos} capsulas={capsulas} precio={calc.precioAplicar} onClose={() => setVincular(false)}
           onElegir={puedeAprobar ? (dest) => aprobarYAplicar(dest) : undefined}
-          onSoloVincular={(dest) => { setCab("vinculo", dest); setVincular(false); }} />
+          onSoloVincular={(dest) => { const campos = camposDeDestino(dest); mutar((n) => { n.vinculo = dest; Object.assign(n, campos); }); setVincular(false); }} />
       )}
       {viniloModal && (
         <div onClick={() => setViniloModal(null)} style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,.55)", zIndex: 900, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: 16, overflowY: "auto" }}>
@@ -826,8 +841,8 @@ function ModalVincular({ cot, protos, capsulas, precio, onElegir, onSoloVincular
   const [q, setQ] = useState(cot.referencia || "");
   const opciones = useMemo(() => {
     const lista = [];
-    (protos || []).filter((p) => !p.eliminado).forEach((p) => lista.push({ kind: "proto", id: p.id, label: `${p.reference || "s/ref"} · ${p.name || ""}`.trim(), reference: p.reference || "", cliente: p.cliente || p.colores?.[0] || "", precioActual: p.precioCotizacion }));
-    (capsulas || []).filter((c) => !c.eliminado).forEach((cap) => (cap.referencias || []).forEach((r) => lista.push({ kind: "ref", id: r.id, capsulaId: cap.id, label: `${r.reference || "s/ref"} · ${r.name || ""} — ${cap.name}`, reference: r.reference || "", cliente: cap.cliente || "", precioActual: r.precioCotizacion })));
+    (protos || []).filter((p) => !p.eliminado).forEach((p) => lista.push({ kind: "proto", id: p.id, nombre: p.name || "", label: `${p.reference || "s/ref"} · ${p.name || ""}`.trim(), reference: p.reference || "", cliente: p.cliente || p.colores?.[0] || "", precioActual: p.precioCotizacion }));
+    (capsulas || []).filter((c) => !c.eliminado).forEach((cap) => (cap.referencias || []).forEach((r) => lista.push({ kind: "ref", id: r.id, nombre: r.name || "", capsulaId: cap.id, label: `${r.reference || "s/ref"} · ${r.name || ""} — ${cap.name}`, reference: r.reference || "", cliente: cap.cliente || "", precioActual: r.precioCotizacion })));
     return lista;
   }, [protos, capsulas]);
   const qn = normTxt(q);
