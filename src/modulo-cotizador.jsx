@@ -164,6 +164,33 @@ async function descargarExcel(lista, nombre, imagen, notify) {
   }
 }
 
+// Pasa las filas de una hoja de Vinilo / DTF a una versión de cotización: el DTF, corte,
+// descartonado, espiga y bajada entran como procesos; alta, poliamida y reflectivo como
+// insumos de termofijación. Las filas quedan marcadas «vinilo» (para poder actualizarlas).
+function volcarVinilo(v, filas, calc) {
+  v.procesos = v.procesos || [];
+  v.insumos = v.insumos || [];
+  const ponerProceso = (nombre, valor) => {
+    const i = v.procesos.findIndex((p) => normTxt(p.nombre) === normTxt(nombre));
+    if (i >= 0) v.procesos[i] = { ...v.procesos[i], valor, vinilo: true };
+    else v.procesos.push({ nombre, valor, imp: true, vinilo: true });
+  };
+  const ponerInsumo = (nombre, precio, consumo, codigo) => {
+    const i = v.insumos.findIndex((x) => normTxt(x.nombre) === normTxt(nombre));
+    if (i < 0 && !(num(consumo) > 0)) return; // una fila de insumo sin consumo no se agrega
+    const nuevo = { nombre, precio, consumo, termo: true, vinilo: true, ...(codigo ? { codigo } : {}) };
+    if (i >= 0) v.insumos[i] = { ...v.insumos[i], ...nuevo };
+    else v.insumos.push(nuevo);
+  };
+  const PROC = { dtf: "Aplique DTF", corte: "Corte vinilo", descartonado: "Descartonado", espiga: "Espiga", bajada: "Bajada de vinilo" };
+  filas.forEach((f, i) => {
+    const total = Math.round(calc.detalle[i].total * 100) / 100;
+    if (PROC[f.key]) ponerProceso(PROC[f.key], total);
+    else ponerInsumo(f.nombre, num(f.costoMP) + num(f.base) / (num(f.consumo) || 1), num(f.consumo), f.codigo);
+  });
+  return v;
+}
+
 // ─── APROBACIÓN (2026-10-16) ─────────────────────────────────────────────────
 // Cada versión tiene un estado: sin estado/"borrador" -> "aprobacion" (enviada) ->
 // "aprobada" o "devuelta". Quien tiene el permiso cotizador_aprobar aprueba y el
@@ -173,7 +200,7 @@ const estadoUltima = (c) => ultimaVersion(c)?.estado || "borrador";
 const ICONO_ESTADO = { aprobacion: "⏳", aprobada: "✔", devuelta: "↩" };
 
 // ─── EDITOR DE UNA COTIZACIÓN ────────────────────────────────────────────────
-function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onGuardar, onVolver, onEliminar, onAplicar, onSucio, puedeBorrar, puedeAprobar, usuario, notify }) {
+function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsulas, onGuardar, onVolver, onEliminar, onAplicar, onSucio, puedeBorrar, puedeAprobar, usuario, notify }) {
   const [cot, setCot] = useState(inicial);
   const [sucio, setSucio] = useState(false);
   useEffect(() => { onSucio?.(sucio); }, [sucio]); // eslint-disable-line
@@ -183,6 +210,7 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
   const [telaBusint, setTelaBusint] = useState(null); // índice de la fila de tela que busca precio
   const [insBusint, setInsBusint] = useState(null); // índice de la fila de insumo que busca precio en Busint
   const codOrig = useRef("");
+  const [viniloModal, setViniloModal] = useState(null); // {id} = hoja de Vinilo / DTF abierta sobre esta cotización
   const ver = cot.versiones[cot.activa];
   const calc = useMemo(() => calcularCotizacion(ver.v), [ver.v]);
   const estadoV = ver.estado || "borrador";
@@ -264,6 +292,27 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
     } else if (r.estado === "nada") notify?.(`El código ${String(cod).trim()} no está en el inventario de Busint; queda como lo escribiste.`);
     else if (r.estado === "varios") notify?.(`El código ${String(cod).trim()} coincide con varios insumos de Busint; usa la lupa para elegir.`);
     else if (r.estado === "error") notify?.("No se pudo consultar Busint: " + r.msg);
+  }
+
+  // ── Vinilo / DTF dentro de la cotización ──
+  const miniLink = ver.v.vinilo ? (minis || []).find((m) => m.id === ver.v.vinilo.miniId) : null;
+  const miniCambio = !!miniLink && !!miniLink.actualizado && miniLink.actualizado !== ver.v.vinilo.actualizado;
+  const miniSugerida = !ver.v.vinilo && normRef(cot.referencia)
+    ? (minis || []).filter((m) => normRef(m.ref) === normRef(cot.referencia)).sort((a, b) => String(b.mes).localeCompare(String(a.mes)))[0] || null
+    : null;
+  function usarVinilo(ref, filas, c, mes, stamp) {
+    setV((v) => { volcarVinilo(v, filas, c); v.vinilo = { miniId: `${normRef(ref)}_${mes}`, ref: String(ref).trim(), mes, total: Math.round(c.total * 100) / 100, actualizado: stamp }; });
+    setViniloModal(null);
+    notify?.(`Vinilo / DTF de ${String(ref).trim()} agregado a la V${ver.numero}`);
+  }
+  function traerMini(m) {
+    usarVinilo(m.ref, m.filas, calcularVinilo(m.filas, m.pct ?? IMPREVISTOS_PCT), m.mes, m.actualizado);
+  }
+  function actualizarVinilo() {
+    const m = miniLink;
+    if (!m) return;
+    setV((v) => { const c = calcularVinilo(m.filas, m.pct ?? IMPREVISTOS_PCT); volcarVinilo(v, m.filas, c); v.vinilo = { ...v.vinilo, total: Math.round(c.total * 100) / 100, actualizado: m.actualizado }; });
+    notify?.("Filas de Vinilo / DTF actualizadas con la hoja");
   }
 
   // ── Flujo de aprobación ──
@@ -353,6 +402,7 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
         {sucio && <Pastilla bg={C.amberBg} color={C.amber}>Cambios sin guardar</Pastilla>}
         <div style={{ flex: 1 }} />
         {cot.id && inicial.existe && puedeBorrar && <button onClick={() => onEliminar(cot)} style={btn(C.white, C.red, C.red)}>Eliminar</button>}
+        <button onClick={() => setViniloModal({ id: ver.v.vinilo?.miniId || null })} disabled={bloqueada} title="Abre la hoja de Vinilo / DTF de esta referencia y pasa sus valores a esta versión" style={{ ...btn(C.white, C.amber, C.amber), opacity: bloqueada ? 0.5 : 1 }}>🎨 Vinilo / DTF</button>
         <button onClick={() => descargarExcel([cot], `Cotizacion ${String(cot.referencia || "nueva").replace(/[\\/:*?"<>|]/g, "-")}.xlsx`, imagenVinculada(), notify)} style={btn(C.white, C.blue, C.blue)}>📥 Descargar Excel</button>
         <button onClick={guardar} style={btn(C.green, C.white)}>💾 Guardar versión</button>
       </div>
@@ -397,6 +447,27 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
           <div style={{ flex: 1, fontSize: 13 }}>
             <b style={{ color: C.red }}>Devuelta{ver.decision?.por ? ` por ${ver.decision.por}` : ""}.</b> {ver.decision?.comentario ? `«${ver.decision.comentario}»` : ""} Corrige y vuelve a enviarla a aprobación.
           </div>
+        </div>
+      )}
+
+      {ver.v.vinilo && (
+        <div style={{ display: "flex", alignItems: "center", gap: 12, background: C.blueBg, border: `1.5px solid ${miniCambio ? "#F0CF95" : "#C9D9EA"}`, borderRadius: 14, padding: "10px 16px", marginBottom: 14, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 20 }}>🎨</span>
+          <div style={{ flex: 1, fontSize: 13, minWidth: 240 }}>
+            <b style={{ color: C.blue }}>Vinilo / DTF</b> desde la hoja de {ver.v.vinilo.ref} ({mesLargo(ver.v.vinilo.mes)}) · {fmtCOP(ver.v.vinilo.total)}
+            {miniCambio && <> · <b style={{ color: C.amber }}>La hoja cambió{miniLink.actualizadoPor ? ` (${miniLink.actualizadoPor}, ${fmtFecha(String(miniLink.actualizado).slice(0, 10))})` : ""}.</b></>}
+            {!miniLink && <span style={{ color: C.slate }}> · la hoja ya no existe</span>}
+          </div>
+          {miniCambio && !bloqueada && <button onClick={actualizarVinilo} style={btn(C.amber, C.white)}>↻ Actualizar filas</button>}
+          {miniCambio && bloqueada && <span style={{ fontSize: 12, color: C.slate }}>Crea una versión nueva para actualizar.</span>}
+          {miniLink && !bloqueada && <button onClick={() => setViniloModal({ id: ver.v.vinilo.miniId })} style={btn(C.white, C.blue, C.blue)}>Abrir hoja</button>}
+        </div>
+      )}
+      {miniSugerida && !bloqueada && (
+        <div style={{ display: "flex", alignItems: "center", gap: 12, background: C.amberBg, border: "1.5px solid #F0CF95", borderRadius: 14, padding: "10px 16px", marginBottom: 14, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 20 }}>🎨</span>
+          <div style={{ flex: 1, fontSize: 13, minWidth: 240 }}>Hay una hoja de <b>Vinilo / DTF</b> guardada para la referencia {cot.referencia} ({mesLargo(miniSugerida.mes)}) por {fmtCOP(miniSugerida.total)}.</div>
+          <button onClick={() => traerMini(miniSugerida)} style={btn(C.amber, C.white)}>Traerla a esta versión</button>
         </div>
       )}
 
@@ -468,6 +539,7 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
                           <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
                             <button title="Traer precio promedio y código desde el inventario de Busint" onClick={() => setInsBusint(i)} style={{ border: `1px solid ${C.border}`, background: C.field, borderRadius: 8, cursor: "pointer", padding: "6px 8px" }}>🔎</button>
                             <input value={it.nombre} onChange={(e) => setV((v) => { v.insumos[i].nombre = e.target.value; if (!v.insumos[i].termoManual) v.insumos[i].termo = REGEX_INSUMO_TERMO.test(e.target.value); })} style={{ ...inp, minWidth: 170 }} placeholder="Hilo, etiqueta, vinilo…" />
+                            {it.vinilo && <Pastilla bg={C.amberBg} color={C.amber}>Vinilo</Pastilla>}
                           </div>
                         </td>
                         <td style={td}><input value={it.codigo || ""} onFocus={() => { codOrig.current = String(it.codigo || "").trim(); }} onBlur={() => autollenarCodigo(i)} onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }} onChange={(e) => setV((v) => { v.insumos[i].codigo = e.target.value; })} style={{ ...inp, width: 96 }} placeholder="Código" /></td>
@@ -494,7 +566,7 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
                 <tbody>
                   {procesos.map((p, i) => (
                     <tr key={i}>
-                      <td style={td}><input value={p.nombre} onChange={(e) => setV((v) => { v.procesos[i].nombre = e.target.value; })} style={{ ...inp, minWidth: 190 }} /></td>
+                      <td style={td}><div style={{ display: "flex", gap: 6, alignItems: "center" }}><input value={p.nombre} onChange={(e) => setV((v) => { v.procesos[i].nombre = e.target.value; })} style={{ ...inp, minWidth: 190 }} />{p.vinilo && <Pastilla bg={C.amberBg} color={C.amber}>Vinilo</Pastilla>}</div></td>
                       <td style={td}>{celdaNum(p.valor, (x) => setV((v) => { v.procesos[i].valor = x; }), 110)}</td>
                       <td style={{ ...td, textAlign: "center" }}><input type="checkbox" checked={!!p.imp} onChange={(e) => setV((v) => { v.procesos[i].imp = e.target.checked; })} /></td>
                       <td style={td}><button onClick={() => setV((v) => { v.procesos.splice(i, 1); })} style={{ border: "none", background: "none", cursor: "pointer", color: C.red, fontSize: 16 }}>×</button></td>
@@ -659,6 +731,17 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
         <ModalVincular cot={cot} protos={protos} capsulas={capsulas} precio={calc.precioAplicar} onClose={() => setVincular(false)}
           onElegir={puedeAprobar ? (dest) => aprobarYAplicar(dest) : undefined}
           onSoloVincular={(dest) => { setCab("vinculo", dest); setVincular(false); }} />
+      )}
+      {viniloModal && (
+        <div onClick={() => setViniloModal(null)} style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,.55)", zIndex: 900, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: 16, overflowY: "auto" }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: C.canvas, borderRadius: 16, width: "min(1100px, 100%)", padding: 16, fontFamily: FUENTE }}>
+            <div style={{ display: "flex", alignItems: "center", marginBottom: 10 }}>
+              <div style={{ flex: 1, fontWeight: 800, fontSize: 16 }}>Vinilo / DTF para {cot.referencia || "esta cotización"} · V{ver.numero}</div>
+              <button onClick={() => setViniloModal(null)} style={btn(C.white, C.slate, C.border)}>Cerrar</button>
+            </div>
+            <MiniVinilo currentUser={{ name: usuario }} notify={notify} refInicial={cot.referencia} inicialId={viniloModal.id} etiquetaPasar="✔ Usar en esta cotización" onPasar={usarVinilo} />
+          </div>
+        </div>
       )}
       {devolviendo && (
         <div onClick={() => setDevolviendo(false)} style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,.55)", zIndex: 1000, display: "grid", placeItems: "center", padding: 16 }}>
@@ -1056,9 +1139,9 @@ function ModalInsumoBusint({ inicial, titulo, onElegir, onClose }) {
     </div>
   );
 }
-function MiniVinilo({ currentUser, notify, onPasar }) {
+function MiniVinilo({ currentUser, notify, onPasar, refInicial, inicialId, etiquetaPasar }) {
   const [guardados, setGuardados] = useState([]);
-  const [ref, setRef] = useState("");
+  const [ref, setRef] = useState(refInicial || "");
   const [mes, setMes] = useState(hoyISO().slice(0, 7));
   const [pct, setPct] = useState(IMPREVISTOS_PCT);
   const [filas, setFilas] = useState(() => filasViniloVacias());
@@ -1075,15 +1158,21 @@ function MiniVinilo({ currentUser, notify, onPasar }) {
   useEffect(() => {
     if (estandarAplicado || bases === null || !guardadosListo) return;
     setEstandarAplicado(true);
+    // Abierta desde una cotización: arranca con la hoja guardada de esa referencia (si la hay).
+    const previa = (inicialId && guardados.find((g) => g.id === inicialId))
+      || (refInicial ? guardados.filter((g) => g.id !== "_estandar" && normRef(g.ref) === normRef(refInicial)).sort((a, b) => String(b.mes).localeCompare(String(a.mes)))[0] : null);
+    if (previa) { cargar(previa); return; }
     setFilas((fs) => aplicarBases(fs, bases, `${mes}-31`, estandarViejo));
   }, [bases, guardadosListo, estandarAplicado]); // eslint-disable-line
 
   const calc = useMemo(() => calcularVinilo(filas, pct), [filas, pct]);
   const cambiar = (key, campo, valor) => setFilas((fs) => fs.map((f) => (f.key === key ? { ...f, [campo]: valor } : f)));
   async function guardar() {
-    if (!normRef(ref)) { notify?.("Escribe la referencia para guardar"); return; }
-    await fsSet("cotizador_vinilo", `${normRef(ref)}_${mes}`, { ref: ref.trim(), mes, pct, filas, total: calc.total, actualizadoPor: currentUser?.name || "", actualizado: new Date().toISOString() });
+    if (!normRef(ref)) { notify?.("Escribe la referencia para guardar"); return null; }
+    const stamp = new Date().toISOString();
+    await fsSet("cotizador_vinilo", `${normRef(ref)}_${mes}`, { ref: ref.trim(), mes, pct, filas, total: calc.total, actualizadoPor: currentUser?.name || "", actualizado: stamp });
     notify?.("Minicotización guardada");
+    return stamp;
   }
   function aplicarBasesVigentes() {
     setFilas((fs) => aplicarBases(fs, bases || [], `${mes}-31`, estandarViejo));
@@ -1164,7 +1253,7 @@ function MiniVinilo({ currentUser, notify, onPasar }) {
         <div style={{ display: "flex", gap: 10, marginTop: 14, flexWrap: "wrap" }}>
           <button onClick={guardar} style={btn(C.green, C.white)}>💾 Guardar</button>
           <button onClick={excel} style={btn(C.white, C.blue, C.blue)}>📤 Descargar Excel</button>
-          <button onClick={() => onPasar(ref, filas, calc)} style={btn(C.white, C.violet, C.violet)}>🧮 Pasar al cotizador</button>
+          <button onClick={async () => { const st = await guardar(); if (st) onPasar(ref, filas, calc, mes, st); }} style={btn(C.white, C.violet, C.violet)}>{etiquetaPasar || "🧮 Pasar al cotizador"}</button>
           <div style={{ flex: 1 }} />
           <button onClick={aplicarBasesVigentes} title="Vuelve a poner el BASE (y el valor de los procesos) que rige en el mes de esta hoja, según «Bases Vinilo y DTF»" style={btn(C.white, C.slate, C.border)}>↻ Aplicar bases vigentes</button>
         </div>
@@ -1548,32 +1637,15 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
     await eliminar(cot);
   }
   // Minicotizador de Vinilo / DTF -> cotización de la referencia (versión nueva).
-  async function pasarAlCotizador(ref, filas, calc) {
+  async function pasarAlCotizador(ref, filas, calc, mes, stamp) {
     const k = normRef(ref);
     if (!k) { notify?.("Escribe la referencia para pasarla al cotizador"); return; }
     const existente = cotizaciones.find((c) => normRef(c.referencia) === k);
     const base = existente ? limpio(existente) : cotNueva({ referencia: String(ref).trim() });
     const ultima = base.versiones[base.versiones.length - 1];
     const v = limpio(ultima.v);
-    v.procesos = v.procesos || [];
-    v.insumos = v.insumos || [];
-    const ponerProceso = (nombre, valor) => {
-      const i = v.procesos.findIndex((p) => normTxt(p.nombre) === normTxt(nombre));
-      if (i >= 0) v.procesos[i] = { ...v.procesos[i], valor };
-      else v.procesos.push({ nombre, valor, imp: true });
-    };
-    const ponerInsumo = (nombre, precio, consumo) => {
-      const i = v.insumos.findIndex((x) => normTxt(x.nombre) === normTxt(nombre));
-      const nuevo = { nombre, precio, consumo, termo: true };
-      if (i >= 0) v.insumos[i] = { ...v.insumos[i], ...nuevo };
-      else v.insumos.push(nuevo);
-    };
-    const PROC = { dtf: "Aplique DTF", corte: "Corte vinilo", descartonado: "Descartonado", espiga: "Espiga", bajada: "Bajada de vinilo" };
-    filas.forEach((f, i) => {
-      const total = Math.round(calc.detalle[i].total * 100) / 100;
-      if (PROC[f.key]) ponerProceso(PROC[f.key], total);
-      else ponerInsumo(f.nombre, num(f.costoMP) + num(f.base) / (num(f.consumo) || 1), num(f.consumo));
-    });
+    volcarVinilo(v, filas, calc);
+    v.vinilo = { miniId: `${k}_${mes}`, ref: String(ref).trim(), mes, total: Math.round(calc.total * 100) / 100, actualizado: stamp };
     const nota = "Desde minicotizador Vinilo/DTF";
     if (existente) {
       const numero = base.versiones.reduce((m, x) => Math.max(m, x.numero), 0) + 1;
@@ -1634,7 +1706,7 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
       <MenuCotizaciones activo={edit ? "cotizaciones" : tab} onIr={irA} onVolver={onVolver} onLogout={onLogout} currentUser={currentUser} nAprobar={cotizaciones.filter((c) => estadoUltima(c) === "aprobacion").length} puedeAprobar={puedeAprobar} />
       <div style={{ flex: 1, minWidth: 0, padding: "24px 34px", boxSizing: "border-box" }}>
       {edit ? (
-        <CotizacionEditor key={edit.id} inicial={edit} parametros={parametros} clientes={clientesApp} protos={protos} capsulas={capsulas}
+        <CotizacionEditor key={edit.id} inicial={edit} minis={minis} parametros={parametros} clientes={clientesApp} protos={protos} capsulas={capsulas}
           onGuardar={guardar} onVolver={() => { setEdit(null); setEdSucio(false); }} onEliminar={pedirBorrar} puedeBorrar={puedeBorrar} onSucio={setEdSucio} puedeAprobar={puedeAprobar} usuario={currentUser?.name || ""} notify={notify}
           onAplicar={(destino, valor) => onAplicarPrecio(destino, valor)} />
       ) : (
