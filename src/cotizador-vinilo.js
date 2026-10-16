@@ -22,16 +22,41 @@ export const FILAS_VINILO = [
   { key: "corte", nombre: "CORTE VINILO", tipo: "proceso", valor: 103 },
   { key: "descartonado", nombre: "DESCARTONADO", tipo: "proceso", valor: 20 },
   { key: "espiga", nombre: "ESPIGA", tipo: "proceso", valor: 60 },
+  // Una prenda puede llevar hasta 5 vinilos y cada uno se baja aparte: 5 renglones, y la
+  // SUMA de los marcados es el valor del proceso «Bajada de vinilo» de la cotización.
+  // El registro de bases (BASE y valor vigentes) es uno solo para el grupo: "bajada".
   { key: "bajada", nombre: "BAJADA DE VINILO", tipo: "proceso", valor: 360 },
+  { key: "bajada2", nombre: "BAJADA DE VINILO 2", tipo: "proceso", valor: 360, extra: true },
+  { key: "bajada3", nombre: "BAJADA DE VINILO 3", tipo: "proceso", valor: 360, extra: true },
+  { key: "bajada4", nombre: "BAJADA DE VINILO 4", tipo: "proceso", valor: 360, extra: true },
+  { key: "bajada5", nombre: "BAJADA DE VINILO 5", tipo: "proceso", valor: 360, extra: true },
   { key: "reflectivo", nombre: "CONS VINILO REFLECTIVO (CURVA)", tipo: "insumo", buscar: "reflect" },
 ];
 
+// Grupo de una fila: las 5 bajadas comparten el concepto "bajada" (bases y cotización).
+export const grupoFila = (f) => (/^bajada\d*$/.test(String(f?.key || "")) ? "bajada" : f?.key);
+const nombreFila = (f) => (f.key === "bajada" ? "BAJADA DE VINILO 1" : f.nombre);
+
 export function filasViniloVacias() {
   return FILAS_VINILO.map((f) => ({
-    key: f.key, nombre: f.nombre, tipo: f.tipo, usa: true,
+    key: f.key, nombre: nombreFila(f), tipo: f.tipo, usa: !f.extra,
     codigo: "", costoMP: "", unidad: "", consumo: f.tipo === "insumo" ? "" : "",
     valor: f.tipo === "proceso" ? f.valor : "", base: 0, fuente: f.tipo === "proceso" ? "Valor fijo" : "",
   }));
+}
+
+// Lleva una hoja guardada (que solo tenía una bajada) a la estructura actual: queda en el
+// orden de la hoja, la bajada que tenía pasa a ser la 1 y las demás nacen sin marcar con el
+// mismo valor y BASE.
+export function normalizarFilas(filas) {
+  const guardadas = filas || [];
+  const b1 = guardadas.find((x) => x.key === "bajada");
+  return FILAS_VINILO.map((def) => {
+    const f = guardadas.find((x) => x.key === def.key);
+    if (f) return def.key === "bajada" ? { ...f, nombre: nombreFila(def) } : f;
+    if (def.extra) return { key: def.key, nombre: nombreFila(def), tipo: "proceso", usa: false, codigo: "", costoMP: "", unidad: "", consumo: "", valor: b1 ? b1.valor : def.valor, base: b1 ? b1.base : 0, fuente: "Valor fijo" };
+    return { key: def.key, nombre: nombreFila(def), tipo: def.tipo, usa: true, codigo: "", costoMP: "", unidad: "", consumo: "", valor: def.tipo === "proceso" ? def.valor : "", base: 0, fuente: def.tipo === "proceso" ? "Valor fijo" : "" };
+  });
 }
 
 export function calcularVinilo(filas, pct = IMPREVISTOS_PCT) {
@@ -154,9 +179,9 @@ export function baseVigente(registros, key, fechaISO) {
 // "estandar" = valores guardados antes de existir este registro (solo procesos, si la fila no tiene registro).
 export function aplicarBases(filas, registros, fechaISO, estandar) {
   return (filas || []).map((f) => {
-    const r = baseVigente(registros, f.key, fechaISO);
+    const r = baseVigente(registros, grupoFila(f), fechaISO);
     if (r) return { ...f, base: r.base ?? f.base, ...(f.tipo === "proceso" && r.valor != null ? { valor: r.valor } : {}) };
-    const e = f.tipo === "proceso" ? (estandar || []).find((x) => x.key === f.key) : null;
+    const e = f.tipo === "proceso" ? (estandar || []).find((x) => x.key === grupoFila(f)) : null;
     return e ? { ...f, valor: e.valor, base: e.base } : f;
   });
 }

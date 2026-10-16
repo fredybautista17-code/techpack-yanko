@@ -9,7 +9,7 @@ import {
 import { descargarCotizacionesExcel } from "./cotizador-excel";
 import {
   FILAS_VINILO, IMPREVISTOS_PCT, filasViniloVacias, calcularVinilo, aplicarInsumoAFila,
-  tituloVinilo, mesLargo, descargarViniloExcel, baseVigente, aplicarBases,
+  tituloVinilo, mesLargo, descargarViniloExcel, baseVigente, aplicarBases, normalizarFilas, grupoFila,
 } from "./cotizador-vinilo";
 
 // ─── COTIZADOR ───────────────────────────────────────────────────────────────
@@ -188,11 +188,18 @@ function volcarVinilo(v, filas, calc) {
     else v.insumos.push(nuevo);
   };
   const PROC = { dtf: "Aplique DTF", corte: "Corte vinilo", descartonado: "Descartonado", espiga: "Espiga", bajada: "Bajada de vinilo" };
+  // Las bajadas (hasta 5 por prenda) pasan sumadas como un solo proceso.
+  const sumaGrupo = {};
+  filas.forEach((f, i) => { if (f.usa !== false) sumaGrupo[grupoFila(f)] = (sumaGrupo[grupoFila(f)] || 0) + calc.detalle[i].total; });
+  const hechos = new Set();
   filas.forEach((f, i) => {
-    const total = Math.round(calc.detalle[i].total * 100) / 100;
-    if (PROC[f.key]) {
-      if (f.usa !== false && total > 0) ponerProceso(PROC[f.key], total);
-      else quitar(v.procesos, PROC[f.key], (p) => num(p.valor));
+    const g = grupoFila(f);
+    if (PROC[g]) {
+      if (hechos.has(g)) return;
+      hechos.add(g);
+      const suma = Math.round((sumaGrupo[g] || 0) * 100) / 100;
+      if (suma > 0) ponerProceso(PROC[g], suma);
+      else quitar(v.procesos, PROC[g], (p) => num(p.valor));
     } else if (f.usa !== false && num(f.consumo) > 0) {
       ponerInsumo(f.nombre, num(f.costoMP) + num(f.base) / (num(f.consumo) || 1), num(f.consumo), f.codigo);
     } else quitar(v.insumos, f.nombre, (x) => num(x.precio) * num(x.consumo));
@@ -1259,7 +1266,7 @@ function MiniVinilo({ currentUser, notify, onPasar, refInicial, inicialId, etiqu
     notify?.(`Bases vigentes en ${mesLargo(mes)} aplicadas`);
   }
   function cargar(g) {
-    setRef(g.ref || ""); setMes(g.mes || hoyISO().slice(0, 7)); setPct(g.pct ?? IMPREVISTOS_PCT); setFilas(g.filas || filasViniloVacias());
+    setRef(g.ref || ""); setMes(g.mes || hoyISO().slice(0, 7)); setPct(g.pct ?? IMPREVISTOS_PCT); setFilas(normalizarFilas(g.filas));
   }
   // Borra una minicotización guardada (la hoja exacta de la fila). Pide confirmación.
   async function borrarGuardada(g) {
@@ -1301,7 +1308,8 @@ function MiniVinilo({ currentUser, notify, onPasar, refInicial, inicialId, etiqu
             </thead>
             <tbody>
               {filas.map((f, i) => (
-                <tr key={f.key} style={{ borderTop: `1px solid ${C.border}`, opacity: f.usa === false ? 0.45 : 1 }}>
+                <FragmentFila key={f.key}>
+                <tr style={{ borderTop: `1px solid ${C.border}`, opacity: f.usa === false ? 0.45 : 1 }}>
                   <td style={{ ...td, textAlign: "center", width: 44 }}><input type="checkbox" title="Si no la marcas, esta fila no suma ni pasa a la cotización" checked={f.usa !== false} onChange={(e) => cambiar(f.key, "usa", e.target.checked)} /></td>
                   <td style={{ ...td, minWidth: 220 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -1326,6 +1334,17 @@ function MiniVinilo({ currentUser, notify, onPasar, refInicial, inicialId, etiqu
                   <td style={td}><input value={f.base} onChange={(e) => cambiar(f.key, "base", e.target.value)} style={cel} /></td>
                   <td style={{ ...td, textAlign: "right", fontWeight: 800, fontSize: 13 }}>{money(calc.detalle[i].total)}</td>
                 </tr>
+                {f.key === "bajada5" && (() => {
+                  const marcadas = filas.filter((x) => grupoFila(x) === "bajada" && x.usa !== false).length;
+                  const suma = filas.reduce((a, x, j) => a + (grupoFila(x) === "bajada" && x.usa !== false ? calc.detalle[j].total : 0), 0);
+                  return (
+                    <tr style={{ background: "#FFF3B0", borderTop: `1px solid ${C.border}` }}>
+                      <td colSpan={7} style={{ ...td, textAlign: "right", fontWeight: 800, padding: 8 }}>TOTAL BAJADAS ({marcadas} de 5 vinilos)</td>
+                      <td style={{ ...td, textAlign: "right", fontWeight: 800 }}>{money(suma)}</td>
+                    </tr>
+                  );
+                })()}
+                </FragmentFila>
               ))}
               <tr style={{ borderTop: `2px solid ${C.ink}`, background: "#FFF9C4" }}>
                 <td colSpan={7} style={{ ...td, textAlign: "right", fontWeight: 800, padding: 8 }}>SUMA VINILO + DTF</td>
@@ -1421,13 +1440,13 @@ function BasesVinilo({ currentUser, puedeEditar, notify }) {
           <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 720 }}>
             <thead><tr><th style={th}>Concepto</th><th style={{ ...th, textAlign: "right" }}>Valor del proceso</th><th style={{ ...th, textAlign: "right" }}>BASE vigente</th><th style={th}>Rige desde</th><th /></tr></thead>
             <tbody>
-              {FILAS_VINILO.map((f) => {
+              {FILAS_VINILO.filter((f) => !f.extra).map((f) => {
                 const v = baseVigente(registros, f.key, hoy);
                 const historial = registros.filter((r) => r.key === f.key).sort((a, b) => String(b.desde).localeCompare(String(a.desde)) || String(b.creado || "").localeCompare(String(a.creado || "")));
                 return (
                   <FragmentFila key={f.key}>
                     <tr style={{ borderTop: `1px solid ${C.border}` }}>
-                      <td style={{ ...td, padding: "10px 6px" }}><div style={{ fontWeight: 700, fontSize: 13 }}>{f.nombre}</div><div style={{ fontSize: 11, color: C.slate }}>{f.tipo === "proceso" ? "Proceso" : "Insumo (Busint)"}</div></td>
+                      <td style={{ ...td, padding: "10px 6px" }}><div style={{ fontWeight: 700, fontSize: 13 }}>{f.nombre}</div><div style={{ fontSize: 11, color: C.slate }}>{f.key === "bajada" ? "Proceso · rige para cada una de las 5 bajadas" : f.tipo === "proceso" ? "Proceso" : "Insumo (Busint)"}</div></td>
                       <td style={{ ...td, textAlign: "right" }}>{f.tipo === "proceso" ? (v?.valor != null ? money(v.valor) : <span style={{ color: C.slate }}>{money(f.valor)} (estándar)</span>) : "—"}</td>
                       <td style={{ ...td, textAlign: "right", fontWeight: 800 }}>{v ? money(v.base) : <span style={{ color: C.amber, fontWeight: 600 }}>Sin registrar</span>}</td>
                       <td style={{ ...td, fontSize: 12, color: C.slate }}>{v ? fmtFecha(v.desde) : "—"}</td>
