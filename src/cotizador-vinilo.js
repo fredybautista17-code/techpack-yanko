@@ -1,8 +1,10 @@
 // ─── MINICOTIZADOR DE VINILO / DTF ───────────────────────────────────────────
 // (2026-10-15, a pedido de Fredy) Hoja corta "COTIZACIÓN DE VENTA {ref}
-// ({mes}- {año})" para los aplique de vinilo / DTF. Cuatro filas salen de la
-// ficha técnica de Busint (aplique DTF - Paper PET, aplique en ALTA,
-// poliamida - Fast Dry y vinilo reflectivo); las otras (corte de vinilo,
+// ({mes}- {año})" para los aplique de vinilo / DTF. Cuatro filas son insumos
+// que se eligen del catálogo de Busint (aplique DTF - Paper PET, aplique en
+// ALTA, poliamida - Fast Dry y vinilo reflectivo; el costo viene de Busint y
+// el consumo lo digita el usuario, porque la referencia es nueva y no tiene
+// ficha); las otras (corte de vinilo,
 // descartonado, espiga, bajada de vinilo) son procesos con valor fijo.
 //   COSTO X U = COSTO M.P × CONSUMO   (en los procesos: el valor digitado)
 //   TOTAL     = COSTO X U + BASE      (BASE = "lo que siempre va a costar hacerlo")
@@ -11,17 +13,17 @@ import { num } from "./cotizador-calculo";
 
 export const IMPREVISTOS_PCT = 10;
 
-// Filas fijas, en el orden de la hoja de Fredy. "slot" = qué insumo de la
-// ficha de Busint la alimenta (regex sobre el nombre del insumo).
+// Filas fijas, en el orden de la hoja de Fredy. "buscar" = texto con el que
+// arranca la búsqueda en el catálogo de insumos de Busint (botón 🔎).
 export const FILAS_VINILO = [
-  { key: "dtf", nombre: "APLIQUE DTF - PAPER PET", tipo: "insumo", slot: /dtf|paper\s*pet/i },
-  { key: "alta", nombre: "APLIQUE EN ALTA", tipo: "insumo", slot: /\balta\b/i },
-  { key: "poliamida", nombre: "POLIAMIDA - FAST DRY", tipo: "insumo", slot: /poliamida|fast\s?dry/i },
+  { key: "dtf", nombre: "APLIQUE DTF - PAPER PET", tipo: "insumo", buscar: "paper pet" },
+  { key: "alta", nombre: "APLIQUE EN ALTA", tipo: "insumo", buscar: "alta" },
+  { key: "poliamida", nombre: "POLIAMIDA - FAST DRY", tipo: "insumo", buscar: "poliamida" },
   { key: "corte", nombre: "CORTE VINILO", tipo: "proceso", valor: 103 },
   { key: "descartonado", nombre: "DESCARTONADO", tipo: "proceso", valor: 20 },
   { key: "espiga", nombre: "ESPIGA", tipo: "proceso", valor: 60 },
   { key: "bajada", nombre: "BAJADA DE VINILO", tipo: "proceso", valor: 360 },
-  { key: "reflectivo", nombre: "CONS VINILO REFLECTIVO (CURVA)", tipo: "insumo", slot: /reflect/i },
+  { key: "reflectivo", nombre: "CONS VINILO REFLECTIVO (CURVA)", tipo: "insumo", buscar: "reflect" },
 ];
 
 export function filasViniloVacias() {
@@ -42,39 +44,13 @@ export function calcularVinilo(filas, pct = IMPREVISTOS_PCT) {
   return { detalle, suma, imprevistos, total: suma + imprevistos };
 }
 
-// Reparte las filas de la ficha de Busint en las 4 filas de insumo. Si varias
-// filas de la ficha caen en el mismo slot, se suman costo × cant (consumo 1) y
-// el detalle queda en "fuente". Devuelve { filas, sinUbicar } (sinUbicar = filas
-// de la ficha que no encajaron en ningún slot, para asignarlas a mano).
-export function asignarFichaAVinilo(filasActuales, ficha) {
-  const usadas = new Set();
-  const nuevas = filasActuales.map((f) => {
-    const def = FILAS_VINILO.find((d) => d.key === f.key);
-    if (!def || !def.slot) return f;
-    const coinciden = (ficha || []).filter((x) => def.slot.test(x.insumo || ""));
-    if (!coinciden.length) return { ...f, fuente: "No está en la ficha de Busint — digítalo" };
-    coinciden.forEach((x) => usadas.add(x.id));
-    return aplicarFilasAFila(f, coinciden);
-  });
-  const sinUbicar = (ficha || []).filter((x) => !usadas.has(x.id));
-  return { filas: nuevas, sinUbicar };
-}
-
-// Aplica una o varias filas de la ficha a una fila de la hoja.
-export function aplicarFilasAFila(fila, coinciden) {
-  if (coinciden.length === 1) {
-    const x = coinciden[0];
-    return {
-      ...fila,
-      costoMP: x.costo ?? "", unidad: x.unidad || "", consumo: x.cant,
-      fuente: `Busint: ${x.insumo}${x.enMaestro ? "" : " (sin costo en el maestro)"}`,
-    };
-  }
-  const costo = coinciden.reduce((s, x) => s + (Number(x.costo) || 0) * (Number(x.cant) || 0), 0);
+// Aplica un insumo del catálogo de Busint a una fila de la hoja (costo y unidad;
+// el consumo lo digita el usuario porque la referencia es nueva).
+export function aplicarInsumoAFila(fila, x) {
   return {
     ...fila,
-    costoMP: costo, unidad: "", consumo: 1,
-    fuente: "Busint (suma): " + coinciden.map((x) => `${x.insumo} ${x.cant} × ${x.costo ?? "s/c"}`).join(" + "),
+    costoMP: x.costo ?? "", unidad: x.unidad || "",
+    fuente: `Busint: ${x.insumo}${x.costo > 0 ? "" : " (sin costo en el catálogo)"}`,
   };
 }
 

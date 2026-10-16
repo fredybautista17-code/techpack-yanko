@@ -17470,8 +17470,7 @@ function AppInner() {
       cliente: kind === "proto" ? (item.cliente || item.colores?.[0] || "") : (capsula ? capsulaCliente(capsula) || "" : ""),
       label: `${item.reference || "s/ref"} · ${item.name || ""}`.trim() + (capsula ? ` — ${capsula.name}` : ""),
     });
-    setAreaAbierta("cotizaciones_area");
-    setView("cotizaciones");
+    setModuloActivo("cotizaciones"); // el Cotizador es un módulo aparte (pantalla completa); al volver queda donde estaba
   }
   // --- Bitácora de Envíos ---
   // Un registro de bitácora agrupa VARIAS referencias/prototipos enviados
@@ -18342,6 +18341,7 @@ function AppInner() {
     if (itemId === "produccion") return view === "produccion";
     if (itemId === "__corte__") return moduloActivo === "corte";
     if (itemId === "contabilidad_area") return moduloActivo === "contabilidad";
+    if (itemId === "cotizaciones") return moduloActivo === "cotizaciones";
     if (itemId === "planeacion_area") return moduloActivo === "planeacion";
     if (itemId === "planta_area") return moduloActivo === "planta";
     if (itemId === "bodega_area") return moduloActivo === "bodega";
@@ -18354,6 +18354,7 @@ function AppInner() {
   function navClick(itemId) {
     if (itemId === "__corte__") { setModuloActivo("corte"); return; }
     if (itemId === "contabilidad_area") { setModuloActivo("contabilidad"); return; }
+    if (itemId === "cotizaciones") { setModuloActivo("cotizaciones"); return; }
     if (itemId === "planeacion_area") { setModuloActivo("planeacion"); return; }
     if (itemId === "planta_area") { setModuloActivo("planta"); return; }
     if (itemId === "bodega_area") { setModuloActivo("bodega"); return; }
@@ -18397,6 +18398,16 @@ function AppInner() {
   }
   if (moduloActivo === "contabilidad") {
     return <ModuloContabilidad currentUser={currentUser} pedidos={pedidos} puedeAdministrarBasesDadoPorCumplido={puedeAdministrarBasesDadoPorCumplido} puedeSincronizarDadoPorCumplido={puedeSincronizarDadoPorCumplido} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+  }
+  if (moduloActivo === "cotizaciones" && canAccessCotizador) {
+    // (2026-10-16, a pedido de Fredy) Cotizaciones se abre como módulo aparte
+    // (pantalla completa), igual que Contabilidad, con "Volver a ATLAS".
+    return (
+      <CotizadorView currentUser={currentUser} config={config} protos={protosVisibles} capsulas={capsulasVisibles}
+        iniciarDesde={cotizadorInicio} onIniciarConsumido={() => setCotizadorInicio(null)}
+        onAplicarPrecio={aplicarPrecioCotizador} onVolver={() => setModuloActivo("diseno")}
+        notify={(msg) => notify({ id: uid(), icon: "🧮", title: "Cotizador", msg })} />
+    );
   }
   if (moduloActivo === "planeacion") {
     return <ModuloPlaneacion currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
@@ -18537,7 +18548,7 @@ function AppInner() {
               <HomeView currentUser={currentUser} perms={perms} canAccessCorte={canAccessCorte} canAccessContabilidad={canAccessContabilidad} canAccessPlaneacion={canAccessPlaneacion} canAccessPlanta={canAccessPlanta} canAccessBodega={canAccessBodega} canAccessNomina={canAccessNomina} canAccessDiseno={canAccessDiseno} canAccessPedidosArea={canAccessPedidosArea} canAccessKpis={canAccessKpis} canAccessInformes={canAccessInformes} canAccessAreas={canAccessAreas} canAccessCotizador={canAccessCotizador}
                 onGoArea={(id) => {
                   if (id === "contabilidad_area") { setModuloActivo("contabilidad"); }
-                  else if (id === "cotizaciones_area") { setAreaAbierta("cotizaciones_area"); setView("cotizaciones"); }
+                  else if (id === "cotizaciones_area") { setModuloActivo("cotizaciones"); }
                   else if (id === "planeacion_area") { setModuloActivo("planeacion"); }
                   else if (id === "planta_area") { setModuloActivo("planta"); }
                   else if (id === "bodega_area") { setModuloActivo("bodega"); }
@@ -18749,12 +18760,6 @@ function AppInner() {
                   else if (entry.kind === "ref") { setSelCapId(entry.capsulaId); setSelRefId(entry.itemId); setView("ref-detail"); }
                 }}
               />
-            )}
-            {view === "cotizaciones" && canAccessCotizador && (
-              <CotizadorView currentUser={currentUser} config={config} protos={protosVisibles} capsulas={capsulasVisibles}
-                iniciarDesde={cotizadorInicio} onIniciarConsumido={() => setCotizadorInicio(null)}
-                onAplicarPrecio={aplicarPrecioCotizador}
-                notify={(msg) => notify({ id: uid(), icon: "🧮", title: "Cotizador", msg })} />
             )}
             {view === "admin" && (currentUser?.isAdmin || canAccessAdminDiseno) && (
               <AdminView config={config} onUpdateConfig={saveConfig} users={users} onUpdateUsers={saveUsers} protos={protos} capsulas={capsulas}

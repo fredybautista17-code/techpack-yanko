@@ -8,7 +8,7 @@ import {
 } from "./cotizador-calculo";
 import { descargarCotizacionesExcel } from "./cotizador-excel";
 import {
-  FILAS_VINILO, IMPREVISTOS_PCT, filasViniloVacias, calcularVinilo, asignarFichaAVinilo, aplicarFilasAFila,
+  FILAS_VINILO, IMPREVISTOS_PCT, filasViniloVacias, calcularVinilo, aplicarInsumoAFila,
   tituloVinilo, mesLargo, descargarViniloExcel,
 } from "./cotizador-vinilo";
 
@@ -730,7 +730,53 @@ function ParametrosView({ parametros, clientesApp, currentUser, notify }) {
 // (2026-10-15, a pedido de Fredy) Ver src/cotizador-vinilo.js. Colección
 // Firestore "cotizador_vinilo": un doc por referencia+mes (id "{REF}_{aaaa-mm}")
 // y un doc "_estandar" con los valores de los procesos fijos (corte, espiga...).
-const SLOTS_INSUMO = FILAS_VINILO.filter((f) => f.tipo === "insumo");
+// Catálogo de insumos de Busint ("maestro de insumos"): se consulta una sola vez
+// y se guarda en memoria (igual que las telas).
+let catalogoInsumosPromesa = null;
+function cargarCatalogoInsumos(forzar) {
+  if (!catalogoInsumosPromesa || forzar) {
+    catalogoInsumosPromesa = httpsCallable(functionsClient, "getCatalogoInsumosBusint")()
+      .then((r) => r.data?.insumos || [])
+      .catch((e) => { catalogoInsumosPromesa = null; throw e; });
+  }
+  return catalogoInsumosPromesa;
+}
+function ModalInsumoBusint({ inicial, titulo, onElegir, onClose }) {
+  const [cat, setCat] = useState(null);
+  const [error, setError] = useState("");
+  const [q, setQ] = useState(inicial || "");
+  useEffect(() => { cargarCatalogoInsumos().then(setCat).catch((e) => setError(e.message || String(e))); }, []);
+  const lista = useMemo(() => {
+    if (!cat) return [];
+    const palabras = normTxt(q).split(/\s+/).filter(Boolean);
+    return cat.filter((x) => palabras.every((w) => normTxt(x.insumo).includes(w))).slice(0, 60);
+  }, [cat, q]);
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.45)", zIndex: 1000, display: "grid", placeItems: "center", padding: 16 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: C.white, borderRadius: 14, width: "100%", maxWidth: 640, maxHeight: "85vh", display: "flex", flexDirection: "column" }}>
+        <div style={{ padding: "14px 18px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ flex: 1, fontWeight: 800, fontSize: 15 }}>Insumos de Busint — {titulo}</div>
+          <button onClick={onClose} style={btn(C.white, C.slate, C.border)}>Cerrar</button>
+        </div>
+        <div style={{ padding: "12px 18px" }}>
+          <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Escribe parte del nombre del insumo…" style={inp} />
+        </div>
+        <div style={{ overflowY: "auto", padding: "0 18px 16px" }}>
+          {!cat && !error && <div style={{ padding: 20, textAlign: "center", color: C.slate, fontSize: 13 }}>Consultando el catálogo de Busint…</div>}
+          {error && <div style={{ padding: 12, background: C.redBg, color: C.red, borderRadius: 8, fontSize: 13 }}>No se pudo consultar Busint: {error}</div>}
+          {cat && lista.length === 0 && <div style={{ padding: 20, textAlign: "center", color: C.slate, fontSize: 13 }}>Ningún insumo coincide con la búsqueda.</div>}
+          {lista.map((x) => (
+            <div key={x.insumo} onClick={() => onElegir(x)} style={{ display: "flex", gap: 10, padding: "9px 6px", borderTop: `1px solid ${C.border}`, cursor: "pointer", fontSize: 13, alignItems: "center" }}>
+              <div style={{ flex: 1 }}>{x.insumo}{x.codigo && <span style={{ color: C.slate, fontSize: 11 }}> · {x.codigo}</span>}</div>
+              <div style={{ color: C.slate, minWidth: 40 }}>{x.unidad}</div>
+              <div style={{ fontWeight: 800, minWidth: 80, textAlign: "right", color: x.costo > 0 ? C.ink : C.amber }}>{x.costo > 0 ? "$" + fmtDec(x.costo) : "sin costo"}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function MiniVinilo({ currentUser, notify, onPasar }) {
   const [guardados, setGuardados] = useState([]);
@@ -738,9 +784,7 @@ function MiniVinilo({ currentUser, notify, onPasar }) {
   const [mes, setMes] = useState(hoyISO().slice(0, 7));
   const [pct, setPct] = useState(IMPREVISTOS_PCT);
   const [filas, setFilas] = useState(() => filasViniloVacias());
-  const [ficha, setFicha] = useState(null); // filas de la ficha de Busint
-  const [buscando, setBuscando] = useState(false);
-  const [aviso, setAviso] = useState("");
+  const [buscandoFila, setBuscandoFila] = useState(null); // fila que está eligiendo insumo de Busint
   const [estandarAplicado, setEstandarAplicado] = useState(false);
 
   useEffect(() => onSnapshot(collection(db, "cotizador_vinilo"), (s) => setGuardados(s.docs.map((d) => ({ ...d.data(), id: d.id }))), () => {}), []);
@@ -759,34 +803,6 @@ function MiniVinilo({ currentUser, notify, onPasar }) {
 
   const calc = useMemo(() => calcularVinilo(filas, pct), [filas, pct]);
   const cambiar = (key, campo, valor) => setFilas((fs) => fs.map((f) => (f.key === key ? { ...f, [campo]: valor } : f)));
-  const sinUbicar = useMemo(() => {
-    if (!ficha) return [];
-    return asignarFichaAVinilo(filas, ficha).sinUbicar;
-  }, [ficha, filas]);
-
-  async function traer() {
-    if (!ref.trim()) { notify?.("Escribe la referencia"); return; }
-    setBuscando(true); setAviso("");
-    try {
-      const r = await httpsCallable(functionsClient, "getFichaViniloBusintPorReferencia")({ ref: ref.trim() });
-      const d = r.data || {};
-      if (!d.encontrada) {
-        setFicha(null);
-        setAviso(`No encontré la referencia ${ref.trim()} en la ficha técnica de Busint (insumos dig). Revisa cómo está escrita o digita los valores a mano.`);
-      } else {
-        setFicha(d.filas || []);
-        const { filas: nuevas } = asignarFichaAVinilo(filas, d.filas || []);
-        setFilas(nuevas);
-        notify?.("Ficha traída de Busint");
-      }
-    } catch (e) {
-      setAviso("No se pudo consultar Busint: " + (e.message || e));
-    }
-    setBuscando(false);
-  }
-  function usarEn(x, key) {
-    setFilas((fs) => fs.map((f) => (f.key === key ? aplicarFilasAFila(f, [x]) : f)));
-  }
   async function guardar() {
     if (!normRef(ref)) { notify?.("Escribe la referencia para guardar"); return; }
     await fsSet("cotizador_vinilo", `${normRef(ref)}_${mes}`, { ref: ref.trim(), mes, pct, filas, total: calc.total, actualizadoPor: currentUser?.name || "", actualizado: new Date().toISOString() });
@@ -797,7 +813,7 @@ function MiniVinilo({ currentUser, notify, onPasar }) {
     notify?.("Valores de procesos guardados como estándar");
   }
   function cargar(g) {
-    setRef(g.ref || ""); setMes(g.mes || hoyISO().slice(0, 7)); setPct(g.pct ?? IMPREVISTOS_PCT); setFilas(g.filas || filasViniloVacias()); setFicha(null); setAviso("");
+    setRef(g.ref || ""); setMes(g.mes || hoyISO().slice(0, 7)); setPct(g.pct ?? IMPREVISTOS_PCT); setFilas(g.filas || filasViniloVacias());
   }
   async function excel() {
     try { await descargarViniloExcel({ ref, mes, filas, pct }); } catch (e) { notify?.("No se pudo generar el Excel: " + (e.message || e)); }
@@ -809,17 +825,15 @@ function MiniVinilo({ currentUser, notify, onPasar }) {
 
   return (
     <div>
-      <Seccion titulo="🎨 Minicotizador de Vinilo / DTF" sub="Trae de Busint el aplique DTF, la alta, la poliamida y el vinilo reflectivo; los demás son procesos con valor fijo. TOTAL = costo por unidad + BASE.">
+      <Seccion titulo="🎨 Minicotizador de Vinilo / DTF" sub="En cada insumo usa 🔎 para tomar su costo del catálogo de Busint y digita el promedio (consumo); los demás son procesos con valor fijo. TOTAL = costo por unidad + BASE.">
         <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
-          <Campo label="Referencia" ancho={150}><input value={ref} onChange={(e) => setRef(e.target.value)} onKeyDown={(e) => e.key === "Enter" && traer()} placeholder="Ej: 98-5644" style={inp} /></Campo>
+          <Campo label="Referencia" ancho={150}><input value={ref} onChange={(e) => setRef(e.target.value)} placeholder="Ej: 98-5644" style={inp} /></Campo>
           <Campo label="Mes" ancho={140}><input type="month" value={mes} onChange={(e) => setMes(e.target.value)} style={inp} /></Campo>
           <Campo label="Imprevistos %" ancho={100}><input value={pct} onChange={(e) => setPct(e.target.value)} style={cel} /></Campo>
-          <button onClick={traer} disabled={buscando} style={{ ...btn(C.blue, C.white), opacity: buscando ? 0.6 : 1 }}>{buscando ? "Consultando Busint…" : "🔎 Traer de Busint"}</button>
         </div>
-        {aviso && <div style={{ marginTop: 10, padding: "8px 12px", background: C.amberBg, color: C.amber, borderRadius: 8, fontSize: 13 }}>{aviso}</div>}
       </Seccion>
 
-      <Seccion titulo={tituloVinilo(ref.trim(), mes)} sub="Los valores en gris vienen de Busint; todos se pueden corregir a mano.">
+      <Seccion titulo={tituloVinilo(ref.trim(), mes)} sub="El costo M.P viene del catálogo de Busint (🔎); todo se puede corregir a mano.">
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 820 }}>
             <thead>
@@ -832,7 +846,10 @@ function MiniVinilo({ currentUser, notify, onPasar }) {
               {filas.map((f, i) => (
                 <tr key={f.key} style={{ borderTop: `1px solid ${C.border}` }}>
                   <td style={{ ...td, minWidth: 220 }}>
-                    <div style={{ fontWeight: 700, fontSize: 13 }}>{f.nombre}</div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <div style={{ fontWeight: 700, fontSize: 13, flex: 1 }}>{f.nombre}</div>
+                      {f.tipo === "insumo" && <button onClick={() => setBuscandoFila(f.key)} title="Buscar el insumo en el catálogo de Busint" style={{ ...btn(C.blueBg, C.blue, C.blueBg), padding: "3px 8px" }}>🔎</button>}
+                    </div>
                     {f.fuente && <div style={{ fontSize: 11, color: f.fuente.startsWith("No está") ? C.amber : C.slate }}>{f.fuente}</div>}
                   </td>
                   {f.tipo === "insumo" ? (
@@ -876,32 +893,6 @@ function MiniVinilo({ currentUser, notify, onPasar }) {
         </div>
       </Seccion>
 
-      {ficha && (
-        <Seccion titulo={`Ficha técnica en Busint (${ficha.length} filas)`} sub={sinUbicar.length ? `${sinUbicar.length} fila(s) no encajaron en ninguna línea: asígnalas a mano si corresponde.` : "Todas las filas encajaron en una línea."} plegable abierta={sinUbicar.length > 0}>
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 640 }}>
-              <thead><tr><th style={th}>Insumo</th><th style={{ ...th, textAlign: "right" }}>Cant.</th><th style={{ ...th, textAlign: "right" }}>Costo</th><th style={th}>U</th><th style={th}>Usar en…</th></tr></thead>
-              <tbody>
-                {ficha.map((x) => (
-                  <tr key={x.id} style={{ borderTop: `1px solid ${C.border}` }}>
-                    <td style={{ ...td, fontSize: 13 }}>{x.insumo}{!x.enMaestro && <span style={{ marginLeft: 6 }}><Pastilla bg={C.amberBg} color={C.amber}>sin costo</Pastilla></span>}</td>
-                    <td style={{ ...td, textAlign: "right", fontSize: 13 }}>{fmtDec(x.cant)}</td>
-                    <td style={{ ...td, textAlign: "right", fontSize: 13 }}>{x.costo == null ? "—" : money(x.costo)}</td>
-                    <td style={{ ...td, fontSize: 12, color: C.slate }}>{x.unidad || ""}</td>
-                    <td style={td}>
-                      <select value="" onChange={(e) => e.target.value && usarEn(x, e.target.value)} style={{ ...inp, maxWidth: 230 }}>
-                        <option value="">—</option>
-                        {SLOTS_INSUMO.map((s) => <option key={s.key} value={s.key}>{s.nombre}</option>)}
-                      </select>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Seccion>
-      )}
-
       <Seccion titulo={`Minicotizaciones guardadas (${lista.length})`} plegable abierta={false}>
         {lista.length === 0 && <div style={{ fontSize: 13, color: C.slate }}>Aún no hay ninguna guardada.</div>}
         {lista.map((g) => (
@@ -910,6 +901,12 @@ function MiniVinilo({ currentUser, notify, onPasar }) {
           </div>
         ))}
       </Seccion>
+      {buscandoFila && (() => {
+        const def = FILAS_VINILO.find((d) => d.key === buscandoFila);
+        const fila = filas.find((f) => f.key === buscandoFila);
+        return <ModalInsumoBusint inicial={def?.buscar || ""} titulo={fila?.nombre || ""} onClose={() => setBuscandoFila(null)}
+          onElegir={(x) => { setFilas((fs) => fs.map((f) => (f.key === buscandoFila ? aplicarInsumoAFila(f, x) : f))); setBuscandoFila(null); }} />;
+      })()}
     </div>
   );
 }
@@ -1013,7 +1010,7 @@ function InicioCotizaciones({ cotizaciones, minis, cargado, onIr, onNueva, onFil
   );
 }
 
-export default function CotizadorView({ currentUser, config, protos, capsulas, iniciarDesde, onIniciarConsumido, onAplicarPrecio, notify }) {
+export default function CotizadorView({ currentUser, config, protos, capsulas, iniciarDesde, onIniciarConsumido, onAplicarPrecio, onVolver, notify }) {
   const [tab, setTab] = useState("inicio");
   const [minis, setMinis] = useState([]); // minicotizaciones de vinilo guardadas (solo para el conteo del inicio)
   const [filtroEstado, setFiltroEstado] = useState(null); // "sinAplicar" | "sinVincular" | "viejas"
@@ -1155,6 +1152,7 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
   return (
     <div style={{ padding: 20, background: C.canvas, minHeight: "100%" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+        {onVolver && <button onClick={onVolver} style={btn(C.white, C.slate, C.border)}>← Volver a ATLAS</button>}
         <div style={{ fontWeight: 800, fontSize: 20, color: C.ink, flex: 1 }}>🧮 Módulo de Cotizaciones</div>
         {["inicio", "cotizaciones", "vinilo", "parametros"].map((t) => (
           <button key={t} onClick={() => { setTab(t); if (t !== "cotizaciones") setFiltroEstado(null); }} style={{ ...btn(tab === t ? C.ink : C.white, tab === t ? C.white : C.slate, tab === t ? C.ink : C.border) }}>{t === "inicio" ? "🏠 Inicio" : t === "cotizaciones" ? "Cotizaciones" : t === "vinilo" ? "🎨 Vinilo / DTF" : "⚙ Parámetros por cliente"}</button>

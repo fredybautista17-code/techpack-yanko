@@ -4961,93 +4961,49 @@ exports.getCostosProcesoDesdeBusintPorReferencia = onCall(
     };
   }
 );
-// (2026-10-15, a pedido de Fredy) Minicotizador de Vinilo / DTF: trae la
-// ficha técnica de UNA referencia desde Busint ("insumos dig": Insumo + Cant
-// = consumo por prenda) y, para cada insumo, su costo del maestro ("maestro
-// de insumos": Costo, Unidad). El frontend ubica en esas filas el aplique DTF
-// (Paper PET), las altas, la poliamida y el vinilo reflectivo. Se devuelven
-// TODAS las filas de la ficha (no solo las 4) para poder asignarlas a mano si
-// el nombre en Busint no coincide con lo esperado. Misma regla de
-// getCostosProcesoDesdeBusintPorReferencia: si la referencia está escrita de
-// dos maneras en Busint, se usa solo la ficha más reciente (ID más alto).
-exports.getFichaViniloBusintPorReferencia = onCall(
+// (2026-10-16, a pedido de Fredy) Minicotizador de Vinilo / DTF: una cotizacion
+// es una referencia NUEVA (no tiene ficha tecnica en Busint), asi que aqui
+// solo se consulta el catalogo de insumos ("maestro de insumos": Insumo,
+// Costo, Unidad) para que el cotizador elija el insumo (aplique DTF, alta,
+// poliamida, vinilo reflectivo...) y tome su costo. El consumo lo digita el
+// usuario. Si un insumo esta repetido en el maestro se deja el primero con
+// costo > 0.
+exports.getCatalogoInsumosBusint = onCall(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     timeoutSeconds: 180,
     memory: "512MiB",
   },
-  async (request) => {
-    const ref = String(request.data?.ref || "").trim();
-    if (!ref) {
-      throw new HttpsError("invalid-argument", "ref es obligatorio.");
-    }
-    let dig;
+  async () => {
     let maestro;
     try {
-      [dig, maestro] = await Promise.all([
-        consultarTablaBusintBDCompleta("insumos dig"),
-        consultarTablaBusintBDCompleta("maestro de insumos"),
-      ]);
+      maestro = await consultarTablaBusintBDCompleta("maestro de insumos");
     } catch (err) {
-      logger.error("Error consultando Busint BD (getFichaViniloBusintPorReferencia)", { ref, error: String(err) });
+      logger.error("Error consultando Busint BD (getCatalogoInsumosBusint)", { error: String(err) });
       throw new HttpsError("unavailable", `No se pudo consultar Busint: ${err?.message || String(err)}`);
     }
-    const normBuscada = normalizarRefComparacion(ref);
-    const porRefLiteral = new Map();
-    dig
-      .filter((f) => normalizarRefComparacion(f?.Ref) === normBuscada && f?.Insumo)
-      .forEach((f) => {
-        const refLit = String(f.Ref ?? "");
-        const id = Number(f.ID) || 0;
-        if (!porRefLiteral.has(refLit)) porRefLiteral.set(refLit, { maxId: id, filas: [] });
-        const g = porRefLiteral.get(refLit);
-        if (id > g.maxId) g.maxId = id;
-        g.filas.push(f);
-      });
-    let mejor = null;
-    let refLiteralUsada = null;
-    for (const [refLit, g] of porRefLiteral.entries()) {
-      if (!mejor || g.maxId > mejor.maxId) { mejor = g; refLiteralUsada = refLit; }
-    }
-    // Maestro por nombre de insumo (si hay repetidos, el primero con costo > 0).
-    const maestroPorNombre = new Map();
-    maestro.forEach((m) => {
-      const k = normalizarProcesoBD(m?.Insumo);
-      if (!k) return;
-      const prev = maestroPorNombre.get(k);
-      if (!prev || (!(Number(prev.Costo) > 0) && Number(m.Costo) > 0)) maestroPorNombre.set(k, m);
-    });
     const CAMPOS_CODIGO = ["Codigo", "Cod", "CodIns", "Codinsumo", "CodInsumo", "Id", "ID"];
-    const filas = (mejor ? mejor.filas : [])
-      .map((f) => {
-        const nombre = String(f.Insumo).trim();
-        const m = maestroPorNombre.get(normalizarProcesoBD(nombre));
-        const campoCodigo = m ? CAMPOS_CODIGO.find((c) => m[c] !== undefined && m[c] !== null && m[c] !== "") : null;
-        return {
-          id: Number(f.ID) || 0,
-          insumo: nombre,
-          cant: Number(f.Cant) || 0,
-          ubicacion: f.Ubicacion ?? null,
-          proc: f.PROC ?? null,
-          enMaestro: !!m,
-          costo: m ? Number(m.Costo) || 0 : null,
-          unidad: m ? String(m.Unidad ?? "").trim() : null,
-          codigo: campoCodigo ? String(m[campoCodigo]).trim() : null,
-        };
-      })
-      .sort((a, b) => a.id - b.id);
-    const ejemploMaestro = maestro.find((m) => m && typeof m === "object");
+    const porNombre = new Map();
+    maestro.forEach((m) => {
+      const nombre = String(m?.Insumo ?? "").trim();
+      const k = normalizarProcesoBD(nombre);
+      if (!k) return;
+      const costo = Number(m.Costo) || 0;
+      const prev = porNombre.get(k);
+      if (prev && !(prev.costo === 0 && costo > 0)) return;
+      const campoCodigo = CAMPOS_CODIGO.find((c) => m[c] !== undefined && m[c] !== null && m[c] !== "");
+      porNombre.set(k, {
+        insumo: nombre,
+        costo,
+        unidad: String(m.Unidad ?? "").trim(),
+        codigo: campoCodigo ? String(m[campoCodigo]).trim() : null,
+      });
+    });
+    const insumos = [...porNombre.values()].sort((x, y) => x.insumo.localeCompare(y.insumo, "es"));
+    const ejemplo = maestro.find((m) => m && typeof m === "object");
     return {
-      ref,
-      encontrada: filas.length > 0,
-      refLiteralUsada,
-      filas,
-      _debug: {
-        totalFilasDig: dig.length,
-        totalFilasMaestro: maestro.length,
-        columnasMaestro: ejemploMaestro ? Object.keys(ejemploMaestro) : [],
-        sinMaestro: filas.filter((f) => !f.enMaestro).length,
-      },
+      insumos,
+      _debug: { totalFilasMaestro: maestro.length, columnasMaestro: ejemplo ? Object.keys(ejemplo) : [] },
     };
   }
 );
