@@ -852,7 +852,7 @@ function ModalImportar({ cotizaciones, parametros, clientes, onImportar, onClose
 
 // ─── PARÁMETROS POR CLIENTE ──────────────────────────────────────────────────
 function ParametrosView({ parametros, clientesApp, currentUser, notify }) {
-  const fichasVirtuales = ["General", "Kamila", "Surtiexport", "Conbot", "Goldmark", "Mary Bautista"];
+  const fichasVirtuales = ["General", "Kamila", "Surtiexport", "Conbot", "Mary Bautista"];
   const lista = useMemo(() => {
     const out = [];
     const vistos = new Set();

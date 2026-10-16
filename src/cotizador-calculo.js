@@ -93,7 +93,7 @@ export const INSUMOS_CLIENTES = [
     ins("343", "BOLSA DOCENA 14X22", 200, 0.16), ins("341", "BOLSA INDIVIDUAL 9X12", 80, 1),
     ins("17", "VINILO REFLECTIVO", 38000, 0.001, true), ins("312", "ELASTICO 5 CM", 460, 1.3), ins("", "CIF", 250, 1),
   ] },
-  { claves: ["goldmark", "gold mark"], insumos: [
+  { claves: ["surtiexport", "goldmark", "gold mark"], insumos: [
     ins("4395", "MLLANYLG.A.65%AG35%PL", 30, 1), ins("4446", "ETIQ.GM-CAB4X8cm", 95, 1),
     ins("345", "BOLSA DOCENA 18X24", 295, 0.08), ins("2708", "POLIAMIDA GOLDMARK", 39, 1, true), ins("", "CIF", 160, 1),
   ] },
