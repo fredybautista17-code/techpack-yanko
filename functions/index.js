@@ -10175,3 +10175,74 @@ exports.subirCotizacionADropbox = onCall(
     return { ok: true, ruta, destino };
   }
 );
+
+// (2026-10-16, a pedido de Fredy) DIAGNOSTICO de ÓRDENES DE COMPRA de Busint BD (SOLO LEE).
+// Dado un número de orden (ej. 3648, YKK COLOMBIA SAS) busca esa orden en las tablas
+// "orden de compra" (cabecera), "orden de compra detalles" y "orden de compra detallesdxc" y
+// devuelve sus columnas, las filas que coinciden tal como vienen de Busint y la suma de cada
+// columna numérica de esas filas, para cuadrar contra el PDF de la orden (bruto, descuento, IVA, neto)
+// antes de construir la pantalla de historial de compras y control de costo en Contabilidad.
+// Como aún no se conocen los nombres de las columnas, una fila coincide si ALGUNA columna vale el número;
+// en el detalle se usan primero las mismas columnas con las que coincidió la cabecera.
+exports.depurarOrdenCompraBusint = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 540,
+    memory: "1GiB",
+  },
+  async (request) => {
+    await verificarLlamadorEsAdmin(request);
+    const numero = String(request.data?.numero ?? "").trim();
+    if (!/^\d+$/.test(numero)) throw new HttpsError("invalid-argument", "Escribe el número de la orden de compra (solo dígitos, ej. 3648).");
+    const esNumero = (v) => {
+      if (v === null || v === undefined || v === "") return false;
+      const t = String(v).trim();
+      return t === numero || (/^\d+(\.0+)?$/.test(t) && Number(t) === Number(numero));
+    };
+    const TABLAS = ["orden de compra", "orden de compra detalles", "orden de compra detallesdxc"];
+    let datos;
+    try {
+      datos = await Promise.all(TABLAS.map((t) => consultarTablaBusintBDCompleta(t)));
+    } catch (err) {
+      logger.error("Error consultando Busint BD (depurarOrdenCompraBusint)", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar Busint BD: ${err?.message || String(err)}`);
+    }
+    let columnasClave = [];
+    const resultado = TABLAS.map((tabla, i) => {
+      const filas = datos[i];
+      const columnas = filas.length ? Object.keys(filas[0]) : [];
+      const coincide = (f, cols) => (cols && cols.length ? cols : Object.keys(f)).some((k) => esNumero(f[k]));
+      let cols = null;
+      if (i > 0 && columnasClave.length) {
+        const propias = columnas.filter((c) => columnasClave.some((k) => k.toLowerCase() === c.toLowerCase()));
+        if (propias.length) cols = propias;
+      }
+      const halladas = filas.filter((f) => coincide(f, cols));
+      if (i === 0) {
+        const set = new Set();
+        halladas.forEach((f) => Object.keys(f).forEach((k) => { if (esNumero(f[k])) set.add(k); }));
+        columnasClave = [...set];
+      }
+      const sumas = {};
+      columnas.forEach((c) => {
+        const vals = halladas.map((f) => f[c]);
+        if (vals.length && vals.every((v) => v === null || v === "" || (typeof v === "number" && Number.isFinite(v)))) {
+          sumas[c] = Math.round(vals.reduce((a, v) => a + (Number(v) || 0), 0) * 100) / 100;
+        }
+      });
+      return {
+        tabla,
+        totalFilas: filas.length,
+        columnas,
+        columnasUsadasParaBuscar: cols || (i === 0 ? "cualquier columna" : "cualquier columna (no se halló la columna clave)"),
+        columnasQueCoincidieron: i === 0 ? columnasClave : undefined,
+        cantidadCoincidencias: halladas.length,
+        coincidencias: halladas.slice(0, 40),
+        sumasNumericas: sumas,
+        primerasFilas: halladas.length ? undefined : filas.slice(0, 2),
+      };
+    });
+    logger.info("depurarOrdenCompraBusint", { numero, coincidencias: resultado.map((r) => r.cantidadCoincidencias) });
+    return { ok: true, numero, tablas: resultado };
+  }
+);

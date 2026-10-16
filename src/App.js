@@ -14286,6 +14286,26 @@ function BusintCatalogoTestView() {
   function fmtMoneyDebug(n) {
     return "$ " + Number(n || 0).toLocaleString("es-CO", { maximumFractionDigits: 2 });
   }
+  // (2026-10-16) DIAGNOSTICO de una orden de compra de Busint (ver depurarOrdenCompraBusint en functions/index.js).
+  const [numOrdenCompraDepurar, setNumOrdenCompraDepurar] = useState("");
+  const [cargandoOrdenCompra, setCargandoOrdenCompra] = useState(false);
+  const [ordenCompraResultado, setOrdenCompraResultado] = useState(null);
+  async function depurarOrdenCompra() {
+    const numero = numOrdenCompraDepurar.trim();
+    if (!numero) return;
+    setCargandoOrdenCompra(true);
+    setError("");
+    setOrdenCompraResultado(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "depurarOrdenCompraBusint", { timeout: 540000 });
+      const resp = await llamar({ numero });
+      setOrdenCompraResultado(resp.data);
+    } catch (err) {
+      setError(err?.message || "No se pudo consultar la orden de compra.");
+    } finally {
+      setCargandoOrdenCompra(false);
+    }
+  }
   async function depurarFacturaCxp() {
     const codigo = codigoDepurarCxp.trim();
     const nfact = nfactDepurarCxp.trim();
@@ -15302,6 +15322,49 @@ function BusintCatalogoTestView() {
               </div>
             </>
           )}
+        </div>
+      )}
+      <div style={{ height: 1, background: T.border, margin: "24px 0" }} />
+      <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Ver una orden de compra de Busint</div>
+      <div style={{ fontSize: 13, color: T.slate, marginBottom: 16 }}>
+        Escribe el número de la orden (ej. 3648). Busca en "orden de compra", "orden de compra detalles" y "orden de compra detallesdxc" y muestra las columnas, las filas tal como vienen de Busint y la suma de cada columna numérica, para cuadrar contra el PDF de la orden. Solo lee.
+      </div>
+      <div style={{ display: "flex", gap: 10, alignItems: "end", marginBottom: 16, flexWrap: "wrap" }}>
+        <Field label="Número de orden de compra"><FInput value={numOrdenCompraDepurar} onChange={setNumOrdenCompraDepurar} placeholder="3648" /></Field>
+        <div style={{ marginBottom: 14 }}>
+          <Btn onClick={depurarOrdenCompra} disabled={cargandoOrdenCompra || !numOrdenCompraDepurar.trim()}>{cargandoOrdenCompra ? "Consultando..." : "🔎 Ver orden"}</Btn>
+        </div>
+      </div>
+      {ordenCompraResultado && (
+        <div style={{ marginBottom: 24, display: "grid", gap: 14 }}>
+          {(ordenCompraResultado.tablas || []).map((t) => (
+            <div key={t.tabla} style={{ padding: 14, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
+              <div style={{ fontWeight: 800, fontSize: 14, color: T.ink }}>{t.tabla} <span style={{ fontWeight: 400, color: T.slate }}>— {t.totalFilas} filas · {t.cantidadCoincidencias} coinciden con la orden {ordenCompraResultado.numero}</span></div>
+              <div style={{ fontSize: 12, color: T.slate, margin: "6px 0" }}>
+                Columnas: {t.columnas.join(" · ") || "—"}
+                {t.columnasQueCoincidieron ? <div>Columna(s) donde apareció el número: <b>{t.columnasQueCoincidieron.join(", ") || "ninguna"}</b></div> : null}
+                <div>Buscado en: {Array.isArray(t.columnasUsadasParaBuscar) ? t.columnasUsadasParaBuscar.join(", ") : t.columnasUsadasParaBuscar}</div>
+              </div>
+              {t.cantidadCoincidencias > 0 && (
+                <>
+                  <div style={{ fontSize: 12, color: T.ink, marginBottom: 6 }}><b>Suma de columnas numéricas (de las filas que coinciden):</b> {Object.entries(t.sumasNumericas || {}).map(([k, v]) => `${k}: ${Number(v).toLocaleString("es-CO", { maximumFractionDigits: 2 })}`).join(" · ") || "—"}</div>
+                  <div style={{ overflowX: "auto" }}>
+                    <table style={{ borderCollapse: "collapse", fontSize: 12 }}>
+                      <thead><tr>{t.columnas.map((c) => <th key={c} style={{ textAlign: "left", padding: "4px 8px", borderBottom: `1px solid ${T.border}`, whiteSpace: "nowrap" }}>{c}</th>)}</tr></thead>
+                      <tbody>
+                        {t.coincidencias.map((f, i) => (
+                          <tr key={i}>{t.columnas.map((c) => <td key={c} style={{ padding: "4px 8px", borderBottom: `1px solid ${T.border}`, whiteSpace: "nowrap" }}>{f[c] === null || f[c] === undefined ? "" : String(f[c])}</td>)}</tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
+              {t.cantidadCoincidencias === 0 && t.primerasFilas?.length > 0 && (
+                <div style={{ fontSize: 12, color: T.slate }}>Sin coincidencias. Primeras filas de la tabla, para ver cómo vienen: <code>{JSON.stringify(t.primerasFilas)}</code></div>
+              )}
+            </div>
+          ))}
         </div>
       )}
       <div style={{ height: 1, background: T.border, margin: "24px 0" }} />
