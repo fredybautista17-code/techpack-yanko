@@ -209,11 +209,11 @@ const estadoUltima = (c) => ultimaVersion(c)?.estado || "borrador";
 const ICONO_ESTADO = { aprobacion: "⏳", aprobada: "✔", devuelta: "↩" };
 
 // ─── EDITOR DE UNA COTIZACIÓN ────────────────────────────────────────────────
-function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsulas, onGuardar, onVolver, onEliminar, onAplicar, onSucio, puedeBorrar, puedeAprobar, usuario, notify }) {
+function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsulas, cotizaciones, onGuardar, onVolver, onEliminar, onAplicar, onSucio, puedeBorrar, puedeAprobar, usuario, notify }) {
   const [cot, setCot] = useState(inicial);
   const [sucio, setSucio] = useState(false);
   useEffect(() => { onSucio?.(sucio); }, [sucio]); // eslint-disable-line
-  const [vincular, setVincular] = useState(false);
+  const [vincular, setVincular] = useState(false); // false | "solo" (vincular) | "aprobar" (aprobar y aplicar)
   const [devolviendo, setDevolviendo] = useState(false);
   const [comentario, setComentario] = useState("");
   const [telaBusint, setTelaBusint] = useState(null); // índice de la fila de tela que busca precio
@@ -395,7 +395,19 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
   }
   function pedirAprobar(destino) {
     const txt = destino ? `¿Aprobar la V${ver.numero} y aplicar ${fmtCOP(calc.precioAplicar)} (con IVA) a ${destino.label}?` : `¿Aprobar la V${ver.numero} sin aplicar el precio a ningún prototipo?`;
-    if (window.confirm(txt)) aprobarYAplicar(destino);
+    const aviso = !(calc.telasTotal > 0) ? "\n\nOjo: esta versión no tiene costo de telas cargado." : "";
+    if (window.confirm(txt + aviso)) aprobarYAplicar(destino);
+  }
+  // Quien aprueba puede reabrir una versión aprobada (p. ej. si se aprobó sin querer). El precio ya
+  // aplicado al prototipo no se revierte solo: se reemplaza al volver a aprobar.
+  async function reabrir() {
+    const ap = cot.precioAplicado && cot.precioAplicado.version === ver.numero;
+    if (!window.confirm(`¿Reabrir la V${ver.numero} para seguir editándola?${ap ? `\n\nEl precio ${fmtCOP(cot.precioAplicado.valor)} ya aplicado a ${cot.precioAplicado.destino} no se revierte solo: se reemplaza cuando la vuelvas a aprobar.` : ""}`)) return;
+    const n = limpio(cot);
+    const vv = n.versiones[n.activa];
+    vv.estado = "borrador"; delete vv.decision; delete vv.envio;
+    conEvento(n, `reabrió la V${vv.numero}`);
+    await persistir(n, `V${vv.numero} reabierta`);
   }
   async function devolver() {
     if (!comentario.trim()) { notify?.("Escribe qué debe corregir quien la envió"); return; }
@@ -448,7 +460,7 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
           </select>
         </Campo>
         <Campo label="Prototipo / cápsula vinculado">
-          <button onClick={() => setVincular(true)} style={{ ...inp, textAlign: "left", cursor: "pointer", color: vinculoActual ? C.ink : C.slate }}>
+          <button onClick={() => setVincular("solo")} style={{ ...inp, textAlign: "left", cursor: "pointer", color: vinculoActual ? C.ink : C.slate }}>
             {vinculoActual ? `${vinculoActual.kind === "proto" ? "⬡" : "⬢"} ${vinculoActual.label}` : "Elegir… (para aplicar el precio)"}
           </button>
         </Campo>
@@ -473,6 +485,7 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
             <b style={{ color: C.green }}>Versión aprobada</b>{ver.decision?.por ? ` por ${ver.decision.por}` : ""}{ver.decision?.fecha ? ` el ${fmtFecha(ver.decision.fecha.slice(0, 10))}` : ""}.
             {cot.precioAplicado && cot.precioAplicado.version === ver.numero ? ` ${fmtCOP(cot.precioAplicado.valor)} aplicado a ${cot.precioAplicado.destino}.` : ""} Para cambiar algo, crea una versión nueva (volverá a pasar por aprobación).
           </div>
+          {puedeAprobar && <button onClick={reabrir} style={btn(C.white, C.amber, C.amber)}>Reabrir esta versión</button>}
           <button onClick={nuevaVersion} style={btn(C.white, C.green, C.green)}>+ Crear versión nueva para editar</button>
         </div>
       )}
@@ -690,13 +703,13 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
                 <div style={{ marginTop: 16, padding: "12px 14px", borderRadius: 12, background: "rgba(45,158,107,.25)", fontSize: 13, fontWeight: 700 }}>✔ Versión aprobada</div>
               ) : (
                 <>
-                  <button onClick={() => (vinculoActual ? pedirAprobar(vinculoActual) : setVincular(true))}
+                  <button onClick={() => (vinculoActual ? pedirAprobar(vinculoActual) : setVincular("aprobar"))}
                     style={{ ...btn(C.seam, C.ink), width: "100%", marginTop: 16, padding: "12px 14px" }}>
                     {vinculoActual ? `✔ Aprobar y aplicar ${fmtCOP(calc.precioAplicar)} a ${vinculoActual.label.length > 24 ? vinculoActual.label.slice(0, 24) + "…" : vinculoActual.label}` : `✔ Aprobar y aplicar ${fmtCOP(calc.precioAplicar)} a un prototipo / cápsula`}
                   </button>
                   {!vinculoActual && <button onClick={() => pedirAprobar(null)} style={{ ...btn("transparent", C.white, "rgba(255,255,255,.3)"), width: "100%", marginTop: 8, fontWeight: 500, fontSize: 12 }}>Aprobar sin aplicar el precio</button>}
                   {estadoV === "aprobacion" && <button onClick={() => setDevolviendo(true)} style={{ ...btn("transparent", "#E4E1F5", "#6a6a90"), width: "100%", marginTop: 8 }}>↩ Devolver con comentario</button>}
-                  {vinculoActual && <button onClick={() => setVincular(true)} style={{ ...btn("transparent", C.white, "rgba(255,255,255,.3)"), width: "100%", marginTop: 8, fontWeight: 500, fontSize: 12 }}>Cambiar destino</button>}
+                  {vinculoActual && <button onClick={() => setVincular("solo")} style={{ ...btn("transparent", C.white, "rgba(255,255,255,.3)"), width: "100%", marginTop: 8, fontWeight: 500, fontSize: 12 }}>Cambiar destino</button>}
                 </>
               )
             ) : (
@@ -713,7 +726,7 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
                     {estadoV === "devuelta" ? "Corregir y volver a enviar a aprobación" : "Enviar a aprobación"}
                   </button>
                   <div style={{ fontSize: 11, opacity: 0.7, marginTop: 8 }}>El precio se aplica al prototipo / cápsula cuando lo apruebe quien tiene el permiso.</div>
-                  {vinculoActual && <button onClick={() => setVincular(true)} style={{ ...btn("transparent", C.white, "rgba(255,255,255,.3)"), width: "100%", marginTop: 8, fontWeight: 500, fontSize: 12 }}>Cambiar destino</button>}
+                  {vinculoActual && <button onClick={() => setVincular("solo")} style={{ ...btn("transparent", C.white, "rgba(255,255,255,.3)"), width: "100%", marginTop: 8, fontWeight: 500, fontSize: 12 }}>Cambiar destino</button>}
                 </>
               )
             )}
@@ -763,8 +776,8 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
           onElegir={(r) => { setV((v) => { Object.assign(v.telas[telaBusint], r); }); setTelaBusint(null); }} />
       )}
       {vincular && (
-        <ModalVincular cot={cot} protos={protos} capsulas={capsulas} precio={calc.precioAplicar} onClose={() => setVincular(false)}
-          onElegir={puedeAprobar ? (dest) => aprobarYAplicar(dest) : undefined}
+        <ModalVincular cot={cot} protos={protos} capsulas={capsulas} cotizaciones={cotizaciones} precio={calc.precioAplicar} onClose={() => setVincular(false)}
+          onElegir={puedeAprobar && vincular === "aprobar" ? (dest) => pedirAprobar(dest) : undefined}
           onSoloVincular={(dest) => { const campos = camposDeDestino(dest); mutar((n) => { n.vinculo = dest; Object.assign(n, campos); }); setVincular(false); }} />
       )}
       {viniloModal && (
@@ -857,17 +870,29 @@ function ModalTelaBusint({ inicial, rendimiento, onElegir, onClose }) {
   );
 }
 // Elegir a qué prototipo / referencia de cápsula se manda el precio.
-function ModalVincular({ cot, protos, capsulas, precio, onElegir, onSoloVincular, onClose }) {
-  const [q, setQ] = useState(cot.referencia || "");
+function ModalVincular({ cot, protos, capsulas, cotizaciones, precio, onElegir, onSoloVincular, onClose }) {
+  const [q, setQ] = useState("");
+  const [soloSin, setSoloSin] = useState(true);
   const opciones = useMemo(() => {
     const lista = [];
     (protos || []).filter((p) => !p.eliminado).forEach((p) => lista.push({ kind: "proto", id: p.id, nombre: p.name || "", label: `${p.reference || "s/ref"} · ${p.name || ""}`.trim(), reference: p.reference || "", cliente: p.cliente || p.colores?.[0] || "", precioActual: p.precioCotizacion }));
     (capsulas || []).filter((c) => !c.eliminado).forEach((cap) => (cap.referencias || []).forEach((r) => lista.push({ kind: "ref", id: r.id, nombre: r.name || "", capsulaId: cap.id, label: `${r.reference || "s/ref"} · ${r.name || ""} — ${cap.name}`, reference: r.reference || "", cliente: cap.cliente || "", precioActual: r.precioCotizacion })));
     return lista;
   }, [protos, capsulas]);
+  // Una fila "tiene cotización" si otra cotización ya está vinculada a ella o si ya tiene precio de cotización.
+  const conCot = useMemo(() => {
+    const set = new Set();
+    (cotizaciones || []).forEach((c) => { if (c.vinculo && c.id !== cot.id) set.add(c.vinculo.kind + c.vinculo.id); });
+    return set;
+  }, [cotizaciones, cot.id]);
+  const tieneCot = (o) => conCot.has(o.kind + o.id) || o.precioActual != null;
+  const esActual = (o) => cot.vinculo && cot.vinculo.kind === o.kind && cot.vinculo.id === o.id;
+  const esMismaRef = (o) => o.reference && normRef(o.reference) === normRef(cot.referencia);
+  const nSin = opciones.filter((o) => !tieneCot(o)).length;
   const qn = normTxt(q);
   const qr = normRef(q);
   const filtradas = opciones
+    .filter((o) => !soloSin || !tieneCot(o) || esActual(o) || esMismaRef(o))
     .filter((o) => !qn || normTxt(o.label).includes(qn) || (qr && normRef(o.reference).includes(qr)))
     .sort((a, b) => (normRef(b.reference) === normRef(cot.referencia)) - (normRef(a.reference) === normRef(cot.referencia)))
     .slice(0, 60);
@@ -878,6 +903,9 @@ function ModalVincular({ cot, protos, capsulas, precio, onElegir, onSoloVincular
           <div style={{ fontWeight: 800, fontSize: 16 }}>{onElegir ? `Aplicar ${fmtCOP(precio)} (con IVA)` : "Vincular a prototipo o cápsula"}</div>
           <div style={{ fontSize: 12, color: C.slate, margin: "2px 0 10px" }}>{onElegir ? "Elige el prototipo o la referencia de cápsula que recibe este precio. Haz clic en una fila para vincularla. «Aplicar» además aprueba la versión y pone el precio." : "Haz clic en el prototipo o la referencia de cápsula que corresponde. El precio se aplicará cuando lo apruebe quien tiene el permiso."}</div>
           <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar por referencia o nombre…" style={inp} />
+          <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10, fontSize: 13, color: C.ink, cursor: "pointer" }}>
+            <input type="checkbox" checked={soloSin} onChange={(e) => setSoloSin(e.target.checked)} /> Solo sin cotización <span style={{ color: C.slate }}>({nSin} de {opciones.length})</span>
+          </label>
         </div>
         <div style={{ overflowY: "auto", padding: 8 }}>
           {filtradas.length === 0 && <div style={{ padding: 20, textAlign: "center", color: C.slate, fontSize: 13 }}>No se encontró nada con ese texto.</div>}
@@ -890,6 +918,7 @@ function ModalVincular({ cot, protos, capsulas, precio, onElegir, onSoloVincular
                   <div style={{ fontSize: 11, color: C.slate }}>{o.kind === "proto" ? "Prototipo" : "Referencia de cápsula"}{o.cliente ? ` · ${o.cliente}` : ""}{o.precioActual != null ? ` · precio actual ${fmtCOP(o.precioActual)}` : " · sin precio"}</div>
                 </div>
                 {igual && <Pastilla bg={C.green} color={C.white}>misma ref.</Pastilla>}
+                <Pastilla bg={tieneCot(o) ? C.amberBg : C.blueBg} color={tieneCot(o) ? C.amber : C.blue}>{tieneCot(o) ? "con cotización" : "sin cotización"}</Pastilla>
                 <button onClick={(e) => { e.stopPropagation(); onSoloVincular(o); }} style={{ ...btn(C.white, C.slate, C.border), fontWeight: 500, fontSize: 12 }}>{onElegir ? "Solo vincular" : "Vincular"}</button>
                 {onElegir && <button onClick={(e) => { e.stopPropagation(); onElegir(o); }} style={{ ...btn(C.green, C.white), fontSize: 12 }}>Aplicar</button>}
               </div>
@@ -1742,7 +1771,7 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
       <MenuCotizaciones activo={edit ? "cotizaciones" : tab} onIr={irA} onVolver={onVolver} onLogout={onLogout} currentUser={currentUser} nAprobar={cotizaciones.filter((c) => estadoUltima(c) === "aprobacion").length} puedeAprobar={puedeAprobar} />
       <div style={{ flex: 1, minWidth: 0, padding: "24px 34px", boxSizing: "border-box" }}>
       {edit ? (
-        <CotizacionEditor key={edit.id} inicial={edit} minis={minis} parametros={parametros} clientes={clientesApp} protos={protos} capsulas={capsulas}
+        <CotizacionEditor key={edit.id} inicial={edit} minis={minis} parametros={parametros} clientes={clientesApp} protos={protos} capsulas={capsulas} cotizaciones={cotizaciones}
           onGuardar={guardar} onVolver={() => { setEdit(null); setEdSucio(false); }} onEliminar={pedirBorrar} puedeBorrar={puedeBorrar} onSucio={setEdSucio} puedeAprobar={puedeAprobar} usuario={currentUser?.name || ""} notify={notify}
           onAplicar={(destino, valor) => onAplicarPrecio(destino, valor)} />
       ) : (
