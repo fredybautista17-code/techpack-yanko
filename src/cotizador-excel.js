@@ -205,22 +205,27 @@ function medirImagen(dataUrl) {
   });
 }
 
-// lista = cotizaciones (con .versiones). opciones.imagen = data URL de la foto
-// del prototipo / referencia vinculada (solo para lista de una sola cotización).
-export async function descargarCotizacionesExcel(lista, nombreArchivo, opciones = {}) {
+// Arma el libro (con la plantilla del servidor y la foto opcional) y devuelve el buffer del .xlsx.
+async function construirExcelCotizaciones(lista, imagenDataUrl) {
   const m = await import("exceljs/dist/exceljs.min.js");
   const ExcelJS = m.default || m;
   const resp = await fetch(`${process.env.PUBLIC_URL || ""}/plantilla-cotizacion.xlsx`);
   if (!resp.ok) throw new Error("No se encontró la plantilla de cotización en el servidor");
   const plantilla = await resp.arrayBuffer();
   let imagen = null;
-  if (opciones.imagen && lista.length === 1) {
-    const mt = /^data:image\/(png|jpeg|jpg|gif);base64,/i.exec(opciones.imagen);
-    const medidas = mt ? await medirImagen(opciones.imagen) : null;
-    if (mt && medidas) imagen = { cot: lista[0], base64: opciones.imagen, extension: mt[1].toLowerCase() === "png" ? "png" : mt[1].toLowerCase() === "gif" ? "gif" : "jpeg", ...medidas };
+  if (imagenDataUrl && lista.length === 1) {
+    const mt = /^data:image\/(png|jpeg|jpg|gif);base64,/i.exec(imagenDataUrl);
+    const medidas = mt ? await medirImagen(imagenDataUrl) : null;
+    if (mt && medidas) imagen = { cot: lista[0], base64: imagenDataUrl, extension: mt[1].toLowerCase() === "png" ? "png" : mt[1].toLowerCase() === "gif" ? "gif" : "jpeg", ...medidas };
   }
   const { wb, avisos } = await generarLibroCotizaciones(ExcelJS, plantilla, lista, { imagen });
-  const buf = await wb.xlsx.writeBuffer();
+  return { buf: await wb.xlsx.writeBuffer(), avisos };
+}
+
+// lista = cotizaciones (con .versiones). opciones.imagen = data URL de la foto
+// del prototipo / referencia vinculada (solo para lista de una sola cotización).
+export async function descargarCotizacionesExcel(lista, nombreArchivo, opciones = {}) {
+  const { buf, avisos } = await construirExcelCotizaciones(lista, opciones.imagen);
   const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -231,4 +236,19 @@ export async function descargarCotizacionesExcel(lista, nombreArchivo, opciones 
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 4000);
   return avisos;
+}
+
+// Excel de UNA versión de una cotización, en base64 (sin descargarlo): para mandarlo a Dropbox.
+export async function excelVersionBase64(cot, numeroVersion, imagenDataUrl) {
+  const ver = (cot.versiones || []).find((v) => v.numero === numeroVersion) || (cot.versiones || [])[(cot.versiones || []).length - 1];
+  if (!ver) throw new Error("La cotización no tiene versiones");
+  const una = { ...cot, versiones: [ver] };
+  const { buf } = await construirExcelCotizaciones([una], imagenDataUrl);
+  const dataUrl = await new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(fr.result);
+    fr.onerror = () => reject(new Error("No se pudo leer el Excel generado"));
+    fr.readAsDataURL(new Blob([buf]));
+  });
+  return String(dataUrl).split(",")[1] || "";
 }

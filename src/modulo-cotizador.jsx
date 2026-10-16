@@ -6,7 +6,7 @@ import {
   TASAS_BASE, ETIQUETAS_TASAS, FIJOS_BASE, ETIQUETAS_FIJOS, PROCESOS_BASE, INSUMOS_BASE, insumosSugeridos,
   REGEX_INSUMO_TERMO, num, versionVacia, calcularCotizacion, parsearArchivoCotizacion,
 } from "./cotizador-calculo";
-import { descargarCotizacionesExcel } from "./cotizador-excel";
+import { descargarCotizacionesExcel, excelVersionBase64 } from "./cotizador-excel";
 import {
   FILAS_VINILO, IMPREVISTOS_PCT, filasViniloVacias, calcularVinilo, aplicarInsumoAFila,
   tituloVinilo, mesLargo, descargarViniloExcel, baseVigente, aplicarBases, normalizarFilas, grupoFila,
@@ -240,6 +240,7 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
   useEffect(() => { onSucio?.(sucio); }, [sucio]); // eslint-disable-line
   const [vincular, setVincular] = useState(false); // false | "solo" (vincular) | "aprobar" (aprobar y aplicar)
   const [devolviendo, setDevolviendo] = useState(false);
+  const [subiendoDropbox, setSubiendoDropbox] = useState(false);
   const [comentario, setComentario] = useState("");
   const [telaBusint, setTelaBusint] = useState(null); // índice de la fila de tela que busca precio
   const [insBusint, setInsBusint] = useState(null); // índice de la fila de insumo que busca precio en Busint
@@ -420,6 +421,34 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
     conEvento(n, `retiró la V${vv.numero} de aprobación`);
     await persistir(n, `V${vv.numero} retirada de aprobación`);
   }
+  // Guarda el Excel de la versión activa en Dropbox: {carpeta raíz}/{REF}/{REF} V{n} {fecha}.xlsx (lo hace una función
+  // de la nube con la app de Dropbox que ya usa "Dado por Cumplido"). Si falla, la versión sigue como estaba.
+  async function enviarDropbox(base) {
+    const c0 = base || cot;
+    const ver0 = c0.versiones[c0.activa];
+    const vin = c0.vinculo;
+    let destino = null;
+    if (vin?.kind === "proto") destino = (protos || []).find((p) => p.id === vin.id);
+    else if (vin) destino = (capsulas || []).find((x) => x.id === vin.capsulaId)?.referencias?.find((r) => r.id === vin.id);
+    const carpeta = refReal(c0.referencia) || textoRef(destino);
+    if (!carpeta) { notify?.("Escribe la referencia de la cotización para guardarla en Dropbox"); return false; }
+    setSubiendoDropbox(true);
+    try {
+      const archivoBase64 = await excelVersionBase64(c0, ver0.numero, imagenVinculada(c0));
+      const r = await httpsCallable(functionsClient, "subirCotizacionADropbox")({ carpeta, version: ver0.numero, fecha: ver0.fecha || hoyISO(), archivoBase64 });
+      const ruta = r.data?.ruta || "";
+      const n = limpio(c0);
+      n.versiones[n.activa].dropbox = { ruta, fecha: new Date().toISOString(), por: usuario || "" };
+      conEvento(n, `guardó la V${ver0.numero} en Dropbox (${ruta})`);
+      await persistir(n, `V${ver0.numero} guardada en Dropbox: ${ruta}`);
+      return true;
+    } catch (e) {
+      notify?.(`No se pudo guardar en Dropbox: ${e?.message || e}. La versión sigue igual; usa «Enviar a Dropbox» para reintentar.`);
+      return false;
+    } finally {
+      setSubiendoDropbox(false);
+    }
+  }
   // Aprueba la versión activa y, si hay destino, aplica el precio con IVA a ese prototipo / referencia.
   async function aprobarYAplicar(destino) {
     const valor = calc.precioAplicar;
@@ -442,6 +471,7 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
     setSucio(false);
     setVincular(false);
     notify?.(destino ? `${fmtCOP(valor)} (con IVA) aprobado y aplicado a ${destino.label}` : `V${vv.numero} aprobada`);
+    await enviarDropbox(n); // la cotización aprobada queda guardada en Dropbox
   }
   function pedirAprobar(destino) {
     const txt = destino ? `¿Aprobar la V${ver.numero} y aplicar ${fmtCOP(calc.precioAplicar)} (con IVA) a ${destino.label}?` : `¿Aprobar la V${ver.numero} sin aplicar el precio a ningún prototipo?`;
@@ -479,8 +509,8 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
   const tasasEdit = Object.keys(ETIQUETAS_TASAS);
   const vinculoActual = cot.vinculo ? { ...cot.vinculo, label: etiquetaVinculo(cot.vinculo, protos, capsulas) } : null;
   // Foto del prototipo / referencia vinculada: va en el Excel, como en la hoja original.
-  function imagenVinculada() {
-    const vi = cot.vinculo;
+  function imagenVinculada(c = cot) {
+    const vi = c.vinculo;
     if (!vi) return null;
     if (vi.kind === "proto") return (protos || []).find((p) => p.id === vi.id)?.image || null;
     const cap = (capsulas || []).find((c) => c.id === vi.capsulaId);
@@ -534,7 +564,9 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
           <div style={{ flex: 1, fontSize: 13 }}>
             <b style={{ color: C.green }}>Versión aprobada</b>{ver.decision?.por ? ` por ${ver.decision.por}` : ""}{ver.decision?.fecha ? ` el ${fmtFecha(ver.decision.fecha.slice(0, 10))}` : ""}.
             {cot.precioAplicado && cot.precioAplicado.version === ver.numero ? ` ${fmtCOP(cot.precioAplicado.valor)} aplicado a ${cot.precioAplicado.destino}.` : ""} Para cambiar algo, crea una versión nueva (volverá a pasar por aprobación).
+            {ver.dropbox && <div style={{ marginTop: 4, color: C.slate }}>☁ En Dropbox: {ver.dropbox.ruta}</div>}
           </div>
+          <button onClick={() => enviarDropbox()} disabled={subiendoDropbox} title={ver.dropbox ? `Ya está en Dropbox: ${ver.dropbox.ruta}` : "Guarda el Excel de esta versión en la carpeta de cotizaciones aprobadas"} style={{ ...btn(C.white, C.blue, C.blue), opacity: subiendoDropbox ? 0.5 : 1 }}>{subiendoDropbox ? "Subiendo…" : ver.dropbox ? "☁ Reenviar a Dropbox" : "☁ Enviar a Dropbox"}</button>
           {puedeAprobar && <button onClick={reabrir} style={btn(C.white, C.amber, C.amber)}>Reabrir esta versión</button>}
           <button onClick={nuevaVersion} style={btn(C.white, C.green, C.green)}>+ Crear versión nueva para editar</button>
         </div>

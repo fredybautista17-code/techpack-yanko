@@ -10070,3 +10070,94 @@ exports.cierreAutomaticoNocturno = onSchedule(
     await correrCierreAutomaticoNocturno();
   }
 );
+
+// ─────────────────────────────────────────────────────────────────────────
+// (2026-10-16, a pedido de Fredy) Cotizaciones aprobadas -> Dropbox.
+// Al aprobar una versión, el Cotizador arma el Excel de esa versión (con el formato
+// de siempre) y lo manda aquí; se guarda en
+//   {carpeta raíz}/{REF}/{REF} V{n} {aaaa-mm-dd}.xlsx
+// (si la misma versión se vuelve a enviar el mismo día, el archivo se reemplaza).
+// Reutiliza la app de Dropbox y los secretos que ya usa "Dado por Cumplido"
+// (DROPBOX_APP_KEY / DROPBOX_APP_SECRET / DROPBOX_REFRESH_TOKEN): no hay nada nuevo que configurar.
+// La carpeta raíz se puede cambiar sin publicar nada: documento Firestore
+// `config/cotizador_dropbox` con el campo `ruta` (ej. "/CENTRO ADMINISTRATIVO YANKO/COTIZACIONES/COTIZACIONES APROBADAS").
+// La ruta de la API de Dropbox va desde la raíz de la carpeta personal de Fredy, no desde C:\...\FREDY Dropbox.
+const RUTAS_COTIZACIONES_DROPBOX = [
+  "/CENTRO ADMINISTRATIVO YANKO/COTIZACIONES/COTIZACIONES APROBADAS",
+  "/FREDY bautista/CENTRO ADMINISTRATIVO YANKO/COTIZACIONES/COTIZACIONES APROBADAS",
+];
+let raizCotizacionesDropboxCache = null;
+
+async function llamarDropboxJson(endpoint, cuerpo) {
+  const accessToken = await obtenerTokenAccesoDropbox();
+  const resp = await fetch(`https://api.dropboxapi.com/2/${endpoint}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify(cuerpo),
+  });
+  const texto = await resp.text().catch(() => "");
+  let json = null;
+  try { json = JSON.parse(texto); } catch (e) { /* no era JSON */ }
+  return { ok: resp.ok, status: resp.status, json, texto };
+}
+
+async function resolverRaizCotizacionesDropbox() {
+  if (raizCotizacionesDropboxCache) return raizCotizacionesDropboxCache;
+  let candidatas = [...RUTAS_COTIZACIONES_DROPBOX];
+  try {
+    const cfg = await db.collection("config").doc("cotizador_dropbox").get();
+    const ruta = cfg.exists ? String(cfg.data()?.ruta || "").trim() : "";
+    if (ruta) candidatas = [ruta.startsWith("/") ? ruta : `/${ruta}`];
+  } catch (e) {
+    logger.warn("No se pudo leer config/cotizador_dropbox; se usan las rutas por defecto", { error: String(e) });
+  }
+  for (const ruta of candidatas) {
+    const r = await llamarDropboxJson("files/get_metadata", { path: ruta });
+    if (r.ok && r.json?.[".tag"] === "folder") {
+      raizCotizacionesDropboxCache = r.json.path_display || ruta;
+      return raizCotizacionesDropboxCache;
+    }
+  }
+  // No se encontró: se listan las carpetas de la raíz para saber cuál es la ruta correcta.
+  const lista = await llamarDropboxJson("files/list_folder", { path: "" });
+  const nombres = (lista.json?.entries || []).filter((x) => x[".tag"] === "folder").map((x) => x.name).slice(0, 20);
+  throw new HttpsError(
+    "failed-precondition",
+    `No encontré la carpeta de cotizaciones aprobadas en Dropbox. Probé: ${candidatas.join(" | ")}. ` +
+      `Carpetas que veo en la raíz: ${nombres.length ? nombres.join(", ") : "ninguna (¿la app de Dropbox solo tiene acceso a su propia carpeta?)"}. ` +
+      "Para fijar la ruta correcta crea el documento config/cotizador_dropbox con el campo ruta."
+  );
+}
+
+exports.subirCotizacionADropbox = onCall(
+  {
+    secrets: [DROPBOX_APP_KEY, DROPBOX_APP_SECRET, DROPBOX_REFRESH_TOKEN],
+    timeoutSeconds: 120,
+    memory: "512MiB",
+  },
+  async (request) => {
+    if (!request.auth) throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+    const d = request.data || {};
+    const limpiaSegmento = (t) => String(t || "").replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, " ").trim().replace(/^\.+/, "").slice(0, 80);
+    const carpeta = limpiaSegmento(d.carpeta);
+    const version = Number.parseInt(d.version, 10);
+    const fecha = String(d.fecha || "");
+    if (!carpeta) throw new HttpsError("invalid-argument", "Falta la referencia (o el # Prototipo) para nombrar la carpeta.");
+    if (!(version > 0)) throw new HttpsError("invalid-argument", "Falta el número de versión.");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) throw new HttpsError("invalid-argument", "La fecha de la versión no es válida.");
+    if (typeof d.archivoBase64 !== "string" || !d.archivoBase64) throw new HttpsError("invalid-argument", "Falta el archivo Excel.");
+    const buffer = Buffer.from(d.archivoBase64, "base64");
+    if (!buffer.length || buffer.length > 8 * 1024 * 1024) throw new HttpsError("invalid-argument", "El archivo está vacío o pesa más de 8 MB.");
+
+    const raiz = await resolverRaizCotizacionesDropbox();
+    const ruta = `${raiz}/${carpeta}/${carpeta} V${version} ${fecha}.xlsx`;
+    try {
+      await subirArchivoADropbox(buffer, ruta);
+    } catch (err) {
+      logger.error("No se pudo subir la cotización a Dropbox", { ruta, error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo subir a Dropbox: ${err?.message || String(err)}`);
+    }
+    logger.info("Cotización subida a Dropbox", { ruta, bytes: buffer.length, por: request.auth?.token?.email || request.auth?.uid || "" });
+    return { ok: true, ruta };
+  }
+);
