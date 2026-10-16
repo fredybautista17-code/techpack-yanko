@@ -26,6 +26,7 @@ import {
   runTransaction,
 } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
+import { parsearNumProto, maxNumeros, formatearNumProto, siguienteNumProto, numProtoRepetido, BASE_MOLDE } from "./contador-prototipos";
 // (2026-09-17, a pedido de Fredy) Storage -- para subir las fotos de
 // "Carta de colores" de Preordenes como archivos en vez de guardarlas
 // codificadas dentro del documento de Firestore (ver ImageListUploader
@@ -1875,15 +1876,75 @@ function SugerenciaYVerificacionRef({ sug, referencia, onUsar, busint, protos, c
     </div>
   );
 }
+// Contador del «# Prototipo» (ver contador-prototipos.js). Lee lo que ya hay en ATLAS y el
+// contador guardado en Firestore ("contadores/prototipos"); si no se puede escribir el
+// contador, igual calcula el número con los datos existentes.
+function useContadorProtos(protos, capsulas) {
+  const [contador, setContador] = useState({});
+  useEffect(() => onSnapshot(doc(db, "contadores", "prototipos"), (sn) => setContador(sn.exists() ? sn.data() : {}), () => {}), []);
+  const textos = useMemo(
+    () => [...(protos || []).map((p) => p.numPrototipo), ...(capsulas || []).flatMap((c) => (c.referencias || []).map((r) => r.numPrototipo))],
+    [protos, capsulas]
+  );
+  const sugerir = (tipo) => (tipo ? formatearNumProto(tipo, siguienteNumProto(tipo, textos, contador)) : "");
+  // Reserva el siguiente número de la serie (transacción: dos personas no reciben el mismo).
+  async function reservar(tipo) {
+    const ref = doc(db, "contadores", "prototipos");
+    const base = maxNumeros(textos)[tipo] || 0;
+    try {
+      return await runTransaction(db, async (tx) => {
+        const sn = await tx.get(ref);
+        const c = sn.exists() ? Number(sn.data()[tipo]) || 0 : 0;
+        const n = Math.max(tipo === "molde" ? BASE_MOLDE - 1 : 0, base, c) + 1;
+        tx.set(ref, { [tipo]: n }, { merge: true });
+        return formatearNumProto(tipo, n);
+      });
+    } catch (e) {
+      return sugerir(tipo);
+    }
+  }
+  // Un número escrito a mano que pertenece a una serie sube el contador (para no repetirlo después).
+  async function registrarManual(txt) {
+    const p = parsearNumProto(txt);
+    if (!p) return;
+    try {
+      await runTransaction(db, async (tx) => {
+        const ref = doc(db, "contadores", "prototipos");
+        const sn = await tx.get(ref);
+        const c = sn.exists() ? Number(sn.data()[p.tipo]) || 0 : 0;
+        if (p.n > c) tx.set(ref, { [p.tipo]: p.n }, { merge: true });
+      });
+    } catch (e) { /* si no se puede escribir, el cálculo con los datos existentes basta */ }
+  }
+  const repetido = (txt, ignorar) => numProtoRepetido(txt, textos, ignorar);
+  return { sugerir, reservar, registrarManual, repetido };
+}
+const OPCIONES_TIPO_PROTO = ["Tela", "Molde"];
+const tipoProtoDeTexto = (t) => (t === "Tela" ? "tela" : t === "Molde" ? "molde" : "");
+const textoDeTipoProto = (t) => (t === "tela" ? "Tela" : t === "molde" ? "Molde" : "");
+
 function NewProtoModal({ onSave, onClose, config, protos, capsulas }) {
-  const [form, setForm] = useState({ name: "", categoria: "", silueta: "", linea: "", rango: "", reference: "", assignedTo: "", cliente: "", mes: "", tipoTela: "", baseMolderia: "", numPrototipo: "" });
+  const [form, setForm] = useState({ name: "", categoria: "", silueta: "", linea: "", rango: "", reference: "", assignedTo: "", cliente: "", mes: "", tipoTela: "", baseMolderia: "", numPrototipo: "", tipoProto: "" });
   const [prefijoSel, setPrefijoSel] = useState("");
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+  const cont = useContadorProtos(protos, capsulas);
+  const [numManual, setNumManual] = useState(false);
+  const numSugerido = cont.sugerir(form.tipoProto);
+  // Mientras no lo escribas a mano, «# Prototipo» sigue al siguiente número de la serie.
+  useEffect(() => {
+    if (form.tipoProto && !numManual) setForm((f) => (f.numPrototipo === numSugerido ? f : { ...f, numPrototipo: numSugerido }));
+  }, [numSugerido, numManual, form.tipoProto]);
   const busint = useMaestroReferenciasBusint();
   const sug = sugerirReferencia(form.categoria, form.linea, form.cliente, config, protos || [], capsulas || [], busint.lista, prefijoSel);
-  function save() {
+  async function save() {
     if (!form.name || !form.reference) return;
-    onSave({ id: uid(), ...form, status: "borrador", currentStage: "ilustracion", stageStartedAt: today(), createdAt: today(), promotedTo: null, image: null, bom: [], pom: [], observations: [] });
+    let num = form.numPrototipo;
+    if (form.tipoProto && !numManual) num = await cont.reservar(form.tipoProto);
+    else if (String(num || "").trim()) {
+      if (cont.repetido(num) && !window.confirm(`El número ${num} ya está en otro prototipo. ¿Crear de todas formas?`)) return;
+      await cont.registrarManual(num);
+    }
+    onSave({ id: uid(), ...form, numPrototipo: num, status: "borrador", currentStage: "ilustracion", stageStartedAt: today(), createdAt: today(), promotedTo: null, image: null, bom: [], pom: [], observations: [] });
     onClose();
   }
   return (
@@ -1908,7 +1969,16 @@ function NewProtoModal({ onSave, onClose, config, protos, capsulas }) {
         <Field label="Tipo de Tela"><FInput value={form.tipoTela} onChange={set("tipoTela")} placeholder="Ej: Diamante, Lycra" /></Field>
         <Field label="Base de Moldería"><FInput value={form.baseMolderia} onChange={set("baseMolderia")} placeholder="Ej: BM-045" /></Field>
       </div>
-      <Field label="# Prototipo"><FInput value={form.numPrototipo} onChange={set("numPrototipo")} placeholder="Ej: PTGM170" /></Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Tipo de prototipo"><FSel value={textoDeTipoProto(form.tipoProto)} onChange={(t) => { setNumManual(false); set("tipoProto")(tipoProtoDeTexto(t)); if (!t) set("numPrototipo")(""); }} options={OPCIONES_TIPO_PROTO} /></Field>
+        <Field label="# Prototipo"><FInput value={form.numPrototipo} onChange={(v) => { setNumManual(true); set("numPrototipo")(v); }} placeholder={form.tipoProto === "molde" ? "Ej: 890" : "Ej: PK-1"} /></Field>
+      </div>
+      {form.tipoProto && numManual && numSugerido && form.numPrototipo !== numSugerido && (
+        <div style={{ fontSize: 12, color: T.slate, margin: "-6px 0 8px" }}>Siguiente de la serie: <b>{numSugerido}</b> <span onClick={() => { setNumManual(false); }} style={{ color: T.denim, cursor: "pointer", fontWeight: 700 }}>· usarlo</span></div>
+      )}
+      {String(form.numPrototipo || "").trim() && cont.repetido(form.numPrototipo) && (
+        <div style={{ fontSize: 12, color: T.coral, fontWeight: 700, margin: "-6px 0 8px" }}>⚠ El número {form.numPrototipo} ya está en otro prototipo.</div>
+      )}
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
         <Btn onClick={save}>Crear Prototipo</Btn>
@@ -1963,10 +2033,25 @@ function EditRefModal({ refData: refItem, onSave, onClose, config, protos }) {
     </Modal>
   );
 }
-function EditProtoModal({ proto, onSave, onClose, config }) {
-  const [form, setForm] = useState({ name: proto?.name || "", categoria: proto?.categoria || "", silueta: proto?.silueta || "", rango: proto?.rango || "", reference: proto?.reference || "", assignedTo: proto?.assignedTo || "", cliente: proto?.cliente || "", mes: proto?.mes || "", tipoTela: proto?.tipoTela || "", baseMolderia: proto?.baseMolderia || "", numPrototipo: proto?.numPrototipo || "" });
+function EditProtoModal({ proto, onSave, onClose, config, protos, capsulas }) {
+  const [form, setForm] = useState({ name: proto?.name || "", categoria: proto?.categoria || "", silueta: proto?.silueta || "", rango: proto?.rango || "", reference: proto?.reference || "", assignedTo: proto?.assignedTo || "", cliente: proto?.cliente || "", mes: proto?.mes || "", tipoTela: proto?.tipoTela || "", baseMolderia: proto?.baseMolderia || "", numPrototipo: proto?.numPrototipo || "", tipoProto: proto?.tipoProto || "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
-  function save() { if (!form.name || !form.reference) return; onSave(form); onClose(); }
+  const cont = useContadorProtos(protos, capsulas);
+  async function save() {
+    if (!form.name || !form.reference) return;
+    const num = String(form.numPrototipo || "").trim();
+    if (num && num !== String(proto?.numPrototipo || "").trim()) {
+      if (cont.repetido(num, proto?.numPrototipo) && !window.confirm(`El número ${num} ya está en otro prototipo. ¿Guardar de todas formas?`)) return;
+      await cont.registrarManual(num);
+    }
+    onSave(form);
+    onClose();
+  }
+  async function asignarNumero() {
+    if (!form.tipoProto) return;
+    const n = await cont.reservar(form.tipoProto);
+    set("numPrototipo")(n);
+  }
   return (
     <Modal title={`Editar Prototipo — ${proto.reference}`} onClose={onClose} width={540}>
       <Field label="Nombre"><FInput value={form.name} onChange={set("name")} placeholder="Nombre del prototipo" /></Field>
@@ -1987,7 +2072,16 @@ function EditProtoModal({ proto, onSave, onClose, config }) {
         <Field label="Tipo de Tela"><FInput value={form.tipoTela} onChange={set("tipoTela")} placeholder="Ej: Diamante, Lycra" /></Field>
         <Field label="Base de Moldería"><FInput value={form.baseMolderia} onChange={set("baseMolderia")} placeholder="Ej: BM-045" /></Field>
       </div>
-      <Field label="# Prototipo"><FInput value={form.numPrototipo} onChange={set("numPrototipo")} placeholder="Ej: PTGM170" /></Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Tipo de prototipo"><FSel value={textoDeTipoProto(form.tipoProto)} onChange={(t) => set("tipoProto")(tipoProtoDeTexto(t))} options={OPCIONES_TIPO_PROTO} /></Field>
+        <Field label="# Prototipo"><FInput value={form.numPrototipo} onChange={set("numPrototipo")} placeholder="Ej: PK-1 o 890" /></Field>
+      </div>
+      {form.tipoProto && !String(form.numPrototipo || "").trim() && (
+        <div style={{ fontSize: 12, color: T.slate, margin: "-6px 0 8px" }}>Siguiente de la serie: <b>{cont.sugerir(form.tipoProto)}</b> <span onClick={asignarNumero} style={{ color: T.denim, cursor: "pointer", fontWeight: 700 }}>· asignarlo</span></div>
+      )}
+      {String(form.numPrototipo || "").trim() && cont.repetido(form.numPrototipo, proto?.numPrototipo) && (
+        <div style={{ fontSize: 12, color: T.coral, fontWeight: 700, margin: "-6px 0 8px" }}>⚠ El número {form.numPrototipo} ya está en otro prototipo.</div>
+      )}
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
         <Btn onClick={save}>Guardar cambios</Btn>
@@ -2660,7 +2754,7 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
   const noFinalState = !["aprobado", "declinado"].includes(st);
   return (
     <div>
-      {showEdit && kind === "proto" && <EditProtoModal proto={item} config={config} onSave={(p) => onUpdateItem(p)} onClose={() => setShowEdit(false)} />}
+      {showEdit && kind === "proto" && <EditProtoModal proto={item} protos={protos} capsulas={capsulas} config={config} onSave={(p) => onUpdateItem(p)} onClose={() => setShowEdit(false)} />}
       {showEdit && kind === "ref" && <EditRefModal refData={item} config={config} protos={protos} onSave={(p) => onUpdateItem(p)} onClose={() => setShowEdit(false)} />}
       {showEnviado && <EnviadoModal onSave={handleEnviado} onClose={() => setShowEnviado(false)} />}
       {showTaller && <EnviarTallerModal item={item} existing={tallerMasReciente?.estado !== "enviado" ? tallerMasReciente : null} ultimoTaller={tallerMasReciente} config={config} onSave={handleGuardarTaller} onClose={() => setShowTaller(false)} />}
