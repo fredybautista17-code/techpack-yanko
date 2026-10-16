@@ -44,13 +44,17 @@ export function calcularVinilo(filas, pct = IMPREVISTOS_PCT) {
   return { detalle, suma, imprevistos, total: suma + imprevistos };
 }
 
-// Aplica un insumo del catálogo de Busint a una fila de la hoja (costo y unidad;
-// el consumo lo digita el usuario porque la referencia es nueva).
+// Aplica un insumo del inventario de Busint a una fila de la hoja: costo
+// PROMEDIO del inventario (si no tiene, el costo de la ficha) y unidad. El
+// consumo lo digita el usuario porque la referencia es nueva.
 export function aplicarInsumoAFila(fila, x) {
+  const usaPromedio = x.promedio > 0;
+  const costo = usaPromedio ? x.promedio : x.costo;
+  const nombre = x.color ? `${x.componente} - ${x.color}` : x.componente;
   return {
     ...fila,
-    costoMP: x.costo ?? "", unidad: x.unidad || "",
-    fuente: `Busint: ${x.insumo}${x.costo > 0 ? "" : " (sin costo en el catálogo)"}`,
+    costoMP: costo > 0 ? Math.round(costo * 100) / 100 : "", unidad: x.unidad || "",
+    fuente: `Busint: ${nombre} · ${usaPromedio ? "costo promedio de inventario" : costo > 0 ? "costo de la ficha (sin promedio en inventario)" : "sin costo en Busint"}`,
   };
 }
 

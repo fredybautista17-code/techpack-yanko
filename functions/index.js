@@ -4962,48 +4962,55 @@ exports.getCostosProcesoDesdeBusintPorReferencia = onCall(
   }
 );
 // (2026-10-16, a pedido de Fredy) Minicotizador de Vinilo / DTF: una cotizacion
-// es una referencia NUEVA (no tiene ficha tecnica en Busint), asi que aqui
-// solo se consulta el catalogo de insumos ("maestro de insumos": Insumo,
-// Costo, Unidad) para que el cotizador elija el insumo (aplique DTF, alta,
-// poliamida, vinilo reflectivo...) y tome su costo. El consumo lo digita el
-// usuario. Si un insumo esta repetido en el maestro se deja el primero con
-// costo > 0.
+// es una referencia NUEVA (no tiene ficha tecnica en Busint), asi que aqui solo
+// se consulta el INVENTARIO de insumos para que el cotizador elija el insumo
+// (aplique DTF, alta, poliamida, vinilo reflectivo...) y tome su costo
+// PROMEDIO. Fuente: tabla "estandar componentes prod" (la misma de
+// getTelasStockBusintBD), filas que NO son tela ("Telas" distinto de "T";
+// los insumos vienen como "I"): ICant = cantidad en bodega, Itotal = valor
+// total, Iprom = costo promedio por unidad. El "Costo" (valor de la ficha del
+// insumo, a veces un valor de relleno) se devuelve solo como referencia.
+// El consumo lo digita el usuario.
 exports.getCatalogoInsumosBusint = onCall(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
-    timeoutSeconds: 180,
+    timeoutSeconds: 300,
     memory: "512MiB",
   },
   async () => {
-    let maestro;
+    let filas;
     try {
-      maestro = await consultarTablaBusintBDCompleta("maestro de insumos");
+      filas = await consultarTablaBusintBDCompleta("estandar componentes prod");
     } catch (err) {
       logger.error("Error consultando Busint BD (getCatalogoInsumosBusint)", { error: String(err) });
-      throw new HttpsError("unavailable", `No se pudo consultar Busint: ${err?.message || String(err)}`);
+      throw new HttpsError("unavailable", `No se pudo consultar el inventario de insumos en Busint: ${err?.message || String(err)}`);
     }
-    const CAMPOS_CODIGO = ["Codigo", "Cod", "CodIns", "Codinsumo", "CodInsumo", "Id", "ID"];
-    const porNombre = new Map();
-    maestro.forEach((m) => {
-      const nombre = String(m?.Insumo ?? "").trim();
-      const k = normalizarProcesoBD(nombre);
-      if (!k) return;
-      const costo = Number(m.Costo) || 0;
-      const prev = porNombre.get(k);
-      if (prev && !(prev.costo === 0 && costo > 0)) return;
-      const campoCodigo = CAMPOS_CODIGO.find((c) => m[c] !== undefined && m[c] !== null && m[c] !== "");
-      porNombre.set(k, {
-        insumo: nombre,
-        costo,
-        unidad: String(m.Unidad ?? "").trim(),
-        codigo: campoCodigo ? String(m[campoCodigo]).trim() : null,
-      });
-    });
-    const insumos = [...porNombre.values()].sort((x, y) => x.insumo.localeCompare(y.insumo, "es"));
-    const ejemplo = maestro.find((m) => m && typeof m === "object");
+    const num = (v) => (v !== undefined && v !== null && v !== "" && Number.isFinite(Number(v)) ? Number(v) : null);
+    const porTipo = {};
+    filas.forEach((f) => { const t = String(f?.Telas ?? "").trim().toUpperCase() || "(vacio)"; porTipo[t] = (porTipo[t] || 0) + 1; });
+    const insumos = filas
+      .filter((f) => String(f?.Telas ?? "").trim().toUpperCase() !== "T" && String(f?.Componente ?? "").trim())
+      .map((f) => {
+        const cantidad = num(f.ICant) ?? 0;
+        const total = num(f.Itotal);
+        let promedio = num(f.Iprom);
+        if (!(promedio > 0) && total > 0 && cantidad > 0) promedio = total / cantidad;
+        return {
+          componente: String(f.Componente).trim(),
+          color: String(f.Color ?? "").trim(),
+          codcomp: f.Codcomp !== undefined && f.Codcomp !== null && f.Codcomp !== "" ? String(f.Codcomp).trim() : null,
+          cantidad,
+          total,
+          promedio: promedio > 0 ? promedio : 0,
+          costo: num(f.Costo) ?? 0,
+          unidad: String(f.Unidad ?? f.UnidadT ?? "").trim(),
+        };
+      })
+      .sort((x, y) => x.componente.localeCompare(y.componente, "es") || x.color.localeCompare(y.color, "es"));
+    const ejemplo = filas.find((f) => f && typeof f === "object");
     return {
       insumos,
-      _debug: { totalFilasMaestro: maestro.length, columnasMaestro: ejemplo ? Object.keys(ejemplo) : [] },
+      _debug: { totalFilas: filas.length, porTipo, columnas: ejemplo ? Object.keys(ejemplo) : [] },
     };
   }
 );
