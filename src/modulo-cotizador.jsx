@@ -1198,25 +1198,37 @@ function BasesVinilo({ currentUser, puedeEditar, notify }) {
   const [cargado, setCargado] = useState(false);
   const [abierto, setAbierto] = useState(null);
   const [editando, setEditando] = useState(null);
+  const [editId, setEditId] = useState(null); // id del registro que se está corrigiendo (null = registro nuevo)
   const [form, setForm] = useState({ desde: hoyISO(), valor: "", base: "", nota: "" });
   useEffect(() => onSnapshot(collection(db, "cotizador_bases"), (s) => { setRegistros(s.docs.find((d) => d.id === "vinilo")?.data().registros || []); setCargado(true); }, () => setCargado(true)), []);
   const hoy = hoyISO();
   const money = (n) => "$" + fmtDec(n);
   const cel = { ...inp, textAlign: "right" };
-  function abrirForm(f) {
-    const v = baseVigente(registros, f.key, hoy);
-    setForm({ desde: hoy, valor: f.tipo === "proceso" ? String(v?.valor ?? f.valor ?? "") : "", base: v?.base != null ? String(v.base) : "", nota: "" });
+  function abrirForm(f, reg) {
+    const v = reg || baseVigente(registros, f.key, hoy);
+    setForm({ desde: reg ? reg.desde : hoy, valor: f.tipo === "proceso" ? String(v?.valor ?? f.valor ?? "") : "", base: v?.base != null ? String(v.base) : "", nota: reg ? (reg.nota || "") : "" });
+    setEditId(reg ? reg.id : null);
     setEditando(f.key);
+  }
+  async function borrarRegistro(f, r) {
+    if (!puedeEditar) { notify?.("Tu rol no puede cambiar las bases"); return; }
+    if (!window.confirm(`¿Borrar el registro de ${f.nombre}: BASE ${money(r.base)} desde ${fmtFecha(r.desde)}?\n\nLas minicotizaciones ya guardadas no cambian; las nuevas tomarán la base anterior.`)) return;
+    await fsSet("cotizador_bases", "vinilo", { registros: registros.filter((x) => x.id !== r.id), actualizadoPor: currentUser?.name || "", actualizado: new Date().toISOString() });
+    notify?.("Registro borrado");
   }
   async function registrar(f) {
     if (!puedeEditar) { notify?.("Tu rol no puede cambiar las bases"); return; }
     if (!form.desde) { notify?.("Indica desde qué fecha rige"); return; }
     if (String(form.base).trim() === "") { notify?.("Escribe el valor BASE (puede ser 0)"); return; }
-    const reg = { id: uid(), key: f.key, desde: form.desde, valor: f.tipo === "proceso" && String(form.valor).trim() !== "" ? num(form.valor) : null, base: num(form.base), nota: form.nota.trim(), por: currentUser?.name || "", creado: new Date().toISOString() };
-    await fsSet("cotizador_bases", "vinilo", { registros: [...registros, reg], actualizadoPor: currentUser?.name || "", actualizado: new Date().toISOString() });
+    const datos = { desde: form.desde, valor: f.tipo === "proceso" && String(form.valor).trim() !== "" ? num(form.valor) : null, base: num(form.base), nota: form.nota.trim() };
+    const nuevos = editId
+      ? registros.map((r) => (r.id === editId ? { ...r, ...datos, editadoPor: currentUser?.name || "", editado: new Date().toISOString() } : r))
+      : [...registros, { id: uid(), key: f.key, ...datos, por: currentUser?.name || "", creado: new Date().toISOString() }];
+    await fsSet("cotizador_bases", "vinilo", { registros: nuevos, actualizadoPor: currentUser?.name || "", actualizado: new Date().toISOString() });
     setEditando(null);
+    setEditId(null);
     setAbierto(f.key);
-    notify?.(`Base de ${f.nombre} registrada desde ${fmtFecha(form.desde)}`);
+    notify?.(editId ? `Registro de ${f.nombre} corregido` : `Base de ${f.nombre} registrada desde ${fmtFecha(form.desde)}`);
   }
   return (
     <div>
@@ -1239,7 +1251,7 @@ function BasesVinilo({ currentUser, puedeEditar, notify }) {
                       <td style={{ ...td, fontSize: 12, color: C.slate }}>{v ? fmtFecha(v.desde) : "—"}</td>
                       <td style={{ ...td, textAlign: "right", whiteSpace: "nowrap" }}>
                         <button onClick={() => setAbierto(abierto === f.key ? null : f.key)} style={{ ...btn(C.white, C.slate, C.border), padding: "4px 10px", fontSize: 12 }}>{abierto === f.key ? "▾" : "▸"} Historial ({historial.length})</button>{" "}
-                        {puedeEditar && <button onClick={() => (editando === f.key ? setEditando(null) : abrirForm(f))} style={{ ...btn(C.blueBg, C.blue, C.blue), padding: "4px 10px", fontSize: 12 }}>✏ Cambiar</button>}
+                        {puedeEditar && <button onClick={() => (editando === f.key && !editId ? setEditando(null) : abrirForm(f))} style={{ ...btn(C.blueBg, C.blue, C.blue), padding: "4px 10px", fontSize: 12 }}>✏ Cambiar</button>}
                       </td>
                     </tr>
                     {editando === f.key && (
@@ -1249,8 +1261,9 @@ function BasesVinilo({ currentUser, puedeEditar, notify }) {
                           {f.tipo === "proceso" && <Campo label="Valor del proceso" ancho={130}><input value={form.valor} onChange={(e) => setForm({ ...form, valor: e.target.value })} style={cel} /></Campo>}
                           <Campo label="BASE" ancho={130}><input value={form.base} onChange={(e) => setForm({ ...form, base: e.target.value })} style={cel} /></Campo>
                           <Campo label="Nota (opcional)" ancho={240}><input value={form.nota} onChange={(e) => setForm({ ...form, nota: e.target.value })} placeholder="Ej.: subió el operario" style={inp} /></Campo>
-                          <button onClick={() => registrar(f)} style={btn(C.green, C.white)}>Registrar</button>
-                          <button onClick={() => setEditando(null)} style={btn(C.white, C.slate, C.border)}>Cancelar</button>
+                          <div style={{ flexBasis: "100%", fontSize: 12, fontWeight: 700, color: editId ? C.amber : C.slate }}>{editId ? "Corrigiendo un registro del historial" : "Nuevo registro de base"}</div>
+                          <button onClick={() => registrar(f)} style={btn(C.green, C.white)}>{editId ? "Guardar corrección" : "Registrar"}</button>
+                          <button onClick={() => { setEditando(null); setEditId(null); }} style={btn(C.white, C.slate, C.border)}>Cancelar</button>
                         </div>
                       </td></tr>
                     )}
@@ -1262,8 +1275,12 @@ function BasesVinilo({ currentUser, puedeEditar, notify }) {
                             <b style={{ minWidth: 70 }}>{fmtFecha(r.desde)}</b>
                             <span style={{ minWidth: 110 }}>BASE {money(r.base)}</span>
                             {r.valor != null && <span style={{ minWidth: 120 }}>Proceso {money(r.valor)}</span>}
-                            <span style={{ flex: 1, color: C.slate }}>{r.nota || ""}{r.nota && r.por ? " · " : ""}{r.por || ""}</span>
+                            <span style={{ flex: 1, color: C.slate }}>{r.nota || ""}{r.nota && r.por ? " · " : ""}{r.por || ""}{r.editadoPor ? ` · corregido por ${r.editadoPor}` : ""}</span>
                             {v && v.id === r.id && <Pastilla bg={C.greenBg} color={C.green}>vigente hoy</Pastilla>}
+                            {puedeEditar && <>
+                              <button onClick={() => abrirForm(f, r)} style={{ ...btn(C.white, C.navy, C.border), padding: "2px 8px", fontSize: 11 }}>✏ Editar</button>
+                              <button onClick={() => borrarRegistro(f, r)} style={{ ...btn(C.white, C.red, C.red), padding: "2px 8px", fontSize: 11 }}>🗑 Borrar</button>
+                            </>}
                           </div>
                         ))}
                       </td></tr>
