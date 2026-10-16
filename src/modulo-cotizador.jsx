@@ -914,8 +914,109 @@ function MiniVinilo({ currentUser, notify, onPasar }) {
   );
 }
 
+// ─── INICIO (DASHBOARD) DEL MÓDULO DE COTIZACIONES ───────────────────────────
+// (2026-10-16, a pedido de Fredy) Pantalla de entrada del módulo, como la de
+// Contabilidad: fichas de resumen, accesos a las tres pantallas y las últimas
+// cotizaciones. Todo sale de las cotizaciones guardadas (nada se escribe aquí).
+const DIAS_SIN_CAMBIOS = 30;
+function estadoCotizacion(c) {
+  if (c.precioAplicado) return { txt: "Aplicado", bg: C.greenBg, color: C.green };
+  if (c.vinculo) return { txt: "Vinculada", bg: C.blueBg, color: C.blue };
+  return { txt: "Sin aplicar", bg: C.amberBg, color: C.amber };
+}
+function InicioCotizaciones({ cotizaciones, minis, cargado, onIr, onNueva, onFiltro, onAbrir }) {
+  const hoy = new Date();
+  const mesActual = hoyISO().slice(0, 7);
+  const clientes = new Set(cotizaciones.map((c) => c.cliente || "General"));
+  const nVersiones = cotizaciones.reduce((s, c) => s + (c.versiones?.length || 0), 0);
+  const versionesMes = cotizaciones.reduce((s, c) => s + (c.versiones || []).filter((v) => String(v.fecha || "").startsWith(mesActual)).length, 0);
+  const aplicadas = cotizaciones.filter((c) => c.precioAplicado).length;
+  const sinAplicar = cotizaciones.length - aplicadas;
+  const sinVincular = cotizaciones.filter((c) => !c.vinculo && !c.precioAplicado).length;
+  const viejas = cotizaciones.filter((c) => {
+    const f = c.actualizado ? new Date(c.actualizado) : null;
+    return f && (hoy - f) / 86400000 > DIAS_SIN_CAMBIOS;
+  }).length;
+  const ultimas = [...cotizaciones].sort((a, b) => String(b.actualizado || "").localeCompare(String(a.actualizado || ""))).slice(0, 6);
+  const mesLbl = hoy.toLocaleDateString("es-CO", { month: "long", year: "numeric" });
+
+  const Ficha = ({ label, valor, sub, color }) => (
+    <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 16px" }}>
+      <div style={{ fontSize: 11, color: C.slate, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4 }}>{label}</div>
+      <div style={{ fontSize: 28, fontWeight: 900, marginTop: 4, color: color || C.ink }}>{cargado ? valor : "…"}</div>
+      <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>{sub}</div>
+    </div>
+  );
+  const Acceso = ({ icono, bg, titulo, desc, tab }) => (
+    <div onClick={() => onIr(tab)} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, display: "flex", gap: 12, alignItems: "center", cursor: "pointer" }}>
+      <div style={{ width: 44, height: 44, borderRadius: 10, background: bg, display: "grid", placeItems: "center", fontSize: 22 }}>{icono}</div>
+      <div><div style={{ fontWeight: 800, fontSize: 14 }}>{titulo}</div><div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>{desc}</div></div>
+    </div>
+  );
+  const Pendiente = ({ n, bg, color, texto, filtro }) => (
+    <div onClick={() => n > 0 && filtro && onFiltro(filtro)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 16px", borderTop: `1px solid ${C.border}`, fontSize: 13, cursor: n > 0 && filtro ? "pointer" : "default" }}>
+      <Pastilla bg={bg} color={color}>{cargado ? n : "…"}</Pastilla>{texto}
+    </div>
+  );
+
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: 12, marginBottom: 16 }}>
+        <Ficha label="Cotizaciones" valor={cotizaciones.length} sub={`${clientes.size} cliente(s) · ${nVersiones} versiones`} />
+        <Ficha label="Versiones este mes" valor={versionesMes} sub={mesLbl} />
+        <Ficha label="Precio ya aplicado" valor={aplicadas} sub="en prototipos y cápsulas" color={C.green} />
+        <Ficha label="Pendientes de aplicar" valor={sinAplicar} sub="cotizadas sin precio aplicado" color={C.amber} />
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))", gap: 12, marginBottom: 16 }}>
+        <Acceso icono="🧮" bg={C.blueBg} titulo="Cotizaciones" desc="Crear, versionar y aplicar precios" tab="cotizaciones" />
+        <Acceso icono="🎨" bg={C.amberBg} titulo="Vinilo / DTF" desc="Minicotizador con datos de Busint" tab="vinilo" />
+        <Acceso icono="⚙" bg={C.violetBg} titulo="Parámetros por cliente" desc="Impuestos, administrativos y procesos" tab="parametros" />
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(320px,1fr))", gap: 12 }}>
+        <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden", paddingBottom: 6 }}>
+          <div style={{ display: "flex", alignItems: "center", padding: "12px 16px" }}>
+            <div style={{ fontWeight: 800, fontSize: 14, flex: 1 }}>Últimas cotizaciones</div>
+            <button onClick={onNueva} style={{ ...btn(C.green, C.white), padding: "6px 12px" }}>+ Nueva cotización</button>
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 480 }}>
+              <thead><tr><th style={{ ...th, padding: "6px 16px" }}>Referencia</th><th style={th}>Cliente</th><th style={th}>Versión</th><th style={{ ...th, textAlign: "right" }}>Precio con IVA</th><th style={th}>Estado</th></tr></thead>
+              <tbody>
+                {cargado && ultimas.length === 0 && <tr><td colSpan={5} style={{ padding: 20, textAlign: "center", color: C.slate }}>Aún no hay cotizaciones.</td></tr>}
+                {ultimas.map((c) => {
+                  const ult = c.versiones?.[c.versiones.length - 1];
+                  const r = ult ? calcularCotizacion(ult.v) : null;
+                  const e = estadoCotizacion(c);
+                  return (
+                    <tr key={c.id} onClick={() => onAbrir(c)} style={{ borderTop: `1px solid ${C.border}`, cursor: "pointer" }}>
+                      <td style={{ padding: "9px 16px", fontWeight: 800 }}>{c.referencia || "—"}</td>
+                      <td style={td}>{c.cliente || "General"}</td>
+                      <td style={{ ...td, color: C.slate }}>V{ult?.numero} · {fmtFecha(ult?.fecha).slice(0, 5)}</td>
+                      <td style={{ ...td, textAlign: "right", fontWeight: 800 }}>{r ? fmtCOP(r.precioAplicar) : "—"}</td>
+                      <td style={td}><Pastilla bg={e.bg} color={e.color}>{e.txt}</Pastilla></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden", alignSelf: "start" }}>
+          <div style={{ fontWeight: 800, fontSize: 14, padding: "12px 16px" }}>Por atender</div>
+          <Pendiente n={sinAplicar} bg={C.amberBg} color={C.amber} texto="Cotizadas sin precio aplicado" filtro="sinAplicar" />
+          <Pendiente n={sinVincular} bg={C.redBg} color={C.red} texto="Sin vincular a prototipo ni cápsula" filtro="sinVincular" />
+          <Pendiente n={viejas} bg={C.blueBg} color={C.blue} texto={`Con más de ${DIAS_SIN_CAMBIOS} días sin cambios`} filtro="viejas" />
+          <Pendiente n={minis.length} bg={C.violetBg} color={C.violet} texto="Minicotizaciones de vinilo guardadas" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function CotizadorView({ currentUser, config, protos, capsulas, iniciarDesde, onIniciarConsumido, onAplicarPrecio, notify }) {
-  const [tab, setTab] = useState("cotizaciones");
+  const [tab, setTab] = useState("inicio");
+  const [minis, setMinis] = useState([]); // minicotizaciones de vinilo guardadas (solo para el conteo del inicio)
+  const [filtroEstado, setFiltroEstado] = useState(null); // "sinAplicar" | "sinVincular" | "viejas"
   const [cotizaciones, setCotizaciones] = useState([]);
   const [parametros, setParametros] = useState([]);
   const [cargado, setCargado] = useState(false);
@@ -926,7 +1027,8 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
   useEffect(() => {
     const u1 = onSnapshot(collection(db, "cotizaciones"), (s) => { setCotizaciones(s.docs.map((d) => ({ ...d.data(), id: d.id }))); setCargado(true); }, () => setCargado(true));
     const u2 = onSnapshot(collection(db, "cotizador_parametros"), (s) => setParametros(s.docs.map((d) => ({ ...d.data(), id: d.id }))), () => {});
-    return () => { u1(); u2(); };
+    const u3 = onSnapshot(collection(db, "cotizador_vinilo"), (s) => setMinis(s.docs.filter((d) => d.id !== "_estandar").map((d) => ({ ...d.data(), id: d.id }))), () => {});
+    return () => { u1(); u2(); u3(); };
   }, []);
 
   const clientesApp = useMemo(() => {
@@ -1029,7 +1131,15 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
     notify?.(`${hojas.length} versión(es) importada(s)`);
   }
 
+  const FILTROS_TXT = { sinAplicar: "Cotizadas sin precio aplicado", sinVincular: "Sin vincular a prototipo ni cápsula", viejas: "Con más de 30 días sin cambios" };
+  const pasaFiltro = (c) => {
+    if (filtroEstado === "sinAplicar") return !c.precioAplicado;
+    if (filtroEstado === "sinVincular") return !c.vinculo && !c.precioAplicado;
+    if (filtroEstado === "viejas") return !!c.actualizado && (Date.now() - new Date(c.actualizado).getTime()) / 86400000 > 30;
+    return true;
+  };
   const filtradas = cotizaciones
+    .filter(pasaFiltro)
     .filter((c) => !busqueda || normTxt(`${c.referencia} ${c.nombre} ${c.cliente}`).includes(normTxt(busqueda)) || normRef(c.referencia).includes(normRef(busqueda)))
     .sort((a, b) => String(b.actualizado || "").localeCompare(String(a.actualizado || "")));
 
@@ -1045,18 +1155,29 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
   return (
     <div style={{ padding: 20, background: C.canvas, minHeight: "100%" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
-        <div style={{ fontWeight: 800, fontSize: 20, color: C.ink, flex: 1 }}>🧮 Cotizaciones</div>
-        {["cotizaciones", "vinilo", "parametros"].map((t) => (
-          <button key={t} onClick={() => setTab(t)} style={{ ...btn(tab === t ? C.ink : C.white, tab === t ? C.white : C.slate, tab === t ? C.ink : C.border) }}>{t === "cotizaciones" ? "Cotizaciones" : t === "vinilo" ? "🎨 Vinilo / DTF" : "⚙ Parámetros por cliente"}</button>
+        <div style={{ fontWeight: 800, fontSize: 20, color: C.ink, flex: 1 }}>🧮 Módulo de Cotizaciones</div>
+        {["inicio", "cotizaciones", "vinilo", "parametros"].map((t) => (
+          <button key={t} onClick={() => { setTab(t); if (t !== "cotizaciones") setFiltroEstado(null); }} style={{ ...btn(tab === t ? C.ink : C.white, tab === t ? C.white : C.slate, tab === t ? C.ink : C.border) }}>{t === "inicio" ? "🏠 Inicio" : t === "cotizaciones" ? "Cotizaciones" : t === "vinilo" ? "🎨 Vinilo / DTF" : "⚙ Parámetros por cliente"}</button>
         ))}
       </div>
 
       {tab === "parametros" && <ParametrosView parametros={parametros} clientesApp={clientesApp} currentUser={currentUser} notify={notify} />}
 
+      {tab === "inicio" && (
+        <InicioCotizaciones cotizaciones={cotizaciones} minis={minis} cargado={cargado}
+          onIr={(t) => { setFiltroEstado(null); setTab(t); }} onNueva={() => setEdit(cotNueva())}
+          onFiltro={(f) => { setFiltroEstado(f); setTab("cotizaciones"); }} onAbrir={(c) => setEdit({ ...limpio(c), existe: true })} />
+      )}
+
       {tab === "vinilo" && <MiniVinilo currentUser={currentUser} notify={notify} onPasar={pasarAlCotizador} />}
 
       {tab === "cotizaciones" && (
         <div>
+          {filtroEstado && (
+            <div style={{ marginBottom: 10 }}>
+              <span onClick={() => setFiltroEstado(null)} style={{ display: "inline-flex", gap: 8, alignItems: "center", padding: "5px 12px", borderRadius: 14, background: C.amberBg, color: C.amber, fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Filtro: {FILTROS_TXT[filtroEstado]} ✕</span>
+            </div>
+          )}
           <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
             <input value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder="Buscar por referencia, nombre o cliente…" style={{ ...inp, maxWidth: 340 }} />
             <div style={{ flex: 1 }} />

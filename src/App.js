@@ -10596,7 +10596,7 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
     </div>
   );
 }
-function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, canAccessPlaneacion, canAccessPlanta, canAccessBodega, canAccessNomina, canAccessDiseno, canAccessPedidosArea, canAccessKpis, canAccessInformes, canAccessAreas, onGoArea, protos, capsulas, pedidos }) {
+function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, canAccessPlaneacion, canAccessPlanta, canAccessBodega, canAccessNomina, canAccessDiseno, canAccessPedidosArea, canAccessKpis, canAccessInformes, canAccessAreas, canAccessCotizador, onGoArea, protos, capsulas, pedidos }) {
   const hoy = new Date();
   const protosEnProceso = protos.filter((p) => p.status === "en_proceso").length;
   const pedidosActivos = pedidos.filter((p) => p.estado === "activo" || p.estado === "terminado").length;
@@ -10621,6 +10621,11 @@ function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, c
       // Antes: perms.admin || currentUser?.isAdmin — esto mezclaba visibilidad de módulo con
       // permisos de flujo de trabajo en Diseño. Ahora se decide con el permiso de módulo dedicado.
       permiso: canAccessContabilidad,
+    },
+    {
+      id: "cotizaciones_area", icon: "🧮", label: "Cotizaciones", desc: "Cotizar prototipos y referencias, aplicar precios y el minicotizador de Vinilo / DTF", color: T.denim, bg: T.denimBg,
+      stats: [],
+      permiso: canAccessCotizador,
     },
     {
       id: "planeacion_area", icon: "📋", label: "Planeación", desc: "Informes de producción de planta a partir de Hoja1", color: T.violet, bg: T.violetBg,
@@ -17465,6 +17470,7 @@ function AppInner() {
       cliente: kind === "proto" ? (item.cliente || item.colores?.[0] || "") : (capsula ? capsulaCliente(capsula) || "" : ""),
       label: `${item.reference || "s/ref"} · ${item.name || ""}`.trim() + (capsula ? ` — ${capsula.name}` : ""),
     });
+    setAreaAbierta("cotizaciones_area");
     setView("cotizaciones");
   }
   // --- Bitácora de Envíos ---
@@ -18233,7 +18239,7 @@ function AppInner() {
   // KPIs ya NO cuenta para canAccessDiseno — es su propia área de nivel
   // superior en el menú (ver AREAS abajo), porque cubre toda la compañía
   // (Corte, Ventas, Contabilidad, Planeación...), no solo Diseño.
-  const canAccessDiseno = canAccessProtos || canAccessCapsulas || canAccessStats || canAccessHistorial || canAccessCronograma || canAccessCotizador || canAccessBitacora || canAccessAdminDiseno || !!currentUser?.isAdmin;
+  const canAccessDiseno = canAccessProtos || canAccessCapsulas || canAccessStats || canAccessHistorial || canAccessCronograma || canAccessBitacora || canAccessAdminDiseno || !!currentUser?.isAdmin;
   // Pedidos (Pedidos, Clientes, Admin Pedidos) tenía sus 3 secciones
   // dispersas dentro del menú de Diseño, mezcladas con Prototipos/Historial/
   // Bitácoras/Corte — quedaba desordenado. Ahora es su propia área de nivel
@@ -18258,7 +18264,6 @@ function AppInner() {
             ...(canAccessHistorial ? [{ id: "historial", icon: "🕘", label: "Historial" }] : []),
             ...(canAccessBitacora ? [{ id: "bitacora", icon: "📜", label: "Bitácoras" }] : []),
             ...(canAccessCronograma ? [{ id: "cronograma_muestras", icon: "🧵", label: "Cronograma de Muestras" }] : []),
-            ...(canAccessCotizador ? [{ id: "cotizaciones", icon: "🧮", label: "Cotizaciones" }] : []),
             // "Administrador General" siempre queda al final de la lista, sin
             // importar qué otras secciones estén visibles para el rol.
             ...(canAccessAdminDiseno ? [{ id: "admin", icon: "⚙", label: "Administrador General" }] : []),
@@ -18281,6 +18286,14 @@ function AppInner() {
       : []),
     ...(canAccessContabilidad
       ? [{ id: "contabilidad_area", icon: "💰", label: "Contabilidad", items: [{ id: "contabilidad_area", icon: "💰", label: "Módulo Contabilidad" }] }]
+      : []),
+    // (2026-10-16, a pedido de Fredy) Cotizaciones es un área propia, como
+    // Contabilidad: "Módulo de Cotizaciones" abre su pantalla de inicio
+    // (dashboard) con accesos a Cotizaciones, Vinilo / DTF y Parámetros.
+    // Sigue usando view === "cotizaciones" (así el botón "Cotizar" de
+    // prototipos y referencias abre directo la cotización).
+    ...(canAccessCotizador
+      ? [{ id: "cotizaciones_area", icon: "🧮", label: "Cotizaciones", items: [{ id: "cotizaciones", icon: "🧮", label: "Módulo de Cotizaciones" }] }]
       : []),
     ...(canAccessPlaneacion
       ? [{ id: "planeacion_area", icon: "📋", label: "Planeación", items: [{ id: "planeacion_area", icon: "📋", label: "Módulo Planeación" }] }]
@@ -18353,7 +18366,7 @@ function AppInner() {
   // "Planeador puro": solo tiene Corte y NINGUNA otra sección de Diseño (ni
   // Pedidos). Si además tiene Pedidos u otra sección, ya no aplica este atajo
   // de pantalla completa — ve el shell normal con solo esas secciones visibles.
-  const isPlaneadorPuro = canAccessCorte && !canAccessPedidos && !canAccessProtos && !canAccessCapsulas && !canAccessPedidosClientes && !canAccessStats && !perms.editar && !perms.aprobar && !currentUser?.isAdmin;
+  const isPlaneadorPuro = canAccessCorte && !canAccessCotizador && !canAccessPedidos && !canAccessProtos && !canAccessCapsulas && !canAccessPedidosClientes && !canAccessStats && !perms.editar && !perms.aprobar && !currentUser?.isAdmin;
   // Igual que "Planeador puro" arriba: este atajo de pantalla completa solo
   // debe aplicar si Contabilidad es LO ÚNICO que el rol puede ver. Antes solo
   // se fijaba en "!canAccessDiseno", así que un rol con Contabilidad + Bodega
@@ -18363,6 +18376,7 @@ function AppInner() {
   const isContabilidadPura =
     canAccessContabilidad &&
     !canAccessDiseno &&
+    !canAccessCotizador &&
     !canAccessCorte &&
     !canAccessBodega &&
     !canAccessPlanta &&
@@ -18520,9 +18534,10 @@ function AppInner() {
         <div style={{ flex: 1, padding: "28px 32px", overflow: "auto" }}>
           <div style={{ maxWidth: 1020, margin: "0 auto" }}>
             {view === "dashboard" && (
-              <HomeView currentUser={currentUser} perms={perms} canAccessCorte={canAccessCorte} canAccessContabilidad={canAccessContabilidad} canAccessPlaneacion={canAccessPlaneacion} canAccessPlanta={canAccessPlanta} canAccessBodega={canAccessBodega} canAccessNomina={canAccessNomina} canAccessDiseno={canAccessDiseno} canAccessPedidosArea={canAccessPedidosArea} canAccessKpis={canAccessKpis} canAccessInformes={canAccessInformes} canAccessAreas={canAccessAreas}
+              <HomeView currentUser={currentUser} perms={perms} canAccessCorte={canAccessCorte} canAccessContabilidad={canAccessContabilidad} canAccessPlaneacion={canAccessPlaneacion} canAccessPlanta={canAccessPlanta} canAccessBodega={canAccessBodega} canAccessNomina={canAccessNomina} canAccessDiseno={canAccessDiseno} canAccessPedidosArea={canAccessPedidosArea} canAccessKpis={canAccessKpis} canAccessInformes={canAccessInformes} canAccessAreas={canAccessAreas} canAccessCotizador={canAccessCotizador}
                 onGoArea={(id) => {
                   if (id === "contabilidad_area") { setModuloActivo("contabilidad"); }
+                  else if (id === "cotizaciones_area") { setAreaAbierta("cotizaciones_area"); setView("cotizaciones"); }
                   else if (id === "planeacion_area") { setModuloActivo("planeacion"); }
                   else if (id === "planta_area") { setModuloActivo("planta"); }
                   else if (id === "bodega_area") { setModuloActivo("bodega"); }
@@ -18550,7 +18565,6 @@ function AppInner() {
                     else if (canAccessHistorial) setView("historial");
                     else if (canAccessBitacora) setView("bitacora");
                     else if (canAccessCronograma) setView("cronograma_muestras");
-                    else if (canAccessCotizador) setView("cotizaciones");
                     else if (canAccessCorte) setModuloActivo("corte");
                   }
                   else { setView(id); }
