@@ -1746,9 +1746,10 @@ function HistorialCotizaciones({ cotizaciones, protos, capsulas, cargado, onAbri
   const [estado, setEstado] = useState("");
   const [desde, setDesde] = useState("");
   const [hasta, setHasta] = useState("");
+  const [dropbox, setDropbox] = useState("");
   const [orden, setOrden] = useState("fecha");
   const [pagina, setPagina] = useState(0);
-  useEffect(() => { setPagina(0); }, [q, cliente, estado, desde, hasta, orden]);
+  useEffect(() => { setPagina(0); }, [q, cliente, estado, desde, hasta, dropbox, orden]);
 
   // Una fila por cotización, con el # Prototipo y la REF del prototipo / cápsula vinculado.
   const filas = useMemo(() => cotizaciones.map((c) => {
@@ -1762,7 +1763,10 @@ function HistorialCotizaciones({ cotizaciones, protos, capsulas, cargado, onAbri
     const fecha = ult?.fecha || String(c.creado || "").slice(0, 10);
     const precio = ult ? calcularCotizacion(ult.v).precioAplicar : 0;
     const est = estadoCotizacion(c);
-    return { c, fecha, numProto, refProto, precio, est, ultNum: ult?.numero, nVer: c.versiones?.length || 0, cliente: c.cliente || "General" };
+    // Dropbox: "ok" = todas sus versiones aprobadas ya están en Dropbox; "falta" = alguna aprobada sin subir; "" = ninguna aprobada.
+    const aprobadas = (c.versiones || []).filter((v) => v.estado === "aprobada");
+    const dbx = !aprobadas.length ? "" : aprobadas.every((v) => v.dropbox) ? "ok" : "falta";
+    return { c, fecha, numProto, refProto, precio, est, dbx, ultNum: ult?.numero, nVer: c.versiones?.length || 0, cliente: c.cliente || "General" };
   }), [cotizaciones, protos, capsulas]);
 
   const clientes = useMemo(() => [...new Set(filas.map((f) => f.cliente))].sort((a, b) => a.localeCompare(b, "es")), [filas]);
@@ -1775,20 +1779,21 @@ function HistorialCotizaciones({ cotizaciones, protos, capsulas, cargado, onAbri
     .filter((f) => !estado || f.est.txt === estado)
     .filter((f) => !desde || f.fecha >= desde)
     .filter((f) => !hasta || f.fecha <= hasta)
+    .filter((f) => !dropbox || f.dbx === dropbox)
     .filter((f) => !qn || normTxt(`${f.c.referencia} ${f.c.nombre} ${f.cliente} ${f.numProto} ${f.refProto}`).includes(qn)
       || (qr && (normRef(f.c.referencia).includes(qr) || normRef(f.numProto).includes(qr) || normRef(f.refProto).includes(qr))))
     .sort((a, b) => (orden === "ref" ? String(a.c.referencia || "").localeCompare(String(b.c.referencia || ""), "es", { numeric: true })
       : orden === "precio" ? b.precio - a.precio
-        : String(b.fecha).localeCompare(String(a.fecha)))), [filas, cliente, estado, desde, hasta, qn, qr, orden]);
+        : String(b.fecha).localeCompare(String(a.fecha)))), [filas, cliente, estado, desde, hasta, dropbox, qn, qr, orden]);
 
   const pagina0 = Math.min(pagina, Math.max(0, Math.ceil(filtradas.length / TAM_PAGINA) - 1));
   const visibles = filtradas.slice(pagina0 * TAM_PAGINA, (pagina0 + 1) * TAM_PAGINA);
-  const hayFiltro = q || cliente || estado || desde || hasta;
-  const limpiar = () => { setQ(""); setCliente(""); setEstado(""); setDesde(""); setHasta(""); };
+  const hayFiltro = q || cliente || estado || desde || hasta || dropbox;
+  const limpiar = () => { setQ(""); setCliente(""); setEstado(""); setDesde(""); setHasta(""); setDropbox(""); };
   const csv = () => {
     descargarCSV(`Historial cotizaciones ${hoyISO()}.csv`, [
-      ["Fecha última versión", "Referencia", "# Prototipo", "REF prototipo", "Nombre", "Cliente", "Estado", "Precio con IVA", "Versiones"],
-      ...filtradas.map((f) => [fmtFecha(f.fecha), f.c.referencia, f.numProto, f.refProto, f.c.nombre, f.cliente, f.est.txt, Math.round(f.precio), f.nVer]),
+      ["Fecha última versión", "Referencia", "# Prototipo", "REF prototipo", "Nombre", "Cliente", "Estado", "Precio con IVA", "Versiones", "Dropbox"],
+      ...filtradas.map((f) => [fmtFecha(f.fecha), f.c.referencia, f.numProto, f.refProto, f.c.nombre, f.cliente, f.est.txt, Math.round(f.precio), f.nVer, f.dbx === "ok" ? "Sí" : f.dbx === "falta" ? "Pendiente" : ""]),
     ]);
     notify?.(`Historial descargado (${filtradas.length} cotizaciones)`);
   };
@@ -1801,20 +1806,21 @@ function HistorialCotizaciones({ cotizaciones, protos, capsulas, cargado, onAbri
         <Campo label="Estado"><select value={estado} onChange={(e) => setEstado(e.target.value)} style={selFiltro}><option value="">Todos</option>{estados.map((x) => <option key={x} value={x}>{x}</option>)}</select></Campo>
         <Campo label="Desde"><input type="date" value={desde} onChange={(e) => setDesde(e.target.value)} style={{ ...inp, width: 150 }} /></Campo>
         <Campo label="Hasta"><input type="date" value={hasta} onChange={(e) => setHasta(e.target.value)} style={{ ...inp, width: 150 }} /></Campo>
+        <Campo label="Dropbox"><select value={dropbox} onChange={(e) => setDropbox(e.target.value)} style={selFiltro}><option value="">Todas</option><option value="ok">Aprobadas en Dropbox</option><option value="falta">Aprobadas sin subir</option></select></Campo>
         <Campo label="Ordenar por"><select value={orden} onChange={(e) => setOrden(e.target.value)} style={selFiltro}><option value="fecha">Fecha (más reciente)</option><option value="ref">Referencia</option><option value="precio">Precio (mayor)</option></select></Campo>
         {hayFiltro && <button onClick={limpiar} style={{ ...btn(C.white, C.slate, C.border), marginBottom: 1 }}>Limpiar filtros</button>}
         <div style={{ flex: 1 }} />
         <button disabled={!filtradas.length} onClick={csv} title="Descarga lo que ves filtrado; se abre en Excel" style={{ ...btn(C.white, C.blue, C.blue), marginBottom: 1, opacity: filtradas.length ? 1 : 0.4 }}>⬇ Descargar ({filtradas.length})</button>
       </div>
       <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflowX: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1000 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1100 }}>
           <thead><tr>
             <th style={{ ...th, padding: 12 }}>Fecha</th><th style={th}>Referencia</th><th style={th}># Prototipo</th><th style={th}>REF prototipo</th><th style={th}>Nombre</th>
-            <th style={th}>Cliente</th><th style={th}>Estado</th><th style={{ ...th, textAlign: "right" }}>Precio con IVA</th><th style={th}>Versión</th><th style={th} />
+            <th style={th}>Cliente</th><th style={th}>Estado</th><th style={{ ...th, textAlign: "right" }}>Precio con IVA</th><th style={th}>Versión</th><th style={th}>Dropbox</th><th style={th} />
           </tr></thead>
           <tbody>
-            {!cargado && <tr><td colSpan={10} style={{ padding: 24, textAlign: "center", color: C.slate }}>Cargando…</td></tr>}
-            {cargado && visibles.length === 0 && <tr><td colSpan={10} style={{ padding: 28, textAlign: "center", color: C.slate, fontSize: 13 }}>{cotizaciones.length ? "Ninguna cotización coincide con los filtros." : "Aún no hay cotizaciones."}</td></tr>}
+            {!cargado && <tr><td colSpan={11} style={{ padding: 24, textAlign: "center", color: C.slate }}>Cargando…</td></tr>}
+            {cargado && visibles.length === 0 && <tr><td colSpan={11} style={{ padding: 28, textAlign: "center", color: C.slate, fontSize: 13 }}>{cotizaciones.length ? "Ninguna cotización coincide con los filtros." : "Aún no hay cotizaciones."}</td></tr>}
             {visibles.map((f) => (
               <tr key={f.c.id} onClick={() => onAbrir(f.c)} style={{ borderTop: `1px solid ${C.border}`, cursor: "pointer" }}>
                 <td style={{ padding: 12, fontSize: 13, whiteSpace: "nowrap" }}>{fmtFecha(f.fecha)}</td>
@@ -1826,6 +1832,7 @@ function HistorialCotizaciones({ cotizaciones, protos, capsulas, cargado, onAbri
                 <td style={td}><Pastilla bg={f.est.bg} color={f.est.color}>{f.est.txt}</Pastilla></td>
                 <td style={{ ...td, textAlign: "right", fontWeight: 800 }}>{f.precio > 0 ? fmtCOP(f.precio) : "—"}</td>
                 <td style={{ ...td, fontSize: 12, color: C.slate, whiteSpace: "nowrap" }}>V{f.ultNum} · {f.nVer} en total</td>
+                <td style={td}>{f.dbx === "ok" ? <Pastilla bg={C.greenBg} color={C.green}>☁ En Dropbox</Pastilla> : f.dbx === "falta" ? <Pastilla bg={C.amberBg} color={C.amber}>Sin subir</Pastilla> : <span style={{ fontSize: 12, color: C.slate }}>—</span>}</td>
                 <td style={{ ...td, paddingRight: 12 }}><AccionesCotizacion c={f.c} onEditar={onAbrir} onBorrar={onBorrar} puedeBorrar={puedeBorrar} /></td>
               </tr>
             ))}
