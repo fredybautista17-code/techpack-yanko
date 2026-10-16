@@ -59,6 +59,12 @@ export default function OrdenesCompraView({ db, functionsClient, currentUser, C,
     setMarcas(m);
   }, () => {}), [db]);
   useEffect(() => { setLimite(50); }, [tab, q, prov, desde, hasta, ventana]);
+  useEffect(() => {
+    if (!abierta) return undefined;
+    const alTeclear = (e) => { if (e.key === "Escape") setAbierta(null); };
+    window.addEventListener("keydown", alTeclear);
+    return () => window.removeEventListener("keydown", alTeclear);
+  }, [abierta]);
 
   // Órdenes con sus totales
   const ordenes = useMemo(() => {
@@ -170,13 +176,14 @@ export default function OrdenesCompraView({ db, functionsClient, currentUser, C,
 
   function DetalleOrden({ o }) {
     return (
-      <div style={{ margin: "4px 0 14px", border: "1.5px solid #C9D9EA", borderRadius: 14, background: C.white, overflow: "hidden" }}>
+      <div style={{ border: "1.5px solid #C9D9EA", borderRadius: 14, background: C.white, overflow: "hidden" }}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 14, padding: "14px 18px", background: "#F6F9FC", borderBottom: "1px solid #D9E4F0" }}>
           {[["Proveedor", o.pn || "—", `Código ${o.p || "—"}`], ["Fecha de la orden", fmtF(o.fi)], ["Fecha de entrega", fmtF(o.ff), o.est.clave === "vencida" ? o.est.txt : ""], ["Elaboró", o.u || "—"]].map(([l, v, s]) => (
             <div key={l}><div style={{ fontSize: 11, letterSpacing: 0.5, textTransform: "uppercase", color: C.slate, fontWeight: 700 }}>{l}</div><div style={{ fontSize: 14, fontWeight: 700, color: l === "Fecha de entrega" && o.est.clave === "vencida" ? C.red : C.ink }}>{v}</div>{s ? <div style={{ fontSize: 11.5, color: l === "Fecha de entrega" ? C.red : C.slate }}>{s}</div> : null}</div>
           ))}
         </div>
-        <div style={{ overflowX: "auto" }}>
+        {!o.lineas.length && <div style={{ padding: "18px", color: C.slate, fontSize: 13 }}>Esta orden no tiene líneas registradas en Busint (0 unidades, $0).</div>}
+        <div style={{ overflowX: "auto", display: o.lineas.length ? "block" : "none" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead><tr><th style={th}>Cód.</th><th style={th}>Insumo</th><th style={{ ...th, textAlign: "right" }}>Cant.</th><th style={{ ...th, textAlign: "right" }}>Precio unit.</th><th style={{ ...th, textAlign: "right" }}>Desc.</th><th style={{ ...th, textAlign: "right" }}>Precio neto</th><th style={{ ...th, textAlign: "right" }}>Total línea</th><th style={th}>Frente a la compra anterior</th></tr></thead>
             <tbody>
@@ -229,7 +236,6 @@ export default function OrdenesCompraView({ db, functionsClient, currentUser, C,
             </tbody>
           </table>
         </div>
-        {abierta && visibles.some((o) => o.n === abierta) && <div style={{ padding: "10px 0 0" }}><DetalleOrden o={visibles.find((o) => o.n === abierta)} /></div>}
         {conPaginacion && lista.length > limite && <div style={{ textAlign: "center", padding: 12 }}><Btn variant="secondary" small onClick={() => setLimite(limite + 100)}>Mostrar más ({lista.length - limite} restantes)</Btn></div>}
       </div>
     );
@@ -248,6 +254,11 @@ export default function OrdenesCompraView({ db, functionsClient, currentUser, C,
       .sort((a, b) => b.pct - a.pct);
   }, [porInsumo, periodoCosto, qn, soloSubieron, hoy]);
 
+  // Cuadro al frente con el detalle de la orden (se abre al hacer clic en una fila)
+  const ordenAbierta = abierta ? conEstado.find((o) => o.n === abierta) : null;
+  const listaNavegable = tab === "historial" ? listaHist : listaPend;
+  const posAbierta = ordenAbierta ? listaNavegable.findIndex((o) => o.n === ordenAbierta.n) : -1;
+  const irA = (delta) => { const o = listaNavegable[posAbierta + delta]; if (o) setAbierta(o.n); };
   const tabs = [["vencidas", `⚠ Vencidas (${vencidas.length})`], ["pendientes", `Pendientes (${pendientes.length})`], ["historial", `Historial (${ordenes.length.toLocaleString("es-CO")})`], ["insumo", "Por insumo"], ["costo", "Control de costo"]];
   const mostrarFiltroBase = tab === "vencidas" || tab === "pendientes" || tab === "historial";
 
@@ -374,6 +385,31 @@ export default function OrdenesCompraView({ db, functionsClient, currentUser, C,
             )}
           </div>
         </>
+      )}
+      {ordenAbierta && (
+        <div onClick={() => setAbierta(null)} style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 1000, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "4vh 16px", overflowY: "auto" }}>
+          <div onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label={`Orden de compra ${ordenAbierta.n}`} style={{ background: C.canvas, borderRadius: 18, boxShadow: "0 20px 60px rgba(0,0,0,0.35)", width: "100%", maxWidth: 1000, padding: 18 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <div style={{ fontSize: 20, fontWeight: 800, color: C.ink }}>Orden de compra {ordenAbierta.n}</div>
+                <Pastilla est={ordenAbierta.est} />
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                {posAbierta >= 0 && <Btn variant="secondary" small onClick={() => irA(-1)} disabled={posAbierta <= 0}>← Anterior</Btn>}
+                {posAbierta >= 0 && <span style={{ fontSize: 12, color: C.slate }}>{posAbierta + 1} de {listaNavegable.length}</span>}
+                {posAbierta >= 0 && <Btn variant="secondary" small onClick={() => irA(1)} disabled={posAbierta >= listaNavegable.length - 1}>Siguiente →</Btn>}
+                <button onClick={() => setAbierta(null)} aria-label="Cerrar" style={{ border: "none", background: C.white, borderRadius: 8, width: 34, height: 34, fontSize: 18, cursor: "pointer", color: C.ink, boxShadow: `0 0 0 1px ${C.border}` }}>✕</button>
+              </div>
+            </div>
+            <DetalleOrden o={ordenAbierta} />
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
+              {marcas[String(ordenAbierta.n)]
+                ? <Btn variant="ghost" onClick={() => quitarMarca(ordenAbierta)}>Quitar recibida</Btn>
+                : <Btn variant="success" onClick={() => marcarRecibida(ordenAbierta)}>✔ Marcar recibida</Btn>}
+              <Btn variant="secondary" onClick={() => setAbierta(null)}>Cerrar</Btn>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
