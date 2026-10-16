@@ -749,17 +749,17 @@ function ModalInsumoBusint({ inicial, titulo, onElegir, onClose }) {
   const lista = useMemo(() => {
     if (!cat) return [];
     const palabras = normTxt(q).split(/\s+/).filter(Boolean);
-    return cat.filter((x) => palabras.every((w) => normTxt(`${x.componente} ${x.color}`).includes(w))).slice(0, 80);
+    return cat.filter((x) => palabras.every((w) => normTxt(`${x.componente} ${x.color} ${x.codcomp || ""}`).includes(w))).slice(0, 80);
   }, [cat, q]);
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.45)", zIndex: 1000, display: "grid", placeItems: "center", padding: 16 }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: C.white, borderRadius: 14, width: "100%", maxWidth: 760, maxHeight: "85vh", display: "flex", flexDirection: "column" }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: C.white, borderRadius: 14, width: "100%", maxWidth: 820, maxHeight: "85vh", display: "flex", flexDirection: "column" }}>
         <div style={{ padding: "14px 18px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", gap: 10 }}>
           <div style={{ flex: 1, fontWeight: 800, fontSize: 15 }}>Inventario de insumos (Busint) — {titulo}</div>
           <button onClick={onClose} style={btn(C.white, C.slate, C.border)}>Cerrar</button>
         </div>
         <div style={{ padding: "12px 18px" }}>
-          <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Escribe parte del nombre o del color del insumo…" style={inp} />
+          <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Escribe parte del nombre, del color o el código del insumo…" style={inp} />
         </div>
         <div style={{ overflowY: "auto", padding: "0 18px 16px" }}>
           {!cat && !error && <div style={{ padding: 20, textAlign: "center", color: C.slate, fontSize: 13 }}>Consultando el inventario de Busint…</div>}
@@ -767,11 +767,12 @@ function ModalInsumoBusint({ inicial, titulo, onElegir, onClose }) {
           {cat && lista.length === 0 && <div style={{ padding: 20, textAlign: "center", color: C.slate, fontSize: 13 }}>Ningún insumo coincide con la búsqueda.</div>}
           {cat && lista.length > 0 && (
             <div style={{ display: "flex", gap: 10, padding: "4px 6px", fontSize: 11, color: C.slate, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4 }}>
-              <div style={{ flex: 1 }}>Insumo</div><div style={{ minWidth: 70, textAlign: "right" }}>En bodega</div><div style={{ minWidth: 90, textAlign: "right" }}>Promedio</div><div style={{ minWidth: 90, textAlign: "right" }}>Costo ficha</div>
+              <div style={{ minWidth: 56 }}>Cód.</div><div style={{ flex: 1 }}>Insumo</div><div style={{ minWidth: 70, textAlign: "right" }}>En bodega</div><div style={{ minWidth: 90, textAlign: "right" }}>Promedio</div><div style={{ minWidth: 90, textAlign: "right" }}>Costo ficha</div>
             </div>
           )}
           {lista.map((x, i) => (
             <div key={`${x.codcomp || x.componente}-${i}`} onClick={() => onElegir(x)} style={{ display: "flex", gap: 10, padding: "9px 6px", borderTop: `1px solid ${C.border}`, cursor: "pointer", fontSize: 13, alignItems: "center" }}>
+              <div style={{ minWidth: 56, color: C.slate, fontSize: 12 }}>{x.codcomp || "—"}</div>
               <div style={{ flex: 1 }}>{x.componente}{x.color && <span style={{ color: C.slate }}> · {x.color}</span>}{x.unidad && <span style={{ color: C.slate, fontSize: 11 }}> ({x.unidad})</span>}</div>
               <div style={{ minWidth: 70, textAlign: "right", color: C.slate }}>{fmtDec(x.cantidad)}</div>
               <div style={{ minWidth: 90, textAlign: "right", fontWeight: 800, color: x.promedio > 0 ? C.ink : C.amber }}>{x.promedio > 0 ? "$" + fmtDec(x.promedio) : "sin promedio"}</div>

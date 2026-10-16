@@ -29,7 +29,7 @@ export const FILAS_VINILO = [
 export function filasViniloVacias() {
   return FILAS_VINILO.map((f) => ({
     key: f.key, nombre: f.nombre, tipo: f.tipo,
-    costoMP: "", unidad: "", consumo: f.tipo === "insumo" ? "" : "",
+    codigo: "", costoMP: "", unidad: "", consumo: f.tipo === "insumo" ? "" : "",
     valor: f.tipo === "proceso" ? f.valor : "", base: 0, fuente: f.tipo === "proceso" ? "Valor fijo" : "",
   }));
 }
@@ -53,8 +53,8 @@ export function aplicarInsumoAFila(fila, x) {
   const nombre = x.color ? `${x.componente} - ${x.color}` : x.componente;
   return {
     ...fila,
-    costoMP: costo > 0 ? Math.round(costo * 100) / 100 : "", unidad: x.unidad || "",
-    fuente: `Busint: ${nombre} · ${usaPromedio ? "costo promedio de inventario" : costo > 0 ? "costo de la ficha (sin promedio en inventario)" : "sin costo en Busint"}`,
+    costoMP: costo > 0 ? Math.round(costo * 100) / 100 : "", unidad: x.unidad || "", codigo: x.codcomp || "",
+    fuente: `Busint: ${nombre}${x.codcomp ? ` (cód. ${x.codcomp})` : ""} · ${usaPromedio ? "costo promedio de inventario" : costo > 0 ? "costo de la ficha (sin promedio en inventario)" : "sin costo en Busint"}`,
   };
 }
 
@@ -74,17 +74,17 @@ export async function descargarViniloExcel({ ref, mes, filas, pct }) {
   const ExcelJS = m.default || m;
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet("Vinilo DTF", { views: [{ showGridLines: false }] });
-  ws.columns = [{ width: 38 }, { width: 14 }, { width: 12 }, { width: 8 }, { width: 14 }, { width: 12 }, { width: 14 }];
+  ws.columns = [{ width: 38 }, { width: 14 }, { width: 12 }, { width: 8 }, { width: 14 }, { width: 12 }, { width: 14 }, { width: 16 }];
   const amarillo = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFFF00" } };
   const fino = { style: "thin", color: { argb: "FF000000" } };
   const bordes = { top: fino, left: fino, bottom: fino, right: fino };
-  ws.mergeCells("A1:G1");
+  ws.mergeCells("A1:H1");
   const t = ws.getCell("A1");
   t.value = tituloVinilo(ref, mes);
   t.font = { bold: true, size: 13 };
   t.alignment = { horizontal: "center", vertical: "middle" };
   t.fill = amarillo; t.border = bordes;
-  const cab = ["PROCESO E INSUMO", "COSTO M.P", "PROMEDIO", "U", "COSTO X U", "BASE", "TOTAL"];
+  const cab = ["PROCESO E INSUMO", "COSTO M.P", "PROMEDIO", "U", "COSTO X U", "BASE", "TOTAL", "CÓD. BUSINT"];
   cab.forEach((h, i) => {
     const c = ws.getRow(2).getCell(i + 1);
     c.value = h; c.font = { bold: true }; c.fill = amarillo; c.border = bordes;
@@ -105,7 +105,8 @@ export async function descargarViniloExcel({ ref, mes, filas, pct }) {
     }
     row.getCell(6).value = num(f.base);
     row.getCell(7).value = { formula: `E${r}+F${r}` };
-    for (let c = 1; c <= 7; c++) {
+    row.getCell(8).value = f.tipo === "insumo" ? (/^\d+$/.test(String(f.codigo || "")) ? Number(f.codigo) : f.codigo || "") : "";
+    for (let c = 1; c <= 8; c++) {
       const cell = row.getCell(c);
       cell.border = bordes;
       if (c === 2 || c >= 5) cell.numFmt = money;
