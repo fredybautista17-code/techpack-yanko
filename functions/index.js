@@ -10246,3 +10246,75 @@ exports.depurarOrdenCompraBusint = onCall(
     return { ok: true, numero, tablas: resultado };
   }
 );
+
+// (2026-10-16, a pedido de Fredy) ÓRDENES DE COMPRA de Busint para Contabilidad -> "🛒 Órdenes de compra"
+// (historial, vencidas/pendientes, historial de precio por insumo y control de costo). SOLO LEE.
+// Tablas (validadas con la orden 3648 de YKK COLOMBIA SAS contra su PDF, al peso):
+//   "orden de compra"          cabecera: NumOC, codprove, Fechaini (fecha de la orden), FechaFin (fecha de entrega), USUARIO, Iva...
+//   "orden de compra detalles" líneas: NumOC, Codcomp (código del insumo), Cant, Costo (precio unitario), Dsc (% descuento)
+//   "maestro de proveedores"   Codigo -> Nombre
+//   "estandar componentes prod" Codcomp -> Componente + Color (nombre del insumo)
+// Bruto = Σ Cant × Costo; Descuento = Σ Cant × Costo × Dsc/100; Base = bruto − descuento; IVA = 19 % de la base (la columna
+// Iva de la cabecera dice 16 y no coincide con el PDF, por eso el IVA se calcula en pantalla y no se toma de ahí).
+// Respuesta compacta: l = [[Codcomp, Cant, Costo, Dsc], ...]. Las fechas son AAAA-MM-DD.
+exports.getOrdenesCompraBusint = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 540,
+    memory: "1GiB",
+  },
+  async (request) => {
+    await verificarLlamadorEsAdmin(request);
+    let cabeceras, detalles, proveedores, componentes;
+    try {
+      [cabeceras, detalles, proveedores, componentes] = await Promise.all([
+        consultarTablaBusintBDCompleta("orden de compra"),
+        consultarTablaBusintBDCompleta("orden de compra detalles"),
+        consultarTablaBusintBDCompleta("maestro de proveedores"),
+        consultarTablaBusintBDCompleta("estandar componentes prod"),
+      ]);
+    } catch (err) {
+      logger.error("Error consultando Busint BD (getOrdenesCompraBusint)", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar Busint BD: ${err?.message || String(err)}`);
+    }
+    const num = (v) => (v !== undefined && v !== null && v !== "" && Number.isFinite(Number(v)) ? Number(v) : 0);
+    const clave = (v) => String(v ?? "").trim().replace(/\.0+$/, "");
+    const nombreProv = new Map();
+    proveedores.forEach((p) => { const k = clave(p?.Codigo); if (k) nombreProv.set(k, String(p.Nombre || "").trim()); });
+    const lineasPorOrden = new Map();
+    const codigosUsados = new Set();
+    detalles.forEach((d) => {
+      const oc = clave(d?.NumOC);
+      if (!oc) return;
+      const cod = clave(d?.Codcomp);
+      codigosUsados.add(cod);
+      if (!lineasPorOrden.has(oc)) lineasPorOrden.set(oc, []);
+      lineasPorOrden.get(oc).push([cod, num(d.Cant), num(d.Costo), num(d.Dsc)]);
+    });
+    const ordenes = [];
+    cabeceras.forEach((c) => {
+      const n = clave(c?.NumOC);
+      if (!n) return;
+      const prov = clave(c?.codprove);
+      ordenes.push({
+        n: Number(n),
+        p: prov,
+        pn: nombreProv.get(prov) || (prov ? `Proveedor ${prov}` : ""),
+        fi: fechaBDaISO(c.Fechaini) || null,
+        ff: fechaBDaISO(c.FechaFin) || null,
+        u: String(c.USUARIO || "").trim(),
+        l: lineasPorOrden.get(n) || [],
+      });
+    });
+    const insumos = {};
+    componentes.forEach((f) => {
+      const cod = clave(f?.Codcomp);
+      if (!cod || !codigosUsados.has(cod) || insumos[cod]) return;
+      const nombre = [String(f.Componente || "").trim(), String(f.Color || "").trim()].filter(Boolean).join(" ");
+      if (nombre) insumos[cod] = nombre;
+    });
+    ordenes.sort((a, b) => b.n - a.n);
+    logger.info("getOrdenesCompraBusint", { ordenes: ordenes.length, lineas: detalles.length, insumosConNombre: Object.keys(insumos).length, insumosUsados: codigosUsados.size });
+    return { ok: true, generado: new Date().toISOString(), ordenes, insumos };
+  }
+);
