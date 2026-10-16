@@ -17561,10 +17561,13 @@ function AppInner() {
     else await updateRef(destino.capsulaId, destino.id, { precioCotizacion: valor });
   }
   function abrirCotizadorDesde(item, kind, capsula) {
+    // REF real o, si no la tiene (vacía o solo un guion), su # Prototipo.
+    const limpiaRef = (t) => { const v = String(t ?? "").trim(); return /^[\s\-–—_.]*$/.test(v) || /^(s\/ref|sin ref|n\/a|na)$/i.test(v) ? "" : v; };
+    const refCot = limpiaRef(item.reference) || limpiaRef(item.numPrototipo);
     setCotizadorInicio({
-      kind, id: item.id, capsulaId: capsula?.id, reference: item.reference || "", name: item.name || "",
+      kind, id: item.id, capsulaId: capsula?.id, reference: refCot, name: item.name || "",
       cliente: kind === "proto" ? (item.cliente || item.colores?.[0] || "") : (capsula ? capsulaCliente(capsula) || "" : ""),
-      label: `${item.reference || "s/ref"} · ${item.name || ""}`.trim() + (capsula ? ` — ${capsula.name}` : ""),
+      label: `${refCot || "s/ref"} · ${item.name || ""}`.trim() + (capsula ? ` — ${capsula.name}` : ""),
     });
     setModuloActivo("cotizaciones"); // el Cotizador es un módulo aparte (pantalla completa); al volver queda donde estaba
   }

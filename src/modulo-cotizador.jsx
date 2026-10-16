@@ -209,7 +209,9 @@ const estadoUltima = (c) => ultimaVersion(c)?.estado || "borrador";
 const ICONO_ESTADO = { aprobacion: "⏳", aprobada: "✔", devuelta: "↩" };
 
 // Referencia a mostrar de un prototipo / referencia de cápsula: su REF o, si aún no la tiene, su # Prototipo.
-const textoRef = (x) => String(x?.reference || "").trim() || String(x?.numPrototipo || "").trim();
+// Un REF que solo es un guion o «s/ref» (relleno, no una referencia real) cuenta como vacío.
+const refReal = (t) => { const v = String(t ?? "").trim(); return /^[\s\-–—_.]*$/.test(v) || /^(s\/ref|sin ref|n\/a|na)$/i.test(v) ? "" : v; };
+const textoRef = (x) => refReal(x?.reference) || refReal(x?.numPrototipo);
 // Etiqueta del vínculo tomada en vivo del prototipo / cápsula (así los vínculos viejos con "-" también se corrigen).
 function etiquetaVinculo(v, protos, capsulas) {
   if (!v) return "";
