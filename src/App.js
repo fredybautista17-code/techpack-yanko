@@ -10,6 +10,7 @@ import ModuloNomina from "./modulo-nomina";
 import ModuloInformes from "./modulo-informes";
 import CotizadorView from "./modulo-cotizador";
 import DisponibleDespacharView from "./disponible-despachar";
+import ExplosionMaterialesView from "./explosion-materiales";
 import PatronCodigosReferencia, { buscarPorPatron, PrefijosDeCliente } from "./codigos-patron";
 import { initializeApp } from "firebase/app";
 import {
@@ -17138,10 +17139,10 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
         </div>
       )}
       <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
-        {[["activos", `Activos (${activos.length})`], ["historico", `Histórico (${historico.length})`], ["vigentes_busint", "📡 Vigentes por Cliente (Busint)"], ["disponible_despachar", "📦 Disponible para despachar"]].map(([v, label]) => (
+        {[["activos", `Activos (${activos.length})`], ["historico", `Histórico (${historico.length})`], ["vigentes_busint", "📡 Vigentes por Cliente (Busint)"], ["disponible_despachar", "📦 Disponible para despachar"], ...(soloLectura ? [] : [["explosion_materiales", "🧮 Explosión de materiales"]])].map(([v, label]) => (
           <button key={v} onClick={() => setFiltro(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${filtro === v ? T.ink : T.border}`, background: filtro === v ? T.ink : T.white, color: filtro === v ? T.white : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
         ))}
-        {filtro !== "vigentes_busint" && filtro !== "disponible_despachar" && (
+        {filtro !== "vigentes_busint" && filtro !== "disponible_despachar" && filtro !== "explosion_materiales" && (
           <input
             value={busqueda}
             onChange={(e) => setBusqueda(e.target.value)}
@@ -17152,6 +17153,7 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
       </div>
       {filtro === "vigentes_busint" && <InformeVigentesBusintView isAdmin={isAdmin} pedidosActivos={pedidos} currentUser={currentUser} />}
       {filtro === "disponible_despachar" && <DisponibleDespacharView db={db} functionsClient={functionsClient} T={T} />}
+      {filtro === "explosion_materiales" && !soloLectura && <ExplosionMaterialesView db={db} functionsClient={functionsClient} T={T} pedidos={pedidos} currentUser={currentUser} />}
       {filtro === "activos" && lista.length > 0 && (
         <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, overflow: "hidden", marginBottom: 16 }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
@@ -17236,7 +17238,7 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
           })}
         </div>
       )}
-      {filtro !== "vigentes_busint" && filtro !== "disponible_despachar" && !lista.length && <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>{filtro === "activos" ? "No hay pedidos activos. Carga un pedido de Busint." : "Sin pedidos en el histórico."}</div>}
+      {filtro !== "vigentes_busint" && filtro !== "disponible_despachar" && filtro !== "explosion_materiales" && !lista.length && <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>{filtro === "activos" ? "No hay pedidos activos. Carga un pedido de Busint." : "Sin pedidos en el histórico."}</div>}
     </div>
   );
 }

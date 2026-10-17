@@ -10337,3 +10337,211 @@ exports.getOrdenesCompraBusint = onCall(
     return { ok: true, generado: new Date().toISOString(), ordenes, insumos };
   }
 );
+
+// (2026-10-17, a pedido de Fredy) EXPLOSION DE MATERIALES. Para una lista de
+// [{ref, pinta}] (las referencias+colores de uno o varios pedidos) devuelve la
+// ficha de materiales de cada una, ya cruzada con el inventario de Busint:
+//   - TELAS: tabla "telas" (nombre y consumo por prenda de cada slot Tela1..10)
+//     + "telas - detalle" (codigo de color de cada slot por Ref+Pinta, con el
+//     consumo "con sesgo") + "estandar componentes prod" (stock por
+//     Componente+Color; ICant viene en M2 y se pasa a metros lineales con el
+//     ancho, igual que getTelasStockBusintBD). Misma logica que ya usa Corte.
+//   - INSUMOS: tabla "insumos dig" (Ref, Insumo, Cant, Ubicacion...). OJO: esa
+//     tabla mezcla materiales con procesos/mano de obra (en los procesos Cant
+//     es un precio). Una fila se toma como MATERIAL solo si el nombre del
+//     Insumo coincide con un Componente del inventario ("estandar componentes
+//     prod", Telas distinto de "T"); si no, queda como "otro" y la pantalla la
+//     muestra aparte. "Cant" de un material se asume = cantidad por prenda
+//     (SIN CONFIRMAR todavia contra una ficha real -- por eso la pantalla
+//     muestra el consumo por prenda para que Fredy lo verifique).
+// Como en "insumos dig" no hay color, el stock de un insumo es la suma de
+// todos sus colores activos (`colores` dice cuantos).
+// Si Busint tiene la misma Ref escrita de dos formas (C5008 / C-5008) se usa
+// completo el grupo con el ID mas alto (misma proteccion que Nomina).
+exports.getFichaMaterialesBusint = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 540,
+    memory: "1GiB",
+  },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+    }
+    const pedidas = (Array.isArray(request.data?.items) ? request.data.items : [])
+      .map((i) => ({ ref: String(i?.ref ?? "").trim(), pinta: String(i?.pinta ?? "").trim() }))
+      .filter((i) => i.ref)
+      .slice(0, 600);
+    if (!pedidas.length) {
+      throw new HttpsError("invalid-argument", "items es obligatorio.");
+    }
+    let filasTelas, filasDetalle, filasInsumos, filasInv;
+    try {
+      [filasTelas, filasDetalle, filasInsumos, filasInv] = await Promise.all([
+        consultarTablaBusintBDCompleta("telas"),
+        consultarTablaBusintBDCompleta("telas - detalle"),
+        consultarTablaBusintBDCompleta("insumos dig"),
+        consultarTablaBusintBDCompleta("estandar componentes prod"),
+      ]);
+    } catch (err) {
+      logger.error("Error consultando Busint BD (getFichaMaterialesBusint)", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar Busint BD: ${err?.message || String(err)}`);
+    }
+    const num = (v) => (v !== undefined && v !== null && v !== "" && Number.isFinite(Number(v)) ? Number(v) : 0);
+    const nombreNorm = (s) => String(s ?? "").trim().toUpperCase().replace(/\s+/g, " ");
+    const refNorm = (s) => normalizarRefComparacion(s);
+
+    // ── Inventario ────────────────────────────────────────────────────────────
+    const telaPorNombreColor = new Map(); // `${NOMBRE}|${color}` -> fila
+    const insumosPorNombre = new Map(); // normalizarInsumoBD(Componente) -> [filas]
+    filasInv.forEach((f) => {
+      const componente = String(f?.Componente ?? "").trim();
+      if (!componente || f?.Activo === false) return;
+      const color = String(f?.Color ?? "").trim();
+      const codcomp = f?.Codcomp !== undefined && f?.Codcomp !== null && f?.Codcomp !== "" ? String(f.Codcomp).trim().replace(/\.0+$/, "") : null;
+      const icant = num(f.ICant);
+      const total = num(f.Itotal);
+      let promedio = num(f.Iprom);
+      if (!(promedio > 0) && total > 0 && icant > 0) promedio = total / icant;
+      if (String(f?.Telas ?? "").trim().toUpperCase() === "T") {
+        const ancho = parseFloat(String(f.Unidad ?? f.UnidadT ?? "").trim().replace(",", ".")) || 0;
+        telaPorNombreColor.set(`${nombreNorm(componente)}|${color}`, {
+          componente, color, codcomp, ancho, promedio,
+          stockM2: icant,
+          stockMl: ancho > 0 ? icant / ancho : null,
+        });
+      } else {
+        const k = normalizarInsumoBD(componente);
+        if (!insumosPorNombre.has(k)) insumosPorNombre.set(k, []);
+        insumosPorNombre.get(k).push({ componente, color, codcomp, cantidad: icant, total, promedio, unidad: String(f.Unidad ?? f.UnidadT ?? "").trim() });
+      }
+    });
+
+    // ── Telas por referencia ──────────────────────────────────────────────────
+    const telaPorRef = new Map();
+    filasTelas.forEach((f) => {
+      const k = refNorm(f?.Ref);
+      if (!k) return;
+      const id = num(f.ID);
+      const previa = telaPorRef.get(k);
+      if (!previa || id >= previa.id) telaPorRef.set(k, { id, fila: f });
+    });
+    const detallePorRef = new Map();
+    filasDetalle.forEach((f) => {
+      const k = refNorm(f?.Ref);
+      if (!k) return;
+      if (!detallePorRef.has(k)) detallePorRef.set(k, []);
+      detallePorRef.get(k).push(f);
+    });
+
+    // ── Insumos por referencia (grupo con el ID mas alto) ─────────────────────
+    const insumosPorRef = new Map(); // refNorm -> Map(refLiteral -> {maxId, filas})
+    filasInsumos.forEach((f) => {
+      if (!f?.Ref || !f?.Insumo) return;
+      const k = refNorm(f.Ref);
+      const lit = String(f.Ref);
+      const id = num(f.ID);
+      if (!insumosPorRef.has(k)) insumosPorRef.set(k, new Map());
+      const grupos = insumosPorRef.get(k);
+      if (!grupos.has(lit)) grupos.set(lit, { maxId: id, filas: [] });
+      const g = grupos.get(lit);
+      if (id > g.maxId) g.maxId = id;
+      g.filas.push(f);
+    });
+
+    const cacheRef = new Map();
+    function fichaDeRef(ref) {
+      const k = refNorm(ref);
+      if (cacheRef.has(k)) return cacheRef.get(k);
+      let insumos = [];
+      let refLiteral = null;
+      const grupos = insumosPorRef.get(k);
+      if (grupos) {
+        let mejor = null;
+        for (const [lit, g] of grupos.entries()) {
+          if (!mejor || g.maxId > mejor.g.maxId) mejor = { lit, g };
+        }
+        if (mejor) {
+          refLiteral = mejor.lit;
+          insumos = mejor.g.filas.map((f) => {
+            const nombre = String(f.Insumo).trim();
+            const coincidencias = insumosPorNombre.get(normalizarInsumoBD(nombre)) || [];
+            let inventario = null;
+            if (coincidencias.length) {
+              const cantidad = coincidencias.reduce((s, x) => s + x.cantidad, 0);
+              const valor = coincidencias.reduce((s, x) => s + x.total, 0);
+              inventario = {
+                cantidad,
+                colores: coincidencias.length,
+                unidad: coincidencias[0].unidad,
+                promedio: cantidad > 0 && valor > 0 ? valor / cantidad : (coincidencias.find((x) => x.promedio > 0)?.promedio || 0),
+                codcomps: coincidencias.map((x) => x.codcomp).filter(Boolean).slice(0, 60),
+              };
+            }
+            return {
+              insumo: nombre,
+              cant: num(f.Cant),
+              ubicacion: String(f.Ubicacion ?? "").trim(),
+              orden: f.OrdProc ?? null,
+              proc: f.PROC ?? null,
+              material: !!inventario,
+              inventario,
+            };
+          });
+        }
+      }
+      const filaTela = telaPorRef.get(k)?.fila || null;
+      const detalles = detallePorRef.get(k) || [];
+      const res = { insumos, refLiteral, filaTela, detalles };
+      cacheRef.set(k, res);
+      return res;
+    }
+
+    const items = pedidas.map(({ ref, pinta }) => {
+      const base = fichaDeRef(ref);
+      const pintaNorm = pinta.toUpperCase();
+      const detalle = base.detalles.find((d) => String(d?.Pinta ?? "").trim().toUpperCase() === pintaNorm) || null;
+      const detalleUsado = detalle || base.detalles[0] || null;
+      const telas = [];
+      if (base.filaTela) {
+        for (let i = 1; i <= NUM_SLOTS_TELA; i++) {
+          const nombre = String(valorFlexible(base.filaTela, [`Tela${i}`]) || "").trim();
+          if (!nombre) continue;
+          const consumoBase = num(valorFlexible(base.filaTela, [`Tela${i}-Cons`, `Tela${i}-cons`]));
+          const unidad = String(valorFlexible(base.filaTela, [`Unid${i}`]) || "").trim();
+          let color = null;
+          let consumoSesgo = 0;
+          if (detalleUsado) {
+            const c = valorFlexible(detalleUsado, [`Tela${i}-col`, `Tela${i}-Col`]);
+            if (c !== undefined) color = String(c).trim();
+            consumoSesgo = num(valorFlexible(detalleUsado, [`Tela${i}-con-ses`, `Tela${i}-Con-Ses`]));
+          }
+          const fila = color ? telaPorNombreColor.get(`${nombreNorm(nombre)}|${color}`) : null;
+          let motivo = "ok";
+          if (!detalleUsado) motivo = "sin_detalle_color";
+          else if (!color) motivo = "slot_sin_color";
+          else if (!fila) motivo = "color_no_en_inventario";
+          telas.push({
+            slot: i, nombre, unidad, consumoBase, consumoSesgo,
+            consumo: consumoSesgo > 0 ? consumoSesgo : consumoBase,
+            usaSesgo: consumoSesgo > 0,
+            color, pintaExacta: !!detalle, motivo,
+            codcomp: fila?.codcomp || null,
+            stockMl: fila ? fila.stockMl : null,
+            stockM2: fila ? fila.stockM2 : null,
+            ancho: fila?.ancho || null,
+            promedio: fila?.promedio || 0,
+          });
+        }
+      }
+      return { ref, pinta, refLiteral: base.refLiteral, tieneTelas: telas.length > 0, tieneInsumos: base.insumos.length > 0, telas, insumos: base.insumos };
+    });
+    logger.info("getFichaMaterialesBusint", {
+      pedidas: pedidas.length,
+      sinTelas: items.filter((i) => !i.tieneTelas).length,
+      sinInsumos: items.filter((i) => !i.tieneInsumos).length,
+      filasInsumosDig: filasInsumos.length,
+    });
+    return { ok: true, generado: new Date().toISOString(), items };
+  }
+);
