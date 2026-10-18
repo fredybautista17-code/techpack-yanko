@@ -36,6 +36,44 @@ export function unidadesPendientes(pedido, r) {
   return { total: Number(r.total) || 0, cortado, pendiente: Math.max(0, (Number(r.total) || 0) - cortado) };
 }
 
+const refSG = (v) => String(v ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+// (2026-10-18, a pedido de Fredy) Ajusta lo que falta por cortar con lo que YA
+// cortó Busint. ATLAS solo sabe de los cortes registrados en ATLAS; Busint
+// ("Disponible para despachar", campo etSinCortar = pedido − despachado −
+// unidades en corte/planta/semiterminado/BPT) sabe de todos. Por pedido y
+// referencia se usa el MENOR de los dos pendientes (si algo se cortó hoy y
+// Busint aún no lo refleja, vale lo de ATLAS). Busint da el dato por
+// referencia, no por color: el resultado se reparte entre los colores en
+// proporción a lo que ATLAS tiene pendiente de cada uno.
+// Si el pedido o la referencia no aparecen en Busint (pedido manual, ya
+// cumplido...), se queda el cálculo de ATLAS y se anota en "nota".
+export function ajustarPorCorteBusint({ lineas, bus }) {
+  const grupos = new Map();
+  lineas.forEach((l) => {
+    const k = `${l.pedido}|${refSG(l.ref)}`;
+    const g = grupos.get(k) || { pedido: l.pedido, cliente: l.cliente, k, lineas: [], pend: 0 };
+    g.lineas.push(l); g.pend += l.pendAtlas; grupos.set(k, g);
+  });
+  const resumen = new Map();
+  const salida = [];
+  grupos.forEach((g) => {
+    let r = resumen.get(g.pedido);
+    if (!r) { r = { pedido: g.pedido, cliente: g.cliente, total: 0, atlas: 0, busint: null, usado: 0, notas: new Set() }; resumen.set(g.pedido, r); }
+    const total = g.lineas.reduce((a, l) => a + l.total, 0);
+    let usar = g.pend;
+    if (bus) {
+      if (!bus.pedidos.has(String(g.pedido).trim())) r.notas.add("no aparece en Busint (¿manual o ya cumplido?): se usó ATLAS");
+      else if (!bus.refs.has(g.k)) r.notas.add(`ref. ${g.lineas[0].ref} no encontrada en el pedido de Busint: se usó ATLAS`);
+      else { const b = bus.refs.get(g.k); r.busint = (r.busint || 0) + b; usar = Math.min(g.pend, b); }
+    }
+    const factor = g.pend > 0 ? usar / g.pend : 0;
+    g.lineas.forEach((l) => salida.push({ ...l, unidades: Math.round(l.pendAtlas * factor) }));
+    r.total += total; r.atlas += g.pend; r.usado += usar;
+  });
+  return { lineas: salida.filter((l) => l.unidades > 0), resumen: [...resumen.values()].map((r) => ({ ...r, notas: [...r.notas] })) };
+}
+
 function tipoUnidadTela(u) {
   const t = String(u || "").trim().toLowerCase().replace(/\./g, "");
   if (t === "m2" || t === "m²") return "m2";
@@ -218,6 +256,8 @@ export default function ExplosionMaterialesView({ db, functionsClient, T, pedido
   const [tipoMat, setTipoMat] = useState("telas"); // telas | insumos
   const [soloFalta, setSoloFalta] = useState(false);
   const [abierto, setAbierto] = useState({});
+  const [avisoBus, setAvisoBus] = useState("");
+  const [verCorte, setVerCorte] = useState(false);
 
   useEffect(() => { guardarOpciones(opc); }, [opc]);
   const alternar = (k) => setAbierto((s) => ({ ...s, [k]: !s[k] }));
@@ -233,25 +273,50 @@ export default function ExplosionMaterialesView({ db, functionsClient, T, pedido
   }, [candidatos, q]);
   const elegidos = candidatos.filter(({ p }) => sel[p.id]);
 
-  // Líneas (ref + color + unidades) de los pedidos elegidos, según la opción de unidades
-  const lineas = useMemo(() => {
+  // Líneas (ref + color + unidades) de los pedidos elegidos, según la opción de unidades.
+  // pendAtlas = lo que falta por cortar según los cortes registrados en ATLAS.
+  const lineasAtlas = useMemo(() => {
     const out = [];
     elegidos.forEach(({ p }) => (p.referencias || []).forEach((r) => {
       const u = unidadesPendientes(p, r);
-      const unidades = opc.soloPorCortar ? u.pendiente : u.total;
-      if (unidades <= 0) return;
       const [pinta, ...resto] = String(r.descripcion || "").split(" · ");
-      out.push({ pedido: p.numero, cliente: p.cliente, ref: String(r.ref || "").trim(), pinta: pinta.trim(), color: resto.join(" · ").trim(), unidades });
+      out.push({ pedido: p.numero, cliente: p.cliente, ref: String(r.ref || "").trim(), pinta: pinta.trim(), color: resto.join(" · ").trim(), unidades: opc.soloPorCortar ? u.pendiente : u.total, total: u.total, pendAtlas: u.pendiente });
     }));
     return out;
   }, [elegidos, opc.soloPorCortar]); // eslint-disable-line
+  const lineas = useMemo(() => lineasAtlas.filter((l) => l.unidades > 0), [lineasAtlas]);
 
   async function calcular() {
     if (!lineas.length) return;
-    setCalculando(true); setError(""); setAvisoOC("");
+    setCalculando(true); setError(""); setAvisoOC(""); setAvisoBus("");
     try {
       const unicos = [...new Map(lineas.map((l) => [`${l.ref}|${l.pinta}`, { ref: l.ref, pinta: l.pinta }])).values()];
       const pFicha = httpsCallable(functionsClient, "getFichaMaterialesBusint", { timeout: 540000 })({ items: unicos });
+      pFicha.catch(() => {}); // si luego no hace falta (todo cortado), no queda un error sin atender
+      // Lo que Busint ya cortó (misma consulta de "Disponible para despachar"): solo cuando se pide "lo que falta por cortar"
+      const pBus = (async () => {
+        if (!opc.soloPorCortar) return null;
+        try {
+          const resp = await httpsCallable(functionsClient, "getDisponibleParaDespachar", { timeout: 540000 })({});
+          if ((resp.data?.avisos || []).some((a) => /Panel de Flujo/i.test(String(a)))) {
+            setAvisoBus("Busint no entregó el panel de producción: se usó solo lo cortado que está registrado en ATLAS.");
+            return null;
+          }
+          const bus = { pedidos: new Set(), refs: new Map() };
+          (resp.data?.porCliente || []).forEach((g) => (g.filas || []).forEach((f) => {
+            if (f.esPreorden) return;
+            const ped = String(f.numPed ?? "").trim();
+            if (!ped || ped.startsWith("(")) return;
+            bus.pedidos.add(ped);
+            const k = `${ped}|${refSG(f.ref)}`;
+            bus.refs.set(k, (bus.refs.get(k) || 0) + (Number(f.etSinCortar) || 0));
+          }));
+          return bus;
+        } catch (err) {
+          setAvisoBus("No pude consultar lo cortado en Busint: se usó solo lo cortado que está registrado en ATLAS.");
+          return null;
+        }
+      })();
       const pOC = (async () => {
         if (cacheOC && Date.now() - cacheOC.en < 15 * 60 * 1000) return cacheOC.datos;
         try {
@@ -280,9 +345,23 @@ export default function ExplosionMaterialesView({ db, functionsClient, T, pedido
           return new Map();
         }
       })();
+      const bus = await pBus;
+      let lineasUsar = lineas;
+      let resumenCorte = null;
+      if (opc.soloPorCortar) {
+        const aj = ajustarPorCorteBusint({ lineas: lineasAtlas, bus });
+        lineasUsar = aj.lineas;
+        resumenCorte = aj.resumen;
+      }
+      const pedidosNum = elegidos.map(({ p }) => p.numero);
+      if (!lineasUsar.length) {
+        setDatos({ fichas: new Map(), enCamino: new Map(), lineas: [], generado: new Date().toISOString(), pedidos: pedidosNum, resumenCorte, todoCortado: true, conBusint: !!bus });
+        setAbierto({}); setPagina("informe"); setSelAbierta(false);
+        return;
+      }
       const [respFicha, enCamino] = await Promise.all([pFicha, pOC]);
       const fichas = new Map((respFicha.data?.items || []).map((i) => [`${i.ref}|${i.pinta}`, i]));
-      setDatos({ fichas, enCamino, lineas, generado: new Date().toISOString(), pedidos: elegidos.map(({ p }) => p.numero) });
+      setDatos({ fichas, enCamino, lineas: lineasUsar, generado: new Date().toISOString(), pedidos: pedidosNum, resumenCorte, todoCortado: false, conBusint: !!bus });
       setAbierto({}); setPagina("informe"); setSelAbierta(false);
     } catch (err) {
       setError(err?.message || "No se pudo consultar Busint.");
@@ -389,7 +468,7 @@ export default function ExplosionMaterialesView({ db, functionsClient, T, pedido
         {resultado && !selAbierta ? (
           <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
             <div style={{ fontWeight: 800, color: T.ink }}>{datos?.pedidos?.length || 0} pedido{(datos?.pedidos?.length || 0) === 1 ? "" : "s"}</div>
-            <div style={{ color: T.slate, fontSize: 13 }}>{(datos?.pedidos || []).slice(0, 8).join(", ")}{(datos?.pedidos?.length || 0) > 8 ? "…" : ""} · {fmt(datos.lineas.reduce((s, l) => s + l.unidades, 0), 0)} prendas {opc.soloPorCortar ? "por cortar" : "(pedido completo)"} · calculado {new Date(datos.generado).toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" })}</div>
+            <div style={{ color: T.slate, fontSize: 13 }}>{(datos?.pedidos || []).slice(0, 8).join(", ")}{(datos?.pedidos?.length || 0) > 8 ? "…" : ""} · {fmt(datos.lineas.reduce((s, l) => s + l.unidades, 0), 0)} prendas {opc.soloPorCortar ? (datos.conBusint ? "por cortar (según Busint)" : "por cortar (según ATLAS)") : "(pedido completo)"} · calculado {new Date(datos.generado).toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" })}</div>
             <button onClick={() => setSelAbierta(true)} style={{ ...campo, marginLeft: "auto", cursor: "pointer", fontWeight: 700 }}>Cambiar pedidos u opciones</button>
           </div>
         ) : (
@@ -403,7 +482,7 @@ export default function ExplosionMaterialesView({ db, functionsClient, T, pedido
             </div>
             <div style={{ maxHeight: 260, overflow: "auto", border: `1px solid ${T.border}`, borderRadius: 10 }}>
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                <thead><tr><th style={th}></th><th style={th}>Pedido</th><th style={th}>Cliente</th><th style={{ ...th, textAlign: "right" }}>Pedido</th><th style={{ ...th, textAlign: "right" }}>Por cortar</th><th style={th}>Despacho</th></tr></thead>
+                <thead><tr><th style={th}></th><th style={th}>Pedido</th><th style={th}>Cliente</th><th style={{ ...th, textAlign: "right" }}>Pedido</th><th style={{ ...th, textAlign: "right" }}>Por cortar (ATLAS)</th><th style={th}>Despacho</th></tr></thead>
                 <tbody>
                   {visibles.map(({ p, unidades, total }) => (
                     <tr key={p.id} onClick={() => setSel((s) => ({ ...s, [p.id]: !s[p.id] }))} style={{ cursor: "pointer", background: sel[p.id] ? T.denimBg : "transparent" }}>
@@ -438,9 +517,35 @@ export default function ExplosionMaterialesView({ db, functionsClient, T, pedido
       </div>
 
       {error && <div style={{ background: "#FBE9E6", color: "#9A3A2D", border: "1px solid #F3B9B1", borderRadius: 10, padding: 12, marginBottom: 12, fontSize: 13 }}>{error}</div>}
+      {avisoBus && <div style={{ background: T.amberBg, color: T.amber, border: "1px solid #F0CF95", borderRadius: 10, padding: 12, marginBottom: 12, fontSize: 13 }}>{avisoBus}</div>}
       {avisoOC && <div style={{ background: T.amberBg, color: T.amber, border: "1px solid #F0CF95", borderRadius: 10, padding: 12, marginBottom: 12, fontSize: 13 }}>{avisoOC}</div>}
 
-      {resultado && (
+      {datos && datos.todoCortado && (
+        <div style={{ background: "#E3F5EC", border: "1px solid #B9E3CF", color: "#1E7A52", borderRadius: 14, padding: "16px 18px", marginBottom: 14 }}>
+          <div style={{ fontWeight: 800, fontSize: 16 }}>✅ Según {datos.conBusint ? "Busint" : "los cortes registrados en ATLAS"} ya se cortó todo lo que elegiste</div>
+          <div style={{ fontSize: 13, marginTop: 4 }}>No hay prendas por cortar, así que no hay materiales por pedir. Abajo ves cómo se calculó, pedido por pedido.</div>
+        </div>
+      )}
+      {datos && datos.resumenCorte && datos.resumenCorte.length > 0 && (
+        <div style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, marginBottom: 14, overflow: "hidden" }}>
+          <div onClick={() => setVerCorte((v) => !v || datos.todoCortado)} style={{ padding: "12px 16px", cursor: "pointer", display: "flex", gap: 10, alignItems: "center" }}>
+            <b>{verCorte || datos.todoCortado ? "▾" : "▸"} Cómo se calculó lo que falta por cortar</b>
+            <span style={{ color: T.slate, fontSize: 12.5 }}>ATLAS cuenta solo los cortes registrados aquí; Busint cuenta todo lo cortado. Se usa el menor pendiente de los dos.</span>
+          </div>
+          {(verCorte || datos.todoCortado) && (
+            <div style={{ overflow: "auto", borderTop: `1px solid ${T.border}` }}>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead><tr><th style={th}>Pedido</th><th style={th}>Cliente</th><th style={{ ...th, textAlign: "right" }}>Pedido</th><th style={{ ...th, textAlign: "right" }}>Por cortar según ATLAS</th><th style={{ ...th, textAlign: "right" }}>Por cortar según Busint</th><th style={{ ...th, textAlign: "right" }}>Se usó</th><th style={th}>Nota</th></tr></thead>
+                <tbody>{datos.resumenCorte.map((r) => (
+                  <tr key={r.pedido}><td style={{ ...td, fontWeight: 700 }}>{r.pedido}</td><td style={td}>{r.cliente}</td><td style={{ ...td, ...nu }}>{fmt(r.total, 0)}</td><td style={{ ...td, ...nu }}>{fmt(r.atlas, 0)}</td><td style={{ ...td, ...nu }}>{r.busint == null ? "—" : fmt(r.busint, 0)}</td><td style={{ ...td, ...nu, fontWeight: 800 }}>{fmt(r.usado, 0)}</td><td style={{ ...td, color: T.slate, fontSize: 12 }}>{r.notas.join(" · ")}</td></tr>
+                ))}</tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {resultado && !datos.todoCortado && (
         <div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 12, marginBottom: 16 }}>
             <Kpi t="Hay que comprar" v={`${aComprar.length} material${aComprar.length === 1 ? "" : "es"}`} d={costoTotal ? `≈ ${money(costoTotal)} al costo promedio` : "con faltante"} rojo={aComprar.length > 0} />
