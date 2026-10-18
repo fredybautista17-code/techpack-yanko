@@ -14308,6 +14308,25 @@ function BusintCatalogoTestView() {
       setCargandoOrdenCompra(false);
     }
   }
+  // (2026-10-18) DIAGNOSTICO de la integracion de un lote en Busint (ver depurarIntegracionLoteBusint en functions/index.js).
+  const [numLoteIntegracion, setNumLoteIntegracion] = useState("");
+  const [cargandoIntegracion, setCargandoIntegracion] = useState(false);
+  const [integracionResultado, setIntegracionResultado] = useState(null);
+  async function depurarIntegracionLote(soloResumen) {
+    const numLote = soloResumen ? "" : numLoteIntegracion.trim();
+    setCargandoIntegracion(true);
+    setError("");
+    setIntegracionResultado(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "depurarIntegracionLoteBusint", { timeout: 540000 });
+      const resp = await llamar({ numLote });
+      setIntegracionResultado(resp.data);
+    } catch (err) {
+      setError(err?.message || "No se pudo consultar la integración.");
+    } finally {
+      setCargandoIntegracion(false);
+    }
+  }
   async function depurarFacturaCxp() {
     const codigo = codigoDepurarCxp.trim();
     const nfact = nfactDepurarCxp.trim();
@@ -15367,6 +15386,94 @@ function BusintCatalogoTestView() {
               )}
             </div>
           ))}
+        </div>
+      )}
+      <div style={{ height: 1, background: T.border, margin: "24px 0" }} />
+      <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Integración de un lote (¿cuándo salen los insumos de bodega?)</div>
+      <div style={{ fontSize: 13, color: T.slate, marginBottom: 16 }}>
+        Escribe un número de lote que ya esté integrado para ver los documentos de integración, los insumos entregados, las prendas cubiertas y las fechas de corte y de entrada a planta. El botón de resumen revisa los últimos 100 lotes: cuántos días pasan entre cortar e integrar y cuántos aún no tienen integración. Puede tardar un par de minutos. Solo lee.
+      </div>
+      <div style={{ display: "flex", gap: 10, alignItems: "end", marginBottom: 16, flexWrap: "wrap" }}>
+        <Field label="Número de lote"><FInput value={numLoteIntegracion} onChange={setNumLoteIntegracion} placeholder="ej. 12345" /></Field>
+        <div style={{ marginBottom: 14, display: "flex", gap: 8 }}>
+          <Btn onClick={() => depurarIntegracionLote(false)} disabled={cargandoIntegracion || !numLoteIntegracion.trim()}>{cargandoIntegracion ? "Consultando..." : "🔎 Ver lote"}</Btn>
+          <Btn onClick={() => depurarIntegracionLote(true)} disabled={cargandoIntegracion}>📊 Solo resumen de 100 lotes</Btn>
+        </div>
+      </div>
+      {integracionResultado && (
+        <div style={{ marginBottom: 24, display: "grid", gap: 14 }}>
+          {(integracionResultado.errores || []).length > 0 && (
+            <div style={{ padding: "10px 14px", background: T.coralBg, color: T.coral, borderRadius: 8, fontSize: 12.5, fontWeight: 600 }}>
+              No se pudieron leer: {integracionResultado.errores.join(" · ")}
+            </div>
+          )}
+          <div style={{ padding: 12, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}`, fontSize: 12, color: T.slate }}>
+            <b style={{ color: T.ink }}>Tablas leídas:</b> {(integracionResultado.tablas || []).map((t) => `${t.tabla} (${t.filas} filas · lote: ${t.columnaLote || "sin columna de lote"} · fecha: ${t.columnaFecha || "sin fecha"})`).join(" — ")}
+          </div>
+          {integracionResultado.resumen && (() => {
+            const r = integracionResultado.resumen;
+            return (
+              <div style={{ padding: 14, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
+                <div style={{ fontWeight: 800, fontSize: 14, color: T.ink, marginBottom: 6 }}>Últimos {r.lotesRevisados} lotes cortados</div>
+                <div style={{ fontSize: 12.5, color: T.ink, lineHeight: 1.7 }}>
+                  Con integración: <b>{r.conIntegracion}</b> · Sin integración: <b>{r.sinIntegracion}</b><br />
+                  Integrados antes de cortar: <b>{r.integradosAntesDeCortar}</b> · el mismo día del corte: <b>{r.integradosElMismoDiaDelCorte}</b> · después del corte: <b>{r.integradosDespuesDelCorte}</b><br />
+                  Días entre corte e integración — mínimo: <b>{r.diasMin ?? "—"}</b> · mediana: <b>{r.diasMediana ?? "—"}</b> · máximo: <b>{r.diasMax ?? "—"}</b>
+                </div>
+                <div style={{ overflowX: "auto", marginTop: 10, maxHeight: 360, overflowY: "auto" }}>
+                  <table style={{ borderCollapse: "collapse", fontSize: 12 }}>
+                    <thead><tr>{["Lote", "Ref", "Corte", "Integración", "Días corte→integr.", "Entrada a planta", "Días integr.→entrada"].map((c) => <th key={c} style={{ textAlign: "left", padding: "4px 8px", borderBottom: `1px solid ${T.border}`, whiteSpace: "nowrap" }}>{c}</th>)}</tr></thead>
+                    <tbody>
+                      {r.lotes.map((l) => (
+                        <tr key={l.lote}>
+                          {[l.lote, l.ref, l.corte, l.integracion || "— sin integrar —", l.diasCorteAIntegracion, l.entradaPlanta || "—", l.diasIntegracionAEntrada].map((v, i) => <td key={i} style={{ padding: "4px 8px", borderBottom: `1px solid ${T.border}`, whiteSpace: "nowrap" }}>{v === null || v === undefined ? "—" : String(v)}</td>)}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          })()}
+          {integracionResultado.lote && integracionResultado.detalle && (
+            <>
+              <div style={{ padding: 14, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
+                <div style={{ fontWeight: 800, fontSize: 14, color: T.ink, marginBottom: 6 }}>Insumos entregados al lote {integracionResultado.lote} ({(integracionResultado.detalle.insumosEntregados || []).length} filas)</div>
+                {(integracionResultado.detalle.insumosEntregados || []).length === 0 ? (
+                  <div style={{ fontSize: 12.5, color: T.coral, fontWeight: 600 }}>Este lote no tiene insumos integrados en "bmp - integracion comp".</div>
+                ) : (
+                  <div style={{ overflowX: "auto" }}>
+                    <table style={{ borderCollapse: "collapse", fontSize: 12 }}>
+                      <thead><tr>{["Integración", "Código", "Insumo", "Ref", "Cantidad", "Unidad", "Costo", "Observación"].map((c) => <th key={c} style={{ textAlign: "left", padding: "4px 8px", borderBottom: `1px solid ${T.border}`, whiteSpace: "nowrap" }}>{c}</th>)}</tr></thead>
+                      <tbody>
+                        {integracionResultado.detalle.insumosEntregados.map((f, i) => (
+                          <tr key={i}>{[f.integracion, f.codcomp, f.insumo, f.ref, f.cant, f.unidad, f.costo, f.observacion].map((v, j) => <td key={j} style={{ padding: "4px 8px", borderBottom: `1px solid ${T.border}`, whiteSpace: "nowrap" }}>{v === null || v === undefined ? "" : String(v)}</td>)}</tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+              {(integracionResultado.detalle.tablas || []).map((t) => (
+                <div key={t.tabla} style={{ padding: 14, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
+                  <div style={{ fontWeight: 800, fontSize: 14, color: T.ink }}>{t.tabla} <span style={{ fontWeight: 400, color: T.slate }}>— {t.totalFilas} filas · {t.coincidencias} del lote {integracionResultado.lote}</span></div>
+                  <div style={{ fontSize: 12, color: T.slate, margin: "6px 0" }}>Columnas: {t.columnas.join(" · ") || "—"} · columna de lote: <b>{t.columnaLote || "no encontrada"}</b></div>
+                  {t.filas.length > 0 && (
+                    <div style={{ overflowX: "auto" }}>
+                      <table style={{ borderCollapse: "collapse", fontSize: 12 }}>
+                        <thead><tr>{t.columnas.map((c) => <th key={c} style={{ textAlign: "left", padding: "4px 8px", borderBottom: `1px solid ${T.border}`, whiteSpace: "nowrap" }}>{c}</th>)}</tr></thead>
+                        <tbody>
+                          {t.filas.map((f, i) => (
+                            <tr key={i}>{t.columnas.map((c) => <td key={c} style={{ padding: "4px 8px", borderBottom: `1px solid ${T.border}`, whiteSpace: "nowrap" }}>{f[c] === null || f[c] === undefined ? "" : String(f[c])}</td>)}</tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </>
+          )}
         </div>
       )}
       <div style={{ height: 1, background: T.border, margin: "24px 0" }} />

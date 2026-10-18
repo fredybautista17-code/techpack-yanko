@@ -10545,3 +10545,170 @@ exports.getFichaMaterialesBusint = onCall(
     return { ok: true, generado: new Date().toISOString(), items };
   }
 );
+
+// (2026-10-18, a pedido de Fredy) DIAGNOSTICO de la INTEGRACIÓN de un lote en Busint. SOLO LEE.
+// Objetivo: averiguar con datos reales CUÁNDO sale el insumo de bodega (al cortar, al integrar el lote, al
+// entrar a planta) para decidir cómo descontar los insumos en "Explosión de materiales".
+// Tablas (halladas buscando "integr" en Busint): "bmp - integracion" (cabecera: Numlote, Fecha, Codplanta,
+// USUARIO...), "bmp - integracion comp" (insumos entregados: Codcomp, Cant, unidad, Costo), "bmp - integracion ref"
+// (prendas cubiertas por talla), y "bmp - entrada planta*" para la fecha de entrada a planta. Como los nombres
+// exactos de columna aún no están confirmados, se busca la columna del lote sin importar mayúsculas y se
+// devuelven las filas tal como vienen (con las fechas ya en AAAA-MM-DD).
+function _diagLimpiarFila(f) {
+  const o = {};
+  Object.keys(f || {}).forEach((k) => {
+    const v = f[k];
+    if (v && typeof v === "object" && "isValidDateTime" in v) o[k] = fechaBDaISO(v);
+    else o[k] = v;
+  });
+  return o;
+}
+function _diagClave(filas, regex) {
+  if (!filas || !filas.length) return null;
+  return Object.keys(filas[0]).find((k) => regex.test(k)) || null;
+}
+function _diagMismoLote(v, lote) {
+  if (v === null || v === undefined || v === "") return false;
+  const t = String(v).trim();
+  return t === lote || (/^\d+(\.0+)?$/.test(t) && /^\d+$/.test(lote) && Number(t) === Number(lote));
+}
+function _diagDias(desde, hasta) {
+  if (!desde || !hasta) return null;
+  const a = Date.parse(desde + "T00:00:00Z"), b = Date.parse(hasta + "T00:00:00Z");
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+  return Math.round((b - a) / 86400000);
+}
+exports.depurarIntegracionLoteBusint = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 540,
+    memory: "1GiB",
+  },
+  async (request) => {
+    await verificarLlamadorEsAdmin(request);
+    const lote = String(request.data?.numLote ?? "").trim();
+    if (lote && !/^\d+$/.test(lote)) throw new HttpsError("invalid-argument", "Escribe el número de lote (solo dígitos) o déjalo vacío para ver solo el resumen.");
+    const NOMBRES = {
+      integracion: "bmp - integracion",
+      comp: "bmp - integracion comp",
+      ref: "bmp - integracion ref",
+      orden: "orden produccion",
+      insumos: "estandar componentes prod",
+      entPlanta: "bmp - entrada planta",
+      entPlantaRef: "bmp - entrada planta ref",
+      entProc: "bmp - entrada plantaproc",
+      entProcRef: "bmp - entrada plantaproc ref",
+    };
+    const llaves = Object.keys(NOMBRES);
+    const errores = [];
+    const leidas = await Promise.all(llaves.map(async (k) => {
+      try { return await consultarTablaBusintBDCompleta(NOMBRES[k]); }
+      catch (err) { errores.push(`${NOMBRES[k]}: ${err?.message || String(err)}`); return []; }
+    }));
+    const T = {};
+    llaves.forEach((k, i) => { T[k] = leidas[i].map(_diagLimpiarFila); });
+
+    // Nombre del insumo por código
+    const nombreInsumo = new Map();
+    T.insumos.forEach((f) => {
+      const cod = valorFlexible(f, ["Codcomp", "codcomp", "CodComp"]);
+      if (cod === undefined) return;
+      const nom = [valorFlexible(f, ["Componente", "componente"]), valorFlexible(f, ["Color", "color"])].filter((x) => x !== undefined && x !== "").join(" · ");
+      nombreInsumo.set(String(cod).trim(), nom);
+    });
+
+    // Claves de lote y fecha de cada tabla
+    const claveLote = {}, claveFecha = {};
+    llaves.forEach((k) => {
+      claveLote[k] = _diagClave(T[k], /^num\s*_?lote$|^lote$/i) || _diagClave(T[k], /lote/i);
+      const conFecha = T[k].length ? Object.keys(T[k][0]).filter((c) => /^fecha/i.test(c)) : [];
+      claveFecha[k] = conFecha.find((c) => T[k].some((f) => typeof f[c] === "string" && /^\d{4}-\d{2}-\d{2}$/.test(f[c]))) || null;
+    });
+
+    const detalle = {};
+    if (lote) {
+      const filtrar = (k) => (claveLote[k] ? T[k].filter((f) => _diagMismoLote(f[claveLote[k]], lote)) : []);
+      detalle.tablas = llaves.filter((k) => k !== "insumos").map((k) => {
+        const filas = filtrar(k);
+        return {
+          tabla: NOMBRES[k],
+          totalFilas: T[k].length,
+          columnaLote: claveLote[k],
+          columnaFecha: claveFecha[k],
+          columnas: T[k].length ? Object.keys(T[k][0]) : [],
+          coincidencias: filas.length,
+          filas: filas.slice(0, 80),
+        };
+      });
+      detalle.insumosEntregados = filtrar("comp").map((f) => {
+        const cod = String(valorFlexible(f, ["Codcomp", "codcomp"]) ?? "").trim();
+        return {
+          integracion: valorFlexible(f, ["integracion", "Integracion"]) ?? null,
+          codcomp: cod,
+          insumo: nombreInsumo.get(cod) || null,
+          ref: valorFlexible(f, ["Ref", "ref"]) ?? null,
+          cant: Number(valorFlexible(f, ["Cant", "cant"]) ?? 0) || 0,
+          unidad: valorFlexible(f, ["unidad", "Unidad"]) ?? null,
+          costo: Number(valorFlexible(f, ["Costo", "costo"]) ?? 0) || 0,
+          observacion: valorFlexible(f, ["Observacion", "observacion"]) ?? null,
+        };
+      });
+      const op = T.orden.filter((f) => claveLote.orden && _diagMismoLote(f[claveLote.orden], lote));
+      detalle.ordenProduccion = op.slice(0, 5);
+    }
+
+    // Resumen de los últimos 100 lotes (por FechaCorte en "orden produccion")
+    const kLoteOP = claveLote.orden;
+    const kCorte = T.orden.length ? (Object.keys(T.orden[0]).find((c) => /^fechacorte$/i.test(c)) || Object.keys(T.orden[0]).find((c) => /corte/i.test(c) && /fecha/i.test(c))) : null;
+    const kMsg = T.orden.length ? Object.keys(T.orden[0]).find((c) => /^mensaje$/i.test(c)) : null;
+    const kRefOP = T.orden.length ? Object.keys(T.orden[0]).find((c) => /^ref$/i.test(c)) : null;
+    const primeraFecha = (k) => {
+      const m = new Map();
+      if (!claveLote[k] || !claveFecha[k]) return m;
+      T[k].forEach((f) => {
+        const l = String(f[claveLote[k]] ?? "").trim().replace(/\.0+$/, "");
+        const d = f[claveFecha[k]];
+        if (!l || !d) return;
+        if (!m.has(l) || d < m.get(l)) m.set(l, d);
+      });
+      return m;
+    };
+    const fIntegracion = primeraFecha("integracion");
+    const fEntPlanta = primeraFecha("entPlanta");
+    const fEntProc = primeraFecha("entProc");
+    let resumen = null;
+    if (kLoteOP && kCorte) {
+      const lotesOP = new Map();
+      T.orden.forEach((f) => {
+        if (kMsg && /elimin/i.test(String(f[kMsg] || ""))) return;
+        const l = String(f[kLoteOP] ?? "").trim().replace(/\.0+$/, "");
+        const corte = f[kCorte];
+        if (!l || !corte) return;
+        if (!lotesOP.has(l) || corte < lotesOP.get(l).corte) lotesOP.set(l, { lote: l, corte, ref: kRefOP ? f[kRefOP] : null });
+      });
+      const ultimos = [...lotesOP.values()].sort((a, b) => (a.corte < b.corte ? 1 : a.corte > b.corte ? -1 : 0)).slice(0, 100).map((x) => {
+        const fi = fIntegracion.get(x.lote) || null;
+        const fe = fEntPlanta.get(x.lote) || fEntProc.get(x.lote) || null;
+        return { lote: x.lote, ref: x.ref, corte: x.corte, integracion: fi, diasCorteAIntegracion: _diagDias(x.corte, fi), entradaPlanta: fe, diasCorteAEntrada: _diagDias(x.corte, fe), diasIntegracionAEntrada: _diagDias(fi, fe) };
+      });
+      const dias = ultimos.map((x) => x.diasCorteAIntegracion).filter((d) => d !== null).sort((a, b) => a - b);
+      resumen = {
+        lotesRevisados: ultimos.length,
+        conIntegracion: dias.length,
+        sinIntegracion: ultimos.length - dias.length,
+        integradosAntesDeCortar: dias.filter((d) => d < 0).length,
+        integradosElMismoDiaDelCorte: dias.filter((d) => d === 0).length,
+        integradosDespuesDelCorte: dias.filter((d) => d > 0).length,
+        diasMin: dias.length ? dias[0] : null,
+        diasMediana: dias.length ? dias[Math.floor(dias.length / 2)] : null,
+        diasMax: dias.length ? dias[dias.length - 1] : null,
+        columnaCorte: kCorte,
+        columnaFechaIntegracion: claveFecha.integracion,
+        columnaFechaEntradaPlanta: claveFecha.entPlanta,
+        lotes: ultimos,
+      };
+    }
+    logger.info("depurarIntegracionLoteBusint", { lote, errores: errores.length, resumen: resumen ? { n: resumen.lotesRevisados, con: resumen.conIntegracion } : null });
+    return { ok: true, lote: lote || null, errores, detalle, resumen, tablas: llaves.map((k) => ({ tabla: NOMBRES[k], filas: T[k].length, columnaLote: claveLote[k], columnaFecha: claveFecha[k] })) };
+  }
+);
