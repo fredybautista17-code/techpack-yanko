@@ -1,19 +1,23 @@
 // ─── EXPLOSIÓN DE MATERIALES ──────────────────────────────────────────────────
-// (2026-10-17, a pedido de Fredy) Pestaña de Pedidos: se eligen uno o varios
-// pedidos y se calcula, con la ficha técnica de cada referencia en Busint
-// (función "getFichaMaterialesBusint"), cuánto material hace falta, cuánto hay
-// en bodega, cuánto viene en órdenes de compra vigentes ("getOrdenesCompraBusint",
-// solo administradores) y cuánto falta comprar.
+// (2026-10-17, a pedido de Fredy) Opción del menú Pedidos: se eligen uno o
+// varios pedidos y se calcula, con la ficha técnica de cada referencia en
+// Busint (función "getFichaMaterialesBusint"), cuánto material hace falta,
+// cuánto hay en bodega, cuánto viene en órdenes de compra vigentes
+// ("getOrdenesCompraBusint", solo administradores) y cuánto falta comprar.
 //   Necesito = Σ (unidades × consumo por prenda) × (1 + merma)
 //   Falta    = Necesito − Tengo − En camino   (nunca menor que 0)
 // Unidades = lo pedido, o solo lo que falta por cortar (opción, activa por
 // defecto) para no pedir de nuevo lo que ya se cortó.
+// (2026-10-18, a pedido de Fredy) Informe rediseñado: "Por material" (tela →
+// color, con total por tela) y "Por referencia" (qué necesita cada referencia
+// y por qué). El faltante se calcula por material; en la vista por referencia
+// se REPARTE en proporción a lo que consume cada referencia (estimación).
 import React, { useState, useMemo, useEffect } from "react";
 import { collection, getDocs } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 
 const fmt = (n, dec = 2) => (Number.isFinite(Number(n)) ? Number(n).toLocaleString("es-CO", { maximumFractionDigits: dec }) : "—");
-const money = (n) => "$" + Math.round(Number(n) || 0).toLocaleString("es-CO");
+const money = (n) => "$ " + Math.round(Number(n) || 0).toLocaleString("es-CO");
 const normTxt = (t) => String(t || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
 const hoyISO = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
 const sumarDias = (iso, d) => { const f = new Date(iso + "T12:00:00"); f.setDate(f.getDate() + d); return f.toISOString().slice(0, 10); };
@@ -39,6 +43,18 @@ function tipoUnidadTela(u) {
   return "m"; // vacío, Mt, ML, m...
 }
 
+// Punto de color aproximado a partir del NOMBRE del color del pedido (solo guía visual)
+const COLORES_APROX = [
+  ["negro", "#222222"], ["blanco", "#FFFFFF"], ["crudo", "#F2EBDD"], ["marfil", "#F2EBDD"], ["beige", "#D9C7A7"], ["arena", "#D9C7A7"], ["cafe", "#7A5230"], ["chocolate", "#5A3A22"], ["cocoa", "#7A5230"], ["mostaza", "#D9A62B"],
+  ["amarillo", "#F2D03B"], ["naranja", "#F08A3C"], ["rojo", "#D6443A"], ["vino", "#7B2335"], ["fucsia", "#D6409F"], ["rosado", "#F2B8C6"], ["rosa", "#F2B8C6"], ["lila", "#C9B3E0"], ["morado", "#7B5EA7"], ["violeta", "#7B5EA7"],
+  ["azul clar", "#9CC3E6"], ["celeste", "#9CC3E6"], ["azul", "#3D6B9E"], ["turquesa", "#3CB5B0"], ["verde", "#4C9A62"], ["menta", "#A8DCC0"], ["gris", "#9A9AA5"], ["plomo", "#9A9AA5"], ["jaspe", "#B5B5BD"],
+];
+function colorAprox(nombre) {
+  const n = normTxt(nombre);
+  const hit = COLORES_APROX.find(([k]) => n.includes(k));
+  return hit ? hit[1] : "#E8E2DB";
+}
+
 // Núcleo del cálculo (función pura)
 export function calcularExplosion({ lineas, fichas, enCamino, mermaTela, mermaInsumo }) {
   const telas = new Map();
@@ -46,23 +62,29 @@ export function calcularExplosion({ lineas, fichas, enCamino, mermaTela, mermaIn
   const otros = new Map();
   const sinFicha = new Map();
   const avisosTela = [];
+  const refs = new Map();
   lineas.forEach((l) => {
     const ficha = fichas.get(`${l.ref}|${l.pinta}`);
     if (!ficha) return;
     if (!ficha.tieneTelas && !ficha.tieneInsumos) { sinFicha.set(l.ref, (sinFicha.get(l.ref) || 0) + l.unidades); return; }
     if (!ficha.tieneTelas) avisosTela.push(`${l.ref}: sin tela registrada en Busint`);
+    let r = refs.get(l.ref);
+    if (!r) { r = { ref: l.ref, pedidos: new Set(), colores: new Set(), unidades: 0, items: [] }; refs.set(l.ref, r); }
+    r.pedidos.add(l.pedido); if (l.color) r.colores.add(l.color); r.unidades += l.unidades;
     ficha.telas.forEach((t) => {
       const tipo = tipoUnidadTela(t.unidad);
       const clave = `${t.nombre}|${t.color || "?"}|${tipo}`;
       let a = telas.get(clave);
       if (!a) {
         const tengo = tipo === "m" ? t.stockMl : tipo === "m2" ? t.stockM2 : null;
-        a = { clave, tipo: "tela", nombre: t.nombre, color: t.color, codcomp: t.codcomp, unidad: tipo === "m" ? "m" : tipo === "m2" ? "m²" : "kg", necesito: 0, tengo: t.motivo === "ok" ? tengo : null, promedio: t.promedio, motivo: t.motivo, enCamino: 0, vencidas: 0, usos: [] };
+        a = { clave, tipo: "tela", nombre: t.nombre, color: t.color, codcomp: t.codcomp, unidad: tipo === "m" ? "m" : tipo === "m2" ? "m²" : "kg", necesito: 0, tengo: t.motivo === "ok" ? tengo : null, promedio: t.promedio, motivo: t.motivo, enCamino: 0, vencidas: 0, usos: [], nombresColor: new Map() };
         telas.set(clave, a);
       }
       const cant = l.unidades * t.consumo * (1 + mermaTela / 100);
       a.necesito += cant;
       a.usos.push({ pedido: l.pedido, ref: l.ref, color: l.color, unidades: l.unidades, consumo: t.consumo, cant });
+      if (l.color) a.nombresColor.set(l.color, (a.nombresColor.get(l.color) || 0) + l.unidades);
+      r.items.push({ tipo: "tela", clave, nombre: t.nombre, colorCod: t.color, colorNombre: l.color, unidad: a.unidad, consumo: t.consumo, unidades: l.unidades, cant });
       if (t.motivo !== "ok") avisosTela.push(`${l.ref} (${l.pinta}) · ${t.nombre}: ${({ sin_detalle_color: "sin detalle de color en Busint", slot_sin_color: "sin color asignado", color_no_en_inventario: "ese color no está en inventario" })[t.motivo] || t.motivo}`);
     });
     ficha.insumos.forEach((ins) => {
@@ -74,12 +96,13 @@ export function calcularExplosion({ lineas, fichas, enCamino, mermaTela, mermaIn
       const clave = ins.insumo.toUpperCase().replace(/-/g, " ").replace(/\s+/g, " ").trim();
       let a = insumos.get(clave);
       if (!a) {
-        a = { clave, tipo: "insumo", nombre: ins.insumo, unidad: ins.inventario.unidad || "", necesito: 0, tengo: ins.inventario.cantidad, colores: ins.inventario.colores, promedio: ins.inventario.promedio, codcomps: ins.inventario.codcomps, enCamino: 0, vencidas: 0, usos: [] };
+        a = { clave, tipo: "insumo", nombre: ins.insumo, unidad: ins.inventario.unidad || "", necesito: 0, tengo: ins.inventario.cantidad, colores: ins.inventario.colores, promedio: ins.inventario.promedio, codcomps: ins.inventario.codcomps, enCamino: 0, vencidas: 0, usos: [], nombresColor: new Map() };
         insumos.set(clave, a);
       }
       const cant = l.unidades * ins.cant * (1 + mermaInsumo / 100);
       a.necesito += cant;
       a.usos.push({ pedido: l.pedido, ref: l.ref, color: l.color, unidades: l.unidades, consumo: ins.cant, cant, ubicacion: ins.ubicacion });
+      r.items.push({ tipo: "insumo", clave, nombre: ins.insumo, colorCod: null, colorNombre: l.color, unidad: a.unidad, consumo: ins.cant, unidades: l.unidades, cant, ubicacion: ins.ubicacion });
     });
   });
   const cerrar = (a) => {
@@ -94,13 +117,60 @@ export function calcularExplosion({ lineas, fichas, enCamino, mermaTela, mermaIn
       a.estado = a.falta > 0.005 ? "comprar" : a.tengo >= a.necesito - 0.005 ? "cubierto" : "cubierto_oc";
     }
     a.costoFalta = a.falta && a.promedio > 0 ? a.falta * a.promedio : 0;
+    // Cobertura (para la barra): lo que cubre la bodega, lo que cubren las OC, lo que falta
+    const tengo = Math.max(0, a.tengo || 0);
+    a.cubreBodega = Math.min(a.necesito, tengo);
+    a.cubreOC = Math.min(Math.max(a.necesito - tengo, 0), a.enCamino);
+    a.nombreColor = [...a.nombresColor.entries()].sort((x, y) => y[1] - x[1]).map(([n]) => n);
     return a;
   };
   const orden = { comprar: 0, sindato: 1, cubierto_oc: 2, cubierto: 3 };
   const ordenar = (arr) => arr.map(cerrar).sort((x, y) => orden[x.estado] - orden[y.estado] || (y.falta || 0) - (x.falta || 0) || x.nombre.localeCompare(y.nombre, "es"));
+  const listaTelas = ordenar([...telas.values()]);
+  const listaInsumos = ordenar([...insumos.values()]);
+
+  // Telas agrupadas por nombre (y unidad): total por tela + sus colores
+  const grupos = new Map();
+  listaTelas.forEach((c) => {
+    const k = `${c.nombre}|${c.unidad}`;
+    let g = grupos.get(k);
+    if (!g) { g = { clave: k, nombre: c.nombre, unidad: c.unidad, colores: [], necesito: 0, tengo: 0, tengoConocido: true, enCamino: 0, falta: 0, costoFalta: 0, cubreBodega: 0, cubreOC: 0, refs: new Set(), pedidos: new Set() }; grupos.set(k, g); }
+    g.colores.push(c);
+    g.necesito += c.necesito; g.enCamino += c.enCamino; g.cubreBodega += c.cubreBodega; g.cubreOC += c.cubreOC;
+    if (c.tengo === null || c.tengo === undefined) g.tengoConocido = false; else g.tengo += c.tengo;
+    g.falta += c.falta || 0; g.costoFalta += c.costoFalta || 0;
+    c.usos.forEach((u) => { g.refs.add(u.ref); g.pedidos.add(u.pedido); });
+  });
+  const gruposTela = [...grupos.values()].map((g) => {
+    const estados = g.colores.map((c) => c.estado);
+    g.estado = estados.includes("comprar") ? "comprar" : estados.includes("sindato") ? "sindato" : estados.includes("cubierto_oc") ? "cubierto_oc" : "cubierto";
+    g.refs = g.refs.size; g.pedidos = g.pedidos.size;
+    return g;
+  }).sort((x, y) => orden[x.estado] - orden[y.estado] || y.falta - x.falta || x.nombre.localeCompare(y.nombre, "es"));
+
+  // Por referencia: el faltante de cada material se reparte según lo que consume cada referencia
+  const mat = new Map([...listaTelas, ...listaInsumos].map((a) => [`${a.tipo}|${a.clave}`, a]));
+  const porRef = [...refs.values()].map((r) => {
+    let costoFalta = 0;
+    const items = r.items.map((it) => {
+      const m = mat.get(`${it.tipo}|${it.clave}`);
+      const parte = m && m.necesito > 0 ? it.cant / m.necesito : 0;
+      const faltaParte = m && m.falta ? m.falta * parte : 0;
+      const costoParte = m && m.costoFalta ? m.costoFalta * parte : 0;
+      costoFalta += costoParte;
+      return { ...it, faltaParte, costoParte, estado: m?.estado };
+    });
+    const telasTot = new Map();
+    items.filter((i) => i.tipo === "tela").forEach((i) => { const k = `${i.nombre}|${i.unidad}`; const x = telasTot.get(k) || { nombre: i.nombre, unidad: i.unidad, cant: 0 }; x.cant += i.cant; telasTot.set(k, x); });
+    const insumosDist = new Set(items.filter((i) => i.tipo === "insumo").map((i) => i.clave));
+    return { ref: r.ref, pedidos: [...r.pedidos], colores: [...r.colores], unidades: r.unidades, items, costoFalta, telasTot: [...telasTot.values()], nInsumos: insumosDist.size, hayFalta: items.some((i) => i.faltaParte > 0.005) };
+  }).sort((a, b) => b.costoFalta - a.costoFalta || Number(b.hayFalta) - Number(a.hayFalta) || a.ref.localeCompare(b.ref, "es"));
+
   return {
-    telas: ordenar([...telas.values()]),
-    insumos: ordenar([...insumos.values()]),
+    telas: listaTelas,
+    insumos: listaInsumos,
+    gruposTela,
+    porRef,
     otros: [...otros.values()].map((o) => ({ ...o, refs: [...o.refs] })).sort((a, b) => a.nombre.localeCompare(b.nombre, "es")),
     sinFicha: [...sinFicha.entries()].map(([ref, unidades]) => ({ ref, unidades })),
     avisosTela: [...new Set(avisosTela)],
@@ -113,8 +183,28 @@ const ESTADOS = {
   cubierto_oc: { txt: "Cubierto con OC", fg: "#A8660B", bg: "#FDF1DA" },
   cubierto: { txt: "Hay suficiente", fg: "#1E7A52", bg: "#E3F5EC" },
 };
+const VERDE = "#2D9E6B", AMBAR = "#E0A93B", ROJO = "#E85D4A";
 
-export default function ExplosionMaterialesView({ db, functionsClient, T, pedidos, currentUser }) {
+function Pill({ e }) {
+  return <span style={{ display: "inline-block", padding: "3px 11px", borderRadius: 20, fontSize: 11.5, fontWeight: 800, background: ESTADOS[e].bg, color: ESTADOS[e].fg, whiteSpace: "nowrap" }}>{ESTADOS[e].txt}</span>;
+}
+function Barra({ necesito, bodega, oc, falta, T }) {
+  const p = (x) => (necesito > 0 ? Math.max(0, Math.min(100, (x / necesito) * 100)) : 0);
+  return (
+    <div>
+      <div style={{ height: 12, borderRadius: 6, background: "#EFEAE3", display: "flex", overflow: "hidden" }}>
+        <i style={{ display: "block", width: `${p(bodega)}%`, background: VERDE }} />
+        <i style={{ display: "block", width: `${p(oc)}%`, background: AMBAR }} />
+        <i style={{ display: "block", width: `${p(falta)}%`, background: ROJO }} />
+      </div>
+      <div style={{ fontSize: 11, color: T.slate, marginTop: 4, whiteSpace: "nowrap" }}>
+        <span style={{ color: VERDE }}>■</span> bodega &nbsp;<span style={{ color: AMBAR }}>■</span> en camino &nbsp;<span style={{ color: ROJO }}>■</span> falta
+      </div>
+    </div>
+  );
+}
+
+export default function ExplosionMaterialesView({ db, functionsClient, T, pedidos }) {
   const [opc, setOpc] = useState(leerOpciones);
   const [sel, setSel] = useState({});
   const [q, setQ] = useState("");
@@ -122,11 +212,15 @@ export default function ExplosionMaterialesView({ db, functionsClient, T, pedido
   const [error, setError] = useState("");
   const [avisoOC, setAvisoOC] = useState("");
   const [datos, setDatos] = useState(null); // { fichas: Map, enCamino: Map, lineas, generado }
-  const [tab, setTab] = useState("telas");
+  const [selAbierta, setSelAbierta] = useState(true);
+  const [pagina, setPagina] = useState("informe"); // informe | fichas | otros
+  const [vista, setVista] = useState("material"); // material | referencia
+  const [tipoMat, setTipoMat] = useState("telas"); // telas | insumos
   const [soloFalta, setSoloFalta] = useState(false);
   const [abierto, setAbierto] = useState({});
 
   useEffect(() => { guardarOpciones(opc); }, [opc]);
+  const alternar = (k) => setAbierto((s) => ({ ...s, [k]: !s[k] }));
 
   const candidatos = useMemo(() => (pedidos || []).filter((p) => p.estado === "activo").map((p) => {
     const unidades = (p.referencias || []).reduce((s, r) => s + unidadesPendientes(p, r).pendiente, 0);
@@ -188,8 +282,8 @@ export default function ExplosionMaterialesView({ db, functionsClient, T, pedido
       })();
       const [respFicha, enCamino] = await Promise.all([pFicha, pOC]);
       const fichas = new Map((respFicha.data?.items || []).map((i) => [`${i.ref}|${i.pinta}`, i]));
-      setDatos({ fichas, enCamino, lineas, generado: respFicha.data?.generado });
-      setAbierto({});
+      setDatos({ fichas, enCamino, lineas, generado: new Date().toISOString(), pedidos: elegidos.map(({ p }) => p.numero) });
+      setAbierto({}); setPagina("informe"); setSelAbierta(false);
     } catch (err) {
       setError(err?.message || "No se pudo consultar Busint.");
     } finally {
@@ -198,79 +292,149 @@ export default function ExplosionMaterialesView({ db, functionsClient, T, pedido
   }
 
   const resultado = useMemo(() => datos ? calcularExplosion({ lineas: datos.lineas, fichas: datos.fichas, enCamino: datos.enCamino, mermaTela: Number(opc.mermaTela) || 0, mermaInsumo: Number(opc.mermaInsumo) || 0 }) : null, [datos, opc.mermaTela, opc.mermaInsumo]);
+  const todos = resultado ? [...resultado.telas, ...resultado.insumos] : [];
+  const aComprar = todos.filter((a) => a.estado === "comprar");
+  const costoTotal = aComprar.reduce((s, a) => s + a.costoFalta, 0);
+  const nombreColorDe = (c) => (c.nombreColor && c.nombreColor.length ? c.nombreColor.slice(0, 2).join(" / ") : "");
 
   async function exportar() {
     if (!resultado) return;
     const XLSX = await import("xlsx");
-    const fila = (a) => ({ Tipo: a.tipo === "tela" ? "Tela" : "Insumo", Material: a.nombre, "Color (cód.)": a.color || "", Unidad: a.unidad, Necesito: +a.necesito.toFixed(2), Tengo: a.tengo == null ? "" : +a.tengo.toFixed(2), "En camino (OC)": +a.enCamino.toFixed(2), "Falta comprar": a.falta == null ? "" : +a.falta.toFixed(2), "Costo prom. unidad": Math.round(a.promedio || 0), "Costo estimado": Math.round(a.costoFalta || 0), Estado: ESTADOS[a.estado].txt });
-    const todo = [...resultado.telas, ...resultado.insumos];
+    const r2 = (n) => (n == null ? "" : +Number(n).toFixed(2));
+    const filaTela = (a) => ({ Tela: a.nombre, "Color (cód.)": a.color || "", "Color (pedido)": nombreColorDe(a), Unidad: a.unidad, Necesito: r2(a.necesito), Tengo: r2(a.tengo), "En camino (OC)": r2(a.enCamino), "Falta comprar": r2(a.falta), "Costo prom. unidad": Math.round(a.promedio || 0), "Costo estimado": Math.round(a.costoFalta || 0), Estado: ESTADOS[a.estado].txt });
+    const filaIns = (a) => ({ Insumo: a.nombre, Unidad: a.unidad, Necesito: r2(a.necesito), Tengo: r2(a.tengo), "En camino (OC)": r2(a.enCamino), "Falta comprar": r2(a.falta), "Costo prom. unidad": Math.round(a.promedio || 0), "Costo estimado": Math.round(a.costoFalta || 0), Estado: ESTADOS[a.estado].txt });
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(todo.map(fila)), "Explosión");
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(todo.filter((a) => a.estado === "comprar").map(fila)), "Para comprar");
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(todo.flatMap((a) => a.usos.map((u) => ({ Material: a.nombre, "Color (cód.)": a.color || "", Pedido: u.pedido, Referencia: u.ref, Color: u.color, Unidades: u.unidades, "Consumo por prenda": u.consumo, Cantidad: +u.cant.toFixed(2) })))), "Detalle por referencia");
+    const add = (nombre, filas) => XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(filas.length ? filas : [{ Aviso: "Sin filas" }]), nombre);
+    const resumenTela = [];
+    resultado.gruposTela.forEach((g) => {
+      resumenTela.push({ Tela: g.nombre, "Color (cód.)": "TOTAL TELA", "Color (pedido)": "", Unidad: g.unidad, Necesito: r2(g.necesito), Tengo: g.tengoConocido ? r2(g.tengo) : "", "En camino (OC)": r2(g.enCamino), "Falta comprar": r2(g.falta), "Costo prom. unidad": "", "Costo estimado": Math.round(g.costoFalta), Estado: ESTADOS[g.estado].txt });
+      g.colores.forEach((c) => resumenTela.push(filaTela(c)));
+    });
+    add("Telas por color", resumenTela);
+    add("Insumos", resultado.insumos.map(filaIns));
+    add("Para comprar", [...resultado.telas.filter((a) => a.estado === "comprar").map(filaTela), ...resultado.insumos.filter((a) => a.estado === "comprar").map(filaIns)]);
+    const filasRef = [];
+    resultado.porRef.forEach((r) => {
+      r.items.forEach((i) => filasRef.push({ Referencia: r.ref, Pedidos: r.pedidos.join(", "), Tipo: i.tipo === "tela" ? "Tela" : "Insumo", Material: i.nombre, "Color (cód.)": i.colorCod || "", "Color (pedido)": i.colorNombre || "", Unidad: i.unidad, "Prendas por cortar": i.unidades, "Consumo por prenda": +Number(i.consumo).toFixed(4), Cantidad: r2(i.cant), "Falta (estimado)": r2(i.faltaParte), "Costo falta (estimado)": Math.round(i.costoParte || 0) }));
+      filasRef.push({ Referencia: r.ref, Pedidos: "", Tipo: "TOTAL", Material: `${r.unidades} prendas`, "Costo falta (estimado)": Math.round(r.costoFalta) });
+    });
+    add("Por referencia", filasRef);
     XLSX.writeFile(wb, `Explosion de materiales ${hoyISO()}.xlsx`);
   }
 
+  function imprimir() {
+    if (!resultado) return;
+    const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    const fila = (cols, cls = "") => `<tr class="${cls}">${cols.map((c, i) => `<td class="${i ? "n" : ""}">${esc(c)}</td>`).join("")}</tr>`;
+    const tela = resultado.gruposTela.map((g) => `<h3>${esc(g.nombre)} <small>${esc(ESTADOS[g.estado].txt)}</small></h3><table><tr><th>Color</th><th>Necesito</th><th>Tengo</th><th>En camino</th><th>Falta comprar</th></tr>${g.colores.map((c) => fila([`${nombreColorDe(c) || "—"} · cód. ${c.color || "?"}`, `${fmt(c.necesito)} ${c.unidad}`, c.tengo == null ? "—" : `${fmt(c.tengo)} ${c.unidad}`, c.enCamino ? fmt(c.enCamino) : "—", c.falta == null ? "?" : c.falta > 0 ? `${fmt(c.falta)} ${c.unidad}` : "0"], c.estado === "comprar" ? "rojo" : "")).join("")}${fila(["TOTAL " + g.nombre, `${fmt(g.necesito)} ${g.unidad}`, g.tengoConocido ? `${fmt(g.tengo)} ${g.unidad}` : "—", g.enCamino ? fmt(g.enCamino) : "—", `${fmt(g.falta)} ${g.unidad}`], "tot")}</table>`).join("");
+    const ins = `<table><tr><th>Insumo</th><th>Necesito</th><th>Tengo</th><th>En camino</th><th>Falta comprar</th></tr>${resultado.insumos.map((a) => fila([a.nombre, `${fmt(a.necesito)} ${a.unidad}`, a.tengo == null ? "—" : fmt(a.tengo), a.enCamino ? fmt(a.enCamino) : "—", a.falta == null ? "?" : a.falta > 0 ? fmt(a.falta) : "0"], a.estado === "comprar" ? "rojo" : "")).join("")}</table>`;
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Explosión de materiales ${hoyISO()}</title><style>body{font-family:Arial,sans-serif;color:#1A1A2E;margin:24px}h1{margin:0 0 4px}h3{margin:18px 0 6px}h3 small{font-weight:400;color:#5A5A7A;font-size:12px;margin-left:8px}table{width:100%;border-collapse:collapse;font-size:12px}th{text-align:right;background:#F1ECE5;padding:5px 8px}th:first-child,td:first-child{text-align:left}td{padding:5px 8px;border-bottom:1px solid #E8E2DB}td.n{text-align:right}tr.rojo td{color:#9A3A2D;font-weight:700}tr.tot td{background:#F7F4F0;font-weight:700}p{color:#5A5A7A;font-size:12px}</style></head><body><h1>Explosión de materiales</h1><p>Pedidos: ${esc((datos?.pedidos || []).join(", "))} · ${fmt(lineas.reduce((s, l) => s + l.unidades, 0), 0)} prendas · ${esc(hoyISO())} · Por comprar: ${aComprar.length} materiales${costoTotal ? ` (≈ ${esc(money(costoTotal))})` : ""}</p><h2>Telas</h2>${tela}<h2>Insumos</h2>${ins}</body></html>`;
+    const w = window.open(URL.createObjectURL(new Blob([html], { type: "text/html" })), "_blank");
+    if (w) setTimeout(() => { try { w.print(); } catch {} }, 500);
+  }
+
+  const campo = { padding: "7px 10px", border: `1px solid ${T.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", color: T.ink, background: T.white };
   const th = { textAlign: "left", fontSize: 11, letterSpacing: 0.5, textTransform: "uppercase", color: T.slate, padding: "8px 10px", background: "#FAF8F5", borderBottom: `1px solid ${T.border}`, whiteSpace: "nowrap" };
   const td = { padding: "9px 10px", borderBottom: "1px solid #F0ECE3", fontSize: 13 };
   const nu = { textAlign: "right", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" };
-  const campo = { padding: "7px 10px", border: `1px solid ${T.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", color: T.ink, background: T.white };
-  const Pill = ({ e }) => <span style={{ display: "inline-block", padding: "3px 10px", borderRadius: 20, fontSize: 11.5, fontWeight: 700, background: ESTADOS[e].bg, color: ESTADOS[e].fg, whiteSpace: "nowrap" }}>{ESTADOS[e].txt}</span>;
+  const COLS = "minmax(190px,1.6fr) 112px 112px 112px 132px minmax(210px,1.3fr)";
+  const Seg = ({ valor, opciones, onChange }) => (
+    <div style={{ display: "flex", background: T.white, border: `1px solid ${T.border}`, borderRadius: 10, padding: 3 }}>
+      {opciones.map(([v, label]) => (
+        <div key={v} onClick={() => onChange(v)} style={{ padding: "7px 16px", borderRadius: 8, fontWeight: 700, cursor: "pointer", background: valor === v ? T.ink : "transparent", color: valor === v ? T.white : T.slate, fontSize: 13 }}>{label}</div>
+      ))}
+    </div>
+  );
   const Kpi = ({ t, v, d, rojo }) => (
-    <div style={{ background: rojo ? "#FBE9E6" : T.white, border: `1px solid ${rojo ? "#F3B9B1" : T.border}`, borderRadius: 14, padding: "12px 16px", minWidth: 150 }}>
-      <div style={{ fontSize: 11, letterSpacing: 0.5, textTransform: "uppercase", color: T.slate, fontWeight: 700 }}>{t}</div>
-      <div style={{ fontSize: 22, fontWeight: 800, color: rojo ? "#9A3A2D" : T.ink }}>{v}</div>
+    <div style={{ background: rojo ? "#FDF0EE" : T.white, border: `1px solid ${rojo ? "#F3B9B1" : T.border}`, borderRadius: 14, padding: "14px 16px" }}>
+      <div style={{ fontSize: 11, letterSpacing: 0.6, textTransform: "uppercase", color: T.slate, fontWeight: 700 }}>{t}</div>
+      <div style={{ fontSize: 24, fontWeight: 800, color: rojo ? "#B8402F" : T.ink, marginTop: 2 }}>{v}</div>
       <div style={{ fontSize: 12, color: T.slate }}>{d}</div>
     </div>
   );
+  const Num = ({ t, v, sub, rojo }) => (
+    <div style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+      {t && <div style={{ fontSize: 10.5, letterSpacing: 0.5, textTransform: "uppercase", color: T.slate, fontWeight: 700 }}>{t}</div>}
+      <div style={{ fontSize: t ? 16 : 14, fontWeight: t || rojo ? 800 : 500, color: rojo ? "#B8402F" : T.ink }}>{v}</div>
+      {sub && <div style={{ fontSize: 11, color: T.slate }}>{sub}</div>}
+    </div>
+  );
+  // usos agrupados por referencia (para "ver N referencias")
+  const usosPorRef = (a) => {
+    const m = new Map();
+    a.usos.forEach((u) => { const x = m.get(u.ref) || { ref: u.ref, unidades: 0, cant: 0, consumo: u.consumo, colores: new Set(), pedidos: new Set() }; x.unidades += u.unidades; x.cant += u.cant; if (u.color) x.colores.add(u.color); x.pedidos.add(u.pedido); m.set(u.ref, x); });
+    return [...m.values()].sort((x, y) => y.cant - x.cant);
+  };
+  const DetalleRefs = ({ a }) => (
+    <div style={{ padding: "8px 18px 12px 38px", background: "#F6F2EC", borderBottom: `1px solid ${T.border}` }}>
+      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <thead><tr><th style={th}>Referencia</th><th style={th}>Color / pedido</th><th style={{ ...th, textAlign: "right" }}>Prendas</th><th style={{ ...th, textAlign: "right" }}>Consumo por prenda</th><th style={{ ...th, textAlign: "right" }}>Cantidad</th></tr></thead>
+        <tbody>{usosPorRef(a).map((u) => (
+          <tr key={u.ref}><td style={{ ...td, fontWeight: 700 }}>{u.ref}</td><td style={td}>{[...u.colores].join(" · ") || "—"} <span style={{ color: T.slate }}>· pedido {[...u.pedidos].join(", ")}</span></td><td style={{ ...td, ...nu }}>{fmt(u.unidades, 0)}</td><td style={{ ...td, ...nu }}>{fmt(u.consumo, 4)}</td><td style={{ ...td, ...nu, fontWeight: 700 }}>{fmt(u.cant)} {a.unidad}</td></tr>
+        ))}</tbody>
+      </table>
+    </div>
+  );
 
-  const lista = resultado ? (tab === "telas" ? resultado.telas : resultado.insumos) : [];
-  const listaVista = soloFalta ? lista.filter((a) => a.estado === "comprar" || a.estado === "sindato") : lista;
-  const todos = resultado ? [...resultado.telas, ...resultado.insumos] : [];
-  const aComprar = todos.filter((a) => a.estado === "comprar");
-  const costoTotal = aComprar.reduce((s, a) => s + a.costoFalta, 0);
+  const gruposVista = resultado ? resultado.gruposTela.map((g) => ({ ...g, coloresVista: soloFalta ? g.colores.filter((c) => c.estado === "comprar" || c.estado === "sindato") : g.colores })).filter((g) => g.coloresVista.length) : [];
+  const insumosVista = resultado ? (soloFalta ? resultado.insumos.filter((a) => a.estado === "comprar" || a.estado === "sindato") : resultado.insumos) : [];
+  const refsVista = resultado ? (soloFalta ? resultado.porRef.filter((r) => r.hayFalta) : resultado.porRef) : [];
+  const nColores = resultado ? resultado.telas.length : 0;
+  const nColoresFalta = resultado ? resultado.telas.filter((c) => c.estado === "comprar").length : 0;
 
   return (
     <div>
+      {/* 1. Elegir pedidos */}
       <div style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, padding: 16, marginBottom: 16 }}>
-        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
-          <div style={{ fontWeight: 800, color: T.ink, fontSize: 15 }}>1. Elige los pedidos</div>
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="🔍 N° pedido, cliente o referencia" style={{ ...campo, minWidth: 260 }} />
-          <button onClick={() => setSel((s) => { const n = { ...s }; visibles.forEach(({ p }) => { n[p.id] = true; }); return n; })} style={{ ...campo, cursor: "pointer", fontWeight: 600 }}>Seleccionar los visibles</button>
-          <button onClick={() => setSel({})} style={{ ...campo, cursor: "pointer", fontWeight: 600 }}>Quitar selección</button>
-        </div>
-        <div style={{ maxHeight: 260, overflow: "auto", border: `1px solid ${T.border}`, borderRadius: 10 }}>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead><tr><th style={th}></th><th style={th}>Pedido</th><th style={th}>Cliente</th><th style={{ ...th, textAlign: "right" }}>Pedido</th><th style={{ ...th, textAlign: "right" }}>Por cortar</th><th style={th}>Despacho</th></tr></thead>
-            <tbody>
-              {visibles.map(({ p, unidades, total }) => (
-                <tr key={p.id} onClick={() => setSel((s) => ({ ...s, [p.id]: !s[p.id] }))} style={{ cursor: "pointer", background: sel[p.id] ? T.denimBg : "transparent" }}>
-                  <td style={td}><input type="checkbox" checked={!!sel[p.id]} readOnly /></td>
-                  <td style={{ ...td, fontWeight: 700 }}>{p.numero}</td>
-                  <td style={td}>{p.cliente}</td>
-                  <td style={{ ...td, ...nu }}>{fmt(total, 0)}</td>
-                  <td style={{ ...td, ...nu }}>{fmt(unidades, 0)}</td>
-                  <td style={td}>{p.fechaDespacho || "—"}</td>
-                </tr>
-              ))}
-              {!visibles.length && <tr><td style={{ ...td, color: T.slate }} colSpan={6}>No hay pedidos activos que coincidan.</td></tr>}
-            </tbody>
-          </table>
-        </div>
-        <div style={{ display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap", marginTop: 12 }}>
-          <label style={{ fontSize: 13, display: "flex", gap: 6, alignItems: "center" }}>
-            <input type="checkbox" checked={opc.soloPorCortar} onChange={(e) => setOpc({ ...opc, soloPorCortar: e.target.checked })} /> Solo lo que falta por cortar
-          </label>
-          <label style={{ fontSize: 13, display: "flex", gap: 6, alignItems: "center" }}>Merma telas
-            <input type="number" min="0" max="50" step="0.5" value={opc.mermaTela} onChange={(e) => setOpc({ ...opc, mermaTela: e.target.value })} style={{ ...campo, width: 64 }} /> %
-          </label>
-          <label style={{ fontSize: 13, display: "flex", gap: 6, alignItems: "center" }}>Merma insumos
-            <input type="number" min="0" max="50" step="0.5" value={opc.mermaInsumo} onChange={(e) => setOpc({ ...opc, mermaInsumo: e.target.value })} style={{ ...campo, width: 64 }} /> %
-          </label>
-          <button disabled={!lineas.length || calculando} onClick={calcular} style={{ padding: "9px 18px", borderRadius: 8, border: "none", background: lineas.length ? T.ink : T.border, color: T.white, fontWeight: 700, cursor: lineas.length ? "pointer" : "default" }}>
-            {calculando ? "Consultando Busint… (puede tardar 1–2 min)" : `🧮 Calcular materiales${elegidos.length ? ` (${elegidos.length} pedido${elegidos.length === 1 ? "" : "s"} · ${fmt(lineas.reduce((s, l) => s + l.unidades, 0), 0)} prendas)` : ""}`}
-          </button>
-        </div>
+        {resultado && !selAbierta ? (
+          <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+            <div style={{ fontWeight: 800, color: T.ink }}>{datos?.pedidos?.length || 0} pedido{(datos?.pedidos?.length || 0) === 1 ? "" : "s"}</div>
+            <div style={{ color: T.slate, fontSize: 13 }}>{(datos?.pedidos || []).slice(0, 8).join(", ")}{(datos?.pedidos?.length || 0) > 8 ? "…" : ""} · {fmt(datos.lineas.reduce((s, l) => s + l.unidades, 0), 0)} prendas {opc.soloPorCortar ? "por cortar" : "(pedido completo)"} · calculado {new Date(datos.generado).toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" })}</div>
+            <button onClick={() => setSelAbierta(true)} style={{ ...campo, marginLeft: "auto", cursor: "pointer", fontWeight: 700 }}>Cambiar pedidos u opciones</button>
+          </div>
+        ) : (
+          <div>
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
+              <div style={{ fontWeight: 800, color: T.ink, fontSize: 15 }}>1. Elige los pedidos</div>
+              <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="🔍 N° pedido, cliente o referencia" style={{ ...campo, minWidth: 260 }} />
+              <button onClick={() => setSel((s) => { const n = { ...s }; visibles.forEach(({ p }) => { n[p.id] = true; }); return n; })} style={{ ...campo, cursor: "pointer", fontWeight: 600 }}>Seleccionar los visibles</button>
+              <button onClick={() => setSel({})} style={{ ...campo, cursor: "pointer", fontWeight: 600 }}>Quitar selección</button>
+              {resultado && <button onClick={() => setSelAbierta(false)} style={{ ...campo, marginLeft: "auto", cursor: "pointer", fontWeight: 600 }}>Ocultar</button>}
+            </div>
+            <div style={{ maxHeight: 260, overflow: "auto", border: `1px solid ${T.border}`, borderRadius: 10 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead><tr><th style={th}></th><th style={th}>Pedido</th><th style={th}>Cliente</th><th style={{ ...th, textAlign: "right" }}>Pedido</th><th style={{ ...th, textAlign: "right" }}>Por cortar</th><th style={th}>Despacho</th></tr></thead>
+                <tbody>
+                  {visibles.map(({ p, unidades, total }) => (
+                    <tr key={p.id} onClick={() => setSel((s) => ({ ...s, [p.id]: !s[p.id] }))} style={{ cursor: "pointer", background: sel[p.id] ? T.denimBg : "transparent" }}>
+                      <td style={td}><input type="checkbox" checked={!!sel[p.id]} readOnly /></td>
+                      <td style={{ ...td, fontWeight: 700 }}>{p.numero}</td>
+                      <td style={td}>{p.cliente}</td>
+                      <td style={{ ...td, ...nu }}>{fmt(total, 0)}</td>
+                      <td style={{ ...td, ...nu }}>{fmt(unidades, 0)}</td>
+                      <td style={td}>{p.fechaDespacho || "—"}</td>
+                    </tr>
+                  ))}
+                  {!visibles.length && <tr><td style={{ ...td, color: T.slate }} colSpan={6}>No hay pedidos activos que coincidan.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap", marginTop: 12 }}>
+              <label style={{ fontSize: 13, display: "flex", gap: 6, alignItems: "center" }}>
+                <input type="checkbox" checked={opc.soloPorCortar} onChange={(e) => setOpc({ ...opc, soloPorCortar: e.target.checked })} /> Solo lo que falta por cortar
+              </label>
+              <label style={{ fontSize: 13, display: "flex", gap: 6, alignItems: "center" }}>Merma telas
+                <input type="number" min="0" max="50" step="0.5" value={opc.mermaTela} onChange={(e) => setOpc({ ...opc, mermaTela: e.target.value })} style={{ ...campo, width: 64 }} /> %
+              </label>
+              <label style={{ fontSize: 13, display: "flex", gap: 6, alignItems: "center" }}>Merma insumos
+                <input type="number" min="0" max="50" step="0.5" value={opc.mermaInsumo} onChange={(e) => setOpc({ ...opc, mermaInsumo: e.target.value })} style={{ ...campo, width: 64 }} /> %
+              </label>
+              <button disabled={!lineas.length || calculando} onClick={calcular} style={{ padding: "9px 18px", borderRadius: 8, border: "none", background: lineas.length ? T.ink : T.border, color: T.white, fontWeight: 700, cursor: lineas.length ? "pointer" : "default" }}>
+                {calculando ? "Consultando Busint… (puede tardar 1–2 min)" : `🧮 Calcular materiales${elegidos.length ? ` (${elegidos.length} pedido${elegidos.length === 1 ? "" : "s"} · ${fmt(lineas.reduce((s, l) => s + l.unidades, 0), 0)} prendas)` : ""}`}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {error && <div style={{ background: "#FBE9E6", color: "#9A3A2D", border: "1px solid #F3B9B1", borderRadius: 10, padding: 12, marginBottom: 12, fontSize: 13 }}>{error}</div>}
@@ -278,12 +442,11 @@ export default function ExplosionMaterialesView({ db, functionsClient, T, pedido
 
       {resultado && (
         <div>
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
-            <Kpi t="Materiales" v={todos.length} d={`${resultado.telas.length} telas · ${resultado.insumos.length} insumos`} />
-            <Kpi t="Hay que comprar" v={aComprar.length} d={costoTotal ? `≈ ${money(costoTotal)} al costo promedio` : "materiales con faltante"} rojo={aComprar.length > 0} />
-            <Kpi t="Cubiertos con OC" v={todos.filter((a) => a.estado === "cubierto_oc").length} d="falta bodega pero viene en camino" />
-            <Kpi t="Hay suficiente" v={todos.filter((a) => a.estado === "cubierto").length} d="ya está en bodega" />
-            <Kpi t="Sin dato de bodega" v={todos.filter((a) => a.estado === "sindato").length} d="revisar a mano" />
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 12, marginBottom: 16 }}>
+            <Kpi t="Hay que comprar" v={`${aComprar.length} material${aComprar.length === 1 ? "" : "es"}`} d={costoTotal ? `≈ ${money(costoTotal)} al costo promedio` : "con faltante"} rojo={aComprar.length > 0} />
+            <Kpi t="Telas" v={`${resultado.gruposTela.length} tela${resultado.gruposTela.length === 1 ? "" : "s"} · ${nColores} color${nColores === 1 ? "" : "es"}`} d={`${nColoresFalta} color${nColoresFalta === 1 ? "" : "es"} con faltante`} />
+            <Kpi t="Cubiertos con órdenes de compra" v={`${todos.filter((a) => a.estado === "cubierto_oc").length} material${todos.filter((a) => a.estado === "cubierto_oc").length === 1 ? "" : "es"}`} d="falta en bodega pero viene en camino" />
+            <Kpi t="Ya hay suficiente" v={`${todos.filter((a) => a.estado === "cubierto").length} material${todos.filter((a) => a.estado === "cubierto").length === 1 ? "" : "es"}`} d={todos.some((a) => a.estado === "sindato") ? `+ ${todos.filter((a) => a.estado === "sindato").length} sin dato de bodega (revisar)` : "no hay que comprar"} />
           </div>
 
           {(resultado.sinFicha.length > 0 || resultado.avisosTela.length > 0) && (
@@ -295,59 +458,132 @@ export default function ExplosionMaterialesView({ db, functionsClient, T, pedido
             </div>
           )}
 
-          <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
-            {[["telas", `Telas (${resultado.telas.length})`], ["insumos", `Insumos (${resultado.insumos.length})`], ["fichas", "Fichas leídas"], ["otros", `Otras filas de la ficha (${resultado.otros.length})`]].map(([v, label]) => (
-              <button key={v} onClick={() => setTab(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${tab === v ? T.ink : T.border}`, background: tab === v ? T.ink : T.white, color: tab === v ? T.white : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
-            ))}
-            {(tab === "telas" || tab === "insumos") && <label style={{ fontSize: 13, marginLeft: 8, display: "flex", gap: 6, alignItems: "center" }}><input type="checkbox" checked={soloFalta} onChange={(e) => setSoloFalta(e.target.checked)} /> Solo lo que falta</label>}
-            <button onClick={exportar} style={{ ...campo, marginLeft: "auto", cursor: "pointer", fontWeight: 700 }}>⬇ Excel (todo + lista para comprar)</button>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
+            <Seg valor={pagina} onChange={setPagina} opciones={[["informe", "Informe"], ["fichas", "Fichas leídas"], ["otros", `Otras filas (${resultado.otros.length})`]]} />
+            {pagina === "informe" && <Seg valor={vista} onChange={setVista} opciones={[["material", "Por material"], ["referencia", "Por referencia"]]} />}
+            {pagina === "informe" && vista === "material" && <Seg valor={tipoMat} onChange={setTipoMat} opciones={[["telas", "Telas"], ["insumos", "Insumos"]]} />}
+            {pagina === "informe" && <label style={{ fontSize: 13, display: "flex", gap: 6, alignItems: "center" }}><input type="checkbox" checked={soloFalta} onChange={(e) => setSoloFalta(e.target.checked)} /> Solo lo que falta</label>}
+            <span style={{ flex: 1 }} />
+            <button onClick={exportar} style={{ ...campo, cursor: "pointer", fontWeight: 700 }}>⬇ Excel</button>
+            <button onClick={imprimir} style={{ ...campo, cursor: "pointer", fontWeight: 700 }}>🖨 Imprimir / PDF</button>
           </div>
 
-          {(tab === "telas" || tab === "insumos") && (
-            <div style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, overflow: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                <thead><tr><th style={th}>Material</th><th style={{ ...th, textAlign: "right" }}>Necesito</th><th style={{ ...th, textAlign: "right" }}>Tengo</th><th style={{ ...th, textAlign: "right" }}>En camino (OC)</th><th style={{ ...th, textAlign: "right" }}>Falta comprar</th><th style={th}>Estado</th></tr></thead>
-                <tbody>
-                  {listaVista.map((a) => (
-                    <React.Fragment key={a.clave}>
-                      <tr onClick={() => setAbierto((s) => ({ ...s, [a.clave]: !s[a.clave] }))} style={{ cursor: "pointer" }}>
-                        <td style={td}>
-                          <div style={{ fontWeight: 700 }}>{abierto[a.clave] ? "▾" : "▸"} {a.nombre}</div>
-                          <div style={{ fontSize: 11.5, color: T.slate }}>
-                            {a.tipo === "tela" ? `Color ${a.color || "sin asignar"}${a.codcomp ? ` · Cód. ${a.codcomp}` : ""}` : `${a.colores} color${a.colores === 1 ? "" : "es"} en bodega (se suman)`} · {a.usos.length} uso{a.usos.length === 1 ? "" : "s"}
+          {/* ── POR MATERIAL · TELAS: tela → color ── */}
+          {pagina === "informe" && vista === "material" && tipoMat === "telas" && (
+            <div>
+              {gruposVista.map((g) => (
+                <div key={g.clave} style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 16, marginBottom: 12, overflow: "hidden" }}>
+                  <div style={{ display: "grid", gridTemplateColumns: COLS, gap: 12, alignItems: "center", padding: "14px 18px" }}>
+                    <div><div style={{ fontWeight: 800, fontSize: 16 }}>{g.nombre}</div><div style={{ fontSize: 12, color: T.slate, marginTop: 2 }}>{g.colores.length} color{g.colores.length === 1 ? "" : "es"} · {g.refs} referencia{g.refs === 1 ? "" : "s"} · {g.pedidos} pedido{g.pedidos === 1 ? "" : "s"}</div></div>
+                    <Num t="Necesito" v={`${fmt(g.necesito)} ${g.unidad}`} />
+                    <Num t="Tengo" v={g.tengoConocido ? `${fmt(g.tengo)} ${g.unidad}` : "—"} />
+                    <Num t="En camino" v={g.enCamino ? `${fmt(g.enCamino)} ${g.unidad}` : "—"} />
+                    <Num t="Falta comprar" v={g.falta > 0 ? `${fmt(g.falta)} ${g.unidad}` : "0"} rojo={g.falta > 0} sub={g.costoFalta ? `≈ ${money(g.costoFalta)}` : ""} />
+                    <div>{g.estado === "cubierto" || g.estado === "cubierto_oc" || g.estado === "sindato" ? <Pill e={g.estado} /> : <Barra necesito={g.necesito} bodega={g.cubreBodega} oc={g.cubreOC} falta={g.falta} T={T} />}</div>
+                  </div>
+                  <div style={{ borderTop: `1px solid ${T.border}`, background: "#FCFAF8" }}>
+                    {g.coloresVista.map((c) => (
+                      <React.Fragment key={c.clave}>
+                        <div onClick={() => alternar(c.clave)} style={{ display: "grid", gridTemplateColumns: COLS, gap: 12, alignItems: "center", padding: "10px 18px 10px 38px", borderBottom: "1px solid #F0ECE3", cursor: "pointer" }}>
+                          <div>
+                            <span style={{ display: "inline-block", width: 14, height: 14, borderRadius: "50%", verticalAlign: -2, marginRight: 8, border: "1px solid rgba(0,0,0,.18)", background: colorAprox(nombreColorDe(c)) }} />
+                            <b>{nombreColorDe(c) || "Color sin nombre"}</b> <span style={{ color: T.slate, fontSize: 12 }}>· cód. {c.color || "?"}{c.codcomp ? ` · ref. ${c.codcomp}` : ""}</span>
                           </div>
-                        </td>
-                        <td style={{ ...td, ...nu }}>{fmt(a.necesito)} {a.unidad}</td>
-                        <td style={{ ...td, ...nu }}>{a.tengo == null ? "—" : `${fmt(a.tengo)} ${a.unidad}`}</td>
-                        <td style={{ ...td, ...nu }}>{a.enCamino ? fmt(a.enCamino) : "—"}{a.vencidas ? <div style={{ fontSize: 11, color: T.slate }}>+{fmt(a.vencidas)} en OC vencidas</div> : null}</td>
-                        <td style={{ ...td, ...nu, fontWeight: 800, color: a.falta > 0 ? "#9A3A2D" : T.ink }}>{a.falta == null ? "?" : a.falta > 0 ? `${fmt(a.falta)} ${a.unidad}` : "0"}{a.costoFalta ? <div style={{ fontSize: 11, color: T.slate, fontWeight: 400 }}>≈ {money(a.costoFalta)}</div> : null}</td>
-                        <td style={td}><Pill e={a.estado} /></td>
-                      </tr>
-                      {abierto[a.clave] && (
-                        <tr><td colSpan={6} style={{ ...td, background: "#FAF8F5" }}>
-                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
-                            <thead><tr><th style={th}>Pedido</th><th style={th}>Referencia</th><th style={th}>Color</th><th style={{ ...th, textAlign: "right" }}>Prendas</th><th style={{ ...th, textAlign: "right" }}>Consumo por prenda</th><th style={{ ...th, textAlign: "right" }}>Cantidad</th></tr></thead>
-                            <tbody>{a.usos.map((u, i) => (
-                              <tr key={i}><td style={td}>{u.pedido}</td><td style={td}>{u.ref}</td><td style={td}>{u.color || "—"}{u.ubicacion ? ` · ${u.ubicacion}` : ""}</td><td style={{ ...td, ...nu }}>{fmt(u.unidades, 0)}</td><td style={{ ...td, ...nu }}>{fmt(u.consumo, 4)}</td><td style={{ ...td, ...nu }}>{fmt(u.cant)}</td></tr>
-                            ))}</tbody>
-                          </table>
-                        </td></tr>
-                      )}
-                    </React.Fragment>
-                  ))}
-                  {!listaVista.length && <tr><td colSpan={6} style={{ ...td, color: T.slate }}>{soloFalta ? "Nada por comprar en esta lista." : "No hay materiales de este tipo."}</td></tr>}
-                </tbody>
-              </table>
+                          <Num v={`${fmt(c.necesito)} ${c.unidad}`} rojo={false} />
+                          <Num v={c.tengo == null ? "—" : `${fmt(c.tengo)} ${c.unidad}`} />
+                          <Num v={c.enCamino ? `${fmt(c.enCamino)} ${c.unidad}` : "—"} sub={c.vencidas ? `+${fmt(c.vencidas)} en OC vencidas` : ""} />
+                          <Num v={c.falta == null ? "?" : c.falta > 0 ? `${fmt(c.falta)} ${c.unidad}` : "0"} rojo={c.falta > 0} sub={c.costoFalta ? `≈ ${money(c.costoFalta)}` : ""} />
+                          <div><Pill e={c.estado} /> <span style={{ color: T.slate, fontSize: 12 }}>{abierto[c.clave] ? "▾" : "▸"} {c.estado === "cubierto" && c.tengo != null ? `sobran ${fmt(c.tengo - c.necesito)} ${c.unidad} · ` : ""}{new Set(c.usos.map((u) => u.ref)).size} ref.</span></div>
+                        </div>
+                        {abierto[c.clave] && <DetalleRefs a={c} />}
+                      </React.Fragment>
+                    ))}
+                  </div>
+                  {g.colores.length > 1 && g.falta > 0 && <div style={{ padding: "8px 18px", background: "#FAF8F5", borderTop: `1px solid ${T.border}`, color: T.slate, fontSize: 12 }}>El total “Falta comprar” suma solo los colores que faltan: lo que sobra en un color no cubre a otro.</div>}
+                </div>
+              ))}
+              {!gruposVista.length && <div style={{ color: T.slate, padding: 20 }}>{soloFalta ? "Ninguna tela por comprar." : "No hay telas en este cálculo."}</div>}
             </div>
           )}
 
-          {tab === "fichas" && (
+          {/* ── POR MATERIAL · INSUMOS ── */}
+          {pagina === "informe" && vista === "material" && tipoMat === "insumos" && (
+            <div style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 16, overflow: "hidden" }}>
+              <div style={{ display: "grid", gridTemplateColumns: COLS, gap: 12, padding: "10px 18px", background: "#FAF8F5", borderBottom: `1px solid ${T.border}`, fontSize: 11, letterSpacing: 0.5, textTransform: "uppercase", color: T.slate, fontWeight: 700 }}>
+                <div>Insumo</div><div style={{ textAlign: "right" }}>Necesito</div><div style={{ textAlign: "right" }}>Tengo</div><div style={{ textAlign: "right" }}>En camino</div><div style={{ textAlign: "right" }}>Falta comprar</div><div>Estado</div>
+              </div>
+              {insumosVista.map((a) => (
+                <React.Fragment key={a.clave}>
+                  <div onClick={() => alternar("i|" + a.clave)} style={{ display: "grid", gridTemplateColumns: COLS, gap: 12, alignItems: "center", padding: "11px 18px", borderBottom: "1px solid #F0ECE3", cursor: "pointer" }}>
+                    <div><b>{a.nombre}</b><div style={{ fontSize: 11.5, color: T.slate }}>{a.colores} color{a.colores === 1 ? "" : "es"} en bodega (se suman)</div></div>
+                    <Num v={`${fmt(a.necesito)} ${a.unidad}`} />
+                    <Num v={a.tengo == null ? "—" : `${fmt(a.tengo)} ${a.unidad}`} />
+                    <Num v={a.enCamino ? fmt(a.enCamino) : "—"} sub={a.vencidas ? `+${fmt(a.vencidas)} en OC vencidas` : ""} />
+                    <Num v={a.falta == null ? "?" : a.falta > 0 ? `${fmt(a.falta)} ${a.unidad}` : "0"} rojo={a.falta > 0} sub={a.costoFalta ? `≈ ${money(a.costoFalta)}` : ""} />
+                    <div><Pill e={a.estado} /> <span style={{ color: T.slate, fontSize: 12 }}>{abierto["i|" + a.clave] ? "▾" : "▸"} {new Set(a.usos.map((u) => u.ref)).size} ref.</span></div>
+                  </div>
+                  {abierto["i|" + a.clave] && <DetalleRefs a={a} />}
+                </React.Fragment>
+              ))}
+              {!insumosVista.length && <div style={{ color: T.slate, padding: 20 }}>{soloFalta ? "Ningún insumo por comprar." : "No hay insumos con inventario en este cálculo."}</div>}
+            </div>
+          )}
+
+          {/* ── POR REFERENCIA ── */}
+          {pagina === "informe" && vista === "referencia" && (
+            <div>
+              <div style={{ color: T.slate, fontSize: 12.5, marginBottom: 10 }}>Qué necesita cada referencia y por qué. El “falta comprar” de cada referencia es una estimación: el faltante de cada material se reparte según lo que consume cada una.</div>
+              {refsVista.map((r) => (
+                <div key={r.ref} style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 16, marginBottom: 12, overflow: "hidden" }}>
+                  <div onClick={() => alternar("r|" + r.ref)} style={{ display: "grid", gridTemplateColumns: "150px minmax(160px,1.2fr) 110px minmax(180px,1.2fr) minmax(160px,1fr) 150px", gap: 12, alignItems: "center", padding: "14px 18px", cursor: "pointer" }}>
+                    <div><div style={{ fontWeight: 800, fontSize: 16 }}>{abierto["r|" + r.ref] ? "▾" : "▸"} {r.ref}</div><div style={{ fontSize: 12, color: T.slate }}>Pedido{r.pedidos.length === 1 ? "" : "s"} {r.pedidos.join(", ")}</div></div>
+                    <div style={{ fontSize: 12.5, color: T.slate }}>{r.colores.join(" · ") || "—"}</div>
+                    <Num t="Por cortar" v={`${fmt(r.unidades, 0)} u`} />
+                    <div>{r.telasTot.map((t) => <span key={t.nombre + t.unidad} style={{ display: "inline-block", background: "#F3EEF9", color: "#7B5EA7", fontWeight: 700, fontSize: 12, padding: "3px 10px", borderRadius: 10, margin: "2px 4px 2px 0" }}>🧵 {t.nombre} {fmt(t.cant, 1)} {t.unidad}</span>)}</div>
+                    <div>{r.nInsumos > 0 && <span style={{ display: "inline-block", background: T.denimBg, color: T.denim, fontWeight: 700, fontSize: 12, padding: "3px 10px", borderRadius: 10 }}>🔩 {r.nInsumos} insumo{r.nInsumos === 1 ? "" : "s"}</span>}</div>
+                    <Num t="Falta comprar" v={r.costoFalta > 0 ? `≈ ${money(r.costoFalta)}` : r.hayFalta ? "sin costo" : "0"} rojo={r.hayFalta} />
+                  </div>
+                  {abierto["r|" + r.ref] && (
+                    <div style={{ borderTop: `1px solid ${T.border}`, background: "#FCFAF8", padding: "6px 18px 12px 38px" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                        <thead><tr><th style={th}>Material</th><th style={th}>Color / ubicación</th><th style={{ ...th, textAlign: "right" }}>Prendas</th><th style={{ ...th, textAlign: "right" }}>Consumo por prenda</th><th style={{ ...th, textAlign: "right" }}>Cantidad</th><th style={{ ...th, textAlign: "right" }}>De esto falta comprar</th></tr></thead>
+                        <tbody>{r.items.map((i, k) => (
+                          <tr key={k}>
+                            <td style={td}>{i.tipo === "tela" ? "🧵" : "🔩"} <b>{i.nombre}</b></td>
+                            <td style={td}>{i.tipo === "tela" ? `${i.colorNombre || "—"} · cód. ${i.colorCod || "?"}` : (i.ubicacion || "—")}</td>
+                            <td style={{ ...td, ...nu }}>{fmt(i.unidades, 0)}</td>
+                            <td style={{ ...td, ...nu }}>{fmt(i.consumo, 4)}</td>
+                            <td style={{ ...td, ...nu, fontWeight: 700 }}>{fmt(i.cant)} {i.unidad}</td>
+                            <td style={{ ...td, ...nu, color: i.faltaParte > 0.005 ? "#9A3A2D" : T.slate, fontWeight: i.faltaParte > 0.005 ? 800 : 400 }}>{i.faltaParte > 0.005 ? `${fmt(i.faltaParte)} ${i.unidad}${i.costoParte ? ` · ≈ ${money(i.costoParte)}` : ""}` : i.estado === "sindato" ? "sin dato" : "—"}</td>
+                          </tr>
+                        ))}</tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              ))}
+              {!refsVista.length && <div style={{ color: T.slate, padding: 20 }}>{soloFalta ? "Ninguna referencia con faltante." : "No hay referencias con ficha en este cálculo."}</div>}
+              {refsVista.length > 0 && (
+                <div style={{ display: "grid", gridTemplateColumns: "150px minmax(160px,1.2fr) 110px minmax(180px,1.2fr) minmax(160px,1fr) 150px", gap: 12, alignItems: "center", padding: "14px 18px", background: "#F1EDE6", border: `1px solid ${T.border}`, borderRadius: 16 }}>
+                  <div style={{ fontWeight: 800, fontSize: 16 }}>TOTAL</div>
+                  <div style={{ fontSize: 12.5, color: T.slate }}>{refsVista.length} referencia{refsVista.length === 1 ? "" : "s"}</div>
+                  <Num t="Por cortar" v={`${fmt(refsVista.reduce((s, r) => s + r.unidades, 0), 0)} u`} />
+                  <div>{[...refsVista.flatMap((r) => r.telasTot).reduce((m, t) => { const k = t.nombre + "|" + t.unidad; const x = m.get(k) || { ...t, cant: 0 }; x.cant += t.cant; m.set(k, x); return m; }, new Map()).values()].map((t) => <span key={t.nombre + t.unidad} style={{ display: "inline-block", background: "#F3EEF9", color: "#7B5EA7", fontWeight: 700, fontSize: 12, padding: "3px 10px", borderRadius: 10, margin: "2px 4px 2px 0" }}>🧵 {t.nombre} {fmt(t.cant, 1)} {t.unidad}</span>)}</div>
+                  <div><span style={{ display: "inline-block", background: T.denimBg, color: T.denim, fontWeight: 700, fontSize: 12, padding: "3px 10px", borderRadius: 10 }}>🔩 {resultado.insumos.length} insumos</span></div>
+                  <Num t="Falta comprar" v={`≈ ${money(refsVista.reduce((s, r) => s + r.costoFalta, 0))}`} rojo />
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── FICHAS LEÍDAS ── */}
+          {pagina === "fichas" && (
             <div style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, padding: 14, fontSize: 13 }}>
               <div style={{ color: T.slate, marginBottom: 10 }}>Esto es lo que ATLAS leyó de la ficha de cada referencia en Busint, por prenda. Compáralo con tu ficha técnica para confirmar que el consumo está bien.</div>
               {[...datos.fichas.values()].map((f) => (
                 <div key={`${f.ref}|${f.pinta}`} style={{ borderTop: `1px solid ${T.border}`, padding: "8px 0" }}>
                   <div style={{ fontWeight: 800 }}>{f.ref} <span style={{ fontWeight: 500, color: T.slate }}>· pinta {f.pinta || "—"}</span></div>
-                  {f.telas.map((t) => <div key={t.slot}>🧵 {t.nombre} · color {t.color || "?"} · {fmt(t.consumo, 4)} {t.unidad || "m"} por prenda{t.usaSesgo ? " (con sesgo)" : ""}{!f.telas.length ? "" : ""}</div>)}
+                  {f.telas.map((t) => <div key={t.slot}>🧵 {t.nombre} · color {t.color || "?"} · {fmt(t.consumo, 4)} {t.unidad || "m"} por prenda{t.usaSesgo ? " (con sesgo)" : ""}</div>)}
                   {!f.telas.length && <div style={{ color: T.slate }}>Sin tela registrada.</div>}
                   {f.insumos.filter((i) => i.material).map((i, k) => <div key={k}>🔩 {i.insumo} · {fmt(i.cant, 4)} por prenda{i.ubicacion ? ` · ${i.ubicacion}` : ""}</div>)}
                   {!f.insumos.some((i) => i.material) && <div style={{ color: T.slate }}>Sin insumos con inventario en Busint.</div>}
@@ -356,7 +592,8 @@ export default function ExplosionMaterialesView({ db, functionsClient, T, pedido
             </div>
           )}
 
-          {tab === "otros" && (
+          {/* ── OTRAS FILAS ── */}
+          {pagina === "otros" && (
             <div style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, overflow: "auto" }}>
               <div style={{ padding: 12, fontSize: 13, color: T.slate }}>Filas de la ficha que no coinciden con ningún insumo del inventario (procesos, mano de obra, servicios u otros nombres). No entran al cálculo. Si aquí aparece un material real, dímelo para ajustarlo.</div>
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
