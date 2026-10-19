@@ -10767,10 +10767,10 @@ exports.getLotesPorIntegrarBusint = onCall(
       leer("orden produccion", true), leer("bmp - integracion", true), leer("bmp - integracion ref", true),
       leer("insumos dig", true), leer("estandar componentes prod", true),
     ]);
-    const [detalles, entPlantaRef, ocCab, ocDet, ocDxc, provs, seguimiento] = await Promise.all([
+    const [detalles, entPlantaRef, ocCab, ocDet, ocDxc, provs, seguimiento, integComp] = await Promise.all([
       leer("orden produccion detalles", false), leer("bmp - entrada planta ref", false),
       leer("orden de compra", false), leer("orden de compra detalles", false), leer("orden de compra detallesdxc", false),
-      leer("maestro de proveedores", false), leer("ia_seguimientolotesv_data", false),
+      leer("maestro de proveedores", false), leer("ia_seguimientolotesv_data", false), leer("bmp - integracion comp", false),
     ]);
     const num = (v) => (v !== undefined && v !== null && v !== "" && Number.isFinite(Number(v)) ? Number(v) : 0);
     const clave = (v) => String(v ?? "").trim().replace(/\.0+$/, "");
@@ -10872,6 +10872,13 @@ exports.getLotesPorIntegrarBusint = onCall(
     });
     porIntegrar.sort((a, b) => (a.corte < b.corte ? -1 : a.corte > b.corte ? 1 : Number(a.lote) - Number(b.lote)));
 
+    // 4b) Lotes YA integrados (en la ventana) que podrían tener la integración incompleta: se revisan contra la ficha más abajo
+    const enPorIntegrar = new Set(porIntegrar.map((l) => l.lote));
+    const candidatosInc = [];
+    lotes.forEach((l) => {
+      if (l.corte < desdeLista || enPorIntegrar.has(l.lote) || !conIntegracion.has(l.lote)) return;
+      candidatosInc.push({ lote: l.lote, ref: l.ref, pedido: l.pedido || null, corte: l.corte, clienteObs: clienteDesdeObservacion(l.obs), fechaIntegracion: conIntegracion.get(l.lote) || null, ubic: ubicacionLote.get(l.lote) || null });
+    });
     // 5) Ficha de insumos de las referencias de esos lotes, cruzada con el inventario
     const insumosInv = new Map();
     inventario.forEach((f) => {
@@ -10882,7 +10889,7 @@ exports.getLotesPorIntegrarBusint = onCall(
       if (!insumosInv.has(k)) insumosInv.set(k, []);
       insumosInv.get(k).push({ cantidad: num(f.ICant), unidad: String(f.Unidad ?? f.UnidadT ?? "").trim(), codcomp: clave(f.Codcomp) });
     });
-    const refsNecesarias = new Set(porIntegrar.map((l) => normalizarRefComparacion(l.ref)));
+    const refsNecesarias = new Set([...porIntegrar, ...candidatosInc].map((l) => normalizarRefComparacion(l.ref)));
     const gruposRef = new Map(); // refNorm -> Map(lit -> {maxId, filas})
     insumosDig.forEach((f) => {
       if (!f?.Ref || !f?.Insumo) return;
@@ -10899,7 +10906,7 @@ exports.getLotesPorIntegrarBusint = onCall(
     });
     const fichas = {};
     const codcompsUsados = new Set();
-    porIntegrar.forEach((l) => {
+    [...porIntegrar, ...candidatosInc].forEach((l) => {
       if (fichas[l.ref]) return;
       const g = gruposRef.get(normalizarRefComparacion(l.ref));
       let mejor = null;
@@ -10918,6 +10925,40 @@ exports.getLotesPorIntegrarBusint = onCall(
       fichas[l.ref] = lista;
     });
 
+    // 5b) Integración incompleta: lotes ya integrados a los que les falta algún insumo de la ficha
+    // (entregado en "bmp - integracion comp", sumando todos los colores/códigos del mismo insumo, menos de lo que pide la ficha)
+    const entregadoLote = new Map(); // lote -> Map(codcomp -> cantidad)
+    integComp.forEach((f) => {
+      const lote = loteDe(f);
+      const cod = clave(f.Codcomp);
+      if (!lote || !cod) return;
+      const m = entregadoLote.get(lote) || new Map();
+      m.set(cod, (m.get(cod) || 0) + num(f.Cant));
+      entregadoLote.set(lote, m);
+    });
+    const incompletos = [];
+    if (integComp.length) {
+      candidatosInc.forEach((l) => {
+        const ficha = fichas[l.ref] || [];
+        if (!ficha.length) return;
+        const unidades = integradasLote.get(l.lote) || (prendasLote.get(l.lote)?.total || 0);
+        if (!(unidades > 0)) return;
+        const ent = entregadoLote.get(l.lote) || new Map();
+        const faltan = [];
+        ficha.forEach((i) => {
+          const requerido = unidades * i.cant;
+          const entregado = (i.codcomps || []).reduce((sum, c) => sum + (ent.get(c) || 0), 0);
+          const falta = requerido - entregado;
+          if (falta > Math.max(0.5, requerido * 0.02)) faltan.push({ insumo: i.insumo, unidad: i.unidad, consumo: i.cant, requerido, entregado, falta, bodega: i.bodega, codcomps: i.codcomps });
+        });
+        if (faltan.length) incompletos.push({ ...l, prendas: unidades, faltan });
+      });
+      incompletos.sort((a, b) => (a.corte < b.corte ? 1 : -1));
+      if (incompletos.length > 200) { incompletos.length = 200; avisos.push("Se muestran solo los 200 lotes con integración incompleta más recientes."); }
+    } else {
+      avisos.push("No se pudo leer \"bmp - integracion comp\": no se puede revisar si a los lotes integrados les falta algún insumo.");
+    }
+    incompletos.forEach((l) => l.faltan.forEach((f) => (f.codcomps || []).forEach((c) => codcompsUsados.add(c))));
     // 6) Órdenes de compra vigentes (sin precios) por código de insumo
     const oc = {};
     if (ocCab.length && ocDet.length) {
@@ -10956,7 +10997,7 @@ exports.getLotesPorIntegrarBusint = onCall(
     logger.info("getLotesPorIntegrarBusint", { lotes: porIntegrar.length, fuentePrendas, integradas: integradas.size, refs: Object.keys(fichas).length, avisos: avisos.length });
     return {
       ok: true, generado: new Date().toISOString(), hoy, dias, fuentePrendas,
-      lotes: porIntegrar, fichas, oc,
+      lotes: porIntegrar, incompletos, fichas: Object.fromEntries(Object.entries(fichas).filter(([r]) => porIntegrar.some((l) => l.ref === r))), oc,
       integradas: [...integradas.entries()].map(([k, u]) => { const i = k.indexOf("|"); return [k.slice(0, i), k.slice(i + 1), u]; }),
       avisos,
     };

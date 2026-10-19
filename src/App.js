@@ -18994,7 +18994,7 @@ function AppInner() {
                   <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>📦 Lotes por integrar</h2>
                   <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Los lotes ya cortados que todavía esperan sus insumos de bodega, con lo que hay que entregar, lo que alcanza y lo que viene en órdenes de compra.</p>
                 </div>
-                <LotesPorIntegrarView functionsClient={functionsClient} T={T} pedidos={pedidosVisibles} />
+                <LotesPorIntegrarView db={db} functionsClient={functionsClient} T={T} pedidos={pedidosVisibles} />
               </div>
             )}
             {view === "preordenes" && (

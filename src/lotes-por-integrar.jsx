@@ -9,6 +9,7 @@
 // que dos lotes no cuenten el mismo inventario.
 import React, { useState, useMemo, useEffect, useCallback } from "react";
 import { httpsCallable } from "firebase/functions";
+import { doc, getDoc, setDoc } from "firebase/firestore";
 
 const fmt = (n, dec = 2) => (Number.isFinite(Number(n)) ? Number(n).toLocaleString("es-CO", { maximumFractionDigits: dec }) : "—");
 const normTxt = (t) => String(t || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
@@ -102,7 +103,7 @@ export function asignarInventario({ lotes, fichas, oc }) {
       else if (comprar > 0.005) estado = "comprar";
       else estado = ocAsig.some((o) => o.tarde) ? "oc_tarde" : "oc_ok";
       if (PESO[estado] > PESO[peor]) peor = estado;
-      return { insumo: i.insumo, unidad: i.unidad, consumo: i.cant, necesito, bodega: disp, usaBodega, falta: faltaInicial, oc: ocAsig, comprar, estado };
+      return { insumo: i.insumo, unidad: i.unidad, consumo: i.cant, necesito, bodega: disp, usaBodega, falta: faltaInicial, oc: ocAsig, comprar, estado, pide: i.pide, entregado: i.entregado };
     });
     const nFalta = insumos.filter((x) => x.estado === "comprar").length;
     const nOc = insumos.filter((x) => x.estado === "oc_ok" || x.estado === "oc_tarde").length;
@@ -136,7 +137,12 @@ const textoLote = (l) => {
   return null;
 };
 
-export default function LotesPorIntegrarView({ functionsClient, T, pedidos }) {
+// Insumos que Busint nunca integra por ese documento (se ocultan de "Integración incompleta" para todos los lotes)
+const LS_IGN = "atlasLotesIntegrar_ignorar";
+const leerIgn = () => { try { return JSON.parse(localStorage.getItem(LS_IGN) || "[]"); } catch { return []; } };
+const ESTADO_INS_INC = { ...ESTADO_INS, ok: { txt: "Hay en bodega · completar", bg: "#E3F5EC", fg: "#1E7A52" }, justo: { txt: "Alcanza justo", bg: "#FDF1DA", fg: "#A8660B" } };
+
+export default function LotesPorIntegrarView({ db, functionsClient, T, pedidos }) {
   const [datos, setDatos] = useState(null);
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState("");
@@ -146,7 +152,20 @@ export default function LotesPorIntegrarView({ functionsClient, T, pedidos }) {
   const [verCerrados, setVerCerrados] = useState(false);
   const [orden, setOrden] = useState({ k: "despacho", dir: 1 });
   const [abierto, setAbierto] = useState(null);
-  const [pestana, setPestana] = useState("listos"); // listos (ya en planta) | corte (aún en corte)
+  const [pestana, setPestana] = useState("listos"); // listos (ya en planta) | corte (aún en corte) | incompleta
+  const [ignorados, setIgnorados] = useState(() => new Set(leerIgn()));
+  const [avisoIgn, setAvisoIgn] = useState("");
+  useEffect(() => {
+    if (!db) return;
+    getDoc(doc(db, "atlas_config", "lotes_integrar")).then((sn) => { if (sn.exists()) setIgnorados(new Set(sn.data().ignorarInsumos || [])); }).catch(() => {});
+  }, [db]);
+  function guardarIgnorados(n) {
+    setIgnorados(n);
+    try { localStorage.setItem(LS_IGN, JSON.stringify([...n])); } catch {}
+    if (db) setDoc(doc(db, "atlas_config", "lotes_integrar"), { ignorarInsumos: [...n] }, { merge: true }).then(() => setAvisoIgn("")).catch(() => setAvisoIgn("No se pudo guardar para todos los usuarios; la lista de insumos ocultos quedó solo en este navegador."));
+  }
+  const ocultarInsumo = (nombre) => guardarIgnorados(new Set([...ignorados, claveInsumo(nombre)]));
+  const restaurarInsumo = (k) => { const n = new Set(ignorados); n.delete(k); guardarIgnorados(n); };
 
   const cargar = useCallback(async (forzar) => {
     setCargando(true); setError("");
@@ -169,14 +188,28 @@ export default function LotesPorIntegrarView({ functionsClient, T, pedidos }) {
       const u = clasificarUbicacion(l.ub);
       return { ...l, ubicTipo: u.tipo, ubicTexto: u.texto, cliente: p?.cliente || l.clienteObs || "(sin cliente)", despacho: p?.fechaDespacho || null, estadoPedido: p?.estado || null, diasSin: datos.hoy ? Math.max(0, diasEntre(l.corte, datos.hoy)) : 0 };
     });
-    return asignarInventario({ lotes: base, fichas: datos.fichas, oc: datos.oc });
-  }, [datos, pedidoPorNumero]);
+    // Integración incompleta: lo que falta de cada lote ya integrado entra al mismo reparto de inventario como un "lote" aparte
+    const fichasInc = {};
+    const lotesInc = [];
+    (datos.incompletos || []).forEach((l) => {
+      const faltan = (l.faltan || []).filter((f) => !ignorados.has(claveInsumo(f.insumo)));
+      if (!faltan.length) return;
+      const p = l.pedido ? pedidoPorNumero.get(String(l.pedido)) : null;
+      const u = clasificarUbicacion(l.ub);
+      fichasInc[`inc|${l.lote}`] = faltan.map((f) => ({ insumo: f.insumo, cant: f.falta, unidad: f.unidad, bodega: f.bodega, codcomps: f.codcomps, pide: f.requerido, entregado: f.entregado }));
+      lotesInc.push({ ...l, ref: `inc|${l.lote}`, refReal: l.ref, prendasReal: l.prendas, prendas: 1, integradas: 0, incompleto: true, ubicTipo: u.tipo === "corte" ? "planta" : u.tipo, ubicTexto: u.texto, cliente: p?.cliente || l.clienteObs || "(sin cliente)", despacho: p?.fechaDespacho || null, estadoPedido: p?.estado || null, diasSin: datos.hoy && l.fechaIntegracion ? Math.max(0, diasEntre(l.fechaIntegracion, datos.hoy)) : 0 });
+    });
+    return asignarInventario({ lotes: [...base, ...lotesInc], fichas: { ...datos.fichas, ...fichasInc }, oc: datos.oc })
+      .map((l) => (l.incompleto ? { ...l, ref: l.refReal, pendientes: l.prendasReal } : l));
+  }, [datos, pedidoPorNumero, ignorados]);
 
-  const cerrados = todos.filter((l) => l.estadoPedido === "cerrado" || l.estadoPedido === "terminado");
-  const sinCerrados = verCerrados ? todos : todos.filter((l) => !(l.estadoPedido === "cerrado" || l.estadoPedido === "terminado"));
+  const esCerrado = (l) => l.estadoPedido === "cerrado" || l.estadoPedido === "terminado";
+  const cerrados = todos.filter((l) => esCerrado(l) && !l.incompleto);
+  const sinCerrados = (verCerrados ? todos : todos.filter((l) => !esCerrado(l))).filter((l) => !l.incompleto);
+  const incompletas = (verCerrados ? todos : todos.filter((l) => !esCerrado(l))).filter((l) => l.incompleto);
   const enCorte = sinCerrados.filter((l) => l.ubicTipo === "corte");
   const listos = sinCerrados.filter((l) => l.ubicTipo !== "corte");
-  const base = pestana === "corte" ? enCorte : listos;
+  const base = pestana === "incompleta" ? incompletas : pestana === "corte" ? enCorte : listos;
   const clientes = useMemo(() => [...new Set(base.map((l) => l.cliente))].sort((a, b) => a.localeCompare(b, "es")), [base]);
   const visibles = useMemo(() => {
     const k = normTxt(q);
@@ -196,6 +229,9 @@ export default function LotesPorIntegrarView({ functionsClient, T, pedidos }) {
   const proximos = base.filter((l) => l.despacho && hoy && diasEntre(hoy, l.despacho) <= 7);
   const masViejo = base.reduce((m, l) => (!m || l.diasSin > m.diasSin ? l : m), null);
   const totalPrendas = base.reduce((s, l) => s + (l.pendientes || 0), 0);
+  const completables = base.filter((l) => l.estado === "ok" || l.estado === "justo");
+  const esperanCompra = base.filter((l) => ["comprar", "oc_ok", "oc_tarde"].includes(l.estado));
+  const insumosFaltan = new Set(base.flatMap((l) => l.insumos.map((i) => claveInsumo(i.insumo)))).size;
 
   function ordenarPor(k) { setOrden((o) => (o.k === k ? { k, dir: -o.dir } : { k, dir: 1 })); }
 
@@ -205,7 +241,7 @@ export default function LotesPorIntegrarView({ functionsClient, T, pedidos }) {
     const r2 = (n) => (n == null ? "" : +Number(n).toFixed(2));
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(visibles.map((l) => ({ Lote: l.lote, Referencia: l.ref, Pedido: l.pedido || "", Cliente: l.cliente, Despacho: l.despacho || "", Corte: l.corte, "Dónde está": l.ubicTexto, "Días sin integrar": l.diasSin, "Prendas por integrar": l.pendientes ?? "", Estado: (ESTADOS[l.estado] || {}).txt }))), "Lotes");
     const filas = [];
-    visibles.forEach((l) => l.insumos.forEach((i) => filas.push({ Lote: l.lote, Referencia: l.ref, Insumo: i.insumo, Unidad: i.unidad, "Por prenda": i.consumo, Entregar: r2(i.necesito), "En bodega": r2(i.bodega), Falta: r2(i.falta), "Orden de compra": i.oc.map((o) => `OC ${o.n} (${o.prov}) ${fmt(o.cant)} · entrega ${o.ff}${o.tarde ? " · TARDE" : ""}`).join(" | "), "Sin orden de compra": r2(i.comprar), Estado: (ESTADO_INS[i.estado] || {}).txt })));
+    visibles.forEach((l) => l.insumos.forEach((i) => filas.push({ Lote: l.lote, Referencia: l.ref, Insumo: i.insumo, Unidad: i.unidad, "Pide la ficha": i.pide == null ? "" : r2(i.pide), Entregado: i.entregado == null ? "" : r2(i.entregado), "Por prenda": i.consumo, Entregar: r2(i.necesito), "En bodega": r2(i.bodega), Falta: r2(i.falta), "Orden de compra": i.oc.map((o) => `OC ${o.n} (${o.prov}) ${fmt(o.cant)} · entrega ${o.ff}${o.tarde ? " · TARDE" : ""}`).join(" | "), "Sin orden de compra": r2(i.comprar), Estado: (ESTADO_INS[i.estado] || {}).txt })));
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(filas), "Insumos por lote");
     XLSX.writeFile(wb, `Lotes por integrar ${hoy || ""}.xlsx`);
   }
@@ -234,6 +270,68 @@ export default function LotesPorIntegrarView({ functionsClient, T, pedidos }) {
   );
   const btn = (primario) => ({ padding: "8px 14px", borderRadius: 10, fontWeight: 700, fontSize: 13, cursor: "pointer", border: `1px solid ${primario ? T.ink : T.border}`, background: primario ? T.ink : T.white, color: primario ? T.white : T.ink });
 
+  const tablaIncompleta = (
+    <div style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, overflowX: "auto" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <thead><tr>{th("lote", "Lote")}{th("ref", "Referencia")}{th("cliente", "Pedido · Cliente")}{th("despacho", "Despacho")}{th("dias", "Integrado hace", true)}{th(null, "Insumos que faltan")}{th("estado", "Estado")}</tr></thead>
+        <tbody>
+          {visibles.map((l) => (
+            <React.Fragment key={l.lote}>
+              <tr onClick={() => setAbierto(abierto === l.lote ? null : l.lote)} style={{ cursor: "pointer", background: abierto === l.lote ? "#F3F7FB" : "transparent" }}>
+                <td style={{ ...td, fontWeight: 800, fontSize: 15 }}>{l.lote}</td>
+                <td style={td}>{l.ref}</td>
+                <td style={td}>{l.pedido || "—"} · <span style={{ color: T.slate, fontSize: 12 }}>{l.cliente}</span></td>
+                <td style={td}>{fmtFecha(l.despacho)}</td>
+                <td style={{ ...td, textAlign: "right" }}>{l.diasSin} día{l.diasSin === 1 ? "" : "s"}<div style={{ fontSize: 11, color: T.slate }}>{fmtFecha(l.fechaIntegracion)}</div></td>
+                <td style={{ ...td, fontSize: 12.5 }}>{l.insumos.slice(0, 2).map((i) => `${i.insumo} (${fmt(i.necesito)} ${i.unidad})`).join(" · ")}{l.insumos.length > 2 ? ` · y ${l.insumos.length - 2} más` : ""}</td>
+                <td style={td}><Pill e={l.estado} mapa={ESTADO_INS_INC} /></td>
+              </tr>
+              {abierto === l.lote && (
+                <tr><td colSpan={7} style={{ padding: 0, background: "#F3F7FB", borderBottom: `1px solid ${T.border}` }}>
+                  <div style={{ padding: "12px 18px" }}>
+                    <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
+                      <b style={{ fontSize: 15 }}>Lote {l.lote} · ref {l.ref}</b>
+                      <span style={{ color: T.slate, fontSize: 12 }}>Pedido {l.pedido || "—"} · {l.cliente} · {fmt(l.pendientes, 0)} prendas integradas el {fmtFecha(l.fechaIntegracion)}</span>
+                      <div style={{ flex: 1 }} />
+                      <button style={btn(false)} onClick={(e) => { e.stopPropagation(); imprimir([l]); }}>🖨 Hoja de este lote</button>
+                    </div>
+                    <table style={{ width: "100%", borderCollapse: "collapse", background: T.white }}>
+                      <thead><tr>{th(null, "Insumo")}{th(null, "Pide la ficha", true)}{th(null, "Entregado", true)}{th(null, "Falta entregar", true)}{th(null, "En bodega (disponible)", true)}{th(null, "Orden de compra")}{th(null, "Estado")}{th(null, "")}</tr></thead>
+                      <tbody>
+                        {l.insumos.map((i) => (
+                          <tr key={i.insumo}>
+                            <td style={td}>{i.insumo}</td>
+                            <td style={{ ...td, textAlign: "right" }}>{fmt(i.pide)} {i.unidad}</td>
+                            <td style={{ ...td, textAlign: "right" }}>{fmt(i.entregado)} {i.unidad}</td>
+                            <td style={{ ...td, textAlign: "right", fontWeight: 800, color: "#B8402F" }}>{fmt(i.necesito)} {i.unidad}</td>
+                            <td style={{ ...td, textAlign: "right" }}>{fmt(i.bodega)} {i.unidad}</td>
+                            <td style={{ ...td, fontSize: 12 }}>
+                              {i.oc.map((o) => <div key={o.n}><b>OC {o.n}</b> · {o.prov}<br /><span style={{ color: T.slate }}>{fmt(o.cant)} · entrega {fmtFecha(o.ff)}{o.tarde ? " · después del despacho" : ""}</span></div>)}
+                              {i.comprar > 0.005 && <div style={{ color: "#9A3A2D", fontWeight: 700 }}>{i.oc.length ? `Aún faltan ${fmt(i.comprar)} sin OC` : "Sin orden de compra vigente"}</div>}
+                              {!i.oc.length && !(i.comprar > 0.005) && "—"}
+                            </td>
+                            <td style={td}><Pill e={i.estado} mapa={ESTADO_INS_INC} /></td>
+                            <td style={td}><button style={{ ...btn(false), fontSize: 11.5, padding: "5px 9px" }} title="Este insumo nunca se integra por este documento: ocultarlo en todos los lotes" onClick={(e) => { e.stopPropagation(); ocultarInsumo(i.insumo); }}>No integrar nunca</button></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </td></tr>
+              )}
+            </React.Fragment>
+          ))}
+          {!visibles.length && <tr><td colSpan={7} style={{ padding: 24, textAlign: "center", color: T.slate }}>No hay lotes con integración incompleta con esos filtros.</td></tr>}
+        </tbody>
+      </table>
+      {ignorados.size > 0 && (
+        <div style={{ padding: "10px 14px", borderTop: `1px solid ${T.border}`, fontSize: 12, color: T.slate }}>
+          Insumos ocultos (no se revisan): {[...ignorados].map((k) => <span key={k} style={{ display: "inline-block", margin: "2px 6px 2px 0", padding: "2px 8px", background: "#F1ECE5", borderRadius: 10 }}>{k} <b style={{ cursor: "pointer" }} title="Volver a revisarlo" onClick={() => restaurarInsumo(k)}>×</b></span>)}
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div>
       <div style={{ color: T.slate, fontSize: 13, marginBottom: 14 }}>
@@ -246,7 +344,7 @@ export default function LotesPorIntegrarView({ functionsClient, T, pedidos }) {
       {datos && (
         <>
           <div style={{ display: "flex", background: T.white, border: `1px solid ${T.border}`, borderRadius: 12, padding: 4, marginBottom: 14, width: "fit-content", maxWidth: "100%", flexWrap: "wrap" }}>
-            {[["listos", `Listos para integrar (${listos.length})`], ["corte", `Todavía en corte (${enCorte.length})`]].map(([v, label]) => (
+            {[["listos", `Listos para integrar (${listos.length})`], ["corte", `Todavía en corte (${enCorte.length})`], ["incompleta", `Integración incompleta (${incompletas.length})`]].map(([v, label]) => (
               <div key={v} onClick={() => { setPestana(v); setAbierto(null); }} style={{ padding: "9px 18px", borderRadius: 9, fontWeight: 700, cursor: "pointer", fontSize: 13.5, background: pestana === v ? T.ink : "transparent", color: pestana === v ? T.white : T.slate }}>{label}</div>
             ))}
           </div>
@@ -255,12 +353,27 @@ export default function LotesPorIntegrarView({ functionsClient, T, pedidos }) {
               Estos lotes siguen en la bodega de corte ({fmt(prendasCorte, 0)} prendas). Sus insumos se necesitarán cuando salgan a planta; abajo ves si alcanzarán, para que puedas adelantar compras.
             </div>
           )}
+          {pestana === "incompleta" && (
+            <div style={{ padding: "10px 14px", background: "#EEF3F9", color: "#2D5A8C", borderRadius: 10, fontSize: 13, marginBottom: 14 }}>
+              Lotes que ya tienen documento de integración, pero a los que Busint no les entregó todo lo que pide la ficha técnica (por ejemplo, los cierres que no habían llegado). Si un insumo de la lista nunca se integra por ese documento, ocúltalo con el botón "No integrar nunca" y deja de salir en todos los lotes.
+            </div>
+          )}
+          {avisoIgn && <div style={{ padding: "8px 12px", background: "#FDF1DA", color: "#8A5A0B", borderRadius: 8, fontSize: 12.5, marginBottom: 8 }}>{avisoIgn}</div>}
+          {pestana === "incompleta" ? (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: 12, marginBottom: 16 }}>
+            <Kpi t="Lotes con integración incompleta" v={base.length} d={`${insumosFaltan} insumo${insumosFaltan === 1 ? "" : "s"} distinto${insumosFaltan === 1 ? "" : "s"} por entregar`} />
+            <Kpi t="Se pueden completar hoy" v={`${completables.length} lote${completables.length === 1 ? "" : "s"}`} d="el insumo ya está en bodega" />
+            <Kpi t="Esperan compra" v={`${esperanCompra.length} lote${esperanCompra.length === 1 ? "" : "s"}`} d={`${esperanCompra.length - sinOC.length} con OC en camino · ${sinOC.length} sin OC`} rojo={esperanCompra.length > 0} />
+            <Kpi t="Despachan en 7 días o menos" v={`${proximos.length} lote${proximos.length === 1 ? "" : "s"}`} d="prioridad para completar" />
+          </div>
+          ) : (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: 12, marginBottom: 16 }}>
             <Kpi t={pestana === "corte" ? "Lotes en corte" : "Lotes por integrar"} v={base.length} d={`${fmt(totalPrendas, 0)} prendas`} />
             <Kpi t="Más antiguo" v={masViejo ? `${masViejo.diasSin} día${masViejo.diasSin === 1 ? "" : "s"}` : "—"} d={masViejo ? `cortado el ${fmtFecha(masViejo.corte)} · lote ${masViejo.lote}` : ""} />
             <Kpi t="Con insumo faltante" v={`${conFalta.length} lote${conFalta.length === 1 ? "" : "s"}`} d={`${conFalta.length - sinOC.length} con OC en camino · ${sinOC.length} sin OC`} rojo={conFalta.length > 0} />
             <Kpi t="Despachan en 7 días o menos" v={`${proximos.length} lote${proximos.length === 1 ? "" : "s"}`} d="prioridad de alistamiento" />
           </div>
+          )}
           <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 14, flexWrap: "wrap" }}>
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar lote, referencia, pedido o cliente" style={{ ...campo, minWidth: 260 }} />
             <select value={fCliente} onChange={(e) => setFCliente(e.target.value)} style={campo}><option value="">Cliente: todos</option>{clientes.map((c) => <option key={c} value={c}>{c}</option>)}</select>
@@ -273,6 +386,7 @@ export default function LotesPorIntegrarView({ functionsClient, T, pedidos }) {
             <button style={btn(false)} onClick={exportar} disabled={!visibles.length}>⬇ Excel</button>
             <button style={btn(true)} onClick={() => imprimir(visibles)} disabled={!visibles.length}>🖨 Imprimir hoja del día</button>
           </div>
+          {pestana === "incompleta" ? tablaIncompleta : (
           <div style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead><tr>{th("lote", "Lote")}{th("ref", "Referencia")}{th(null, "Dónde está")}{th("cliente", "Pedido · Cliente")}{th("despacho", "Despacho")}{th("corte", "Corte")}{th("dias", "Días desde el corte", true)}{th("prendas", "Prendas", true)}{th("estado", "Insumos en bodega")}</tr></thead>
@@ -336,6 +450,7 @@ export default function LotesPorIntegrarView({ functionsClient, T, pedidos }) {
               </tbody>
             </table>
           </div>
+          )}
           <div style={{ color: T.slate, fontSize: 12, marginTop: 10 }}>
             Cada insumo = consumo de la ficha técnica × prendas del lote. El inventario y las órdenes de compra se reparten lote por lote en orden de fecha de despacho, para que dos lotes no cuenten el mismo inventario. La orden de compra se muestra solo si sigue vigente (no cumplida ni marcada como recibida). Lotes de los últimos {datos.dias} días.
           </div>
