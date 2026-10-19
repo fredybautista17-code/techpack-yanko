@@ -1357,6 +1357,34 @@ function EstadisticasPlantaView({ cargaActiva }) {
   }, [meses, deLaPlanta, entradas, planta]);
   const totalGeneral = meses.reduce((s, mes) => s + (porMes[mes]?.unidades || 0), 0);
 
+  // (2026-10-19, a pedido de Fredy) Entregado por CATEGORÍA, todas juntas: filas = categorías,
+  // columnas = meses (de la planta elegida, sin filtrar por categoría).
+  const catDe = (e) => e.categoria || "Sin categoría";
+  const entradasPlanta = useMemo(() => entradas.filter((e) => e.nombrePlanta === planta), [entradas, planta]);
+  const mesesPlanta = useMemo(
+    () => [...new Set(entradasPlanta.map((e) => (e.fecha || "").slice(0, 7)).filter(Boolean))].sort(),
+    [entradasPlanta]
+  );
+  const filasCategoria = useMemo(() => {
+    const m = new Map();
+    entradasPlanta.forEach((e) => {
+      const mes = (e.fecha || "").slice(0, 7);
+      if (!mes) return;
+      const c = catDe(e);
+      if (!m.has(c)) m.set(c, { categoria: c, porMes: {}, total: 0 });
+      const f = m.get(c);
+      f.porMes[mes] = (f.porMes[mes] || 0) + e.cantidad;
+      f.total += e.cantidad;
+    });
+    return [...m.values()].sort((a, b) => b.total - a.total || a.categoria.localeCompare(b.categoria));
+  }, [entradasPlanta]);
+  const totalesMesPlanta = useMemo(() => {
+    const t = {};
+    filasCategoria.forEach((f) => mesesPlanta.forEach((mes) => { t[mes] = (t[mes] || 0) + (f.porMes[mes] || 0); }));
+    return t;
+  }, [filasCategoria, mesesPlanta]);
+  const totalCategorias = filasCategoria.reduce((s, f) => s + f.total, 0);
+
   // Modo "todas las plantas": matriz planta × mes, solo con entradas del año en
   // curso (today() ya existe en el archivo y evita líos de zona horaria).
   const anioActual = today().slice(0, 4);
@@ -1364,24 +1392,71 @@ function EstadisticasPlantaView({ cargaActiva }) {
     () => entradas.filter((e) => (e.fecha || "").slice(0, 4) === anioActual),
     [entradas, anioActual]
   );
-  const mesesEsteAnio = useMemo(
-    () => [...new Set(entradasEsteAnio.map((e) => (e.fecha || "").slice(0, 7)).filter(Boolean))].sort(),
+  const [categoriaTodas, setCategoriaTodas] = useState("todas");
+  const categoriasEsteAnio = useMemo(
+    () => [...new Set(entradasEsteAnio.map(catDe))].sort(),
     [entradasEsteAnio]
+  );
+  const entradasAnioFiltro = useMemo(
+    () => (categoriaTodas === "todas" ? entradasEsteAnio : entradasEsteAnio.filter((e) => catDe(e) === categoriaTodas)),
+    [entradasEsteAnio, categoriaTodas]
+  );
+  const mesesEsteAnio = useMemo(
+    () => [...new Set(entradasAnioFiltro.map((e) => (e.fecha || "").slice(0, 7)).filter(Boolean))].sort(),
+    [entradasAnioFiltro]
   );
   const plantasEsteAnio = useMemo(
-    () => [...new Set(entradasEsteAnio.map((e) => e.nombrePlanta).filter(Boolean))].sort(),
-    [entradasEsteAnio]
+    () => [...new Set(entradasAnioFiltro.map((e) => e.nombrePlanta).filter(Boolean))].sort(),
+    [entradasAnioFiltro]
   );
-  const matrizPlantas = useMemo(() => {
+  // Planta × categoría (total del año, sin filtrar por categoría).
+  const matrizPlantaCategoria = useMemo(() => {
     const m = {};
     entradasEsteAnio.forEach((e) => {
+      if (!e.nombrePlanta) return;
+      if (!m[e.nombrePlanta]) m[e.nombrePlanta] = {};
+      const c = catDe(e);
+      m[e.nombrePlanta][c] = (m[e.nombrePlanta][c] || 0) + e.cantidad;
+    });
+    return m;
+  }, [entradasEsteAnio]);
+  const matrizPlantas = useMemo(() => {
+    const m = {};
+    entradasAnioFiltro.forEach((e) => {
       const mes = (e.fecha || "").slice(0, 7);
       if (!mes) return;
       if (!m[e.nombrePlanta]) m[e.nombrePlanta] = {};
       m[e.nombrePlanta][mes] = (m[e.nombrePlanta][mes] || 0) + e.cantidad;
     });
     return m;
-  }, [entradasEsteAnio]);
+  }, [entradasAnioFiltro]);
+
+  async function descargarExcel() {
+    const XLSX = await import("xlsx");
+    const wb = XLSX.utils.book_new();
+    if (modo === "planta") {
+      const filas = [["Categoría", ...mesesPlanta, "Total"]];
+      filasCategoria.forEach((f) => filas.push([f.categoria, ...mesesPlanta.map((mes) => f.porMes[mes] || 0), f.total]));
+      filas.push(["TOTAL", ...mesesPlanta.map((mes) => totalesMesPlanta[mes] || 0), totalCategorias]);
+      const ws = XLSX.utils.aoa_to_sheet(filas);
+      ws["!cols"] = [{ wch: 26 }, ...mesesPlanta.map(() => ({ wch: 10 })), { wch: 12 }];
+      XLSX.utils.book_append_sheet(wb, ws, "Por categoría");
+      XLSX.writeFile(wb, `Entregado por categoría - ${String(planta).slice(0, 40).replace(/[\\/:*?"<>|]/g, "-")} ${today()}.xlsx`);
+      return;
+    }
+    const f1 = [["Planta", ...mesesEsteAnio, "Total"]];
+    plantasEsteAnio.forEach((pl) => f1.push([pl, ...mesesEsteAnio.map((mes) => matrizPlantas[pl]?.[mes] || 0), mesesEsteAnio.reduce((s, mes) => s + (matrizPlantas[pl]?.[mes] || 0), 0)]));
+    const ws1 = XLSX.utils.aoa_to_sheet(f1);
+    ws1["!cols"] = [{ wch: 36 }, ...mesesEsteAnio.map(() => ({ wch: 10 })), { wch: 12 }];
+    XLSX.utils.book_append_sheet(wb, ws1, categoriaTodas === "todas" ? "Planta x mes" : String(categoriaTodas).slice(0, 28).replace(/[\\/:*?\[\]]/g, "-"));
+    const plantasAnio = [...new Set(entradasEsteAnio.map((e) => e.nombrePlanta).filter(Boolean))].sort();
+    const f2 = [["Planta", ...categoriasEsteAnio, "Total"]];
+    plantasAnio.forEach((pl) => f2.push([pl, ...categoriasEsteAnio.map((c) => matrizPlantaCategoria[pl]?.[c] || 0), categoriasEsteAnio.reduce((s, c) => s + (matrizPlantaCategoria[pl]?.[c] || 0), 0)]));
+    const ws2 = XLSX.utils.aoa_to_sheet(f2);
+    ws2["!cols"] = [{ wch: 36 }, ...categoriasEsteAnio.map(() => ({ wch: 14 })), { wch: 12 }];
+    XLSX.utils.book_append_sheet(wb, ws2, "Planta x categoría");
+    XLSX.writeFile(wb, `Estadisticas de planta ${anioActual} ${today()}.xlsx`);
+  }
 
   return (
     <div>
@@ -1420,6 +1495,13 @@ function EstadisticasPlantaView({ cargaActiva }) {
                 {m.label}
               </button>
             ))}
+            <div style={{ flex: 1 }} />
+            <button
+              onClick={descargarExcel}
+              style={{ padding: "8px 14px", borderRadius: 20, border: `1.5px solid ${C.blue}`, background: C.white, color: C.blue, fontWeight: 700, fontSize: 12, cursor: "pointer", whiteSpace: "nowrap" }}
+            >
+              📥 Descargar Excel
+            </button>
           </div>
           {modo === "planta" ? (
             <>
@@ -1501,8 +1583,59 @@ function EstadisticasPlantaView({ cargaActiva }) {
                   </table>
                 </div>
               )}
+              {mesesPlanta.length > 0 && (
+                <div style={{ marginTop: 24 }}>
+                  <div style={{ fontWeight: 800, fontSize: 15, color: C.ink }}>Entregado por categoría</div>
+                  <div style={{ fontSize: 12, color: C.slate, margin: "2px 0 10px" }}>Todas las categorías que entregó esta planta, mes a mes (de la que más entregó a la que menos).</div>
+                  <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "auto" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                      <thead>
+                        <tr style={{ background: C.ink }}>
+                          <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Categoría</th>
+                          {mesesPlanta.map((mes) => (
+                            <th key={mes} style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{mes}</th>
+                          ))}
+                          <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>Total</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filasCategoria.map((f, i) => (
+                          <tr key={f.categoria} onClick={() => setCategoria(categoria === f.categoria ? "todas" : f.categoria)} title="Clic para ver solo esta categoría arriba" style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}`, cursor: "pointer" }}>
+                            <td style={{ padding: "7px 12px", fontWeight: 700, color: C.ink, whiteSpace: "nowrap" }}>{f.categoria}</td>
+                            {mesesPlanta.map((mes) => (
+                              <td key={mes} style={{ padding: "7px 12px", textAlign: "right", color: C.ink, fontVariantNumeric: "tabular-nums" }}>{f.porMes[mes] ? fmtNum(f.porMes[mes]) : "—"}</td>
+                            ))}
+                            <td style={{ padding: "7px 12px", textAlign: "right", fontWeight: 900, color: C.blue, fontVariantNumeric: "tabular-nums" }}>{fmtNum(f.total)}</td>
+                          </tr>
+                        ))}
+                        <tr style={{ background: C.ink }}>
+                          <td style={{ padding: "8px 12px", fontWeight: 800, color: C.seam }}>TOTAL</td>
+                          {mesesPlanta.map((mes) => (
+                            <td key={mes} style={{ padding: "8px 12px", textAlign: "right", fontWeight: 800, color: C.seam, fontVariantNumeric: "tabular-nums" }}>{fmtNum(totalesMesPlanta[mes] || 0)}</td>
+                          ))}
+                          <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 900, color: C.seam, fontVariantNumeric: "tabular-nums" }}>{fmtNum(totalCategorias)}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
             </>
-          ) : !mesesEsteAnio.length ? (
+          ) : (
+            <>
+              <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
+                <select
+                  value={categoriaTodas}
+                  onChange={(e) => setCategoriaTodas(e.target.value)}
+                  style={{ padding: "8px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontWeight: 700, color: C.ink, background: C.white, fontFamily: "inherit" }}
+                >
+                  <option value="todas">Todas las categorías</option>
+                  {categoriasEsteAnio.map((c) => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
+              </div>
+              {!mesesEsteAnio.length ? (
             <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13, background: C.white, borderRadius: 14, border: `1px solid ${C.border}` }}>
               Sin entregas registradas en {anioActual}.
             </div>
@@ -1538,6 +1671,38 @@ function EstadisticasPlantaView({ cargaActiva }) {
                 </tbody>
               </table>
             </div>
+          )}
+              {entradasEsteAnio.length > 0 && (
+                <div style={{ marginTop: 24 }}>
+                  <div style={{ fontWeight: 800, fontSize: 15, color: C.ink }}>Planta × categoría ({anioActual})</div>
+                  <div style={{ fontSize: 12, color: C.slate, margin: "2px 0 10px" }}>Total entregado en el año por cada planta, separado por categoría.</div>
+                  <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "auto" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                      <thead>
+                        <tr style={{ background: C.ink }}>
+                          <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Planta</th>
+                          {categoriasEsteAnio.map((c) => (
+                            <th key={c} style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{c}</th>
+                          ))}
+                          <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>Total</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {Object.keys(matrizPlantaCategoria).sort().map((pl, i) => (
+                          <tr key={pl} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
+                            <td style={{ padding: "7px 12px", fontWeight: 700, color: C.ink, whiteSpace: "nowrap" }}>{pl}</td>
+                            {categoriasEsteAnio.map((c) => (
+                              <td key={c} style={{ padding: "7px 12px", textAlign: "right", color: C.ink, fontVariantNumeric: "tabular-nums" }}>{matrizPlantaCategoria[pl][c] ? fmtNum(matrizPlantaCategoria[pl][c]) : "—"}</td>
+                            ))}
+                            <td style={{ padding: "7px 12px", textAlign: "right", fontWeight: 900, color: C.blue, fontVariantNumeric: "tabular-nums" }}>{fmtNum(categoriasEsteAnio.reduce((sum, c) => sum + (matrizPlantaCategoria[pl][c] || 0), 0))}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </>
       )}
