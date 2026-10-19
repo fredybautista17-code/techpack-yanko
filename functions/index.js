@@ -10781,6 +10781,7 @@ exports.getLotesPorIntegrarBusint = onCall(
       if (!lote) return;
       ubicacionLote.set(lote, { corte: num(f.Inventario_corte), planta: num(f.Inventario_en_planta), semi: num(f.Inventario_en_semiterminado), bpt: num(f.Inventario_en_bodega_de_producto_terminado) });
     });
+    const ubicDe = (lote) => ubicacionLote.get(lote) || (ubicacionLote.size ? { corte: 0, planta: 0, semi: 0, bpt: 0 } : null); // lote que no está en el seguimiento = ya salió de producción
     if (!ubicacionLote.size) avisos.push("No se pudo leer en qué etapa está cada lote (seguimiento de lotes): no se puede separar los lotes en corte de los que ya están en planta.");
     const refSG = (v) => String(v ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
     const loteDe = (f) => clave(valorFlexible(f, ["NumLote", "Numlote", "numlote", "Nomlote", "NomLote"]));
@@ -10867,7 +10868,7 @@ exports.getLotesPorIntegrarBusint = onCall(
       const colores = p ? [...p.colores.entries()].filter(([, u]) => u > 0).map(([c, u]) => [c, u]) : [];
       porIntegrar.push({
         lote: l.lote, ref: l.ref, pedido: l.pedido || null, corte: l.corte,
-        clienteObs: clienteDesdeObservacion(l.obs), ubic: ubicacionLote.get(l.lote) || null, prendas: cortadas, integradas: tiene ? integ : 0, parcial, colores,
+        clienteObs: clienteDesdeObservacion(l.obs), ubic: ubicDe(l.lote), prendas: cortadas, integradas: tiene ? integ : 0, parcial, colores,
       });
     });
     porIntegrar.sort((a, b) => (a.corte < b.corte ? -1 : a.corte > b.corte ? 1 : Number(a.lote) - Number(b.lote)));
@@ -10877,7 +10878,10 @@ exports.getLotesPorIntegrarBusint = onCall(
     const candidatosInc = [];
     lotes.forEach((l) => {
       if (l.corte < desdeLista || enPorIntegrar.has(l.lote) || !conIntegracion.has(l.lote)) return;
-      candidatosInc.push({ lote: l.lote, ref: l.ref, pedido: l.pedido || null, corte: l.corte, clienteObs: clienteDesdeObservacion(l.obs), fechaIntegracion: conIntegracion.get(l.lote) || null, ubic: ubicacionLote.get(l.lote) || null });
+      // Un lote que ya salió de producción (despachado/terminado) no se revisa: sus insumos ya se usaron aunque Busint no los muestre
+      const u = ubicDe(l.lote);
+      if (u && !(u.corte + u.planta + u.semi > 0)) return;
+      candidatosInc.push({ lote: l.lote, ref: l.ref, pedido: l.pedido || null, corte: l.corte, clienteObs: clienteDesdeObservacion(l.obs), fechaIntegracion: conIntegracion.get(l.lote) || null, ubic: ubicDe(l.lote) });
     });
     // 5) Ficha de insumos de las referencias de esos lotes, cruzada con el inventario
     const insumosInv = new Map();

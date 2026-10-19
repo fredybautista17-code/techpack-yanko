@@ -43,13 +43,14 @@ export function clasificarUbicacion(ub) {
   if (ub.planta > 0) partes.push(`En planta (${Math.round(ub.planta)})`);
   if (ub.semi > 0) partes.push(`Semiterminado (${Math.round(ub.semi)})`);
   if (ub.bpt > 0) partes.push(`Terminado (${Math.round(ub.bpt)})`);
-  if (ub.planta > 0 || ub.semi > 0 || ub.bpt > 0) return { tipo: "planta", texto: partes.join(" · ") };
+  if (ub.planta > 0 || ub.semi > 0) return { tipo: "planta", texto: partes.join(" · ") };
   if (ub.corte > 0) return { tipo: "corte", texto: partes.join(" · ") };
-  return { tipo: "desconocida", texto: "Sin prendas en ninguna etapa" };
+  // Sin prendas en corte, planta ni semiterminado: ya salió de producción (terminado o despachado)
+  return { tipo: "fuera", texto: ub.bpt > 0 ? partes.join(" · ") : "Ya salió de producción" };
 }
 const PESO = { comprar: 5, oc_tarde: 4, oc_ok: 3, justo: 2, ok: 1 };
 export function asignarInventario({ lotes, fichas, oc }) {
-  const rango = (l) => (l.ubicTipo === "corte" ? 1 : 0);
+  const rango = (l) => (l.ubicTipo === "fuera" ? 2 : l.ubicTipo === "corte" ? 1 : 0);
   const orden = [...lotes].sort((a, b) => rango(a) - rango(b) || String(a.despacho || "9999").localeCompare(String(b.despacho || "9999")) || String(a.corte).localeCompare(String(b.corte)) || Number(a.lote) - Number(b.lote));
   const stock = new Map();
   const ocPorInsumo = new Map();
@@ -150,6 +151,7 @@ export default function LotesPorIntegrarView({ db, functionsClient, T, pedidos }
   const [fCliente, setFCliente] = useState("");
   const [fEstado, setFEstado] = useState("");
   const [verCerrados, setVerCerrados] = useState(false);
+  const [verFuera, setVerFuera] = useState(false);
   const [orden, setOrden] = useState({ k: "despacho", dir: 1 });
   const [abierto, setAbierto] = useState(null);
   const [pestana, setPestana] = useState("listos"); // listos (ya en planta) | corte (aún en corte) | incompleta
@@ -208,7 +210,8 @@ export default function LotesPorIntegrarView({ db, functionsClient, T, pedidos }
   const sinCerrados = (verCerrados ? todos : todos.filter((l) => !esCerrado(l))).filter((l) => !l.incompleto);
   const incompletas = (verCerrados ? todos : todos.filter((l) => !esCerrado(l))).filter((l) => l.incompleto);
   const enCorte = sinCerrados.filter((l) => l.ubicTipo === "corte");
-  const listos = sinCerrados.filter((l) => l.ubicTipo !== "corte");
+  const fuera = sinCerrados.filter((l) => l.ubicTipo === "fuera");
+  const listos = sinCerrados.filter((l) => l.ubicTipo === "planta" || l.ubicTipo === "desconocida" || (verFuera && l.ubicTipo === "fuera"));
   const base = pestana === "incompleta" ? incompletas : pestana === "corte" ? enCorte : listos;
   const clientes = useMemo(() => [...new Set(base.map((l) => l.cliente))].sort((a, b) => a.localeCompare(b, "es")), [base]);
   const visibles = useMemo(() => {
@@ -380,6 +383,7 @@ export default function LotesPorIntegrarView({ db, functionsClient, T, pedidos }
             <select value={fEstado} onChange={(e) => setFEstado(e.target.value)} style={campo}>
               <option value="">Estado: todos</option><option value="falta">Con insumo faltante</option><option value="comprar">Hay que comprar (sin OC)</option><option value="oc_ok">Viene en OC</option><option value="oc_tarde">OC llega tarde</option><option value="justo">Alcanza justo</option><option value="ok">Todo disponible</option>
             </select>
+            {pestana === "listos" && fuera.length > 0 && <label style={{ fontSize: 12.5, color: T.slate, display: "flex", gap: 6, alignItems: "center", cursor: "pointer" }}><input type="checkbox" checked={verFuera} onChange={(e) => setVerFuera(e.target.checked)} />Ver {fuera.length} lote{fuera.length === 1 ? "" : "s"} que ya salieron de producción</label>}
             {cerrados.length > 0 && <label style={{ fontSize: 12.5, color: T.slate, display: "flex", gap: 6, alignItems: "center", cursor: "pointer" }}><input type="checkbox" checked={verCerrados} onChange={(e) => setVerCerrados(e.target.checked)} />Ver {cerrados.length} lote{cerrados.length === 1 ? "" : "s"} de pedidos cerrados</label>}
             <div style={{ flex: 1 }} />
             <button style={btn(false)} onClick={() => cargar(true)} disabled={cargando}>{cargando ? "Actualizando..." : "🔄 Actualizar"}</button>
