@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { initializeApp, getApps } from "firebase/app";
-import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, query, where } from "firebase/firestore";
+import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, query, where, getDocs } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import {
   TASAS_BASE, ETIQUETAS_TASAS, FIJOS_BASE, ETIQUETAS_FIJOS, PROCESOS_BASE, INSUMOS_BASE, insumosSugeridos,
@@ -239,6 +239,56 @@ function etiquetaVinculo(v, protos, capsulas) {
   return r ? `${textoRef(r) || "s/ref"} · ${r.name || ""} — ${cap.name}` : v.label;
 }
 
+// ─── ACTUALIZAR DATOS (cliente, nombre y vínculo) ───────────────────────────
+// (2026-10-19, a pedido de Fredy) Las cotizaciones importadas del Excel llegan con cliente «General», sin nombre y sin
+// vincular. Con la REFERENCIA se buscan los datos reales: primero en los prototipos / cápsulas de TechPack (cliente,
+// nombre y vínculo) y, si no está, en el maestro de referencias de Busint (busint_referencias, se sincroniza cada
+// madrugada) para el nombre. Solo se llena lo que está vacío o en «General»: nunca se pisa lo que ya puso una persona,
+// y NO se toca ningún precio.
+function destinosTechpack(protos, capsulas) {
+  const lista = [];
+  (protos || []).filter((p) => !p.eliminado).forEach((p) => lista.push({ kind: "proto", id: p.id, nombre: p.name || "", label: `${textoRef(p) || "s/ref"} · ${p.name || ""}`.trim(), reference: textoRef(p), cliente: p.cliente || p.colores?.[0] || "" }));
+  (capsulas || []).filter((c) => !c.eliminado).forEach((cap) => (cap.referencias || []).forEach((r) => lista.push({ kind: "ref", id: r.id, nombre: r.name || "", capsulaId: cap.id, label: `${textoRef(r) || "s/ref"} · ${r.name || ""} — ${cap.name}`, reference: textoRef(r), cliente: clienteCapsula(cap) })));
+  return lista;
+}
+let cacheNombresBusint = null; // { t, mapa } — evita releer el maestro cada vez que se abre una cotización
+async function cargarNombresBusint(forzar) {
+  if (!forzar && cacheNombresBusint && Date.now() - cacheNombresBusint.t < 10 * 60 * 1000) return cacheNombresBusint.mapa;
+  const snap = await getDocs(collection(db, "busint_referencias"));
+  const mapa = new Map();
+  snap.docs.forEach((d) => { const x = d.data(); const k = normRef(x.ref || d.id); const t = String(x.descripcion || "").trim(); if (k && t && !mapa.has(k)) mapa.set(k, t); });
+  cacheNombresBusint = { t: Date.now(), mapa };
+  return mapa;
+}
+const sinCliente = (c) => !String(c || "").trim() || normTxt(c) === "general";
+// Calcula qué se llenaría en una cotización. ocupados = vínculos (kind+id) que ya usa otra cotización.
+function planActualizar(cot, destinos, nombresBusint, ocupados) {
+  const k = normRef(cot.referencia);
+  const plan = { cambios: {}, fuente: "", destino: null };
+  if (!k) return plan;
+  const cand = destinos.filter((d) => d.reference && normRef(d.reference) === k);
+  let pick = null;
+  if (cot.vinculo) pick = destinos.find((d) => d.kind === cot.vinculo.kind && d.id === cot.vinculo.id) || null;
+  else {
+    const libres = cand.filter((d) => !ocupados.has(d.kind + d.id));
+    pick = libres.length === 1 ? libres[0] : cand.length === 1 ? cand[0] : null;
+  }
+  const clientes = [...new Set(cand.map((d) => String(d.cliente || "").trim()).filter(Boolean).map(normTxt))];
+  const cliUnico = clientes.length === 1 ? String(cand.find((d) => d.cliente).cliente).trim() : "";
+  if (sinCliente(cot.cliente) && cliUnico && normTxt(cliUnico) !== "general") plan.cambios.cliente = cliUnico;
+  if (!String(cot.nombre || "").trim()) {
+    const nom = pick?.nombre || nombresBusint.get(k) || (cand.length === 1 ? cand[0].nombre : "");
+    if (nom) { plan.cambios.nombre = String(nom).trim(); plan.fuente = pick?.nombre || (!nombresBusint.get(k) && cand.length === 1) ? "TechPack" : "Busint"; }
+  }
+  if (!cot.vinculo && pick) {
+    plan.cambios.vinculo = { kind: pick.kind, id: pick.id, label: pick.label, reference: pick.reference, ...(pick.capsulaId ? { capsulaId: pick.capsulaId } : {}) };
+    plan.destino = pick;
+  }
+  if (!plan.fuente && Object.keys(plan.cambios).length) plan.fuente = "TechPack";
+  return plan;
+}
+const textoPlan = (pl) => [pl.cambios.cliente && `cliente → ${pl.cambios.cliente}`, pl.cambios.nombre && `nombre → ${pl.cambios.nombre}`, pl.cambios.vinculo && `vinculada a ${pl.cambios.vinculo.label}`].filter(Boolean).join(" · ");
+
 // ─── EDITOR DE UNA COTIZACIÓN ────────────────────────────────────────────────
 function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsulas, cotizaciones, onGuardar, onVolver, onEliminar, onAplicar, onSucio, puedeBorrar, puedeAprobar, puedeDeshabilitar, puedeEditar = true, usuario, notify }) {
   const [cot, setCot] = useState(inicial);
@@ -401,6 +451,37 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
     return out;
   }
 
+  // ── Actualizar datos (cliente, nombre, vínculo) desde TechPack / Busint, por la referencia ──
+  const [actualizando, setActualizando] = useState(false);
+  async function actualizarDatos(auto) {
+    if (!puedeEditar) return;
+    if (!String(cot.referencia || "").trim()) { if (!auto) notify?.("Escribe la referencia para buscar sus datos"); return; }
+    setActualizando(true);
+    try {
+      let nombres = new Map();
+      try { nombres = await cargarNombresBusint(!auto); } catch (e) { if (!auto) notify?.("No pude leer el maestro de Busint; uso solo lo de TechPack."); }
+      const ocupados = new Set((cotizaciones || []).filter((c) => c.vinculo && c.id !== cot.id).map((c) => c.vinculo.kind + c.vinculo.id));
+      const pl = planActualizar(cot, destinosTechpack(protos, capsulas), nombres, ocupados);
+      if (!Object.keys(pl.cambios).length) {
+        if (!auto) notify?.(destinosTechpack(protos, capsulas).some((d) => d.reference && normRef(d.reference) === normRef(cot.referencia)) || nombres.has(normRef(cot.referencia)) ? "Los datos ya estaban al día." : `No encontré la referencia ${cot.referencia} en TechPack ni en Busint.`);
+        return;
+      }
+      mutar((n) => {
+        if (pl.cambios.nombre) n.nombre = pl.cambios.nombre;
+        if (pl.cambios.vinculo) n.vinculo = pl.cambios.vinculo;
+        ponerCliente(n, pl.cambios.cliente || null);
+        conEvento(n, `actualizó datos desde ${pl.fuente || "TechPack"}: ${textoPlan(pl)}`);
+      });
+      notify?.(`Datos actualizados (${textoPlan(pl)}). Pulsa «Guardar versión» para conservarlos.`);
+    } finally {
+      setActualizando(false);
+    }
+  }
+  // Al abrir una cotización con datos vacíos (cliente General / sin nombre / sin vínculo) se completa sola.
+  useEffect(() => {
+    if (puedeEditar && String(cot.referencia || "").trim() && (sinCliente(cot.cliente) || !String(cot.nombre || "").trim() || !cot.vinculo)) actualizarDatos(true);
+  }, []); // eslint-disable-line
+
   // ── Flujo de aprobación ──
   function conEvento(n, txt) {
     n.historial = [...(n.historial || []), { fecha: new Date().toISOString(), quien: usuario || "—", v: n.versiones[n.activa].numero, txt }];
@@ -557,6 +638,7 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
         <div style={{ flex: 1 }} />
         {cot.id && inicial.existe && puedeBorrar && <button onClick={() => onEliminar(cot)} style={btn(C.white, C.red, C.red)}>Eliminar</button>}
         {puedeEditar && <button onClick={() => setViniloModal({ id: ver.v.vinilo?.miniId || null })} disabled={bloqueada} title="Abre la hoja de Vinilo / DTF de esta referencia y pasa sus valores a esta versión" style={{ ...btn(C.white, C.amber, C.amber), opacity: bloqueada ? 0.5 : 1 }}>🎨 Vinilo / DTF</button>}
+        {puedeEditar && <button onClick={() => actualizarDatos(false)} disabled={actualizando} title="Busca la referencia en TechPack y en Busint y llena el cliente, el nombre y el vínculo que estén vacíos. No cambia precios." style={{ ...btn(C.white, C.green, C.green), opacity: actualizando ? 0.6 : 1 }}>{actualizando ? "Buscando…" : "🔄 Actualizar datos"}</button>}
         <button onClick={() => descargarExcel([cot], `Cotizacion ${String(cot.referencia || "nueva").replace(/[\\/:*?"<>|]/g, "-")}.xlsx`, imagenVinculada(), notify)} style={btn(C.white, C.blue, C.blue)}>📥 Descargar Excel</button>
         {puedeEditar && <button onClick={guardar} style={btn(C.green, C.white)}>💾 Guardar versión</button>}
       </div>
@@ -1003,6 +1085,48 @@ function ModalTelaBusint({ inicial, rendimiento, onElegir, onClose }) {
     </div>
   );
 }
+// Resumen y confirmación de «Actualizar datos de todas».
+function ModalActualizarTodas({ plan, aplicando, progreso, onAplicar, onClose }) {
+  const con = plan.filas.filter((f) => Object.keys(f.pl.cambios).length);
+  return (
+    <div onClick={aplicando ? undefined : onClose} style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,.55)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: C.white, borderRadius: 14, width: "min(820px, 100%)", maxHeight: "88vh", display: "flex", flexDirection: "column" }}>
+        <div style={{ padding: "16px 18px", borderBottom: `1px solid ${C.border}` }}>
+          <div style={{ fontWeight: 800, fontSize: 16 }}>Actualizar datos de todas las cotizaciones</div>
+          <div style={{ fontSize: 12, color: C.slate, marginTop: 4 }}>Se busca cada referencia en TechPack (cliente, nombre, vínculo) y en Busint (nombre). Solo se llena lo vacío o en «General»; los precios no se tocan.</div>
+          <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+            <Pastilla bg={C.greenBg} color={C.green}>{con.length} con cambios</Pastilla>
+            <Pastilla bg={C.blueBg} color={C.blue}>{plan.alDia} ya al día</Pastilla>
+            <Pastilla bg={C.amberBg} color={C.amber}>{plan.sinCoincidencia} sin coincidencia</Pastilla>
+          </div>
+        </div>
+        <div style={{ overflowY: "auto", padding: 8 }}>
+          {con.length === 0 && <div style={{ padding: 24, textAlign: "center", color: C.slate, fontSize: 13 }}>No hay nada para actualizar.</div>}
+          {con.length > 0 && (
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead><tr><th style={th}>Referencia</th><th style={th}>Qué se llena</th><th style={th}>Fuente</th></tr></thead>
+              <tbody>
+                {con.map((f) => (
+                  <tr key={f.cot.id} style={{ borderTop: `1px solid ${C.border}` }}>
+                    <td style={{ padding: "8px 6px", fontWeight: 800, fontSize: 13 }}>{f.cot.referencia}</td>
+                    <td style={{ ...td, fontSize: 12 }}>{textoPlan(f.pl)}</td>
+                    <td style={{ ...td, fontSize: 12, color: C.slate }}>{f.pl.fuente}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+        <div style={{ padding: 12, borderTop: `1px solid ${C.border}`, display: "flex", gap: 10, alignItems: "center", justifyContent: "flex-end" }}>
+          {aplicando && <span style={{ fontSize: 12, color: C.slate }}>Guardando {progreso} de {con.length}…</span>}
+          <button disabled={aplicando} onClick={onClose} style={btn(C.white, C.slate, C.border)}>Cancelar</button>
+          <button disabled={aplicando || !con.length} onClick={onAplicar} style={{ ...btn(C.green, C.white), opacity: aplicando || !con.length ? 0.5 : 1 }}>Actualizar {con.length} cotizaciones</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Elegir a qué prototipo / referencia de cápsula se manda el precio.
 function ModalVincular({ cot, protos, capsulas, cotizaciones, precio, onElegir, onSoloVincular, onClose }) {
   const [q, setQ] = useState("");
@@ -2037,6 +2161,10 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
   const [edit, setEdit] = useState(null); // cotización en edición
   const [busqueda, setBusqueda] = useState("");
   const [importar, setImportar] = useState(false);
+  const [masivo, setMasivo] = useState(null); // { filas, alDia, sinCoincidencia } al preparar «Actualizar datos de todas»
+  const [masivoAplicando, setMasivoAplicando] = useState(false);
+  const [masivoProgreso, setMasivoProgreso] = useState(0);
+  const [masivoBuscando, setMasivoBuscando] = useState(false);
   const [miniAbrir, setMiniAbrir] = useState(null); // hoja de Vinilo / DTF que se abre desde el historial {id, n}
 
   useEffect(() => {
@@ -2093,6 +2221,51 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
     await fsSet("cotizaciones", cot.id, { ...datos, actualizadoPor: currentUser?.name || "", actualizado: new Date().toISOString() });
     setEdit((e) => (e && e.id === cot.id ? { ...e, existe: true } : e));
   }
+  // (2026-10-19, a pedido de Fredy) Llena cliente / nombre / vínculo de TODAS las cotizaciones con datos vacíos.
+  async function prepararMasivo() {
+    if (!puedeEditar) { notify?.("Tu rol solo puede consultar cotizaciones"); return; }
+    setMasivoBuscando(true);
+    try {
+      let nombres = new Map();
+      try { nombres = await cargarNombresBusint(true); } catch (e) { notify?.("No pude leer el maestro de Busint; uso solo lo de TechPack."); }
+      const destinos = destinosTechpack(protos, capsulas);
+      const ocupados = new Set(cotizaciones.filter((c) => c.vinculo).map((c) => c.vinculo.kind + c.vinculo.id));
+      const filas = [];
+      let alDia = 0, sinCoincidencia = 0;
+      cotizaciones.forEach((c) => {
+        const pl = planActualizar(c, destinos, nombres, ocupados);
+        if (Object.keys(pl.cambios).length) { filas.push({ cot: c, pl }); if (pl.cambios.vinculo) ocupados.add(pl.cambios.vinculo.kind + pl.cambios.vinculo.id); return; }
+        const k = normRef(c.referencia);
+        if (k && (destinos.some((d) => d.reference && normRef(d.reference) === k) || nombres.has(k))) alDia += 1; else sinCoincidencia += 1;
+      });
+      setMasivo({ filas, alDia, sinCoincidencia });
+    } finally {
+      setMasivoBuscando(false);
+    }
+  }
+  async function aplicarMasivo() {
+    if (!masivo) return;
+    setMasivoAplicando(true);
+    setMasivoProgreso(0);
+    let ok = 0, fallo = 0;
+    for (const { cot, pl } of masivo.filas) {
+      try {
+        const n = limpio(cot);
+        if (pl.cambios.nombre) n.nombre = pl.cambios.nombre;
+        if (pl.cambios.vinculo) n.vinculo = pl.cambios.vinculo;
+        if (pl.cambios.cliente) n.cliente = pl.cambios.cliente;
+        n.historial = [...(n.historial || []), { fecha: new Date().toISOString(), quien: currentUser?.name || "—", v: n.versiones?.[n.activa]?.numero, txt: `actualizó datos desde ${pl.fuente || "TechPack"}: ${textoPlan(pl)}` }];
+        const { existe, ...datos } = n;
+        await fsSet("cotizaciones", n.id, { ...datos, actualizadoPor: currentUser?.name || "", actualizado: new Date().toISOString() });
+        ok += 1;
+      } catch (e) { fallo += 1; }
+      setMasivoProgreso((x) => x + 1);
+    }
+    setMasivoAplicando(false);
+    setMasivo(null);
+    notify?.(`${ok} cotizaciones actualizadas${fallo ? ` · ${fallo} no se pudieron guardar` : ""}.`);
+  }
+
   async function eliminar(cot) {
     await fsDel("cotizaciones", cot.id);
     setEdit(null);
@@ -2221,6 +2394,7 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
             <div style={{ flex: 1 }} />
             {tab === "cotizaciones" && <>
             {puedeEditar && <button onClick={() => setImportar(true)} style={btn(C.white, C.blue, C.blue)}>📥 Importar Excel</button>}
+            {puedeEditar && <button onClick={prepararMasivo} disabled={masivoBuscando || !cotizaciones.length} title="Busca cada referencia en TechPack y Busint y llena el cliente, el nombre y el vínculo vacíos de todas las cotizaciones" style={{ ...btn(C.white, C.green, C.green), opacity: masivoBuscando || !cotizaciones.length ? 0.5 : 1 }}>{masivoBuscando ? "Buscando…" : "🔄 Actualizar datos de todas"}</button>}
             <button disabled={!filtradas.length} onClick={() => descargarExcel(filtradas, `Cotizaciones ${hoyISO()}.xlsx`, null, notify)} style={{ ...btn(C.white, C.blue, C.blue), opacity: filtradas.length ? 1 : 0.4 }}>📤 Descargar Excel ({filtradas.length})</button>
             {puedeEditar && <button onClick={() => setEdit(cotNueva())} style={btn(C.green, C.white)}>+ Nueva cotización</button>}
             </>}
@@ -2254,6 +2428,7 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
           </div>
         </div>
       )}
+      {masivo && <ModalActualizarTodas plan={masivo} aplicando={masivoAplicando} progreso={masivoProgreso} onAplicar={aplicarMasivo} onClose={() => setMasivo(null)} />}
       {importar && <ModalImportar cotizaciones={cotizaciones} parametros={parametros} clientes={clientesApp} onImportar={importarHojas} onClose={() => setImportar(false)} />}
       </>
       )}
