@@ -110,6 +110,20 @@
  * tanto Pedidos como Corte leen.
  */
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
+// (2026-10-19, seguridad) Toda función onCall exige una sesión iniciada: la llave de la app es
+// pública, así que sin esta revisión cualquiera podía llamarlas desde fuera. Se usa igual que
+// onCall (con o sin opciones); el handler recibe el mismo "request".
+function onCallAuth(a, b) {
+  const conOpciones = typeof a !== "function";
+  const handler = conOpciones ? b : a;
+  const envuelto = async (request) => {
+    if (!request.auth || !request.auth.uid) {
+      throw new HttpsError("unauthenticated", "Debes iniciar sesión para usar esta función.");
+    }
+    return handler(request);
+  };
+  return conOpciones ? onCall(a, envuelto) : onCall(envuelto);
+}
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { defineSecret } = require("firebase-functions/params");
 const logger = require("firebase-functions/logger");
@@ -298,7 +312,7 @@ async function consultarFacturadoBusint(fechaInicio, fechaFin) {
 // "numped" (número de pedido), que es el dato que sí comparten los lotes
 // del panel de flujo y los documentos de facturación. Se filtra solo a los
 // numpeds pedidos (numpeds) para no devolver más de lo necesario.
-exports.getDocumentosPorPedidoBusint = onCall(
+exports.getDocumentosPorPedidoBusint = onCallAuth(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
     // (2026-08-28) Falló en producción con un "internal" genérico (sin
@@ -620,7 +634,7 @@ async function agruparFacturacionPorClienteBusint(fechaInicio, fechaFin) {
     };
 }
 
-exports.getFacturacionPorClienteBusint = onCall(
+exports.getFacturacionPorClienteBusint = onCallAuth(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 300,
@@ -764,7 +778,7 @@ async function sincronizarBitacoraDespachos() {
 // Boton "Sincronizar ahora" en Informes -> Centro de Estadisticas (solo
 // admin) -- para no tener que esperar hasta la proxima corrida programada
 // la primera vez, o si algo se ve desactualizado.
-exports.sincronizarBitacoraDespachosAhora = onCall(
+exports.sincronizarBitacoraDespachosAhora = onCallAuth(
   { secrets: [BUSINT_TOKEN, BUSINT_BASE_URL], timeoutSeconds: 300, memory: "1GiB" },
   async (request) => {
     await verificarLlamadorEsAdmin(request);
@@ -1213,7 +1227,7 @@ async function sincronizarDadoPorCumplidoPendientes() {
 // total, o quien tenga el permiso puntual "contabilidad_sincronizar_dado_por_
 // cumplido" en su rol (2026-09-24, a pedido de Fredy) -- para no tener que
 // esperar la corrida programada.
-exports.sincronizarDadoPorCumplidoPendientesAhora = onCall(
+exports.sincronizarDadoPorCumplidoPendientesAhora = onCallAuth(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL, BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     timeoutSeconds: 300,
@@ -1245,7 +1259,7 @@ exports.revisarDadoPorCumplidoPendientes = onSchedule(
 // categoriaBaseId) más los porcentajes/BASE configurados en Firestore.
 // (Paso 1: NO crea nada en bitacora_despachos todavía -- ver comentario
 // arriba de sincronizarDadoPorCumplidoPendientes.)
-exports.aprobarDadoPorCumplido = onCall(
+exports.aprobarDadoPorCumplido = onCallAuth(
   { timeoutSeconds: 60, memory: "256MiB" },
   async (request) => {
     if (!request.auth) {
@@ -1484,7 +1498,7 @@ async function exportarDadoPorCumplidoADropbox() {
 // Botón manual "Descargar y subir a Dropbox ahora" en Contabilidad -> Dado
 // por Cumplido (solo admin) -- para probar sin esperar al horario de las
 // 6:00 a.m.
-exports.exportarDadoPorCumplidoADropboxAhora = onCall(
+exports.exportarDadoPorCumplidoADropboxAhora = onCallAuth(
   {
     secrets: [DROPBOX_APP_KEY, DROPBOX_APP_SECRET, DROPBOX_REFRESH_TOKEN],
     timeoutSeconds: 120,
@@ -1590,7 +1604,7 @@ async function exportarBitacoraDespachosADropbox() {
 // Botón manual "Descargar y subir a Dropbox ahora" (si se agrega en Bodega
 // -> Control de Despacho, solo admin) -- para probar sin esperar al horario
 // de las 6:00 a.m.
-exports.exportarBitacoraDespachosADropboxAhora = onCall(
+exports.exportarBitacoraDespachosADropboxAhora = onCallAuth(
   {
     secrets: [DROPBOX_APP_KEY, DROPBOX_APP_SECRET, DROPBOX_REFRESH_TOKEN],
     timeoutSeconds: 120,
@@ -1630,7 +1644,7 @@ function cryptoRandomId() {
 // y devuelve solo los pedidos cuya fecha de despacho es hoy o está en el
 // futuro, agrupados por cliente. Se llama desde el navegador con
 // `httpsCallable(functions, "getPedidosVigentesBusint")({ fechaInicio, fechaFin })`.
-exports.getPedidosVigentesBusint = onCall(
+exports.getPedidosVigentesBusint = onCallAuth(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
     // (2026-09-04) 256MiB/60s no alcanzaba con rangos de fecha largos
@@ -1794,7 +1808,7 @@ function campoFechaPrecioBusint(fila) {
 function refSinGuion(v) {
   return String(v ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
-exports.getDisponibleParaDespachar = onCall(
+exports.getDisponibleParaDespachar = onCallAuth(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL, BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     timeoutSeconds: 540,
@@ -2326,7 +2340,7 @@ exports.getDisponibleParaDespachar = onCall(
 // decir que en Busint se canceló, se cerró o se dio por cumplido — el
 // aplicativo lo usa para marcarlo automáticamente en vez de quedarse
 // pegado como activo para siempre.
-exports.getPedidosExistentesBusint = onCall(
+exports.getPedidosExistentesBusint = onCallAuth(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 60,
@@ -2355,7 +2369,7 @@ exports.getPedidosExistentesBusint = onCall(
 // el rango de fechas dado. Se usa desde la pantalla de Pedidos para
 // responder la pregunta "¿este pedido todavía existe en Busint, y con qué
 // datos exactos?" sin adivinar — muestra tal cual lo que Busint responde.
-exports.getOrdenBusintPorNumero = onCall(
+exports.getOrdenBusintPorNumero = onCallAuth(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 60,
@@ -2420,7 +2434,7 @@ async function consultarClientesBusint() {
 // teléfono) — la decisión de qué hacer con cada uno (agregar, reemplazar
 // nombre existente, u omitir) la toma el usuario en pantalla, esta función
 // solo entrega los datos crudos de Busint.
-exports.getClientesBusint = onCall(
+exports.getClientesBusint = onCallAuth(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 60,
@@ -2542,7 +2556,7 @@ function extraerFilasBusintBD(data) {
 // muestra chica — para explorar tablas nuevas que todavía no se conectaron
 // a ATLAS (columnas y unas pocas filas) sin traer todo. Se usa desde
 // Administración → "🔌 Busint (prueba)".
-exports.getCatalogoBusintCrudo = onCall(
+exports.getCatalogoBusintCrudo = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     timeoutSeconds: 120,
@@ -2614,7 +2628,7 @@ const TABLAS_CANDIDATAS_NOMINA_DEFAULT = [
 // ("proddev ..."). Dado un NumEnt (y opcionalmente un NumLote) devuelve las
 // filas CRUDAS de todas ellas para compararlas a mano contra una fila del
 // Excel y confirmar de donde sale cada columna. No escribe nada.
-exports.depurarEntradaPlantaBusintBD = onCall(
+exports.depurarEntradaPlantaBusintBD = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY, BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 540,
@@ -2769,7 +2783,7 @@ exports.depurarEntradaPlantaBusintBD = onCall(
   }
 );
 
-exports.getBarridoTablasBusintBD = onCall(
+exports.getBarridoTablasBusintBD = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     timeoutSeconds: 300,
@@ -2807,7 +2821,7 @@ exports.getBarridoTablasBusintBD = onCall(
 // fuerza de pedidos), y se queda solo con las que tengan alguna columna que
 // contenga alguna de las palabras clave — así se ve de un vistazo cuáles
 // tablas de las 972 podrían servir, sin gastar un clic por cada una.
-exports.getBarridoTotalTablasBusintBD = onCall(
+exports.getBarridoTotalTablasBusintBD = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     timeoutSeconds: 540,
@@ -2867,7 +2881,7 @@ exports.getBarridoTotalTablasBusintBD = onCall(
 // filtra por texto contenido en el nombre — no consulta ni una fila de
 // datos de ninguna tabla, así que es casi instantáneo y no necesita
 // secrets de Busint (el swagger es público).
-exports.buscarTablasBusintBDPorNombre = onCall(
+exports.buscarTablasBusintBDPorNombre = onCallAuth(
   {
     timeoutSeconds: 60,
     memory: "256MiB",
@@ -2909,7 +2923,7 @@ exports.buscarTablasBusintBDPorNombre = onCall(
 // contengan alguna palabra clave tipica de compras/cartera en su nombre) y
 // dice en que tabla + columna aparece. Quitar esta funcion una vez
 // encontrada la tabla correcta -- es solo para esta investigacion puntual.
-exports.buscarValorEnTablasBusintBD = onCall(
+exports.buscarValorEnTablasBusintBD = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     timeoutSeconds: 540,
@@ -3028,7 +3042,7 @@ async function consultarTablaBusintBDCompleta(tableName, pageSize = 500, maxPagi
 // hasta hoy, sin tener que ir adivinando número de página a mano en la
 // pantalla de prueba. Se usa desde Administración → "🔌 Busint (prueba)"
 // con el botón "📊 Ver resumen completo".
-exports.getResumenTablaBusintBD = onCall(
+exports.getResumenTablaBusintBD = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     timeoutSeconds: 300,
@@ -3076,7 +3090,7 @@ exports.getResumenTablaBusintBD = onCall(
 // un saldo conocido (ej. saldo de Kamila Venezuela, cliente 116) y descubrir si
 // ya descuenta pagos. Si se manda `valorGrupo`, solo ese grupo y con desglose por
 // mes. SOLO LEE: no escribe nada.
-exports.sumarTablaBusintBD = onCall(
+exports.sumarTablaBusintBD = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     timeoutSeconds: 300,
@@ -3176,7 +3190,7 @@ exports.sumarTablaBusintBD = onCall(
 // devolución ($7.631.250, traslado 2218) y las notas de contabilidad
 // ($55.582.637, traslado 2333) del reporte "Traslados por facturar extractos" de
 // Kamila Venezuela. SOLO LEE: no escribe nada.
-exports.buscarValorEnTablasBusintBD = onCall(
+exports.buscarValorEnTablasBusintBD = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     timeoutSeconds: 540,
@@ -3245,7 +3259,7 @@ exports.buscarValorEnTablasBusintBD = onCall(
 // Devuelve, por cliente, el saldo con DOS hipótesis de pago para poder cuadrar
 // contra el saldo real de Busint: (a) solo `Valor`, (b) `Valor + Desc + Rtfe + RtfeIva`.
 // SOLO LEE: no escribe nada.
-exports.getSaldoTrasladosExternosBusint = onCall(
+exports.getSaldoTrasladosExternosBusint = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY, BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 300,
@@ -3747,7 +3761,7 @@ exports.getSaldoTrasladosExternosBusint = onCall(
 // Busint dejó alguna factura del mismo pedido sin ese campo puesto. Por
 // eso también se devuelve `totalFacturas` (cuántas facturas se encontraron
 // con ese Numped) para poder notar el caso a simple vista.
-exports.getResumenFacturacionPorPedidoBusintBD = onCall(
+exports.getResumenFacturacionPorPedidoBusintBD = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     timeoutSeconds: 300,
@@ -3878,7 +3892,7 @@ function fechaBusintBDaDateSoloDia(campo) {
 function normalizarCodigoCxp(v) {
   return String(v ?? "").trim().toUpperCase();
 }
-exports.getCuentasPorPagarBusintGen = onCall(
+exports.getCuentasPorPagarBusintGen = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     timeoutSeconds: 540,
@@ -4210,7 +4224,7 @@ exports.getCuentasPorPagarBusintGen = onCall(
 // cada vez. Van 5 casos resueltos así uno por uno: Tintatex, Cheviotto (x2),
 // Jorge Alexander Mora Capacho, y Comercializadora Idea Innova -- esta
 // herramienta queda para el próximo caso.
-exports.depurarFacturaCxp = onCall(
+exports.depurarFacturaCxp = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     timeoutSeconds: 540,
@@ -4354,7 +4368,7 @@ exports.depurarFacturaCxp = onCall(
 // confirmar de antemano que "MDEO - CONFECCION" también exista ahí -- si no
 // existe, precioUnidad sale null para esas filas (el frontend lo muestra
 // como "—", nunca como $0).
-exports.getVerificadorPrecioBusintGen = onCall(
+exports.getVerificadorPrecioBusintGen = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     timeoutSeconds: 540,
@@ -4530,7 +4544,7 @@ async function entradasLoteBusintBD(numLote) {
 // en mas de una planta propia con fechas distintas (caso real: Lote 7128,
 // Terminacion, quedo bajo la planta 1021 en vez de la 1002 -- ver nota de
 // CODPLANTAS_PROPIAS mas abajo). Se uso para investigar el Lote 7314.
-exports.getEntradasCrudasLoteBusintBD = onCall(
+exports.getEntradasCrudasLoteBusintBD = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     timeoutSeconds: 300,
@@ -4608,7 +4622,7 @@ exports.getEntradasCrudasLoteBusintBD = onCall(
   }
 );
 
-exports.getMovimientosLoteBusintBD = onCall(
+exports.getMovimientosLoteBusintBD = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     timeoutSeconds: 300,
@@ -4730,7 +4744,7 @@ function resumenMovimientosPorLoteProceso(filasRef, fechasPorNumero, campoNumero
 // que el Programador de Procesos usa para pintar cada lote programado como
 // cumplido (hubo entrada/salida <= fecha programada) o vencido (ya pasó la
 // fecha programada y no hay movimiento real todavía).
-exports.getMovimientosProcesoBusintBD = onCall(
+exports.getMovimientosProcesoBusintBD = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     timeoutSeconds: 540,
@@ -5037,7 +5051,7 @@ async function correrAuditoriaBusintVsNomina({ inmediato = false, sinNotificar =
 // Trae TODAS las filas de la referencia de una sola vez (no solo un
 // proceso puntual) para que el frontend pueda cambiar de proceso sin
 // volver a golpear Busint cada vez.
-exports.getCostosProcesoDesdeBusintPorReferencia = onCall(
+exports.getCostosProcesoDesdeBusintPorReferencia = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     timeoutSeconds: 120,
@@ -5124,7 +5138,7 @@ exports.getCostosProcesoDesdeBusintPorReferencia = onCall(
 // total, Iprom = costo promedio por unidad. El "Costo" (valor de la ficha del
 // insumo, a veces un valor de relleno) se devuelve solo como referencia.
 // El consumo lo digita el usuario.
-exports.getCatalogoInsumosBusint = onCall(
+exports.getCatalogoInsumosBusint = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     timeoutSeconds: 300,
@@ -5175,7 +5189,7 @@ exports.getCatalogoInsumosBusint = onCall(
 // getCostosProcesoDesdeBusintPorReferencia) y filtra server-side solo las
 // filas de mano de obra de corte, para no mandar la tabla completa (con
 // TODOS los procesos) al frontend.
-exports.getPreciosCorteBusint = onCall(
+exports.getPreciosCorteBusint = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     timeoutSeconds: 180,
@@ -5217,7 +5231,7 @@ exports.getPreciosCorteBusint = onCall(
 // devuelve parseVentasPerdidasBusint (porPedido/porReferencia) para que el
 // resto de la app (Vigentes por Cliente, Corte) no tenga que cambiar nada.
 const TALLAS_VP_BUSINT = ["T2", "T4", "T6", "T8", "T10", "T12", "T14", "T16", "T18", "T24", "T36"];
-exports.getVentasPerdidasBusintLive = onCall(
+exports.getVentasPerdidasBusintLive = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY, BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 540,
@@ -5388,7 +5402,7 @@ function fechaBDaISOHoraSafe(obj) {
   const h = obj.hour ?? 0, mi = obj.minute ?? 0, s = obj.second ?? 0;
   return `${base} ${String(h).padStart(2, "0")}:${String(mi).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
-exports.getTelasStockBusintBD = onCall(
+exports.getTelasStockBusintBD = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     timeoutSeconds: 300,
@@ -5487,7 +5501,7 @@ function valorFlexible(obj, candidatos) {
 // fila correcta en "estandar componentes prod" (Componente+Color) en vez de
 // sumar el stock de todos los colores de esa tela.
 const NUM_SLOTS_TELA = 10;
-exports.getComposicionTelasBusintBD = onCall(
+exports.getComposicionTelasBusintBD = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     timeoutSeconds: 300,
@@ -5554,7 +5568,7 @@ exports.getComposicionTelasBusintBD = onCall(
 // intentar identificar el color exacto por NOMBRE cuando no hay detalle de
 // color por Referencia+Pinta (ver disponibilidadTelaPorColor en el
 // frontend).
-exports.getTablaColoresBusintBD = onCall(
+exports.getTablaColoresBusintBD = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     timeoutSeconds: 120,
@@ -5604,7 +5618,7 @@ function clienteDesdeObservacion(obs) {
 // Es SOLO para validar (comparar a mano contra la última Hoja1 subida)
 // antes de decidir si reemplaza "Subir Hoja1" — todavía NO se usa en Mi
 // Día ni en Informes. Se llama desde Administración → "🔌 Busint (prueba)".
-exports.getLotesReconstruidosBusintBD = onCall(
+exports.getLotesReconstruidosBusintBD = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     timeoutSeconds: 300,
@@ -5697,7 +5711,7 @@ function loteDesdeComentarios(comentarios) {
   const m = String(comentarios).match(/LOTE\s*(\d+)/i);
   return m ? Number(m[1]) : null;
 }
-exports.getValidacionFacturasBusintBD = onCall(
+exports.getValidacionFacturasBusintBD = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     timeoutSeconds: 300,
@@ -5781,7 +5795,7 @@ exports.getValidacionFacturasBusintBD = onCall(
 // (`FechaAnt` -> `FechaAct`, campo `Fecha` = cuándo se hizo el cambio). Se
 // toma la fila más reciente (mayor `ID`) de cada NumLote como la fecha de
 // entrega planeada vigente.
-exports.getValidacionFechaEntregaBusintBD = onCall(
+exports.getValidacionFechaEntregaBusintBD = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     timeoutSeconds: 300,
@@ -5863,7 +5877,7 @@ exports.getValidacionFechaEntregaBusintBD = onCall(
 // fecha de inserción), así que "últimas 5" no representa "más reciente" —
 // hay que buscar directo por los NumPed de pedidos actuales (los de
 // `orden produccion` más recientes) y ver si ya tienen `FechaDespacho1`.
-exports.getValidacionPedidosPendientesEspacioBusintBD = onCall(
+exports.getValidacionPedidosPendientesEspacioBusintBD = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     timeoutSeconds: 300,
@@ -5940,7 +5954,7 @@ exports.getValidacionPedidosPendientesEspacioBusintBD = onCall(
 // por lote, y marca si `FechaDespacho1` es distinto de `FechaPed` (señal de
 // que es una fecha real asignada, no solo el valor por defecto del día de
 // creación del pedido).
-exports.getValidacionPedidosClientesBusintBD = onCall(
+exports.getValidacionPedidosClientesBusintBD = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     timeoutSeconds: 300,
@@ -6035,7 +6049,7 @@ exports.getValidacionPedidosClientesBusintBD = onCall(
 // (InformesView) para refrescar SOLO nombreCliente/fechaEntregaConfISO de
 // lotes ya cargados por "Subir Hoja1" — no reemplaza la carga inicial
 // todavía (falta resolver cantidades por talla).
-exports.getClienteFechaLotesBusintBD = onCall(
+exports.getClienteFechaLotesBusintBD = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     timeoutSeconds: 300,
@@ -6102,7 +6116,7 @@ exports.getClienteFechaLotesBusintBD = onCall(
 // `numLote` en ATLAS) sí es una llave directa y sin ambigüedad, por eso
 // esto es seguro. Ver el merge/recalculo en modulo-planeacion.jsx
 // (`actualizarInventarioBusint`, dentro de InformesView).
-exports.getInventarioLotesBusintBD = onCall(
+exports.getInventarioLotesBusintBD = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     timeoutSeconds: 300,
@@ -6135,7 +6149,7 @@ exports.getInventarioLotesBusintBD = onCall(
 // referencia, autocompleta descripción/precio (ApiGen_Referencias) y los
 // códigos de barra por talla/color (ApiGen_CodigosDeBarra) de esa misma
 // referencia, para no tener que digitarlos a mano.
-exports.buscarReferenciaBusint = onCall(
+exports.buscarReferenciaBusint = onCallAuth(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 60,
@@ -6204,7 +6218,7 @@ exports.buscarReferenciaBusint = onCall(
 // precio en Busint" en vez de contarla como $0 en silencio. Los precios son
 // información financiera: exige sesión iniciada y rechaza a los usuarios
 // Cliente (los que tienen clienteProduccion/clientesProduccion).
-exports.getPreciosMatriculadosBusint = onCall(
+exports.getPreciosMatriculadosBusint = onCallAuth(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 120,
@@ -6252,7 +6266,7 @@ exports.getPreciosMatriculadosBusint = onCall(
 // (ApiGen_CarteraFacturacionBusint), qué facturó/despachó en los últimos 12 meses
 // por tipo de documento (FAC/TCO/TEX/DTC/DTE...) y qué códigos de cartera siguen
 // sin nombre. SOLO LEE: no escribe nada.
-exports.diagnosticarClienteBusint = onCall(
+exports.diagnosticarClienteBusint = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY, BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 300,
@@ -6406,7 +6420,7 @@ exports.diagnosticarClienteBusint = onCall(
 // al dia. Esto la trae completa, suma por cliente (codigo interno) y devuelve
 // el resumen. Solo lectura: no escribe nada. Exige sesion iniciada y rechaza
 // a usuarios Cliente (mismo criterio que getPreciosMatriculadosBusint).
-exports.getResumenCarteraClientesBusintBD = onCall(
+exports.getResumenCarteraClientesBusintBD = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY, BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 300,
@@ -6628,7 +6642,7 @@ exports.getResumenCarteraClientesBusintBD = onCall(
 // existe una fuente de verdad más viva (ej. un kardex/movimientos de
 // materia prima) antes de seguir confiando en esa tabla para avisar
 // disponibilidad en Programación de Corte.
-exports.getListaConsultasBusintGen = onCall(
+exports.getListaConsultasBusintGen = onCallAuth(
   {
     secrets: [BUSINT_BASE_URL],
     timeoutSeconds: 60,
@@ -6667,7 +6681,7 @@ exports.getListaConsultasBusintGen = onCall(
 // muestra cruda (primeras + últimas filas) para ver la forma real de los
 // datos antes de decidir si sirve para reemplazar/complementar Hoja1. No
 // escribe nada ni reemplaza ningún flujo existente.
-exports.getMuestraPanelFlujoBusintGen = onCall(
+exports.getMuestraPanelFlujoBusintGen = onCallAuth(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 120,
@@ -6693,7 +6707,7 @@ exports.getMuestraPanelFlujoBusintGen = onCall(
 // (2026-08-21) EXPLORATORIO — mismo caso que getMuestraPanelFlujoBusintGen
 // pero para "ApiGen_InventarioBusint", el otro catálogo nuevo de la API gen
 // que podría servir para Hoja1 (inventario en vivo).
-exports.getMuestraInventarioBusintGen = onCall(
+exports.getMuestraInventarioBusintGen = onCallAuth(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
     // "internal" genérico (sin mensaje) en el cliente suele ser timeout u
@@ -6731,7 +6745,7 @@ exports.getMuestraInventarioBusintGen = onCall(
 // exploró (492 filas en la prueba, cabe completa sin paginar). Se usa en
 // Programación de Corte para comparar, por Referencia+Pinta+Color, cuánto
 // ya existe en inventario contra las Capas que se están por programar.
-exports.getInventarioProductoBusintGen = onCall(
+exports.getInventarioProductoBusintGen = onCallAuth(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 300,
@@ -6768,7 +6782,7 @@ exports.getInventarioProductoBusintGen = onCall(
 // Planeación (planeacion_cargas), para confirmar que los datos SÍ cuadran
 // antes de siquiera considerar reemplazar el botón "Subir Hoja1". No
 // escribe nada.
-exports.getValidacionPanelFlujoBusintGen = onCall(
+exports.getValidacionPanelFlujoBusintGen = onCallAuth(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 300,
@@ -6914,7 +6928,7 @@ async function obtenerLotesPlaneacionDesdeBusint() {
   return { total: lotes.length, lotes };
 }
 
-exports.getCargaPlaneacionDesdeBusintGen = onCall(
+exports.getCargaPlaneacionDesdeBusintGen = onCallAuth(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 300,
@@ -6954,7 +6968,7 @@ const GRUPOS_CLIENTE_BUSINT = {
   kamila_ve: ["KAMILA VENEZUELA-KAMILA VENEZUELA"],
 };
 
-exports.getProduccionClienteDesdeBusintGen = onCall(
+exports.getProduccionClienteDesdeBusintGen = onCallAuth(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 300,
@@ -7023,7 +7037,7 @@ exports.getProduccionClienteDesdeBusintGen = onCall(
 // (ApiGen_MovimientosPosint, ApiGen_CarteraFacturacionBusint,
 // ApiGen_FacturadoPosint, ApiGen_InventarioPosint...) sin tener que escribir
 // una función nueva por cada uno.
-exports.getMuestraCatalogoBusintGen = onCall(
+exports.getMuestraCatalogoBusintGen = onCallAuth(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 300,
@@ -7072,7 +7086,7 @@ exports.getMuestraCatalogoBusintGen = onCall(
 // endpoint puntual de "/consultas/X" (nombre, si es obligatorio, tipo) —
 // para saber, sin adivinar, qué mandar cuando un catálogo devuelve []
 // vacío sin filtros (ej. "ApiGen_MovimientosPosint").
-exports.getEsquemaConsultaBusintGen = onCall(
+exports.getEsquemaConsultaBusintGen = onCallAuth(
   {
     secrets: [BUSINT_BASE_URL],
     timeoutSeconds: 60,
@@ -7129,7 +7143,7 @@ exports.getEsquemaConsultaBusintGen = onCall(
 // desde "Nuevo Prototipo"/"Nueva Referencia" (Diseño) para verificar en vivo
 // si un consecutivo sugerido ya existe en Busint antes de dejar crearlo (ver
 // sugerirReferencia() en App.js).
-exports.getReferenciasBusint = onCall(
+exports.getReferenciasBusint = onCallAuth(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 540,
@@ -7293,7 +7307,7 @@ async function guardarReferenciasBusintEnFirestore(filasBusint) {
 function normalizarProcesoBD(s) {
   return (s || "").toString().trim().toUpperCase().replace(/\s+/g, " ");
 }
-exports.probarReferenciaBusint = onCall(
+exports.probarReferenciaBusint = onCallAuth(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 60,
@@ -7327,7 +7341,7 @@ exports.probarReferenciaBusint = onCall(
 // referencia — "costoFT" en ApiGen_Referencias (validado en vivo, ojo que
 // viene en 0 para varias referencias que Busint no tiene costeadas todavía,
 // eso no es un error, solo significa que esa ref no tiene tope configurado).
-exports.getCostoTeoricoReferenciaBusint = onCall(
+exports.getCostoTeoricoReferenciaBusint = onCallAuth(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 60,
@@ -7360,7 +7374,7 @@ exports.getCostoTeoricoReferenciaBusint = onCall(
 // y Sarai buscan por N° de lote en vez de escribir la referencia a mano —
 // trae de una vez cantidad cortada, pedido, cliente y el costo teórico
 // (costoFT) de esa referencia, para que no tengan que hacer dos búsquedas.
-exports.getLoteBusintPorNumero = onCall(
+exports.getLoteBusintPorNumero = onCallAuth(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 60,
@@ -7434,7 +7448,7 @@ exports.getLoteBusintPorNumero = onCall(
 // ahí y cuenta en cuántos lotes aparece cada uno, para que el admin pueda
 // elegir de una lista real en vez de escribir a mano y arriesgarse a que no
 // coincida con lo que trae Busint.
-exports.getProcesosDistintosBusint = onCall(
+exports.getProcesosDistintosBusint = onCallAuth(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 120,
@@ -7477,7 +7491,7 @@ exports.getProcesosDistintosBusint = onCall(
 // (AAAA-MM-DD, la fecha que aparece en la remisión), se acota la búsqueda a
 // ±20/10 días alrededor de esa fecha — más rápido y más preciso si el
 // traslado es viejo.
-exports.buscarTrasladoBusintPorNumero = onCall(
+exports.buscarTrasladoBusintPorNumero = onCallAuth(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 180,
@@ -7590,7 +7604,7 @@ exports.buscarTrasladoBusintPorNumero = onCall(
 // rango, cada uno con sus líneas ya listas para cargar — así la pantalla
 // puede mostrar una lista con casillas y armar UN SOLO despacho con las que
 // se marquen, sin tener que escribir número por número.
-exports.listarDocumentosBusintCliente = onCall(
+exports.listarDocumentosBusintCliente = onCallAuth(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 300,
@@ -7720,7 +7734,7 @@ exports.listarDocumentosBusintCliente = onCall(
 // este punto nadie puede iniciar sesión todavía con Firebase Auth).
 const MIGRACION_CLAVE = defineSecret("MIGRACION_CLAVE");
 
-exports.migrarUsuariosAFirebaseAuth = onCall(
+exports.migrarUsuariosAFirebaseAuth = onCallAuth(
   {
     secrets: [MIGRACION_CLAVE],
     timeoutSeconds: 120,
@@ -7840,7 +7854,7 @@ async function verificarLlamadorPuedeSincronizarDadoPorCumplido(request) {
   return snap.docs[0];
 }
 
-exports.adminCrearUsuario = onCall(
+exports.adminCrearUsuario = onCallAuth(
   { timeoutSeconds: 60, memory: "256MiB" },
   async (request) => {
     await verificarLlamadorEsAdmin(request);
@@ -7928,7 +7942,7 @@ exports.adminCrearUsuario = onCall(
   }
 );
 
-exports.adminCambiarClaveUsuario = onCall(
+exports.adminCambiarClaveUsuario = onCallAuth(
   { timeoutSeconds: 60, memory: "256MiB" },
   async (request) => {
     await verificarLlamadorEsAdmin(request);
@@ -8005,7 +8019,7 @@ const EMAIL_USER = defineSecret("EMAIL_USER");
 const EMAIL_APP_PASSWORD = defineSecret("EMAIL_APP_PASSWORD");
 const nodemailer = require("nodemailer");
 
-exports.correrAuditoriaBusintVsNominaAhora = onCall(
+exports.correrAuditoriaBusintVsNominaAhora = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY, EMAIL_USER, EMAIL_APP_PASSWORD],
     timeoutSeconds: 540,
@@ -8028,7 +8042,7 @@ exports.correrAuditoriaBusintVsNominaAhora = onCall(
 // automatico de las 7am sigue intacto. Requiere admin, igual que el boton
 // general "Correr auditoría ahora" (confirmado por Fredy: la usuaria de
 // Contabilidad que aprueba Dado por Cumplido tiene rol Administradora).
-exports.revisarAuditoriaLoteDadoPorCumplido = onCall(
+exports.revisarAuditoriaLoteDadoPorCumplido = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY, EMAIL_USER, EMAIL_APP_PASSWORD],
     timeoutSeconds: 540,
@@ -8115,7 +8129,7 @@ exports.cierreAutomaticoCorte = onSchedule(
 // Botón "Correr auditoría ahora" (solo admin) de Centro de Costo Cierre →
 // CORTE. Recalcula y guarda el resultado de hoy, pero NO manda correo (el
 // aviso solo sale en la corrida automática de las 7:30am).
-exports.correrAuditoriaCorteVsBusintAhora = onCall(
+exports.correrAuditoriaCorteVsBusintAhora = onCallAuth(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 300,
@@ -8148,7 +8162,7 @@ const entradasPlanta = crearEntradasPlanta({
   fechaHoyBogota,
 });
 
-exports.sincronizarEntradasPlantaBusintBD = onCall(
+exports.sincronizarEntradasPlantaBusintBD = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     timeoutSeconds: 540,
@@ -8302,7 +8316,7 @@ async function agregarSeccionNotificacion({ correos, titulo, horaOrigen, html })
 // Usuarios. Los horarios y la lista de tareas son fijos aquí (cambiarlos
 // requiere editar código y desplegar), pero los destinatarios sí reflejan
 // el estado real de la base de datos en el momento de la consulta.
-exports.obtenerResumenNotificacionesProgramadas = onCall({ timeoutSeconds: 60, memory: "256MiB" }, async (request) => {
+exports.obtenerResumenNotificacionesProgramadas = onCallAuth({ timeoutSeconds: 60, memory: "256MiB" }, async (request) => {
   await verificarLlamadorEsAdmin(request);
 
   const [usersSnap, configSnap, areasSnap] = await Promise.all([
@@ -8699,7 +8713,7 @@ exports.correoResumenPorCliente = onSchedule(
 // cliente (mes) (solo admin) -- para ver de una vez como llega el correo
 // (con los datos reales de este mes), sin tener que esperar al envio
 // automatico de las 6:10pm.
-exports.enviarResumenPorClienteAhora = onCall(
+exports.enviarResumenPorClienteAhora = onCallAuth(
   { secrets: [EMAIL_USER, EMAIL_APP_PASSWORD], timeoutSeconds: 120, memory: "512MiB" },
   async (request) => {
     await verificarLlamadorEsAdmin(request);
@@ -9282,7 +9296,7 @@ exports.enviarAsistenciaDiaria = onSchedule(
 // mismo período. Correo a Gerencia/Talento Humano (mismo grupo de
 // DESTINATARIOS_ASISTENCIA_COMPLETA -- Fredy confirmó que es la misma
 // gente, sin un correo de RRHH aparte) + el líder del área de la persona.
-exports.revisarRetardosYAvisar = onCall(
+exports.revisarRetardosYAvisar = onCallAuth(
   { secrets: [EMAIL_USER, EMAIL_APP_PASSWORD], timeoutSeconds: 120, memory: "256MiB" },
   async () => {
     const fecha = fechaHoyBogota();
@@ -9366,7 +9380,7 @@ function idAvisoPrecioFaltante(referencia, proceso) {
   return `${r}__${p}`.replace(/[^A-Z0-9_]/g, "_").slice(0, 400);
 }
 
-exports.avisarProcesoSinPrecioMaximo = onCall(
+exports.avisarProcesoSinPrecioMaximo = onCallAuth(
   {
     secrets: [EMAIL_USER, EMAIL_APP_PASSWORD],
     timeoutSeconds: 60,
@@ -9647,7 +9661,7 @@ async function llamarTNS(path, { method = "GET", body, empresa = "yanko" } = {})
 // de la respuesta (el swagger no la documenta bien para este endpoint en
 // particular), así que se devuelve tal cual TNS la mande y se interpreta en
 // el frontend.
-exports.listarCentroCostoTNS = onCall(
+exports.listarCentroCostoTNS = onCallAuth(
   {
     secrets: TNS_SECRETS_TODAS,
     timeoutSeconds: 30,
@@ -9672,7 +9686,7 @@ exports.listarCentroCostoTNS = onCall(
 // selecciona el trabajador al crear el contrato). No se sabe todavía si
 // trae datos útiles de nómina (cargo, sueldo, etc.) o solo lo básico del
 // tercero — se deja crudo para revisar la forma real de la respuesta.
-exports.listarTercerosTNS = onCall(
+exports.listarTercerosTNS = onCallAuth(
   {
     secrets: TNS_SECRETS_TODAS,
     timeoutSeconds: 30,
@@ -9697,7 +9711,7 @@ exports.listarTercerosTNS = onCall(
 // de novedad. No se valida de más acá adentro — TNS es quien decide si el
 // codconcepto/codcontrato son válidos, y su respuesta de error (si la hay)
 // se propaga tal cual al frontend para que se vea el motivo real.
-exports.insertarNovedadTNS = onCall(
+exports.insertarNovedadTNS = onCallAuth(
   {
     secrets: TNS_SECRETS_TODAS,
     timeoutSeconds: 30,
@@ -9736,7 +9750,7 @@ exports.insertarNovedadTNS = onCall(
 // edades". SOLO LEE: es un reporte, no cambia nada en TNS. Devuelve lo que
 // TNS responda, tal cual, para compararlo contra el Excel antes de conectar
 // nada a Contabilidad.
-exports.probarBalanceTNS = onCall(
+exports.probarBalanceTNS = onCallAuth(
   {
     secrets: TNS_SECRETS_TODAS,
     timeoutSeconds: 120,
@@ -9833,7 +9847,7 @@ function fechasCorteTNS(request) {
   const fechaFinal = /^\d{4}-\d{2}-\d{2}$/.test(String(request.data?.fechaFinal || "")) ? request.data.fechaFinal : hoy;
   return { fechaFinal, fechaInicial: `${fechaFinal.slice(0, 4)}-01-01` };
 }
-exports.getCarteraTNS = onCall(
+exports.getCarteraTNS = onCallAuth(
   {
     secrets: TNS_SECRETS_TODAS,
     timeoutSeconds: 300,
@@ -9882,7 +9896,7 @@ exports.getCarteraTNS = onCall(
 // comparten código de empresa y se separan por sucursal. Consulta el saldo por
 // cliente (1305 + 2805) en cada código de sucursal (por defecto 00 a 09) y dice
 // cuáles existen, cuántos clientes y qué saldo tienen. Solo LEE.
-exports.explorarSucursalesTNS = onCall(
+exports.explorarSucursalesTNS = onCallAuth(
   {
     secrets: TNS_SECRETS_TODAS,
     timeoutSeconds: 300,
@@ -9922,7 +9936,7 @@ exports.explorarSucursalesTNS = onCall(
 
 // Guarda qué sucursales de TNS pertenecen a cada empresa (se llama a propósito
 // desde "Explorar sucursales"; ya no se pisa sola al probar el Balance).
-exports.guardarSucursalesTNS = onCall(
+exports.guardarSucursalesTNS = onCallAuth(
   { timeoutSeconds: 30, memory: "256MiB" },
   async (request) => {
     if (!request.auth) throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
@@ -9941,7 +9955,7 @@ exports.guardarSucursalesTNS = onCall(
 // documento swagger (JSON) de la API y devuelve la lista de rutas
 // (método, ruta, resumen, etiqueta) para filtrarla en pantalla. Solo LEE el
 // swagger: no consulta ni modifica ningún dato de TNS.
-exports.explorarApiTNS = onCall(
+exports.explorarApiTNS = onCallAuth(
   {
     secrets: TNS_SECRETS_TODAS,
     timeoutSeconds: 60,
@@ -10073,7 +10087,7 @@ exports.explorarApiTNS = onCall(
 // apenas se configuren los secretos, antes de construir el envío real de
 // Contratos/Novedades. Se puede llamar desde el navegador con
 // `httpsCallable(functions, "probarConexionTNS")()`.
-exports.probarConexionTNS = onCall(
+exports.probarConexionTNS = onCallAuth(
   {
     secrets: TNS_SECRETS_TODAS,
     timeoutSeconds: 30,
@@ -10299,7 +10313,7 @@ async function resolverRaizCotizacionesDropbox(destino) {
   );
 }
 
-exports.subirCotizacionADropbox = onCall(
+exports.subirCotizacionADropbox = onCallAuth(
   {
     secrets: [DROPBOX_APP_KEY, DROPBOX_APP_SECRET, DROPBOX_REFRESH_TOKEN],
     timeoutSeconds: 120,
@@ -10337,7 +10351,7 @@ exports.subirCotizacionADropbox = onCall(
 // antes de construir la pantalla de historial de compras y control de costo en Contabilidad.
 // Como aún no se conocen los nombres de las columnas, una fila coincide si ALGUNA columna vale el número;
 // en el detalle se usan primero las mismas columnas con las que coincidió la cabecera.
-exports.depurarOrdenCompraBusint = onCall(
+exports.depurarOrdenCompraBusint = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     timeoutSeconds: 540,
@@ -10410,7 +10424,7 @@ exports.depurarOrdenCompraBusint = onCall(
 // Bruto = Σ Cant × Costo; Descuento = Σ Cant × Costo × Dsc/100; Base = bruto − descuento; IVA = 19 % de la base (la columna
 // Iva de la cabecera dice 16 y no coincide con el PDF, por eso el IVA se calcula en pantalla y no se toma de ahí).
 // Respuesta compacta: l = [[Codcomp, Cant, Costo, Dsc], ...]. Las fechas son AAAA-MM-DD.
-exports.getOrdenesCompraBusint = onCall(
+exports.getOrdenesCompraBusint = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     timeoutSeconds: 540,
@@ -10509,7 +10523,7 @@ exports.getOrdenesCompraBusint = onCall(
 // todos sus colores activos (`colores` dice cuantos).
 // Si Busint tiene la misma Ref escrita de dos formas (C5008 / C-5008) se usa
 // completo el grupo con el ID mas alto (misma proteccion que Nomina).
-exports.getFichaMaterialesBusint = onCall(
+exports.getFichaMaterialesBusint = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     timeoutSeconds: 540,
@@ -10729,7 +10743,7 @@ function _diagDias(desde, hasta) {
   if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
   return Math.round((b - a) / 86400000);
 }
-exports.depurarIntegracionLoteBusint = onCall(
+exports.depurarIntegracionLoteBusint = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     timeoutSeconds: 540,
@@ -10900,7 +10914,7 @@ async function verificarLlamadorConModulos(request, modulosPermitidos) {
   if (!modulosPermitidos.some((m) => modulos.includes(m))) throw new HttpsError("permission-denied", "No tienes permiso para ver los lotes por integrar.");
   return snap.docs[0];
 }
-exports.getLotesPorIntegrarBusint = onCall(
+exports.getLotesPorIntegrarBusint = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     timeoutSeconds: 540,
