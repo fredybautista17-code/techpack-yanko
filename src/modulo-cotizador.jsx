@@ -1196,6 +1196,12 @@ function ModalImportar({ cotizaciones, parametros, clientes, onImportar, onClose
   const [cliente, setCliente] = useState("");
   const [cargando, setCargando] = useState(false);
   const [sel, setSel] = useState({});
+  // (2026-10-19) Una hoja ya importada antes (misma hoja y mismo precio del Excel en esa referencia) se vuelve a marcar solo si Fredy lo decide: así no se duplican versiones al subir dos veces el mismo archivo.
+  const yaImportada = (h) => {
+    const ex = (cotizaciones || []).find((c) => normRef(c.referencia) === normRef(h.referencia));
+    if (!ex || !normRef(h.referencia)) return false;
+    return (ex.versiones || []).some((v) => v.nota === `Importada del Excel (hoja ${h.nombre})` && (v.excelPrecio == null || h.precioExcel == null || Math.abs(v.excelPrecio - h.precioExcel) < 0.5));
+  };
   async function leer(file) {
     if (!file) return;
     setCargando(true); setError("");
@@ -1204,7 +1210,7 @@ function ModalImportar({ cotizaciones, parametros, clientes, onImportar, onClose
       if (!r.length) setError("No se encontraron hojas con cotización en el archivo.");
       setHojas(r);
       // (2026-10-19) Solo se marcan las hojas cuyo precio coincide con el Excel; las de diseño viejo o que difieren quedan desmarcadas.
-      setSel(Object.fromEntries(r.map((h, i) => [i, h.coincide === true])));
+      setSel(Object.fromEntries(r.map((h, i) => [i, h.coincide === true && !yaImportada(h)])));
     } catch (e) {
       setError("No se pudo leer el archivo: " + (e.message || e));
     }
@@ -1235,7 +1241,7 @@ function ModalImportar({ cotizaciones, parametros, clientes, onImportar, onClose
                   <tr key={i} style={{ borderTop: `1px solid ${C.border}` }}>
                     <td style={td}><input type="checkbox" checked={!!sel[i]} onChange={(e) => setSel({ ...sel, [i]: e.target.checked })} /></td>
                     <td style={{ ...td, fontSize: 13, fontWeight: 700 }}>{h.nombre}</td>
-                    <td style={{ ...td, fontSize: 13 }}>{h.referencia || "—"}{existentePorRef(h.referencia) ? <div style={{ fontSize: 10, color: C.amber }}>ya existe: se agrega como versión</div> : null}</td>
+                    <td style={{ ...td, fontSize: 13 }}>{h.referencia || "—"}{existentePorRef(h.referencia) ? <div style={{ fontSize: 10, color: C.amber }}>ya existe: se agrega como versión</div> : null}{yaImportada(h) ? <div style={{ fontSize: 10, color: C.red, fontWeight: 700 }}>ya importada antes: se duplicaría</div> : null}</td>
                     <td style={{ ...td, fontSize: 12 }}>{fmtFecha(h.fecha)}</td>
                     <td style={{ ...td, textAlign: "right", fontSize: 13 }}>{h.precioExcel != null ? fmtCOP(h.precioExcel) : "—"}</td>
                     <td style={{ ...td, textAlign: "right", fontSize: 13, fontWeight: 700 }}>{fmtCOP(h.precioAtlas)}</td>
@@ -2313,6 +2319,12 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
     const porRef = new Map();
     hojas.forEach((h) => { const k = normRef(h.referencia) || h.nombre; if (!porRef.has(k)) porRef.set(k, []); porRef.get(k).push(h); });
     let ultimo = null;
+    // (2026-10-19) Al importar también se llenan cliente / nombre / vínculo desde TechPack y Busint (solo lo vacío o «General»; no toca precios).
+    let nombresBusint = new Map();
+    try { nombresBusint = await cargarNombresBusint(true); } catch (e) { /* sin maestro de Busint: se usa solo TechPack */ }
+    const destinos = destinosTechpack(protos, capsulas);
+    const ocupados = new Set(cotizaciones.filter((c) => c.vinculo).map((c) => c.vinculo.kind + c.vinculo.id));
+    let nActualizadas = 0;
     for (const [k, hs] of porRef) {
       const existente = cotizaciones.find((c) => normRef(c.referencia) === k);
       const base = existente ? limpio(existente) : cotNueva({ referencia: hs[0].referencia, nombre: "", cliente: cli });
@@ -2320,12 +2332,20 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
       let numero = base.versiones.reduce((m, v) => Math.max(m, v.numero), 0);
       hs.forEach((h) => { numero += 1; base.versiones.push({ id: uid(), numero, fecha: h.fecha || hoyISO(), nota: `Importada del Excel (hoja ${h.nombre})`, v: h.version, excelPrecio: h.precioExcel }); });
       base.activa = base.versiones.length - 1;
+      const pl = planActualizar(base, destinos, nombresBusint, ocupados);
+      if (Object.keys(pl.cambios).length) {
+        if (pl.cambios.nombre) base.nombre = pl.cambios.nombre;
+        if (pl.cambios.cliente) base.cliente = pl.cambios.cliente;
+        if (pl.cambios.vinculo) { base.vinculo = pl.cambios.vinculo; ocupados.add(pl.cambios.vinculo.kind + pl.cambios.vinculo.id); }
+        base.historial = [...(base.historial || []), { fecha: new Date().toISOString(), quien: currentUser?.name || "—", v: base.versiones[base.activa].numero, txt: `actualizó datos desde ${pl.fuente || "TechPack"}: ${textoPlan(pl)}` }];
+        nActualizadas += 1;
+      }
       await guardar(base);
       ultimo = { ...base, existe: true };
     }
     setImportar(false);
     if (ultimo) setEdit(ultimo);
-    notify?.(`${hojas.length} versión(es) importada(s)`);
+    notify?.(`${hojas.length} versión(es) importada(s)${nActualizadas ? ` · datos completados en ${nActualizadas} referencia(s)` : ""}`);
   }
 
   const FILTROS_TXT = { porAprobar: "Esperan aprobación", devueltas: "Devueltas para corregir", sinAplicar: "Cotizadas sin precio aplicado", sinVincular: "Sin vincular a prototipo ni cápsula", viejas: "Con más de 30 días sin cambios" };
