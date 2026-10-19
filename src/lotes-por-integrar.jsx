@@ -33,9 +33,23 @@ export function cargarLotesPorIntegrar(functionsClient, { forzar = false } = {})
 // ── Asignación de inventario y órdenes de compra, lote por lote ────────────────
 // lotes: [{lote, ref, pedido, corte, prendas, integradas, despacho, ...}]; fichas: {ref: [{insumo, cant, unidad, bodega, codcomps}]}
 // oc: {codcomp: [[numOC, proveedor, fechaEntrega, cant]]}. Devuelve los mismos lotes con `insumos` y `estado`.
+// Dónde está el lote según el seguimiento de Busint: si ya hay prendas en planta/semiterminado/terminado, está listo
+// para integrar; si todo sigue en corte, los insumos se necesitarán cuando salga a planta.
+export function clasificarUbicacion(ub) {
+  if (!ub) return { tipo: "desconocida", texto: "Sin dato de etapa" };
+  const partes = [];
+  if (ub.corte > 0) partes.push(`En corte (${Math.round(ub.corte)})`);
+  if (ub.planta > 0) partes.push(`En planta (${Math.round(ub.planta)})`);
+  if (ub.semi > 0) partes.push(`Semiterminado (${Math.round(ub.semi)})`);
+  if (ub.bpt > 0) partes.push(`Terminado (${Math.round(ub.bpt)})`);
+  if (ub.planta > 0 || ub.semi > 0 || ub.bpt > 0) return { tipo: "planta", texto: partes.join(" · ") };
+  if (ub.corte > 0) return { tipo: "corte", texto: partes.join(" · ") };
+  return { tipo: "desconocida", texto: "Sin prendas en ninguna etapa" };
+}
 const PESO = { comprar: 5, oc_tarde: 4, oc_ok: 3, justo: 2, ok: 1 };
 export function asignarInventario({ lotes, fichas, oc }) {
-  const orden = [...lotes].sort((a, b) => String(a.despacho || "9999").localeCompare(String(b.despacho || "9999")) || String(a.corte).localeCompare(String(b.corte)) || Number(a.lote) - Number(b.lote));
+  const rango = (l) => (l.ubicTipo === "corte" ? 1 : 0);
+  const orden = [...lotes].sort((a, b) => rango(a) - rango(b) || String(a.despacho || "9999").localeCompare(String(b.despacho || "9999")) || String(a.corte).localeCompare(String(b.corte)) || Number(a.lote) - Number(b.lote));
   const stock = new Map();
   const ocPorInsumo = new Map();
   const ocDe = (ins, k) => {
@@ -111,6 +125,10 @@ const Pill = ({ e, mapa = ESTADOS, extra }) => {
   const x = mapa[e] || ESTADOS.sin_prendas;
   return <span style={{ display: "inline-block", padding: "3px 11px", borderRadius: 20, fontSize: 11.5, fontWeight: 800, background: x.bg, color: x.fg, whiteSpace: "nowrap" }}>● {extra || x.txt}</span>;
 };
+const textoAnticipado = (l) => ({
+  ok: "los insumos alcanzan", justo: "los insumos alcanzan justo", oc_ok: "faltará un insumo · viene en OC",
+  oc_tarde: "faltará un insumo · la OC llega tarde", comprar: `faltará${l.nFalta > 1 ? "n" : ""} ${l.nFalta || ""} insumo${l.nFalta > 1 ? "s" : ""} · sin OC`.replace("  ", " "),
+}[l.estado] || "");
 const textoLote = (l) => {
   if (l.estado === "comprar") return `Falta ${l.nFalta} insumo${l.nFalta === 1 ? "" : "s"} · sin OC`;
   if (l.estado === "oc_tarde") return "Falta · OC llega tarde";
@@ -128,6 +146,7 @@ export default function LotesPorIntegrarView({ functionsClient, T, pedidos }) {
   const [verCerrados, setVerCerrados] = useState(false);
   const [orden, setOrden] = useState({ k: "despacho", dir: 1 });
   const [abierto, setAbierto] = useState(null);
+  const [pestana, setPestana] = useState("listos"); // listos (ya en planta) | corte (aún en corte)
 
   const cargar = useCallback(async (forzar) => {
     setCargando(true); setError("");
@@ -147,13 +166,17 @@ export default function LotesPorIntegrarView({ functionsClient, T, pedidos }) {
     if (!datos) return [];
     const base = (datos.lotes || []).map((l) => {
       const p = l.pedido ? pedidoPorNumero.get(String(l.pedido)) : null;
-      return { ...l, cliente: p?.cliente || l.clienteObs || "(sin cliente)", despacho: p?.fechaDespacho || null, estadoPedido: p?.estado || null, diasSin: datos.hoy ? Math.max(0, diasEntre(l.corte, datos.hoy)) : 0 };
+      const u = clasificarUbicacion(l.ub);
+      return { ...l, ubicTipo: u.tipo, ubicTexto: u.texto, cliente: p?.cliente || l.clienteObs || "(sin cliente)", despacho: p?.fechaDespacho || null, estadoPedido: p?.estado || null, diasSin: datos.hoy ? Math.max(0, diasEntre(l.corte, datos.hoy)) : 0 };
     });
     return asignarInventario({ lotes: base, fichas: datos.fichas, oc: datos.oc });
   }, [datos, pedidoPorNumero]);
 
   const cerrados = todos.filter((l) => l.estadoPedido === "cerrado" || l.estadoPedido === "terminado");
-  const base = verCerrados ? todos : todos.filter((l) => !(l.estadoPedido === "cerrado" || l.estadoPedido === "terminado"));
+  const sinCerrados = verCerrados ? todos : todos.filter((l) => !(l.estadoPedido === "cerrado" || l.estadoPedido === "terminado"));
+  const enCorte = sinCerrados.filter((l) => l.ubicTipo === "corte");
+  const listos = sinCerrados.filter((l) => l.ubicTipo !== "corte");
+  const base = pestana === "corte" ? enCorte : listos;
   const clientes = useMemo(() => [...new Set(base.map((l) => l.cliente))].sort((a, b) => a.localeCompare(b, "es")), [base]);
   const visibles = useMemo(() => {
     const k = normTxt(q);
@@ -167,6 +190,7 @@ export default function LotesPorIntegrarView({ functionsClient, T, pedidos }) {
   }, [base, q, fCliente, fEstado, orden]);
 
   const hoy = datos?.hoy;
+  const prendasCorte = enCorte.reduce((s, l) => s + (l.pendientes || 0), 0);
   const conFalta = base.filter((l) => ["comprar", "oc_ok", "oc_tarde"].includes(l.estado));
   const sinOC = base.filter((l) => l.estado === "comprar");
   const proximos = base.filter((l) => l.despacho && hoy && diasEntre(hoy, l.despacho) <= 7);
@@ -179,7 +203,7 @@ export default function LotesPorIntegrarView({ functionsClient, T, pedidos }) {
     const XLSX = await import("xlsx");
     const wb = XLSX.utils.book_new();
     const r2 = (n) => (n == null ? "" : +Number(n).toFixed(2));
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(visibles.map((l) => ({ Lote: l.lote, Referencia: l.ref, Pedido: l.pedido || "", Cliente: l.cliente, Despacho: l.despacho || "", Corte: l.corte, "Días sin integrar": l.diasSin, "Prendas por integrar": l.pendientes ?? "", Estado: (ESTADOS[l.estado] || {}).txt }))), "Lotes");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(visibles.map((l) => ({ Lote: l.lote, Referencia: l.ref, Pedido: l.pedido || "", Cliente: l.cliente, Despacho: l.despacho || "", Corte: l.corte, "Dónde está": l.ubicTexto, "Días sin integrar": l.diasSin, "Prendas por integrar": l.pendientes ?? "", Estado: (ESTADOS[l.estado] || {}).txt }))), "Lotes");
     const filas = [];
     visibles.forEach((l) => l.insumos.forEach((i) => filas.push({ Lote: l.lote, Referencia: l.ref, Insumo: i.insumo, Unidad: i.unidad, "Por prenda": i.consumo, Entregar: r2(i.necesito), "En bodega": r2(i.bodega), Falta: r2(i.falta), "Orden de compra": i.oc.map((o) => `OC ${o.n} (${o.prov}) ${fmt(o.cant)} · entrega ${o.ff}${o.tarde ? " · TARDE" : ""}`).join(" | "), "Sin orden de compra": r2(i.comprar), Estado: (ESTADO_INS[i.estado] || {}).txt })));
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(filas), "Insumos por lote");
@@ -188,7 +212,7 @@ export default function LotesPorIntegrarView({ functionsClient, T, pedidos }) {
 
   function imprimir(lista) {
     const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-    const bloque = (l) => `<div class="lote"><h2>Lote ${esc(l.lote)} · ref ${esc(l.ref)} <small>Pedido ${esc(l.pedido || "—")} · ${esc(l.cliente)} · ${l.pendientes == null ? "prendas por confirmar" : fmt(l.pendientes, 0) + " prendas"} · despacha ${esc(fmtFecha(l.despacho))} · cortado ${esc(fmtFecha(l.corte))}</small></h2>${l.insumos.length ? `<table><tr><th>✓</th><th>Insumo</th><th>Entregar</th><th>En bodega</th><th>Orden de compra</th></tr>${l.insumos.map((i) => `<tr class="${i.estado === "comprar" ? "rojo" : ""}"><td class="c">☐</td><td>${esc(i.insumo)}</td><td class="n">${i.necesito == null ? `${fmt(i.consumo, 4)} por prenda` : `<b>${fmt(i.necesito)}</b> ${esc(i.unidad)}`}</td><td class="n">${fmt(i.bodega)} ${esc(i.unidad)}</td><td>${i.estado === "ok" || i.estado === "justo" ? "—" : i.oc.length ? i.oc.map((o) => `OC ${o.n} · ${esc(o.prov)} · ${fmt(o.cant)} · entrega ${esc(fmtFecha(o.ff))}${o.tarde ? " (llega tarde)" : ""}`).join("<br>") + (i.comprar > 0.005 ? `<br><b>Falta comprar ${fmt(i.comprar)}</b>` : "") : i.comprar > 0.005 ? `<b>Hay que comprar ${fmt(i.comprar)}</b> (sin OC)` : "—"}</td></tr>`).join("")}</table>` : "<p>Este lote no tiene insumos en la ficha de Busint.</p>"}</div>`;
+    const bloque = (l) => `<div class="lote"><h2>Lote ${esc(l.lote)} · ref ${esc(l.ref)} <small>Pedido ${esc(l.pedido || "—")} · ${esc(l.cliente)} · ${l.pendientes == null ? "prendas por confirmar" : fmt(l.pendientes, 0) + " prendas"} · despacha ${esc(fmtFecha(l.despacho))} · cortado ${esc(fmtFecha(l.corte))} · ${esc(l.ubicTexto)}</small></h2>${l.insumos.length ? `<table><tr><th>✓</th><th>Insumo</th><th>Entregar</th><th>En bodega</th><th>Orden de compra</th></tr>${l.insumos.map((i) => `<tr class="${i.estado === "comprar" ? "rojo" : ""}"><td class="c">☐</td><td>${esc(i.insumo)}</td><td class="n">${i.necesito == null ? `${fmt(i.consumo, 4)} por prenda` : `<b>${fmt(i.necesito)}</b> ${esc(i.unidad)}`}</td><td class="n">${fmt(i.bodega)} ${esc(i.unidad)}</td><td>${i.estado === "ok" || i.estado === "justo" ? "—" : i.oc.length ? i.oc.map((o) => `OC ${o.n} · ${esc(o.prov)} · ${fmt(o.cant)} · entrega ${esc(fmtFecha(o.ff))}${o.tarde ? " (llega tarde)" : ""}`).join("<br>") + (i.comprar > 0.005 ? `<br><b>Falta comprar ${fmt(i.comprar)}</b>` : "") : i.comprar > 0.005 ? `<b>Hay que comprar ${fmt(i.comprar)}</b> (sin OC)` : "—"}</td></tr>`).join("")}</table>` : "<p>Este lote no tiene insumos en la ficha de Busint.</p>"}</div>`;
     const html = `<!doctype html><html><head><meta charset="utf-8"><title>Lotes por integrar ${esc(hoy || "")}</title><style>body{font-family:Arial,sans-serif;color:#1A1A2E;margin:22px}h1{margin:0 0 4px;font-size:20px}h2{font-size:15px;margin:0 0 6px}h2 small{font-weight:400;color:#5A5A7A;font-size:11.5px;margin-left:8px}.lote{margin:0 0 18px;page-break-inside:avoid}table{width:100%;border-collapse:collapse;font-size:12px}th{text-align:left;background:#F1ECE5;padding:5px 8px}td{padding:5px 8px;border-bottom:1px solid #E8E2DB;vertical-align:top}td.n{text-align:right;white-space:nowrap}td.c{width:22px;text-align:center}tr.rojo td{color:#9A3A2D}p{color:#5A5A7A;font-size:12px}</style></head><body><h1>Lotes por integrar</h1><p>${esc(hoy || "")} · ${lista.length} lote${lista.length === 1 ? "" : "s"}</p>${lista.map(bloque).join("")}</body></html>`;
     const w = window.open(URL.createObjectURL(new Blob([html], { type: "text/html" })), "_blank");
     if (w) setTimeout(() => { try { w.print(); } catch {} }, 500);
@@ -213,7 +237,7 @@ export default function LotesPorIntegrarView({ functionsClient, T, pedidos }) {
   return (
     <div>
       <div style={{ color: T.slate, fontSize: 13, marginBottom: 14 }}>
-        Lotes ya cortados que todavía no han recibido sus insumos de bodega. Al integrar el lote en Busint, desaparece de esta lista.
+        Lotes ya cortados que todavía no han recibido sus insumos de bodega. "Listos para integrar" son los que ya salieron de corte hacia planta; los que siguen en corte se muestran aparte porque sus insumos se necesitarán más adelante. Al integrar el lote en Busint, desaparece de la lista.
         {datos?.generado ? ` Datos de Busint de ${new Date(datos.generado).toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" })}.` : ""}
       </div>
       {error && <div style={{ padding: "10px 14px", background: T.coralBg, color: T.coral, borderRadius: 8, fontSize: 13, fontWeight: 600, marginBottom: 12 }}>⚠ {error}</div>}
@@ -221,8 +245,18 @@ export default function LotesPorIntegrarView({ functionsClient, T, pedidos }) {
       {cargando && !datos && <div style={{ padding: 30, textAlign: "center", color: T.slate }}>Consultando Busint (lotes, integraciones, fichas, inventario y órdenes de compra)... puede tardar un par de minutos.</div>}
       {datos && (
         <>
+          <div style={{ display: "flex", background: T.white, border: `1px solid ${T.border}`, borderRadius: 12, padding: 4, marginBottom: 14, width: "fit-content", maxWidth: "100%", flexWrap: "wrap" }}>
+            {[["listos", `Listos para integrar (${listos.length})`], ["corte", `Todavía en corte (${enCorte.length})`]].map(([v, label]) => (
+              <div key={v} onClick={() => { setPestana(v); setAbierto(null); }} style={{ padding: "9px 18px", borderRadius: 9, fontWeight: 700, cursor: "pointer", fontSize: 13.5, background: pestana === v ? T.ink : "transparent", color: pestana === v ? T.white : T.slate }}>{label}</div>
+            ))}
+          </div>
+          {pestana === "corte" && (
+            <div style={{ padding: "10px 14px", background: "#EEF3F9", color: "#2D5A8C", borderRadius: 10, fontSize: 13, marginBottom: 14 }}>
+              Estos lotes siguen en la bodega de corte ({fmt(prendasCorte, 0)} prendas). Sus insumos se necesitarán cuando salgan a planta; abajo ves si alcanzarán, para que puedas adelantar compras.
+            </div>
+          )}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: 12, marginBottom: 16 }}>
-            <Kpi t="Lotes por integrar" v={base.length} d={`${fmt(totalPrendas, 0)} prendas`} />
+            <Kpi t={pestana === "corte" ? "Lotes en corte" : "Lotes por integrar"} v={base.length} d={`${fmt(totalPrendas, 0)} prendas`} />
             <Kpi t="Más antiguo" v={masViejo ? `${masViejo.diasSin} día${masViejo.diasSin === 1 ? "" : "s"}` : "—"} d={masViejo ? `cortado el ${fmtFecha(masViejo.corte)} · lote ${masViejo.lote}` : ""} />
             <Kpi t="Con insumo faltante" v={`${conFalta.length} lote${conFalta.length === 1 ? "" : "s"}`} d={`${conFalta.length - sinOC.length} con OC en camino · ${sinOC.length} sin OC`} rojo={conFalta.length > 0} />
             <Kpi t="Despachan en 7 días o menos" v={`${proximos.length} lote${proximos.length === 1 ? "" : "s"}`} d="prioridad de alistamiento" />
@@ -241,22 +275,27 @@ export default function LotesPorIntegrarView({ functionsClient, T, pedidos }) {
           </div>
           <div style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead><tr>{th("lote", "Lote")}{th("ref", "Referencia")}{th("cliente", "Pedido · Cliente")}{th("despacho", "Despacho")}{th("corte", "Corte")}{th("dias", "Días sin integrar", true)}{th("prendas", "Prendas", true)}{th("estado", "Insumos en bodega")}</tr></thead>
+              <thead><tr>{th("lote", "Lote")}{th("ref", "Referencia")}{th(null, "Dónde está")}{th("cliente", "Pedido · Cliente")}{th("despacho", "Despacho")}{th("corte", "Corte")}{th("dias", "Días desde el corte", true)}{th("prendas", "Prendas", true)}{th("estado", "Insumos en bodega")}</tr></thead>
               <tbody>
                 {visibles.map((l) => (
                   <React.Fragment key={l.lote}>
                     <tr onClick={() => setAbierto(abierto === l.lote ? null : l.lote)} style={{ cursor: "pointer", background: abierto === l.lote ? "#F3F7FB" : "transparent" }}>
                       <td style={{ ...td, fontWeight: 800, fontSize: 15 }}>{l.lote}</td>
                       <td style={td}>{l.ref}</td>
+                      <td style={{ ...td, fontSize: 12, color: l.ubicTipo === "corte" ? "#2D5A8C" : T.ink }}>{l.ubicTexto}</td>
                       <td style={td}>{l.pedido || "—"} · <span style={{ color: T.slate, fontSize: 12 }}>{l.cliente}</span></td>
                       <td style={td}>{fmtFecha(l.despacho)}</td>
                       <td style={td}>{fmtFecha(l.corte)}</td>
                       <td style={{ ...td, textAlign: "right", fontWeight: 700 }}>{l.diasSin}</td>
                       <td style={{ ...td, textAlign: "right" }}>{l.pendientes == null ? "—" : fmt(l.pendientes, 0)}{l.parcial ? <div style={{ fontSize: 10.5, color: "#A8660B" }}>integración parcial</div> : null}</td>
-                      <td style={td}><Pill e={l.estado} extra={textoLote(l)} /></td>
+                      <td style={td}>
+                        {l.ubicTipo === "corte" && !["sin_ficha", "sin_prendas"].includes(l.estado)
+                          ? <><span style={{ display: "inline-block", padding: "3px 11px", borderRadius: 20, fontSize: 11.5, fontWeight: 800, background: "#E6EEF8", color: "#2D5A8C", whiteSpace: "nowrap" }}>● Aún en corte</span><div style={{ fontSize: 11.5, color: T.slate, marginTop: 3 }}>{textoAnticipado(l)}</div></>
+                          : <Pill e={l.estado} extra={textoLote(l)} />}
+                      </td>
                     </tr>
                     {abierto === l.lote && (
-                      <tr><td colSpan={8} style={{ padding: 0, background: "#F3F7FB", borderBottom: `1px solid ${T.border}` }}>
+                      <tr><td colSpan={9} style={{ padding: 0, background: "#F3F7FB", borderBottom: `1px solid ${T.border}` }}>
                         <div style={{ padding: "12px 18px" }}>
                           <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
                             <b style={{ fontSize: 15 }}>Lote {l.lote} · ref {l.ref}</b>
@@ -293,7 +332,7 @@ export default function LotesPorIntegrarView({ functionsClient, T, pedidos }) {
                     )}
                   </React.Fragment>
                 ))}
-                {!visibles.length && <tr><td colSpan={8} style={{ padding: 24, textAlign: "center", color: T.slate }}>No hay lotes por integrar con esos filtros.</td></tr>}
+                {!visibles.length && <tr><td colSpan={9} style={{ padding: 24, textAlign: "center", color: T.slate }}>{pestana === "corte" ? "No hay lotes en corte con esos filtros." : "No hay lotes listos para integrar con esos filtros."}</td></tr>}
               </tbody>
             </table>
           </div>

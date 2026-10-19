@@ -10767,13 +10767,21 @@ exports.getLotesPorIntegrarBusint = onCall(
       leer("orden produccion", true), leer("bmp - integracion", true), leer("bmp - integracion ref", true),
       leer("insumos dig", true), leer("estandar componentes prod", true),
     ]);
-    const [detalles, entPlantaRef, ocCab, ocDet, ocDxc, provs] = await Promise.all([
+    const [detalles, entPlantaRef, ocCab, ocDet, ocDxc, provs, seguimiento] = await Promise.all([
       leer("orden produccion detalles", false), leer("bmp - entrada planta ref", false),
       leer("orden de compra", false), leer("orden de compra detalles", false), leer("orden de compra detallesdxc", false),
-      leer("maestro de proveedores", false),
+      leer("maestro de proveedores", false), leer("ia_seguimientolotesv_data", false),
     ]);
     const num = (v) => (v !== undefined && v !== null && v !== "" && Number.isFinite(Number(v)) ? Number(v) : 0);
     const clave = (v) => String(v ?? "").trim().replace(/\.0+$/, "");
+    // Dónde está cada lote (prendas por etapa, "Seguimiento a lotes" de Busint): corte, planta, semiterminado, producto terminado
+    const ubicacionLote = new Map();
+    seguimiento.forEach((f) => {
+      const lote = clave(f.Numero_de_Lote);
+      if (!lote) return;
+      ubicacionLote.set(lote, { corte: num(f.Inventario_corte), planta: num(f.Inventario_en_planta), semi: num(f.Inventario_en_semiterminado), bpt: num(f.Inventario_en_bodega_de_producto_terminado) });
+    });
+    if (!ubicacionLote.size) avisos.push("No se pudo leer en qué etapa está cada lote (seguimiento de lotes): no se puede separar los lotes en corte de los que ya están en planta.");
     const refSG = (v) => String(v ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
     const loteDe = (f) => clave(valorFlexible(f, ["NumLote", "Numlote", "numlote", "Nomlote", "NomLote"]));
     const sumaTallas = (f) => Object.keys(f).reduce((s, k) => (/^T\d+$/i.test(k) ? s + num(f[k]) : s), 0);
@@ -10859,7 +10867,7 @@ exports.getLotesPorIntegrarBusint = onCall(
       const colores = p ? [...p.colores.entries()].filter(([, u]) => u > 0).map(([c, u]) => [c, u]) : [];
       porIntegrar.push({
         lote: l.lote, ref: l.ref, pedido: l.pedido || null, corte: l.corte,
-        clienteObs: clienteDesdeObservacion(l.obs), prendas: cortadas, integradas: tiene ? integ : 0, parcial, colores,
+        clienteObs: clienteDesdeObservacion(l.obs), ubic: ubicacionLote.get(l.lote) || null, prendas: cortadas, integradas: tiene ? integ : 0, parcial, colores,
       });
     });
     porIntegrar.sort((a, b) => (a.corte < b.corte ? -1 : a.corte > b.corte ? 1 : Number(a.lote) - Number(b.lote)));
