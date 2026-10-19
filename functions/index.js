@@ -1763,6 +1763,34 @@ exports.getPedidosVigentesBusint = onCall(
 //                 ("precioFuente") para que nadie tenga que adivinar.
 // Precio mínimo para considerarlo real (pesos). Busint guarda 0,01 como relleno.
 const PRECIO_MINIMO_REAL = 1;
+// (2026-10-19, a pedido de Fredy) El precio de cada línea es el MÁS RECIENTE entre el
+// precio matriculado de Busint y el de la última cotización aprobada, ambos ANTES DE IVA
+// (el precioPM de Busint ya viene sin IVA; el de la cotización se guarda con IVA y acá se
+// le quita). Para comparar hace falta la fecha de cada uno.
+function parseFechaFlexible(v) {
+  if (v === null || v === undefined || v === "") return null;
+  if (v instanceof Date) return isNaN(v.getTime()) ? null : v.getTime();
+  const t = String(v).trim();
+  const m = t.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})/); // dd/mm/yyyy
+  if (m) { const ms = Date.UTC(Number(m[3]), Number(m[2]) - 1, Number(m[1])); return isNaN(ms) ? null : ms; }
+  if (!/^\d{4}-\d{2}-\d{2}/.test(t)) return null;
+  const ms = Date.parse(t);
+  return isNaN(ms) ? null : ms;
+}
+// Busca en la fila del maestro de referencias el campo de fecha que parece ser el de
+// "última actualización del precio" (nombre con prec/actualiz/modif/cambio; nunca creación).
+function campoFechaPrecioBusint(fila) {
+  let mejor = null;
+  for (const [campo, valor] of Object.entries(fila || {})) {
+    if (!/fecha|actualiz|modif|cambio/i.test(campo)) continue;
+    const ms = parseFechaFlexible(valor);
+    if (ms == null) continue;
+    const puntos = (/prec|\bpm\b|mayor|venta|vta/i.test(campo) ? 4 : 0) + (/actualiz|modif|cambio/i.test(campo) ? 2 : 0) - (/creac|ingres|nacim|registro|alta/i.test(campo) ? 5 : 0);
+    if (puntos <= 0) continue;
+    if (!mejor || puntos > mejor.puntos) mejor = { campo, ms, puntos };
+  }
+  return mejor;
+}
 function refSinGuion(v) {
   return String(v ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
@@ -1948,6 +1976,8 @@ exports.getDisponibleParaDespachar = onCall(
     // ÚNICA fuente de precio (decisión de Fredy): el de la pantalla de Costos.
     const precioMatriculado = new Map(); // refNorm -> precioPM
     const filaPorRef = new Map(); // refNorm -> fila del maestro (para el diagnóstico)
+    const fechaPrecioBusint = new Map(); // refNorm -> ms de la última actualización del precio (si Busint la trae)
+    let diagFechasBusint = null; // { campoFechaPrecio, camposFecha:{campo:valor} } (para confirmar que leímos el campo correcto)
     try {
       const referencias = await consultarCatalogoBusint("ApiGen_Referencias");
       // 1) Por la referencia INTERNA (la que cuenta; cada una tiene su precio).
@@ -1956,7 +1986,16 @@ exports.getDisponibleParaDespachar = onCall(
         if (!k) continue;
         if (!filaPorRef.has(k)) filaPorRef.set(k, r);
         const pm = Number(r?.precioPM) || 0;
-        if (pm >= PRECIO_MINIMO_REAL && !precioMatriculado.has(k)) precioMatriculado.set(k, pm);
+        if (pm >= PRECIO_MINIMO_REAL && !precioMatriculado.has(k)) {
+          precioMatriculado.set(k, pm);
+          const fp = campoFechaPrecioBusint(r);
+          if (fp) fechaPrecioBusint.set(k, fp.ms);
+          if (!diagFechasBusint || (!diagFechasBusint.campoFechaPrecio && fp)) {
+            const camposFecha = {};
+            for (const [campo, valor] of Object.entries(r)) if (/fecha|actualiz|modif|cambio/i.test(campo)) camposFecha[campo] = valor;
+            diagFechasBusint = { campoFechaPrecio: fp ? fp.campo : null, camposFecha };
+          }
+        }
       }
       // 2) Por la referencia EXTERNA solo para los códigos que no coinciden con
       // ninguna referencia interna, y solo si todas las referencias que comparten
@@ -1974,15 +2013,49 @@ exports.getDisponibleParaDespachar = onCall(
         filaPorRef.set(k, e.fila);
         if (e.precios.size === 1) {
           const pm = [...e.precios][0];
-          if (pm >= PRECIO_MINIMO_REAL) precioMatriculado.set(k, pm);
+          if (pm >= PRECIO_MINIMO_REAL) {
+            precioMatriculado.set(k, pm);
+            const fp = campoFechaPrecioBusint(e.fila);
+            if (fp) fechaPrecioBusint.set(k, fp.ms);
+          }
         }
       }
-      diagTablas["ApiGen_Referencias"] = { filas: referencias.length, preciosMatriculados: precioMatriculado.size };
+      diagTablas["ApiGen_Referencias"] = { filas: referencias.length, preciosMatriculados: precioMatriculado.size, preciosConFecha: fechaPrecioBusint.size, ...(diagFechasBusint || {}) };
     } catch (err) {
       logger.error("Error leyendo ApiGen_Referencias (getDisponibleParaDespachar)", { error: String(err) });
       diagTablas["ApiGen_Referencias"] = { error: String(err?.message || err).slice(0, 200) };
       avisos.push("No se pudo leer el precio matriculado de las referencias: todas las líneas saldrán 'sin matricular'.");
     }
+
+    // 5b-2) Precio de la última cotización APROBADA de cada referencia (Firestore "cotizaciones").
+    // La versión aprobada guarda el precio CON IVA (vv.precio) y la fecha de aprobación
+    // (vv.decision.fecha); acá se le quita el IVA de esa versión (19 % por defecto).
+    const precioCotizacion = new Map(); // refNorm -> { precio (sin IVA), ms, version }
+    try {
+      const snapCot = await db.collection("cotizaciones").get();
+      for (const d of snapCot.docs) {
+        const c = d.data() || {};
+        const k = refSinGuion(c.referencia);
+        if (!k) continue;
+        for (const ver of c.versiones || []) {
+          if (ver?.estado !== "aprobada") continue;
+          const conIva = Number(ver.precio) || 0;
+          if (conIva < PRECIO_MINIMO_REAL) continue;
+          const ms = parseFechaFlexible(ver.decision?.fecha);
+          if (ms == null) continue;
+          const iva = Number(ver.v?.tasas?.iva);
+          const tasa = iva >= 0 && iva < 1 ? iva : 0.19;
+          const prev = precioCotizacion.get(k);
+          if (!prev || ms > prev.ms) precioCotizacion.set(k, { precio: Math.round((conIva / (1 + tasa)) * 100) / 100, ms, version: ver.numero });
+        }
+      }
+      diagTablas["cotizaciones"] = { refsConPrecioAprobado: precioCotizacion.size };
+    } catch (err) {
+      logger.error("Error leyendo cotizaciones (getDisponibleParaDespachar)", { error: String(err) });
+      diagTablas["cotizaciones"] = { error: String(err?.message || err).slice(0, 200) };
+      avisos.push("No se pudieron leer las cotizaciones: los precios salen solo de Busint.");
+    }
+    let lineasConPrecioCotizacion = 0;
 
     // 5c) Lo que está en producción por etapa (Panel de Flujo Operacional de
     // Busint, por lote): Corte / Bodega Materia Prima / Planta / Semiterminado /
@@ -2082,8 +2155,21 @@ exports.getDisponibleParaDespachar = onCall(
       // de Costos de Busint), para que todos los precios sigan el mismo patrón.
       // Sin respaldo de pedido/facturas: lo que no está matriculado sale
       // "sin matricular" y hay que matricularlo en Busint.
-      if (precioMatriculado.get(l.refNorm) > 0) { l.precio = precioMatriculado.get(l.refNorm); l.precioFuente = "precio matriculado"; }
-      else { l.precio = 0; l.precioFuente = "sin matricular"; }
+      // (2026-10-19) Ahora: el más reciente entre Busint (precio matriculado, ya sin IVA) y la
+      // última cotización aprobada (sin IVA). Si Busint no trae la fecha de su precio, manda
+      // Busint y la cotización solo cubre lo que no está matriculado.
+      const pBus = precioMatriculado.get(l.refNorm) > 0 ? precioMatriculado.get(l.refNorm) : 0;
+      const fBus = fechaPrecioBusint.get(l.refNorm) ?? null;
+      const cotz = precioCotizacion.get(l.refNorm);
+      const dia = (ms) => new Date(ms).toISOString().slice(0, 10);
+      if (cotz && (!pBus || (fBus != null && cotz.ms > fBus))) {
+        l.precio = cotz.precio;
+        l.precioFuente = `cotización V${cotz.version} aprobada el ${dia(cotz.ms)} (sin IVA)`;
+        lineasConPrecioCotizacion++;
+      } else if (pBus) {
+        l.precio = pBus;
+        l.precioFuente = fBus != null ? `Busint, precio matriculado actualizado el ${dia(fBus)} (sin IVA)` : "Busint, precio matriculado (sin IVA)";
+      } else { l.precio = 0; l.precioFuente = "sin matricular"; }
       l.producido = Math.max(0, l.producido);
       l.despachado = Math.max(0, l.despachado);
       const saldoPedido = Math.max(0, l.pedido - l.despachado);
@@ -2199,6 +2285,7 @@ exports.getDisponibleParaDespachar = onCall(
       sinPrecioDiag.push({ ref: l.ref, numPed: l.numPed, enMaestro: true, refMaestro: fila.ref, refExterna: fila.referenciaExterna, camposPrecio, candidatos });
     }
     if (diagTablas["ApiGen_Referencias"] && !diagTablas["ApiGen_Referencias"].error) diagTablas["ApiGen_Referencias"].sinPrecio = sinPrecioDiag;
+    if (diagTablas["cotizaciones"] && !diagTablas["cotizaciones"].error) diagTablas["cotizaciones"].lineasConPrecio = lineasConPrecioCotizacion;
     const porCliente = [...porClienteMap.entries()]
       .map(([cliente, filas]) => {
         filas.sort((a, b) => (b.disponible > 0) - (a.disponible > 0) || a.ref.localeCompare(b.ref) || a.numPed.localeCompare(b.numPed));

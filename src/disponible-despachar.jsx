@@ -134,7 +134,7 @@ const COLUMNAS_EXCEL = [
   { h: "Despachado", w: 12, k: "despachado", al: "right", num: true },
   { h: "Falta producir", w: 13, k: "faltaProducir", al: "right", num: true },
   { h: "Disponible", w: 12, k: "disponible", al: "right", num: true },
-  { h: "Precio", w: 13, k: "precio", al: "right", money: true },
+  { h: "Precio sin IVA", w: 15, k: "precio", al: "right", money: true },
   { h: "Valor del pedido", w: 17, k: "valorPedido", al: "right", money: true },
   { h: "Valor disponible", w: 17, k: "valorDisponible", al: "right", money: true },
   { h: "Falta despachar", w: 13, k: "faltaDespachar", al: "right", num: true },
@@ -453,11 +453,11 @@ export default function DisponibleDespacharView({ db, functionsClient, T }) {
             {kpi("Producido", fmt(tot.producido), T.denim)}
             {kpi("Ya despachado", fmt(tot.despachado), T.slate)}
             {kpi("Disponible", fmt(tot.disponible), T.jade, "listo para despachar")}
-            {kpi("Valor disponible", money(tot.valorDisponible), T.jade, "con precio matriculado")}
+            {kpi("Valor disponible", money(tot.valorDisponible), T.jade, "precios antes de IVA")}
           </div>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
             {kpi("Falta por despachar", fmt(tot.faltaDespachar), T.ink, "pedido − despachado")}
-            {kpi("Valor falta por despachar", money(tot.valorFaltaDespachar), T.ink, "con precio matriculado")}
+            {kpi("Valor falta por despachar", money(tot.valorFaltaDespachar), T.ink, "precios antes de IVA")}
             {kpi("Sin cortar", fmt(tot.etSinCortar), T.amber)}
             {kpi("En corte", fmt(tot.etCorte), T.coral)}
             {kpi("En planta", fmt(tot.etPlanta), T.denim)}
@@ -469,7 +469,7 @@ export default function DisponibleDespacharView({ db, functionsClient, T }) {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 1700 }}>
               <thead>
                 <tr style={{ background: T.ink }}>
-                  {th("Pedido", "center")}{th("Referencia", "left")}{th("Descripción", "left")}{th("Pedido")}{th("Producido")}{th("Despachado")}{th("Falta producir")}{th("Disponible")}{th("Precio")}{th("Valor del pedido")}{th("Valor disponible")}{th("Falta despachar")}{th("Valor falta despachar")}{th("Sin cortar")}{th("En corte")}{th("En planta")}{th("Semiterm.")}{th("En BPT")}{th("Estado", "center")}
+                  {th("Pedido", "center")}{th("Referencia", "left")}{th("Descripción", "left")}{th("Pedido")}{th("Producido")}{th("Despachado")}{th("Falta producir")}{th("Disponible")}{th("Precio sin IVA")}{th("Valor del pedido")}{th("Valor disponible")}{th("Falta despachar")}{th("Valor falta despachar")}{th("Sin cortar")}{th("En corte")}{th("En planta")}{th("Semiterm.")}{th("En BPT")}{th("Estado", "center")}
                 </tr>
               </thead>
               <tbody>
@@ -530,7 +530,7 @@ export default function DisponibleDespacharView({ db, functionsClient, T }) {
           </div>
           <div style={{ fontSize: 11, color: T.slate, marginTop: 10, lineHeight: 1.5 }}>
             Disponible = lo producido (Entradas a Planta) menos lo ya despachado (facturas y traslados netos de devoluciones), sin pasar del saldo del pedido.
-            Las filas violeta son preórdenes montadas que todavía no son pedido: suman en Pedido y Falta producir, nunca en Disponible. Precio: es el precio matriculado de la referencia en Busint (pantalla de Costos); las referencias "sin matricular" hay que matricularlas allá y salen con valor $0 hasta entonces.
+            Las filas violeta son preórdenes montadas que todavía no son pedido: suman en Pedido y Falta producir, nunca en Disponible. Precio (siempre ANTES de IVA): es el más reciente entre el precio matriculado de la referencia en Busint (pantalla de Costos) y el de su última cotización aprobada en ATLAS; pasa el mouse sobre el precio para ver de dónde salió. Si Busint no informa la fecha de su precio, manda Busint y la cotización solo cubre lo que no está matriculado. Las referencias sin ninguno de los dos salen "sin matricular" con valor $0.{datos?.diagTablas?.ApiGen_Referencias && !datos.diagTablas.ApiGen_Referencias.error && <> (Fecha del precio en Busint: {datos.diagTablas.ApiGen_Referencias.campoFechaPrecio ? `campo «${datos.diagTablas.ApiGen_Referencias.campoFechaPrecio}», ${datos.diagTablas.ApiGen_Referencias.preciosConFecha} referencias con fecha` : "Busint no trae un campo de fecha del precio"}{datos.diagTablas.cotizaciones && !datos.diagTablas.cotizaciones.error ? `; precios tomados de cotización: ${datos.diagTablas.cotizaciones.lineasConPrecio ?? 0} líneas` : ""}.)</>}
             Falta por despachar = pedido − despachado; las columnas Sin cortar / En corte / En planta / Semiterm. / En BPT dicen dónde está hoy ese saldo según el Panel de Flujo de Busint (Sin cortar = lo que aún no está en ninguna etapa). Las filas grises "Producción sin línea de pedido" son lotes que están en producción pero no tienen línea en ese pedido: se muestran para que no se pierdan.
             {datos?.generadoEn && <> · Consultado: {new Date(datos.generadoEn).toLocaleString("es-CO")}</>}
           </div>
