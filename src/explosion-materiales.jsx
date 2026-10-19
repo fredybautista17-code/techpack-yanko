@@ -132,41 +132,63 @@ function colorAprox(nombre) {
 // Núcleo del cálculo (función pura)
 // (2026-10-19, a pedido de Fredy) ¿De qué COLOR es el código de color de una tela? Los pedidos solo
 // traen el nombre de la PRENDA (ej. "NEGRO / AZUL BEBÉ"), que puede llevar dos colores. Se cruza el
-// código contra todas las líneas que lo usan: los nombres que comparten todas son los candidatos.
-//  - "seguro": queda un solo nombre, y sale de una prenda de una sola tela o de 2+ prendas distintas.
+// código contra todas las prendas (ref + color) que lo usan y se VOTA: cada prenda suma un voto a cada
+// uno de sus nombres. Una prenda mal codificada ya no tumba el resultado (antes se exigía coincidencia total).
+//  - "seguro": un nombre gana con voto único (sin empate) y con al menos 60 % de las prendas.
 //  - "deducido": en una prenda de dos telas, la otra tela ya es segura y queda un solo nombre.
-//  - "confirmar": quedan dos o más nombres posibles (o ninguno): hay que validarlo en Busint.
+//  - "confirmar": empate o sin mayoría clara: hay que validarlo en Busint.
+const normColor = (t) => String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().replace(/[^A-Z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
+const partirColor = (txt) => {
+  const m = new Map();
+  String(txt || "").split(/[\/+,]/).forEach((x) => { const d = x.trim().toUpperCase().replace(/\s+/g, " "); const k = normColor(d); if (k && !m.has(k)) m.set(k, d); });
+  return m; // clave normalizada -> nombre para mostrar
+};
 function resolverColoresTela(registros) {
+  // una prenda (ref + color + códigos) cuenta una sola vez, aunque esté en muchos pedidos
+  const lineas = new Map();
+  registros.forEach((r) => { const k = `${r.ref}|${[...r.nombres.keys()].join("/")}|${r.codes.join(",")}`; if (!lineas.has(k)) lineas.set(k, r); });
   const info = new Map();
-  registros.forEach(({ codes, nombres, color, directo }) => {
-    codes.forEach((c) => {
+  [...lineas.values()].forEach((r) => {
+    r.codes.forEach((c) => {
       let i = info.get(c);
-      if (!i) { i = { cands: null, n: new Set(), directo: false }; info.set(c, i); }
-      i.cands = i.cands ? new Set([...i.cands].filter((x) => nombres.has(x))) : new Set(nombres);
-      i.n.add(color);
-      if (directo) i.directo = true;
+      if (!i) { i = { n: 0, votos: new Map(), disp: new Map(), lineas: [], telas: new Set() }; info.set(c, i); }
+      i.n += 1; i.lineas.push(r);
+      (r.telas || []).forEach((t) => i.telas.add(t));
+      r.nombres.forEach((disp, k) => { i.votos.set(k, (i.votos.get(k) || 0) + 1); if (!i.disp.has(k)) i.disp.set(k, disp); });
     });
   });
   const res = new Map();
   info.forEach((i, c) => {
-    if (i.cands.size === 1 && (i.directo || i.n.size >= 2)) res.set(c, { nombre: [...i.cands][0], estado: "seguro", opciones: [...i.cands] });
-    else res.set(c, { nombre: "", estado: "confirmar", opciones: [...i.cands] });
+    const rank = [...i.votos.entries()].sort((a, b) => b[1] - a[1]);
+    const top = rank[0], segundo = rank[1];
+    const gana = top && (!segundo || top[1] > segundo[1]) && top[1] / i.n >= 0.6;
+    const empatados = rank.filter(([, v]) => top && v === top[1]).map(([k]) => i.disp.get(k));
+    res.set(c, gana
+      ? { nombre: i.disp.get(top[0]), clave: top[0], estado: "seguro", opciones: [i.disp.get(top[0])] }
+      : { nombre: "", clave: "", estado: "confirmar", opciones: empatados.length > 1 && empatados.length <= 3 ? empatados : [] });
   });
   for (let pase = 0; pase < 4; pase++) {
     let cambio = false;
-    registros.forEach(({ codes, nombres }) => {
+    [...lineas.values()].forEach(({ codes, nombres }) => {
       if (codes.length < 2) return;
       const sinResolver = codes.filter((c) => !res.get(c).nombre);
       if (sinResolver.length !== 1) return;
       const c = sinResolver[0];
       const i = info.get(c);
-      if (i.cands.size === 0) return;
-      const resueltos = new Set(codes.map((x) => res.get(x).nombre).filter(Boolean));
-      const resto = [...nombres].filter((x) => !resueltos.has(x) && i.cands.has(x));
-      if (resto.length === 1) { res.set(c, { nombre: resto[0], estado: "deducido", opciones: resto }); cambio = true; }
+      const usados = new Set(codes.map((x) => res.get(x).clave).filter(Boolean));
+      const resto = [...nombres.keys()].filter((k) => !usados.has(k) && i.votos.has(k));
+      if (resto.length === 1) { res.set(c, { nombre: nombres.get(resto[0]), clave: resto[0], estado: "deducido", opciones: [nombres.get(resto[0])] }); cambio = true; }
     });
     if (!cambio) break;
   }
+  // detalle para el diagnóstico (hoja "Códigos de color")
+  res.forEach((r, c) => {
+    const i = info.get(c);
+    r.prendas = i.n;
+    r.telas = [...i.telas];
+    r.votos = [...i.votos.entries()].sort((a, b) => b[1] - a[1]).map(([k, v]) => ({ nombre: i.disp.get(k), votos: v }));
+    r.noCuadran = r.clave ? i.lineas.filter((l) => !l.nombres.has(r.clave)).map((l) => `${l.ref} · ${[...l.nombres.values()].join(" / ")}`) : [];
+  });
   return res;
 }
 export function calcularExplosion({ lineas, fichas, enCamino, mermaTela, mermaInsumo }) {
@@ -188,7 +210,7 @@ export function calcularExplosion({ lineas, fichas, enCamino, mermaTela, mermaIn
     r.pedidos.add(l.pedido); if (l.color) r.colores.add(l.color); r.unidades += l.unidades; r.unidadesIns += uIns;
     if (l.unidades > 0 && l.color) {
       const codes = [...new Set(ficha.telas.map((t) => t.color).filter(Boolean))];
-      if (codes.length) registrosColor.push({ codes, nombres: new Set(String(l.color).split("/").map((x) => x.trim().toUpperCase()).filter(Boolean)), color: String(l.color).trim().toUpperCase(), directo: ficha.telas.filter((t) => t.nombre).length === 1 });
+      if (codes.length) registrosColor.push({ codes, nombres: partirColor(l.color), color: String(l.color).trim().toUpperCase(), ref: l.ref, telas: ficha.telas.filter((t) => t.color && t.nombre).map((t) => t.nombre) });
     }
     if (l.unidades > 0) ficha.telas.forEach((t) => {
       const tipo = tipoUnidadTela(t.unidad);
@@ -300,6 +322,7 @@ export function calcularExplosion({ lineas, fichas, enCamino, mermaTela, mermaIn
     otros: [...otros.values()].map((o) => ({ ...o, refs: [...o.refs] })).sort((a, b) => a.nombre.localeCompare(b.nombre, "es")),
     sinFicha: [...sinFicha.entries()].map(([ref, unidades]) => ({ ref, unidades })),
     avisosTela: [...new Set(avisosTela)],
+    coloresTela: [...colorTela.entries()].map(([codigo, v]) => ({ codigo, ...v })).sort((a, b) => String(a.codigo).localeCompare(String(b.codigo), "es", { numeric: true })),
   };
 }
 
@@ -511,6 +534,7 @@ export default function ExplosionMaterialesView({ db, functionsClient, T, pedido
       filasRef.push({ Referencia: r.ref, Pedidos: "", Tipo: "TOTAL", Material: `${r.unidades} prendas`, "Costo falta (estimado)": Math.round(r.costoFalta) });
     });
     add("Por referencia", filasRef);
+    add("Códigos de color", (resultado.coloresTela || []).map((v) => ({ "Código de color": v.codigo, "Telas que lo usan": (v.telas || []).join(", "), "Color elegido": v.nombre || "", Estado: v.estado === "seguro" ? "Seguro" : v.estado === "deducido" ? "Deducido" : "Por confirmar", "Prendas (ref + color) que lo usan": v.prendas, "Nombres vistos (votos)": (v.votos || []).map((x) => `${x.nombre} (${x.votos})`).join("; "), "Prendas que no cuadran": (v.noCuadran || []).slice(0, 8).join("; ") + ((v.noCuadran || []).length > 8 ? ` … +${v.noCuadran.length - 8}` : "") })));
     XLSX.writeFile(wb, `Explosion de materiales ${hoyISO()}.xlsx`);
   }
 
