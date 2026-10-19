@@ -158,7 +158,10 @@ export default function LotesPorIntegrarView({ db, functionsClient, T, pedidos }
   const [verFichaDistinta, setVerFichaDistinta] = useState(false);
   const [orden, setOrden] = useState({ k: "despacho", dir: 1 });
   const [abierto, setAbierto] = useState(null);
-  const [pestana, setPestana] = useState("listos"); // listos (ya en planta) | corte (aún en corte) | incompleta
+  const [pestana, setPestana] = useState("listos"); // listos (ya en planta) | corte (aún en corte) | incompleta | insumos
+  const [incluirCorte, setIncluirCorte] = useState(true);
+  const [incluirInc, setIncluirInc] = useState(true);
+  const [soloFaltan, setSoloFaltan] = useState(false);
   const [ignorados, setIgnorados] = useState(() => new Set(leerIgn()));
   const [avisoIgn, setAvisoIgn] = useState("");
   useEffect(() => {
@@ -288,6 +291,119 @@ export default function LotesPorIntegrarView({ db, functionsClient, T, pedidos }
   );
   const btn = (primario) => ({ padding: "8px 14px", borderRadius: 10, fontWeight: 700, fontSize: 13, cursor: "pointer", border: `1px solid ${primario ? T.ink : T.border}`, background: primario ? T.ink : T.white, color: primario ? T.white : T.ink });
 
+  // ── Lista de insumos: todo lo que necesitan los lotes incluidos, sumado por insumo ──
+  const lotesIns = [...listos, ...(incluirCorte ? enCorte : []), ...(incluirInc ? incompletas : [])];
+  const resumenIns = (() => {
+    const m = new Map();
+    lotesIns.forEach((l) => (l.insumos || []).forEach((i) => {
+      if (!(i.necesito > 0)) return;
+      const k = claveInsumo(i.insumo);
+      const r = m.get(k) || { k, insumo: i.insumo, unidad: i.unidad, necesito: 0, usaBodega: 0, oc: 0, comprar: 0, bodega: 0, estado: "ok", lotes: [], ocs: new Map() };
+      r.necesito += i.necesito; r.usaBodega += i.usaBodega || 0; r.comprar += i.comprar || 0; r.bodega = Math.max(r.bodega, i.bodega || 0);
+      (i.oc || []).forEach((o) => { r.oc += o.cant; const p = r.ocs.get(o.n) || { n: o.n, prov: o.prov, ff: o.ff, cant: 0 }; p.cant += o.cant; r.ocs.set(o.n, p); });
+      if ((PESO[i.estado] || 0) > (PESO[r.estado] || 0)) r.estado = i.estado;
+      r.lotes.push({ lote: l.lote, id: l.id ?? l.lote, ref: l.ref, pedido: l.pedido, cliente: l.cliente, despacho: l.despacho, prendas: l.pendientes, necesito: i.necesito, estado: i.estado, etapa: l.incompleto ? "Integración incompleta" : l.ubicTipo === "corte" ? "En corte" : "Para integrar" });
+      m.set(k, r);
+    }));
+    return [...m.values()].map((r) => ({ ...r, ocLista: [...r.ocs.values()].sort((a, b) => String(a.ff).localeCompare(String(b.ff))) }));
+  })();
+  const qIns = normTxt(q);
+  const filasIns = resumenIns
+    .filter((r) => (!qIns || normTxt(r.insumo).includes(qIns)) && (!soloFaltan || r.comprar > 0.005 || r.oc > 0.005))
+    .sort((a, b) => (b.comprar - a.comprar) || (b.oc - a.oc) || a.insumo.localeCompare(b.insumo, "es"));
+  const nComprar = resumenIns.filter((r) => r.comprar > 0.005).length;
+  const nSoloOc = resumenIns.filter((r) => r.comprar <= 0.005 && r.oc > 0.005).length;
+  const nAlcanza = resumenIns.length - nComprar - nSoloOc;
+  const estIns = (r) => (r.comprar > 0.005 ? "comprar" : r.oc > 0.005 ? (r.estado === "oc_tarde" ? "oc_tarde" : "oc_ok") : "ok");
+  const proxOc = (r) => (r.ocLista[0] ? `${fmtFecha(r.ocLista[0].ff)}${r.ocLista.length > 1 ? ` (+${r.ocLista.length - 1})` : ""}` : "");
+
+  async function exportarInsumos() {
+    const XLSX = await import("xlsx");
+    const wb = XLSX.utils.book_new();
+    const r2 = (n) => +Number(n || 0).toFixed(2);
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(filasIns.map((r) => ({ Insumo: r.insumo, Unidad: r.unidad, "Necesito": r2(r.necesito), "En bodega": r2(r.bodega), "Sale de bodega": r2(r.usaBodega), "Viene en OC": r2(r.oc), "Falta comprar": r2(r.comprar), "OC (número · proveedor · fecha · cantidad)": r.ocLista.map((o) => `${o.n} · ${o.prov || ""} · ${o.ff || ""} · ${r2(o.cant)}`).join(" | "), Lotes: r.lotes.length }))), "Lista de insumos");
+    const det = [];
+    filasIns.forEach((r) => r.lotes.forEach((x) => det.push({ Insumo: r.insumo, Unidad: r.unidad, Lote: x.lote, Etapa: x.etapa, Referencia: x.ref, Pedido: x.pedido || "", Cliente: x.cliente, Despacho: x.despacho || "", Prendas: x.prendas ?? "", "Necesito": r2(x.necesito), Estado: (ESTADO_INS[x.estado] || {}).txt || x.estado })));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(det), "Detalle por lote");
+    XLSX.writeFile(wb, `Lista de insumos ${hoy || ""}.xlsx`);
+  }
+  function imprimirInsumos() {
+    const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    const filas = filasIns.map((r) => `<tr><td>${esc(r.insumo)}</td><td>${esc(r.unidad)}</td><td class="n">${fmt(r.necesito)}</td><td class="n">${fmt(r.bodega)}</td><td class="n">${fmt(r.oc)}${r.oc > 0.005 ? ` <small>${esc(proxOc(r))}</small>` : ""}</td><td class="n"><b>${r.comprar > 0.005 ? fmt(r.comprar) : "—"}</b></td><td class="n">${r.lotes.length}</td></tr>`).join("");
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Lista de insumos ${esc(hoy || "")}</title><style>body{font-family:Arial,sans-serif;color:#1A1A2E;margin:22px}h1{margin:0 0 4px;font-size:20px}p{margin:0 0 12px;color:#5A5A7A;font-size:12px}table{width:100%;border-collapse:collapse;font-size:12px}th{text-align:left;border-bottom:2px solid #1A1A2E;padding:6px 8px;font-size:11px;text-transform:uppercase}td{padding:6px 8px;border-bottom:1px solid #DDD}.n{text-align:right}small{color:#5A5A7A}</style></head><body><h1>Lista de insumos</h1><p>${esc(hoy || "")} · ${filasIns.length} insumos · lotes por integrar${incluirCorte ? ", en corte" : ""}${incluirInc ? " e integración incompleta" : ""}</p><table><thead><tr><th>Insumo</th><th>Und</th><th class="n">Necesito</th><th class="n">En bodega</th><th class="n">Viene en OC</th><th class="n">Falta comprar</th><th class="n">Lotes</th></tr></thead><tbody>${filas}</tbody></table></body></html>`;
+    const w = window.open(URL.createObjectURL(new Blob([html], { type: "text/html" })), "_blank");
+    if (w) setTimeout(() => { try { w.print(); } catch {} }, 500);
+  }
+  const vistaInsumos = (
+    <>
+      <div style={{ padding: "10px 14px", background: "#EEF3F9", color: "#2D5A8C", borderRadius: 10, fontSize: 13, marginBottom: 14 }}>
+        Todo lo que necesitan los lotes incluidos, sumado por insumo: lo que sale de bodega, lo que viene en órdenes de compra y lo que falta comprar. Se calcula con las prendas que faltan por integrar de cada lote.
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: 12, marginBottom: 16 }}>
+        <Kpi t="Insumos distintos" v={resumenIns.length} d={`${lotesIns.length} lote${lotesIns.length === 1 ? "" : "s"} incluidos`} />
+        <Kpi t="Hay que comprar" v={`${nComprar} insumo${nComprar === 1 ? "" : "s"}`} d="sin bodega ni OC que alcance" rojo={nComprar > 0} />
+        <Kpi t="Vienen en orden de compra" v={`${nSoloOc} insumo${nSoloOc === 1 ? "" : "s"}`} d="la OC cubre lo que falta" />
+        <Kpi t="Alcanzan con bodega" v={`${nAlcanza} insumo${nAlcanza === 1 ? "" : "s"}`} d="no hace falta comprar" />
+      </div>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 14, flexWrap: "wrap" }}>
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar insumo" style={{ ...campo, minWidth: 220 }} />
+        <label style={{ fontSize: 12.5, color: T.slate, display: "flex", gap: 6, alignItems: "center", cursor: "pointer" }}><input type="checkbox" checked={soloFaltan} onChange={(e) => setSoloFaltan(e.target.checked)} />Solo los que hay que comprar o esperan OC</label>
+        <label style={{ fontSize: 12.5, color: T.slate, display: "flex", gap: 6, alignItems: "center", cursor: "pointer" }}><input type="checkbox" checked={incluirCorte} onChange={(e) => setIncluirCorte(e.target.checked)} />Incluir lotes en corte ({enCorte.length})</label>
+        <label style={{ fontSize: 12.5, color: T.slate, display: "flex", gap: 6, alignItems: "center", cursor: "pointer" }}><input type="checkbox" checked={incluirInc} onChange={(e) => setIncluirInc(e.target.checked)} />Incluir integración incompleta ({incompletas.length})</label>
+        <div style={{ flex: 1 }} />
+        <button style={btn(false)} onClick={() => cargar(true)} disabled={cargando}>{cargando ? "Actualizando..." : "🔄 Actualizar"}</button>
+        <button style={btn(false)} onClick={exportarInsumos} disabled={!filasIns.length}>⬇ Excel</button>
+        <button style={btn(true)} onClick={imprimirInsumos} disabled={!filasIns.length}>🖨 Imprimir lista</button>
+      </div>
+      <div style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead><tr>{th(null, "Insumo")}{th(null, "Und")}{th(null, "Necesito", true)}{th(null, "En bodega", true)}{th(null, "Viene en OC", true)}{th(null, "Falta comprar", true)}{th(null, "Lotes", true)}{th(null, "Estado")}</tr></thead>
+          <tbody>
+            {filasIns.map((r) => (
+              <React.Fragment key={r.k}>
+                <tr onClick={() => setAbierto(abierto === `ins|${r.k}` ? null : `ins|${r.k}`)} style={{ cursor: "pointer", background: abierto === `ins|${r.k}` ? "#F3F7FB" : "transparent" }}>
+                  <td style={{ ...td, fontWeight: 700 }}>{r.insumo}</td>
+                  <td style={td}>{r.unidad}</td>
+                  <td style={{ ...td, textAlign: "right" }}>{fmt(r.necesito)}</td>
+                  <td style={{ ...td, textAlign: "right" }}>{fmt(r.bodega)}</td>
+                  <td style={{ ...td, textAlign: "right" }}>{r.oc > 0.005 ? <>{fmt(r.oc)}<div style={{ fontSize: 10.5, color: T.slate }}>llega {proxOc(r)}</div></> : "—"}</td>
+                  <td style={{ ...td, textAlign: "right", fontWeight: 800, color: r.comprar > 0.005 ? "#B8402F" : T.slate }}>{r.comprar > 0.005 ? fmt(r.comprar) : "—"}</td>
+                  <td style={{ ...td, textAlign: "right" }}>{r.lotes.length}</td>
+                  <td style={td}><Pill e={estIns(r)} mapa={ESTADO_INS} /></td>
+                </tr>
+                {abierto === `ins|${r.k}` && (
+                  <tr><td colSpan={8} style={{ padding: 0, background: "#F3F7FB", borderBottom: `1px solid ${T.border}` }}>
+                    <div style={{ padding: "12px 18px" }}>
+                      {r.ocLista.length > 0 && <div style={{ fontSize: 12.5, color: T.slate, marginBottom: 8 }}>Órdenes de compra: {r.ocLista.map((o) => `OC ${o.n}${o.prov ? ` · ${o.prov}` : ""} · llega ${fmtFecha(o.ff)} · ${fmt(o.cant)} ${r.unidad}`).join("  |  ")}</div>}
+                      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                        <thead><tr>{th(null, "Lote")}{th(null, "Etapa")}{th(null, "Referencia")}{th(null, "Pedido · Cliente")}{th(null, "Despacho")}{th(null, "Prendas", true)}{th(null, "Necesito", true)}{th(null, "Estado")}</tr></thead>
+                        <tbody>
+                          {[...r.lotes].sort((a, b) => String(a.despacho || "9999").localeCompare(String(b.despacho || "9999")) || Number(a.lote) - Number(b.lote)).map((x) => (
+                            <tr key={x.id}>
+                              <td style={{ ...td, fontWeight: 800 }}>{x.lote}</td>
+                              <td style={td}>{x.etapa}</td>
+                              <td style={td}>{x.ref}</td>
+                              <td style={td}>{x.pedido || "—"} · <span style={{ color: T.slate }}>{x.cliente}</span></td>
+                              <td style={td}>{x.despacho ? fmtFecha(x.despacho) : "—"}</td>
+                              <td style={{ ...td, textAlign: "right" }}>{x.prendas == null ? "—" : fmt(x.prendas, 0)}</td>
+                              <td style={{ ...td, textAlign: "right" }}>{fmt(x.necesito)} {r.unidad}</td>
+                              <td style={td}><Pill e={x.estado} mapa={ESTADO_INS} /></td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </td></tr>
+                )}
+              </React.Fragment>
+            ))}
+            {!filasIns.length && <tr><td colSpan={8} style={{ padding: 24, textAlign: "center", color: T.slate }}>No hay insumos con esos filtros.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+
   const tablaIncompleta = (
     <div style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, overflowX: "auto" }}>
       <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -367,7 +483,7 @@ export default function LotesPorIntegrarView({ db, functionsClient, T, pedidos }
       {datos && (
         <>
           <div style={{ display: "flex", background: T.white, border: `1px solid ${T.border}`, borderRadius: 12, padding: 4, marginBottom: 14, width: "fit-content", maxWidth: "100%", flexWrap: "wrap" }}>
-            {[["listos", `Listos para integrar (${listos.length})`], ["corte", `Todavía en corte (${enCorte.length})`], ["incompleta", `Integración incompleta (${incompletas.length})`]].map(([v, label]) => (
+            {[["listos", `Listos para integrar (${listos.length})`], ["corte", `Todavía en corte (${enCorte.length})`], ["incompleta", `Integración incompleta (${incompletas.length})`], ["insumos", "Lista de insumos"]].map(([v, label]) => (
               <div key={v} onClick={() => { setPestana(v); setAbierto(null); }} style={{ padding: "9px 18px", borderRadius: 9, fontWeight: 700, cursor: "pointer", fontSize: 13.5, background: pestana === v ? T.ink : "transparent", color: pestana === v ? T.white : T.slate }}>{label}</div>
             ))}
           </div>
@@ -382,6 +498,7 @@ export default function LotesPorIntegrarView({ db, functionsClient, T, pedidos }
             </div>
           )}
           {avisoIgn && <div style={{ padding: "8px 12px", background: "#FDF1DA", color: "#8A5A0B", borderRadius: 8, fontSize: 12.5, marginBottom: 8 }}>{avisoIgn}</div>}
+          {pestana === "insumos" ? vistaInsumos : (<>
           {pestana === "incompleta" ? (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: 12, marginBottom: 16 }}>
             <Kpi t="Lotes con integración incompleta" v={base.length} d={`${insumosFaltan} insumo${insumosFaltan === 1 ? "" : "s"} distinto${insumosFaltan === 1 ? "" : "s"} por entregar`} />
@@ -476,6 +593,7 @@ export default function LotesPorIntegrarView({ db, functionsClient, T, pedidos }
             </table>
           </div>
           )}
+          </>)}
           <div style={{ color: T.slate, fontSize: 12, marginTop: 10 }}>
             Cada insumo = consumo de la ficha técnica × prendas del lote. El inventario y las órdenes de compra se reparten lote por lote en orden de fecha de despacho, para que dos lotes no cuenten el mismo inventario. La orden de compra se muestra solo si sigue vigente (no cumplida ni marcada como recibida). Lotes de los últimos {datos.dias} días.
           </div>
