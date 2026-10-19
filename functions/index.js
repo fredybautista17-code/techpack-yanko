@@ -6207,9 +6207,11 @@ exports.buscarReferenciaBusint = onCallAuth(
       throw new HttpsError("unavailable", "No se pudo consultar la API de Busint. Intenta de nuevo en unos minutos.");
     }
 
-    const refsCoincidentes = referencias.filter((r) => String(r.ref || "").trim().toUpperCase() === refBuscada);
+    // (2026-10-19, a pedido de Fredy) La referencia se compara SIN guiones y en mayúsculas: "DG-1000" y "DG1000" son la misma.
+    const refNorm = normalizarRefComparacion(refBuscada);
+    const refsCoincidentes = referencias.filter((r) => normalizarRefComparacion(r.ref) === refNorm);
     const barrasCoincidentes = codigosBarra
-      .filter((c) => String(c.ref || "").trim().toUpperCase() === refBuscada)
+      .filter((c) => normalizarRefComparacion(c.ref) === refNorm)
       .map((c) => ({
         talla: (c.talla || "").trim(),
         pinta: (c.pinta || "").trim(),
