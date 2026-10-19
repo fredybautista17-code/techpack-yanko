@@ -240,7 +240,7 @@ function etiquetaVinculo(v, protos, capsulas) {
 }
 
 // ─── EDITOR DE UNA COTIZACIÓN ────────────────────────────────────────────────
-function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsulas, cotizaciones, onGuardar, onVolver, onEliminar, onAplicar, onSucio, puedeBorrar, puedeAprobar, puedeDeshabilitar, usuario, notify }) {
+function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsulas, cotizaciones, onGuardar, onVolver, onEliminar, onAplicar, onSucio, puedeBorrar, puedeAprobar, puedeDeshabilitar, puedeEditar = true, usuario, notify }) {
   const [cot, setCot] = useState(inicial);
   const [sucio, setSucio] = useState(false);
   useEffect(() => { onSucio?.(sucio); }, [sucio]); // eslint-disable-line
@@ -257,7 +257,7 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
   const ver = cot.versiones[cot.activa];
   const calc = useMemo(() => calcularCotizacion(ver.v), [ver.v]);
   const estadoV = ver.estado || "borrador";
-  const bloqueada = (estadoV === "aprobacion" && !puedeAprobar) || estadoV === "aprobada" || estadoV === "deshabilitada"; // quien envía no edita mientras espera; el aprobador sí; una aprobada se cambia con versión nueva
+  const bloqueada = (estadoV === "aprobacion" && !puedeAprobar) || estadoV === "aprobada" || estadoV === "deshabilitada" || !puedeEditar; // (2026-10-19) sin permiso de editar = solo consulta; quien envía no edita mientras espera; el aprobador sí; una aprobada se cambia con versión nueva
 
   function mutar(fn) {
     setCot((c) => {
@@ -318,6 +318,7 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
     });
   }
   async function guardar() {
+    if (!puedeEditar) { notify?.("Tu rol solo puede consultar cotizaciones"); return; }
     if (!String(cot.referencia).trim()) { notify?.("Escribe la referencia antes de guardar"); return; }
     let a = cot;
     // Si el aprobador corrigió una versión que espera aprobación, el precio enviado se actualiza.
@@ -555,21 +556,28 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
         {sucio && <Pastilla bg={C.amberBg} color={C.amber}>Cambios sin guardar</Pastilla>}
         <div style={{ flex: 1 }} />
         {cot.id && inicial.existe && puedeBorrar && <button onClick={() => onEliminar(cot)} style={btn(C.white, C.red, C.red)}>Eliminar</button>}
-        <button onClick={() => setViniloModal({ id: ver.v.vinilo?.miniId || null })} disabled={bloqueada} title="Abre la hoja de Vinilo / DTF de esta referencia y pasa sus valores a esta versión" style={{ ...btn(C.white, C.amber, C.amber), opacity: bloqueada ? 0.5 : 1 }}>🎨 Vinilo / DTF</button>
+        {puedeEditar && <button onClick={() => setViniloModal({ id: ver.v.vinilo?.miniId || null })} disabled={bloqueada} title="Abre la hoja de Vinilo / DTF de esta referencia y pasa sus valores a esta versión" style={{ ...btn(C.white, C.amber, C.amber), opacity: bloqueada ? 0.5 : 1 }}>🎨 Vinilo / DTF</button>}
         <button onClick={() => descargarExcel([cot], `Cotizacion ${String(cot.referencia || "nueva").replace(/[\\/:*?"<>|]/g, "-")}.xlsx`, imagenVinculada(), notify)} style={btn(C.white, C.blue, C.blue)}>📥 Descargar Excel</button>
-        <button onClick={guardar} style={btn(C.green, C.white)}>💾 Guardar versión</button>
+        {puedeEditar && <button onClick={guardar} style={btn(C.green, C.white)}>💾 Guardar versión</button>}
       </div>
 
+      {!puedeEditar && (
+        <div style={{ display: "flex", alignItems: "center", gap: 12, background: C.blueBg, border: "1.5px solid #C9D9EA", borderRadius: 14, padding: "10px 16px", marginBottom: 14 }}>
+          <span style={{ fontSize: 20 }}>👁</span>
+          <div style={{ flex: 1, fontSize: 13 }}><b style={{ color: C.blue }}>Modo consulta.</b> Tu rol puede ver las cotizaciones, pero no crearlas ni cambiarlas. Si necesitas editar, pídele al administrador el permiso «Puede crear y editar cotizaciones».</div>
+        </div>
+      )}
+
       <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 16, padding: "14px 18px", marginBottom: 14, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 14, boxShadow: "0 1px 2px rgba(26,26,46,.04), 0 4px 14px rgba(26,26,46,.03)" }}>
-        <Campo label="Referencia"><input value={cot.referencia} onChange={(e) => setCab("referencia", e.target.value)} style={inp} placeholder="975093" /></Campo>
-        <Campo label="Nombre / descripción"><input value={cot.nombre} onChange={(e) => setCab("nombre", e.target.value)} style={inp} placeholder="Camiseta ..." /></Campo>
+        <Campo label="Referencia"><input disabled={!puedeEditar} value={cot.referencia} onChange={(e) => setCab("referencia", e.target.value)} style={inp} placeholder="975093" /></Campo>
+        <Campo label="Nombre / descripción"><input disabled={!puedeEditar} value={cot.nombre} onChange={(e) => setCab("nombre", e.target.value)} style={inp} placeholder="Camiseta ..." /></Campo>
         <Campo label="Cliente">
-          <select value={cot.cliente || "General"} onChange={(e) => cambiarCliente(e.target.value)} style={inp}>
+          <select disabled={!puedeEditar} value={cot.cliente || "General"} onChange={(e) => cambiarCliente(e.target.value)} style={inp}>
             {(clientes.includes(cot.cliente) || !cot.cliente ? clientes : [cot.cliente, ...clientes]).map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
         </Campo>
         <Campo label="Prototipo / cápsula vinculado">
-          <button onClick={() => setVincular("solo")} style={{ ...inp, textAlign: "left", cursor: "pointer", color: vinculoActual ? C.ink : C.slate }}>
+          <button disabled={!puedeEditar} onClick={() => setVincular("solo")} style={{ ...inp, textAlign: "left", cursor: puedeEditar ? "pointer" : "default", color: vinculoActual ? C.ink : C.slate }}>
             {vinculoActual ? `${vinculoActual.kind === "proto" ? "⬡" : "⬢"} ${vinculoActual.label}` : "Elegir… (para aplicar el precio)"}
           </button>
         </Campo>
@@ -584,7 +592,7 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
             {puedeAprobar ? (vinculoActual ? <>Al aprobarla, <b>{fmtCOP(calc.precioAplicar)}</b> pasa solo como precio de <b>{vinculoActual.label}</b>.</> : "No tiene prototipo ni cápsula vinculado: puedes elegirlo al aprobar.") : "No se puede editar hasta que la aprueben o la devuelvan."}
             {puedeAprobar && " Como aprobador puedes corregirla aquí mismo; al guardar se actualiza el precio enviado."}
           </div>
-          {!sucio && <button onClick={retirarEnvio} style={btn(C.white, C.amber, C.amber)}>Retirar de aprobación</button>}
+          {!sucio && puedeEditar && <button onClick={retirarEnvio} style={btn(C.white, C.amber, C.amber)}>Retirar de aprobación</button>}
         </div>
       )}
       {estadoV === "aprobada" && (
@@ -598,7 +606,7 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
           <button onClick={() => enviarDropbox()} disabled={subiendoDropbox} title={ver.dropbox ? `Ya está en Dropbox: ${ver.dropbox.ruta}` : `Guarda el libro con las versiones aprobadas (una hoja por versión) en la carpeta ${CARPETA_DISENO}`} style={{ ...btn(C.white, C.blue, C.blue), opacity: subiendoDropbox ? 0.5 : 1 }}>{subiendoDropbox ? "Subiendo…" : ver.dropbox ? "☁ Reenviar a Dropbox" : "☁ Enviar a Dropbox"}</button>
           {puedeAprobar && <button onClick={reabrir} style={btn(C.white, C.amber, C.amber)}>Reabrir esta versión</button>}
           {puedeDeshabilitar && <button onClick={deshabilitar} style={btn(C.white, C.red, C.red)}>🚫 Deshabilitar</button>}
-          <button onClick={nuevaVersion} style={btn(C.white, C.green, C.green)}>+ Crear versión nueva para editar</button>
+          {puedeEditar && <button onClick={nuevaVersion} style={btn(C.white, C.green, C.green)}>+ Crear versión nueva para editar</button>}
         </div>
       )}
       {estadoV === "deshabilitada" && (
@@ -609,7 +617,7 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
             {cot.precioAplicado && cot.precioAplicado.version === ver.numero ? ` OJO: ${fmtCOP(cot.precioAplicado.valor)} sigue aplicado a ${cot.precioAplicado.destino}; no se quita solo.` : ""}
           </div>
           {puedeDeshabilitar && <button onClick={habilitar} style={btn(C.white, C.green, C.green)}>Habilitar de nuevo</button>}
-          <button onClick={nuevaVersion} style={btn(C.white, C.green, C.green)}>+ Crear versión nueva para editar</button>
+          {puedeEditar && <button onClick={nuevaVersion} style={btn(C.white, C.green, C.green)}>+ Crear versión nueva para editar</button>}
         </div>
       )}
       {estadoV === "devuelta" && (
@@ -650,8 +658,8 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
             V{vv.numero} <span style={{ fontWeight: 500, opacity: 0.8 }}>· {fmtFecha(vv.fecha)}</span>{ICONO_ESTADO[vv.estado] ? ` ${ICONO_ESTADO[vv.estado]}` : ""}
           </button>
         ))}
-        <button onClick={nuevaVersion} style={btn(C.blueBg, C.blue, C.blue)}>+ Nueva versión</button>
-        {cot.versiones.length > 1 && <button onClick={borrarVersion} disabled={bloqueada} style={{ ...btn(C.white, C.slate, C.border), fontWeight: 500 }}>Borrar V{ver.numero}</button>}
+        {puedeEditar && <button onClick={nuevaVersion} style={btn(C.blueBg, C.blue, C.blue)}>+ Nueva versión</button>}
+        {cot.versiones.length > 1 && puedeEditar && <button onClick={borrarVersion} disabled={bloqueada} style={{ ...btn(C.white, C.slate, C.border), fontWeight: 500 }}>Borrar V{ver.numero}</button>}
         <div style={{ display: "flex", gap: 8, alignItems: "center", marginLeft: "auto" }}>
           <input type="date" disabled={bloqueada} value={ver.fecha || ""} onChange={(e) => mutar((n) => { n.versiones[n.activa].fecha = e.target.value; })} style={{ ...inp, width: 150 }} />
           <input disabled={bloqueada} value={ver.nota || ""} onChange={(e) => mutar((n) => { n.versiones[n.activa].nota = e.target.value; })} placeholder="Nota de la versión (qué cambió)" style={{ ...inp, width: 260 }} />
@@ -841,8 +849,10 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
               ) : estadoV === "aprobacion" ? (
                 <>
                   <div style={{ marginTop: 16, padding: "12px 14px", borderRadius: 12, background: "rgba(242,184,75,.22)", fontSize: 13, fontWeight: 700 }}>⏳ Esperando aprobación</div>
-                  <button onClick={retirarEnvio} style={{ ...btn("transparent", C.white, "rgba(255,255,255,.3)"), width: "100%", marginTop: 8, fontWeight: 500, fontSize: 12 }}>Retirar de aprobación</button>
+                  {puedeEditar && <button onClick={retirarEnvio} style={{ ...btn("transparent", C.white, "rgba(255,255,255,.3)"), width: "100%", marginTop: 8, fontWeight: 500, fontSize: 12 }}>Retirar de aprobación</button>}
                 </>
+              ) : !puedeEditar ? (
+                <div style={{ marginTop: 16, padding: "12px 14px", borderRadius: 12, background: "rgba(255,255,255,.14)", fontSize: 13, fontWeight: 700 }}>👁 Solo consulta</div>
               ) : (
                 <>
                   <button onClick={enviarAprobacion} style={{ ...btn(C.seam, C.ink), width: "100%", marginTop: 16, padding: "12px 14px" }}>
@@ -1123,7 +1133,7 @@ function ModalImportar({ cotizaciones, parametros, clientes, onImportar, onClose
 }
 
 // ─── PARÁMETROS POR CLIENTE ──────────────────────────────────────────────────
-function ParametrosView({ parametros, clientesApp, currentUser, notify }) {
+function ParametrosView({ parametros, clientesApp, currentUser, notify, soloLectura = false }) {
   const fichasVirtuales = ["General", "Kamila", "Surtiexport", "Conbot", "Mary Bautista"];
   const lista = useMemo(() => {
     const out = [];
@@ -1192,17 +1202,18 @@ function ParametrosView({ parametros, clientesApp, currentUser, notify }) {
           </button>
         ))}
         <div style={{ borderTop: `1px solid ${C.border}`, marginTop: 8, paddingTop: 10 }}>
-          <input list="cotizador-clientes-par" value={nuevo} onChange={(e) => setNuevo(e.target.value)} placeholder="Agregar cliente…" style={inp} />
+          <input disabled={soloLectura} list="cotizador-clientes-par" value={nuevo} onChange={(e) => setNuevo(e.target.value)} placeholder="Agregar cliente…" style={inp} />
           <datalist id="cotizador-clientes-par">{clientesApp.filter((c) => !lista.some((f) => normTxt(f.nombre) === normTxt(c))).map((c) => <option key={c} value={c} />)}</datalist>
-          <button onClick={agregarCliente} style={{ ...btn(C.blueBg, C.blue, C.blue), width: "100%", marginTop: 6 }}>+ Agregar cliente</button>
+          {!soloLectura && <button onClick={agregarCliente} style={{ ...btn(C.blueBg, C.blue, C.blue), width: "100%", marginTop: 6 }}>+ Agregar cliente</button>}
         </div>
       </div>
       <div>
         <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 12 }}>
           <div style={{ fontWeight: 800, fontSize: 17, flex: 1 }}>Ficha: {borrador.nombre}</div>
-          {actual.guardada && borrador.id !== "general" && <button onClick={borrarFicha} style={btn(C.white, C.red, C.red)}>Quitar ficha</button>}
-          <button onClick={guardar} style={btn(C.green, C.white)}>💾 Guardar ficha</button>
+          {actual.guardada && borrador.id !== "general" && !soloLectura && <button onClick={borrarFicha} style={btn(C.white, C.red, C.red)}>Quitar ficha</button>}
+          {!soloLectura && <button onClick={guardar} style={btn(C.green, C.white)}>💾 Guardar ficha</button>}
         </div>
+        <fieldset disabled={soloLectura} style={{ minWidth: 0, border: 0, margin: 0, padding: 0 }}>
         <Seccion titulo="Tasas e impuestos" sub="En decimal: 0,005 = 0,5%. Se usan para las cotizaciones NUEVAS de este cliente.">
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
             {Object.keys(ETIQUETAS_TASAS).map((k) => (
@@ -1264,6 +1275,7 @@ function ParametrosView({ parametros, clientesApp, currentUser, notify }) {
             </div>
           )}
         </Seccion>
+        </fieldset>
       </div>
     </div>
   );
@@ -1328,7 +1340,7 @@ function ModalInsumoBusint({ inicial, titulo, onElegir, onClose }) {
     </div>
   );
 }
-function MiniVinilo({ currentUser, notify, onPasar, refInicial, inicialId, etiquetaPasar, puedeBorrar }) {
+function MiniVinilo({ currentUser, notify, onPasar, refInicial, inicialId, etiquetaPasar, puedeBorrar, soloLectura = false }) {
   const [guardados, setGuardados] = useState([]);
   const [ref, setRef] = useState(refInicial || "");
   const [mes, setMes] = useState(hoyISO().slice(0, 7));
@@ -1391,6 +1403,8 @@ function MiniVinilo({ currentUser, notify, onPasar, refInicial, inicialId, etiqu
 
   return (
     <div>
+      {soloLectura && <div style={{ background: C.blueBg, border: "1.5px solid #C9D9EA", borderRadius: 12, padding: "8px 14px", marginBottom: 12, fontSize: 13 }}>👁 <b style={{ color: C.blue }}>Modo consulta.</b> Puedes ver las hojas guardadas, pero no crearlas ni cambiarlas.</div>}
+      <fieldset disabled={soloLectura} style={{ minWidth: 0, border: 0, margin: 0, padding: 0 }}>
       <Seccion titulo="🎨 Minicotizador de Vinilo / DTF" sub="En cada insumo usa 🔎 para tomar su costo PROMEDIO del inventario de Busint y digita el promedio (consumo); los demás son procesos con valor fijo. TOTAL = costo por unidad + BASE.">
         <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
           <Campo label="Referencia" ancho={150}><input value={ref} onChange={(e) => setRef(e.target.value)} placeholder="Ej: 98-5644" style={inp} /></Campo>
@@ -1398,8 +1412,10 @@ function MiniVinilo({ currentUser, notify, onPasar, refInicial, inicialId, etiqu
           <Campo label="Imprevistos %" ancho={100}><input value={pct} onChange={(e) => setPct(e.target.value)} style={cel} /></Campo>
         </div>
       </Seccion>
+      </fieldset>
 
       <Seccion titulo={tituloVinilo(ref.trim(), mes)} sub="El costo M.P viene del costo promedio del inventario de Busint (🔎); el BASE viene de «Bases Vinilo y DTF» (el vigente en el mes). Todo se puede corregir a mano.">
+        <fieldset disabled={soloLectura} style={{ minWidth: 0, border: 0, margin: 0, padding: 0 }}>
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 860 }}>
             <thead>
@@ -1463,12 +1479,13 @@ function MiniVinilo({ currentUser, notify, onPasar, refInicial, inicialId, etiqu
             </tbody>
           </table>
         </div>
+        </fieldset>
         <div style={{ display: "flex", gap: 10, marginTop: 14, flexWrap: "wrap" }}>
-          <button onClick={guardar} style={btn(C.green, C.white)}>💾 Guardar</button>
+          {!soloLectura && <button onClick={guardar} style={btn(C.green, C.white)}>💾 Guardar</button>}
           <button onClick={excel} style={btn(C.white, C.blue, C.blue)}>📤 Descargar Excel</button>
-          <button onClick={async () => { const st = await guardar(); if (st) onPasar(ref, filas, calc, mes, st); }} style={btn(C.white, C.violet, C.violet)}>{etiquetaPasar || "🧮 Pasar al cotizador"}</button>
+          {!soloLectura && <button onClick={async () => { const st = await guardar(); if (st) onPasar(ref, filas, calc, mes, st); }} style={btn(C.white, C.violet, C.violet)}>{etiquetaPasar || "🧮 Pasar al cotizador"}</button>}
           <div style={{ flex: 1 }} />
-          <button onClick={aplicarBasesVigentes} title="Vuelve a poner el BASE (y el valor de los procesos) que rige en el mes de esta hoja, según «Bases Vinilo y DTF»" style={btn(C.white, C.slate, C.border)}>↻ Aplicar bases vigentes</button>
+          {!soloLectura && <button onClick={aplicarBasesVigentes} title="Vuelve a poner el BASE (y el valor de los procesos) que rige en el mes de esta hoja, según «Bases Vinilo y DTF»" style={btn(C.white, C.slate, C.border)}>↻ Aplicar bases vigentes</button>}
         </div>
       </Seccion>
 
@@ -1624,7 +1641,7 @@ function AccionesCotizacion({ c, onEditar, onBorrar, puedeBorrar }) {
     </div>
   );
 }
-function InicioCotizaciones({ protos, capsulas, cotizaciones, minis, cargado, puedeAprobar, puedeBorrar, onBorrar, onIr, onNueva, onFiltro, onAbrir }) {
+function InicioCotizaciones({ protos, capsulas, cotizaciones, minis, cargado, puedeAprobar, puedeBorrar, puedeEditar = true, onBorrar, onIr, onNueva, onFiltro, onAbrir }) {
   const hoy = new Date();
   const mesActual = hoyISO().slice(0, 7);
   const clientes = new Set(cotizaciones.map((c) => c.cliente || "General"));
@@ -1709,7 +1726,7 @@ function InicioCotizaciones({ protos, capsulas, cotizaciones, minis, cargado, pu
         <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden", paddingBottom: 6 }}>
           <div style={{ display: "flex", alignItems: "center", padding: "12px 16px" }}>
             <div style={{ fontWeight: 800, fontSize: 14, flex: 1 }}>Últimas cotizaciones</div>
-            <button onClick={onNueva} style={{ ...btn(C.green, C.white), padding: "6px 12px" }}>+ Nueva cotización</button>
+            {puedeEditar && <button onClick={onNueva} style={{ ...btn(C.green, C.white), padding: "6px 12px" }}>+ Nueva cotización</button>}
           </div>
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 560 }}>
@@ -1965,7 +1982,7 @@ function HistorialVinilo({ minis, cotizaciones, cargado, onAbrir, onBorrar, pued
 }
 
 const ITEMS_MENU = [["inicio", "◉", "Inicio"], ["cotizaciones", "▤", "Cotizaciones"], ["historial", "☰", "Historial de cotizaciones"], ["aprobar", "✓", "Por aprobar"], ["vinilo", "◈", "Vinilo / DTF"], ["historialVinilo", "☷", "Historial de Vinilo / DTF"], ["bases", "▦", "Bases Vinilo y DTF"], ["parametros", "⚙", "Parámetros por cliente"]];
-function MenuCotizaciones({ activo, onIr, onVolver, onLogout, currentUser, nAprobar, puedeAprobar }) {
+function MenuCotizaciones({ activo, onIr, onVolver, onLogout, currentUser, nAprobar, puedeAprobar, soloConsulta }) {
   const inicial = String(currentUser?.name || "?").trim().charAt(0).toUpperCase();
   return (
     <div className="cotz-side" style={{ width: 268, flexShrink: 0, background: C.navy, color: "#C9C8DE", padding: "18px 14px", display: "flex", flexDirection: "column", position: "sticky", top: 0, height: "100vh", alignSelf: "flex-start", boxSizing: "border-box" }}>
@@ -1978,6 +1995,7 @@ function MenuCotizaciones({ activo, onIr, onVolver, onLogout, currentUser, nApro
         <div style={{ minWidth: 0 }}>
           <div style={{ color: "#fff", fontWeight: 700, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{currentUser?.name || "Usuario"}</div>
           <div style={{ color: "#8B8AAE", fontSize: 11 }}>{currentUser?.role || ""}</div>
+          {soloConsulta && <div style={{ color: C.seam, fontSize: 11, fontWeight: 700 }}>👁 Solo consulta</div>}
         </div>
       </div>
       <div className="cotz-items">
@@ -1998,7 +2016,7 @@ function MenuCotizaciones({ activo, onIr, onVolver, onLogout, currentUser, nApro
   );
 }
 
-export default function CotizadorView({ currentUser, config, protos, capsulas, iniciarDesde, onIniciarConsumido, onAplicarPrecio, onVolver, onLogout, puedeBorrar, puedeAprobar, puedeDeshabilitar, notify }) {
+export default function CotizadorView({ currentUser, config, protos, capsulas, iniciarDesde, onIniciarConsumido, onAplicarPrecio, onVolver, onLogout, puedeBorrar, puedeAprobar, puedeDeshabilitar, puedeEditar = true, notify }) {
   const [edSucio, setEdSucio] = useState(false); // el editor abierto tiene cambios sin guardar
   const [tab, setTab] = useState("inicio");
   const [minis, setMinis] = useState([]); // minicotizaciones de vinilo guardadas (solo para el conteo del inicio)
@@ -2041,6 +2059,7 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
     const existente = cotizaciones.find((c) => c.vinculo && c.vinculo.kind === iniciarDesde.kind && c.vinculo.id === iniciarDesde.id)
       || (iniciarDesde.reference ? cotizaciones.find((c) => normRef(c.referencia) === normRef(iniciarDesde.reference)) : null);
     if (existente) setEdit({ ...limpio(existente), existe: true });
+    else if (!puedeEditar) notify?.("Esa referencia aún no tiene cotización y tu rol solo puede consultar");
     else setEdit(cotNueva({ referencia: iniciarDesde.reference || "", nombre: iniciarDesde.name || "", cliente: iniciarDesde.cliente || "General", vinculo: { kind: iniciarDesde.kind, id: iniciarDesde.id, capsulaId: iniciarDesde.capsulaId, label: iniciarDesde.label, reference: iniciarDesde.reference } }));
     setTab("cotizaciones");
     onIniciarConsumido?.();
@@ -2068,6 +2087,7 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
   }
   // Minicotizador de Vinilo / DTF -> cotización de la referencia (versión nueva).
   async function pasarAlCotizador(ref, filas, calc, mes, stamp) {
+    if (!puedeEditar) { notify?.("Tu rol solo puede consultar cotizaciones"); return; }
     const k = normRef(ref);
     if (!k) { notify?.("Escribe la referencia para pasarla al cotizador"); return; }
     const existente = cotizaciones.find((c) => normRef(c.referencia) === k);
@@ -2092,6 +2112,7 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
   }
 
   async function importarHojas(hojas, cliente) {
+    if (!puedeEditar) { notify?.("Tu rol solo puede consultar cotizaciones"); return; }
     const cli = cliente.trim() || "General";
     const porRef = new Map();
     hojas.forEach((h) => { const k = normRef(h.referencia) || h.nombre; if (!porRef.has(k)) porRef.set(k, []); porRef.get(k).push(h); });
@@ -2139,11 +2160,11 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
   const TITULOS = { inicio: "Inicio", cotizaciones: "Cotizaciones", vinilo: "Vinilo / DTF", bases: "Bases Vinilo y DTF", historial: "Historial de cotizaciones", historialVinilo: "Historial de Vinilo / DTF", parametros: "Parámetros por cliente", aprobar: puedeAprobar ? "Por aprobar" : "En aprobación" };
   return (
     <div className="cotz-root" style={{ display: "flex", minHeight: "100vh", background: C.canvas, fontFamily: FUENTE, color: C.ink }}>
-      <MenuCotizaciones activo={edit ? "cotizaciones" : tab} onIr={irA} onVolver={onVolver} onLogout={onLogout} currentUser={currentUser} nAprobar={cotizaciones.filter((c) => estadoUltima(c) === "aprobacion").length} puedeAprobar={puedeAprobar} />
+      <MenuCotizaciones activo={edit ? "cotizaciones" : tab} onIr={irA} onVolver={onVolver} onLogout={onLogout} currentUser={currentUser} nAprobar={cotizaciones.filter((c) => estadoUltima(c) === "aprobacion").length} puedeAprobar={puedeAprobar} soloConsulta={!puedeEditar} />
       <div style={{ flex: 1, minWidth: 0, padding: "24px 34px", boxSizing: "border-box" }}>
       {edit ? (
         <CotizacionEditor key={edit.id} inicial={edit} minis={minis} parametros={parametros} clientes={clientesApp} protos={protos} capsulas={capsulas} cotizaciones={cotizaciones}
-          onGuardar={guardar} onVolver={() => { setEdit(null); setEdSucio(false); }} onEliminar={pedirBorrar} puedeBorrar={puedeBorrar} onSucio={setEdSucio} puedeAprobar={puedeAprobar} puedeDeshabilitar={puedeDeshabilitar} usuario={currentUser?.name || ""} notify={notify}
+          onGuardar={guardar} onVolver={() => { setEdit(null); setEdSucio(false); }} onEliminar={pedirBorrar} puedeBorrar={puedeBorrar} onSucio={setEdSucio} puedeAprobar={puedeAprobar} puedeDeshabilitar={puedeDeshabilitar} puedeEditar={puedeEditar} usuario={currentUser?.name || ""} notify={notify}
           onAplicar={(destino, valor) => onAplicarPrecio(destino, valor)} />
       ) : (
       <>
@@ -2152,15 +2173,15 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
         <div style={{ color: C.slate, fontWeight: 600 }}>· Cotizaciones</div>
       </div>
 
-      {tab === "parametros" && <ParametrosView parametros={parametros} clientesApp={clientesApp} currentUser={currentUser} notify={notify} />}
+      {tab === "parametros" && <ParametrosView parametros={parametros} clientesApp={clientesApp} currentUser={currentUser} notify={notify} soloLectura={!puedeEditar} />}
 
       {tab === "inicio" && (
-        <InicioCotizaciones protos={protos} capsulas={capsulas} cotizaciones={cotizaciones} minis={minis} cargado={cargado} puedeAprobar={puedeAprobar} puedeBorrar={puedeBorrar} onBorrar={pedirBorrar}
+        <InicioCotizaciones protos={protos} capsulas={capsulas} cotizaciones={cotizaciones} minis={minis} cargado={cargado} puedeAprobar={puedeAprobar} puedeBorrar={puedeBorrar} puedeEditar={puedeEditar} onBorrar={pedirBorrar}
           onIr={(t) => { setFiltroEstado(null); setTab(t); }} onNueva={() => setEdit(cotNueva())}
           onFiltro={(f) => { setFiltroEstado(f); setTab("cotizaciones"); }} onAbrir={(c) => setEdit({ ...limpio(c), existe: true })} />
       )}
 
-      {tab === "vinilo" && <MiniVinilo key={miniAbrir?.n || 0} inicialId={miniAbrir?.id} currentUser={currentUser} notify={notify} onPasar={pasarAlCotizador} puedeBorrar={puedeBorrar} />}
+      {tab === "vinilo" && <MiniVinilo key={miniAbrir?.n || 0} inicialId={miniAbrir?.id} currentUser={currentUser} notify={notify} onPasar={pasarAlCotizador} puedeBorrar={puedeBorrar} soloLectura={!puedeEditar} />}
       {tab === "historial" && <HistorialCotizaciones cotizaciones={cotizaciones} protos={protos} capsulas={capsulas} cargado={cargado} onAbrir={(c) => setEdit({ ...limpio(c), existe: true })} onBorrar={pedirBorrar} puedeBorrar={puedeBorrar} notify={notify} />}
       {tab === "historialVinilo" && <HistorialVinilo minis={minis} cotizaciones={cotizaciones} cargado={cargado} onAbrir={(m) => { setMiniAbrir({ id: m.id, n: Date.now() }); setTab("vinilo"); }} onBorrar={borrarMini} puedeBorrar={puedeBorrar} notify={notify} />}
       {tab === "bases" && <BasesVinilo currentUser={currentUser} puedeEditar={puedeAprobar} notify={notify} />}
@@ -2176,9 +2197,9 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
             <input value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder="Buscar por referencia, nombre o cliente…" style={{ ...inp, maxWidth: 340 }} />
             <div style={{ flex: 1 }} />
             {tab === "cotizaciones" && <>
-            <button onClick={() => setImportar(true)} style={btn(C.white, C.blue, C.blue)}>📥 Importar Excel</button>
+            {puedeEditar && <button onClick={() => setImportar(true)} style={btn(C.white, C.blue, C.blue)}>📥 Importar Excel</button>}
             <button disabled={!filtradas.length} onClick={() => descargarExcel(filtradas, `Cotizaciones ${hoyISO()}.xlsx`, null, notify)} style={{ ...btn(C.white, C.blue, C.blue), opacity: filtradas.length ? 1 : 0.4 }}>📤 Descargar Excel ({filtradas.length})</button>
-            <button onClick={() => setEdit(cotNueva())} style={btn(C.green, C.white)}>+ Nueva cotización</button>
+            {puedeEditar && <button onClick={() => setEdit(cotNueva())} style={btn(C.green, C.white)}>+ Nueva cotización</button>}
             </>}
           </div>
           <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflowX: "auto" }}>
