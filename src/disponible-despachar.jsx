@@ -325,7 +325,7 @@ export default function DisponibleDespacharView({ db, functionsClient, T }) {
     setCargando(true);
     setError("");
     try {
-      const resp = await httpsCallable(functionsClient, "getDisponibleParaDespachar")({});
+      const resp = await httpsCallable(functionsClient, "getDisponibleParaDespachar", { timeout: 540000 })({});
       setDatos(resp.data);
       setCliente((actual) => (actual && (resp.data.porCliente || []).some((g) => g.cliente === actual) ? actual : (resp.data.porCliente || [])[0]?.cliente || ""));
     } catch (err) {

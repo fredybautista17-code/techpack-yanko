@@ -1784,6 +1784,9 @@ exports.getDisponibleParaDespachar = onCall(
     const fechaInicio = fechaValida(request.data?.fechaInicio) ? request.data.fechaInicio : sumarDias(hoyISO, -270);
     const fechaFin = fechaValida(request.data?.fechaFin) ? request.data.fechaFin : sumarDias(hoyISO, 90);
     const avisos = [];
+    // Las órdenes de producción (para "Sin cortar") se piden desde el inicio, en paralelo con los pedidos y las facturas, para no alargar la consulta.
+    const pLeerCortes = Promise.all([consultarTablaBusintBDCompleta("orden produccion"), consultarTablaBusintBDCompleta("orden produccion detalles")]);
+    pLeerCortes.catch(() => {});
 
     // 1) Pedidos (en vivo)
     let filasPedido;
@@ -2016,7 +2019,7 @@ exports.getDisponibleParaDespachar = onCall(
     const cortadoPorClave = new Map(); // `${numPed}|${refNorm}` -> prendas cortadas
     let cortadoLeido = false;
     try {
-      const [ordProd, ordDet] = await Promise.all([consultarTablaBusintBDCompleta("orden produccion"), consultarTablaBusintBDCompleta("orden produccion detalles")]);
+      const [ordProd, ordDet] = await pLeerCortes;
       const claveL = (v) => String(v ?? "").trim().replace(/\.0+$/, "");
       const lotePed = new Map(); // lote -> { ped, refNorm }
       let cortesSinPedido = 0;
