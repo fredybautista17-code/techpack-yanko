@@ -50,7 +50,7 @@ export function clasificarUbicacion(ub) {
 }
 const PESO = { comprar: 5, oc_tarde: 4, oc_ok: 3, justo: 2, ok: 1 };
 export function asignarInventario({ lotes, fichas, oc }) {
-  const rango = (l) => (l.ubicTipo === "fuera" ? 2 : l.ubicTipo === "corte" ? 1 : 0);
+  const rango = (l) => (l.ubicTipo === "fuera" || l.fichaDistinta ? 2 : l.ubicTipo === "corte" ? 1 : 0);
   const orden = [...lotes].sort((a, b) => rango(a) - rango(b) || String(a.despacho || "9999").localeCompare(String(b.despacho || "9999")) || String(a.corte).localeCompare(String(b.corte)) || Number(a.lote) - Number(b.lote));
   const stock = new Map();
   const ocPorInsumo = new Map();
@@ -152,6 +152,7 @@ export default function LotesPorIntegrarView({ db, functionsClient, T, pedidos }
   const [fEstado, setFEstado] = useState("");
   const [verCerrados, setVerCerrados] = useState(false);
   const [verFuera, setVerFuera] = useState(false);
+  const [verFichaDistinta, setVerFichaDistinta] = useState(false);
   const [orden, setOrden] = useState({ k: "despacho", dir: 1 });
   const [abierto, setAbierto] = useState(null);
   const [pestana, setPestana] = useState("listos"); // listos (ya en planta) | corte (aún en corte) | incompleta
@@ -208,7 +209,9 @@ export default function LotesPorIntegrarView({ db, functionsClient, T, pedidos }
   const esCerrado = (l) => l.estadoPedido === "cerrado" || l.estadoPedido === "terminado";
   const cerrados = todos.filter((l) => esCerrado(l) && !l.incompleto);
   const sinCerrados = (verCerrados ? todos : todos.filter((l) => !esCerrado(l))).filter((l) => !l.incompleto);
-  const incompletas = (verCerrados ? todos : todos.filter((l) => !esCerrado(l))).filter((l) => l.incompleto);
+  const incompletasTodas = (verCerrados ? todos : todos.filter((l) => !esCerrado(l))).filter((l) => l.incompleto);
+  const fichaCambio = incompletasTodas.filter((l) => l.fichaDistinta);
+  const incompletas = incompletasTodas.filter((l) => !l.fichaDistinta || verFichaDistinta);
   const enCorte = sinCerrados.filter((l) => l.ubicTipo === "corte");
   const fuera = sinCerrados.filter((l) => l.ubicTipo === "fuera");
   const listos = sinCerrados.filter((l) => l.ubicTipo === "planta" || l.ubicTipo === "desconocida" || (verFuera && l.ubicTipo === "fuera"));
@@ -298,6 +301,11 @@ export default function LotesPorIntegrarView({ db, functionsClient, T, pedidos }
                       <div style={{ flex: 1 }} />
                       <button style={btn(false)} onClick={(e) => { e.stopPropagation(); imprimir([l]); }}>🖨 Hoja de este lote</button>
                     </div>
+                    {l.extras?.length > 0 && (
+                      <div style={{ padding: "8px 12px", background: l.fichaDistinta ? "#FDF1DA" : "#EEF3F9", color: l.fichaDistinta ? "#8A5A0B" : "#2D5A8C", borderRadius: 8, fontSize: 12.5, marginBottom: 8 }}>
+                        {l.fichaDistinta ? "Ninguno de los insumos de la ficha actual se entregó en esta integración, así que la ficha probablemente cambió después. " : ""}En la integración sí se entregó: {l.extras.join(" · ")}{l.fichaDistinta ? "" : " (no está en la ficha actual)"}.
+                      </div>
+                    )}
                     <table style={{ width: "100%", borderCollapse: "collapse", background: T.white }}>
                       <thead><tr>{th(null, "Insumo")}{th(null, "Pide la ficha", true)}{th(null, "Entregado", true)}{th(null, "Falta entregar", true)}{th(null, "En bodega (disponible)", true)}{th(null, "Orden de compra")}{th(null, "Estado")}{th(null, "")}</tr></thead>
                       <tbody>
@@ -383,6 +391,7 @@ export default function LotesPorIntegrarView({ db, functionsClient, T, pedidos }
             <select value={fEstado} onChange={(e) => setFEstado(e.target.value)} style={campo}>
               <option value="">Estado: todos</option><option value="falta">Con insumo faltante</option><option value="comprar">Hay que comprar (sin OC)</option><option value="oc_ok">Viene en OC</option><option value="oc_tarde">OC llega tarde</option><option value="justo">Alcanza justo</option><option value="ok">Todo disponible</option>
             </select>
+            {pestana === "incompleta" && fichaCambio.length > 0 && <label style={{ fontSize: 12.5, color: T.slate, display: "flex", gap: 6, alignItems: "center", cursor: "pointer" }}><input type="checkbox" checked={verFichaDistinta} onChange={(e) => setVerFichaDistinta(e.target.checked)} />Ver {fichaCambio.length} lote{fichaCambio.length === 1 ? "" : "s"} cuya ficha parece haber cambiado</label>}
             {pestana === "listos" && fuera.length > 0 && <label style={{ fontSize: 12.5, color: T.slate, display: "flex", gap: 6, alignItems: "center", cursor: "pointer" }}><input type="checkbox" checked={verFuera} onChange={(e) => setVerFuera(e.target.checked)} />Ver {fuera.length} lote{fuera.length === 1 ? "" : "s"} que ya salieron de producción</label>}
             {cerrados.length > 0 && <label style={{ fontSize: 12.5, color: T.slate, display: "flex", gap: 6, alignItems: "center", cursor: "pointer" }}><input type="checkbox" checked={verCerrados} onChange={(e) => setVerCerrados(e.target.checked)} />Ver {cerrados.length} lote{cerrados.length === 1 ? "" : "s"} de pedidos cerrados</label>}
             <div style={{ flex: 1 }} />

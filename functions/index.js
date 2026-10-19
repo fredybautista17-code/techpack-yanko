@@ -10956,6 +10956,11 @@ exports.getLotesPorIntegrarBusint = onCall(
       m.set(cod, (m.get(cod) || 0) + num(f.Cant));
       entregadoLote.set(lote, m);
     });
+    const nombreCod = new Map();
+    inventario.forEach((f) => {
+      const c = clave(f?.Codcomp);
+      if (c) nombreCod.set(c, [String(f.Componente ?? "").trim(), String(f.Color ?? "").trim()].filter(Boolean).join(" · "));
+    });
     const incompletos = [];
     if (integComp.length) {
       candidatosInc.forEach((l) => {
@@ -10971,7 +10976,13 @@ exports.getLotesPorIntegrarBusint = onCall(
           const falta = requerido - entregado;
           if (falta > Math.max(0.5, requerido * 0.02)) faltan.push({ insumo: i.insumo, unidad: i.unidad, consumo: i.cant, requerido, entregado, falta, bodega: i.bodega, codcomps: i.codcomps });
         });
-        if (faltan.length) incompletos.push({ ...l, prendas: unidades, faltan });
+        if (!faltan.length) return;
+        // Si NINGUNO de los insumos de la ficha actual se entregó y sí se entregaron otros, lo más probable es que la ficha cambió
+        // después de integrar el lote (la ficha de hoy no es la que se usó): se marca para no mezclarlo con los faltantes reales
+        const codsFicha = new Set(ficha.flatMap((i) => i.codcomps || []));
+        const extras = [...new Set([...ent.keys()].filter((c) => ent.get(c) > 0 && !codsFicha.has(c)).map((c) => nombreCod.get(c) || `código ${c}`))].slice(0, 12);
+        const coinciden = ficha.filter((i) => (i.codcomps || []).some((c) => (ent.get(c) || 0) > 0)).length;
+        incompletos.push({ ...l, prendas: unidades, faltan, extras, fichaDistinta: coinciden === 0 && extras.length > 0 });
       });
       incompletos.sort((a, b) => (a.corte < b.corte ? 1 : -1));
       if (incompletos.length > 200) { incompletos.length = 200; avisos.push("Se muestran solo los 200 lotes con integración incompleta más recientes."); }
