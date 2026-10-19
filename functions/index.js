@@ -10781,6 +10781,7 @@ exports.getLotesPorIntegrarBusint = onCall(
       leer("maestro de proveedores", false), leer("ia_seguimientolotesv_data", false), leer("bmp - integracion comp", false),
     ]);
     const pedidosPendientes = await leer("pedidos_pendientes", false);
+    const plantaprocRef = await leer("bmp - entrada plantaproc ref", false);
     const num = (v) => (v !== undefined && v !== null && v !== "" && Number.isFinite(Number(v)) ? Number(v) : 0);
     const clave = (v) => String(v ?? "").trim().replace(/\.0+$/, "");
     // Dónde está cada lote (prendas por etapa, "Seguimiento a lotes" de Busint): corte, planta, semiterminado, producto terminado
@@ -10819,7 +10820,23 @@ exports.getLotesPorIntegrarBusint = onCall(
       if (!pendientesPedido.size || !(n > 0) || n >= maxPedidoPend) return false;
       return !(pendientesPedido.get(n) > 0);
     };
+    // Lote terminado: ya entró la TERMINACION (último proceso) por lo menos del 98 % de lo cortado/integrado.
+    // Es la misma señal que usa Busint: un lote solo sigue en el reporte de pendientes mientras le quedan procesos por hacer.
+    const terminacionLote = new Map(); // lote -> prendas con terminación entrada
+    plantaprocRef.forEach((f) => {
+      if (!/^\s*TERMINACION/i.test(String(f.Proceso ?? ""))) return;
+      const lote = loteDe(f);
+      const u = num(f.Total);
+      if (lote && u > 0) terminacionLote.set(lote, (terminacionLote.get(lote) || 0) + u);
+    });
+    const loteTerminado = (lote) => {
+      const term = terminacionLote.get(lote) || 0;
+      if (!(term > 0)) return false;
+      const base = prendasLote.get(lote)?.total || integradasLote.get(lote) || 0;
+      return base > 0 && term >= base * 0.98;
+    };
     const ubicDe = (lote) => {
+      if (loteTerminado(lote)) return { corte: 0, planta: 0, semi: 0, bpt: 0, est: true, despachado: true, terminado: true };
       if (pedidoDespachado(lotes.get(lote)?.pedido)) return { corte: 0, planta: 0, semi: 0, bpt: 0, est: true, despachado: true };
       const seg = ubicacionLote.get(lote);
       if (seg) return seg;

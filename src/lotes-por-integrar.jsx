@@ -39,7 +39,7 @@ export function cargarLotesPorIntegrar(functionsClient, { forzar = false } = {})
 export function clasificarUbicacion(ub) {
   if (!ub) return { tipo: "desconocida", texto: "Sin dato de etapa" };
   // Etapa deducida de las entradas a planta (sin cantidades por etapa)
-  if (ub.despachado) return { tipo: "fuera", texto: "Pedido ya despachado" };
+  if (ub.despachado) return { tipo: "fuera", texto: ub.terminado ? "Lote terminado" : "Pedido ya despachado" };
   if (ub.est) return ub.planta > 0 ? { tipo: "planta", texto: "En planta" } : { tipo: "corte", texto: "En corte" };
   const partes = [];
   if (ub.corte > 0) partes.push(`En corte (${Math.round(ub.corte)})`);
