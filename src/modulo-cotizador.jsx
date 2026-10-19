@@ -211,9 +211,15 @@ function volcarVinilo(v, filas, calc) {
 // Cada versión tiene un estado: sin estado/"borrador" -> "aprobacion" (enviada) ->
 // "aprobada" o "devuelta". Quien tiene el permiso cotizador_aprobar aprueba y el
 // precio con IVA se aplica solo al prototipo / referencia vinculada.
-const ultimaVersion = (c) => c.versiones?.[c.versiones.length - 1];
+// (2026-10-19) Las versiones "deshabilitadas" no cuentan como vigentes: la "última" es la última habilitada
+// (si todas están deshabilitadas, la última a secas).
+const ultimaVersion = (c) => {
+  const vs = c.versiones || [];
+  for (let i = vs.length - 1; i >= 0; i--) if (vs[i].estado !== "deshabilitada") return vs[i];
+  return vs[vs.length - 1];
+};
 const estadoUltima = (c) => ultimaVersion(c)?.estado || "borrador";
-const ICONO_ESTADO = { aprobacion: "⏳", aprobada: "✔", devuelta: "↩" };
+const ICONO_ESTADO = { aprobacion: "⏳", aprobada: "✔", devuelta: "↩", deshabilitada: "🚫" };
 
 // Cliente de una cápsula: el suyo o, si no tiene, el de alguna de sus referencias (igual que en ATLAS).
 const clienteCapsula = (cap) => cap.cliente || (cap.referencias || []).map((r) => r.cliente || r.colores?.[0]).find(Boolean) || "";
@@ -234,7 +240,7 @@ function etiquetaVinculo(v, protos, capsulas) {
 }
 
 // ─── EDITOR DE UNA COTIZACIÓN ────────────────────────────────────────────────
-function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsulas, cotizaciones, onGuardar, onVolver, onEliminar, onAplicar, onSucio, puedeBorrar, puedeAprobar, usuario, notify }) {
+function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsulas, cotizaciones, onGuardar, onVolver, onEliminar, onAplicar, onSucio, puedeBorrar, puedeAprobar, puedeDeshabilitar, usuario, notify }) {
   const [cot, setCot] = useState(inicial);
   const [sucio, setSucio] = useState(false);
   useEffect(() => { onSucio?.(sucio); }, [sucio]); // eslint-disable-line
@@ -251,7 +257,7 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
   const ver = cot.versiones[cot.activa];
   const calc = useMemo(() => calcularCotizacion(ver.v), [ver.v]);
   const estadoV = ver.estado || "borrador";
-  const bloqueada = (estadoV === "aprobacion" && !puedeAprobar) || estadoV === "aprobada"; // quien envía no edita mientras espera; el aprobador sí; una aprobada se cambia con versión nueva
+  const bloqueada = (estadoV === "aprobacion" && !puedeAprobar) || estadoV === "aprobada" || estadoV === "deshabilitada"; // quien envía no edita mientras espera; el aprobador sí; una aprobada se cambia con versión nueva
 
   function mutar(fn) {
     setCot((c) => {
@@ -493,6 +499,25 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
     conEvento(n, `reabrió la V${vv.numero}`);
     await persistir(n, `V${vv.numero} reabierta`);
   }
+  // (2026-10-19, a pedido de Fredy) Deshabilitar una versión aprobada (permiso aparte: cotizador_deshabilitar). Queda en el
+  // historial, ya no cuenta como vigente y NO quita sola el precio ya aplicado al prototipo/referencia.
+  async function deshabilitar() {
+    const ap = cot.precioAplicado && cot.precioAplicado.version === ver.numero;
+    if (!window.confirm(`¿Deshabilitar la V${ver.numero}? Ya no contará como cotización vigente.${ap ? `\n\nOJO: el precio ${fmtCOP(cot.precioAplicado.valor)} sigue aplicado a ${cot.precioAplicado.destino}; no se quita solo, cámbialo allá si hace falta.` : ""}`)) return;
+    const n = limpio(cot);
+    const vv = n.versiones[n.activa];
+    vv.estado = "deshabilitada"; vv.deshabilitada = { por: usuario || "", fecha: new Date().toISOString() };
+    conEvento(n, `deshabilitó la V${vv.numero}`);
+    await persistir(n, `V${vv.numero} deshabilitada`);
+  }
+  async function habilitar() {
+    if (!window.confirm(`¿Habilitar de nuevo la V${ver.numero}? Vuelve a quedar como versión aprobada.`)) return;
+    const n = limpio(cot);
+    const vv = n.versiones[n.activa];
+    vv.estado = "aprobada"; delete vv.deshabilitada;
+    conEvento(n, `habilitó de nuevo la V${vv.numero}`);
+    await persistir(n, `V${vv.numero} habilitada`);
+  }
   async function devolver() {
     if (!comentario.trim()) { notify?.("Escribe qué debe corregir quien la envió"); return; }
     const n = limpio(cot);
@@ -572,6 +597,18 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
           </div>
           <button onClick={() => enviarDropbox()} disabled={subiendoDropbox} title={ver.dropbox ? `Ya está en Dropbox: ${ver.dropbox.ruta}` : `Guarda el libro con las versiones aprobadas (una hoja por versión) en la carpeta ${CARPETA_DISENO}`} style={{ ...btn(C.white, C.blue, C.blue), opacity: subiendoDropbox ? 0.5 : 1 }}>{subiendoDropbox ? "Subiendo…" : ver.dropbox ? "☁ Reenviar a Dropbox" : "☁ Enviar a Dropbox"}</button>
           {puedeAprobar && <button onClick={reabrir} style={btn(C.white, C.amber, C.amber)}>Reabrir esta versión</button>}
+          {puedeDeshabilitar && <button onClick={deshabilitar} style={btn(C.white, C.red, C.red)}>🚫 Deshabilitar</button>}
+          <button onClick={nuevaVersion} style={btn(C.white, C.green, C.green)}>+ Crear versión nueva para editar</button>
+        </div>
+      )}
+      {estadoV === "deshabilitada" && (
+        <div style={{ display: "flex", alignItems: "center", gap: 12, background: "#ECE9E4", border: `1.5px solid ${C.border}`, borderRadius: 14, padding: "12px 16px", marginBottom: 14 }}>
+          <span style={{ fontSize: 20 }}>🚫</span>
+          <div style={{ flex: 1, fontSize: 13 }}>
+            <b style={{ color: C.slate }}>Versión deshabilitada</b>{ver.deshabilitada?.por ? ` por ${ver.deshabilitada.por}` : ""}{ver.deshabilitada?.fecha ? ` el ${fmtFecha(ver.deshabilitada.fecha.slice(0, 10))}` : ""}. Ya no cuenta como cotización vigente.
+            {cot.precioAplicado && cot.precioAplicado.version === ver.numero ? ` OJO: ${fmtCOP(cot.precioAplicado.valor)} sigue aplicado a ${cot.precioAplicado.destino}; no se quita solo.` : ""}
+          </div>
+          {puedeDeshabilitar && <button onClick={habilitar} style={btn(C.white, C.green, C.green)}>Habilitar de nuevo</button>}
           <button onClick={nuevaVersion} style={btn(C.white, C.green, C.green)}>+ Crear versión nueva para editar</button>
         </div>
       )}
@@ -785,8 +822,8 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
               </div>
             )}
             {puedeAprobar ? (
-              estadoV === "aprobada" ? (
-                <div style={{ marginTop: 16, padding: "12px 14px", borderRadius: 12, background: "rgba(45,158,107,.25)", fontSize: 13, fontWeight: 700 }}>✔ Versión aprobada</div>
+              estadoV === "aprobada" || estadoV === "deshabilitada" ? (
+                <div style={{ marginTop: 16, padding: "12px 14px", borderRadius: 12, background: estadoV === "aprobada" ? "rgba(45,158,107,.25)" : "rgba(255,255,255,.14)", fontSize: 13, fontWeight: 700 }}>{estadoV === "aprobada" ? "✔ Versión aprobada" : "🚫 Versión deshabilitada"}</div>
               ) : (
                 <>
                   <button onClick={() => (vinculoActual ? pedirAprobar(vinculoActual) : setVincular("aprobar"))}
@@ -799,8 +836,8 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
                 </>
               )
             ) : (
-              estadoV === "aprobada" ? (
-                <div style={{ marginTop: 16, padding: "12px 14px", borderRadius: 12, background: "rgba(45,158,107,.25)", fontSize: 13, fontWeight: 700 }}>✔ Versión aprobada</div>
+              estadoV === "aprobada" || estadoV === "deshabilitada" ? (
+                <div style={{ marginTop: 16, padding: "12px 14px", borderRadius: 12, background: estadoV === "aprobada" ? "rgba(45,158,107,.25)" : "rgba(255,255,255,.14)", fontSize: 13, fontWeight: 700 }}>{estadoV === "aprobada" ? "✔ Versión aprobada" : "🚫 Versión deshabilitada"}</div>
               ) : estadoV === "aprobacion" ? (
                 <>
                   <div style={{ marginTop: 16, padding: "12px 14px", borderRadius: 12, background: "rgba(242,184,75,.22)", fontSize: 13, fontWeight: 700 }}>⏳ Esperando aprobación</div>
@@ -1572,6 +1609,7 @@ function estadoCotizacion(c) {
   const e = estadoUltima(c);
   if (e === "aprobacion") return { txt: "En aprobación", bg: C.amberBg, color: C.amber };
   if (e === "devuelta") return { txt: "Devuelta", bg: C.redBg, color: C.red };
+  if (e === "deshabilitada") return { txt: "Deshabilitada", bg: "#ECE9E4", color: C.slate };
   if (c.precioAplicado) return { txt: "Aplicado", bg: C.greenBg, color: C.green };
   if (c.vinculo) return { txt: "Vinculada", bg: C.blueBg, color: C.blue };
   return { txt: "Sin aplicar", bg: C.amberBg, color: C.amber };
@@ -1960,7 +1998,7 @@ function MenuCotizaciones({ activo, onIr, onVolver, onLogout, currentUser, nApro
   );
 }
 
-export default function CotizadorView({ currentUser, config, protos, capsulas, iniciarDesde, onIniciarConsumido, onAplicarPrecio, onVolver, onLogout, puedeBorrar, puedeAprobar, notify }) {
+export default function CotizadorView({ currentUser, config, protos, capsulas, iniciarDesde, onIniciarConsumido, onAplicarPrecio, onVolver, onLogout, puedeBorrar, puedeAprobar, puedeDeshabilitar, notify }) {
   const [edSucio, setEdSucio] = useState(false); // el editor abierto tiene cambios sin guardar
   const [tab, setTab] = useState("inicio");
   const [minis, setMinis] = useState([]); // minicotizaciones de vinilo guardadas (solo para el conteo del inicio)
@@ -2105,7 +2143,7 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
       <div style={{ flex: 1, minWidth: 0, padding: "24px 34px", boxSizing: "border-box" }}>
       {edit ? (
         <CotizacionEditor key={edit.id} inicial={edit} minis={minis} parametros={parametros} clientes={clientesApp} protos={protos} capsulas={capsulas} cotizaciones={cotizaciones}
-          onGuardar={guardar} onVolver={() => { setEdit(null); setEdSucio(false); }} onEliminar={pedirBorrar} puedeBorrar={puedeBorrar} onSucio={setEdSucio} puedeAprobar={puedeAprobar} usuario={currentUser?.name || ""} notify={notify}
+          onGuardar={guardar} onVolver={() => { setEdit(null); setEdSucio(false); }} onEliminar={pedirBorrar} puedeBorrar={puedeBorrar} onSucio={setEdSucio} puedeAprobar={puedeAprobar} puedeDeshabilitar={puedeDeshabilitar} usuario={currentUser?.name || ""} notify={notify}
           onAplicar={(destino, valor) => onAplicarPrecio(destino, valor)} />
       ) : (
       <>

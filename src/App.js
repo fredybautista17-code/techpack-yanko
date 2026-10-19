@@ -13390,7 +13390,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
   const GRUPOS_MODULOS_DEF = [
     { area: "💰 Contabilidad", items: [["contabilidad", "Contabilidad"], ["contabilidad_bases_dado_por_cumplido", "Puede crear y configurar Bases (Dado por Cumplido)"], ["contabilidad_sincronizar_dado_por_cumplido", "Puede sincronizar con Busint (Buscar lotes nuevos)"]] },
     // (2026-10-16, a pedido de Fredy) El acceso al módulo sigue en la lista de Diseño ("cotizador"); estos dos son permisos extra por rol.
-    { area: "🧮 Cotizaciones", items: [["cotizador_borrar", "Puede borrar cotizaciones"], ["cotizador_aprobar", "Puede aprobar cotizaciones (y aplicar el precio)"]] },
+    { area: "🧮 Cotizaciones", items: [["cotizador_borrar", "Puede borrar cotizaciones"], ["cotizador_aprobar", "Puede aprobar cotizaciones (y aplicar el precio)"], ["cotizador_deshabilitar", "Puede deshabilitar cotizaciones aprobadas"]] },
     { area: "📋 Planeación", items: [["planeacion", "Planeación"]] },
     { area: "🏭 Planta", items: [["planta", "Planta"]] },
     { area: "📦 Bodega", items: [["bodega", "Bodega"]] },
@@ -18411,6 +18411,8 @@ function AppInner() {
   // (2026-10-16, a pedido de Fredy) Borrar y aprobar cotizaciones: permisos aparte por rol (el admin siempre).
   const canBorrarCotizacion = canAccessCotizador && moduloVisible(userRoleData, "cotizador_borrar", currentUser?.isAdmin);
   const canAprobarCotizacion = canAccessCotizador && moduloVisible(userRoleData, "cotizador_aprobar", currentUser?.isAdmin);
+  // (2026-10-19, a pedido de Fredy) Deshabilitar una cotización aprobada: permiso aparte por rol (el admin siempre).
+  const canDeshabilitarCotizacion = canAccessCotizador && moduloVisible(userRoleData, "cotizador_deshabilitar", currentUser?.isAdmin);
   // (2026-10-16) Cuántas cotizaciones esperan aprobación (solo para quien aprueba): tarjeta del Inicio.
   const [cotPorAprobar, setCotPorAprobar] = useState(0);
   useEffect(() => {
@@ -18697,7 +18699,7 @@ function AppInner() {
       <CotizadorView currentUser={currentUser} config={config} protos={protosVisibles} capsulas={capsulasVisibles}
         iniciarDesde={cotizadorInicio} onIniciarConsumido={() => setCotizadorInicio(null)}
         onAplicarPrecio={aplicarPrecioCotizador} onVolver={() => setModuloActivo("diseno")}
-        puedeBorrar={canBorrarCotizacion} puedeAprobar={canAprobarCotizacion}
+        puedeBorrar={canBorrarCotizacion} puedeAprobar={canAprobarCotizacion} puedeDeshabilitar={canDeshabilitarCotizacion}
         onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }}
         notify={(msg) => notify({ id: uid(), icon: "🧮", title: "Cotizador", msg })} />
     );
