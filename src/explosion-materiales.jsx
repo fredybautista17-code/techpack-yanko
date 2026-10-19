@@ -28,6 +28,10 @@ const normTxt = (t) => String(t || "").normalize("NFD").replace(/[̀-ͯ]/g, "").
 const hoyISO = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
 const sumarDias = (iso, d) => { const f = new Date(iso + "T12:00:00"); f.setDate(f.getDate() + d); return f.toISOString().slice(0, 10); };
 const LS = "atlasExplosion_opciones";
+// (2026-10-19, a pedido de Fredy) Un pedido con el 95 % o más ya cortado se marca "casi cortado":
+// el resto suele no cortarse (se cortaron 290 de 300). Si ya no se va a cortar, se usa
+// "Marcar Terminado" en el pedido y deja de pedir tela.
+const CASI_CORTADO = 0.05;
 let cacheOC = null; // { en: Date.now(), datos }
 
 function leerOpciones() {
@@ -543,7 +547,7 @@ export default function ExplosionMaterialesView({ db, functionsClient, T, pedido
                       <td style={{ ...td, fontWeight: 700 }}>{p.numero}</td>
                       <td style={td}>{p.cliente}</td>
                       <td style={{ ...td, ...nu }}>{fmt(total, 0)}</td>
-                      <td style={{ ...td, ...nu }}>{fmt(unidades, 0)}</td>
+                      <td style={{ ...td, ...nu }}>{fmt(unidades, 0)}{unidades > 0 && total > 0 && unidades <= total * CASI_CORTADO ? <span title="Casi todo cortado: si ya no se va a cortar el resto, abre el pedido y usa Marcar Terminado" style={{ marginLeft: 6, padding: "1px 7px", borderRadius: 10, background: "#FFF3CD", color: "#8A6100", fontSize: 11, fontWeight: 700 }}>casi cortado</span> : null}</td>
                       <td style={td}>{p.fechaDespacho || "—"}</td>
                     </tr>
                   ))}
@@ -580,6 +584,16 @@ export default function ExplosionMaterialesView({ db, functionsClient, T, pedido
           <div style={{ fontSize: 13, marginTop: 4 }}>No hay prendas por cortar ni por integrar, así que no hay materiales por pedir. Abajo ves cómo se calculó, pedido por pedido.</div>
         </div>
       )}
+      {datos && !datos.todoCortado && (datos.resumenCorte || []).filter((r) => r.usado > 0 && r.total > 0 && r.usado <= r.total * CASI_CORTADO).length > 0 && (
+        <div style={{ background: "#FFF8E1", border: "1px solid #F2D58A", borderRadius: 14, padding: "12px 16px", marginBottom: 14, color: "#6B4E00", fontSize: 13.5 }}>
+          <b>✂ Casi cortados — revisa si ya no se va a cortar el resto</b>
+          {(datos.resumenCorte || []).filter((r) => r.usado > 0 && r.total > 0 && r.usado <= r.total * CASI_CORTADO).map((r) => (
+            <div key={r.pedido}>• Pedido {r.pedido} · {r.cliente}: faltan {fmt(r.usado, 0)} de {fmt(r.total, 0)} por cortar ({fmt((r.total - r.usado) / r.total * 100, 1)} % ya cortado)</div>
+          ))}
+          <div style={{ marginTop: 4, fontSize: 12.5 }}>Si ya no se corta el resto, abre el pedido y usa 🏁 Marcar Terminado: deja de pedir tela y sale de esta lista.</div>
+        </div>
+      )}
+
       {datos && datos.resumenCorte && datos.resumenCorte.length > 0 && (
         <div style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, marginBottom: 14, overflow: "hidden" }}>
           <div onClick={() => setVerCorte((v) => !v || datos.todoCortado)} style={{ padding: "12px 16px", cursor: "pointer", display: "flex", gap: 10, alignItems: "center" }}>
