@@ -10820,7 +10820,7 @@ exports.getLotesPorIntegrarBusint = onCall(
       if (!pendientesPedido.size || !(n > 0) || n >= maxPedidoPend) return false;
       return !(pendientesPedido.get(n) > 0);
     };
-    // Lote terminado: ya entró la TERMINACION (último proceso) por lo menos del 98 % de lo cortado/integrado.
+    // Lote terminado: ya entró la TERMINACION (último proceso) por lo menos del 95 % de lo cortado/integrado (el lote 7120: 222 de 227 y Busint ya lo da por terminado).
     // Es la misma señal que usa Busint: un lote solo sigue en el reporte de pendientes mientras le quedan procesos por hacer.
     const terminacionLote = new Map(); // lote -> prendas con terminación entrada
     plantaprocRef.forEach((f) => {
@@ -10833,7 +10833,7 @@ exports.getLotesPorIntegrarBusint = onCall(
       const term = terminacionLote.get(lote) || 0;
       if (!(term > 0)) return false;
       const base = prendasLote.get(lote)?.total || integradasLote.get(lote) || 0;
-      return base > 0 && term >= base * 0.98;
+      return base > 0 && term >= base * 0.95;
     };
     const ubicDe = (lote) => {
       if (loteTerminado(lote)) return { corte: 0, planta: 0, semi: 0, bpt: 0, est: true, despachado: true, terminado: true };
