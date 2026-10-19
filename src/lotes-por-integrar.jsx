@@ -38,6 +38,8 @@ export function cargarLotesPorIntegrar(functionsClient, { forzar = false } = {})
 // para integrar; si todo sigue en corte, los insumos se necesitarán cuando salga a planta.
 export function clasificarUbicacion(ub) {
   if (!ub) return { tipo: "desconocida", texto: "Sin dato de etapa" };
+  // Etapa deducida de las entradas a planta (sin cantidades por etapa)
+  if (ub.est) return ub.planta > 0 ? { tipo: "planta", texto: "En planta" } : { tipo: "corte", texto: "En corte" };
   const partes = [];
   if (ub.corte > 0) partes.push(`En corte (${Math.round(ub.corte)})`);
   if (ub.planta > 0) partes.push(`En planta (${Math.round(ub.planta)})`);

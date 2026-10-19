@@ -10789,11 +10789,26 @@ exports.getLotesPorIntegrarBusint = onCall(
       if (!lote) return;
       ubicacionLote.set(lote, { corte: num(f.Inventario_corte), planta: num(f.Inventario_en_planta), semi: num(f.Inventario_en_semiterminado), bpt: num(f.Inventario_en_bodega_de_producto_terminado) });
     });
-    const ubicDe = (lote) => ubicacionLote.get(lote) || (ubicacionLote.size ? { corte: 0, planta: 0, semi: 0, bpt: 0 } : null); // lote que no está en el seguimiento = ya salió de producción
-    if (!ubicacionLote.size) avisos.push("No se pudo leer en qué etapa está cada lote (seguimiento de lotes): no se puede separar los lotes en corte de los que ya están en planta.");
     const refSG = (v) => String(v ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
     const loteDe = (f) => clave(valorFlexible(f, ["NumLote", "Numlote", "numlote", "Nomlote", "NomLote"]));
     const sumaTallas = (f) => Object.keys(f).reduce((s, k) => (/^T\d+$/i.test(k) ? s + num(f[k]) : s), 0);
+    // OJO: "ia_seguimientolotesv_data" en Busint está congelada (no trae los lotes cortados recientemente). Por eso la etapa
+    // se deduce de las entradas a planta: con entrada a planta el lote está en planta; sin ninguna, sigue en corte.
+    // El seguimiento solo se usa cuando el lote sí aparece en esa tabla.
+    const lotesConEntrada = new Set();
+    entPlantaRef.forEach((f) => {
+      const lote = loteDe(f);
+      if (lote && sumaTallas(f) > 0) lotesConEntrada.add(lote);
+    });
+    const ubicDe = (lote) => {
+      const seg = ubicacionLote.get(lote);
+      if (seg) return seg;
+      if (!entPlantaRef.length) return null;
+      return lotesConEntrada.has(lote)
+        ? { corte: 0, planta: 1, semi: 0, bpt: 0, est: true }
+        : { corte: 1, planta: 0, semi: 0, bpt: 0, est: true };
+    };
+    if (!ubicacionLote.size && !entPlantaRef.length) avisos.push("No se pudo leer en qué etapa está cada lote (entradas a planta / seguimiento de lotes): no se puede separar los lotes en corte de los que ya están en planta.");
 
     // 1) Lotes (orden de producción)
     const lotes = new Map();
