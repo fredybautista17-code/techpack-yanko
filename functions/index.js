@@ -10796,9 +10796,11 @@ exports.getLotesPorIntegrarBusint = onCall(
     // se deduce de las entradas a planta: con entrada a planta el lote está en planta; sin ninguna, sigue en corte.
     // El seguimiento solo se usa cuando el lote sí aparece en esa tabla.
     const lotesConEntrada = new Set();
+    const entradasTotal = new Map(); // lote -> prendas que ya entraron a planta (todas las entradas)
     entPlantaRef.forEach((f) => {
       const lote = loteDe(f);
-      if (lote && sumaTallas(f) > 0) lotesConEntrada.add(lote);
+      const u = lote ? sumaTallas(f) : 0;
+      if (u > 0) { lotesConEntrada.add(lote); entradasTotal.set(lote, (entradasTotal.get(lote) || 0) + u); }
     });
     const ubicDe = (lote) => {
       const seg = ubicacionLote.get(lote);
@@ -10886,12 +10888,22 @@ exports.getLotesPorIntegrarBusint = onCall(
       const p = prendasLote.get(l.lote);
       const cortadas = p && p.total > 0 ? p.total : null;
       const tiene = conIntegracion.has(l.lote);
-      const parcial = tiene && cortadas !== null && integ < cortadas * 0.9;
+      const parcial = tiene && cortadas !== null && integ < cortadas * 0.98;
       if (tiene && !parcial) return;
       const colores = p ? [...p.colores.entries()].filter(([, u]) => u > 0).map(([c, u]) => [c, u]) : [];
+      // Etapa de lo que falta por integrar: si ya entró a planta más de lo integrado, esa parte está en planta; el resto sigue en corte
+      let ubic = ubicDe(l.lote), divPlanta = null, divCorte = null;
+      if (ubic && ubic.est && cortadas !== null) {
+        const pend = Math.max(0, cortadas - integ);
+        const tol = Math.max(2, cortadas * 0.02);
+        const enPlanta = Math.max(0, Math.min(pend, (entradasTotal.get(l.lote) || 0) - integ));
+        const enCorte = pend - enPlanta;
+        if (enPlanta > tol && enCorte > tol) { divPlanta = Math.round(enPlanta); divCorte = Math.round(enCorte); ubic = { corte: 0, planta: 1, semi: 0, bpt: 0, est: true }; }
+        else ubic = enPlanta > tol || enCorte <= tol ? { corte: 0, planta: 1, semi: 0, bpt: 0, est: true } : { corte: 1, planta: 0, semi: 0, bpt: 0, est: true };
+      }
       porIntegrar.push({
         lote: l.lote, ref: l.ref, pedido: l.pedido || null, corte: l.corte,
-        clienteObs: clienteDesdeObservacion(l.obs), ubic: ubicDe(l.lote), prendas: cortadas, integradas: tiene ? integ : 0, parcial, colores,
+        clienteObs: clienteDesdeObservacion(l.obs), ubic, divPlanta, divCorte, prendas: cortadas, integradas: tiene ? integ : 0, parcial, colores,
       });
     });
     porIntegrar.sort((a, b) => (a.corte < b.corte ? -1 : a.corte > b.corte ? 1 : Number(a.lote) - Number(b.lote)));

@@ -75,9 +75,9 @@ export function asignarInventario({ lotes, fichas, oc }) {
   orden.forEach((l) => {
     const ficha = fichas?.[l.ref] || [];
     const pend = l.prendas == null ? null : Math.max(0, l.prendas - (l.integradas || 0));
-    if (!ficha.length) { resultado.set(l.lote, { ...l, pendientes: pend, insumos: [], estado: "sin_ficha" }); return; }
+    if (!ficha.length) { resultado.set(l.id ?? l.lote, { ...l, pendientes: pend, insumos: [], estado: "sin_ficha" }); return; }
     if (pend == null) {
-      resultado.set(l.lote, { ...l, pendientes: null, estado: "sin_prendas", insumos: ficha.map((i) => ({ insumo: i.insumo, unidad: i.unidad, consumo: i.cant, necesito: null, bodega: i.bodega, usaBodega: null, falta: null, oc: [], comprar: null, estado: "sin_prendas" })) });
+      resultado.set(l.id ?? l.lote, { ...l, pendientes: null, estado: "sin_prendas", insumos: ficha.map((i) => ({ insumo: i.insumo, unidad: i.unidad, consumo: i.cant, necesito: null, bodega: i.bodega, usaBodega: null, falta: null, oc: [], comprar: null, estado: "sin_prendas" })) });
       return;
     }
     let peor = "ok";
@@ -110,9 +110,9 @@ export function asignarInventario({ lotes, fichas, oc }) {
     });
     const nFalta = insumos.filter((x) => x.estado === "comprar").length;
     const nOc = insumos.filter((x) => x.estado === "oc_ok" || x.estado === "oc_tarde").length;
-    resultado.set(l.lote, { ...l, pendientes: pend, insumos, estado: peor, nFalta, nOc });
+    resultado.set(l.id ?? l.lote, { ...l, pendientes: pend, insumos, estado: peor, nFalta, nOc });
   });
-  return lotes.map((l) => resultado.get(l.lote));
+  return lotes.map((l) => resultado.get(l.id ?? l.lote));
 }
 
 const ESTADOS = {
@@ -188,7 +188,16 @@ export default function LotesPorIntegrarView({ db, functionsClient, T, pedidos }
 
   const todos = useMemo(() => {
     if (!datos) return [];
-    const base = (datos.lotes || []).map((l) => {
+    // Un lote con una parte ya en planta y otra todavía en corte sale en las dos pestañas, cada una con sus prendas
+    const lotesDivididos = (datos.lotes || []).flatMap((l) => {
+      if (!(l.divPlanta > 0 && l.divCorte > 0)) return [l];
+      const ent = l.integradas || 0;
+      return [
+        { ...l, prendas: ent + l.divPlanta, parteDe: "planta", ubic: { corte: 0, planta: 1, semi: 0, bpt: 0, est: true } },
+        { ...l, id: `${l.lote}-corte`, prendas: ent + l.divCorte, parteDe: "corte", ubic: { corte: 1, planta: 0, semi: 0, bpt: 0, est: true } },
+      ];
+    });
+    const base = lotesDivididos.map((l) => {
       const p = l.pedido ? pedidoPorNumero.get(String(l.pedido)) : null;
       const u = clasificarUbicacion(l.ubic ?? l.ub);
       return { ...l, ubicTipo: u.tipo, ubicTexto: u.texto, cliente: p?.cliente || l.clienteObs || "(sin cliente)", despacho: p?.fechaDespacho || null, estadoPedido: p?.estado || null, diasSin: datos.hoy ? Math.max(0, diasEntre(l.corte, datos.hoy)) : 0 };
@@ -284,8 +293,8 @@ export default function LotesPorIntegrarView({ db, functionsClient, T, pedidos }
         <thead><tr>{th("lote", "Lote")}{th("ref", "Referencia")}{th("cliente", "Pedido · Cliente")}{th("despacho", "Despacho")}{th("dias", "Integrado hace", true)}{th(null, "Insumos que faltan")}{th("estado", "Estado")}</tr></thead>
         <tbody>
           {visibles.map((l) => (
-            <React.Fragment key={l.lote}>
-              <tr onClick={() => setAbierto(abierto === l.lote ? null : l.lote)} style={{ cursor: "pointer", background: abierto === l.lote ? "#F3F7FB" : "transparent" }}>
+            <React.Fragment key={l.id ?? l.lote}>
+              <tr onClick={() => setAbierto(abierto === (l.id ?? l.lote) ? null : (l.id ?? l.lote))} style={{ cursor: "pointer", background: abierto === (l.id ?? l.lote) ? "#F3F7FB" : "transparent" }}>
                 <td style={{ ...td, fontWeight: 800, fontSize: 15 }}>{l.lote}</td>
                 <td style={td}>{l.ref}</td>
                 <td style={td}>{l.pedido || "—"} · <span style={{ color: T.slate, fontSize: 12 }}>{l.cliente}</span></td>
@@ -294,7 +303,7 @@ export default function LotesPorIntegrarView({ db, functionsClient, T, pedidos }
                 <td style={{ ...td, fontSize: 12.5 }}>{l.insumos.slice(0, 2).map((i) => `${i.insumo} (${fmt(i.necesito)} ${i.unidad})`).join(" · ")}{l.insumos.length > 2 ? ` · y ${l.insumos.length - 2} más` : ""}</td>
                 <td style={td}><Pill e={l.estado} mapa={ESTADO_INS_INC} /></td>
               </tr>
-              {abierto === l.lote && (
+              {abierto === (l.id ?? l.lote) && (
                 <tr><td colSpan={7} style={{ padding: 0, background: "#F3F7FB", borderBottom: `1px solid ${T.border}` }}>
                   <div style={{ padding: "12px 18px" }}>
                     <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
@@ -407,8 +416,8 @@ export default function LotesPorIntegrarView({ db, functionsClient, T, pedidos }
               <thead><tr>{th("lote", "Lote")}{th("ref", "Referencia")}{th(null, "Dónde está")}{th("cliente", "Pedido · Cliente")}{th("despacho", "Despacho")}{th("corte", "Corte")}{th("dias", "Días desde el corte", true)}{th("prendas", "Prendas", true)}{th("estado", "Insumos en bodega")}</tr></thead>
               <tbody>
                 {visibles.map((l) => (
-                  <React.Fragment key={l.lote}>
-                    <tr onClick={() => setAbierto(abierto === l.lote ? null : l.lote)} style={{ cursor: "pointer", background: abierto === l.lote ? "#F3F7FB" : "transparent" }}>
+                  <React.Fragment key={l.id ?? l.lote}>
+                    <tr onClick={() => setAbierto(abierto === (l.id ?? l.lote) ? null : (l.id ?? l.lote))} style={{ cursor: "pointer", background: abierto === (l.id ?? l.lote) ? "#F3F7FB" : "transparent" }}>
                       <td style={{ ...td, fontWeight: 800, fontSize: 15 }}>{l.lote}</td>
                       <td style={td}>{l.ref}</td>
                       <td style={{ ...td, fontSize: 12, color: l.ubicTipo === "corte" ? "#2D5A8C" : T.ink }}>{l.ubicTexto}</td>
@@ -416,14 +425,14 @@ export default function LotesPorIntegrarView({ db, functionsClient, T, pedidos }
                       <td style={td}>{fmtFecha(l.despacho)}</td>
                       <td style={td}>{fmtFecha(l.corte)}</td>
                       <td style={{ ...td, textAlign: "right", fontWeight: 700 }}>{l.diasSin}</td>
-                      <td style={{ ...td, textAlign: "right" }}>{l.pendientes == null ? "—" : fmt(l.pendientes, 0)}{l.parcial ? <div style={{ fontSize: 10.5, color: "#A8660B" }}>integración parcial</div> : null}</td>
+                      <td style={{ ...td, textAlign: "right" }}>{l.pendientes == null ? "—" : fmt(l.pendientes, 0)}{l.parcial || l.parteDe ? <div style={{ fontSize: 10.5, color: "#A8660B" }}>{l.parteDe ? `parte del lote ${l.parteDe === "planta" ? "en planta" : "en corte"}` : "integración parcial"}</div> : null}</td>
                       <td style={td}>
                         {l.ubicTipo === "corte" && !["sin_ficha", "sin_prendas"].includes(l.estado)
                           ? <><span style={{ display: "inline-block", padding: "3px 11px", borderRadius: 20, fontSize: 11.5, fontWeight: 800, background: "#E6EEF8", color: "#2D5A8C", whiteSpace: "nowrap" }}>● Aún en corte</span><div style={{ fontSize: 11.5, color: T.slate, marginTop: 3 }}>{textoAnticipado(l)}</div></>
                           : <Pill e={l.estado} extra={textoLote(l)} />}
                       </td>
                     </tr>
-                    {abierto === l.lote && (
+                    {abierto === (l.id ?? l.lote) && (
                       <tr><td colSpan={9} style={{ padding: 0, background: "#F3F7FB", borderBottom: `1px solid ${T.border}` }}>
                         <div style={{ padding: "12px 18px" }}>
                           <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
