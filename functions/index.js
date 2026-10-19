@@ -10780,6 +10780,7 @@ exports.getLotesPorIntegrarBusint = onCall(
       leer("orden de compra", false), leer("orden de compra detalles", false), leer("orden de compra detallesdxc", false),
       leer("maestro de proveedores", false), leer("ia_seguimientolotesv_data", false), leer("bmp - integracion comp", false),
     ]);
+    const pedidosPendientes = await leer("pedidos_pendientes", false);
     const num = (v) => (v !== undefined && v !== null && v !== "" && Number.isFinite(Number(v)) ? Number(v) : 0);
     const clave = (v) => String(v ?? "").trim().replace(/\.0+$/, "");
     // Dónde está cada lote (prendas por etapa, "Seguimiento a lotes" de Busint): corte, planta, semiterminado, producto terminado
@@ -10802,7 +10803,24 @@ exports.getLotesPorIntegrarBusint = onCall(
       const u = lote ? sumaTallas(f) : 0;
       if (u > 0) { lotesConEntrada.add(lote); entradasTotal.set(lote, (entradasTotal.get(lote) || 0) + u); }
     });
+    // Pedidos despachados: un pedido que ya no está en "pedidos_pendientes" (o con 0 unidades pendientes) salió completo.
+    // Solo se aplica a pedidos con número menor al más alto de la tabla, para que una tabla atrasada no marque como despachados los pedidos nuevos.
+    const pendientesPedido = new Map();
+    let maxPedidoPend = 0;
+    pedidosPendientes.forEach((f) => {
+      const n = Number(clave(f.order_id));
+      if (!(n > 0)) return;
+      pendientesPedido.set(n, num(f.pending_units));
+      if (n > maxPedidoPend) maxPedidoPend = n;
+    });
+    if (!pendientesPedido.size) avisos.push("No se pudo leer los pedidos pendientes de Busint: no se puede saber cuáles lotes ya se despacharon.");
+    const pedidoDespachado = (pedido) => {
+      const n = Number(clave(pedido));
+      if (!pendientesPedido.size || !(n > 0) || n >= maxPedidoPend) return false;
+      return !(pendientesPedido.get(n) > 0);
+    };
     const ubicDe = (lote) => {
+      if (pedidoDespachado(lotes.get(lote)?.pedido)) return { corte: 0, planta: 0, semi: 0, bpt: 0, est: true, despachado: true };
       const seg = ubicacionLote.get(lote);
       if (seg) return seg;
       if (!entPlantaRef.length) return null;
@@ -10893,7 +10911,7 @@ exports.getLotesPorIntegrarBusint = onCall(
       const colores = p ? [...p.colores.entries()].filter(([, u]) => u > 0).map(([c, u]) => [c, u]) : [];
       // Etapa de lo que falta por integrar: si ya entró a planta más de lo integrado, esa parte está en planta; el resto sigue en corte
       let ubic = ubicDe(l.lote), divPlanta = null, divCorte = null;
-      if (ubic && ubic.est && cortadas !== null) {
+      if (ubic && ubic.est && !ubic.despachado && cortadas !== null) {
         const pend = Math.max(0, cortadas - integ);
         const tol = Math.max(2, cortadas * 0.02);
         const enPlanta = Math.max(0, Math.min(pend, (entradasTotal.get(l.lote) || 0) - integ));
