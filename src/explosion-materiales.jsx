@@ -157,9 +157,11 @@ export function calcularExplosion({ lineas, fichas, enCamino, mermaTela, mermaIn
       }
       const cant = l.unidades * t.consumo * (1 + mermaTela / 100);
       a.necesito += cant;
-      a.usos.push({ pedido: l.pedido, ref: l.ref, color: l.color, unidades: l.unidades, consumo: t.consumo, cant });
+      // (2026-10-19, a pedido de Fredy) Una prenda puede llevar dos telas (ej. VALERY 004 + MARLY 512): se anota con cuál(es) se combina.
+      const combina = ficha.telas.filter((x) => x !== t && x.nombre).map((x) => `${x.nombre}${x.color ? " " + x.color : ""} (${fmt(x.consumo, 2)} ${tipoUnidadTela(x.unidad) === "m2" ? "m²" : tipoUnidadTela(x.unidad) === "kg" ? "kg" : "m"})`);
+      a.usos.push({ pedido: l.pedido, ref: l.ref, pinta: l.pinta, color: l.color, unidades: l.unidades, consumo: t.consumo, cant, combina });
       if (l.color) a.nombresColor.set(l.color, (a.nombresColor.get(l.color) || 0) + l.unidades);
-      r.items.push({ tipo: "tela", clave, nombre: t.nombre, colorCod: t.color, colorNombre: l.color, unidad: a.unidad, consumo: t.consumo, unidades: l.unidades, cant });
+      r.items.push({ tipo: "tela", clave, nombre: t.nombre, colorCod: t.color, colorNombre: l.color, unidad: a.unidad, consumo: t.consumo, unidades: l.unidades, cant, combina });
       if (t.motivo !== "ok") avisosTela.push(`${l.ref} (${l.pinta}) · ${t.nombre}: ${({ sin_detalle_color: "sin detalle de color en Busint", slot_sin_color: "sin color asignado", color_no_en_inventario: "ese color no está en inventario" })[t.motivo] || t.motivo}`);
     });
     if (uIns > 0) ficha.insumos.forEach((ins) => {
@@ -437,13 +439,14 @@ export default function ExplosionMaterialesView({ db, functionsClient, T, pedido
     if (!resultado) return;
     const XLSX = await import("xlsx");
     const r2 = (n) => (n == null ? "" : +Number(n).toFixed(2));
-    const filaTela = (a) => ({ Tela: a.nombre, "Color (cód.)": a.color || "", "Color (pedido)": nombreColorDe(a), Unidad: a.unidad, Necesito: r2(a.necesito), Tengo: r2(a.tengo), "En camino (OC)": r2(a.enCamino), "Falta comprar": r2(a.falta), "Costo prom. unidad": Math.round(a.promedio || 0), "Costo estimado": Math.round(a.costoFalta || 0), Estado: ESTADOS[a.estado].txt });
+    const usadoEn = (a) => usosPorRef(a).map((u) => `${u.ref}${u.pintas.size ? " pinta " + [...u.pintas].join("/") : ""} (${[...u.colores].join(" · ") || "—"})${u.combina.size ? " + " + [...u.combina].join(" + ") : ""}`).join("; ");
+    const filaTela = (a) => ({ Tela: a.nombre, "Color (cód.)": a.color || "", "Color de la prenda (pedido)": nombreColorDe(a), "Usado en (ref · color de la prenda · combina con)": usadoEn(a), Unidad: a.unidad, Necesito: r2(a.necesito), Tengo: r2(a.tengo), "En camino (OC)": r2(a.enCamino), "Falta comprar": r2(a.falta), "Costo prom. unidad": Math.round(a.promedio || 0), "Costo estimado": Math.round(a.costoFalta || 0), Estado: ESTADOS[a.estado].txt });
     const filaIns = (a) => ({ Insumo: a.nombre, Unidad: a.unidad, Necesito: r2(a.necesito), Tengo: r2(a.tengo), "En camino (OC)": r2(a.enCamino), "Falta comprar": r2(a.falta), "Costo prom. unidad": Math.round(a.promedio || 0), "Costo estimado": Math.round(a.costoFalta || 0), Estado: ESTADOS[a.estado].txt });
     const wb = XLSX.utils.book_new();
     const add = (nombre, filas) => XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(filas.length ? filas : [{ Aviso: "Sin filas" }]), nombre);
     const resumenTela = [];
     resultado.gruposTela.forEach((g) => {
-      resumenTela.push({ Tela: g.nombre, "Color (cód.)": "TOTAL TELA", "Color (pedido)": "", Unidad: g.unidad, Necesito: r2(g.necesito), Tengo: g.tengoConocido ? r2(g.tengo) : "", "En camino (OC)": r2(g.enCamino), "Falta comprar": r2(g.falta), "Costo prom. unidad": "", "Costo estimado": Math.round(g.costoFalta), Estado: ESTADOS[g.estado].txt });
+      resumenTela.push({ Tela: g.nombre, "Color (cód.)": "TOTAL TELA", "Color de la prenda (pedido)": "", Unidad: g.unidad, Necesito: r2(g.necesito), Tengo: g.tengoConocido ? r2(g.tengo) : "", "En camino (OC)": r2(g.enCamino), "Falta comprar": r2(g.falta), "Costo prom. unidad": "", "Costo estimado": Math.round(g.costoFalta), Estado: ESTADOS[g.estado].txt });
       g.colores.forEach((c) => resumenTela.push(filaTela(c)));
     });
     add("Telas por color", resumenTela);
@@ -451,7 +454,7 @@ export default function ExplosionMaterialesView({ db, functionsClient, T, pedido
     add("Para comprar", [...resultado.telas.filter((a) => a.estado === "comprar").map(filaTela), ...resultado.insumos.filter((a) => a.estado === "comprar").map(filaIns)]);
     const filasRef = [];
     resultado.porRef.forEach((r) => {
-      r.items.forEach((i) => filasRef.push({ Referencia: r.ref, Pedidos: r.pedidos.join(", "), Tipo: i.tipo === "tela" ? "Tela" : "Insumo", Material: i.nombre, "Color (cód.)": i.colorCod || "", "Color (pedido)": i.colorNombre || "", Unidad: i.unidad, "Prendas por cortar": i.unidades, "Consumo por prenda": +Number(i.consumo).toFixed(4), Cantidad: r2(i.cant), "Falta (estimado)": r2(i.faltaParte), "Costo falta (estimado)": Math.round(i.costoParte || 0) }));
+      r.items.forEach((i) => filasRef.push({ Referencia: r.ref, Pedidos: r.pedidos.join(", "), Tipo: i.tipo === "tela" ? "Tela" : "Insumo", Material: i.nombre, "Color (cód.)": i.colorCod || "", "Color de la prenda (pedido)": i.colorNombre || "", "Combina con (otra tela)": (i.combina || []).join(" + "), Unidad: i.unidad, "Prendas por cortar": i.unidades, "Consumo por prenda": +Number(i.consumo).toFixed(4), Cantidad: r2(i.cant), "Falta (estimado)": r2(i.faltaParte), "Costo falta (estimado)": Math.round(i.costoParte || 0) }));
       filasRef.push({ Referencia: r.ref, Pedidos: "", Tipo: "TOTAL", Material: `${r.unidades} prendas`, "Costo falta (estimado)": Math.round(r.costoFalta) });
     });
     add("Por referencia", filasRef);
@@ -498,15 +501,15 @@ export default function ExplosionMaterialesView({ db, functionsClient, T, pedido
   // usos agrupados por referencia (para "ver N referencias")
   const usosPorRef = (a) => {
     const m = new Map();
-    a.usos.forEach((u) => { const x = m.get(u.ref) || { ref: u.ref, unidades: 0, cant: 0, consumo: u.consumo, colores: new Set(), pedidos: new Set() }; x.unidades += u.unidades; x.cant += u.cant; if (u.color) x.colores.add(u.color); x.pedidos.add(u.pedido); m.set(u.ref, x); });
+    a.usos.forEach((u) => { const x = m.get(u.ref) || { ref: u.ref, unidades: 0, cant: 0, consumo: u.consumo, colores: new Set(), pedidos: new Set(), pintas: new Set(), combina: new Set() }; x.unidades += u.unidades; x.cant += u.cant; if (u.color) x.colores.add(u.color); if (u.pinta) x.pintas.add(u.pinta); (u.combina || []).forEach((c) => x.combina.add(c)); x.pedidos.add(u.pedido); m.set(u.ref, x); });
     return [...m.values()].sort((x, y) => y.cant - x.cant);
   };
   const DetalleRefs = ({ a }) => (
     <div style={{ padding: "8px 18px 12px 38px", background: "#F6F2EC", borderBottom: `1px solid ${T.border}` }}>
       <table style={{ width: "100%", borderCollapse: "collapse" }}>
-        <thead><tr><th style={th}>Referencia</th><th style={th}>Color / pedido</th><th style={{ ...th, textAlign: "right" }}>Prendas</th><th style={{ ...th, textAlign: "right" }}>Consumo por prenda</th><th style={{ ...th, textAlign: "right" }}>Cantidad</th></tr></thead>
+        <thead><tr><th style={th}>Referencia</th><th style={th}>Color de la prenda / pedido</th>{a.tipo === "tela" && <th style={th}>Combina con (otra tela)</th>}<th style={{ ...th, textAlign: "right" }}>Prendas</th><th style={{ ...th, textAlign: "right" }}>Consumo por prenda</th><th style={{ ...th, textAlign: "right" }}>Cantidad</th></tr></thead>
         <tbody>{usosPorRef(a).map((u) => (
-          <tr key={u.ref}><td style={{ ...td, fontWeight: 700 }}>{u.ref}</td><td style={td}>{[...u.colores].join(" · ") || "—"} <span style={{ color: T.slate }}>· pedido {[...u.pedidos].join(", ")}</span></td><td style={{ ...td, ...nu }}>{fmt(u.unidades, 0)}</td><td style={{ ...td, ...nu }}>{fmt(u.consumo, 4)}</td><td style={{ ...td, ...nu, fontWeight: 700 }}>{fmt(u.cant)} {a.unidad}</td></tr>
+          <tr key={u.ref}><td style={{ ...td, fontWeight: 700 }}>{u.ref}{u.pintas.size ? <span style={{ color: T.slate, fontWeight: 400 }}> · pinta {[...u.pintas].join(", ")}</span> : null}</td><td style={td}>{[...u.colores].join(" · ") || "—"} <span style={{ color: T.slate }}>· pedido {[...u.pedidos].join(", ")}</span></td>{a.tipo === "tela" && <td style={{ ...td, fontSize: 12.5 }}>{u.combina.size ? [...u.combina].join(" + ") : <span style={{ color: T.slate }}>— (única tela)</span>}</td>}<td style={{ ...td, ...nu }}>{fmt(u.unidades, 0)}</td><td style={{ ...td, ...nu }}>{fmt(u.consumo, 4)}</td><td style={{ ...td, ...nu, fontWeight: 700 }}>{fmt(u.cant)} {a.unidad}</td></tr>
         ))}</tbody>
       </table>
     </div>
