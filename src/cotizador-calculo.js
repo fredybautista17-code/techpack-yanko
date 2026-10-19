@@ -280,6 +280,6 @@ export async function parsearArchivoCotizacion(archivo) {
   const XLSX = await import("xlsx");
   const buf = await archivo.arrayBuffer();
   const wb = XLSX.read(buf, { type: "array", cellDates: true });
-  const hojas = wb.SheetNames.map((n) => parsearHojaCotizacion(wb.Sheets[n], n)).filter((h) => h.referencia || h.version.insumos.length);
+  const hojas = wb.SheetNames.map((n) => parsearHojaCotizacion(wb.Sheets[n], n)).filter((h) => h.referencia || h.precioExcel != null); // (2026-10-19) hojas sin referencia ni precio (ej. CONF, tiempos de confeccion) no son cotizacion
   return hojas;
 }

@@ -1032,7 +1032,8 @@ function ModalImportar({ cotizaciones, parametros, clientes, onImportar, onClose
       const r = await parsearArchivoCotizacion(file);
       if (!r.length) setError("No se encontraron hojas con cotización en el archivo.");
       setHojas(r);
-      setSel(Object.fromEntries(r.map((_, i) => [i, true])));
+      // (2026-10-19) Solo se marcan las hojas cuyo precio coincide con el Excel; las de diseño viejo o que difieren quedan desmarcadas.
+      setSel(Object.fromEntries(r.map((h, i) => [i, h.coincide === true])));
     } catch (e) {
       setError("No se pudo leer el archivo: " + (e.message || e));
     }
@@ -1067,12 +1068,12 @@ function ModalImportar({ cotizaciones, parametros, clientes, onImportar, onClose
                     <td style={{ ...td, fontSize: 12 }}>{fmtFecha(h.fecha)}</td>
                     <td style={{ ...td, textAlign: "right", fontSize: 13 }}>{h.precioExcel != null ? fmtCOP(h.precioExcel) : "—"}</td>
                     <td style={{ ...td, textAlign: "right", fontSize: 13, fontWeight: 700 }}>{fmtCOP(h.precioAtlas)}</td>
-                    <td style={td}>{h.coincide === true ? <Pastilla bg={C.greenBg} color={C.green}>✓ Coincide</Pastilla> : h.coincide === false ? <Pastilla bg={C.redBg} color={C.red}>≠ Difiere</Pastilla> : <Pastilla bg={C.amberBg} color={C.amber}>Sin precio en Excel</Pastilla>}</td>
+                    <td style={td}>{h.coincide === true ? <Pastilla bg={C.greenBg} color={C.green}>✓ Coincide</Pastilla> : h.coincide === false ? <Pastilla bg={C.redBg} color={C.red}>≠ Difiere</Pastilla> : <Pastilla bg={C.amberBg} color={C.amber}>Sin precio en Excel</Pastilla>}{h.coincide !== true && <div style={{ fontSize: 10, color: C.slate, marginTop: 3 }}>Posible hoja de diseño antiguo: no se marca. Revísala antes de importarla.</div>}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
-            {hojas.some((h) => h.coincide === false) && <div style={{ fontSize: 12, color: C.red, marginTop: 8 }}>Hay hojas que no coinciden con el Excel: revisa esa versión antes de aplicar su precio.</div>}
+            {hojas.some((h) => h.coincide !== true) && <div style={{ fontSize: 12, color: C.red, marginTop: 8 }}>Las hojas que no coinciden con el Excel (o no traen precio) quedan desmarcadas: suelen ser versiones viejas con otro diseño. Márcalas solo si las revisaste.</div>}
           </div>
         )}
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
