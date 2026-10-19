@@ -1785,7 +1785,7 @@ exports.getDisponibleParaDespachar = onCall(
     const fechaFin = fechaValida(request.data?.fechaFin) ? request.data.fechaFin : sumarDias(hoyISO, 90);
     const avisos = [];
     // Las órdenes de producción (para "Sin cortar") se piden desde el inicio, en paralelo con los pedidos y las facturas, para no alargar la consulta.
-    const pLeerCortes = Promise.all([consultarTablaBusintBDCompleta("orden produccion"), consultarTablaBusintBDCompleta("orden produccion detalles")]);
+    const pLeerCortes = Promise.all([consultarTablaBusintBDCompleta("orden produccion"), consultarTablaBusintBDCompleta("orden produccion detalles"), consultarTablaBusintBDCompleta("bmp - entrada planta ref").catch(() => [])]);
     pLeerCortes.catch(() => {});
 
     // 1) Pedidos (en vivo)
@@ -2019,7 +2019,7 @@ exports.getDisponibleParaDespachar = onCall(
     const cortadoPorClave = new Map(); // `${numPed}|${refNorm}` -> prendas cortadas
     let cortadoLeido = false;
     try {
-      const [ordProd, ordDet] = await pLeerCortes;
+      const [ordProd, ordDet, entPlantaRefDD] = await pLeerCortes;
       const claveL = (v) => String(v ?? "").trim().replace(/\.0+$/, "");
       const lotePed = new Map(); // lote -> { ped, refNorm }
       let cortesSinPedido = 0;
@@ -2038,6 +2038,22 @@ exports.getDisponibleParaDespachar = onCall(
         const u = Object.keys(f).reduce((a, k) => (/^T\d+$/i.test(k) && Number.isFinite(Number(f[k])) ? a + Number(f[k]) : a), 0);
         if (u > 0) prendasPorLote.set(lote, (prendasPorLote.get(lote) || 0) + u);
       }
+      // "orden produccion detalles" puede ir atrasada con los cortes recientes: si un lote no trae prendas ahí (o trae menos),
+      // se usa lo que ya entró a planta ("bmp - entrada planta ref", la entrada más grande del lote), como en Lotes por integrar.
+      const entPorLote = new Map(); // lote -> Map(entrada -> prendas)
+      for (const f of entPlantaRefDD) {
+        const lote = claveL(valorFlexible(f, ["NumLote", "Numlote", "numlote", "Nomlote", "NomLote"]));
+        if (!lote) continue;
+        const u = Object.keys(f).reduce((a, k) => (/^T\d+$/i.test(k) && Number.isFinite(Number(f[k])) ? a + Number(f[k]) : a), 0);
+        if (!(u > 0)) continue;
+        const ent = claveL(f.Entrada);
+        const m = entPorLote.get(lote) || new Map();
+        m.set(ent, (m.get(ent) || 0) + u); entPorLote.set(lote, m);
+      }
+      entPorLote.forEach((m, lote) => {
+        const mejor = Math.max(...m.values());
+        if (mejor > (prendasPorLote.get(lote) || 0)) prendasPorLote.set(lote, mejor);
+      });
       lotePed.forEach((v, lote) => {
         const u = prendasPorLote.get(lote) || 0;
         if (!(u > 0)) return;
