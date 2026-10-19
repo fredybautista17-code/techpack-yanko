@@ -1,0 +1,307 @@
+// ─── LOTES POR INTEGRAR ───────────────────────────────────────────────────────
+// (2026-10-19, a pedido de Fredy) Panel para el encargado de bodega: los lotes ya
+// cortados que todavía no se integran en Busint (la integración es cuando el
+// insumo sale de bodega; validado con el lote 7222). Por cada lote muestra los
+// insumos que hay que entregar (consumo de la ficha × prendas del lote), lo que
+// hay en bodega y, si falta, qué orden de compra viene y si llega antes del despacho.
+// Datos: función "getLotesPorIntegrarBusint". El inventario y las órdenes de
+// compra se ASIGNAN lote por lote en orden de despacho (asignarInventario) para
+// que dos lotes no cuenten el mismo inventario.
+import React, { useState, useMemo, useEffect, useCallback } from "react";
+import { httpsCallable } from "firebase/functions";
+
+const fmt = (n, dec = 2) => (Number.isFinite(Number(n)) ? Number(n).toLocaleString("es-CO", { maximumFractionDigits: dec }) : "—");
+const normTxt = (t) => String(t || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+const refSG = (v) => String(v ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+const MESES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
+const fmtFecha = (iso) => (iso && /^\d{4}-\d{2}-\d{2}/.test(iso) ? `${Number(iso.slice(8, 10))} ${MESES[Number(iso.slice(5, 7)) - 1]}` : "—");
+const diasEntre = (a, b) => Math.round((Date.parse(b + "T00:00:00Z") - Date.parse(a + "T00:00:00Z")) / 86400000);
+const claveInsumo = (s) => String(s || "").toUpperCase().replace(/-/g, " ").replace(/\s+/g, " ").trim();
+
+// ── Carga con caché (la comparten este panel y la Explosión de materiales) ─────
+let cache = null; // { en, datos }
+let enVuelo = null;
+export function cargarLotesPorIntegrar(functionsClient, { forzar = false } = {}) {
+  if (!forzar && cache && Date.now() - cache.en < 10 * 60 * 1000) return Promise.resolve(cache.datos);
+  if (!forzar && enVuelo) return enVuelo;
+  enVuelo = httpsCallable(functionsClient, "getLotesPorIntegrarBusint", { timeout: 540000 })({})
+    .then((r) => { cache = { en: Date.now(), datos: r.data }; return r.data; })
+    .finally(() => { enVuelo = null; });
+  return enVuelo;
+}
+
+// ── Asignación de inventario y órdenes de compra, lote por lote ────────────────
+// lotes: [{lote, ref, pedido, corte, prendas, integradas, despacho, ...}]; fichas: {ref: [{insumo, cant, unidad, bodega, codcomps}]}
+// oc: {codcomp: [[numOC, proveedor, fechaEntrega, cant]]}. Devuelve los mismos lotes con `insumos` y `estado`.
+const PESO = { comprar: 5, oc_tarde: 4, oc_ok: 3, justo: 2, ok: 1 };
+export function asignarInventario({ lotes, fichas, oc }) {
+  const orden = [...lotes].sort((a, b) => String(a.despacho || "9999").localeCompare(String(b.despacho || "9999")) || String(a.corte).localeCompare(String(b.corte)) || Number(a.lote) - Number(b.lote));
+  const stock = new Map();
+  const ocPorInsumo = new Map();
+  const ocDe = (ins, k) => {
+    if (!ocPorInsumo.has(k)) {
+      const vistos = new Set();
+      const lista = [];
+      (ins.codcomps || []).forEach((c) => (oc?.[c] || []).forEach((o) => {
+        const id = `${o[0]}|${c}`;
+        if (vistos.has(id)) return;
+        vistos.add(id);
+        lista.push({ n: o[0], prov: o[1], ff: o[2], resto: o[3] });
+      }));
+      lista.sort((a, b) => String(a.ff).localeCompare(String(b.ff)));
+      ocPorInsumo.set(k, lista);
+    }
+    return ocPorInsumo.get(k);
+  };
+  const resultado = new Map();
+  orden.forEach((l) => {
+    const ficha = fichas?.[l.ref] || [];
+    const pend = l.prendas == null ? null : Math.max(0, l.prendas - (l.integradas || 0));
+    if (!ficha.length) { resultado.set(l.lote, { ...l, pendientes: pend, insumos: [], estado: "sin_ficha" }); return; }
+    if (pend == null) {
+      resultado.set(l.lote, { ...l, pendientes: null, estado: "sin_prendas", insumos: ficha.map((i) => ({ insumo: i.insumo, unidad: i.unidad, consumo: i.cant, necesito: null, bodega: i.bodega, usaBodega: null, falta: null, oc: [], comprar: null, estado: "sin_prendas" })) });
+      return;
+    }
+    let peor = "ok";
+    const insumos = ficha.map((i) => {
+      const k = claveInsumo(i.insumo);
+      if (!stock.has(k)) stock.set(k, i.bodega);
+      const necesito = pend * i.cant;
+      const disp = Math.max(0, stock.get(k));
+      const usaBodega = Math.min(necesito, disp);
+      stock.set(k, stock.get(k) - usaBodega);
+      let falta = necesito - usaBodega;
+      const ocAsig = [];
+      if (falta > 0.005) {
+        for (const o of ocDe(i, k)) {
+          if (falta <= 0.005) break;
+          if (o.resto <= 0) continue;
+          const toma = Math.min(o.resto, falta);
+          o.resto -= toma; falta -= toma;
+          ocAsig.push({ n: o.n, prov: o.prov, ff: o.ff, cant: toma, tarde: !!(l.despacho && o.ff > l.despacho) });
+        }
+      }
+      const comprar = Math.max(0, falta);
+      const faltaInicial = necesito - usaBodega;
+      let estado;
+      if (faltaInicial <= 0.005) estado = stock.get(k) < necesito * 0.1 ? "justo" : "ok";
+      else if (comprar > 0.005) estado = "comprar";
+      else estado = ocAsig.some((o) => o.tarde) ? "oc_tarde" : "oc_ok";
+      if (PESO[estado] > PESO[peor]) peor = estado;
+      return { insumo: i.insumo, unidad: i.unidad, consumo: i.cant, necesito, bodega: disp, usaBodega, falta: faltaInicial, oc: ocAsig, comprar, estado };
+    });
+    const nFalta = insumos.filter((x) => x.estado === "comprar").length;
+    const nOc = insumos.filter((x) => x.estado === "oc_ok" || x.estado === "oc_tarde").length;
+    resultado.set(l.lote, { ...l, pendientes: pend, insumos, estado: peor, nFalta, nOc });
+  });
+  return lotes.map((l) => resultado.get(l.lote));
+}
+
+const ESTADOS = {
+  ok: { txt: "Todo disponible", bg: "#E3F5EC", fg: "#1E7A52" },
+  justo: { txt: "Alcanza justo", bg: "#FDF1DA", fg: "#A8660B" },
+  oc_ok: { txt: "Falta · viene en OC", bg: "#E6EEF8", fg: "#2D5A8C" },
+  oc_tarde: { txt: "Falta · OC llega tarde", bg: "#FDF1DA", fg: "#A8660B" },
+  comprar: { txt: "Hay que comprar", bg: "#FBE9E6", fg: "#9A3A2D" },
+  sin_ficha: { txt: "Sin insumos en la ficha", bg: "#EEEBE6", fg: "#5A5A7A" },
+  sin_prendas: { txt: "Prendas por confirmar", bg: "#EEEBE6", fg: "#5A5A7A" },
+};
+const ESTADO_INS = { ...ESTADOS, ok: { txt: "Alcanza", bg: "#E3F5EC", fg: "#1E7A52" }, oc_ok: { txt: "Llega antes del despacho", bg: "#E6EEF8", fg: "#2D5A8C" }, oc_tarde: { txt: "Llega tarde", bg: "#FDF1DA", fg: "#A8660B" } };
+const Pill = ({ e, mapa = ESTADOS, extra }) => {
+  const x = mapa[e] || ESTADOS.sin_prendas;
+  return <span style={{ display: "inline-block", padding: "3px 11px", borderRadius: 20, fontSize: 11.5, fontWeight: 800, background: x.bg, color: x.fg, whiteSpace: "nowrap" }}>● {extra || x.txt}</span>;
+};
+const textoLote = (l) => {
+  if (l.estado === "comprar") return `Falta ${l.nFalta} insumo${l.nFalta === 1 ? "" : "s"} · sin OC`;
+  if (l.estado === "oc_tarde") return "Falta · OC llega tarde";
+  if (l.estado === "oc_ok") return `Falta ${l.nOc} · viene en OC`;
+  return null;
+};
+
+export default function LotesPorIntegrarView({ functionsClient, T, pedidos }) {
+  const [datos, setDatos] = useState(null);
+  const [cargando, setCargando] = useState(false);
+  const [error, setError] = useState("");
+  const [q, setQ] = useState("");
+  const [fCliente, setFCliente] = useState("");
+  const [fEstado, setFEstado] = useState("");
+  const [verCerrados, setVerCerrados] = useState(false);
+  const [orden, setOrden] = useState({ k: "despacho", dir: 1 });
+  const [abierto, setAbierto] = useState(null);
+
+  const cargar = useCallback(async (forzar) => {
+    setCargando(true); setError("");
+    try { setDatos(await cargarLotesPorIntegrar(functionsClient, { forzar })); }
+    catch (err) { setError(err?.message || "No se pudo consultar Busint."); }
+    finally { setCargando(false); }
+  }, [functionsClient]);
+  useEffect(() => { cargar(false); }, [cargar]);
+
+  const pedidoPorNumero = useMemo(() => {
+    const m = new Map();
+    (pedidos || []).forEach((p) => m.set(String(p.numero).trim(), p));
+    return m;
+  }, [pedidos]);
+
+  const todos = useMemo(() => {
+    if (!datos) return [];
+    const base = (datos.lotes || []).map((l) => {
+      const p = l.pedido ? pedidoPorNumero.get(String(l.pedido)) : null;
+      return { ...l, cliente: p?.cliente || l.clienteObs || "(sin cliente)", despacho: p?.fechaDespacho || null, estadoPedido: p?.estado || null, diasSin: datos.hoy ? Math.max(0, diasEntre(l.corte, datos.hoy)) : 0 };
+    });
+    return asignarInventario({ lotes: base, fichas: datos.fichas, oc: datos.oc });
+  }, [datos, pedidoPorNumero]);
+
+  const cerrados = todos.filter((l) => l.estadoPedido === "cerrado" || l.estadoPedido === "terminado");
+  const base = verCerrados ? todos : todos.filter((l) => !(l.estadoPedido === "cerrado" || l.estadoPedido === "terminado"));
+  const clientes = useMemo(() => [...new Set(base.map((l) => l.cliente))].sort((a, b) => a.localeCompare(b, "es")), [base]);
+  const visibles = useMemo(() => {
+    const k = normTxt(q);
+    const f = base.filter((l) => (!fCliente || l.cliente === fCliente) && (!fEstado || (fEstado === "falta" ? ["comprar", "oc_ok", "oc_tarde"].includes(l.estado) : l.estado === fEstado))
+      && (!k || normTxt(`${l.lote} ${l.ref} ${l.pedido} ${l.cliente}`).includes(k) || refSG(l.ref).includes(refSG(q))));
+    const val = {
+      despacho: (l) => l.despacho || "9999", corte: (l) => l.corte, dias: (l) => -l.diasSin, lote: (l) => Number(l.lote),
+      prendas: (l) => l.pendientes ?? -1, estado: (l) => -(PESO[l.estado] || 0), cliente: (l) => normTxt(l.cliente), ref: (l) => normTxt(l.ref),
+    }[orden.k];
+    return [...f].sort((a, b) => { const x = val(a), y = val(b); const c = typeof x === "number" ? x - y : String(x).localeCompare(String(y)); return (c || Number(a.lote) - Number(b.lote)) * orden.dir; });
+  }, [base, q, fCliente, fEstado, orden]);
+
+  const hoy = datos?.hoy;
+  const conFalta = base.filter((l) => ["comprar", "oc_ok", "oc_tarde"].includes(l.estado));
+  const sinOC = base.filter((l) => l.estado === "comprar");
+  const proximos = base.filter((l) => l.despacho && hoy && diasEntre(hoy, l.despacho) <= 7);
+  const masViejo = base.reduce((m, l) => (!m || l.diasSin > m.diasSin ? l : m), null);
+  const totalPrendas = base.reduce((s, l) => s + (l.pendientes || 0), 0);
+
+  function ordenarPor(k) { setOrden((o) => (o.k === k ? { k, dir: -o.dir } : { k, dir: 1 })); }
+
+  async function exportar() {
+    const XLSX = await import("xlsx");
+    const wb = XLSX.utils.book_new();
+    const r2 = (n) => (n == null ? "" : +Number(n).toFixed(2));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(visibles.map((l) => ({ Lote: l.lote, Referencia: l.ref, Pedido: l.pedido || "", Cliente: l.cliente, Despacho: l.despacho || "", Corte: l.corte, "Días sin integrar": l.diasSin, "Prendas por integrar": l.pendientes ?? "", Estado: (ESTADOS[l.estado] || {}).txt }))), "Lotes");
+    const filas = [];
+    visibles.forEach((l) => l.insumos.forEach((i) => filas.push({ Lote: l.lote, Referencia: l.ref, Insumo: i.insumo, Unidad: i.unidad, "Por prenda": i.consumo, Entregar: r2(i.necesito), "En bodega": r2(i.bodega), Falta: r2(i.falta), "Orden de compra": i.oc.map((o) => `OC ${o.n} (${o.prov}) ${fmt(o.cant)} · entrega ${o.ff}${o.tarde ? " · TARDE" : ""}`).join(" | "), "Sin orden de compra": r2(i.comprar), Estado: (ESTADO_INS[i.estado] || {}).txt })));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(filas), "Insumos por lote");
+    XLSX.writeFile(wb, `Lotes por integrar ${hoy || ""}.xlsx`);
+  }
+
+  function imprimir(lista) {
+    const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    const bloque = (l) => `<div class="lote"><h2>Lote ${esc(l.lote)} · ref ${esc(l.ref)} <small>Pedido ${esc(l.pedido || "—")} · ${esc(l.cliente)} · ${l.pendientes == null ? "prendas por confirmar" : fmt(l.pendientes, 0) + " prendas"} · despacha ${esc(fmtFecha(l.despacho))} · cortado ${esc(fmtFecha(l.corte))}</small></h2>${l.insumos.length ? `<table><tr><th>✓</th><th>Insumo</th><th>Entregar</th><th>En bodega</th><th>Orden de compra</th></tr>${l.insumos.map((i) => `<tr class="${i.estado === "comprar" ? "rojo" : ""}"><td class="c">☐</td><td>${esc(i.insumo)}</td><td class="n">${i.necesito == null ? `${fmt(i.consumo, 4)} por prenda` : `<b>${fmt(i.necesito)}</b> ${esc(i.unidad)}`}</td><td class="n">${fmt(i.bodega)} ${esc(i.unidad)}</td><td>${i.estado === "ok" || i.estado === "justo" ? "—" : i.oc.length ? i.oc.map((o) => `OC ${o.n} · ${esc(o.prov)} · ${fmt(o.cant)} · entrega ${esc(fmtFecha(o.ff))}${o.tarde ? " (llega tarde)" : ""}`).join("<br>") + (i.comprar > 0.005 ? `<br><b>Falta comprar ${fmt(i.comprar)}</b>` : "") : i.comprar > 0.005 ? `<b>Hay que comprar ${fmt(i.comprar)}</b> (sin OC)` : "—"}</td></tr>`).join("")}</table>` : "<p>Este lote no tiene insumos en la ficha de Busint.</p>"}</div>`;
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Lotes por integrar ${esc(hoy || "")}</title><style>body{font-family:Arial,sans-serif;color:#1A1A2E;margin:22px}h1{margin:0 0 4px;font-size:20px}h2{font-size:15px;margin:0 0 6px}h2 small{font-weight:400;color:#5A5A7A;font-size:11.5px;margin-left:8px}.lote{margin:0 0 18px;page-break-inside:avoid}table{width:100%;border-collapse:collapse;font-size:12px}th{text-align:left;background:#F1ECE5;padding:5px 8px}td{padding:5px 8px;border-bottom:1px solid #E8E2DB;vertical-align:top}td.n{text-align:right;white-space:nowrap}td.c{width:22px;text-align:center}tr.rojo td{color:#9A3A2D}p{color:#5A5A7A;font-size:12px}</style></head><body><h1>Lotes por integrar</h1><p>${esc(hoy || "")} · ${lista.length} lote${lista.length === 1 ? "" : "s"}</p>${lista.map(bloque).join("")}</body></html>`;
+    const w = window.open(URL.createObjectURL(new Blob([html], { type: "text/html" })), "_blank");
+    if (w) setTimeout(() => { try { w.print(); } catch {} }, 500);
+  }
+
+  const campo = { padding: "8px 12px", border: `1px solid ${T.border}`, borderRadius: 10, fontSize: 13, fontFamily: "inherit", color: T.ink, background: T.white };
+  const th = (k, label, der) => (
+    <th onClick={k ? () => ordenarPor(k) : undefined} style={{ textAlign: der ? "right" : "left", fontSize: 11, letterSpacing: 0.6, textTransform: "uppercase", color: orden.k === k ? T.ink : T.slate, padding: "10px 12px", background: "#FAF8F5", borderBottom: `1px solid ${T.border}`, whiteSpace: "nowrap", cursor: k ? "pointer" : "default" }}>
+      {label}{orden.k === k ? (orden.dir > 0 ? " ▲" : " ▼") : ""}
+    </th>
+  );
+  const td = { padding: "11px 12px", borderBottom: "1px solid #F0ECE3", fontSize: 13, fontVariantNumeric: "tabular-nums" };
+  const Kpi = ({ t, v, d, rojo }) => (
+    <div style={{ background: rojo ? "#FDF0EE" : T.white, border: `1px solid ${rojo ? "#F3B9B1" : T.border}`, borderRadius: 14, padding: "14px 16px" }}>
+      <div style={{ fontSize: 11, letterSpacing: 0.6, textTransform: "uppercase", color: T.slate, fontWeight: 700 }}>{t}</div>
+      <div style={{ fontSize: 24, fontWeight: 800, color: rojo ? "#B8402F" : T.ink, marginTop: 2 }}>{v}</div>
+      <div style={{ fontSize: 12, color: T.slate }}>{d}</div>
+    </div>
+  );
+  const btn = (primario) => ({ padding: "8px 14px", borderRadius: 10, fontWeight: 700, fontSize: 13, cursor: "pointer", border: `1px solid ${primario ? T.ink : T.border}`, background: primario ? T.ink : T.white, color: primario ? T.white : T.ink });
+
+  return (
+    <div>
+      <div style={{ color: T.slate, fontSize: 13, marginBottom: 14 }}>
+        Lotes ya cortados que todavía no han recibido sus insumos de bodega. Al integrar el lote en Busint, desaparece de esta lista.
+        {datos?.generado ? ` Datos de Busint de ${new Date(datos.generado).toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" })}.` : ""}
+      </div>
+      {error && <div style={{ padding: "10px 14px", background: T.coralBg, color: T.coral, borderRadius: 8, fontSize: 13, fontWeight: 600, marginBottom: 12 }}>⚠ {error}</div>}
+      {(datos?.avisos || []).map((a, i) => <div key={i} style={{ padding: "8px 12px", background: "#FDF1DA", color: "#8A5A0B", borderRadius: 8, fontSize: 12.5, marginBottom: 8 }}>{a}</div>)}
+      {cargando && !datos && <div style={{ padding: 30, textAlign: "center", color: T.slate }}>Consultando Busint (lotes, integraciones, fichas, inventario y órdenes de compra)... puede tardar un par de minutos.</div>}
+      {datos && (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: 12, marginBottom: 16 }}>
+            <Kpi t="Lotes por integrar" v={base.length} d={`${fmt(totalPrendas, 0)} prendas`} />
+            <Kpi t="Más antiguo" v={masViejo ? `${masViejo.diasSin} día${masViejo.diasSin === 1 ? "" : "s"}` : "—"} d={masViejo ? `cortado el ${fmtFecha(masViejo.corte)} · lote ${masViejo.lote}` : ""} />
+            <Kpi t="Con insumo faltante" v={`${conFalta.length} lote${conFalta.length === 1 ? "" : "s"}`} d={`${conFalta.length - sinOC.length} con OC en camino · ${sinOC.length} sin OC`} rojo={conFalta.length > 0} />
+            <Kpi t="Despachan en 7 días o menos" v={`${proximos.length} lote${proximos.length === 1 ? "" : "s"}`} d="prioridad de alistamiento" />
+          </div>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 14, flexWrap: "wrap" }}>
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar lote, referencia, pedido o cliente" style={{ ...campo, minWidth: 260 }} />
+            <select value={fCliente} onChange={(e) => setFCliente(e.target.value)} style={campo}><option value="">Cliente: todos</option>{clientes.map((c) => <option key={c} value={c}>{c}</option>)}</select>
+            <select value={fEstado} onChange={(e) => setFEstado(e.target.value)} style={campo}>
+              <option value="">Estado: todos</option><option value="falta">Con insumo faltante</option><option value="comprar">Hay que comprar (sin OC)</option><option value="oc_ok">Viene en OC</option><option value="oc_tarde">OC llega tarde</option><option value="justo">Alcanza justo</option><option value="ok">Todo disponible</option>
+            </select>
+            {cerrados.length > 0 && <label style={{ fontSize: 12.5, color: T.slate, display: "flex", gap: 6, alignItems: "center", cursor: "pointer" }}><input type="checkbox" checked={verCerrados} onChange={(e) => setVerCerrados(e.target.checked)} />Ver {cerrados.length} lote{cerrados.length === 1 ? "" : "s"} de pedidos cerrados</label>}
+            <div style={{ flex: 1 }} />
+            <button style={btn(false)} onClick={() => cargar(true)} disabled={cargando}>{cargando ? "Actualizando..." : "🔄 Actualizar"}</button>
+            <button style={btn(false)} onClick={exportar} disabled={!visibles.length}>⬇ Excel</button>
+            <button style={btn(true)} onClick={() => imprimir(visibles)} disabled={!visibles.length}>🖨 Imprimir hoja del día</button>
+          </div>
+          <div style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead><tr>{th("lote", "Lote")}{th("ref", "Referencia")}{th("cliente", "Pedido · Cliente")}{th("despacho", "Despacho")}{th("corte", "Corte")}{th("dias", "Días sin integrar", true)}{th("prendas", "Prendas", true)}{th("estado", "Insumos en bodega")}</tr></thead>
+              <tbody>
+                {visibles.map((l) => (
+                  <React.Fragment key={l.lote}>
+                    <tr onClick={() => setAbierto(abierto === l.lote ? null : l.lote)} style={{ cursor: "pointer", background: abierto === l.lote ? "#F3F7FB" : "transparent" }}>
+                      <td style={{ ...td, fontWeight: 800, fontSize: 15 }}>{l.lote}</td>
+                      <td style={td}>{l.ref}</td>
+                      <td style={td}>{l.pedido || "—"} · <span style={{ color: T.slate, fontSize: 12 }}>{l.cliente}</span></td>
+                      <td style={td}>{fmtFecha(l.despacho)}</td>
+                      <td style={td}>{fmtFecha(l.corte)}</td>
+                      <td style={{ ...td, textAlign: "right", fontWeight: 700 }}>{l.diasSin}</td>
+                      <td style={{ ...td, textAlign: "right" }}>{l.pendientes == null ? "—" : fmt(l.pendientes, 0)}{l.parcial ? <div style={{ fontSize: 10.5, color: "#A8660B" }}>integración parcial</div> : null}</td>
+                      <td style={td}><Pill e={l.estado} extra={textoLote(l)} /></td>
+                    </tr>
+                    {abierto === l.lote && (
+                      <tr><td colSpan={8} style={{ padding: 0, background: "#F3F7FB", borderBottom: `1px solid ${T.border}` }}>
+                        <div style={{ padding: "12px 18px" }}>
+                          <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
+                            <b style={{ fontSize: 15 }}>Lote {l.lote} · ref {l.ref}</b>
+                            <span style={{ color: T.slate, fontSize: 12 }}>
+                              Pedido {l.pedido || "—"} · {l.cliente}{l.pendientes != null ? ` · ${fmt(l.pendientes, 0)} prendas` : ""}{l.colores?.length ? ` · colores ${l.colores.map(([c, u]) => `${c} (${fmt(u, 0)})`).join(", ")}` : ""}
+                            </span>
+                            <div style={{ flex: 1 }} />
+                            <button style={btn(false)} onClick={(e) => { e.stopPropagation(); imprimir([l]); }}>🖨 Hoja de este lote</button>
+                          </div>
+                          {l.estado === "sin_ficha" ? <div style={{ fontSize: 13, color: T.slate }}>Busint no tiene insumos de material en la ficha de esta referencia (o no coinciden con el inventario).</div> : (
+                            <table style={{ width: "100%", borderCollapse: "collapse", background: T.white }}>
+                              <thead><tr>{th(null, "Insumo que debe entregar")}{th(null, "Por prenda", true)}{th(null, "Entregar", true)}{th(null, "En bodega (disponible)", true)}{th(null, "Falta", true)}{th(null, "Orden de compra")}{th(null, "Estado")}</tr></thead>
+                              <tbody>
+                                {l.insumos.map((i) => (
+                                  <tr key={i.insumo}>
+                                    <td style={td}>{i.insumo}</td>
+                                    <td style={{ ...td, textAlign: "right" }}>{fmt(i.consumo, 4)}</td>
+                                    <td style={{ ...td, textAlign: "right", fontWeight: 800 }}>{i.necesito == null ? "—" : `${fmt(i.necesito)} ${i.unidad}`}</td>
+                                    <td style={{ ...td, textAlign: "right" }}>{fmt(i.bodega)} {i.unidad}</td>
+                                    <td style={{ ...td, textAlign: "right", color: i.falta > 0.005 ? "#B8402F" : T.slate, fontWeight: i.falta > 0.005 ? 800 : 400 }}>{i.falta > 0.005 ? `${fmt(i.falta)} ${i.unidad}` : "—"}</td>
+                                    <td style={{ ...td, fontSize: 12 }}>
+                                      {i.oc.map((o) => <div key={o.n}><b>OC {o.n}</b> · {o.prov}<br /><span style={{ color: T.slate }}>{fmt(o.cant)} · entrega {fmtFecha(o.ff)}{o.tarde ? " · después del despacho" : ""}</span></div>)}
+                                      {i.comprar > 0.005 && <div style={{ color: "#9A3A2D", fontWeight: 700 }}>{i.oc.length ? `Aún faltan ${fmt(i.comprar)} sin OC` : "Sin orden de compra vigente"}</div>}
+                                      {!i.oc.length && !(i.comprar > 0.005) && "—"}
+                                    </td>
+                                    <td style={td}><Pill e={i.estado} mapa={ESTADO_INS} /></td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          )}
+                        </div>
+                      </td></tr>
+                    )}
+                  </React.Fragment>
+                ))}
+                {!visibles.length && <tr><td colSpan={8} style={{ padding: 24, textAlign: "center", color: T.slate }}>No hay lotes por integrar con esos filtros.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ color: T.slate, fontSize: 12, marginTop: 10 }}>
+            Cada insumo = consumo de la ficha técnica × prendas del lote. El inventario y las órdenes de compra se reparten lote por lote en orden de fecha de despacho, para que dos lotes no cuenten el mismo inventario. La orden de compra se muestra solo si sigue vigente (no cumplida ni marcada como recibida). Lotes de los últimos {datos.dias} días.
+          </div>
+        </>
+      )}
+    </div>
+  );
+}

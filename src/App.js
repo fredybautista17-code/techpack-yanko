@@ -11,6 +11,7 @@ import ModuloInformes from "./modulo-informes";
 import CotizadorView from "./modulo-cotizador";
 import DisponibleDespacharView from "./disponible-despachar";
 import ExplosionMaterialesView from "./explosion-materiales";
+import LotesPorIntegrarView from "./lotes-por-integrar";
 import PatronCodigosReferencia, { buscarPorPatron, PrefijosDeCliente } from "./codigos-patron";
 import { initializeApp } from "firebase/app";
 import {
@@ -13366,6 +13367,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     ["pedidos_clientes", "🏢 Clientes"],
     ["preordenes", "🧾 Preórdenes"],
     ["explosion_materiales", "🧮 Explosión de materiales"],
+    ["lotes_por_integrar", "📦 Lotes por integrar"],
     ["ordenes", "🧵 Órdenes"],
     ["corte", "✂ Corte"],
     ["historial", "🕘 Historial"],
@@ -18396,6 +18398,7 @@ function AppInner() {
   const canAccessOrdenes = moduloVisible(userRoleData, "ordenes", currentUser?.isAdmin) && moduloVisibleParaCliente(currentUser, "ordenes");
   // (2026-10-18, a pedido de Fredy) Explosión de materiales: opción propia del menú Pedidos (como Clientes y Preórdenes). Se asigna por rol en Administración → Roles; un usuario Cliente nunca la ve (muestra inventario y costos internos).
   const canAccessExplosionMateriales = moduloVisible(userRoleData, "explosion_materiales", currentUser?.isAdmin) && currentUser?.role !== "Cliente";
+  const canAccessLotesPorIntegrar = moduloVisible(userRoleData, "lotes_por_integrar", currentUser?.isAdmin) && currentUser?.role !== "Cliente";
   const canAccessStats = moduloVisible(userRoleData, "stats", currentUser?.isAdmin);
   // (2026-09-30, a pedido de Fredy) "Observaciones": listado consolidado de
   // TODAS las observaciones de Diseño (Prototipos, Referencias de Cápsula e
@@ -18533,7 +18536,7 @@ function AppInner() {
   // acá: trabaja directo sobre los mismos pedidos (pedidos_activos es la
   // misma colección que usa "Pedidos"), tiene más que ver con esto que con
   // el flujo de diseño/aprobación.
-  const canAccessPedidosArea = canAccessPedidos || canAccessPedidosClientes || canAccessPreordenes || canAccessExplosionMateriales || canAccessCorte || canAccessProduccion || !!currentUser?.isAdmin;
+  const canAccessPedidosArea = canAccessPedidos || canAccessPedidosClientes || canAccessPreordenes || canAccessExplosionMateriales || canAccessLotesPorIntegrar || canAccessCorte || canAccessProduccion || !!currentUser?.isAdmin;
   const [moduloActivo, setModuloActivo] = useState("diseno");
   const AREAS = [
     ...(canAccessDiseno
@@ -18561,6 +18564,7 @@ function AppInner() {
             ...(canAccessPedidosClientes ? [{ id: "pedidos_clientes", icon: "🏢", label: "Clientes" }] : []),
             ...(canAccessPreordenes ? [{ id: "preordenes", icon: "🧾", label: "Preórdenes" }] : []),
             ...(canAccessExplosionMateriales ? [{ id: "explosion_materiales", icon: "🧮", label: "Explosión de materiales" }] : []),
+            ...(canAccessLotesPorIntegrar ? [{ id: "lotes_por_integrar", icon: "📦", label: "Lotes por integrar" }] : []),
             ...(canAccessOrdenes ? [{ id: "ordenes", icon: "🧵", label: "Órdenes" }] : []),
             ...(canAccessProduccion ? [{ id: "produccion", icon: "🏭", label: "Producción" }] : []),
             ...(canAccessCorte ? [{ id: "__corte__", icon: "✂", label: "Corte" }] : []),
@@ -18624,6 +18628,7 @@ function AppInner() {
     if (itemId === "pedidos_clientes") return view === "pedidos_clientes";
     if (itemId === "preordenes") return view === "preordenes";
     if (itemId === "explosion_materiales") return view === "explosion_materiales";
+    if (itemId === "lotes_por_integrar") return view === "lotes_por_integrar";
     if (itemId === "produccion") return view === "produccion";
     if (itemId === "__corte__") return moduloActivo === "corte";
     if (itemId === "contabilidad_area") return moduloActivo === "contabilidad";
@@ -18850,6 +18855,7 @@ function AppInner() {
                     else if (canAccessPedidosClientes) setView("pedidos_clientes");
                     else if (canAccessPreordenes) setView("preordenes");
                     else if (canAccessExplosionMateriales) setView("explosion_materiales");
+                    else if (canAccessLotesPorIntegrar) setView("lotes_por_integrar");
                     else if (canAccessProduccion) setView("produccion");
                     else if (currentUser?.isAdmin) setView("pedidos_admin");
                     else if (canAccessCorte) setModuloActivo("corte");
@@ -18980,6 +18986,15 @@ function AppInner() {
                   <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Elige uno o varios pedidos y mira qué tela e insumos necesitas, qué tienes en bodega, qué viene en órdenes de compra y qué falta comprar.</p>
                 </div>
                 <ExplosionMaterialesView db={db} functionsClient={functionsClient} T={T} pedidos={pedidosVisibles} currentUser={currentUser} />
+              </div>
+            )}
+            {view === "lotes_por_integrar" && canAccessLotesPorIntegrar && (
+              <div>
+                <div style={{ marginBottom: 16 }}>
+                  <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>📦 Lotes por integrar</h2>
+                  <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Los lotes ya cortados que todavía esperan sus insumos de bodega, con lo que hay que entregar, lo que alcanza y lo que viene en órdenes de compra.</p>
+                </div>
+                <LotesPorIntegrarView functionsClient={functionsClient} T={T} pedidos={pedidosVisibles} />
               </div>
             )}
             {view === "preordenes" && (

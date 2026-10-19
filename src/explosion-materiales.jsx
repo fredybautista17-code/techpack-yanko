@@ -8,6 +8,11 @@
 //   Falta    = Necesito − Tengo − En camino   (nunca menor que 0)
 // Unidades = lo pedido, o solo lo que falta por cortar (opción, activa por
 // defecto) para no pedir de nuevo lo que ya se cortó.
+// (2026-10-19, a pedido de Fredy) Los INSUMOS se descuentan por INTEGRACIÓN, no por
+// corte: el insumo sale de bodega cuando el lote se integra en Busint (validado con
+// el lote 7222). Con "solo lo que falta", las telas usan lo que falta por cortar y los
+// insumos usan lo que falta por INTEGRAR (pedido − prendas ya integradas, por pedido y
+// referencia, según "bmp - integracion ref"; ver ajustarInsumosPorIntegracion).
 // (2026-10-18, a pedido de Fredy) Informe rediseñado: "Por material" (tela →
 // color, con total por tela) y "Por referencia" (qué necesita cada referencia
 // y por qué). El faltante se calcula por material; en la vista por referencia
@@ -15,6 +20,7 @@
 import React, { useState, useMemo, useEffect } from "react";
 import { collection, getDocs } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
+import { cargarLotesPorIntegrar } from "./lotes-por-integrar";
 
 const fmt = (n, dec = 2) => (Number.isFinite(Number(n)) ? Number(n).toLocaleString("es-CO", { maximumFractionDigits: dec }) : "—");
 const money = (n) => "$ " + Math.round(Number(n) || 0).toLocaleString("es-CO");
@@ -74,6 +80,32 @@ export function ajustarPorCorteBusint({ lineas, bus }) {
   return { lineas: salida.filter((l) => l.unidades > 0), resumen: [...resumen.values()].map((r) => ({ ...r, notas: [...r.notas] })) };
 }
 
+// (2026-10-19) Unidades sobre las que se calculan los INSUMOS: lo pedido menos lo ya
+// INTEGRADO en Busint, por pedido y referencia (Busint integra por referencia, no por
+// pinta/color: el pendiente se reparte entre las líneas en proporción a lo pedido).
+// integ: Map `${pedido}|${refSG}` -> prendas integradas, o null si no se pudo leer
+// (entonces los insumos usan las mismas prendas por cortar de las telas).
+export function ajustarInsumosPorIntegracion({ lineas, integ }) {
+  if (!integ) return { lineas: lineas.map((l) => ({ ...l, unidadesIns: l.unidades })), resumen: [] };
+  const grupos = new Map();
+  lineas.forEach((l) => {
+    const k = `${String(l.pedido).trim()}|${refSG(l.ref)}`;
+    const g = grupos.get(k) || { k, pedido: l.pedido, total: 0 };
+    g.total += l.total; grupos.set(k, g);
+  });
+  const resumen = new Map();
+  grupos.forEach((g) => {
+    const integrado = Math.min(g.total, integ.get(g.k) || 0);
+    g.factor = g.total > 0 ? (g.total - integrado) / g.total : 0;
+    const r = resumen.get(g.pedido) || { pedido: g.pedido, integrado: 0, sinIntegrar: 0 };
+    r.integrado += integrado; r.sinIntegrar += g.total - integrado; resumen.set(g.pedido, r);
+  });
+  return {
+    lineas: lineas.map((l) => ({ ...l, unidadesIns: Math.round(l.total * grupos.get(`${String(l.pedido).trim()}|${refSG(l.ref)}`).factor) })),
+    resumen: [...resumen.values()],
+  };
+}
+
 function tipoUnidadTela(u) {
   const t = String(u || "").trim().toLowerCase().replace(/\./g, "");
   if (t === "m2" || t === "m²") return "m2";
@@ -104,12 +136,13 @@ export function calcularExplosion({ lineas, fichas, enCamino, mermaTela, mermaIn
   lineas.forEach((l) => {
     const ficha = fichas.get(`${l.ref}|${l.pinta}`);
     if (!ficha) return;
-    if (!ficha.tieneTelas && !ficha.tieneInsumos) { sinFicha.set(l.ref, (sinFicha.get(l.ref) || 0) + l.unidades); return; }
-    if (!ficha.tieneTelas) avisosTela.push(`${l.ref}: sin tela registrada en Busint`);
+    if (!ficha.tieneTelas && !ficha.tieneInsumos) { sinFicha.set(l.ref, (sinFicha.get(l.ref) || 0) + Math.max(l.unidades, l.unidadesIns ?? 0)); return; }
+    const uIns = l.unidadesIns ?? l.unidades;
+    if (!ficha.tieneTelas && l.unidades > 0) avisosTela.push(`${l.ref}: sin tela registrada en Busint`);
     let r = refs.get(l.ref);
-    if (!r) { r = { ref: l.ref, pedidos: new Set(), colores: new Set(), unidades: 0, items: [] }; refs.set(l.ref, r); }
-    r.pedidos.add(l.pedido); if (l.color) r.colores.add(l.color); r.unidades += l.unidades;
-    ficha.telas.forEach((t) => {
+    if (!r) { r = { ref: l.ref, pedidos: new Set(), colores: new Set(), unidades: 0, unidadesIns: 0, items: [] }; refs.set(l.ref, r); }
+    r.pedidos.add(l.pedido); if (l.color) r.colores.add(l.color); r.unidades += l.unidades; r.unidadesIns += uIns;
+    if (l.unidades > 0) ficha.telas.forEach((t) => {
       const tipo = tipoUnidadTela(t.unidad);
       const clave = `${t.nombre}|${t.color || "?"}|${tipo}`;
       let a = telas.get(clave);
@@ -125,7 +158,7 @@ export function calcularExplosion({ lineas, fichas, enCamino, mermaTela, mermaIn
       r.items.push({ tipo: "tela", clave, nombre: t.nombre, colorCod: t.color, colorNombre: l.color, unidad: a.unidad, consumo: t.consumo, unidades: l.unidades, cant });
       if (t.motivo !== "ok") avisosTela.push(`${l.ref} (${l.pinta}) · ${t.nombre}: ${({ sin_detalle_color: "sin detalle de color en Busint", slot_sin_color: "sin color asignado", color_no_en_inventario: "ese color no está en inventario" })[t.motivo] || t.motivo}`);
     });
-    ficha.insumos.forEach((ins) => {
+    if (uIns > 0) ficha.insumos.forEach((ins) => {
       if (!ins.material) {
         const o = otros.get(ins.insumo) || { nombre: ins.insumo, refs: new Set(), cant: ins.cant };
         o.refs.add(l.ref); otros.set(ins.insumo, o); return;
@@ -137,10 +170,10 @@ export function calcularExplosion({ lineas, fichas, enCamino, mermaTela, mermaIn
         a = { clave, tipo: "insumo", nombre: ins.insumo, unidad: ins.inventario.unidad || "", necesito: 0, tengo: ins.inventario.cantidad, colores: ins.inventario.colores, promedio: ins.inventario.promedio, codcomps: ins.inventario.codcomps, enCamino: 0, vencidas: 0, usos: [], nombresColor: new Map() };
         insumos.set(clave, a);
       }
-      const cant = l.unidades * ins.cant * (1 + mermaInsumo / 100);
+      const cant = uIns * ins.cant * (1 + mermaInsumo / 100);
       a.necesito += cant;
-      a.usos.push({ pedido: l.pedido, ref: l.ref, color: l.color, unidades: l.unidades, consumo: ins.cant, cant, ubicacion: ins.ubicacion });
-      r.items.push({ tipo: "insumo", clave, nombre: ins.insumo, colorCod: null, colorNombre: l.color, unidad: a.unidad, consumo: ins.cant, unidades: l.unidades, cant, ubicacion: ins.ubicacion });
+      a.usos.push({ pedido: l.pedido, ref: l.ref, color: l.color, unidades: uIns, consumo: ins.cant, cant, ubicacion: ins.ubicacion });
+      r.items.push({ tipo: "insumo", clave, nombre: ins.insumo, colorCod: null, colorNombre: l.color, unidad: a.unidad, consumo: ins.cant, unidades: uIns, cant, ubicacion: ins.ubicacion });
     });
   });
   const cerrar = (a) => {
@@ -201,7 +234,7 @@ export function calcularExplosion({ lineas, fichas, enCamino, mermaTela, mermaIn
     const telasTot = new Map();
     items.filter((i) => i.tipo === "tela").forEach((i) => { const k = `${i.nombre}|${i.unidad}`; const x = telasTot.get(k) || { nombre: i.nombre, unidad: i.unidad, cant: 0 }; x.cant += i.cant; telasTot.set(k, x); });
     const insumosDist = new Set(items.filter((i) => i.tipo === "insumo").map((i) => i.clave));
-    return { ref: r.ref, pedidos: [...r.pedidos], colores: [...r.colores], unidades: r.unidades, items, costoFalta, telasTot: [...telasTot.values()], nInsumos: insumosDist.size, hayFalta: items.some((i) => i.faltaParte > 0.005) };
+    return { ref: r.ref, pedidos: [...r.pedidos], colores: [...r.colores], unidades: r.unidades, unidadesIns: r.unidadesIns, items, costoFalta, telasTot: [...telasTot.values()], nInsumos: insumosDist.size, hayFalta: items.some((i) => i.faltaParte > 0.005) };
   }).sort((a, b) => b.costoFalta - a.costoFalta || Number(b.hayFalta) - Number(a.hayFalta) || a.ref.localeCompare(b.ref, "es"));
 
   return {
@@ -257,6 +290,7 @@ export default function ExplosionMaterialesView({ db, functionsClient, T, pedido
   const [soloFalta, setSoloFalta] = useState(false);
   const [abierto, setAbierto] = useState({});
   const [avisoBus, setAvisoBus] = useState("");
+  const [avisoInteg, setAvisoInteg] = useState("");
   const [verCorte, setVerCorte] = useState(false);
 
   useEffect(() => { guardarOpciones(opc); }, [opc]);
@@ -280,15 +314,15 @@ export default function ExplosionMaterialesView({ db, functionsClient, T, pedido
     elegidos.forEach(({ p }) => (p.referencias || []).forEach((r) => {
       const u = unidadesPendientes(p, r);
       const [pinta, ...resto] = String(r.descripcion || "").split(" · ");
-      out.push({ pedido: p.numero, cliente: p.cliente, ref: String(r.ref || "").trim(), pinta: pinta.trim(), color: resto.join(" · ").trim(), unidades: opc.soloPorCortar ? u.pendiente : u.total, total: u.total, pendAtlas: u.pendiente });
+      out.push({ idx: out.length, pedido: p.numero, cliente: p.cliente, ref: String(r.ref || "").trim(), pinta: pinta.trim(), color: resto.join(" · ").trim(), unidades: opc.soloPorCortar ? u.pendiente : u.total, total: u.total, pendAtlas: u.pendiente });
     }));
     return out;
   }, [elegidos, opc.soloPorCortar]); // eslint-disable-line
-  const lineas = useMemo(() => lineasAtlas.filter((l) => l.unidades > 0), [lineasAtlas]);
+  const lineas = useMemo(() => lineasAtlas.filter((l) => l.total > 0), [lineasAtlas]);
 
   async function calcular() {
     if (!lineas.length) return;
-    setCalculando(true); setError(""); setAvisoOC(""); setAvisoBus("");
+    setCalculando(true); setError(""); setAvisoOC(""); setAvisoBus(""); setAvisoInteg("");
     try {
       const unicos = [...new Map(lineas.map((l) => [`${l.ref}|${l.pinta}`, { ref: l.ref, pinta: l.pinta }])).values()];
       const pFicha = httpsCallable(functionsClient, "getFichaMaterialesBusint", { timeout: 540000 })({ items: unicos });
@@ -314,6 +348,19 @@ export default function ExplosionMaterialesView({ db, functionsClient, T, pedido
           return bus;
         } catch (err) {
           setAvisoBus("No pude consultar lo cortado en Busint: se usó solo lo cortado que está registrado en ATLAS.");
+          return null;
+        }
+      })();
+      // Lo que Busint ya INTEGRÓ (el insumo sale de bodega al integrar): solo con "lo que falta"
+      const pInteg = (async () => {
+        if (!opc.soloPorCortar) return null;
+        try {
+          const d = await cargarLotesPorIntegrar(functionsClient);
+          const m = new Map();
+          (d?.integradas || []).forEach(([ped, ref, u]) => m.set(`${String(ped).trim()}|${refSG(ref)}`, Number(u) || 0));
+          return m;
+        } catch (err) {
+          setAvisoInteg("No pude consultar las integraciones de Busint: los insumos se calcularon sobre lo que falta por cortar (puede pedir de más).");
           return null;
         }
       })();
@@ -348,20 +395,26 @@ export default function ExplosionMaterialesView({ db, functionsClient, T, pedido
       const bus = await pBus;
       let lineasUsar = lineas;
       let resumenCorte = null;
+      let resumenInteg = null;
       if (opc.soloPorCortar) {
         const aj = ajustarPorCorteBusint({ lineas: lineasAtlas, bus });
-        lineasUsar = aj.lineas;
+        const telaPorIdx = new Map(aj.lineas.map((l) => [l.idx, l.unidades]));
+        const base = lineasAtlas.map((l) => ({ ...l, unidades: telaPorIdx.get(l.idx) || 0 }));
+        const integ = await pInteg;
+        const ai = ajustarInsumosPorIntegracion({ lineas: base, integ });
+        lineasUsar = ai.lineas.filter((l) => l.unidades > 0 || l.unidadesIns > 0);
         resumenCorte = aj.resumen;
+        resumenInteg = integ ? ai.resumen : null;
       }
       const pedidosNum = elegidos.map(({ p }) => p.numero);
       if (!lineasUsar.length) {
-        setDatos({ fichas: new Map(), enCamino: new Map(), lineas: [], generado: new Date().toISOString(), pedidos: pedidosNum, resumenCorte, todoCortado: true, conBusint: !!bus });
+        setDatos({ fichas: new Map(), enCamino: new Map(), lineas: [], generado: new Date().toISOString(), pedidos: pedidosNum, resumenCorte, resumenInteg, todoCortado: true, conBusint: !!bus });
         setAbierto({}); setPagina("informe"); setSelAbierta(false);
         return;
       }
       const [respFicha, enCamino] = await Promise.all([pFicha, pOC]);
       const fichas = new Map((respFicha.data?.items || []).map((i) => [`${i.ref}|${i.pinta}`, i]));
-      setDatos({ fichas, enCamino, lineas: lineasUsar, generado: new Date().toISOString(), pedidos: pedidosNum, resumenCorte, todoCortado: false, conBusint: !!bus });
+      setDatos({ fichas, enCamino, lineas: lineasUsar, generado: new Date().toISOString(), pedidos: pedidosNum, resumenCorte, resumenInteg, todoCortado: false, conBusint: !!bus });
       setAbierto({}); setPagina("informe"); setSelAbierta(false);
     } catch (err) {
       setError(err?.message || "No se pudo consultar Busint.");
@@ -518,27 +571,28 @@ export default function ExplosionMaterialesView({ db, functionsClient, T, pedido
 
       {error && <div style={{ background: "#FBE9E6", color: "#9A3A2D", border: "1px solid #F3B9B1", borderRadius: 10, padding: 12, marginBottom: 12, fontSize: 13 }}>{error}</div>}
       {avisoBus && <div style={{ background: T.amberBg, color: T.amber, border: "1px solid #F0CF95", borderRadius: 10, padding: 12, marginBottom: 12, fontSize: 13 }}>{avisoBus}</div>}
+      {avisoInteg && <div style={{ background: T.amberBg, color: T.amber, border: "1px solid #F0CF95", borderRadius: 10, padding: 12, marginBottom: 12, fontSize: 13 }}>{avisoInteg}</div>}
       {avisoOC && <div style={{ background: T.amberBg, color: T.amber, border: "1px solid #F0CF95", borderRadius: 10, padding: 12, marginBottom: 12, fontSize: 13 }}>{avisoOC}</div>}
 
       {datos && datos.todoCortado && (
         <div style={{ background: "#E3F5EC", border: "1px solid #B9E3CF", color: "#1E7A52", borderRadius: 14, padding: "16px 18px", marginBottom: 14 }}>
-          <div style={{ fontWeight: 800, fontSize: 16 }}>✅ Según {datos.conBusint ? "Busint" : "los cortes registrados en ATLAS"} ya se cortó todo lo que elegiste</div>
-          <div style={{ fontSize: 13, marginTop: 4 }}>No hay prendas por cortar, así que no hay materiales por pedir. Abajo ves cómo se calculó, pedido por pedido.</div>
+          <div style={{ fontWeight: 800, fontSize: 16 }}>✅ Según {datos.conBusint ? "Busint" : "los cortes registrados en ATLAS"} ya se cortó e integró todo lo que elegiste</div>
+          <div style={{ fontSize: 13, marginTop: 4 }}>No hay prendas por cortar ni por integrar, así que no hay materiales por pedir. Abajo ves cómo se calculó, pedido por pedido.</div>
         </div>
       )}
       {datos && datos.resumenCorte && datos.resumenCorte.length > 0 && (
         <div style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, marginBottom: 14, overflow: "hidden" }}>
           <div onClick={() => setVerCorte((v) => !v || datos.todoCortado)} style={{ padding: "12px 16px", cursor: "pointer", display: "flex", gap: 10, alignItems: "center" }}>
-            <b>{verCorte || datos.todoCortado ? "▾" : "▸"} Cómo se calculó lo que falta por cortar</b>
-            <span style={{ color: T.slate, fontSize: 12.5 }}>ATLAS cuenta solo los cortes registrados aquí; Busint cuenta todo lo cortado. Se usa el menor pendiente de los dos.</span>
+            <b>{verCorte || datos.todoCortado ? "▾" : "▸"} Cómo se calculó lo que falta por cortar e integrar</b>
+            <span style={{ color: T.slate, fontSize: 12.5 }}>Telas: lo que falta por cortar (se usa el menor pendiente entre ATLAS y Busint). Insumos: lo que falta por integrar, porque el insumo sale de bodega al integrar el lote.</span>
           </div>
           {(verCorte || datos.todoCortado) && (
             <div style={{ overflow: "auto", borderTop: `1px solid ${T.border}` }}>
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                <thead><tr><th style={th}>Pedido</th><th style={th}>Cliente</th><th style={{ ...th, textAlign: "right" }}>Pedido</th><th style={{ ...th, textAlign: "right" }}>Por cortar según ATLAS</th><th style={{ ...th, textAlign: "right" }}>Por cortar según Busint</th><th style={{ ...th, textAlign: "right" }}>Se usó</th><th style={th}>Nota</th></tr></thead>
-                <tbody>{datos.resumenCorte.map((r) => (
-                  <tr key={r.pedido}><td style={{ ...td, fontWeight: 700 }}>{r.pedido}</td><td style={td}>{r.cliente}</td><td style={{ ...td, ...nu }}>{fmt(r.total, 0)}</td><td style={{ ...td, ...nu }}>{fmt(r.atlas, 0)}</td><td style={{ ...td, ...nu }}>{r.busint == null ? "—" : fmt(r.busint, 0)}</td><td style={{ ...td, ...nu, fontWeight: 800 }}>{fmt(r.usado, 0)}</td><td style={{ ...td, color: T.slate, fontSize: 12 }}>{r.notas.join(" · ")}</td></tr>
-                ))}</tbody>
+                <thead><tr><th style={th}>Pedido</th><th style={th}>Cliente</th><th style={{ ...th, textAlign: "right" }}>Pedido</th><th style={{ ...th, textAlign: "right" }}>Por cortar según ATLAS</th><th style={{ ...th, textAlign: "right" }}>Por cortar según Busint</th><th style={{ ...th, textAlign: "right" }}>Telas sobre (por cortar)</th><th style={{ ...th, textAlign: "right" }}>Ya integradas</th><th style={{ ...th, textAlign: "right" }}>Insumos sobre (sin integrar)</th><th style={th}>Nota</th></tr></thead>
+                <tbody>{datos.resumenCorte.map((r) => { const ri = (datos.resumenInteg || []).find((x) => String(x.pedido) === String(r.pedido)); return (
+                  <tr key={r.pedido}><td style={{ ...td, fontWeight: 700 }}>{r.pedido}</td><td style={td}>{r.cliente}</td><td style={{ ...td, ...nu }}>{fmt(r.total, 0)}</td><td style={{ ...td, ...nu }}>{fmt(r.atlas, 0)}</td><td style={{ ...td, ...nu }}>{r.busint == null ? "—" : fmt(r.busint, 0)}</td><td style={{ ...td, ...nu, fontWeight: 800 }}>{fmt(r.usado, 0)}</td><td style={{ ...td, ...nu }}>{ri ? fmt(ri.integrado, 0) : "—"}</td><td style={{ ...td, ...nu, fontWeight: 800 }}>{ri ? fmt(ri.sinIntegrar, 0) : "—"}</td><td style={{ ...td, color: T.slate, fontSize: 12 }}>{r.notas.join(" · ")}</td></tr>
+                ); })}</tbody>
               </table>
             </div>
           )}
@@ -644,6 +698,7 @@ export default function ExplosionMaterialesView({ db, functionsClient, T, pedido
                     <div><div style={{ fontWeight: 800, fontSize: 16 }}>{abierto["r|" + r.ref] ? "▾" : "▸"} {r.ref}</div><div style={{ fontSize: 12, color: T.slate }}>Pedido{r.pedidos.length === 1 ? "" : "s"} {r.pedidos.join(", ")}</div></div>
                     <div style={{ fontSize: 12.5, color: T.slate }}>{r.colores.join(" · ") || "—"}</div>
                     <Num t="Por cortar" v={`${fmt(r.unidades, 0)} u`} />
+                    <Num t="Sin integrar" v={`${fmt(r.unidadesIns, 0)} u`} />
                     <div>{r.telasTot.map((t) => <span key={t.nombre + t.unidad} style={{ display: "inline-block", background: "#F3EEF9", color: "#7B5EA7", fontWeight: 700, fontSize: 12, padding: "3px 10px", borderRadius: 10, margin: "2px 4px 2px 0" }}>🧵 {t.nombre} {fmt(t.cant, 1)} {t.unidad}</span>)}</div>
                     <div>{r.nInsumos > 0 && <span style={{ display: "inline-block", background: T.denimBg, color: T.denim, fontWeight: 700, fontSize: 12, padding: "3px 10px", borderRadius: 10 }}>🔩 {r.nInsumos} insumo{r.nInsumos === 1 ? "" : "s"}</span>}</div>
                     <Num t="Falta comprar" v={r.costoFalta > 0 ? `≈ ${money(r.costoFalta)}` : r.hayFalta ? "sin costo" : "0"} rojo={r.hayFalta} />

@@ -10712,3 +10712,245 @@ exports.depurarIntegracionLoteBusint = onCall(
     return { ok: true, lote: lote || null, errores, detalle, resumen, tablas: llaves.map((k) => ({ tabla: NOMBRES[k], filas: T[k].length, columnaLote: claveLote[k], columnaFecha: claveFecha[k] })) };
   }
 );
+
+// (2026-10-19, a pedido de Fredy) LOTES POR INTEGRAR (panel para bodega) + base para descontar los INSUMOS de la
+// Explosión de materiales por INTEGRACIÓN. SOLO LEE. Validado con el lote 7222 (ref 989026): el insumo sale de
+// bodega cuando se INTEGRA el lote ("bmp - integracion" cabecera, "bmp - integracion comp" insumos, "bmp - integracion
+// ref" prendas por talla), unos 0-5 días después del corte, y lo entregado = consumo de la ficha × prendas del lote.
+//   - Lotes: "orden produccion" (NumLote, Ref, Nped, FechaCorte; Mensaje "ELIMINADO" se descarta).
+//   - Prendas cortadas por lote: "orden produccion detalles" (Color y columnas T2..T36); respaldo: "bmp - entrada planta
+//     ref" (el mayor total entre sus entradas). Si ninguna da el lote, prendas = null ("por confirmar").
+//   - Prendas integradas: "bmp - integracion ref" (suma de T*). Un lote está POR INTEGRAR si no tiene documento en
+//     "bmp - integracion", o si lo integrado es menos del 90 % de lo cortado (integración parcial).
+//   - Ficha de insumos: "insumos dig" (grupo de la ref con el ID más alto) cruzada con el inventario de
+//     "estandar componentes prod" (mismas reglas que getFichaMaterialesBusint: solo cuenta como material si el nombre
+//     coincide con un Componente del inventario; el stock es la suma de todos sus colores).
+//   - Órdenes de compra vigentes por código de insumo (sin precios), igual que la Explosión.
+// Permiso: administrador o rol con el módulo "lotes_por_integrar" o "explosion_materiales".
+async function verificarLlamadorConModulos(request, modulosPermitidos) {
+  if (!request.auth) throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+  const snap = await db.collection("users").where("authUid", "==", request.auth.uid).limit(1).get();
+  if (snap.empty) throw new HttpsError("permission-denied", "No tienes permiso para hacer esto.");
+  const userData = snap.docs[0].data();
+  if (userData.isAdmin) return snap.docs[0];
+  if (userData.role === "Cliente") throw new HttpsError("permission-denied", "No tienes permiso para hacer esto.");
+  const configSnap = await db.collection("config").doc("main").get();
+  const roles = configSnap.exists ? configSnap.data().roles || [] : [];
+  const roleData = roles.find((r) => r.name === userData.role);
+  const modulos = Array.isArray(roleData?.modulos) ? roleData.modulos : [];
+  if (!modulosPermitidos.some((m) => modulos.includes(m))) throw new HttpsError("permission-denied", "No tienes permiso para ver los lotes por integrar.");
+  return snap.docs[0];
+}
+exports.getLotesPorIntegrarBusint = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 540,
+    memory: "1GiB",
+  },
+  async (request) => {
+    await verificarLlamadorConModulos(request, ["lotes_por_integrar", "explosion_materiales"]);
+    const hoy = new Date().toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
+    const dias = Math.min(400, Math.max(15, Number(request.data?.dias) || 120));
+    const sumarDias = (iso, d) => { const f = new Date(iso + "T12:00:00Z"); f.setUTCDate(f.getUTCDate() + d); return f.toISOString().slice(0, 10); };
+    const desdeLista = sumarDias(hoy, -dias);
+    const desdeIntegradas = sumarDias(hoy, -400);
+    const avisos = [];
+    const leer = async (nombre, obligatoria) => {
+      try { return await consultarTablaBusintBDCompleta(nombre); }
+      catch (err) {
+        if (obligatoria) throw new HttpsError("unavailable", `No se pudo consultar "${nombre}" en Busint: ${err?.message || String(err)}`);
+        avisos.push(`No se pudo leer "${nombre}": ${err?.message || String(err)}`);
+        return [];
+      }
+    };
+    const [ordenes, integracion, integracionRef, insumosDig, inventario] = await Promise.all([
+      leer("orden produccion", true), leer("bmp - integracion", true), leer("bmp - integracion ref", true),
+      leer("insumos dig", true), leer("estandar componentes prod", true),
+    ]);
+    const [detalles, entPlantaRef, ocCab, ocDet, ocDxc, provs] = await Promise.all([
+      leer("orden produccion detalles", false), leer("bmp - entrada planta ref", false),
+      leer("orden de compra", false), leer("orden de compra detalles", false), leer("orden de compra detallesdxc", false),
+      leer("maestro de proveedores", false),
+    ]);
+    const num = (v) => (v !== undefined && v !== null && v !== "" && Number.isFinite(Number(v)) ? Number(v) : 0);
+    const clave = (v) => String(v ?? "").trim().replace(/\.0+$/, "");
+    const refSG = (v) => String(v ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+    const loteDe = (f) => clave(valorFlexible(f, ["NumLote", "Numlote", "numlote", "Nomlote", "NomLote"]));
+    const sumaTallas = (f) => Object.keys(f).reduce((s, k) => (/^T\d+$/i.test(k) ? s + num(f[k]) : s), 0);
+
+    // 1) Lotes (orden de producción)
+    const lotes = new Map();
+    ordenes.forEach((f) => {
+      if (/elimin/i.test(String(f.Mensaje || ""))) return;
+      const lote = clave(f.NumLote);
+      if (!lote || !(Number(lote) > 0)) return;
+      const corte = fechaBDaISO(f.FechaCorte);
+      if (!corte) return;
+      const previo = lotes.get(lote);
+      if (previo && previo.corte <= corte) return;
+      lotes.set(lote, { lote, ref: String(f.Ref ?? "").trim(), pedido: Number(clave(f.Nped)) > 0 ? clave(f.Nped) : "", corte, obs: String(f.Observacion ?? "") });
+    });
+    // 2) Integración: cabeceras y prendas integradas por lote
+    const conIntegracion = new Map(); // lote -> primera fecha
+    integracion.forEach((f) => {
+      const lote = loteDe(f);
+      if (!lote) return;
+      const fe = fechaBDaISO(f.Fecha) || "";
+      if (!conIntegracion.has(lote) || (fe && fe < conIntegracion.get(lote))) conIntegracion.set(lote, fe);
+    });
+    const integradasLote = new Map();
+    integracionRef.forEach((f) => {
+      const lote = loteDe(f);
+      if (!lote) return;
+      integradasLote.set(lote, (integradasLote.get(lote) || 0) + sumaTallas(f));
+    });
+    // 3) Prendas cortadas por lote (y por color)
+    const prendasLote = new Map(); // lote -> { total, colores: Map }
+    let fuentePrendas = "ninguna";
+    detalles.forEach((f) => {
+      const lote = loteDe(f);
+      if (!lote) return;
+      const u = sumaTallas(f);
+      const p = prendasLote.get(lote) || { total: 0, colores: new Map() };
+      p.total += u;
+      const c = String(valorFlexible(f, ["Color", "color"]) ?? "").trim();
+      if (c) p.colores.set(c, (p.colores.get(c) || 0) + u);
+      prendasLote.set(lote, p);
+    });
+    if (prendasLote.size) fuentePrendas = "orden produccion detalles";
+    else if (entPlantaRef.length) {
+      const porEntrada = new Map(); // lote -> Map(entrada -> {total, colores})
+      entPlantaRef.forEach((f) => {
+        const lote = loteDe(f);
+        if (!lote) return;
+        const ent = clave(f.Entrada);
+        const m = porEntrada.get(lote) || new Map();
+        const e = m.get(ent) || { total: 0, colores: new Map() };
+        const u = sumaTallas(f);
+        e.total += u;
+        const c = String(valorFlexible(f, ["Color", "color"]) ?? "").trim();
+        if (c) e.colores.set(c, (e.colores.get(c) || 0) + u);
+        m.set(ent, e); porEntrada.set(lote, m);
+      });
+      porEntrada.forEach((m, lote) => {
+        let mejor = null;
+        m.forEach((e) => { if (!mejor || e.total > mejor.total) mejor = e; });
+        if (mejor) prendasLote.set(lote, mejor);
+      });
+      if (prendasLote.size) { fuentePrendas = "bmp - entrada planta ref"; avisos.push("Las prendas de cada lote salen de las entradas a planta (no se pudo leer \"orden produccion detalles\"): los lotes que aún no entran a planta quedan 'por confirmar'."); }
+    }
+    if (fuentePrendas === "ninguna") avisos.push("No se pudieron leer las prendas de los lotes: se muestran 'por confirmar'.");
+
+    // 4) Lotes por integrar + integradas por pedido/ref
+    const porIntegrar = [];
+    const integradas = new Map(); // `${pedido}|${refSG}` -> unidades
+    lotes.forEach((l) => {
+      const integ = integradasLote.get(l.lote) || 0;
+      if (l.corte >= desdeIntegradas && l.pedido && integ > 0) {
+        const k = `${l.pedido}|${refSG(l.ref)}`;
+        integradas.set(k, (integradas.get(k) || 0) + integ);
+      }
+      if (l.corte < desdeLista) return;
+      const p = prendasLote.get(l.lote);
+      const cortadas = p && p.total > 0 ? p.total : null;
+      const tiene = conIntegracion.has(l.lote);
+      const parcial = tiene && cortadas !== null && integ < cortadas * 0.9;
+      if (tiene && !parcial) return;
+      const colores = p ? [...p.colores.entries()].filter(([, u]) => u > 0).map(([c, u]) => [c, u]) : [];
+      porIntegrar.push({
+        lote: l.lote, ref: l.ref, pedido: l.pedido || null, corte: l.corte,
+        clienteObs: clienteDesdeObservacion(l.obs), prendas: cortadas, integradas: tiene ? integ : 0, parcial, colores,
+      });
+    });
+    porIntegrar.sort((a, b) => (a.corte < b.corte ? -1 : a.corte > b.corte ? 1 : Number(a.lote) - Number(b.lote)));
+
+    // 5) Ficha de insumos de las referencias de esos lotes, cruzada con el inventario
+    const insumosInv = new Map();
+    inventario.forEach((f) => {
+      const componente = String(f?.Componente ?? "").trim();
+      if (!componente || f?.Activo === false) return;
+      if (String(f?.Telas ?? "").trim().toUpperCase() === "T") return;
+      const k = normalizarInsumoBD(componente);
+      if (!insumosInv.has(k)) insumosInv.set(k, []);
+      insumosInv.get(k).push({ cantidad: num(f.ICant), unidad: String(f.Unidad ?? f.UnidadT ?? "").trim(), codcomp: clave(f.Codcomp) });
+    });
+    const refsNecesarias = new Set(porIntegrar.map((l) => normalizarRefComparacion(l.ref)));
+    const gruposRef = new Map(); // refNorm -> Map(lit -> {maxId, filas})
+    insumosDig.forEach((f) => {
+      if (!f?.Ref || !f?.Insumo) return;
+      const k = normalizarRefComparacion(f.Ref);
+      if (!refsNecesarias.has(k)) return;
+      const lit = String(f.Ref);
+      const id = num(f.ID);
+      if (!gruposRef.has(k)) gruposRef.set(k, new Map());
+      const g = gruposRef.get(k);
+      if (!g.has(lit)) g.set(lit, { maxId: id, filas: [] });
+      const x = g.get(lit);
+      if (id > x.maxId) x.maxId = id;
+      x.filas.push(f);
+    });
+    const fichas = {};
+    const codcompsUsados = new Set();
+    porIntegrar.forEach((l) => {
+      if (fichas[l.ref]) return;
+      const g = gruposRef.get(normalizarRefComparacion(l.ref));
+      let mejor = null;
+      if (g) for (const [, x] of g.entries()) if (!mejor || x.maxId > mejor.maxId) mejor = x;
+      const lista = [];
+      if (mejor) {
+        mejor.filas.forEach((f) => {
+          const coin = insumosInv.get(normalizarInsumoBD(String(f.Insumo).trim())) || [];
+          const cant = num(f.Cant);
+          if (!coin.length || !(cant > 0)) return; // procesos / mano de obra no son material
+          const codcomps = coin.map((x) => x.codcomp).filter(Boolean).slice(0, 60);
+          codcomps.forEach((c) => codcompsUsados.add(c));
+          lista.push({ insumo: String(f.Insumo).trim(), cant, unidad: coin[0].unidad, bodega: coin.reduce((s, x) => s + x.cantidad, 0), codcomps });
+        });
+      }
+      fichas[l.ref] = lista;
+    });
+
+    // 6) Órdenes de compra vigentes (sin precios) por código de insumo
+    const oc = {};
+    if (ocCab.length && ocDet.length) {
+      let marcas = new Set();
+      try { marcas = new Set((await db.collection("contabilidad_ordenes_compra_recibidas").get()).docs.map((d) => d.id)); }
+      catch (err) { avisos.push("No se pudo leer qué órdenes de compra ya se recibieron: se muestran todas las vigentes."); }
+      const nombreProv = new Map();
+      provs.forEach((p) => { const k = clave(p?.Codigo); if (k) nombreProv.set(k, String(p.Nombre || "").trim()); });
+      const enDxc = new Set();
+      ocDxc.forEach((d) => { const k = clave(d?.NumOC); if (k) enDxc.add(k); });
+      const lineas = new Map();
+      ocDet.forEach((d) => {
+        const n = clave(d?.NumOC);
+        if (!n) return;
+        if (!lineas.has(n)) lineas.set(n, []);
+        lineas.get(n).push([clave(d?.Codcomp), num(d.Cant)]);
+      });
+      const desdeOC = sumarDias(hoy, -60);
+      ocCab.forEach((c) => {
+        const n = clave(c?.NumOC);
+        if (!n || marcas.has(n) || enDxc.has(n)) return;
+        const txt = String(c.DadoPorCumplido ?? "").trim();
+        if ((txt !== "" && !["0", "N", "NO", "FALSE", "NULL"].includes(txt.toUpperCase())) || fechaBDaISO(c.FechaDxC)) return;
+        const ff = fechaBDaISO(c.FechaFin);
+        if (!ff || ff < desdeOC) return;
+        const prov = nombreProv.get(clave(c.codprove)) || (clave(c.codprove) ? `Proveedor ${clave(c.codprove)}` : "");
+        (lineas.get(n) || []).forEach(([cod, cant]) => {
+          if (!codcompsUsados.has(cod) || !(cant > 0)) return;
+          if (!oc[cod]) oc[cod] = [];
+          oc[cod].push([Number(n), prov, ff, cant]);
+        });
+      });
+    } else if (!avisos.some((a) => /orden de compra/.test(a))) {
+      avisos.push("No hay órdenes de compra para mostrar.");
+    }
+    logger.info("getLotesPorIntegrarBusint", { lotes: porIntegrar.length, fuentePrendas, integradas: integradas.size, refs: Object.keys(fichas).length, avisos: avisos.length });
+    return {
+      ok: true, generado: new Date().toISOString(), hoy, dias, fuentePrendas,
+      lotes: porIntegrar, fichas, oc,
+      integradas: [...integradas.entries()].map(([k, u]) => { const i = k.indexOf("|"); return [k.slice(0, i), k.slice(i + 1), u]; }),
+      avisos,
+    };
+  }
+);
