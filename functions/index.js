@@ -2009,6 +2009,47 @@ exports.getDisponibleParaDespachar = onCall(
       avisos.push("No se pudo leer el Panel de Flujo Operacional de Busint: las columnas de etapas (sin cortar, corte, planta, semiterminado, BPT) quedan en cero.");
     }
 
+    // 5d) (2026-10-19, a pedido de Fredy) Prendas YA CORTADAS por pedido + referencia, desde las órdenes de
+    // producción de Busint ("orden produccion" = lote, ref, pedido; "orden produccion detalles" = prendas por talla).
+    // Sin cortar = pedido - el mayor entre (cortado, producido, facturado): un lote ya cortado cuenta aunque hoy esté
+    // en un taller o sin inventario en el panel, y lo facturado/producido necesariamente se cortó.
+    const cortadoPorClave = new Map(); // `${numPed}|${refNorm}` -> prendas cortadas
+    let cortadoLeido = false;
+    try {
+      const [ordProd, ordDet] = await Promise.all([consultarTablaBusintBDCompleta("orden produccion"), consultarTablaBusintBDCompleta("orden produccion detalles")]);
+      const claveL = (v) => String(v ?? "").trim().replace(/\.0+$/, "");
+      const lotePed = new Map(); // lote -> { ped, refNorm }
+      let cortesSinPedido = 0;
+      for (const f of ordProd) {
+        if (/elimin/i.test(String(f.Mensaje || ""))) continue;
+        const lote = claveL(f.NumLote);
+        if (!(Number(lote) > 0)) continue;
+        const ped = Number(claveL(f.Nped)) > 0 ? claveL(f.Nped) : "";
+        const refNorm = refSinGuion(f.Ref);
+        if (!lotePed.has(lote) || (ped && !lotePed.get(lote).ped)) lotePed.set(lote, { ped, refNorm });
+      }
+      const prendasPorLote = new Map();
+      for (const f of ordDet) {
+        const lote = claveL(valorFlexible(f, ["NumLote", "Numlote", "numlote", "Nomlote", "NomLote"]));
+        if (!lote) continue;
+        const u = Object.keys(f).reduce((a, k) => (/^T\d+$/i.test(k) && Number.isFinite(Number(f[k])) ? a + Number(f[k]) : a), 0);
+        if (u > 0) prendasPorLote.set(lote, (prendasPorLote.get(lote) || 0) + u);
+      }
+      lotePed.forEach((v, lote) => {
+        const u = prendasPorLote.get(lote) || 0;
+        if (!(u > 0)) return;
+        if (!v.ped || !v.refNorm) { cortesSinPedido += 1; return; }
+        const k = `${v.ped}|${v.refNorm}`;
+        cortadoPorClave.set(k, (cortadoPorClave.get(k) || 0) + u);
+      });
+      cortadoLeido = prendasPorLote.size > 0 && lotePed.size > 0;
+      if (!cortadoLeido) avisos.push("No se pudieron leer las prendas cortadas de las órdenes de producción: \"Sin cortar\" se calculó con el panel de flujo.");
+      else if (cortesSinPedido > 0) avisos.push(`${cortesSinPedido} cortes en Busint no tienen número de pedido: no se descuentan de "Sin cortar" (si ya se facturaron, la factura los cubre).`);
+    } catch (err) {
+      logger.error("Error leyendo las órdenes de producción (getDisponibleParaDespachar)", { error: String(err) });
+      avisos.push("No se pudieron leer las órdenes de producción: \"Sin cortar\" se calculó con el panel de flujo.");
+    }
+
     // 6) Armar resultado por cliente
     const porClienteMap = new Map();
     let sinPrecio = 0;
@@ -2039,12 +2080,16 @@ exports.getDisponibleParaDespachar = onCall(
       if (lot) lot.usado = true;
       const eC = lot ? lot.e.corte : 0, eP = lot ? lot.e.planta : 0, eS = lot ? lot.e.semi : 0, eB = lot ? lot.e.pt : 0;
       const faltaDespachar = saldoPedido;
-      const etSinCortar = panelLeido ? Math.max(0, faltaDespachar - (eC + eP + eS + eB)) : 0;
+      const cortadoBus = cortadoPorClave.get(k) || 0;
+      const etSinCortar = cortadoLeido
+        ? Math.max(0, l.pedido - Math.max(cortadoBus, l.producido, l.despachado))
+        : (panelLeido ? Math.max(0, faltaDespachar - (eC + eP + eS + eB)) : 0);
       if (!porClienteMap.has(l.cliente)) porClienteMap.set(l.cliente, []);
       porClienteMap.get(l.cliente).push({
         faltaDespachar,
         valorFaltaDespachar: Math.round(faltaDespachar * l.precio),
         etSinCortar,
+        cortadoBusint: cortadoBus,
         etCorte: eC,
         etPlanta: eP,
         etSemi: eS,
