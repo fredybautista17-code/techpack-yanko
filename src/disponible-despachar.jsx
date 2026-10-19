@@ -60,10 +60,21 @@ function totalesDe(filas) {
   };
 }
 // Filas de las preórdenes montadas de un cliente que todavía no son pedido
-function filasPreordenesDe(nombreCliente, preordenes) {
+// (2026-10-19, a pedido de Fredy) Una preorden que ya se montó como pedido en Busint se queda abierta en ATLAS y
+// duplicaba la fila ("Orden SUR-01 / DG-700 sin cortar" junto al pedido 1771 ya cortado). Si el cliente ya tiene un pedido
+// real con la misma referencia y la misma cantidad (±2 %), la fila de la preorden se oculta (o se muestra marcada si se pide).
+// Con la misma referencia pero otra cantidad se deja, marcada como "posible pedido N°".
+const refNormPre = (v) => String(v ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+function filasPreordenesDe(nombreCliente, preordenes, filasReales = [], mostrarConvertidas = false) {
   const k = normTxt(nombreCliente);
   if (!k) return [];
   const filas = [];
+  const realesPorRef = new Map();
+  (filasReales || []).forEach((r) => {
+    const rk = refNormPre(r.ref);
+    if (!rk || r.esPreorden) return;
+    realesPorRef.set(rk, [...(realesPorRef.get(rk) || []), r]);
+  });
   preordenes.forEach((p) => {
     const kp = normTxt(p.cliente);
     if (!kp || p.estado === "cerrada" || p.numPedido) return;
@@ -76,10 +87,14 @@ function filasPreordenesDe(nombreCliente, preordenes) {
       const cant = (Number(it.colombiaCantidad) || 0) + (Number(it.venezuelaCantidad) || 0);
       if (cant <= 0) return;
       const precio = numeroPrecio(it.precio);
+      const reales = realesPorRef.get(refNormPre(it.referencia)) || [];
+      const igual = reales.find((r) => Math.abs((Number(r.pedido) || 0) - cant) <= Math.max(2, cant * 0.02));
+      if (igual && !mostrarConvertidas) return;
+      const distinta = !igual && reales.length ? reales[0] : null;
       filas.push({
         numPed: etiqueta,
         ref: it.referencia || "(sin referencia)",
-        descripcion: it.nombre || "",
+        descripcion: (it.nombre || "") + (igual ? ` (ya es el pedido N° ${igual.numPed})` : distinta ? ` (posible pedido N° ${distinta.numPed}: ${distinta.pedido} und)` : ""),
         pedido: cant,
         producido: 0,
         despachado: 0,
@@ -313,6 +328,7 @@ export default function DisponibleDespacharView({ db, functionsClient, T }) {
   const [verDespachados, setVerDespachados] = useState(false);
   const [soloDisponible, setSoloDisponible] = useState(false);
   const [incluirPre, setIncluirPre] = useState(true);
+  const [verConvertidas, setVerConvertidas] = useState(false);
   const [bajando, setBajando] = useState(false);
   const [preordenes, setPreordenes] = useState([]);
 
@@ -342,7 +358,8 @@ export default function DisponibleDespacharView({ db, functionsClient, T }) {
     return filas.filter((f) => (verDespachados || f.estado !== "despachado") && (!soloDisponible || f.disponible > 0));
   }
   // Preórdenes montadas sin pedido: van al final de la tabla del cliente
-  const filasPre = useMemo(() => (grupo ? filasPreordenesDe(grupo.cliente, preordenes) : []), [grupo, preordenes]);
+  const filasPre = useMemo(() => (grupo ? filasPreordenesDe(grupo.cliente, preordenes, grupo.filas, verConvertidas) : []), [grupo, preordenes, verConvertidas]);
+  const nConvertidas = useMemo(() => (grupo ? filasPreordenesDe(grupo.cliente, preordenes, [], false).length - filasPreordenesDe(grupo.cliente, preordenes, grupo.filas, false).length : 0), [grupo, preordenes]);
   const filas = grupo ? [...filtrarFilas(grupo.filas), ...(incluirPre && !soloDisponible ? filasPre : [])] : [];
   const tot = totalesDe(filas);
 
@@ -359,7 +376,7 @@ export default function DisponibleDespacharView({ db, functionsClient, T }) {
     try {
       const lista = grupos
         .map((g) => {
-          const f = [...filtrarFilas(g.filas), ...(incluirPre && !soloDisponible ? filasPreordenesDe(g.cliente, preordenes) : [])];
+          const f = [...filtrarFilas(g.filas), ...(incluirPre && !soloDisponible ? filasPreordenesDe(g.cliente, preordenes, g.filas, verConvertidas) : [])];
           return { ...g, filas: f, totales: totalesDe(f) };
         })
         .filter((g) => g.filas.length);
@@ -393,6 +410,9 @@ export default function DisponibleDespacharView({ db, functionsClient, T }) {
         </label>
         <label style={{ fontSize: 12, color: T.slate, display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}>
           <input type="checkbox" checked={incluirPre} onChange={(e) => setIncluirPre(e.target.checked)} /> Incluir preórdenes
+        </label>
+        <label style={{ fontSize: 12, color: T.slate, display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }} title="Preórdenes cuyo pedido real ya existe en Busint (misma referencia y cantidad)">
+          <input type="checkbox" checked={verConvertidas} onChange={(e) => setVerConvertidas(e.target.checked)} /> Mostrar preórdenes ya convertidas en pedido{nConvertidas > 0 ? ` (${nConvertidas} ocultas)` : ""}
         </label>
         <div style={{ flex: 1 }} />
         <button onClick={consultar} disabled={cargando} style={{ padding: "8px 14px", borderRadius: 8, border: `1.5px solid ${T.border}`, background: T.white, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{cargando ? "Consultando Busint..." : "🔄 Actualizar"}</button>
