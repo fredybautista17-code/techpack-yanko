@@ -603,7 +603,7 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
             {cot.precioAplicado && cot.precioAplicado.version === ver.numero ? ` ${fmtCOP(cot.precioAplicado.valor)} aplicado a ${cot.precioAplicado.destino}.` : ""} Para cambiar algo, crea una versión nueva (volverá a pasar por aprobación).
             {ver.dropbox && <div style={{ marginTop: 4, color: C.slate }}>☁ En Dropbox: {ver.dropbox.ruta}</div>}
           </div>
-          <button onClick={() => enviarDropbox()} disabled={subiendoDropbox} title={ver.dropbox ? `Ya está en Dropbox: ${ver.dropbox.ruta}` : `Guarda el libro con las versiones aprobadas (una hoja por versión) en la carpeta ${CARPETA_DISENO}`} style={{ ...btn(C.white, C.blue, C.blue), opacity: subiendoDropbox ? 0.5 : 1 }}>{subiendoDropbox ? "Subiendo…" : ver.dropbox ? "☁ Reenviar a Dropbox" : "☁ Enviar a Dropbox"}</button>
+          {puedeEditar && <button onClick={() => enviarDropbox()} disabled={subiendoDropbox} title={ver.dropbox ? `Ya está en Dropbox: ${ver.dropbox.ruta}` : `Guarda el libro con las versiones aprobadas (una hoja por versión) en la carpeta ${CARPETA_DISENO}`} style={{ ...btn(C.white, C.blue, C.blue), opacity: subiendoDropbox ? 0.5 : 1 }}>{subiendoDropbox ? "Subiendo…" : ver.dropbox ? "☁ Reenviar a Dropbox" : "☁ Enviar a Dropbox"}</button>}
           {puedeAprobar && <button onClick={reabrir} style={btn(C.white, C.amber, C.amber)}>Reabrir esta versión</button>}
           {puedeDeshabilitar && <button onClick={deshabilitar} style={btn(C.white, C.red, C.red)}>🚫 Deshabilitar</button>}
           {puedeEditar && <button onClick={nuevaVersion} style={btn(C.white, C.green, C.green)}>+ Crear versión nueva para editar</button>}
@@ -1982,7 +1982,7 @@ function HistorialVinilo({ minis, cotizaciones, cargado, onAbrir, onBorrar, pued
 }
 
 const ITEMS_MENU = [["inicio", "◉", "Inicio"], ["cotizaciones", "▤", "Cotizaciones"], ["historial", "☰", "Historial de cotizaciones"], ["aprobar", "✓", "Por aprobar"], ["vinilo", "◈", "Vinilo / DTF"], ["historialVinilo", "☷", "Historial de Vinilo / DTF"], ["bases", "▦", "Bases Vinilo y DTF"], ["parametros", "⚙", "Parámetros por cliente"]];
-function MenuCotizaciones({ activo, onIr, onVolver, onLogout, currentUser, nAprobar, puedeAprobar, soloConsulta }) {
+function MenuCotizaciones({ activo, onIr, onVolver, onLogout, currentUser, nAprobar, puedeAprobar, soloConsulta, soloCliente }) {
   const inicial = String(currentUser?.name || "?").trim().charAt(0).toUpperCase();
   return (
     <div className="cotz-side" style={{ width: 268, flexShrink: 0, background: C.navy, color: "#C9C8DE", padding: "18px 14px", display: "flex", flexDirection: "column", position: "sticky", top: 0, height: "100vh", alignSelf: "flex-start", boxSizing: "border-box" }}>
@@ -1999,7 +1999,7 @@ function MenuCotizaciones({ activo, onIr, onVolver, onLogout, currentUser, nApro
         </div>
       </div>
       <div className="cotz-items">
-        {ITEMS_MENU.map(([id, icono, texto]) => {
+        {ITEMS_MENU.filter(([id]) => !soloCliente || id === "cotizaciones" || id === "historial").map(([id, icono, texto]) => {
           const on = activo === id;
           return (
             <button key={id} onClick={() => onIr(id)} style={{ display: "flex", alignItems: "center", gap: 12, width: "100%", padding: "11px 12px", border: "none", borderRadius: 10, marginBottom: 3, fontSize: 14, fontFamily: "inherit", cursor: "pointer", textAlign: "left", background: on ? C.seam : "transparent", color: on ? C.ink : "#C9C8DE", fontWeight: on ? 800 : 500 }}>
@@ -2016,12 +2016,22 @@ function MenuCotizaciones({ activo, onIr, onVolver, onLogout, currentUser, nApro
   );
 }
 
-export default function CotizadorView({ currentUser, config, protos, capsulas, iniciarDesde, onIniciarConsumido, onAplicarPrecio, onVolver, onLogout, puedeBorrar, puedeAprobar, puedeDeshabilitar, puedeEditar = true, notify }) {
+export default function CotizadorView({ currentUser, config, protos, capsulas, iniciarDesde, onIniciarConsumido, onAplicarPrecio, onVolver, onLogout, puedeBorrar, puedeAprobar, puedeDeshabilitar, puedeEditar = true, clientesPermitidos = null, notify }) {
+  // (2026-10-19, a pedido de Fredy) Usuario de rol Cliente: solo ve (y descarga) las cotizaciones APROBADAS de sus clientes asociados.
+  const esCliente = Array.isArray(clientesPermitidos);
   const [edSucio, setEdSucio] = useState(false); // el editor abierto tiene cambios sin guardar
-  const [tab, setTab] = useState("inicio");
+  const [tab, setTabRaw] = useState(esCliente ? "cotizaciones" : "inicio");
+  const setTab = (t) => setTabRaw(esCliente && !["cotizaciones", "historial"].includes(t) ? "cotizaciones" : t);
   const [minis, setMinis] = useState([]); // minicotizaciones de vinilo guardadas (solo para el conteo del inicio)
   const [filtroEstado, setFiltroEstado] = useState(null); // "sinAplicar" | "sinVincular" | "viejas"
-  const [cotizaciones, setCotizaciones] = useState([]);
+  const [cotizacionesTodas, setCotizaciones] = useState([]);
+  const cotizaciones = useMemo(() => {
+    if (!esCliente) return cotizacionesTodas;
+    const ok = new Set(clientesPermitidos.map(normTxt));
+    return cotizacionesTodas
+      .filter((c) => ok.has(normTxt(c.cliente || "General")) && (c.versiones || []).some((v) => v.estado === "aprobada"))
+      .map((c) => { const vs = c.versiones.filter((v) => v.estado === "aprobada"); return { ...c, versiones: vs, activa: vs.length - 1 }; });
+  }, [cotizacionesTodas, esCliente, clientesPermitidos]); // eslint-disable-line
   const [parametros, setParametros] = useState([]);
   const [cargado, setCargado] = useState(false);
   const [edit, setEdit] = useState(null); // cotización en edición
@@ -2160,7 +2170,7 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
   const TITULOS = { inicio: "Inicio", cotizaciones: "Cotizaciones", vinilo: "Vinilo / DTF", bases: "Bases Vinilo y DTF", historial: "Historial de cotizaciones", historialVinilo: "Historial de Vinilo / DTF", parametros: "Parámetros por cliente", aprobar: puedeAprobar ? "Por aprobar" : "En aprobación" };
   return (
     <div className="cotz-root" style={{ display: "flex", minHeight: "100vh", background: C.canvas, fontFamily: FUENTE, color: C.ink }}>
-      <MenuCotizaciones activo={edit ? "cotizaciones" : tab} onIr={irA} onVolver={onVolver} onLogout={onLogout} currentUser={currentUser} nAprobar={cotizaciones.filter((c) => estadoUltima(c) === "aprobacion").length} puedeAprobar={puedeAprobar} soloConsulta={!puedeEditar} />
+      <MenuCotizaciones activo={edit ? "cotizaciones" : tab} onIr={irA} onVolver={onVolver} onLogout={onLogout} currentUser={currentUser} nAprobar={cotizaciones.filter((c) => estadoUltima(c) === "aprobacion").length} puedeAprobar={puedeAprobar} soloConsulta={!puedeEditar} soloCliente={esCliente} />
       <div style={{ flex: 1, minWidth: 0, padding: "24px 34px", boxSizing: "border-box" }}>
       {edit ? (
         <CotizacionEditor key={edit.id} inicial={edit} minis={minis} parametros={parametros} clientes={clientesApp} protos={protos} capsulas={capsulas} cotizaciones={cotizaciones}

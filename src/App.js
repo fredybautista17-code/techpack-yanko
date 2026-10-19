@@ -1150,6 +1150,7 @@ const MODULOS_CLIENTE_OPCIONES = [
   { id: "preordenes", label: "Preórdenes" },
   { id: "ordenes", label: "Órdenes" },
   { id: "produccion", label: "Producción" },
+  { id: "cotizador", label: "Cotizaciones (solo ver y descargar las aprobadas de sus clientes)" },
 ];
 // (2026-09-24, a pedido de Fredy) Para la pantalla "Producción" -- a qué
 // grupo de cliente de Busint queda amarrado un usuario Cliente (ver
@@ -18407,14 +18408,17 @@ function AppInner() {
   const canAccessHistorial = moduloVisible(userRoleData, "historial", currentUser?.isAdmin);
   const canAccessCronograma = moduloVisible(userRoleData, "cronograma_muestras", currentUser?.isAdmin) && moduloVisibleParaCliente(currentUser, "cronograma_muestras");
   // (2026-10-06, a pedido de Fredy) Cotizador: llave propia, no implícita en "diseno".
-  const canAccessCotizador = moduloVisible(userRoleData, "cotizador", currentUser?.isAdmin);
+  // Un usuario de rol Cliente solo entra si el rol lo permite Y además se le marcó "Cotizaciones" en su usuario (no vale el "sin marcar = todos") y tiene clientes asociados.
+  const esClienteCot = currentUser?.role === "Cliente" && !currentUser?.isAdmin;
+  const canAccessCotizador = moduloVisible(userRoleData, "cotizador", currentUser?.isAdmin)
+    && (!esClienteCot || (Array.isArray(currentUser?.modulosCliente) && currentUser.modulosCliente.includes("cotizador") && clientesDeUsuario(currentUser).length > 0));
   // (2026-10-16, a pedido de Fredy) Borrar y aprobar cotizaciones: permisos aparte por rol (el admin siempre).
-  const canBorrarCotizacion = canAccessCotizador && moduloVisible(userRoleData, "cotizador_borrar", currentUser?.isAdmin);
-  const canAprobarCotizacion = canAccessCotizador && moduloVisible(userRoleData, "cotizador_aprobar", currentUser?.isAdmin);
+  const canBorrarCotizacion = canAccessCotizador && !esClienteCot && moduloVisible(userRoleData, "cotizador_borrar", currentUser?.isAdmin);
+  const canAprobarCotizacion = canAccessCotizador && !esClienteCot && moduloVisible(userRoleData, "cotizador_aprobar", currentUser?.isAdmin);
   // (2026-10-19, a pedido de Fredy) Deshabilitar una cotización aprobada: permiso aparte por rol (el admin siempre).
-  const canDeshabilitarCotizacion = canAccessCotizador && moduloVisible(userRoleData, "cotizador_deshabilitar", currentUser?.isAdmin);
+  const canDeshabilitarCotizacion = canAccessCotizador && !esClienteCot && moduloVisible(userRoleData, "cotizador_deshabilitar", currentUser?.isAdmin);
   // (2026-10-19, a pedido de Fredy) Crear/editar cotizaciones: permiso aparte. Con solo "cotizador" el usuario queda en SOLO CONSULTA (el admin siempre edita).
-  const canEditarCotizacion = canAccessCotizador && moduloVisible(userRoleData, "cotizador_editar", currentUser?.isAdmin);
+  const canEditarCotizacion = canAccessCotizador && !esClienteCot && moduloVisible(userRoleData, "cotizador_editar", currentUser?.isAdmin);
   // (2026-10-16) Cuántas cotizaciones esperan aprobación (solo para quien aprueba): tarjeta del Inicio.
   const [cotPorAprobar, setCotPorAprobar] = useState(0);
   useEffect(() => {
@@ -18701,7 +18705,7 @@ function AppInner() {
       <CotizadorView currentUser={currentUser} config={config} protos={protosVisibles} capsulas={capsulasVisibles}
         iniciarDesde={cotizadorInicio} onIniciarConsumido={() => setCotizadorInicio(null)}
         onAplicarPrecio={aplicarPrecioCotizador} onVolver={() => setModuloActivo("diseno")}
-        puedeBorrar={canBorrarCotizacion} puedeAprobar={canAprobarCotizacion} puedeDeshabilitar={canDeshabilitarCotizacion} puedeEditar={canEditarCotizacion}
+        puedeBorrar={canBorrarCotizacion} puedeAprobar={canAprobarCotizacion} puedeDeshabilitar={canDeshabilitarCotizacion} puedeEditar={canEditarCotizacion} clientesPermitidos={esClienteCot ? clientesDeUsuario(currentUser) : null}
         onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }}
         notify={(msg) => notify({ id: uid(), icon: "🧮", title: "Cotizador", msg })} />
     );
@@ -18947,7 +18951,7 @@ function AppInner() {
               />
             )}
             {view === "proto-detail" && selProto && (
-              <DetailView item={selProto} kind="proto" onCotizar={canAccessCotizador ? abrirCotizadorDesde : undefined} role={role} perms={perms} capsulas={capsulas}
+              <DetailView item={selProto} kind="proto" onCotizar={canAccessCotizador && !esClienteCot ? abrirCotizadorDesde : undefined} role={role} perms={perms} capsulas={capsulas}
                 onBack={() => setView("protos")}
                 onUpdateItem={(p) => updateProto(selProto.id, p)}
                 onPromote={(p) => { setPromoteProto(p); setModal("promote"); }}
@@ -18958,7 +18962,7 @@ function AppInner() {
               />
             )}
             {view === "ref-detail" && selRef && selCap && (
-              <DetailView item={selRef} kind="ref" onCotizar={canAccessCotizador ? abrirCotizadorDesde : undefined} role={role} perms={perms} capsulas={capsulas} capsula={selCap} protos={protos}
+              <DetailView item={selRef} kind="ref" onCotizar={canAccessCotizador && !esClienteCot ? abrirCotizadorDesde : undefined} role={role} perms={perms} capsulas={capsulas} capsula={selCap} protos={protos}
                 onBack={() => setView("capsulas")}
                 onUpdateItem={(p) => updateRef(selCap.id, selRef.id, p)}
                 onPasarAPreorden={(ref) => pasarAPreorden(selCap, ref)}
