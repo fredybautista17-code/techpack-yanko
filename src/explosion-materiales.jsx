@@ -130,6 +130,45 @@ function colorAprox(nombre) {
 }
 
 // Núcleo del cálculo (función pura)
+// (2026-10-19, a pedido de Fredy) ¿De qué COLOR es el código de color de una tela? Los pedidos solo
+// traen el nombre de la PRENDA (ej. "NEGRO / AZUL BEBÉ"), que puede llevar dos colores. Se cruza el
+// código contra todas las líneas que lo usan: los nombres que comparten todas son los candidatos.
+//  - "seguro": queda un solo nombre, y sale de una prenda de una sola tela o de 2+ prendas distintas.
+//  - "deducido": en una prenda de dos telas, la otra tela ya es segura y queda un solo nombre.
+//  - "confirmar": quedan dos o más nombres posibles (o ninguno): hay que validarlo en Busint.
+function resolverColoresTela(registros) {
+  const info = new Map();
+  registros.forEach(({ codes, nombres, color, directo }) => {
+    codes.forEach((c) => {
+      let i = info.get(c);
+      if (!i) { i = { cands: null, n: new Set(), directo: false }; info.set(c, i); }
+      i.cands = i.cands ? new Set([...i.cands].filter((x) => nombres.has(x))) : new Set(nombres);
+      i.n.add(color);
+      if (directo) i.directo = true;
+    });
+  });
+  const res = new Map();
+  info.forEach((i, c) => {
+    if (i.cands.size === 1 && (i.directo || i.n.size >= 2)) res.set(c, { nombre: [...i.cands][0], estado: "seguro", opciones: [...i.cands] });
+    else res.set(c, { nombre: "", estado: "confirmar", opciones: [...i.cands] });
+  });
+  for (let pase = 0; pase < 4; pase++) {
+    let cambio = false;
+    registros.forEach(({ codes, nombres }) => {
+      if (codes.length < 2) return;
+      const sinResolver = codes.filter((c) => !res.get(c).nombre);
+      if (sinResolver.length !== 1) return;
+      const c = sinResolver[0];
+      const i = info.get(c);
+      if (i.cands.size === 0) return;
+      const resueltos = new Set(codes.map((x) => res.get(x).nombre).filter(Boolean));
+      const resto = [...nombres].filter((x) => !resueltos.has(x) && i.cands.has(x));
+      if (resto.length === 1) { res.set(c, { nombre: resto[0], estado: "deducido", opciones: resto }); cambio = true; }
+    });
+    if (!cambio) break;
+  }
+  return res;
+}
 export function calcularExplosion({ lineas, fichas, enCamino, mermaTela, mermaInsumo }) {
   const telas = new Map();
   const insumos = new Map();
@@ -137,6 +176,7 @@ export function calcularExplosion({ lineas, fichas, enCamino, mermaTela, mermaIn
   const sinFicha = new Map();
   const avisosTela = [];
   const refs = new Map();
+  const registrosColor = []; // por línea de pedido: códigos de color de sus telas y nombres de la prenda
   lineas.forEach((l) => {
     const ficha = fichas.get(`${l.ref}|${l.pinta}`);
     if (!ficha) return;
@@ -146,6 +186,10 @@ export function calcularExplosion({ lineas, fichas, enCamino, mermaTela, mermaIn
     let r = refs.get(l.ref);
     if (!r) { r = { ref: l.ref, pedidos: new Set(), colores: new Set(), unidades: 0, unidadesIns: 0, items: [] }; refs.set(l.ref, r); }
     r.pedidos.add(l.pedido); if (l.color) r.colores.add(l.color); r.unidades += l.unidades; r.unidadesIns += uIns;
+    if (l.unidades > 0 && l.color) {
+      const codes = [...new Set(ficha.telas.map((t) => t.color).filter(Boolean))];
+      if (codes.length) registrosColor.push({ codes, nombres: new Set(String(l.color).split("/").map((x) => x.trim().toUpperCase()).filter(Boolean)), color: String(l.color).trim().toUpperCase(), directo: ficha.telas.filter((t) => t.nombre).length === 1 });
+    }
     if (l.unidades > 0) ficha.telas.forEach((t) => {
       const tipo = tipoUnidadTela(t.unidad);
       const clave = `${t.nombre}|${t.color || "?"}|${tipo}`;
@@ -182,8 +226,13 @@ export function calcularExplosion({ lineas, fichas, enCamino, mermaTela, mermaIn
       r.items.push({ tipo: "insumo", clave, nombre: ins.insumo, colorCod: null, colorNombre: l.color, unidad: a.unidad, consumo: ins.cant, unidades: uIns, cant, ubicacion: ins.ubicacion });
     });
   });
+  const colorTela = resolverColoresTela(registrosColor);
   const cerrar = (a) => {
     if (a.tipo === "tela") {
+      const ct = a.color ? colorTela.get(a.color) : null;
+      a.colorTelaNombre = ct?.nombre || "";
+      a.colorTelaEstado = ct?.estado || "confirmar";
+      a.colorTelaOpciones = ct?.opciones || [];
       if (a.codcomp && enCamino.has(a.codcomp)) { a.enCamino = enCamino.get(a.codcomp).vig; a.vencidas = enCamino.get(a.codcomp).venc; }
     } else {
       (a.codcomps || []).forEach((c) => { const e = enCamino.get(c); if (e) { a.enCamino += e.vig; a.vencidas += e.venc; } });
@@ -434,13 +483,17 @@ export default function ExplosionMaterialesView({ db, functionsClient, T, pedido
   const aComprar = todos.filter((a) => a.estado === "comprar");
   const costoTotal = aComprar.reduce((s, a) => s + a.costoFalta, 0);
   const nombreColorDe = (c) => (c.nombreColor && c.nombreColor.length ? c.nombreColor.slice(0, 2).join(" / ") : "");
+  // Nombre del color de la TELA (por su código), con qué tan seguro es.
+  const colorTelaTxt = (c) => (c.colorTelaNombre
+    ? `${c.colorTelaNombre}${c.colorTelaEstado === "deducido" ? " (deducido por la otra tela)" : ""}`
+    : c.colorTelaOpciones && c.colorTelaOpciones.length ? `POR CONFIRMAR: ${c.colorTelaOpciones.join(" o ")}` : "POR CONFIRMAR (los nombres no coinciden)");
 
   async function exportar() {
     if (!resultado) return;
     const XLSX = await import("xlsx");
     const r2 = (n) => (n == null ? "" : +Number(n).toFixed(2));
     const usadoEn = (a) => usosPorRef(a).map((u) => `${u.ref}${u.pintas.size ? " pinta " + [...u.pintas].join("/") : ""} (${[...u.colores].join(" · ") || "—"})${u.combina.size ? " + " + [...u.combina].join(" + ") : ""}`).join("; ");
-    const filaTela = (a) => ({ Tela: a.nombre, "Color (cód.)": a.color || "", "Color de la prenda (pedido)": nombreColorDe(a), "Usado en (ref · color de la prenda · combina con)": usadoEn(a), Unidad: a.unidad, Necesito: r2(a.necesito), Tengo: r2(a.tengo), "En camino (OC)": r2(a.enCamino), "Falta comprar": r2(a.falta), "Costo prom. unidad": Math.round(a.promedio || 0), "Costo estimado": Math.round(a.costoFalta || 0), Estado: ESTADOS[a.estado].txt });
+    const filaTela = (a) => ({ Tela: a.nombre, "Color (cód.)": a.color || "", "Color de la tela (nombre)": colorTelaTxt(a), "Color de la prenda (pedido)": nombreColorDe(a), "Usado en (ref · color de la prenda · combina con)": usadoEn(a), Unidad: a.unidad, Necesito: r2(a.necesito), Tengo: r2(a.tengo), "En camino (OC)": r2(a.enCamino), "Falta comprar": r2(a.falta), "Costo prom. unidad": Math.round(a.promedio || 0), "Costo estimado": Math.round(a.costoFalta || 0), Estado: ESTADOS[a.estado].txt });
     const filaIns = (a) => ({ Insumo: a.nombre, Unidad: a.unidad, Necesito: r2(a.necesito), Tengo: r2(a.tengo), "En camino (OC)": r2(a.enCamino), "Falta comprar": r2(a.falta), "Costo prom. unidad": Math.round(a.promedio || 0), "Costo estimado": Math.round(a.costoFalta || 0), Estado: ESTADOS[a.estado].txt });
     const wb = XLSX.utils.book_new();
     const add = (nombre, filas) => XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(filas.length ? filas : [{ Aviso: "Sin filas" }]), nombre);
@@ -662,8 +715,11 @@ export default function ExplosionMaterialesView({ db, functionsClient, T, pedido
                       <React.Fragment key={c.clave}>
                         <div onClick={() => alternar(c.clave)} style={{ display: "grid", gridTemplateColumns: COLS, gap: 12, alignItems: "center", padding: "10px 18px 10px 38px", borderBottom: "1px solid #F0ECE3", cursor: "pointer" }}>
                           <div>
-                            <span style={{ display: "inline-block", width: 14, height: 14, borderRadius: "50%", verticalAlign: -2, marginRight: 8, border: "1px solid rgba(0,0,0,.18)", background: colorAprox(nombreColorDe(c)) }} />
-                            <b>{nombreColorDe(c) || "Color sin nombre"}</b> <span style={{ color: T.slate, fontSize: 12 }}>· cód. {c.color || "?"}{c.codcomp ? ` · ref. ${c.codcomp}` : ""}</span>
+                            <span style={{ display: "inline-block", width: 14, height: 14, borderRadius: "50%", verticalAlign: -2, marginRight: 8, border: "1px solid rgba(0,0,0,.18)", background: colorAprox(c.colorTelaNombre || nombreColorDe(c)) }} />
+                            <b>{c.colorTelaNombre || nombreColorDe(c) || "Color sin nombre"}</b> <span style={{ color: T.slate, fontSize: 12 }}>· cód. {c.color || "?"}{c.codcomp ? ` · ref. ${c.codcomp}` : ""}</span>
+                            {c.colorTelaNombre
+                              ? <span style={{ color: T.slate, fontSize: 12 }}> · prenda: {nombreColorDe(c) || "—"}{c.colorTelaEstado === "deducido" ? " · deducido por la otra tela" : ""}</span>
+                              : <span title={colorTelaTxt(c)} style={{ marginLeft: 8, background: "#FFF3CD", color: "#8A5A00", borderRadius: 6, padding: "1px 7px", fontSize: 11, fontWeight: 700 }}>por confirmar</span>}
                           </div>
                           <Num v={`${fmt(c.necesito)} ${c.unidad}`} rojo={false} />
                           <Num v={c.tengo == null ? "—" : `${fmt(c.tengo)} ${c.unidad}`} />
