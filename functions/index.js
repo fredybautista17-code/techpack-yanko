@@ -10640,7 +10640,15 @@ exports.depurarIntegracionLoteBusint = onCall(
           filas: filas.slice(0, 80),
         };
       });
-      detalle.insumosEntregados = filtrar("comp").map((f) => {
+      const idsIntegracion = new Set(filtrar("integracion").map((f) => String(valorFlexible(f, ["integracion", "Integracion"]) ?? "").trim()).filter(Boolean));
+      const clavesComp = new Set();
+      const compDelLote = [...filtrar("comp"), ...T.comp.filter((f) => idsIntegracion.has(String(valorFlexible(f, ["integracion", "Integracion"]) ?? "").trim()))].filter((f) => {
+        const id = JSON.stringify(f);
+        if (clavesComp.has(id)) return false;
+        clavesComp.add(id);
+        return true;
+      });
+      detalle.insumosEntregados = compDelLote.map((f) => {
         const cod = String(valorFlexible(f, ["Codcomp", "codcomp"]) ?? "").trim();
         return {
           integracion: valorFlexible(f, ["integracion", "Integracion"]) ?? null,
@@ -10931,9 +10939,17 @@ exports.getLotesPorIntegrarBusint = onCall(
 
     // 5b) Integración incompleta: lotes ya integrados a los que les falta algún insumo de la ficha
     // (entregado en "bmp - integracion comp", sumando todos los colores/códigos del mismo insumo, menos de lo que pide la ficha)
+    // Las filas de insumos pueden venir sin lote: el vínculo seguro es el número de integración (cabecera -> lote)
+    const loteDeIntegracion = new Map();
+    integracion.forEach((f) => {
+      const id = clave(valorFlexible(f, ["integracion", "Integracion"]));
+      const lote = loteDe(f);
+      if (id && lote && Number(lote) > 0) loteDeIntegracion.set(id, lote);
+    });
     const entregadoLote = new Map(); // lote -> Map(codcomp -> cantidad)
     integComp.forEach((f) => {
-      const lote = loteDe(f);
+      let lote = loteDe(f);
+      if (!lote || !(Number(lote) > 0)) lote = loteDeIntegracion.get(clave(valorFlexible(f, ["integracion", "Integracion"]))) || "";
       const cod = clave(f.Codcomp);
       if (!lote || !cod) return;
       const m = entregadoLote.get(lote) || new Map();
