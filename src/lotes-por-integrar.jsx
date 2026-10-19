@@ -188,7 +188,7 @@ export default function LotesPorIntegrarView({ db, functionsClient, T, pedidos }
     if (!datos) return [];
     const base = (datos.lotes || []).map((l) => {
       const p = l.pedido ? pedidoPorNumero.get(String(l.pedido)) : null;
-      const u = clasificarUbicacion(l.ub);
+      const u = clasificarUbicacion(l.ubic ?? l.ub);
       return { ...l, ubicTipo: u.tipo, ubicTexto: u.texto, cliente: p?.cliente || l.clienteObs || "(sin cliente)", despacho: p?.fechaDespacho || null, estadoPedido: p?.estado || null, diasSin: datos.hoy ? Math.max(0, diasEntre(l.corte, datos.hoy)) : 0 };
     });
     // Integración incompleta: lo que falta de cada lote ya integrado entra al mismo reparto de inventario como un "lote" aparte
@@ -198,7 +198,7 @@ export default function LotesPorIntegrarView({ db, functionsClient, T, pedidos }
       const faltan = (l.faltan || []).filter((f) => !ignorados.has(claveInsumo(f.insumo)));
       if (!faltan.length) return;
       const p = l.pedido ? pedidoPorNumero.get(String(l.pedido)) : null;
-      const u = clasificarUbicacion(l.ub);
+      const u = clasificarUbicacion(l.ubic ?? l.ub);
       fichasInc[`inc|${l.lote}`] = faltan.map((f) => ({ insumo: f.insumo, cant: f.falta, unidad: f.unidad, bodega: f.bodega, codcomps: f.codcomps, pide: f.requerido, entregado: f.entregado }));
       lotesInc.push({ ...l, ref: `inc|${l.lote}`, refReal: l.ref, prendasReal: l.prendas, prendas: 1, integradas: 0, incompleto: true, ubicTipo: u.tipo === "corte" ? "planta" : u.tipo, ubicTexto: u.texto, cliente: p?.cliente || l.clienteObs || "(sin cliente)", despacho: p?.fechaDespacho || null, estadoPedido: p?.estado || null, diasSin: datos.hoy && l.fechaIntegracion ? Math.max(0, diasEntre(l.fechaIntegracion, datos.hoy)) : 0 });
     });
@@ -347,7 +347,7 @@ export default function LotesPorIntegrarView({ db, functionsClient, T, pedidos }
     <div>
       <div style={{ color: T.slate, fontSize: 13, marginBottom: 14 }}>
         Lotes ya cortados que todavía no han recibido sus insumos de bodega. "Listos para integrar" son los que ya salieron de corte hacia planta; los que siguen en corte se muestran aparte porque sus insumos se necesitarán más adelante. Al integrar el lote en Busint, desaparece de la lista.
-        {datos?.generado ? ` Datos de Busint de ${new Date(datos.generado).toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" })}.` : ""}
+        {datos?.generado ? ` Datos de Busint de ${new Date(datos.generado).toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" })}` : ""}
       </div>
       {error && <div style={{ padding: "10px 14px", background: T.coralBg, color: T.coral, borderRadius: 8, fontSize: 13, fontWeight: 600, marginBottom: 12 }}>⚠ {error}</div>}
       {(datos?.avisos || []).map((a, i) => <div key={i} style={{ padding: "8px 12px", background: "#FDF1DA", color: "#8A5A0B", borderRadius: 8, fontSize: 12.5, marginBottom: 8 }}>{a}</div>)}
