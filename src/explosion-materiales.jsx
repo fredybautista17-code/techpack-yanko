@@ -694,7 +694,7 @@ export default function ExplosionMaterialesView({ db, functionsClient, T, pedido
               <div style={{ color: T.slate, fontSize: 12.5, marginBottom: 10 }}>Qué necesita cada referencia y por qué. El “falta comprar” de cada referencia es una estimación: el faltante de cada material se reparte según lo que consume cada una.</div>
               {refsVista.map((r) => (
                 <div key={r.ref} style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 16, marginBottom: 12, overflow: "hidden" }}>
-                  <div onClick={() => alternar("r|" + r.ref)} style={{ display: "grid", gridTemplateColumns: "150px minmax(160px,1.2fr) 110px minmax(180px,1.2fr) minmax(160px,1fr) 150px", gap: 12, alignItems: "center", padding: "14px 18px", cursor: "pointer" }}>
+                  <div onClick={() => alternar("r|" + r.ref)} style={{ display: "grid", gridTemplateColumns: "150px minmax(160px,1.2fr) 96px 96px minmax(180px,1.2fr) minmax(160px,1fr) 150px", gap: 12, alignItems: "center", padding: "14px 18px", cursor: "pointer" }}>
                     <div><div style={{ fontWeight: 800, fontSize: 16 }}>{abierto["r|" + r.ref] ? "▾" : "▸"} {r.ref}</div><div style={{ fontSize: 12, color: T.slate }}>Pedido{r.pedidos.length === 1 ? "" : "s"} {r.pedidos.join(", ")}</div></div>
                     <div style={{ fontSize: 12.5, color: T.slate }}>{r.colores.join(" · ") || "—"}</div>
                     <Num t="Por cortar" v={`${fmt(r.unidades, 0)} u`} />
@@ -724,10 +724,11 @@ export default function ExplosionMaterialesView({ db, functionsClient, T, pedido
               ))}
               {!refsVista.length && <div style={{ color: T.slate, padding: 20 }}>{soloFalta ? "Ninguna referencia con faltante." : "No hay referencias con ficha en este cálculo."}</div>}
               {refsVista.length > 0 && (
-                <div style={{ display: "grid", gridTemplateColumns: "150px minmax(160px,1.2fr) 110px minmax(180px,1.2fr) minmax(160px,1fr) 150px", gap: 12, alignItems: "center", padding: "14px 18px", background: "#F1EDE6", border: `1px solid ${T.border}`, borderRadius: 16 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "150px minmax(160px,1.2fr) 96px 96px minmax(180px,1.2fr) minmax(160px,1fr) 150px", gap: 12, alignItems: "center", padding: "14px 18px", background: "#F1EDE6", border: `1px solid ${T.border}`, borderRadius: 16 }}>
                   <div style={{ fontWeight: 800, fontSize: 16 }}>TOTAL</div>
                   <div style={{ fontSize: 12.5, color: T.slate }}>{refsVista.length} referencia{refsVista.length === 1 ? "" : "s"}</div>
                   <Num t="Por cortar" v={`${fmt(refsVista.reduce((s, r) => s + r.unidades, 0), 0)} u`} />
+                  <Num t="Sin integrar" v={`${fmt(refsVista.reduce((s, r) => s + r.unidadesIns, 0), 0)} u`} />
                   <div>{[...refsVista.flatMap((r) => r.telasTot).reduce((m, t) => { const k = t.nombre + "|" + t.unidad; const x = m.get(k) || { ...t, cant: 0 }; x.cant += t.cant; m.set(k, x); return m; }, new Map()).values()].map((t) => <span key={t.nombre + t.unidad} style={{ display: "inline-block", background: "#F3EEF9", color: "#7B5EA7", fontWeight: 700, fontSize: 12, padding: "3px 10px", borderRadius: 10, margin: "2px 4px 2px 0" }}>🧵 {t.nombre} {fmt(t.cant, 1)} {t.unidad}</span>)}</div>
                   <div><span style={{ display: "inline-block", background: T.denimBg, color: T.denim, fontWeight: 700, fontSize: 12, padding: "3px 10px", borderRadius: 10 }}>🔩 {resultado.insumos.length} insumos</span></div>
                   <Num t="Falta comprar" v={`≈ ${money(refsVista.reduce((s, r) => s + r.costoFalta, 0))}`} rojo />
