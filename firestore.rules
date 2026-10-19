@@ -1,0 +1,48 @@
+rules_version = '2';
+
+// Reglas de Firestore de ATLAS / TechPack. Se publican con:
+//   firebase deploy --only firestore:rules
+// (2026-10-19, seguridad) Antes: cualquier cuenta con sesión leía y escribía TODO. Ahora el rol,
+// si es admin y los clientes asociados viajan en la sesión (custom claims: rol, admin, clientes),
+// que mantiene el backend (functions/index.js: sincronizarClaimsUsuario / sincronizarMisClaims).
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    // Una cuenta "con claims" es la que ya sincronizó su rol (entró con la versión nueva de la app).
+    // Mientras no los tenga se la trata como empleado normal (así nadie queda por fuera durante la
+    // transición); cuando todos hayan entrado, se puede cerrar ese margen.
+    function conClaims() { return signedIn() && ('rol' in request.auth.token); }
+    function esAdmin() { return conClaims() && request.auth.token.get('admin', false) == true; }
+    function esCliente() { return conClaims() && request.auth.token.rol == 'Cliente'; }
+
+    // Colecciones internas que un usuario de rol Cliente nunca debe leer ni escribir.
+    function sensible(col) {
+      return col.matches('(nomina|contabilidad|centro_costo|kpi|cotizador|dado_por_cumplido)_.*')
+        || col in ['financiera_pagos', 'abonosVenezuela', 'cuentaYulianaVenezuela', 'despachosDubo',
+                   'despachosVenezuela', 'ventas_perdidas_cargas', 'precios_corte_cargas',
+                   'lotes_servicio_confeccion'];
+    }
+
+    // Perfiles: todos los leen (la app los necesita), pero SOLO un administrador los escribe.
+    // Cierra el hueco de que alguien se ponga isAdmin: true en su propio documento.
+    match /users/{userId} {
+      allow read: if signedIn();
+      allow write: if esAdmin();
+    }
+
+    // Cotizaciones: un Cliente solo lee las de sus clientes asociados y nunca escribe.
+    match /cotizaciones/{cotId} {
+      allow read: if signedIn()
+        && (!esCliente() || resource.data.get('cliente', 'General') in request.auth.token.get('clientes', []));
+      allow write: if signedIn() && !esCliente();
+    }
+
+    // Todo lo demás: cualquier cuenta con sesión, salvo lo sensible para el rol Cliente.
+    match /{col}/{rest=**} {
+      allow read, write: if signedIn()
+        && col != 'users' && col != 'cotizaciones'
+        && (!esCliente() || !sensible(col));
+    }
+  }
+}

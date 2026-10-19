@@ -125,6 +125,7 @@ function onCallAuth(a, b) {
   return conOpciones ? onCall(a, envuelto) : onCall(envuelto);
 }
 const { onSchedule } = require("firebase-functions/v2/scheduler");
+const { onDocumentWritten } = require("firebase-functions/v2/firestore");
 const { defineSecret } = require("firebase-functions/params");
 const logger = require("firebase-functions/logger");
 const admin = require("firebase-admin");
@@ -312,6 +313,40 @@ async function consultarFacturadoBusint(fechaInicio, fechaFin) {
 // "numped" (número de pedido), que es el dato que sí comparten los lotes
 // del panel de flujo y los documentos de facturación. Se filtra solo a los
 // numpeds pedidos (numpeds) para no devolver más de lo necesario.
+// ─── ROL EN LA SESIÓN (seguridad, 2026-10-19) ───────────────────────────────────
+// Las reglas de Firestore (firestore.rules) no pueden buscar el perfil por el campo authUid,
+// así que el rol, si es admin y los clientes asociados se guardan como "custom claims" en la
+// cuenta de Firebase Auth: { rol, admin, clientes }. Se actualizan solos cada vez que cambia un
+// documento de `users`, y cada usuario puede pedir su propia sincronización al entrar
+// (sincronizarMisClaims) — el dato llega al token al renovarlo (getIdToken(true)).
+function claimsDeUsuario(u) {
+  const lista = Array.isArray(u?.clientesAsociados) && u.clientesAsociados.length
+    ? u.clientesAsociados
+    : (u?.clienteAsociado ? [u.clienteAsociado] : []);
+  const claims = { rol: String(u?.role || ""), admin: !!u?.isAdmin, clientes: lista.map((c) => String(c)).filter(Boolean) };
+  // Los claims no pueden pasar de 1000 bytes: si hiciera falta, se recortan los últimos clientes.
+  while (JSON.stringify(claims).length > 900 && claims.clientes.length) claims.clientes.pop();
+  return claims;
+}
+exports.sincronizarClaimsUsuario = onDocumentWritten("users/{userId}", async (event) => {
+  const despues = event.data?.after;
+  if (!despues || !despues.exists) return;
+  const u = despues.data() || {};
+  if (!u.authUid) return;
+  try {
+    await admin.auth().setCustomUserClaims(u.authUid, claimsDeUsuario(u));
+  } catch (err) {
+    logger.error("No se pudieron actualizar los claims del usuario", { userId: event.params.userId, error: String(err) });
+  }
+});
+exports.sincronizarMisClaims = onCallAuth(async (request) => {
+  const snap = await db.collection("users").where("authUid", "==", request.auth.uid).limit(1).get();
+  if (snap.empty) throw new HttpsError("not-found", "Tu cuenta no tiene un perfil asociado.");
+  const claims = claimsDeUsuario(snap.docs[0].data());
+  await admin.auth().setCustomUserClaims(request.auth.uid, claims);
+  return { ok: true, rol: claims.rol, admin: claims.admin, clientes: claims.clientes.length };
+});
+
 exports.getDocumentosPorPedidoBusint = onCallAuth(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],

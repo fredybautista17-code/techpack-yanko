@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { initializeApp, getApps } from "firebase/app";
-import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot } from "firebase/firestore";
+import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, query, where } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import {
   TASAS_BASE, ETIQUETAS_TASAS, FIJOS_BASE, ETIQUETAS_FIJOS, PROCESOS_BASE, INSUMOS_BASE, insumosSugeridos,
@@ -2040,6 +2040,19 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
   const [miniAbrir, setMiniAbrir] = useState(null); // hoja de Vinilo / DTF que se abre desde el historial {id, n}
 
   useEffect(() => {
+    if (esCliente) {
+      // (2026-10-19, seguridad) Un usuario Cliente solo lee las cotizaciones de SUS clientes: Firestore
+      // lo exige en las reglas, y por eso se pide una consulta por cada cliente asociado (no la colección
+      // entera). Parámetros y Vinilo/DTF son internos: ni se piden.
+      const porCliente = new Map();
+      const unsubs = clientesPermitidos.map((cli) => onSnapshot(
+        query(collection(db, "cotizaciones"), where("cliente", "==", cli)),
+        (s) => { porCliente.set(cli, s.docs.map((d) => ({ ...d.data(), id: d.id }))); setCotizaciones([...porCliente.values()].flat()); setCargado(true); },
+        () => setCargado(true)
+      ));
+      if (!clientesPermitidos.length) setCargado(true);
+      return () => unsubs.forEach((f) => f());
+    }
     const u1 = onSnapshot(collection(db, "cotizaciones"), (s) => { setCotizaciones(s.docs.map((d) => ({ ...d.data(), id: d.id }))); setCargado(true); }, () => setCargado(true));
     const u2 = onSnapshot(collection(db, "cotizador_parametros"), (s) => setParametros(s.docs.map((d) => ({ ...d.data(), id: d.id }))), () => {});
     const u3 = onSnapshot(collection(db, "cotizador_vinilo"), (s) => setMinis(s.docs.filter((d) => d.id !== "_estandar").map((d) => ({ ...d.data(), id: d.id }))), () => {});

@@ -17507,6 +17507,18 @@ function AppInner() {
           await signOut(auth);
           return;
         }
+        // (2026-10-19, seguridad) El rol, si es admin y los clientes asociados viajan dentro de la
+        // sesión (custom claims) para que las reglas de Firestore sepan quién es cada cuenta. Si el
+        // token no los trae o están desactualizados, se sincronizan y se renueva el token.
+        try {
+          const tk = await fbUser.getIdTokenResult();
+          const cl = tk.claims || {};
+          const clientesPerfil = clientesDeUsuario(perfil).map((c) => String(c));
+          if (cl.rol !== String(perfil.role || "") || !!cl.admin !== !!perfil.isAdmin || JSON.stringify(cl.clientes || []) !== JSON.stringify(clientesPerfil)) {
+            await httpsCallable(functionsClient, "sincronizarMisClaims")();
+            await fbUser.getIdToken(true);
+          }
+        } catch (e) { console.warn("No se pudo sincronizar el rol de la sesión", e); }
         setCurrentUser(perfil);
         const unsubUsers = onSnapshot(collection(db, "users"), (snap) => {
           const updatedUsers = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
