@@ -6828,6 +6828,31 @@ function calcularCesantiasDelAnio(trabajador, anio, ausencias, areasNomina = [],
   const intereses = (cesantias * dias * TASA_INTERES_CESANTIAS_ANUAL) / 360;
   return { dias, cesantias, intereses, total: cesantias + intereses, incompleto: hastaTope < hastaAnio };
 }
+
+// (2026-10-20, a pedido de Fredy) "Quincena abierta para editar" ahora SOBREVIVE a salir de la pantalla y volver: antes
+// vivía solo en el estado de cada vista, y al irte a Causación Manual a subir un archivo y regresar, la quincena volvía a
+// verse como "ya confirmada" con los valores viejos (parecía que lo subido no entraba). Se guarda por vista en memoria
+// del navegador (se reinicia al recargar la página, a propósito: no queda nada abierto "para siempre").
+const _periodosAbiertosNomina = {};
+function usePeriodoAbierto(clave) {
+  const [periodo, setPeriodo] = useState(_periodosAbiertosNomina[clave] || "");
+  const cambiar = (v) => { _periodosAbiertosNomina[clave] = v; setPeriodo(v); };
+  return [periodo, cambiar];
+}
+// Trabajadores cuya liquidación ya confirmada quedó desactualizada frente a lo que hay HOY en Causación Manual (se subió,
+// editó o borró después de confirmar). Mismo criterio que el Reporte de Nómina por Área ("⚠ Desactualizado").
+function trabajadoresConCausacionDesactualizada(personas, liquidaciones, causacionManual, periodoId, esDestajo) {
+  return (personas || []).filter((t) => {
+    const l = (liquidaciones || []).find((x) => x.periodoId === periodoId && x.trabajadorId === t.id);
+    if (!l) return false;
+    if (!esDestajo && !t.minimoGarantizadoCausacion) return false; // en Fiscal solo aplica con el check de mínimo garantizado
+    const doc = (causacionManual || []).find((c) => c.id === `${t.id}__${periodoId}`);
+    const hoy = doc ? (Number(doc.valor) || 0) : null;
+    const cm = !!l.causacionManual;
+    const guardado = esDestajo ? (l.produccionReal ?? null) : (cm ? (l.causacionManualValor ?? 0) : null);
+    return hoy != null ? (!cm || Number(guardado || 0) !== hoy) : cm;
+  });
+}
 // (2026-10-20, a pedido de Fredy) "Mínimo garantizado por causación": la bonificación o la ayuda se miden sobre lo que se le
 // garantiza BRUTO (sueldo + auxilio de la quincena, más horas, extras y bonificación puntual si tuvo). Si lo causado supera
 // ese bruto, la diferencia es bonificación; si es menor, la diferencia es la ayuda (referencia de costeo; no se paga de más).
@@ -7006,7 +7031,7 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
   // "abierto" -- para que el aviso cambie a "Quincena abierta" en vez de
   // "ya fue confirmada antes" mientras siga en ese estado, sin importar si
   // Fredy navega a otra pantalla y vuelve.
-  const [periodoAbierto, setPeriodoAbierto] = useState("");
+  const [periodoAbierto, setPeriodoAbierto] = usePeriodoAbierto("fiscal");
   const estaAbierta = periodoAbierto === periodoId;
   const { inicio, fin } = rangoQuincena(anio, mes, quincena);
   // (2026-09-22, a pedido de Fredy) Ver comentario junto a
@@ -7194,6 +7219,15 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
       {yaLiquidado && !estaAbierta && (
         <div style={{ padding: "10px 14px", background: C.amberBg, borderRadius: 8, color: C.amber, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
           <div>⚠ Esta quincena ({periodoId}) ya fue confirmada antes. Si vuelves a confirmar, se sobreescribe.</div>
+          {(() => {
+            const desact = trabajadoresConCausacionDesactualizada(personas, liquidaciones, causacionManual, periodoId, false);
+            if (!desact.length) return null;
+            return (
+              <div style={{ marginTop: 8, padding: "8px 12px", background: C.redBg, borderRadius: 8, color: C.red }}>
+                ⛔ La Causación Manual cambió después de confirmar ({desact.length} trabajador{desact.length !== 1 ? "es" : ""}: {desact.slice(0, 6).map((t) => t.nombre).join(", ")}{desact.length > 6 ? "…" : ""}). Lo nuevo NO está aplicado en esta liquidación: usa "🔓 Abrir quincena para editar", luego "🧮 Calcular" y "✅ Confirmar y guardar".
+              </div>
+            );
+          })()}
           {isAdmin && (
             <div style={{ marginTop: 8 }}>
               <Btn small variant="secondary" onClick={() => setConfirmAbrir(true)}>🔓 Abrir quincena para editar</Btn>
@@ -7996,7 +8030,7 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
   // "abierto" -- para que el aviso cambie a "Quincena abierta" en vez de
   // "ya fue confirmada antes" mientras siga en ese estado, sin importar si
   // Fredy navega a otra pantalla y vuelve.
-  const [periodoAbierto, setPeriodoAbierto] = useState("");
+  const [periodoAbierto, setPeriodoAbierto] = usePeriodoAbierto("fiscal_destajo");
   const estaAbierta = periodoAbierto === periodoId;
   const { inicio, fin } = rangoQuincena(anio, mes, quincena);
   // (2026-09-22, a pedido de Fredy) Ver comentario junto a
@@ -8159,6 +8193,15 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
       {yaLiquidado && !estaAbierta && (
         <div style={{ padding: "10px 14px", background: C.amberBg, borderRadius: 8, color: C.amber, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
           <div>⚠ Esta quincena ({periodoId}) ya fue confirmada antes. Si vuelves a confirmar, se sobreescribe.</div>
+          {(() => {
+            const desact = trabajadoresConCausacionDesactualizada(personas, liquidaciones, causacionManual, periodoId, false);
+            if (!desact.length) return null;
+            return (
+              <div style={{ marginTop: 8, padding: "8px 12px", background: C.redBg, borderRadius: 8, color: C.red }}>
+                ⛔ La Causación Manual cambió después de confirmar ({desact.length} trabajador{desact.length !== 1 ? "es" : ""}: {desact.slice(0, 6).map((t) => t.nombre).join(", ")}{desact.length > 6 ? "…" : ""}). Lo nuevo NO está aplicado en esta liquidación: usa "🔓 Abrir quincena para editar", luego "🧮 Calcular" y "✅ Confirmar y guardar".
+              </div>
+            );
+          })()}
           {isAdmin && (
             <div style={{ marginTop: 8 }}>
               <Btn small variant="secondary" onClick={() => setConfirmAbrir(true)}>🔓 Abrir quincena para editar</Btn>
@@ -8699,7 +8742,7 @@ function NominaPrestacionServicioView({ trabajadores, liquidaciones, onGuardarLi
   // "abierto" -- para que el aviso cambie a "Quincena abierta" en vez de
   // "ya fue confirmada antes" mientras siga en ese estado, sin importar si
   // Fredy navega a otra pantalla y vuelve.
-  const [periodoAbierto, setPeriodoAbierto] = useState("");
+  const [periodoAbierto, setPeriodoAbierto] = usePeriodoAbierto("prestacion_servicio");
   const estaAbierta = periodoAbierto === periodoId;
   const { inicio, fin } = rangoQuincena(anio, mes, quincena);
   // (2026-09-22, a pedido de Fredy) Ver comentario junto a
@@ -9128,7 +9171,7 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
   // "abierto" -- para que el aviso cambie a "Quincena abierta" en vez de
   // "ya fue confirmada antes" mientras siga en ese estado, sin importar si
   // Fredy navega a otra pantalla y vuelve.
-  const [periodoAbierto, setPeriodoAbierto] = useState("");
+  const [periodoAbierto, setPeriodoAbierto] = usePeriodoAbierto("destajo");
   const estaAbierta = periodoAbierto === periodoId;
   const { inicio, fin } = rangoQuincena(anio, mes, quincena);
   // (2026-09-22, a pedido de Fredy) Ver comentario junto a
@@ -9356,6 +9399,15 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
       {yaLiquidado && !estaAbierta && (
         <div style={{ padding: "10px 14px", background: C.amberBg, borderRadius: 8, color: C.amber, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
           <div>⚠ Esta quincena ({periodoId}) ya fue confirmada antes. Si vuelves a confirmar, se sobreescribe.</div>
+          {(() => {
+            const desact = trabajadoresConCausacionDesactualizada(personas, liquidaciones, causacionManual, periodoId, true);
+            if (!desact.length) return null;
+            return (
+              <div style={{ marginTop: 8, padding: "8px 12px", background: C.redBg, borderRadius: 8, color: C.red }}>
+                ⛔ La Causación Manual cambió después de confirmar ({desact.length} trabajador{desact.length !== 1 ? "es" : ""}: {desact.slice(0, 6).map((t) => t.nombre).join(", ")}{desact.length > 6 ? "…" : ""}). Lo nuevo NO está aplicado en esta liquidación: usa "🔓 Abrir quincena para editar", luego "🧮 Calcular" y "✅ Confirmar y guardar".
+              </div>
+            );
+          })()}
           {isAdmin && (
             <div style={{ marginTop: 8 }}>
               <Btn small variant="secondary" onClick={() => setConfirmAbrir(true)}>🔓 Abrir quincena para editar</Btn>
