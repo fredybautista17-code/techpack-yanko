@@ -6828,6 +6828,18 @@ function calcularCesantiasDelAnio(trabajador, anio, ausencias, areasNomina = [],
   const intereses = (cesantias * dias * TASA_INTERES_CESANTIAS_ANUAL) / 360;
   return { dias, cesantias, intereses, total: cesantias + intereses, incompleto: hastaTope < hastaAnio };
 }
+// (2026-10-20, a pedido de Fredy) "Mínimo garantizado por causación": la bonificación o la ayuda se miden contra lo que
+// REALMENTE se le paga (el neto: sueldo + auxilio - EPS - pensión + horas, extras y bonificación puntual - cobros de
+// Bodega - seguros), y no contra el salario mínimo a secas. Si causó más que ese neto, la diferencia es bonificación
+// y el neto queda igual a lo causado; si causó menos, la diferencia es la ayuda (referencia de costeo; no se paga de más).
+function causacionContraNeto(base, { totalHoras = 0, totalHorasExtra = 0, bonificacionPuntual = 0, descuentoCobros = 0, descuentoDeducciones = 0 }) {
+  const netoSinCausacion = base.netoAPagar - (base.bonificacionCausacion || 0) + totalHoras + totalHorasExtra + bonificacionPuntual - descuentoCobros - descuentoDeducciones;
+  if (!base.causacionManual) return { netoAPagar: netoSinCausacion, bonificacionCausacion: 0, ayudaCausacion: 0 };
+  const causado = Number(base.causacionManualValor) || 0;
+  const bonificacionCausacion = Math.max(0, causado - netoSinCausacion);
+  const ayudaCausacion = Math.max(0, netoSinCausacion - causado);
+  return { netoAPagar: netoSinCausacion + bonificacionCausacion, bonificacionCausacion, ayudaCausacion };
+}
 function calcularLiquidacionFiscal(trabajador, diasInasistencia, diasSinAuxilio = 0, diasSinSueldo = 0, causacionManualValor = null) {
   const sueldo = Number(trabajador.sueldo) || 0;
   const auxilioMensual = sueldo > TOPE_SUELDO_PARA_AUXILIO ? 0 : (Number(trabajador.auxilioTransporte) || 0);
@@ -7045,7 +7057,7 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
       // (seguros, funeraria, etc.) -- ver DeduccionesFijasView.
       const deduccionesDetalle = deduccionesActivasDeTrabajador(deduccionesTrabajador, t.id);
       const descuentoDeducciones = sumaDeducciones(deduccionesDetalle);
-      return { trabajador: t, calculo: { ...base, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, horasDetalle, horasCant, totalHoras, totalHorasExtra, bonificacionPuntual, descuentoCobros, cobrosDetalle, deduccionesDetalle, descuentoDeducciones, netoAPagar: base.netoAPagar + totalHoras + totalHorasExtra + bonificacionPuntual - descuentoCobros - descuentoDeducciones } };
+      return { trabajador: t, calculo: { ...base, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, horasDetalle, horasCant, totalHoras, totalHorasExtra, bonificacionPuntual, descuentoCobros, cobrosDetalle, deduccionesDetalle, descuentoDeducciones, ...causacionContraNeto(base, { totalHoras, totalHorasExtra, bonificacionPuntual, descuentoCobros, descuentoDeducciones }) } };
     });
     setResultados(filas);
     setGuardadoOk(false);
@@ -8031,7 +8043,7 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
       // (seguros, funeraria, etc.) -- ver DeduccionesFijasView.
       const deduccionesDetalle = deduccionesActivasDeTrabajador(deduccionesTrabajador, t.id);
       const descuentoDeducciones = sumaDeducciones(deduccionesDetalle);
-      return { trabajador: t, calculo: { ...base, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, horasDetalle, horasCant, totalHoras, totalHorasExtra, bonificacionPuntual, descuentoCobros, cobrosDetalle, deduccionesDetalle, descuentoDeducciones, netoAPagar: base.netoAPagar + totalHoras + totalHorasExtra + bonificacionPuntual - descuentoCobros - descuentoDeducciones } };
+      return { trabajador: t, calculo: { ...base, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, horasDetalle, horasCant, totalHoras, totalHorasExtra, bonificacionPuntual, descuentoCobros, cobrosDetalle, deduccionesDetalle, descuentoDeducciones, ...causacionContraNeto(base, { totalHoras, totalHorasExtra, bonificacionPuntual, descuentoCobros, descuentoDeducciones }) } };
     });
     setResultados(filas);
     setGuardadoOk(false);
