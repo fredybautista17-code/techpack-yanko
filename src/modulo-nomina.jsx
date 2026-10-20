@@ -6828,17 +6828,20 @@ function calcularCesantiasDelAnio(trabajador, anio, ausencias, areasNomina = [],
   const intereses = (cesantias * dias * TASA_INTERES_CESANTIAS_ANUAL) / 360;
   return { dias, cesantias, intereses, total: cesantias + intereses, incompleto: hastaTope < hastaAnio };
 }
-// (2026-10-20, a pedido de Fredy) "Mínimo garantizado por causación": la bonificación o la ayuda se miden contra lo que
-// REALMENTE se le paga (el neto: sueldo + auxilio - EPS - pensión + horas, extras y bonificación puntual - cobros de
-// Bodega - seguros), y no contra el salario mínimo a secas. Si causó más que ese neto, la diferencia es bonificación
-// y el neto queda igual a lo causado; si causó menos, la diferencia es la ayuda (referencia de costeo; no se paga de más).
+// (2026-10-20, a pedido de Fredy) "Mínimo garantizado por causación": la bonificación o la ayuda se miden sobre lo que se le
+// garantiza BRUTO (sueldo + auxilio de la quincena, más horas, extras y bonificación puntual si tuvo). Si lo causado supera
+// ese bruto, la diferencia es bonificación; si es menor, la diferencia es la ayuda (referencia de costeo; no se paga de más).
+// El NETO a pagar es ese bruto + bonificación MENOS los descuentos (EPS y pensión del trabajador, cobros de Bodega y seguros):
+// es decir, lo causado menos los descuentos.
 function causacionContraNeto(base, { totalHoras = 0, totalHorasExtra = 0, bonificacionPuntual = 0, descuentoCobros = 0, descuentoDeducciones = 0 }) {
-  const netoSinCausacion = base.netoAPagar - (base.bonificacionCausacion || 0) + totalHoras + totalHorasExtra + bonificacionPuntual - descuentoCobros - descuentoDeducciones;
-  if (!base.causacionManual) return { netoAPagar: netoSinCausacion, bonificacionCausacion: 0, ayudaCausacion: 0 };
+  const eps = base.epsTrabajador || 0, pension = base.pensionTrabajador || 0;
+  const bruto = base.netoAPagar - (base.bonificacionCausacion || 0) + eps + pension + totalHoras + totalHorasExtra + bonificacionPuntual;
+  const descuentos = eps + pension + descuentoCobros + descuentoDeducciones;
+  if (!base.causacionManual) return { netoAPagar: bruto - descuentos, bonificacionCausacion: 0, ayudaCausacion: 0 };
   const causado = Number(base.causacionManualValor) || 0;
-  const bonificacionCausacion = Math.max(0, causado - netoSinCausacion);
-  const ayudaCausacion = Math.max(0, netoSinCausacion - causado);
-  return { netoAPagar: netoSinCausacion + bonificacionCausacion, bonificacionCausacion, ayudaCausacion };
+  const bonificacionCausacion = Math.max(0, causado - bruto);
+  const ayudaCausacion = Math.max(0, bruto - causado);
+  return { netoAPagar: bruto + bonificacionCausacion - descuentos, bonificacionCausacion, ayudaCausacion };
 }
 function calcularLiquidacionFiscal(trabajador, diasInasistencia, diasSinAuxilio = 0, diasSinSueldo = 0, causacionManualValor = null) {
   const sueldo = Number(trabajador.sueldo) || 0;
