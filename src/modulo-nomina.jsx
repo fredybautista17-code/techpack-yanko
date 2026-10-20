@@ -6565,6 +6565,34 @@ function diasDespuesDeRetiro(fechaRetiro, inicio, fin) {
   if (!fechaRetiro || fechaRetiro < inicio || fechaRetiro >= fin) return 0;
   return diasEntre360(fechaRetiro, fin) - 1;
 }
+// (2026-10-20, a pedido de Fredy) Caso real: Yuleisi Virginia Moreno Cruz
+// se retiro el 30-sep pero se le deben "dias adicionales" fechados 01-oct.
+// Como su Fecha de Retiro quedo ANTES de la quincena, no salia en ninguna
+// pantalla de nomina y esas horas nunca se pagaban. Un retirado cuya Fecha
+// de Retiro es anterior a [inicio, fin] SI aparece en esa quincena cuando
+// tiene Horas Sueltas, Horas Extras (por fecha) o una Bonificacion (por
+// quincena) -- pero SOLO con esos pagos: sin sueldo, auxilio, seguridad
+// social, prestaciones ni deducciones fijas (ver "soloPagosPendientes" en
+// NominaFiscalView / NominaFiscalDestajoView / ResumenSemanalView).
+function esRetiradoAntesDe(t, inicio) {
+  return t.activo === false && !!t.fechaRetiro && t.fechaRetiro < inicio;
+}
+function retiradoConPagosEnPeriodo(t, inicio, fin, periodoId, horas, horasExtras, bonificaciones) {
+  if (!esRetiradoAntesDe(t, inicio)) return false;
+  const enRango = (h) => h.trabajadorId === t.id && h.fecha >= inicio && h.fecha <= fin;
+  if ((horas || []).some(enRango) || (horasExtras || []).some(enRango)) return true;
+  return valorBonificacion(bonificaciones, t.id, periodoId) > 0;
+}
+// Trabajadores que se ofrecen al registrar Horas / Horas Extras /
+// Bonificacion: los activos + los retirados en los ultimos 60 dias (para
+// poder registrarle lo que aun se le debe). Se marcan "(retirado)".
+function trabajadoresParaRegistrarPagos(trabajadores) {
+  const d = new Date(); d.setDate(d.getDate() - 60);
+  const limite = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  return (trabajadores || [])
+    .filter((t) => t.activo !== false || (t.fechaRetiro && t.fechaRetiro >= limite))
+    .map((t) => (t.activo === false ? { ...t, nombre: `${t.nombre} (retirado)` } : t));
+}
 // (2026-09-13, a pedido de Fredy) Liquidacion de prestaciones sociales al
 // retiro de un trabajador -- ver LiquidacionRetiroView mas abajo. Cuenta,
 // dentro de [desde, hasta], los dias de CALENDARIO (no solo habiles: un
@@ -7004,7 +7032,7 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
   // final -- ver diasDespuesDeRetiro mas abajo. En las quincenas
   // siguientes, su Fecha de Retiro ya no cae en el rango y deja de
   // aparecer, igual que antes.
-  const personas = trabajadores.filter((t) => t.tipoNomina === "Fiscal" && (t.activo !== false || (t.fechaRetiro && t.fechaRetiro >= inicioPeriodo && t.fechaRetiro <= finPeriodo)) && (!areaFiltro || (t.area || "Sin asignar") === areaFiltro) && (!empresaFiltro || t.empleador === empresaFiltro)).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
+  const personas = trabajadores.filter((t) => t.tipoNomina === "Fiscal" && (t.activo !== false || (t.fechaRetiro && t.fechaRetiro >= inicioPeriodo && t.fechaRetiro <= finPeriodo) || retiradoConPagosEnPeriodo(t, inicioPeriodo, finPeriodo, `${anio}-${mes}-Q${quincena}`, horas, horasExtras, bonificaciones)) && (!areaFiltro || (t.area || "Sin asignar") === areaFiltro) && (!empresaFiltro || t.empleador === empresaFiltro)).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   const periodoId = `${anio}-${mes}-Q${quincena}`;
   // (2026-09-22, a pedido de Fredy) yaLiquidado y la recarga de "lo ya
   // guardado" deben respetar los mismos filtros (Área/Empresa) que
@@ -7065,7 +7093,12 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
       const diasSinAuxilio = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_AUXILIO_TRANSPORTE, t, turno, inicio, fin) + diasIngresoTardio + diasRetiroTemprano;
       const diasSinSueldo = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_SUELDO, t, turno, inicio, fin) + diasIngresoTardio + diasRetiroTemprano;
       const causacionDoc = (causacionManual || []).find((c) => c.id === `${t.id}__${periodoId}`);
-      const base = calcularLiquidacionFiscal(t, dias, diasSinAuxilio, diasSinSueldo, causacionDoc ? causacionDoc.valor : null);
+      // (2026-10-20) Retirado antes de la quincena: solo se le pagan sus horas /
+      // bonificaciones pendientes (ver retiradoConPagosEnPeriodo).
+      const soloPagosPendientes = esRetiradoAntesDe(t, inicio);
+      const base = soloPagosPendientes
+        ? calcularLiquidacionFiscal({ ...t, sueldo: 0, auxilioTransporte: 0 }, 0, 0, 0, null)
+        : calcularLiquidacionFiscal(t, dias, diasSinAuxilio, diasSinSueldo, causacionDoc ? causacionDoc.valor : null);
       // (2026-09-18, a pedido de Fredy) Horas Sueltas (Registrar
       // Producción -> Horas) de la quincena -- se suman al Neto a Pagar,
       // igual que ya hace Resumen Semanal / Cierre de Quincena.
@@ -7083,9 +7116,9 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
       const descuentoCobros = sumaCobrosPendientes(cobrosDetalle);
       // (2026-09-18, a pedido de Fredy) Deducciones fijas por quincena
       // (seguros, funeraria, etc.) -- ver DeduccionesFijasView.
-      const deduccionesDetalle = deduccionesActivasDeTrabajador(deduccionesTrabajador, t.id);
+      const deduccionesDetalle = soloPagosPendientes ? [] : deduccionesActivasDeTrabajador(deduccionesTrabajador, t.id);
       const descuentoDeducciones = sumaDeducciones(deduccionesDetalle);
-      return { trabajador: t, calculo: { ...base, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, horasDetalle, horasCant, totalHoras, totalHorasExtra, bonificacionPuntual, descuentoCobros, cobrosDetalle, deduccionesDetalle, descuentoDeducciones, ...causacionContraNeto(base, { totalHoras, totalHorasExtra, bonificacionPuntual, descuentoCobros, descuentoDeducciones }) } };
+      return { trabajador: t, calculo: { ...base, soloPagosPendientes, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, horasDetalle, horasCant, totalHoras, totalHorasExtra, bonificacionPuntual, descuentoCobros, cobrosDetalle, deduccionesDetalle, descuentoDeducciones, ...causacionContraNeto(base, { totalHoras, totalHorasExtra, bonificacionPuntual, descuentoCobros, descuentoDeducciones }) } };
     });
     setResultados(filas);
     setGuardadoOk(false);
@@ -8003,7 +8036,7 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
   // (2026-10-02, a pedido de Fredy) Ver el mismo comentario en
   // NominaFiscalView -- deja aparecer, solo en la quincena exacta de su
   // retiro, a quien ya quedo Inactivo.
-  const personas = trabajadores.filter((t) => t.tipoNomina === "Fiscal Destajo" && (t.activo !== false || (t.fechaRetiro && t.fechaRetiro >= inicioPeriodo && t.fechaRetiro <= finPeriodo)) && (!empresaFiltro || t.empleador === empresaFiltro)).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
+  const personas = trabajadores.filter((t) => t.tipoNomina === "Fiscal Destajo" && (t.activo !== false || (t.fechaRetiro && t.fechaRetiro >= inicioPeriodo && t.fechaRetiro <= finPeriodo) || retiradoConPagosEnPeriodo(t, inicioPeriodo, finPeriodo, `${anio}-${mes}-Q${quincena}`, horas, horasExtras, bonificaciones)) && (!empresaFiltro || t.empleador === empresaFiltro)).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   const periodoId = `${anio}-${mes}-Q${quincena}`;
   // (2026-09-22, a pedido de Fredy) yaLiquidado y la recarga de "lo ya
   // guardado" deben respetar los mismos filtros (Área/Empresa) que
@@ -8062,7 +8095,12 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
       const diasSinAuxilio = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_AUXILIO_TRANSPORTE, t, turno, inicio, fin) + diasIngresoTardio + diasRetiroTemprano;
       const diasSinSueldo = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_SUELDO, t, turno, inicio, fin) + diasIngresoTardio + diasRetiroTemprano;
       const causacionDoc = (causacionManual || []).find((c) => c.id === `${t.id}__${periodoId}`);
-      const base = calcularLiquidacionFiscalDestajo(t, dias, diasSinAuxilio, diasSinSueldo, causacionDoc ? causacionDoc.valor : null);
+      // (2026-10-20) Retirado antes de la quincena: solo se le pagan sus horas /
+      // bonificaciones pendientes (ver retiradoConPagosEnPeriodo).
+      const soloPagosPendientes = esRetiradoAntesDe(t, inicio);
+      const base = soloPagosPendientes
+        ? calcularLiquidacionFiscalDestajo({ ...t, sueldo: 0, auxilioTransporte: 0 }, 0, 0, 0, null)
+        : calcularLiquidacionFiscalDestajo(t, dias, diasSinAuxilio, diasSinSueldo, causacionDoc ? causacionDoc.valor : null);
       // (2026-09-18, a pedido de Fredy) Horas Sueltas de la quincena --
       // igual que en Nómina Fiscal, para que el total coincida con Resumen
       // Semanal / Cierre de Quincena.
@@ -8078,9 +8116,9 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
       const descuentoCobros = sumaCobrosPendientes(cobrosDetalle);
       // (2026-09-18, a pedido de Fredy) Deducciones fijas por quincena
       // (seguros, funeraria, etc.) -- ver DeduccionesFijasView.
-      const deduccionesDetalle = deduccionesActivasDeTrabajador(deduccionesTrabajador, t.id);
+      const deduccionesDetalle = soloPagosPendientes ? [] : deduccionesActivasDeTrabajador(deduccionesTrabajador, t.id);
       const descuentoDeducciones = sumaDeducciones(deduccionesDetalle);
-      return { trabajador: t, calculo: { ...base, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, horasDetalle, horasCant, totalHoras, totalHorasExtra, bonificacionPuntual, descuentoCobros, cobrosDetalle, deduccionesDetalle, descuentoDeducciones, ...causacionContraNeto(base, { totalHoras, totalHorasExtra, bonificacionPuntual, descuentoCobros, descuentoDeducciones }) } };
+      return { trabajador: t, calculo: { ...base, soloPagosPendientes, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, horasDetalle, horasCant, totalHoras, totalHorasExtra, bonificacionPuntual, descuentoCobros, cobrosDetalle, deduccionesDetalle, descuentoDeducciones, ...causacionContraNeto(base, { totalHoras, totalHorasExtra, bonificacionPuntual, descuentoCobros, descuentoDeducciones }) } };
     });
     setResultados(filas);
     setGuardadoOk(false);
@@ -11648,7 +11686,7 @@ function RegistrarHorasView({ trabajadores, horas, currentUser, onGuardar, onBor
   const [concepto, setConcepto] = useState("");
   const [horasCant, setHorasCant] = useState("");
   const [guardando, setGuardando] = useState(false);
-  const trabajadoresActivos = trabajadores.filter((t) => t.activo);
+  const trabajadoresActivos = trabajadoresParaRegistrarPagos(trabajadores);
   const trabajadorSel = trabajadores.find((t) => t.id === trabajadorId);
   const total = (Number(horasCant) || 0) * (trabajadorSel?.tarifaHora || 0);
   const puedeGuardar = trabajadorId && concepto.trim() && Number(horasCant) > 0 && !guardando;
@@ -11757,7 +11795,7 @@ function RegistrarHorasView({ trabajadores, horas, currentUser, onGuardar, onBor
         <Modal title="Editar horas" onClose={() => { setModalEditar(null); setFormEditar(null); }} width={480}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <Field label="Trabajador">
-              <FSel value={formEditar.trabajadorId} onChange={(v) => setFormEditar((s) => ({ ...s, trabajadorId: v }))} options={[...trabajadoresActivos, ...trabajadores.filter((t) => !t.activo && t.id === modalEditar.trabajadorId)].map((t) => ({ value: t.id, label: t.nombre }))} />
+              <FSel value={formEditar.trabajadorId} onChange={(v) => setFormEditar((s) => ({ ...s, trabajadorId: v }))} options={[...trabajadoresActivos, ...trabajadores.filter((t) => !t.activo && t.id === modalEditar.trabajadorId && !trabajadoresActivos.some((a) => a.id === t.id))].map((t) => ({ value: t.id, label: t.nombre }))} />
             </Field>
             <Field label="Fecha"><FInput type="date" value={formEditar.fecha} onChange={(v) => setFormEditar((s) => ({ ...s, fecha: v }))} /></Field>
           </div>
@@ -11806,7 +11844,7 @@ function RegistrarHorasExtrasView({ trabajadores, horasExtras, currentUser, onGu
   const [modalEditar, setModalEditar] = useState(null);
   const [formEditar, setFormEditar] = useState(null);
   const [guardandoEdicion, setGuardandoEdicion] = useState(false);
-  const trabajadoresActivos = trabajadores.filter((t) => t.activo);
+  const trabajadoresActivos = trabajadoresParaRegistrarPagos(trabajadores);
   const trabajadorSel = trabajadores.find((t) => t.id === trabajadorId);
   const calculo = calcularHoraExtra(sueldoParaHorasExtra(trabajadorSel), tipo, horasCant);
   const puedeGuardar = trabajadorId && Number(horasCant) > 0 && !guardando;
@@ -11989,7 +12027,7 @@ function RegistrarBonificacionView({ trabajadores, bonificaciones, currentUser, 
   const [modalEditar, setModalEditar] = useState(null);
   const [formEditar, setFormEditar] = useState(null);
   const [guardandoEdicion, setGuardandoEdicion] = useState(false);
-  const trabajadoresActivos = trabajadores.filter((t) => t.activo !== false).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
+  const trabajadoresActivos = trabajadoresParaRegistrarPagos(trabajadores).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   const trabajadorSel = trabajadores.find((t) => t.id === trabajadorId);
   const periodoId = `${anio}-${mes}-Q${quincena}`;
   function etiquetaTipo(f) {
@@ -12427,7 +12465,10 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
     // hacen Nomina Fiscal/Fiscal Destajo), y si no tiene Fecha de Retiro
     // registrada se le sigue mostrando como antes (no hay como saber cuando
     // paro).
-    const trabajadoresTipo = trabajadores.filter((t) => t.tipoNomina === tipo && (t.activo !== false || !t.fechaRetiro || t.fechaRetiro >= desde)).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
+    // (2026-10-20, a pedido de Fredy) En Fiscal / Fiscal Destajo tambien
+    // entra el retirado antes de la quincena que tenga horas / bonificaciones
+    // pendientes en ella (ver retiradoConPagosEnPeriodo).
+    const trabajadoresTipo = trabajadores.filter((t) => t.tipoNomina === tipo && (t.activo !== false || !t.fechaRetiro || t.fechaRetiro >= desde || (tipoEsFiscal && retiradoConPagosEnPeriodo(t, desde, hasta, periodoIdActual, horas, horasExtras, bonificaciones)))).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
     const idsTipo = new Set(trabajadoresTipo.map((t) => t.id));
     const mapa = new Map();
     trabajadoresTipo.forEach((t) => {
@@ -12469,7 +12510,8 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
         // (2026-09-19, a pedido de Fredy) Deducciones de seguros -- aplican
         // a Fiscal / Fiscal Destajo y a Prestación de Servicios, nunca a
         // Destajo (igual que en Nómina Fiscal / Fiscal Destajo).
-        const deduccionesDetalle = (tipoEsFiscal || tipoEsPrestacion) ? deduccionesActivasDeTrabajador(deduccionesTrabajador, g.trabajadorId) : [];
+        const soloPagosPendientes = tipoEsFiscal && esRetiradoAntesDe(g.trabajador, desde);
+        const deduccionesDetalle = (!soloPagosPendientes && (tipoEsFiscal || tipoEsPrestacion)) ? deduccionesActivasDeTrabajador(deduccionesTrabajador, g.trabajadorId) : [];
         const descuentoDeducciones = sumaDeducciones(deduccionesDetalle);
         let ajusteValor = 0, ajusteObservacion = "", ayudaSalarioMinimo = 0, excedenteSobreMinimo = 0;
         let sueldoFijoQuincena = 0, auxilioFijoQuincena = 0, pagoDiasQuincena = 0;
@@ -12509,9 +12551,10 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
           const diasRetiroTemprano = diasDespuesDeRetiro(t.fechaRetiro, desde, hasta);
           const diasSinAuxilio = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_AUXILIO_TRANSPORTE, t, turno, desde, hasta) + diasIngresoTardio + diasRetiroTemprano;
           const diasSinSueldo = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_SUELDO, t, turno, desde, hasta) + diasIngresoTardio + diasRetiroTemprano;
+          const tCalc = soloPagosPendientes ? { ...t, sueldo: 0, auxilioTransporte: 0 } : t;
           const base = tipo === "Fiscal"
-            ? calcularLiquidacionFiscal(t, diasInasistencia, diasSinAuxilio, diasSinSueldo)
-            : calcularLiquidacionFiscalDestajo(t, diasInasistencia, diasSinAuxilio, diasSinSueldo);
+            ? calcularLiquidacionFiscal(tCalc, diasInasistencia, diasSinAuxilio, diasSinSueldo)
+            : calcularLiquidacionFiscalDestajo(tCalc, diasInasistencia, diasSinAuxilio, diasSinSueldo);
           sueldoQuincena = base.sueldoQuincena;
           auxilioQuincena = base.auxilioQuincena;
           netoAntesDeAjuste = base.netoAPagar + g.totalHoras - descuentoCobros - descuentoDeducciones;
