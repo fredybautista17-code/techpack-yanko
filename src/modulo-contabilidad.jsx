@@ -7139,7 +7139,7 @@ function CuadrePorClienteView({ currentUser, pedidos }) {
   );
 }
 
-export default function ModuloContabilidad({ currentUser, onVolver, onLogout, puedeAdministrarBasesDadoPorCumplido, puedeSincronizarDadoPorCumplido, pedidos }) {
+export default function ModuloContabilidad({ currentUser, onVolver, onLogout, puedeAdministrarBasesDadoPorCumplido, puedeSincronizarDadoPorCumplido, puedeVerOrdenesCompra, pedidos }) {
   const [subView, setSubView] = useState("home");
   const [movimientos, setMovimientos] = useState([]);
   const [compras, setCompras] = useState([]);
@@ -7469,7 +7469,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
     { id: "cartera_clientes", icon: "🏷️", label: "Cartera Clientes" },
     { id: "dado_por_cumplido", icon: "✅", label: "Dado por Cumplido" },
     { id: "cxp", icon: "🧾", label: "Cuentas por Pagar" },
-    ...(isAdmin ? [{ id: "ordenes_compra", icon: "🛒", label: "Órdenes de compra" }] : []),
+    ...(isAdmin || puedeVerOrdenesCompra ? [{ id: "ordenes_compra", icon: "🛒", label: "Órdenes de compra" }] : []),
     { id: "administracion", icon: "🗂️", label: "Administración" },
   ];
   if (loading)
@@ -7685,7 +7685,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
           {subView === "facturacion_clientes" && <FacturacionClientesView />}
           {subView === "cartera_clientes" && <CarteraClientesView currentUser={currentUser} pedidos={pedidos} />}
           {subView === "dado_por_cumplido" && <DadoPorCumplidoView currentUser={currentUser} puedeAdministrarBases={puedeAdministrarBasesDadoPorCumplido} puedeSincronizar={puedeSincronizarDadoPorCumplido} />}
-          {subView === "ordenes_compra" && isAdmin && <OrdenesCompraView db={db} functionsClient={functionsClient} currentUser={currentUser} C={C} Btn={Btn} />}
+          {subView === "ordenes_compra" && (isAdmin || puedeVerOrdenesCompra) && <OrdenesCompraView db={db} functionsClient={functionsClient} currentUser={currentUser} C={C} Btn={Btn} />}
           {subView === "cxp" && (
             <CuentasPorPagarView
               cortes={cortesCxp}

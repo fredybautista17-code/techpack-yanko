@@ -10468,7 +10468,8 @@ exports.getOrdenesCompraBusint = onCallAuth(
     memory: "1GiB",
   },
   async (request) => {
-    await verificarLlamadorEsAdmin(request);
+    // (2026-10-20, a pedido de Fredy) Antes solo el administrador; ahora también quien tenga el permiso "contabilidad_ordenes_compra" en su rol.
+    await verificarLlamadorConModulos(request, ["contabilidad_ordenes_compra"], "las órdenes de compra");
     let cabeceras, detalles, proveedores, componentes, detallesDxc;
     try {
       [cabeceras, detalles, proveedores, componentes, detallesDxc] = await Promise.all([
@@ -10937,7 +10938,7 @@ exports.depurarIntegracionLoteBusint = onCallAuth(
 //     coincide con un Componente del inventario; el stock es la suma de todos sus colores).
 //   - Órdenes de compra vigentes por código de insumo (sin precios), igual que la Explosión.
 // Permiso: administrador o rol con el módulo "lotes_por_integrar" o "explosion_materiales".
-async function verificarLlamadorConModulos(request, modulosPermitidos) {
+async function verificarLlamadorConModulos(request, modulosPermitidos, queVer = "los lotes por integrar") {
   if (!request.auth) throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
   const snap = await db.collection("users").where("authUid", "==", request.auth.uid).limit(1).get();
   if (snap.empty) throw new HttpsError("permission-denied", "No tienes permiso para hacer esto.");
@@ -10948,7 +10949,7 @@ async function verificarLlamadorConModulos(request, modulosPermitidos) {
   const roles = configSnap.exists ? configSnap.data().roles || [] : [];
   const roleData = roles.find((r) => r.name === userData.role);
   const modulos = Array.isArray(roleData?.modulos) ? roleData.modulos : [];
-  if (!modulosPermitidos.some((m) => modulos.includes(m))) throw new HttpsError("permission-denied", "No tienes permiso para ver los lotes por integrar.");
+  if (!modulosPermitidos.some((m) => modulos.includes(m))) throw new HttpsError("permission-denied", `No tienes permiso para ver ${queVer}.`);
   return snap.docs[0];
 }
 exports.getLotesPorIntegrarBusint = onCallAuth(
