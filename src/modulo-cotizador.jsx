@@ -1752,6 +1752,7 @@ const FragmentFila = ({ children }) => <>{children}</>;
 // Contabilidad: fichas de resumen, accesos a las tres pantallas y las últimas
 // cotizaciones. Todo sale de las cotizaciones guardadas (nada se escribe aquí).
 const DIAS_SIN_CAMBIOS = 30;
+const ESTADO_POR_APROBAR = "__por_aprobar__"; // enviadas a aprobación, esperando decisión
 const ESTADO_SIN_APROBAR = "__sin_aprobar__"; // valor especial del filtro Estado del Historial
 function estadoCotizacion(c) {
   const e = estadoUltima(c);
@@ -1968,7 +1969,7 @@ function HistorialCotizaciones({ cotizaciones, protos, capsulas, cargado, onAbri
   const filtradas = useMemo(() => filas
     .filter((f) => !cliente || f.cliente === cliente)
     // (2026-10-20, a pedido de Fredy) "Sin aprobar" = la última versión vigente NO está aprobada (borrador, en aprobación o devuelta).
-    .filter((f) => !estado || (estado === ESTADO_SIN_APROBAR ? !["aprobada", "deshabilitada"].includes(estadoUltima(f.c)) : f.est.txt === estado))
+    .filter((f) => !estado || (estado === ESTADO_SIN_APROBAR ? !["aprobada", "deshabilitada"].includes(estadoUltima(f.c)) : estado === ESTADO_POR_APROBAR ? estadoUltima(f.c) === "aprobacion" : f.est.txt === estado))
     .filter((f) => !desde || f.fecha >= desde)
     .filter((f) => !hasta || f.fecha <= hasta)
     .filter((f) => !dropbox || f.dbx === dropbox)
@@ -1995,7 +1996,7 @@ function HistorialCotizaciones({ cotizaciones, protos, capsulas, cargado, onAbri
       <div style={{ display: "flex", gap: 10, marginBottom: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
         <div style={{ flex: "1 1 260px", maxWidth: 360 }}><Campo label="Buscar"><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Referencia, # prototipo, REF, nombre o cliente…" style={inp} /></Campo></div>
         <Campo label="Cliente"><select value={cliente} onChange={(e) => setCliente(e.target.value)} style={selFiltro}><option value="">Todos</option>{clientes.map((x) => <option key={x} value={x}>{x}</option>)}</select></Campo>
-        <Campo label="Estado"><select value={estado} onChange={(e) => setEstado(e.target.value)} style={selFiltro}><option value="">Todos</option><option value={ESTADO_SIN_APROBAR}>Sin aprobar</option>{estados.map((x) => <option key={x} value={x}>{x}</option>)}</select></Campo>
+        <Campo label="Estado"><select value={estado} onChange={(e) => setEstado(e.target.value)} style={selFiltro}><option value="">Todos</option><option value={ESTADO_POR_APROBAR}>Por aprobar</option><option value={ESTADO_SIN_APROBAR}>Sin aprobar</option>{estados.map((x) => <option key={x} value={x}>{x}</option>)}</select></Campo>
         <Campo label="Desde"><input type="date" value={desde} onChange={(e) => setDesde(e.target.value)} style={{ ...inp, width: 150 }} /></Campo>
         <Campo label="Hasta"><input type="date" value={hasta} onChange={(e) => setHasta(e.target.value)} style={{ ...inp, width: 150 }} /></Campo>
         <Campo label="Dropbox"><select value={dropbox} onChange={(e) => setDropbox(e.target.value)} style={selFiltro}><option value="">Todas</option><option value="ok">Aprobadas en Dropbox</option><option value="falta">Aprobadas sin subir</option></select></Campo>
