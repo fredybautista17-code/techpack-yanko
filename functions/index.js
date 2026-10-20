@@ -7066,6 +7066,82 @@ exports.getProduccionClienteDesdeBusintGen = onCallAuth(
   }
 );
 
+// (2026-10-20, a pedido de Fredy) Devoluciones de clientes: el cliente escribe el
+// número de lote y esta función le devuelve la referencia y las cantidades del
+// lote por color y talla (para que declare cuánto devuelve). Un usuario Cliente
+// SOLO puede consultar lotes de su propio cliente (se compara el cliente que
+// Busint escribe en la Observación de la orden de producción contra los grupos de
+// cliente que tiene permitidos, los mismos de la pantalla Producción); el personal
+// interno y el admin pueden consultar cualquier lote. Todo se valida acá en el
+// servidor: la pantalla no decide nada de permisos.
+exports.consultarLoteParaDevolucion = onCallAuth(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 300,
+    memory: "1GiB",
+  },
+  async (request) => {
+    if (!request.auth) throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+    const snap = await db.collection("users").where("authUid", "==", request.auth.uid).limit(1).get();
+    if (snap.empty) throw new HttpsError("permission-denied", "No tienes permiso para hacer esto.");
+    const userData = snap.docs[0].data();
+    const esCliente = !userData.isAdmin && String(userData.role || "") === "Cliente";
+
+    const claveL = (v) => String(v ?? "").trim().replace(/\.0+$/, "");
+    const lote = claveL(request.data?.lote);
+    if (!/^\d{1,9}$/.test(lote)) throw new HttpsError("invalid-argument", "Escribe el número de lote (solo números).");
+
+    const [ordenes, detalles] = await Promise.all([
+      consultarTablaBusintBDCompleta("orden produccion"),
+      consultarTablaBusintBDCompleta("orden produccion detalles"),
+    ]);
+    const orden = ordenes.find((o) => claveL(valorFlexible(o, ["NumLote", "Numlote"])) === lote && !/elimin/i.test(String(o.Mensaje || "")));
+    if (!orden) throw new HttpsError("not-found", `No encontré el lote ${lote} en Busint.`);
+    const cliente = clienteDeObservacionOrden(orden.Observacion) || "";
+
+    if (esCliente) {
+      const grupos = Array.isArray(userData.clientesProduccion) && userData.clientesProduccion.length
+        ? userData.clientesProduccion
+        : (userData.clienteProduccion ? [String(userData.clienteProduccion).trim()] : []);
+      if (!grupos.length) {
+        throw new HttpsError("permission-denied", "Tu usuario no tiene un cliente configurado. Pide que te lo activen en Admin -> Usuarios (Clientes de Producción).");
+      }
+      const norm = (t) => String(t || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+      const c = norm(cliente);
+      const permitido = !!c && grupos.some((g) => (GRUPOS_CLIENTE_BUSINT[g] || []).some((nombre) => {
+        const n = norm(nombre);
+        return n === c || n === c + c; // Busint repite el nombre ("X - X"): clienteDeObservacionOrden lo deja una vez
+      }));
+      if (!permitido) throw new HttpsError("permission-denied", `El lote ${lote} no es de tu cliente.`);
+    }
+
+    const TALLAS_DEV = ["T2", "T4", "T6", "T8", "T10", "T12", "T14", "T16", "T18", "T24", "T36"];
+    const porColor = new Map(); // color -> { T6: n, ... }
+    detalles.forEach((f) => {
+      if (claveL(valorFlexible(f, ["NumLote", "Numlote", "numlote", "Nomlote", "NomLote"])) !== lote) return;
+      const color = String(valorFlexible(f, ["Color", "color"]) ?? "").trim() || "(sin color)";
+      const m = porColor.get(color) || {};
+      TALLAS_DEV.forEach((t) => {
+        const n = Number(f[t]);
+        if (Number.isFinite(n) && n > 0) m[t] = (m[t] || 0) + n;
+      });
+      porColor.set(color, m);
+    });
+    const colores = [...porColor.entries()].map(([color, tallas]) => ({ color, tallas })).sort((a, b) => a.color.localeCompare(b.color));
+    const tallas = TALLAS_DEV.filter((t) => colores.some((c) => c.tallas[t] > 0));
+    const pedido = Number(claveL(orden.Nped)) > 0 ? claveL(orden.Nped) : "";
+    return {
+      lote,
+      ref: String(orden.Ref || "").trim(),
+      pedido,
+      cliente,
+      tallas,
+      colores,
+      sinDetalle: !colores.length,
+    };
+  }
+);
+
 // (2026-08-21) EXPLORATORIO — versión genérica de getMuestraPanelFlujoBusintGen
 // / getMuestraInventarioBusintGen: en vez de una función por endpoint,
 // recibe el nombre exacto del catálogo de la API "gen" (tal cual aparece en
@@ -8190,7 +8266,7 @@ exports.correrAuditoriaCorteVsBusintAhora = onCallAuth(
 //                   (con "anio" trae el año completo; si no, los últimos "dias").
 //   - sincronizarEntradasPlantaDiario: lo mismo en modo guardar, todos los
 //     días 6:00am (hora Colombia), con los últimos 45 días.
-const { crearEntradasPlanta } = require("./entradas-planta");
+const { crearEntradasPlanta, clienteDeObservacionOrden } = require("./entradas-planta");
 const entradasPlanta = crearEntradasPlanta({
   db,
   logger,

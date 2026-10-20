@@ -38,10 +38,23 @@ service cloud.firestore {
       allow write: if signedIn() && !esCliente();
     }
 
+    // Devoluciones de clientes (2026-10-20): un Cliente solo LEE lo que él mismo creó y solo puede
+    // CREAR devoluciones a su nombre en estado inicial; nunca las modifica ni las borra (los estados
+    // los cambia el personal interno: Bodega recibe/re-despacha, Calidad revisa). El personal
+    // interno lee y escribe todo. OJO: esta colección se excluye abajo de la regla general, porque
+    // si no, esa regla (que permite todo a quien tenga sesión) anularía esta.
+    match /devoluciones_cliente/{devId} {
+      allow read: if signedIn() && (!esCliente() || resource.data.get('creadoPorUid', '') == request.auth.uid);
+      allow create: if signedIn() && (!esCliente()
+        || (request.resource.data.get('creadoPorUid', '') == request.auth.uid
+            && request.resource.data.get('estado', '') in ['reportada', 'en_camino']));
+      allow update, delete: if signedIn() && !esCliente();
+    }
+
     // Todo lo demás: cualquier cuenta con sesión, salvo lo sensible para el rol Cliente.
     match /{col}/{rest=**} {
       allow read, write: if signedIn()
-        && col != 'users' && col != 'cotizaciones'
+        && col != 'users' && col != 'cotizaciones' && col != 'devoluciones_cliente'
         && (!esCliente() || !sensible(col));
     }
   }

@@ -430,4 +430,4 @@ function crearEntradasPlanta({ db, logger, consultarTablaBusintBDCompleta, fecha
   return { construirEntradasPlantaBusint, compararConCargaActiva, sincronizar };
 }
 
-module.exports = { crearEntradasPlanta, ID_DOC_SYNC };
+module.exports = { crearEntradasPlanta, ID_DOC_SYNC, clienteDeObservacionOrden };

@@ -13,6 +13,7 @@ import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "fire
 import CentroCostoCorteEnAreas, { CentroCostoCierreCorte } from "./modulo-corte-areas";
 import CentroCostoAnioPanel from "./centro-costo-historico";
 import { cargaEntradasActivaDe } from "./entradas-planta-util";
+import { DevolucionesCalidadView } from "./devoluciones-cliente";
 import { claveArea as claveAreaHistorico } from "./centro-costo-historico-parser";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
@@ -5809,7 +5810,9 @@ function EstadisticasPlaneacionView({ programaciones, produccion, lotesActivos, 
 // Confirmado por Fredy que esto NO existe en Busint — se registra directo
 // en Atlas, colección nueva `planeacion_control_calidad`. Cada reclamo se
 // puede marcar "Resuelto" (o reabrir) una vez atendido; borrar es solo admin.
-function ControlCalidadView({ reclamos, onGuardar, onCambiarEstado, onBorrar, isAdmin }) {
+function ControlCalidadView({ reclamos, onGuardar, onCambiarEstado, onBorrar, isAdmin, currentUser }) {
+  // (2026-10-20, a pedido de Fredy) Pestaña "Devoluciones de clientes": lo que el cliente reporta en ATLAS y Calidad cuenta por color y talla al llegar la mercancía.
+  const [pestanaCalidad, setPestanaCalidad] = useState("reclamos");
   const [numLote, setNumLote] = useState("");
   const [referencia, setReferencia] = useState("");
   const [cliente, setCliente] = useState("");
@@ -5868,6 +5871,12 @@ function ControlCalidadView({ reclamos, onGuardar, onCambiarEstado, onBorrar, is
         <h2 style={{ margin: 0, fontSize: 22, fontWeight: 900, color: C.ink }}>🔍 Control de Calidad</h2>
         <p style={{ margin: "6px 0 0", fontSize: 14, color: C.slate }}>Devoluciones y reclamos de cliente por calidad.</p>
       </div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+        {[["reclamos", "📋 Reclamos"], ["devoluciones", "↩️ Devoluciones de clientes"]].map(([k, t]) => (
+          <button key={k} onClick={() => setPestanaCalidad(k)} style={{ padding: "8px 14px", borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", border: `1.5px solid ${pestanaCalidad === k ? C.blue : C.border}`, background: pestanaCalidad === k ? C.blueBg : C.white, color: pestanaCalidad === k ? C.blue : C.ink }}>{t}</button>
+        ))}
+      </div>
+      {pestanaCalidad === "devoluciones" ? <DevolucionesCalidadView db={db} currentUser={currentUser} /> : (<>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 24 }}>
         <KPI icon="📋" label="Reclamos abiertos" value={abiertos.length} color={C.red} bg={C.redBg} />
         <KPI icon="📦" label="Unidades afectadas (abiertos)" value={fmtNum(totalUnidadesAbiertas)} color={C.amber} bg={C.amberBg} />
@@ -5904,6 +5913,7 @@ function ControlCalidadView({ reclamos, onGuardar, onCambiarEstado, onBorrar, is
         <Btn onClick={guardar} disabled={!puedeGuardar}>{guardando ? "Guardando..." : "Registrar reclamo"}</Btn>
       </div>
       <Tabla vacio="No hay reclamos registrados todavía." columnas={columnas} filas={recientes} />
+      </>)}
     </div>
   );
 }
@@ -6659,6 +6669,7 @@ export function AreasStandalone({ currentUser, onVolver, onLogout, puedeCentroCo
                   onCambiarEstado={cambiarEstadoReclamo}
                   onBorrar={borrarReclamo}
                   isAdmin={currentUser?.isAdmin}
+                  currentUser={currentUser}
                 />
               )}
               {seccion === "programador" && PERMISO_TAB.programador && (
@@ -9010,6 +9021,7 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
               onCambiarEstado={cambiarEstadoReclamoCalidad}
               onBorrar={borrarReclamoCalidad}
               isAdmin={isAdmin}
+              currentUser={currentUser}
             />
           )}
           {subView === "informes" && (

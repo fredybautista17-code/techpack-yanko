@@ -12,6 +12,7 @@ import {
   runTransaction,
 } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
+import { DevolucionesBodegaView } from "./devoluciones-cliente";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
   authDomain: "techpack-yanko-f37b8.firebaseapp.com",
@@ -4717,7 +4718,7 @@ function ControlDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
 // son dos flujos totalmente distintos (despachos a Venezuela/Dubo/Colombia
 // con su saldo, vs. transportador/guía/llegada de los lotes locales de
 // Dado por Cumplido) que no tiene sentido mezclar en un solo menú.
-function BodegaHubView({ onSeleccionar, onVolver, onLogout, puedeVerControlDespacho }) {
+function BodegaHubView({ onSeleccionar, onVolver, onLogout, puedeVerControlDespacho, puedeDevoluciones }) {
   // (2026-09-10, a pedido de Fredy) El hub queda con solo 2 tarjetas --
   // "Control de Despacho" junta adentro (con pestañas) lo que antes eran
   // "Despachos Generales" y "Estado de Despacho" por separado, y las dos
@@ -4729,6 +4730,8 @@ function BodegaHubView({ onSeleccionar, onVolver, onLogout, puedeVerControlDespa
   const TARJETAS = [
     { tipo: "nav", id: "despacho_saldo", icon: "📦", label: "Despacho y Saldo", desc: "Abonos y saldos.", color: C.violet, bg: C.violetBg },
     ...(puedeVerControlDespacho ? [{ tipo: "nav", id: "control_despacho", icon: "🎛️", label: "Control de Despacho", desc: "Despachos Generales y Estado de Despacho.", color: C.green, bg: C.greenBg }] : []),
+    // (2026-10-20, a pedido de Fredy) Devoluciones de clientes: Bodega marca "Recibida" cuando llega la mercancía y "Despachada de nuevo" cuando sale otra vez.
+    ...(puedeDevoluciones ? [{ tipo: "nav", id: "devoluciones", icon: "↩️", label: "Devoluciones", desc: "Devoluciones de clientes: recibir y despachar de nuevo.", color: C.amber, bg: C.amberBg }] : []),
   ];
 
   return (
@@ -4825,6 +4828,16 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
   if (vista === "control_despacho" && puedeControlDespacho) {
     return <ControlDespachoView onVolver={() => setVista("hub")} onLogout={onLogout} puedeRevertirDespacho={puedeRevertir} />;
   }
-  return <BodegaHubView onSeleccionar={setVista} onVolver={onVolver} onLogout={onLogout} puedeVerControlDespacho={puedeControlDespacho} />;
+  if (vista === "devoluciones" && currentUser?.role !== "Cliente") {
+    return (
+      <div style={{ minHeight: "100vh", background: C.canvas, fontFamily: "'Inter',-apple-system,sans-serif", padding: 24 }}>
+        <div style={{ maxWidth: 1000, margin: "0 auto" }}>
+          <button onClick={() => setVista("hub")} style={{ background: "none", border: "none", color: C.slate, fontSize: 12, cursor: "pointer", fontFamily: "inherit", marginBottom: 12 }}>← Volver a Bodega</button>
+          <DevolucionesBodegaView db={db} currentUser={currentUser} />
+        </div>
+      </div>
+    );
+  }
+  return <BodegaHubView onSeleccionar={setVista} onVolver={onVolver} onLogout={onLogout} puedeVerControlDespacho={puedeControlDespacho} puedeDevoluciones={currentUser?.role !== "Cliente"} />;
 }
 

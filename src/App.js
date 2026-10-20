@@ -12,6 +12,7 @@ import CotizadorView from "./modulo-cotizador";
 import DisponibleDespacharView from "./disponible-despachar";
 import ExplosionMaterialesView from "./explosion-materiales";
 import LotesPorIntegrarView from "./lotes-por-integrar";
+import { DevolucionesClienteView } from "./devoluciones-cliente";
 import PatronCodigosReferencia, { buscarPorPatron, PrefijosDeCliente } from "./codigos-patron";
 import { initializeApp } from "firebase/app";
 import {
@@ -1150,6 +1151,7 @@ const MODULOS_CLIENTE_OPCIONES = [
   { id: "preordenes", label: "Preórdenes" },
   { id: "ordenes", label: "Órdenes" },
   { id: "produccion", label: "Producción" },
+  { id: "devoluciones", label: "Devoluciones (reportar lo que devuelven, por lote, color y talla)" },
   { id: "cotizador", label: "Cotizaciones (solo ver y descargar las aprobadas de sus clientes)" },
 ];
 // (2026-09-24, a pedido de Fredy) Para la pantalla "Producción" -- a qué
@@ -11709,7 +11711,7 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
                 <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>Marca esto para un cliente que solo debe poder ver el avance en los módulos de arriba, sin tocar nada. No afecta a otros usuarios del rol Cliente.</div>
               </div>
             )}
-            {form.role === "Cliente" && (form.modulosCliente || []).includes("produccion") && (
+            {form.role === "Cliente" && ((form.modulosCliente || []).includes("produccion") || (form.modulosCliente || []).includes("devoluciones")) && (
               <div>
                 <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Clientes de Producción (obligatorio para ver ese módulo)</label>
                 <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "10px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8 }}>
@@ -18448,6 +18450,8 @@ function AppInner() {
   // configurado en la ficha del usuario) o para admin (para previsualizar
   // lo que vería cada cliente).
   const canAccessProduccion = !!currentUser?.isAdmin || (role === "Cliente" && moduloVisibleParaCliente(currentUser, "produccion") && clientesProduccionDeUsuario(currentUser).length > 0);
+  // (2026-10-20, a pedido de Fredy) Devoluciones: la ven los usuarios Cliente con el módulo activo y un cliente de Producción configurado (el servidor valida de nuevo qué lotes puede consultar) y el admin. Bodega y Calidad las ven dentro de sus módulos.
+  const canAccessDevoluciones = !!currentUser?.isAdmin || (role === "Cliente" && moduloVisibleParaCliente(currentUser, "devoluciones") && clientesProduccionDeUsuario(currentUser).length > 0);
   const canAccessKpis = moduloVisible(userRoleData, "kpis", currentUser?.isAdmin);
   const canAccessCorte = moduloVisible(userRoleData, "corte", currentUser?.isAdmin);
   const canAccessContabilidad = moduloVisible(userRoleData, "contabilidad", currentUser?.isAdmin);
@@ -18558,7 +18562,7 @@ function AppInner() {
   // acá: trabaja directo sobre los mismos pedidos (pedidos_activos es la
   // misma colección que usa "Pedidos"), tiene más que ver con esto que con
   // el flujo de diseño/aprobación.
-  const canAccessPedidosArea = canAccessPedidos || canAccessPedidosClientes || canAccessPreordenes || canAccessExplosionMateriales || canAccessLotesPorIntegrar || canAccessCorte || canAccessProduccion || !!currentUser?.isAdmin;
+  const canAccessPedidosArea = canAccessPedidos || canAccessPedidosClientes || canAccessPreordenes || canAccessExplosionMateriales || canAccessLotesPorIntegrar || canAccessCorte || canAccessProduccion || canAccessDevoluciones || !!currentUser?.isAdmin;
   const [moduloActivo, setModuloActivo] = useState("diseno");
   const AREAS = [
     ...(canAccessDiseno
@@ -18589,6 +18593,7 @@ function AppInner() {
             ...(canAccessLotesPorIntegrar ? [{ id: "lotes_por_integrar", icon: "📦", label: "Lotes por integrar" }] : []),
             ...(canAccessOrdenes ? [{ id: "ordenes", icon: "🧵", label: "Órdenes" }] : []),
             ...(canAccessProduccion ? [{ id: "produccion", icon: "🏭", label: "Producción" }] : []),
+            ...(canAccessDevoluciones ? [{ id: "devoluciones", icon: "↩️", label: "Devoluciones" }] : []),
             ...(canAccessCorte ? [{ id: "__corte__", icon: "✂", label: "Corte" }] : []),
             ...(currentUser?.isAdmin ? [{ id: "pedidos_admin", icon: "⚙", label: "Admin Pedidos" }] : []),
           ],
@@ -18652,6 +18657,7 @@ function AppInner() {
     if (itemId === "explosion_materiales") return view === "explosion_materiales";
     if (itemId === "lotes_por_integrar") return view === "lotes_por_integrar";
     if (itemId === "produccion") return view === "produccion";
+    if (itemId === "devoluciones") return view === "devoluciones";
     if (itemId === "__corte__") return moduloActivo === "corte";
     if (itemId === "contabilidad_area") return moduloActivo === "contabilidad";
     if (itemId === "cotizaciones") return moduloActivo === "cotizaciones";
@@ -18879,6 +18885,7 @@ function AppInner() {
                     else if (canAccessExplosionMateriales) setView("explosion_materiales");
                     else if (canAccessLotesPorIntegrar) setView("lotes_por_integrar");
                     else if (canAccessProduccion) setView("produccion");
+                    else if (canAccessDevoluciones) setView("devoluciones");
                     else if (currentUser?.isAdmin) setView("pedidos_admin");
                     else if (canAccessCorte) setModuloActivo("corte");
                   }
@@ -19059,6 +19066,9 @@ function AppInner() {
                 onVincularPedido={vincularPreordenAPedido}
                 onActualizarItemPreorden={actualizarItemPreorden}
               />
+            )}
+            {view === "devoluciones" && canAccessDevoluciones && (
+              <DevolucionesClienteView db={db} functionsClient={functionsClient} T={T} currentUser={currentUser} />
             )}
             {view === "produccion" && (
               <ProduccionView currentUser={currentUser} pedidosCliente={role === "Cliente" ? pedidosVisibles : null} preordenesCliente={role === "Cliente" ? preordenesVisibles : null} todosPedidos={pedidos} todasPreordenes={bitacoraPreordenes} />
