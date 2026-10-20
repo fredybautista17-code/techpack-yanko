@@ -2,7 +2,7 @@
   "name": "functions",
   "description": "Cloud Functions de techpack-yanko (sincronización automática de pedidos desde Busint)",
   "engines": {
-    "node": "20"
+    "node": "22"
   },
   "main": "index.js",
   "dependencies": {
