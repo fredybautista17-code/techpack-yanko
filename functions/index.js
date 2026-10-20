@@ -10978,10 +10978,11 @@ exports.getLotesPorIntegrarBusint = onCallAuth(
       leer("orden produccion", true), leer("bmp - integracion", true), leer("bmp - integracion ref", true),
       leer("insumos dig", true), leer("estandar componentes prod", true),
     ]);
-    const [detalles, entPlantaRef, ocCab, ocDet, ocDxc, provs, seguimiento, integComp] = await Promise.all([
+    const [detalles, entPlantaRef, ocCab, ocDet, ocDxc, provs, seguimiento, integComp, salidaComp] = await Promise.all([
       leer("orden produccion detalles", false), leer("bmp - entrada planta ref", false),
       leer("orden de compra", false), leer("orden de compra detalles", false), leer("orden de compra detallesdxc", false),
       leer("maestro de proveedores", false), leer("ia_seguimientolotesv_data", false), leer("bmp - integracion comp", false),
+      leer("bmp - salida planta comp", false),
     ]);
     const pedidosPendientes = await leer("pedidos_pendientes", false);
     const plantaprocRef = await leer("bmp - entrada plantaproc ref", false);
@@ -11221,6 +11222,24 @@ exports.getLotesPorIntegrarBusint = onCallAuth(
       m.set(cod, (m.get(cod) || 0) + num(f.Cant));
       entregadoLote.set(lote, m);
     });
+    // (2026-10-20) Lo que Busint da por entregado a un lote son las SALIDAS A PLANTA ("bmp - salida planta comp": Numlote,
+    // Codcomp, Cant), no solo lo registrado en la integración: insumos como la bolsa zipper o el cordón salen después de
+    // integrar y por eso "integracion comp" no los tiene (falsos "faltan" en el lote 7136). Por cada lote/código se toma el
+    // MAYOR entre las dos fuentes (no la suma) para no contar doble cuando una misma entrega está en ambas tablas.
+    const salidaPorLote = new Map(); // lote -> Map(codcomp -> cantidad)
+    salidaComp.forEach((f) => {
+      const lote = loteDe(f);
+      const cod = clave(f.Codcomp);
+      if (!lote || !(Number(lote) > 0) || !cod) return;
+      const m = salidaPorLote.get(lote) || new Map();
+      m.set(cod, (m.get(cod) || 0) + num(f.Cant));
+      salidaPorLote.set(lote, m);
+    });
+    salidaPorLote.forEach((ms, lote) => {
+      const m = entregadoLote.get(lote) || new Map();
+      ms.forEach((cant, cod) => { if (cant > (m.get(cod) || 0)) m.set(cod, cant); });
+      entregadoLote.set(lote, m);
+    });
     const nombreCod = new Map();
     inventario.forEach((f) => {
       const c = clave(f?.Codcomp);
@@ -11254,6 +11273,7 @@ exports.getLotesPorIntegrarBusint = onCallAuth(
     } else {
       avisos.push("No se pudo leer \"bmp - integracion comp\": no se puede revisar si a los lotes integrados les falta algún insumo.");
     }
+    if (integComp.length && !salidaComp.length) avisos.push("No se pudo leer \"bmp - salida planta comp\": la revisión de insumos faltantes solo usa la integración y puede marcar de más.");
     incompletos.forEach((l) => l.faltan.forEach((f) => (f.codcomps || []).forEach((c) => codcompsUsados.add(c))));
     // 6) Órdenes de compra vigentes (sin precios) por código de insumo
     const oc = {};
