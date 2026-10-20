@@ -7130,6 +7130,34 @@ exports.consultarLoteParaDevolucion = onCallAuth(
     const colores = [...porColor.entries()].map(([color, tallas]) => ({ color, tallas })).sort((a, b) => a.color.localeCompare(b.color));
     const tallas = TALLAS_DEV.filter((t) => colores.some((c) => c.tallas[t] > 0));
     const pedido = Number(claveL(orden.Nped)) > 0 ? claveL(orden.Nped) : "";
+    // (2026-10-20, a pedido de Fredy) Nombre de cada color: en Busint el lote
+    // solo trae la letra (A, B, C...), pero la descripción de cada línea del
+    // pedido en ATLAS ya viene como "A · BLANCO" (pinta · color). Se busca en
+    // pedidos_activos (id = número de pedido); si no está o no cuadra, el
+    // color queda solo con su letra, como antes -- nunca bloquea la consulta.
+    if (pedido && colores.length) {
+      try {
+        const pedSnap = await db.collection("pedidos_activos").doc(pedido).get();
+        if (pedSnap.exists) {
+          const refsPed = pedSnap.data().referencias || [];
+          const refLote = refSinGuion(orden.Ref);
+          const delMismoRef = refsPed.filter((r) => refSinGuion(r.ref) === refLote);
+          const nombrePorLetra = new Map();
+          [...delMismoRef, ...refsPed].forEach((r) => {
+            const partes = String(r.descripcion || "").split("·").map((x) => x.trim());
+            if (partes.length < 2 || !partes[0] || !partes[1]) return;
+            const letra = partes[0].toUpperCase();
+            if (!nombrePorLetra.has(letra)) nombrePorLetra.set(letra, partes.slice(1).join(" · "));
+          });
+          colores.forEach((c) => {
+            const n = nombrePorLetra.get(String(c.color).trim().toUpperCase());
+            if (n) c.nombre = n;
+          });
+        }
+      } catch (err) {
+        logger.warn("consultarLoteParaDevolucion: no se pudo leer el nombre de los colores", { error: String(err) });
+      }
+    }
     return {
       lote,
       ref: String(orden.Ref || "").trim(),

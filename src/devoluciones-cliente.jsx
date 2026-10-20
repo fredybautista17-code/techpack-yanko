@@ -106,6 +106,8 @@ function usuarioActual(currentUser) {
   return currentUser?.name || currentUser?.username || "";
 }
 
+// "A · BLANCO" si se conoce el nombre del color (viene del pedido); si no, solo la letra.
+const etiquetaColor = (c) => (c && c.nombre ? `${c.color} · ${c.nombre}` : String(c?.color ?? ""));
 // Tabla color x talla. `valores` = { "color|T6": n }. Con `editable` muestra inputs; `tope` = cantidades máximas del lote.
 function GrillaColorTalla({ T, colores, tallas, valores, onCambiar, tope, editable = true, comparar }) {
   const th = { padding: "6px 8px", fontSize: 11, color: T.slate, textAlign: "center", borderBottom: `1px solid ${T.border}` };
@@ -125,7 +127,7 @@ function GrillaColorTalla({ T, colores, tallas, valores, onCambiar, tope, editab
             const fila = tallas.reduce((s, t) => s + (Number(valores[`${c.color}|${t}`]) || 0), 0);
             return (
               <tr key={c.color}>
-                <td style={{ ...td, textAlign: "left", fontWeight: 700 }}>{c.color}</td>
+                <td style={{ ...td, textAlign: "left", fontWeight: 700 }}>{etiquetaColor(c)}</td>
                 {tallas.map((t) => {
                   const k = `${c.color}|${t}`;
                   const cap = tope ? c.tallas?.[t] || 0 : null;
@@ -162,7 +164,7 @@ function valoresDeLineas(lineas) {
   return v;
 }
 function coloresDeLineas(lineas) {
-  return (lineas || []).map((l) => ({ color: l.color, tallas: l.cantidades || {} }));
+  return (lineas || []).map((l) => ({ color: l.color, nombre: l.colorNombre || "", tallas: l.cantidades || {} }));
 }
 function tallasDeLineas(lineas, extra) {
   const set = new Set(extra || []);
@@ -209,7 +211,7 @@ function Detalle({ T, d, mostrarConteo }) {
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
               {d.diferencias.map((x) => (
                 <Pill key={`${x.color}|${x.talla}`} T={T} bg={x.dif < 0 ? T.coralBg : T.amberBg} fg={x.dif < 0 ? T.coral : T.amber}>
-                  {x.color} {x.talla}: {x.dif < 0 ? `falta ${-x.dif}` : `sobra ${x.dif}`}
+                  {x.colorNombre ? `${x.color} · ${x.colorNombre}` : x.color} {x.talla}: {x.dif < 0 ? `falta ${-x.dif}` : `sobra ${x.dif}`}
                 </Pill>
               ))}
             </div>
@@ -282,7 +284,7 @@ export function DevolucionesClienteView({ db, functionsClient, T: Tp, currentUse
     if (!(total > 0)) { setError("Escribe al menos una unidad a devolver."); return; }
     if (!uid) { setError("No se pudo identificar tu sesión. Cierra sesión y vuelve a entrar."); return; }
     const lineas = info.colores
-      .map((c) => ({ color: c.color, cantidades: Object.fromEntries(info.tallas.map((t) => [t, Number(cant[`${c.color}|${t}`]) || 0]).filter(([, n]) => n > 0)) }))
+      .map((c) => ({ color: c.color, colorNombre: c.nombre || "", cantidades: Object.fromEntries(info.tallas.map((t) => [t, Number(cant[`${c.color}|${t}`]) || 0]).filter(([, n]) => n > 0)) }))
       .filter((l) => Object.keys(l.cantidades).length);
     const id = `dev_${Date.now()}`;
     const estado = guia.trim() ? "en_camino" : "reportada";
@@ -402,11 +404,11 @@ function ListaEquipo({ db, T: Tp, currentUser, modo }) {
     const declarado = valoresDeLineas(d.lineas);
     const tallas = tallasDeLineas(d.lineas, d.tallas);
     const colores = coloresDeLineas(d.lineas);
-    const lineasContadas = colores.map((c) => ({ color: c.color, cantidades: Object.fromEntries(tallas.map((t) => [t, Number(conteo[`${c.color}|${t}`]) || 0]).filter(([, n]) => n > 0)) }));
+    const lineasContadas = colores.map((c) => ({ color: c.color, colorNombre: c.nombre || "", cantidades: Object.fromEntries(tallas.map((t) => [t, Number(conteo[`${c.color}|${t}`]) || 0]).filter(([, n]) => n > 0)) }));
     const diferencias = [];
     colores.forEach((c) => tallas.forEach((t) => {
       const dif = (Number(conteo[`${c.color}|${t}`]) || 0) - (Number(declarado[`${c.color}|${t}`]) || 0);
-      if (dif) diferencias.push({ color: c.color, talla: t, dif });
+      if (dif) diferencias.push({ color: c.color, colorNombre: c.nombre || "", talla: t, dif });
     }));
     const resultado = diferencias.length ? "diferencias" : "completa";
     await accion(d, "revisada", { conteo: lineasContadas, diferencias, resultado, totalContado: totalLineas(lineasContadas), revisadoPor: usuario, revisadoEn: nowISO() },
