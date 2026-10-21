@@ -3172,13 +3172,29 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
   const porEstado = filter === "todos" ? protos.filter((p) => !["aprobado", "declinado"].includes(p.status)) : protos.filter((p) => p.status === filter);
   const porCliente = clienteFiltro === "todos" ? porEstado : porEstado.filter((p) => (p.cliente || p.colores?.[0]) === clienteFiltro);
   const porMes = mesFiltro === "todos" ? porCliente : porCliente.filter((p) => p.mes === mesFiltro);
-  const busquedaNorm = busqueda.trim().toLowerCase();
-  const filtered = !busquedaNorm ? porMes : porMes.filter((p) =>
-    (p.name || "").toLowerCase().includes(busquedaNorm) ||
-    (p.reference || "").toLowerCase().includes(busquedaNorm) ||
-    (p.cliente || "").toLowerCase().includes(busquedaNorm) ||
-    (p.colores || []).some((c) => (c || "").toLowerCase().includes(busquedaNorm))
-  );
+  // (2026-10-21, a pedido de Fredy) Buscador de Prototipos: cuando hay texto, busca en TODOS los prototipos
+  // (sin importar la pestaña de estado, el cliente ni el mes), por # prototipo, referencia, nombre, cliente,
+  // categoría, silueta, línea, tela, asignado a y colores. Ignora tildes/mayúsculas, la referencia se
+  // encuentra con o sin guion y varias palabras deben aparecer todas (aunque sea en campos distintos).
+  const tokensP = tokensBusq(busqueda);
+  const buscandoP = tokensP.length > 0;
+  const STATUS_PROTO_TXT = { aprobado: "Aprobado", declinado: "Declinado", en_proceso: "En proceso", en_revision: "En revisión", enviado_cotizacion: "En cotización", enviar_cliente: "Enviar al Cliente", preparada_para_enviar: "Preparada para Enviar", enviado: "Enviado", recibido_cliente: "Recibido por Cliente", borrador: "Borrador" };
+  const camposProto = (p) => [
+    ["# Prototipo", p.numPrototipo], ["Referencia", p.reference], ["Nombre", p.name], ["Cliente", p.cliente || p.colores?.[0]],
+    ["Categoría", p.categoria], ["Silueta", p.silueta], ["Línea", p.linea], ["Tela", p.tipoTela], ["Asignado a", p.assignedTo],
+    ["Colores", (p.colores || []).join(" ")],
+  ].map(([k, v]) => [k, v == null ? "" : String(v)]);
+  const coincideTok = (txt, k) => {
+    const h = normBusq(txt);
+    const kc = k.replace(/[^a-z0-9]/g, "");
+    return h.includes(k) || (kc && h.replace(/[^a-z0-9]/g, "").includes(kc));
+  };
+  const protoCoincide = (p) => {
+    const todo = camposProto(p).map((c) => c[1]).join(" ");
+    return tokensP.every((k) => coincideTok(todo, k));
+  };
+  const dondeCoincideProto = (p) => camposProto(p).filter((c) => c[1] && tokensP.some((k) => coincideTok(c[1], k))).map((c) => c[0]);
+  const filtered = !buscandoP ? porMes : protos.filter(protoCoincide);
   return (
     <div>
       {confirmDel && (
@@ -3225,11 +3241,18 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
         <input
           value={busqueda}
           onChange={(e) => setBusqueda(e.target.value)}
-          placeholder="🔍 Buscar por nombre, referencia o cliente..."
-          style={{ padding: "7px 12px", border: `1.5px solid ${busqueda ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, minWidth: 240, outline: "none", fontFamily: "inherit" }}
+          onKeyDown={(e) => { if (e.key === "Escape") setBusqueda(""); }}
+          placeholder="🔍 Buscar por # prototipo, referencia, nombre, cliente..."
+          style={{ padding: "7px 12px", border: `1.5px solid ${busqueda ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, minWidth: 320, outline: "none", fontFamily: "inherit" }}
         />
+        {buscandoP && (
+          <>
+            <span style={{ fontSize: 12, fontWeight: 700, color: T.slate }}>{filtered.length} resultado{filtered.length === 1 ? "" : "s"} · en todos los estados</span>
+            <button onClick={() => setBusqueda("")} title="Limpiar búsqueda (Esc)" style={{ border: `1px solid ${T.border}`, background: T.white, borderRadius: 8, padding: "5px 10px", cursor: "pointer", fontSize: 12, fontWeight: 700, color: T.slate }}>✕ Limpiar</button>
+          </>
+        )}
       </div>
-      <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap", alignItems: "center" }}>
+      <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap", alignItems: "center", opacity: buscandoP ? 0.45 : 1 }}>
         {[["todos", "Todos"], ["aprobado", "Aprobados"], ["declinado", "Declinados"], ["en_proceso", "En proceso"], ["en_revision", "En revisión"], ["enviado_cotizacion", "En cotización"], ["enviar_cliente", "Enviar al Cliente"], ["enviado", "Enviado"]].map(([v, label]) => (
           <button key={v} onClick={() => cambiarFiltro(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${filter === v ? T.ink : T.border}`, background: filter === v ? T.ink : T.white, color: filter === v ? T.white : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
         ))}
@@ -3239,7 +3262,7 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
           </button>
         )}
       </div>
-      {!filtered.length && <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>No hay prototipos con este filtro.</div>}
+      {!filtered.length && <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>{buscandoP ? `Ningún prototipo coincide con "${busqueda.trim()}".` : "No hay prototipos con este filtro."}</div>}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 14 }}>
         {filtered.map((p) => (
           <div key={p.id} style={{ position: "relative" }}>
@@ -3258,7 +3281,12 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
                 style={{ position: "absolute", top: 8, left: 8, zIndex: 2, width: 20, height: 20, cursor: "pointer" }}
               />
             )}
-            <Card item={p} kind="proto" onClick={() => onSelect(p.id)} onPromote={onPromote} role={role} perms={perms} stages={stages} />
+            <Card item={p} kind="proto" resaltar={buscandoP ? tokensP : null} onClick={() => onSelect(p.id)} onPromote={onPromote} role={role} perms={perms} stages={stages} />
+            {buscandoP && (() => { const d = dondeCoincideProto(p); return (
+              <div style={{ marginTop: 4, fontSize: 11, color: "#7A5B00", background: "#FFF3BF", borderRadius: 6, padding: "2px 8px", fontWeight: 600 }}>
+                {STATUS_PROTO_TXT[p.status] || p.status || "—"}{d.length ? ` · coincide en: ${d.join(", ")}` : ""}
+              </div>
+            ); })()}
           </div>
         ))}
       </div>
