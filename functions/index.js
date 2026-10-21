@@ -5463,7 +5463,18 @@ exports.getTelasStockBusintBD = onCallAuth(
       .map((f) => {
         const anchoTxt = String(f.Unidad ?? f.UnidadT ?? "").trim();
         const ancho = parseFloat(anchoTxt.replace(",", ".")) || 0;
-        const cantidadM2 = Number(f.ICant) || 0;
+        // (2026-10-21) CORREGIDO — cruzando 3 telas (LUCIANA, MARLY, VALERY)
+        // contra el reporte nativo de Busint (Informes Inventarios → Telas por
+        // Genérico): Ml del reporte = 2 × ICant, exacto (ej. MARLY ARENA
+        // ICant 37.5 → Ml 75; VALERY KAKI 156.96 → 313.92). M2 del reporte =
+        // Ml × Ancho, y K = Ml ÷ Rend. Lo de "ICant viene en M2" (2026-08-26)
+        // era un supuesto que no se sostiene. OJO: esta tabla guarda el saldo
+        // hasta la última entrada/ajuste y NO descuenta los consumos
+        // posteriores (el reporte sí), así que en colores con consumo reciente
+        // da MÁS que el reporte.
+        const icant = Number(f.ICant) || 0;
+        const cantidadMl = icant * 2;
+        const cantidadM2 = ancho > 0 ? cantidadMl * ancho : null;
         return {
           componente: String(f.Componente || "").trim(),
           color: String(f.Color || "").trim(),
@@ -5499,8 +5510,9 @@ exports.getTelasStockBusintBD = onCallAuth(
           // Si no hay ancho registrado para esa fila, queda en null (mejor
           // no mostrar un número que no se puede convertir, a mostrarlo
           // en la unidad equivocada).
-          cantidad: ancho > 0 ? cantidadM2 / ancho : null,
+          cantidad: cantidadMl,
           cantidadM2,
+          icant,
           ancho,
           unidad: f.Unidad || "",
           dimension: f.Dimension ?? "",
@@ -10699,8 +10711,7 @@ exports.getOrdenesCompraBusint = onCallAuth(
 //   - TELAS: tabla "telas" (nombre y consumo por prenda de cada slot Tela1..10)
 //     + "telas - detalle" (codigo de color de cada slot por Ref+Pinta, con el
 //     consumo "con sesgo") + "estandar componentes prod" (stock por
-//     Componente+Color; ICant viene en M2 y se pasa a metros lineales con el
-//     ancho, igual que getTelasStockBusintBD). Misma logica que ya usa Corte.
+//     Componente+Color; Ml = 2 × ICant, igual que getTelasStockBusintBD). Misma logica que ya usa Corte.
 //   - INSUMOS: tabla "insumos dig" (Ref, Insumo, Cant, Ubicacion...). OJO: esa
 //     tabla mezcla materiales con procesos/mano de obra (en los procesos Cant
 //     es un precio). Una fila se toma como MATERIAL solo si el nombre del
@@ -10762,8 +10773,9 @@ exports.getFichaMaterialesBusint = onCallAuth(
         const ancho = parseFloat(String(f.Unidad ?? f.UnidadT ?? "").trim().replace(",", ".")) || 0;
         telaPorNombreColor.set(`${nombreNorm(componente)}|${color}`, {
           componente, color, codcomp, ancho, promedio,
-          stockM2: icant,
-          stockMl: ancho > 0 ? icant / ancho : null,
+          // (2026-10-21) Ml = 2 × ICant y M2 = Ml × Ancho (ver getTelasStockBusintBD).
+          stockM2: ancho > 0 ? icant * 2 * ancho : null,
+          stockMl: icant * 2,
         });
       } else {
         const k = normalizarInsumoBD(componente);
