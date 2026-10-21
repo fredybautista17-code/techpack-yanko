@@ -14820,6 +14820,19 @@ function BusintCatalogoTestView() {
               <div style={{ marginTop: 10, fontSize: 13, fontWeight: 800, color: T.ink }}>
                 Total ML (solo filas activas, con ancho): {coloresTela.totalActivo.toLocaleString("es-CO", { maximumFractionDigits: 2 })} m
               </div>
+              <details style={{ marginTop: 14 }}>
+                <summary style={{ cursor: "pointer", fontSize: 13, fontWeight: 700, color: T.coral }}>Campos crudos de cada fila (diagnóstico)</summary>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 }}>
+                  {coloresTela.filas.map((f, i) => (
+                    <div key={i} style={{ padding: 8, border: `1px solid ${T.border}`, borderRadius: 8, fontSize: 11, lineHeight: 1.5, wordBreak: "break-word" }}>
+                      <div style={{ fontWeight: 800, fontSize: 12 }}>{f.componente} · {f.color} {f.nombreColor ? `(${f.nombreColor})` : ""} · Cod {f.codcomp || "—"}</div>
+                      {f.raw
+                        ? Object.entries(f.raw).map(([k, v]) => (<span key={k} style={{ display: "inline-block", marginRight: 10 }}><b>{k}</b>={String(v)}</span>))
+                        : <span style={{ color: T.slate }}>Sin datos crudos (publica la función getTelasStockBusintBD).</span>}
+                    </div>
+                  ))}
+                </div>
+              </details>
             </>
           )}
         </div>

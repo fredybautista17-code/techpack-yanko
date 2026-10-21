@@ -5507,6 +5507,14 @@ exports.getTelasStockBusintBD = onCallAuth(
           unidadT: f.UnidadT ?? "",
           costo: Number(f.Costo) || 0,
           activo: f.Activo !== false,
+          // (2026-10-21) DIAGNOSTICO — todos los campos crudos de la fila
+          // (solo los que traen valor), para investigar por que "Tengo"
+          // no cuadra con el reporte nativo de Busint (ej. LUCIANA).
+          raw: Object.fromEntries(
+            Object.entries(f)
+              .filter(([, v]) => v !== null && v !== undefined && v !== "")
+              .map(([k, v]) => [k, typeof v === "object" ? JSON.stringify(v) : v])
+          ),
         };
       })
       .filter((t) => t.componente);
