@@ -13393,7 +13393,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
   const GRUPOS_MODULOS_DEF = [
     { area: "💰 Contabilidad", items: [["contabilidad", "Contabilidad"], ["contabilidad_bases_dado_por_cumplido", "Puede crear y configurar Bases (Dado por Cumplido)"], ["contabilidad_sincronizar_dado_por_cumplido", "Puede sincronizar con Busint (Buscar lotes nuevos)"], ["contabilidad_ordenes_compra", "🛒 Puede ver Órdenes de compra"]] },
     // (2026-10-16, a pedido de Fredy) El acceso al módulo sigue en la lista de Diseño ("cotizador"); estos dos son permisos extra por rol.
-    { area: "🧮 Cotizaciones", items: [["cotizador_editar", "Puede crear y editar cotizaciones (sin esto, solo consulta)"], ["cotizador_borrar", "Puede borrar cotizaciones"], ["cotizador_aprobar", "Puede aprobar cotizaciones (y aplicar el precio)"], ["cotizador_deshabilitar", "Puede deshabilitar cotizaciones aprobadas"]] },
+    { area: "🧮 Cotizaciones", items: [["cotizador_editar", "Puede crear y editar cotizaciones (sin esto, solo consulta)"], ["cotizador_borrar", "Puede borrar cotizaciones"], ["cotizador_aprobar", "Puede aprobar cotizaciones (y aplicar el precio)"], ["cotizador_deshabilitar", "Puede deshabilitar cotizaciones aprobadas"], ["cotizador_costos_reales", "Puede ajustar costos reales de cotizaciones aprobadas (sin cambiar el precio aprobado)"]] },
     { area: "📋 Planeación", items: [["planeacion", "Planeación"]] },
     { area: "🏭 Planta", items: [["planta", "Planta"]] },
     { area: "📦 Bodega", items: [["bodega", "Bodega"]] },
@@ -18432,6 +18432,7 @@ function AppInner() {
   // (2026-10-19, a pedido de Fredy) Deshabilitar una cotización aprobada: permiso aparte por rol (el admin siempre).
   const canDeshabilitarCotizacion = canAccessCotizador && !esClienteCot && moduloVisible(userRoleData, "cotizador_deshabilitar", currentUser?.isAdmin);
   // (2026-10-19, a pedido de Fredy) Crear/editar cotizaciones: permiso aparte. Con solo "cotizador" el usuario queda en SOLO CONSULTA (el admin siempre edita).
+  const canCostosRealesCotizacion = canAccessCotizador && !esClienteCot && moduloVisible(userRoleData, "cotizador_costos_reales", currentUser?.isAdmin);
   const canEditarCotizacion = canAccessCotizador && !esClienteCot && moduloVisible(userRoleData, "cotizador_editar", currentUser?.isAdmin);
   // (2026-10-16) Cuántas cotizaciones esperan aprobación (solo para quien aprueba): tarjeta del Inicio.
   const [cotPorAprobar, setCotPorAprobar] = useState(0);
@@ -18725,7 +18726,7 @@ function AppInner() {
       <CotizadorView currentUser={currentUser} config={config} protos={protosVisibles} capsulas={capsulasVisibles}
         iniciarDesde={cotizadorInicio} onIniciarConsumido={() => setCotizadorInicio(null)}
         onAplicarPrecio={aplicarPrecioCotizador} onVolver={() => setModuloActivo("diseno")}
-        puedeBorrar={canBorrarCotizacion} puedeAprobar={canAprobarCotizacion} puedeDeshabilitar={canDeshabilitarCotizacion} puedeEditar={canEditarCotizacion} clientesPermitidos={esClienteCot ? clientesDeUsuario(currentUser) : null}
+        puedeBorrar={canBorrarCotizacion} puedeAprobar={canAprobarCotizacion} puedeDeshabilitar={canDeshabilitarCotizacion} puedeCostosReales={canCostosRealesCotizacion} puedeEditar={canEditarCotizacion} clientesPermitidos={esClienteCot ? clientesDeUsuario(currentUser) : null}
         onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }}
         notify={(msg) => notify({ id: uid(), icon: "🧮", title: "Cotizador", msg })} />
     );
