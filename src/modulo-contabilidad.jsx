@@ -7139,8 +7139,8 @@ function CuadrePorClienteView({ currentUser, pedidos }) {
   );
 }
 
-export default function ModuloContabilidad({ currentUser, onVolver, onLogout, puedeAdministrarBasesDadoPorCumplido, puedeSincronizarDadoPorCumplido, puedeVerOrdenesCompra, pedidos }) {
-  const [subView, setSubView] = useState("home");
+export default function ModuloContabilidad({ currentUser, onVolver, onLogout, puedeAdministrarBasesDadoPorCumplido, puedeSincronizarDadoPorCumplido, puedeVerOrdenesCompra, soloOrdenesCompra, pedidos }) {
+  const [subView, setSubView] = useState(soloOrdenesCompra ? "ordenes_compra" : "home");
   const [movimientos, setMovimientos] = useState([]);
   const [compras, setCompras] = useState([]);
   const [presupuestos, setPresupuestos] = useState([]);
@@ -7461,7 +7461,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
     return Object.values(map).sort((a, b) => a.concepto.localeCompare(b.concepto));
   })();
   const isAdmin = currentUser?.isAdmin;
-  const NAV = [
+  const NAV = soloOrdenesCompra && !isAdmin ? [{ id: "ordenes_compra", icon: "🛒", label: "Órdenes de compra" }] : [
     { id: "home", icon: "◉", label: "Inicio" },
     { id: "flujo_caja", icon: "💰", label: "Flujo de Caja" },
     { id: "comparativo", icon: "📊", label: "Comparativo por Concepto" },

@@ -18597,6 +18597,9 @@ function AppInner() {
   const puedeSincronizarDadoPorCumplido = moduloVisible(userRoleData, "contabilidad_sincronizar_dado_por_cumplido", currentUser?.isAdmin);
   // (2026-10-20, a pedido de Fredy) "contabilidad_ordenes_compra": permiso para que alguien sin admin total vea Contabilidad → 🛒 Órdenes de compra (antes solo el administrador).
   const puedeVerOrdenesCompra = moduloVisible(userRoleData, "contabilidad_ordenes_compra", currentUser?.isAdmin) && currentUser?.role !== "Cliente";
+  // (2026-10-21, a pedido de Fredy) Quien tiene SOLO el permiso de Órdenes de compra (sin "Contabilidad" completo) entra al módulo Contabilidad y ve únicamente esa pestaña.
+  const soloOrdenesCompra = !canAccessContabilidad && puedeVerOrdenesCompra;
+  const verAreaContabilidad = canAccessContabilidad || soloOrdenesCompra;
   // Informes: vista consolidada de "lo que está vencido" en toda la
   // compañía (hoy solo Diseño, se va ampliando a Bodega/Corte/Contabilidad).
   // Es la contraparte en pantalla del aviso automático por correo.
@@ -18672,7 +18675,7 @@ function AppInner() {
           ],
         }]
       : []),
-    ...(canAccessContabilidad
+    ...(verAreaContabilidad
       ? [{ id: "contabilidad_area", icon: "💰", label: "Contabilidad", items: [{ id: "contabilidad_area", icon: "💰", label: "Módulo Contabilidad" }] }]
       : []),
     // (2026-10-16, a pedido de Fredy) Cotizaciones es un área propia, como
@@ -18767,7 +18770,7 @@ function AppInner() {
   // igual y quedaba encerrado en Contabilidad sin poder llegar a Bodega — se
   // agregan todas las demás secciones de nivel superior a la condición.
   const isContabilidadPura =
-    canAccessContabilidad &&
+    verAreaContabilidad &&
     !canAccessDiseno &&
     !canAccessCotizador &&
     !canAccessCorte &&
@@ -18783,13 +18786,13 @@ function AppInner() {
     return <ModuloCorte currentUser={currentUser} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} puedeAprobarCorte={perms.aprobarCorte} />;
   }
   if (isContabilidadPura) {
-    return <ModuloContabilidad currentUser={currentUser} pedidos={pedidos} puedeAdministrarBasesDadoPorCumplido={puedeAdministrarBasesDadoPorCumplido} puedeSincronizarDadoPorCumplido={puedeSincronizarDadoPorCumplido} puedeVerOrdenesCompra={puedeVerOrdenesCompra} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+    return <ModuloContabilidad currentUser={currentUser} pedidos={pedidos} puedeAdministrarBasesDadoPorCumplido={puedeAdministrarBasesDadoPorCumplido} puedeSincronizarDadoPorCumplido={puedeSincronizarDadoPorCumplido} puedeVerOrdenesCompra={puedeVerOrdenesCompra} soloOrdenesCompra={soloOrdenesCompra} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (canAccessCorte && moduloActivo === "corte") {
     return <ModuloCorte currentUser={currentUser} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} onVolver={() => setModuloActivo("diseno")} puedeAprobarCorte={perms.aprobarCorte} />;
   }
   if (moduloActivo === "contabilidad") {
-    return <ModuloContabilidad currentUser={currentUser} pedidos={pedidos} puedeAdministrarBasesDadoPorCumplido={puedeAdministrarBasesDadoPorCumplido} puedeSincronizarDadoPorCumplido={puedeSincronizarDadoPorCumplido} puedeVerOrdenesCompra={puedeVerOrdenesCompra} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+    return <ModuloContabilidad currentUser={currentUser} pedidos={pedidos} puedeAdministrarBasesDadoPorCumplido={puedeAdministrarBasesDadoPorCumplido} puedeSincronizarDadoPorCumplido={puedeSincronizarDadoPorCumplido} puedeVerOrdenesCompra={puedeVerOrdenesCompra} soloOrdenesCompra={soloOrdenesCompra} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (moduloActivo === "cotizaciones" && canAccessCotizador) {
     // (2026-10-16, a pedido de Fredy) Cotizaciones se abre como módulo aparte
@@ -18939,7 +18942,7 @@ function AppInner() {
         <div style={{ flex: 1, padding: "28px 32px", overflow: "auto" }}>
           <div style={{ maxWidth: 1020, margin: "0 auto" }}>
             {view === "dashboard" && (
-              <HomeView cotPorAprobar={cotPorAprobar} currentUser={currentUser} perms={perms} canAccessCorte={canAccessCorte} canAccessContabilidad={canAccessContabilidad} canAccessPlaneacion={canAccessPlaneacion} canAccessPlanta={canAccessPlanta} canAccessBodega={canAccessBodega} canAccessNomina={canAccessNomina} canAccessDiseno={canAccessDiseno} canAccessPedidosArea={canAccessPedidosArea} canAccessKpis={canAccessKpis} canAccessInformes={canAccessInformes} canAccessAreas={canAccessAreas} canAccessCotizador={canAccessCotizador}
+              <HomeView cotPorAprobar={cotPorAprobar} currentUser={currentUser} perms={perms} canAccessCorte={canAccessCorte} canAccessContabilidad={verAreaContabilidad} canAccessPlaneacion={canAccessPlaneacion} canAccessPlanta={canAccessPlanta} canAccessBodega={canAccessBodega} canAccessNomina={canAccessNomina} canAccessDiseno={canAccessDiseno} canAccessPedidosArea={canAccessPedidosArea} canAccessKpis={canAccessKpis} canAccessInformes={canAccessInformes} canAccessAreas={canAccessAreas} canAccessCotizador={canAccessCotizador}
                 onGoArea={(id) => {
                   if (id === "contabilidad_area") { setModuloActivo("contabilidad"); }
                   else if (id === "cotizaciones_area") { setModuloActivo("cotizaciones"); }
