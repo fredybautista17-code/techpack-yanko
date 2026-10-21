@@ -10533,7 +10533,9 @@ exports.depurarOrdenCompraBusint = onCallAuth(
       const t = String(v).trim();
       return t === numero || (/^\d+(\.0+)?$/.test(t) && Number(t) === Number(numero));
     };
-    const TABLAS = ["orden de compra", "orden de compra detalles", "orden de compra detallesdxc"];
+    // (2026-10-21) Se agregan las ENTRADAS de mercancía ("bmp - entrada planta comp" = líneas con Codcomp, Cant recibida y NumOC;
+    // "bmp - entrada planta" = cabecera) para verificar si lo recibido por orden se puede comparar contra lo pedido.
+    const TABLAS = ["orden de compra", "orden de compra detalles", "orden de compra detallesdxc", "bmp - entrada planta comp", "bmp - entrada planta"];
     let datos;
     try {
       datos = await Promise.all(TABLAS.map((t) => consultarTablaBusintBDCompleta(t)));
@@ -10576,8 +10578,20 @@ exports.depurarOrdenCompraBusint = onCallAuth(
         primerasFilas: halladas.length ? undefined : filas.slice(0, 2),
       };
     });
+    // Resumen por insumo: lo pedido (detalles), lo guardado al cerrar (detallesdxc) y lo recibido (entradas con este NumOC).
+    const porInsumo = new Map();
+    const tomar = (cod, campo, v) => {
+      const k = String(cod ?? "").trim().replace(/\.0+$/, "");
+      if (!k) return;
+      if (!porInsumo.has(k)) porInsumo.set(k, { codcomp: k, pedido: 0, enDxc: 0, recibido: 0, entradas: new Set() });
+      porInsumo.get(k)[campo] += Number(v) || 0;
+    };
+    (resultado[1]?.coincidencias || []).forEach((f) => tomar(f.Codcomp, "pedido", f.Cant));
+    (resultado[2]?.coincidencias || []).forEach((f) => tomar(f.Codcomp, "enDxc", f.Cant));
+    (resultado[3]?.coincidencias || []).forEach((f) => { tomar(f.Codcomp, "recibido", f.Cant); const k = String(f.Codcomp ?? "").trim().replace(/\.0+$/, ""); if (porInsumo.has(k) && f.Entrada !== undefined) porInsumo.get(k).entradas.add(String(f.Entrada)); });
+    const resumenPorInsumo = [...porInsumo.values()].map((x) => ({ codcomp: x.codcomp, pedido: x.pedido, enDxc: x.enDxc, recibido: x.recibido, pendiente: Math.max(0, Math.round((x.pedido - x.recibido) * 100) / 100), entradas: [...x.entradas].join(", ") }));
     logger.info("depurarOrdenCompraBusint", { numero, coincidencias: resultado.map((r) => r.cantidadCoincidencias) });
-    return { ok: true, numero, tablas: resultado };
+    return { ok: true, numero, tablas: resultado, resumenPorInsumo };
   }
 );
 

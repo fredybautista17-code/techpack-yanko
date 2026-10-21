@@ -15404,6 +15404,24 @@ function BusintCatalogoTestView() {
       </div>
       {ordenCompraResultado && (
         <div style={{ marginBottom: 24, display: "grid", gap: 14 }}>
+          {Array.isArray(ordenCompraResultado.resumenPorInsumo) && (
+            <div style={{ padding: 14, background: T.white, borderRadius: 10, border: `2px solid ${T.denim || T.border}` }}>
+              <div style={{ fontWeight: 800, fontSize: 14, color: T.ink, marginBottom: 6 }}>Resumen por insumo de la orden {ordenCompraResultado.numero}: pedido, cerrado y recibido</div>
+              <div style={{ fontSize: 12, color: T.slate, marginBottom: 8 }}>Pedido = "orden de compra detalles". En cerradas = "detallesdxc". Recibido = suma de las entradas de mercancía (bmp - entrada planta comp) con este NumOC. Pendiente = pedido − recibido.</div>
+              {ordenCompraResultado.resumenPorInsumo.length === 0 ? <div style={{ fontSize: 12, color: T.slate }}>Sin líneas para esta orden.</div> : (
+                <table style={{ borderCollapse: "collapse", fontSize: 12.5 }}>
+                  <thead><tr>{["Insumo (Codcomp)", "Pedido", "En cerradas", "Recibido", "Pendiente", "Entradas"].map((h) => <th key={h} style={{ textAlign: h === "Insumo (Codcomp)" || h === "Entradas" ? "left" : "right", padding: "4px 10px", borderBottom: `1px solid ${T.border}` }}>{h}</th>)}</tr></thead>
+                  <tbody>{ordenCompraResultado.resumenPorInsumo.map((x) => (
+                    <tr key={x.codcomp}>
+                      <td style={{ padding: "4px 10px", fontWeight: 700 }}>{x.codcomp}</td>
+                      {[x.pedido, x.enDxc, x.recibido, x.pendiente].map((v, i) => <td key={i} style={{ padding: "4px 10px", textAlign: "right", fontWeight: i === 3 ? 800 : 400 }}>{Number(v).toLocaleString("es-CO", { maximumFractionDigits: 2 })}</td>)}
+                      <td style={{ padding: "4px 10px" }}>{x.entradas || "—"}</td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              )}
+            </div>
+          )}
           {(ordenCompraResultado.tablas || []).map((t) => (
             <div key={t.tabla} style={{ padding: 14, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
               <div style={{ fontWeight: 800, fontSize: 14, color: T.ink }}>{t.tabla} <span style={{ fontWeight: 400, color: T.slate }}>— {t.totalFilas} filas · {t.cantidadCoincidencias} coinciden con la orden {ordenCompraResultado.numero}</span></div>
