@@ -3545,6 +3545,40 @@ function TNSConexionView() {
       setBalance({ error: err?.message || "No se pudo consultar el Balance de Comprobación." });
     }
   }
+  // Prueba de movimientos (cartera) de UN cliente (2026-10-21): ver si trae remisiones y el detalle por factura.
+  const [movCodigo, setMovCodigo] = useState("");
+  const [movResp, setMovResp] = useState(null); // null | "cargando" | { ok, data } | { error }
+  async function probarMovimientos() {
+    if (!movCodigo.trim() || !balSucursal.trim()) {
+      setMovResp({ error: "Escribe el código del cliente y el código de sucursal (arriba, en la prueba del Balance)." });
+      return;
+    }
+    setMovResp("cargando");
+    try {
+      const llamar = httpsCallable(functionsClient, "probarMovimientosClienteTNS");
+      const resp = await llamar({ empresa, codcliente: movCodigo.trim(), codigosucursal: balSucursal.trim() });
+      setMovResp(resp.data);
+    } catch (err) {
+      setMovResp({ error: err?.message || "No se pudieron consultar los movimientos del cliente." });
+    }
+  }
+  const movData = movResp && movResp.ok ? (movResp.data?.data || {}) : null;
+  const movDocs = movData && Array.isArray(movData.documentos) ? movData.documentos : [];
+  const movAbonos = movData && Array.isArray(movData.abonos) ? movData.abonos : [];
+  const movOtros = movData && Array.isArray(movData.otros) ? movData.otros : [];
+  const movAnticipos = movData && Array.isArray(movData.anticipos) ? movData.anticipos : [];
+  const movPorTipo = (() => {
+    const m = new Map();
+    movDocs.forEach((d) => {
+      const k = `${d.codigoComprobante || "?"} · prefijo ${d.codigoPrefijo || "—"}`;
+      if (!m.has(k)) m.set(k, { tipo: k, n: 0, valor: 0, neto: 0 });
+      const x = m.get(k);
+      x.n += 1;
+      x.valor += Number(d.valor) || 0;
+      x.neto += Number(d.neto) || 0;
+    });
+    return [...m.values()].sort((a, b) => b.n - a.n);
+  })();
   // Sucursales de TNS (2026-10-14): Yanko e Indutex entran con el mismo código de
   // empresa y se separan por sucursal. Se consultan 00 a 09, se marcan las de la
   // empresa y se guardan; "Traer saldos de TNS" suma las marcadas.
@@ -3861,6 +3895,87 @@ function TNSConexionView() {
               ]}
               filas={filasComparacion}
             />
+          </div>
+        )}
+      </div>
+
+      <div style={{ marginTop: 32, paddingTop: 24, borderTop: `1px solid ${C.border}` }}>
+        <div style={{ fontSize: 14, fontWeight: 800, color: C.ink, marginBottom: 8 }}>Prueba: Movimientos de un cliente (facturas, abonos y anticipos)</div>
+        <div style={{ fontSize: 12, color: C.slate, marginBottom: 16 }}>
+          Consulta de lectura (GET Tercero/ObtenerMovimientos): trae de TNS los documentos con su vencimiento, los abonos y los anticipos de UN cliente. Sirve para ver si aparecen remisiones y si el detalle por factura cuadra con tu Excel de cartera. Usa la empresa y el código de sucursal de la prueba de arriba. En el código del cliente prueba el NIT sin dígito de verificación (ej. 901216955).
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12, marginBottom: 12 }}>
+          <Field label="Código del cliente (NIT sin dígito)"><FInput value={movCodigo} onChange={setMovCodigo} placeholder="Ej: 901216955" /></Field>
+        </div>
+        <Btn onClick={probarMovimientos} disabled={movResp === "cargando"}>
+          {movResp === "cargando" ? "Consultando..." : "🔎 Probar movimientos del cliente"}
+        </Btn>
+        {movResp && typeof movResp === "object" && movResp.error && (
+          <div style={{ marginTop: 16, padding: "12px 16px", background: C.redBg, borderRadius: 8, color: C.red, fontWeight: 700, fontSize: 13 }}>
+            ❌ {movResp.error}
+          </div>
+        )}
+        {movData && (
+          <div style={{ marginTop: 16 }}>
+            {movResp.data?.status === false && (
+              <div style={{ marginBottom: 12, padding: "10px 14px", background: C.redBg, borderRadius: 8, color: C.red, fontSize: 12, fontWeight: 700 }}>
+                TNS respondió con un aviso: {movResp.data?.message || "(sin mensaje)"}
+              </div>
+            )}
+            <div style={{ fontSize: 12, color: C.slate, marginBottom: 10 }}>
+              Cliente {movResp.codcliente} · sucursal {movResp.sucursal} · {movDocs.length} documentos · {movAbonos.length} abonos · {movOtros.length} otros · {movAnticipos.length} anticipos.
+              Suma de neto de documentos: <b>{fmtMoney(movDocs.reduce((a, d) => a + (Number(d.neto) || 0), 0))}</b>
+            </div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, margin: "8px 0" }}>Documentos por tipo (para ver si hay remisiones)</div>
+            <Tabla
+              vacio="TNS no devolvió documentos para este cliente."
+              columnas={[
+                { key: "tipo", label: "Comprobante · prefijo" },
+                { key: "n", label: "Cantidad", align: "right" },
+                { key: "valor", label: "Valor", align: "right", render: (f) => fmtMoney(f.valor) },
+                { key: "neto", label: "Neto", align: "right", render: (f) => <b>{fmtMoney(f.neto)}</b> },
+              ]}
+              filas={movPorTipo}
+            />
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, margin: "16px 0 8px" }}>Documentos (primeros 100)</div>
+            <Tabla
+              vacio="Sin documentos."
+              columnas={[
+                { key: "doc", label: "Documento", render: (f) => `${f.codigoComprobante || ""} ${f.codigoPrefijo || ""}-${f.numero || ""}` },
+                { key: "fecha", label: "Fecha", render: (f) => String(f.fecha || "").slice(0, 10) },
+                { key: "fechaVencimiento", label: "Vence", render: (f) => String(f.fechaVencimiento || "").slice(0, 10) },
+                { key: "nombre", label: "Cliente" },
+                { key: "valor", label: "Valor", align: "right", render: (f) => fmtMoney(Number(f.valor) || 0) },
+                { key: "neto", label: "Neto", align: "right", render: (f) => <b>{fmtMoney(Number(f.neto) || 0)}</b> },
+              ]}
+              filas={movDocs.slice(0, 100)}
+            />
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, margin: "16px 0 8px" }}>Abonos (primeros 50)</div>
+            <Tabla
+              vacio="Sin abonos."
+              columnas={[
+                { key: "doc", label: "Abono", render: (f) => `${f.prefijoAbono || ""}-${f.numero || ""}` },
+                { key: "fecha", label: "Fecha", render: (f) => String(f.fecha || "").slice(0, 10) },
+                { key: "recibo", label: "Recibo", render: (f) => `${f.codigoPrefijoRecibo || ""}-${f.numeroRecibo || ""}` },
+                { key: "descripcion", label: "Descripción" },
+                { key: "valor", label: "Valor", align: "right", render: (f) => fmtMoney(Number(f.valor) || 0) },
+              ]}
+              filas={movAbonos.slice(0, 50)}
+            />
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, margin: "16px 0 8px" }}>Anticipos</div>
+            <Tabla
+              vacio="Sin anticipos."
+              columnas={[
+                { key: "doc", label: "Anticipo", render: (f) => `${f.prefijoAnticipo || ""}-${f.numeroAnticipo || ""}` },
+                { key: "fecha", label: "Fecha", render: (f) => String(f.fechaAnticipo || "").slice(0, 10) },
+                { key: "descripcionAnticipo", label: "Descripción" },
+                { key: "anticipo", label: "Valor", align: "right", render: (f) => fmtMoney(Number(f.anticipo) || 0) },
+              ]}
+              filas={movAnticipos.slice(0, 50)}
+            />
+            {movOtros.length > 0 && (
+              <div style={{ fontSize: 12, color: C.slate, marginTop: 12 }}>Hay {movOtros.length} movimientos en "otros" (primeros 5): {movOtros.slice(0, 5).map((o) => `${o.codigoPrefijo || ""}-${o.numero || ""} ${o.descripcion || ""} ${fmtMoney(Number(o.valor) || 0)}`).join(" | ")}</div>
+            )}
           </div>
         )}
       </div>

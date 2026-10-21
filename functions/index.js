@@ -9923,6 +9923,32 @@ exports.probarBalanceTNS = onCallAuth(
   }
 );
 
+// Prueba de lectura: movimientos (cartera) de UN cliente (2026-10-21, a pedido de Fredy).
+// GET /v2/tablas/Tercero/ObtenerMovimientos devuelve documentos (con vencimiento), abonos, otros
+// y anticipos del cliente en una sucursal. Se usa para ver si trae remisiones y si el detalle por
+// factura cuadra con el Excel de cartera. Solo LEE; no guarda ni cambia nada en TNS.
+exports.probarMovimientosClienteTNS = onCallAuth(
+  {
+    secrets: TNS_SECRETS_TODAS,
+    timeoutSeconds: 120,
+    memory: "512MiB",
+  },
+  async (request) => {
+    if (!request.auth) throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+    const empresa = request.data?.empresa === "indutex" ? "indutex" : "yanko";
+    const codcliente = String(request.data?.codcliente || "").trim();
+    const codigosucursal = String(request.data?.codigosucursal || "").trim();
+    if (!codcliente || !codigosucursal) throw new HttpsError("invalid-argument", "Faltan el código del cliente o la sucursal.");
+    try {
+      const data = await llamarTNS(`/v2/tablas/Tercero/ObtenerMovimientos?codcliente=${encodeURIComponent(codcliente)}&codigosucursal=${encodeURIComponent(codigosucursal)}`, { method: "GET", empresa });
+      return { ok: true, empresa, codcliente, sucursal: codigosucursal, data };
+    } catch (err) {
+      logger.error("probarMovimientosClienteTNS falló", { mensaje: err?.message, empresa, codcliente, codigosucursal });
+      throw new HttpsError("internal", err?.message || "Error desconocido al consultar los movimientos del cliente en TNS.");
+    }
+  }
+);
+
 // Saldo de cartera por cliente desde TNS (2026-10-13, a pedido de Fredy):
 // reemplaza subir a mano el Excel "Cartera pendiente por edades" SOLO para el
 // saldo por cliente. Verificado contra el Excel del 13/10/2026: el saldo de un
