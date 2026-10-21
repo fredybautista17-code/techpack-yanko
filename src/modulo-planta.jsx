@@ -101,6 +101,61 @@ function estadoDe(dias) {
   if (dias <= 2) return "URGENTE";
   return "EN TIEMPO";
 }
+// ─── PRIORIDAD AL PROGRAMAR (2026-10-21, a pedido de Fredy) ──────────────────
+// Para cada lote que está en Planta Yanko sin programar, dice qué tan prioritario es y POR QUÉ:
+//   ALTA   = el pedido está vencido o entrega en 7 días o menos, o el pedido está casi completo
+//            (tiene 3+ lotes, al menos uno ya salió a Semiterminado/BPT y faltan 1 o 2).
+//   MEDIA  = el pedido entrega en 8 a 21 días, o va avanzado (la mitad o más de sus lotes ya salió).
+//   NORMAL = el resto.
+// "Listo" = el lote del pedido ya está en BPT o Semiterminado en la carga activa. La Hoja1 solo trae
+// lotes con inventario, así que un lote ya despachado del todo puede no contarse.
+// Fecha sugerida: ALTA = hoy; el resto, 7 días antes de la entrega del pedido (nunca antes de hoy).
+function sumarDiasISO(iso, n) {
+  const [y, m, d] = iso.split("-").map(Number);
+  return dateToISO(new Date(y, m - 1, d + n));
+}
+function estadisticasPedidos(lotes) {
+  const mapa = new Map();
+  (lotes || []).forEach((l) => {
+    if (l.numPedido === undefined || l.numPedido === null || l.numPedido === "") return;
+    const k = String(l.numPedido);
+    const e = mapa.get(k) || { total: 0, listos: 0 };
+    e.total += 1;
+    if (l.ubicacionActual === "BPT" || l.ubicacionActual === "Semiterminado") e.listos += 1;
+    mapa.set(k, e);
+  });
+  return mapa;
+}
+function prioridadDeLote(l, statsPedido) {
+  const dias = diasEntre(l.fechaEntregaPedidoISO);
+  const st = statsPedido.get(String(l.numPedido));
+  const razones = [];
+  let nivel = "normal";
+  if (dias !== null) {
+    if (dias < 0) { razones.push(`Pedido vencido hace ${-dias} día${-dias === 1 ? "" : "s"}`); nivel = "alta"; }
+    else if (dias === 0) { razones.push("El pedido entrega hoy"); nivel = "alta"; }
+    else if (dias <= 7) { razones.push(`El pedido entrega en ${dias} día${dias === 1 ? "" : "s"}`); nivel = "alta"; }
+    else if (dias <= 21) { razones.push(`El pedido entrega en ${dias} días`); nivel = "media"; }
+  }
+  if (st && st.total >= 3 && st.listos >= 1) {
+    const faltan = st.total - st.listos;
+    if (faltan <= 2) { razones.push(`Faltan ${faltan} de ${st.total} lotes del pedido`); nivel = "alta"; }
+    else if (st.listos / st.total >= 0.5) { razones.push(`Pedido avanzado: ${st.listos} de ${st.total} lotes ya salieron`); if (nivel === "normal") nivel = "media"; }
+  }
+  if (!razones.length) razones.push(dias === null ? "Pedido sin fecha de entrega" : `El pedido entrega en ${dias} días`);
+  const hoy = dateToISO(new Date());
+  let fechaSugerida = hoy;
+  if (nivel !== "alta" && l.fechaEntregaPedidoISO) {
+    const previa = sumarDiasISO(l.fechaEntregaPedidoISO, -7);
+    fechaSugerida = previa > hoy ? previa : hoy;
+  }
+  return { prioridad: nivel, razones, razonesTxt: razones.join(" · "), diasPedido: dias, fechaSugerida };
+}
+const NIVELES_PRIO = {
+  alta: { txt: "ALTA", color: "#E85D4A", bg: "#FDF0EE", orden: 0 },
+  media: { txt: "MEDIA", color: "#C47C1A", bg: "#FDF5E6", orden: 1 },
+  normal: { txt: "NORMAL", color: "#2D9E6B", bg: "#EBF7F2", orden: 2 },
+};
 // Nombre exacto de la planta propia dentro de Hoja1 (mismo valor usado en
 // Planeación para el reporte "Programación Yanko").
 const PLANTA_YANKO = "INDUSTRIAS YANKO MODULO CENTRO";
@@ -235,7 +290,7 @@ function Tabla({ columnas, filas, vacio }) {
 // se sube una carga nueva de Hoja1 y el lote ya no aparece en Planta Yanko,
 // queda marcado como cumplido automáticamente.
 function ProgramarLoteModal({ lote, onConfirm, onClose }) {
-  const [fecha, setFecha] = useState(today());
+  const [fecha, setFecha] = useState(lote.fechaSugerida || today());
   function confirmar() {
     if (!fecha) return;
     onConfirm(lote, fecha);
@@ -253,6 +308,12 @@ function ProgramarLoteModal({ lote, onConfirm, onClose }) {
           <div>{fmtNum(lote.invPlanta)}</div>
         </div>
       </div>
+      {lote.prioridad && (
+        <div style={{ padding: "10px 14px", background: NIVELES_PRIO[lote.prioridad].bg, borderRadius: 8, marginBottom: 14, fontSize: 12, color: NIVELES_PRIO[lote.prioridad].color, fontWeight: 700 }}>
+          Prioridad {NIVELES_PRIO[lote.prioridad].txt}: {lote.razonesTxt}
+          {lote.fechaSugerida ? <div style={{ fontWeight: 500, marginTop: 4 }}>Fecha sugerida: {fmtFechaISO(lote.fechaSugerida)} (puedes cambiarla).</div> : null}
+        </div>
+      )}
       <Field label="Fecha comprometida de entrega">
         <FInput type="date" value={fecha} onChange={setFecha} />
       </Field>
@@ -325,6 +386,24 @@ function ProgramacionDiariaView({ cargaActiva, programacion, onProgramar, onCanc
     () => lotesEnPlantaYanko.filter((l) => !numLotesProgramados.has(l.numLote)),
     [lotesEnPlantaYanko, numLotesProgramados]
   );
+  const [filtroPrio, setFiltroPrio] = useState("todas");
+  const statsPedido = useMemo(() => estadisticasPedidos(cargaActiva?.lotes), [cargaActiva]);
+  const sinProgramarPrio = useMemo(
+    () => sinProgramar
+      .map((l) => ({ ...l, ...prioridadDeLote(l, statsPedido) }))
+      .sort((a, b) => NIVELES_PRIO[a.prioridad].orden - NIVELES_PRIO[b.prioridad].orden
+        || (a.diasPedido ?? 9999) - (b.diasPedido ?? 9999) || a.numLote - b.numLote),
+    [sinProgramar, statsPedido]
+  );
+  const conteoPrio = useMemo(() => ({
+    alta: sinProgramarPrio.filter((l) => l.prioridad === "alta").length,
+    media: sinProgramarPrio.filter((l) => l.prioridad === "media").length,
+    normal: sinProgramarPrio.filter((l) => l.prioridad === "normal").length,
+  }), [sinProgramarPrio]);
+  const sinProgramarVisibles = useMemo(
+    () => (filtroPrio === "todas" ? sinProgramarPrio : sinProgramarPrio.filter((l) => l.prioridad === filtroPrio)),
+    [sinProgramarPrio, filtroPrio]
+  );
   const pendientesConEstado = useMemo(
     () => pendientes.map((p) => {
       const dias = diasEntre(p.fechaEnviado);
@@ -365,16 +444,37 @@ function ProgramacionDiariaView({ cargaActiva, programacion, onProgramar, onCanc
       </div>
       {sinProgramar.length > 0 && (
         <div style={{ marginBottom: 28 }}>
-          <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>EN PLANTA YANKO SIN PROGRAMAR</div>
+          <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 4 }}>EN PLANTA YANKO SIN PROGRAMAR — ordenado por prioridad</div>
+          <div style={{ fontSize: 12, color: C.slate, marginBottom: 10 }}>
+            La prioridad sale de la fecha de entrega del pedido y de cuántos lotes del pedido faltan por salir. Al programar, la fecha sugerida ya viene puesta.
+          </div>
+          <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+            {[["todas", `Todas (${sinProgramarPrio.length})`, C.ink, C.canvas], ["alta", `🔴 Alta (${conteoPrio.alta})`, NIVELES_PRIO.alta.color, NIVELES_PRIO.alta.bg], ["media", `🟠 Media (${conteoPrio.media})`, NIVELES_PRIO.media.color, NIVELES_PRIO.media.bg], ["normal", `🟢 Normal (${conteoPrio.normal})`, NIVELES_PRIO.normal.color, NIVELES_PRIO.normal.bg]].map(([id, txt, color, bg]) => (
+              <div
+                key={id}
+                onClick={() => setFiltroPrio(id)}
+                style={{ cursor: "pointer", padding: "6px 14px", borderRadius: 20, fontWeight: 800, fontSize: 12, color, background: bg, border: `2px solid ${filtroPrio === id ? color : "transparent"}` }}
+              >
+                {txt}
+              </div>
+            ))}
+          </div>
           <Tabla
             vacio="Todo lo que está en Planta Yanko ya tiene una fecha programada."
             columnas={[
+              {
+                key: "prioridad",
+                label: "Prioridad",
+                render: (f) => <span style={{ background: NIVELES_PRIO[f.prioridad].bg, color: NIVELES_PRIO[f.prioridad].color, fontWeight: 800, fontSize: 10, padding: "3px 9px", borderRadius: 10 }}>{NIVELES_PRIO[f.prioridad].txt}</span>,
+              },
+              { key: "razonesTxt", label: "Por qué" },
               { key: "numLote", label: "Num Lote" },
               { key: "numPedido", label: "Num Pedido" },
               { key: "referencia", label: "Referencia" },
               { key: "categoria", label: "Categoría" },
               { key: "invPlanta", label: "Cantidad", align: "right", render: (f) => fmtNum(f.invPlanta) },
               { key: "fechaEntregaPedidoISO", label: "Fecha Entrega Pedido", render: (f) => fmtFechaISO(f.fechaEntregaPedidoISO) || "—" },
+              { key: "fechaSugerida", label: "Fecha sugerida", render: (f) => fmtFechaISO(f.fechaSugerida) || "—" },
               {
                 key: "accion",
                 label: "",
@@ -388,7 +488,7 @@ function ProgramacionDiariaView({ cargaActiva, programacion, onProgramar, onCanc
                 ),
               },
             ]}
-            filas={sinProgramar}
+            filas={sinProgramarVisibles}
           />
         </div>
       )}
@@ -1789,6 +1889,11 @@ export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
       estado: "pendiente",
       fechaCumplioISO: null,
       creadoEn: new Date().toISOString(),
+      // (2026-10-21) prioridad con la que se programó, y de qué pedido es (para Planeación).
+      numPedido: lote.numPedido ?? null,
+      prioridad: lote.prioridad ?? null,
+      motivo: lote.razonesTxt ?? null,
+      fechaSugerida: lote.fechaSugerida ?? null,
     };
     setProgramacion((ps) => [...ps, nuevo]);
     await fsSave("planta_programacion", nuevo.id, nuevo);

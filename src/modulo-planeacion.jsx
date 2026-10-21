@@ -607,25 +607,46 @@ function generarAgrupadoPlanta(lotes, campoAgrupador) {
   const totalUnidades = resumen.reduce((s, r) => s + r.unidades, 0);
   return { filas, resumen, totalLotes, totalUnidades };
 }
-function generarCronograma(lotes) {
+// (2026-10-21, a pedido de Fredy) UNA SOLA FECHA con Planta: si el lote ya está programado en
+// Planta → Programación Diaria (colección planta_programacion, estado "pendiente"), el cronograma usa
+// ESA fecha comprometida. Si no está programado, sigue con la "Fecha Entrega Conf" de la Hoja1 y se
+// marca como "sin programar".
+function generarCronograma(lotes, programacionPlanta) {
+  const progPorLote = new Map();
+  (programacionPlanta || [])
+    .filter((p) => p.estado !== "cumplido" && p.fechaEnviado)
+    .forEach((p) => {
+      const prev = progPorLote.get(Number(p.numLote));
+      if (!prev || String(p.creadoEn || "") > String(prev.creadoEn || "")) progPorLote.set(Number(p.numLote), p);
+    });
   const enPlanta = lotes.filter((l) => l.invPlanta > 0);
+  const semanaDe = (l) => {
+    const prog = progPorLote.get(Number(l.numLote));
+    if (prog) return dateToISO(lunesDeSemana(isoToLocalDate(prog.fechaEnviado)));
+    return l.semanaEntregaISO;
+  };
   const filas = enPlanta
-    .filter((l) => l.semanaEntregaISO)
-    .map((l) => ({
-      numLote: l.numLote,
-      referencia: l.referencia,
-      planta: l.nombrePlanta || "(Sin planta)",
-      categoria: l.categoria,
-      unidades: l.invPlanta,
-      semana: l.semanaEntregaISO,
-      // Fecha Entrega Conf exacta del lote (no solo el lunes de su semana) —
-      // se usa en el detalle emergente al hacer clic en una semana.
-      fechaEntregaConf: l.fechaEntregaConfISO,
-    }))
+    .filter((l) => semanaDe(l))
+    .map((l) => {
+      const prog = progPorLote.get(Number(l.numLote));
+      return {
+        numLote: l.numLote,
+        referencia: l.referencia,
+        planta: l.nombrePlanta || "(Sin planta)",
+        categoria: l.categoria,
+        unidades: l.invPlanta,
+        semana: semanaDe(l),
+        // Fecha exacta del lote (no solo el lunes de su semana) — se usa en el detalle emergente
+        // al hacer clic en una semana. Programada en Planta tiene prioridad sobre la de la Hoja1.
+        fechaEntregaConf: prog ? prog.fechaEnviado : l.fechaEntregaConfISO,
+        origen: prog ? "programada" : "hoja1",
+        prioridad: prog?.prioridad || null,
+      };
+    })
     .sort((a, b) => a.planta.localeCompare(b.planta) || a.categoria.localeCompare(b.categoria) || a.numLote - b.numLote);
-  const sinSemana = enPlanta.filter((l) => !l.semanaEntregaISO);
+  const sinSemana = enPlanta.filter((l) => !semanaDe(l));
   const semanas = [...new Set(filas.map((f) => f.semana))].sort();
-  return { filas, semanas, sinSemana };
+  return { filas, semanas, sinSemana, nProgramadas: filas.filter((f) => f.origen === "programada").length, nSinProgramar: filas.filter((f) => f.origen !== "programada").length };
 }
 function generarPorPedido(lotes) {
   return [...lotes]
@@ -1453,7 +1474,7 @@ function BloqueSeguimientoSemiterminado({ data, programaciones = [] }) {
   );
 }
 function BloqueCronograma({ data }) {
-  const { filas, semanas, sinSemana } = data;
+  const { filas, semanas, sinSemana, nProgramadas = 0, nSinProgramar = 0 } = data;
   const [semanaSel, setSemanaSel] = useState(null);
   if (!filas.length) return <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13 }}>Sin lotes en planta con fecha de entrega confirmada.</div>;
   const totalPorSemana = semanas.map((s) => filas.filter((f) => f.semana === s).reduce((sum, f) => sum + f.unidades, 0));
@@ -1461,6 +1482,9 @@ function BloqueCronograma({ data }) {
   const filasSemanaSel = semanaSel ? filas.filter((f) => f.semana === semanaSel).sort((a, b) => (a.fechaEntregaConf || "").localeCompare(b.fechaEntregaConf || "") || a.numLote - b.numLote) : [];
   return (
     <div>
+      <div style={{ padding: "8px 14px", background: C.blueBg, borderRadius: 8, marginBottom: 12, fontSize: 12, color: C.blue, fontWeight: 600 }}>
+        📅 {nProgramadas} lote{nProgramadas !== 1 ? "s" : ""} con la fecha programada en Planta · {nSinProgramar} sin programar (usan la Fecha Entrega Conf de la Hoja1, en gris).
+      </div>
       {sinSemana.length > 0 && (
         <div style={{ padding: "8px 14px", background: C.amberBg, borderRadius: 8, marginBottom: 12, fontSize: 12, color: C.amber, fontWeight: 600 }}>
           {sinSemana.length} lote{sinSemana.length !== 1 ? "s" : ""} en planta sin fecha de entrega confirmada — no aparece{sinSemana.length !== 1 ? "n" : ""} agrupado{sinSemana.length !== 1 ? "s" : ""} por semana.
@@ -1479,7 +1503,8 @@ function BloqueCronograma({ data }) {
               { key: "planta", label: "Planta" },
               { key: "categoria", label: "Categoría" },
               { key: "unidades", label: "Unidades", align: "right", render: (f) => fmtNum(f.unidades) },
-              { key: "fechaEntregaConf", label: "Fecha Entrega Conf.", render: (f) => fmtFechaISO(f.fechaEntregaConf) },
+              { key: "fechaEntregaConf", label: "Fecha", render: (f) => fmtFechaISO(f.fechaEntregaConf) },
+              { key: "origen", label: "Origen", render: (f) => (f.origen === "programada" ? "📅 Programada en Planta" : "Hoja1 · sin programar") },
             ]}
             filas={filasSemanaSel}
           />
@@ -1508,13 +1533,13 @@ function BloqueCronograma({ data }) {
           <tbody>
             {filas.map((f, i) => (
               <tr key={`${f.numLote}-${i}`} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
-                <td style={{ padding: "6px 10px", whiteSpace: "nowrap" }}>{f.numLote}</td>
+                <td style={{ padding: "6px 10px", whiteSpace: "nowrap" }}>{f.numLote}{f.origen === "programada" && <span title="Fecha programada en Planta" style={{ marginLeft: 4 }}>📅</span>}</td>
                 <td style={{ padding: "6px 10px", whiteSpace: "nowrap" }}>{f.referencia}</td>
                 <td style={{ padding: "6px 10px" }}>{f.planta}</td>
                 <td style={{ padding: "6px 10px" }}>{f.categoria}</td>
                 {semanas.map((s) => (
                   <td key={s} style={{ padding: "6px 10px", textAlign: "right", fontWeight: f.semana === s ? 700 : 400, color: f.semana === s ? C.ink : C.slate }}>
-                    {f.semana === s ? fmtNum(f.unidades) : ""}
+                    {f.semana === s ? (f.origen === "programada" ? fmtNum(f.unidades) : <span style={{ color: C.slate, fontWeight: 400 }}>{fmtNum(f.unidades)}</span>) : ""}
                   </td>
                 ))}
                 <td style={{ padding: "6px 10px", textAlign: "right", fontWeight: 700 }}>{fmtNum(f.unidades)}</td>
@@ -2056,6 +2081,13 @@ function InformesView({
   const [showUpload, setShowUpload] = useState(false);
   const [cargaId, setCargaId] = useState(null);
   const [tab, setTab] = useState("en_planta");
+  const [programacionPlanta, setProgramacionPlanta] = useState([]);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "planta_programacion"), (snap) => {
+      setProgramacionPlanta(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    }, () => {});
+    return () => unsub();
+  }, []);
   const [programacionesProcesos, setProgramacionesProcesos] = useState([]);
   useEffect(() => {
     const unsub = onSnapshot(collection(db, "planeacion_programacion_procesos"), (snap) => {
@@ -2212,7 +2244,7 @@ function InformesView({
   const reportePlanta = useMemo(() => generarAgrupadoPlanta(lotesBuscados, "nombrePlanta"), [lotesBuscados]);
   const reporteCliente = useMemo(() => generarAgrupadoPlanta(lotes, "nombreCliente"), [lotes]);
   const reporteClienteAgrupado = useMemo(() => generarAgrupadoPlanta(lotes, "clienteAgrupado"), [lotes]);
-  const reporteCronograma = useMemo(() => generarCronograma(lotes), [lotes]);
+  const reporteCronograma = useMemo(() => generarCronograma(lotes, programacionPlanta), [lotes, programacionPlanta]);
   const reportePorPedido = useMemo(() => generarPorPedido(lotes), [lotes]);
   const reporteBMP = useMemo(() => generarBMP(lotes), [lotes]);
   const reporteBPT = useMemo(() => generarBPT(lotes), [lotes]);
