@@ -511,31 +511,235 @@ export default function ExplosionMaterialesView({ db, functionsClient, T, pedido
     ? `${c.colorTelaNombre}${c.colorTelaEstado === "deducido" ? " (deducido por la otra tela)" : ""}`
     : c.colorTelaOpciones && c.colorTelaOpciones.length ? `POR CONFIRMAR: ${c.colorTelaOpciones.join(" o ")}` : "POR CONFIRMAR (los nombres no coinciden)");
 
+  // Excel con formato (2026-10-21, a pedido de Fredy): resumen al inicio, encabezados oscuros, anchos
+  // ajustados, números con miles y pesos, estados con color, filtros y listo para imprimir en horizontal.
   async function exportar() {
     if (!resultado) return;
-    const XLSX = await import("xlsx");
-    const r2 = (n) => (n == null ? "" : +Number(n).toFixed(2));
+    const m = await import("exceljs/dist/exceljs.min.js");
+    const EJS = m.default || m;
+    const INK = "FF1A1A2E", CREMA = "FFF4EFE6", LINEA = "FFE3DCCF", GRIS = "FF5A5A7A", BLANCO = "FFFFFFFF", ROJO_TXT = "FFB8402F";
+    const argb = (h) => "FF" + String(h).replace("#", "").toUpperCase();
+    const FMT_CANT = "#,##0.00", FMT_COP = '"$"#,##0', FMT_ENT = "#,##0";
+    const r2 = (n) => (n == null || n === "" ? null : +Number(n).toFixed(2));
     const usadoEn = (a) => usosPorRef(a).map((u) => `${u.ref}${u.pintas.size ? " pinta " + [...u.pintas].join("/") : ""} (${[...u.colores].join(" · ") || "—"})${u.combina.size ? " + " + [...u.combina].join(" + ") : ""}`).join("; ");
-    const filaTela = (a) => ({ Tela: a.nombre, "Color (cód.)": a.color || "", "Color de la tela (nombre)": colorTelaTxt(a), "Color de la prenda (pedido)": nombreColorDe(a), "Usado en (ref · color de la prenda · combina con)": usadoEn(a), Unidad: a.unidad, Necesito: r2(a.necesito), Tengo: r2(a.tengo), "En camino (OC)": r2(a.enCamino), "Falta comprar": r2(a.falta), "Costo prom. unidad": Math.round(a.promedio || 0), "Costo estimado": Math.round(a.costoFalta || 0), Estado: ESTADOS[a.estado].txt });
-    const filaIns = (a) => ({ Insumo: a.nombre, Unidad: a.unidad, Necesito: r2(a.necesito), Tengo: r2(a.tengo), "En camino (OC)": r2(a.enCamino), "Falta comprar": r2(a.falta), "Costo prom. unidad": Math.round(a.promedio || 0), "Costo estimado": Math.round(a.costoFalta || 0), Estado: ESTADOS[a.estado].txt });
-    const wb = XLSX.utils.book_new();
-    const add = (nombre, filas) => XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(filas.length ? filas : [{ Aviso: "Sin filas" }]), nombre);
-    const resumenTela = [];
-    resultado.gruposTela.forEach((g) => {
-      resumenTela.push({ Tela: g.nombre, "Color (cód.)": "TOTAL TELA", "Color de la prenda (pedido)": "", Unidad: g.unidad, Necesito: r2(g.necesito), Tengo: g.tengoConocido ? r2(g.tengo) : "", "En camino (OC)": r2(g.enCamino), "Falta comprar": r2(g.falta), "Costo prom. unidad": "", "Costo estimado": Math.round(g.costoFalta), Estado: ESTADOS[g.estado].txt });
-      g.colores.forEach((c) => resumenTela.push(filaTela(c)));
+    const wb = new EJS.Workbook();
+    wb.creator = "ATLAS · Industrias Yanko";
+    wb.created = new Date();
+    const filtrosTxt = [opc.soloPorCortar ? "Solo prendas por cortar" : "Todas las prendas del pedido", Number(opc.mermaTela) ? `Merma de tela ${opc.mermaTela}%` : "", Number(opc.mermaInsumo) ? `Merma de insumos ${opc.mermaInsumo}%` : ""].filter(Boolean).join(" · ");
+    const subtitulo = `Generado el ${hoyISO()} · ${filtrosTxt}`;
+    const borde = { bottom: { style: "thin", color: { argb: LINEA } } };
+
+    // Hoja con tabla: título, subtítulo, encabezado oscuro congelado, filtros e impresión horizontal.
+    // cols: [{ h, w, k, fmt, al, wrap }]; filas: objetos con las claves de cols y, opcionalmente, _total (fila de total),
+    // _estado (clave de ESTADOS para pintar la celda "Estado"), _faltaRojo (marca la falta en rojo).
+    function hojaTabla(nombre, titulo, cols, filas, { congelar = 1, tab } = {}) {
+      const ws = wb.addWorksheet(nombre, { views: [{ state: "frozen", xSplit: congelar, ySplit: 3, showGridLines: false }], properties: tab ? { tabColor: { argb: tab } } : {} });
+      ws.columns = cols.map((c) => ({ width: c.w }));
+      ws.mergeCells(1, 1, 1, Math.max(cols.length, 2));
+      ws.getCell(1, 1).value = titulo;
+      ws.getCell(1, 1).font = { bold: true, size: 15, color: { argb: INK } };
+      ws.getRow(1).height = 26;
+      ws.getCell(1, 1).alignment = { vertical: "middle" };
+      ws.mergeCells(2, 1, 2, Math.max(cols.length, 2));
+      ws.getCell(2, 1).value = subtitulo;
+      ws.getCell(2, 1).font = { size: 10, color: { argb: GRIS } };
+      const cab = ws.getRow(3);
+      cols.forEach((c, i) => {
+        const cell = cab.getCell(i + 1);
+        cell.value = c.h;
+        cell.font = { bold: true, color: { argb: BLANCO }, size: 10.5 };
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: INK } };
+        cell.alignment = { vertical: "middle", horizontal: c.al || "left", wrapText: true };
+      });
+      cab.height = 32;
+      filas.forEach((f) => {
+        const row = ws.addRow(cols.map((c) => (c.k === "Estado" && f._estado && ESTADOS[f._estado] ? ESTADOS[f._estado].txt : f[c.k] == null ? null : f[c.k])));
+        row.eachCell({ includeEmpty: true }, (cell, n) => {
+          const c = cols[n - 1];
+          if (!c) return;
+          cell.border = borde;
+          cell.font = { size: 10.5, color: { argb: INK }, bold: !!f._total };
+          cell.alignment = { vertical: "top", horizontal: c.al || "left", wrapText: !!c.wrap };
+          if (c.fmt) cell.numFmt = c.fmt;
+          if (f._total) cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: CREMA } };
+        });
+        if (f._estado && ESTADOS[f._estado]) {
+          const i = cols.findIndex((c) => c.k === "Estado");
+          if (i >= 0) {
+            const cell = row.getCell(i + 1);
+            cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: argb(ESTADOS[f._estado].bg) } };
+            cell.font = { size: 10.5, bold: true, color: { argb: argb(ESTADOS[f._estado].fg) } };
+            cell.alignment = { vertical: "top", horizontal: "center" };
+          }
+        }
+        if (f._faltaRojo) {
+          const i = cols.findIndex((c) => c.k === "falta");
+          if (i >= 0) row.getCell(i + 1).font = { size: 10.5, bold: true, color: { argb: ROJO_TXT } };
+        }
+        if (f._sangria) {
+          const i = cols.findIndex((c) => c.k === f._sangria);
+          if (i >= 0) { row.getCell(i + 1).alignment = { vertical: "top", horizontal: "left", indent: 1 }; row.getCell(i + 1).font = { size: 10.5, color: { argb: GRIS } }; }
+        }
+      });
+      if (filas.length) ws.autoFilter = { from: { row: 3, column: 1 }, to: { row: 3 + filas.length, column: cols.length } };
+      ws.pageSetup = { orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0, paperSize: 9, margins: { left: 0.4, right: 0.4, top: 0.5, bottom: 0.5, header: 0.3, footer: 0.3 } };
+      ws.pageSetup.printTitlesRow = "3:3";
+      ws.headerFooter = { oddFooter: "&LATLAS · Explosión de materiales&RPágina &P de &N" };
+      if (!filas.length) { ws.addRow(["Sin filas"]); ws.getRow(4).getCell(1).font = { italic: true, color: { argb: GRIS } }; }
+      return ws;
+    }
+
+    const COL_TELA = [
+      { h: "Tela", w: 30, k: "tela" }, { h: "Color (cód.)", w: 11, k: "cod", al: "center" }, { h: "Color de la tela", w: 26, k: "colorTela", wrap: true },
+      { h: "Color de la prenda (pedido)", w: 26, k: "colorPrenda", wrap: true }, { h: "Usado en (ref · color de la prenda · combina con)", w: 54, k: "usado", wrap: true },
+      { h: "Unidad", w: 9, k: "unidad", al: "center" }, { h: "Necesito", w: 13, k: "necesito", fmt: FMT_CANT, al: "right" }, { h: "Tengo", w: 13, k: "tengo", fmt: FMT_CANT, al: "right" },
+      { h: "En camino (OC)", w: 14, k: "camino", fmt: FMT_CANT, al: "right" }, { h: "Falta comprar", w: 14, k: "falta", fmt: FMT_CANT, al: "right" },
+      { h: "Costo prom. unidad", w: 15, k: "prom", fmt: FMT_COP, al: "right" }, { h: "Costo estimado", w: 17, k: "costo", fmt: FMT_COP, al: "right" }, { h: "Estado", w: 20, k: "Estado", al: "center" },
+    ];
+    const filaTela = (a) => ({ tela: a.nombre, cod: a.color || "", colorTela: colorTelaTxt(a), colorPrenda: nombreColorDe(a), usado: usadoEn(a), unidad: a.unidad, necesito: r2(a.necesito), tengo: r2(a.tengo), camino: r2(a.enCamino), falta: r2(a.falta), prom: Math.round(a.promedio || 0), costo: Math.round(a.costoFalta || 0), _estado: a.estado, _faltaRojo: a.estado === "comprar", _sangria: "tela" });
+    const filaTotalTela = (g) => ({ tela: g.nombre, cod: "TOTAL TELA", unidad: g.unidad, necesito: r2(g.necesito), tengo: g.tengoConocido ? r2(g.tengo) : null, camino: r2(g.enCamino), falta: r2(g.falta), costo: Math.round(g.costoFalta || 0), _estado: g.estado, _total: true, _faltaRojo: g.estado === "comprar" });
+    const COL_INS = [
+      { h: "Insumo", w: 38, k: "ins" }, { h: "Unidad", w: 9, k: "unidad", al: "center" }, { h: "Necesito", w: 13, k: "necesito", fmt: FMT_CANT, al: "right" }, { h: "Tengo", w: 13, k: "tengo", fmt: FMT_CANT, al: "right" },
+      { h: "En camino (OC)", w: 14, k: "camino", fmt: FMT_CANT, al: "right" }, { h: "Falta comprar", w: 14, k: "falta", fmt: FMT_CANT, al: "right" },
+      { h: "Costo prom. unidad", w: 15, k: "prom", fmt: FMT_COP, al: "right" }, { h: "Costo estimado", w: 17, k: "costo", fmt: FMT_COP, al: "right" }, { h: "Estado", w: 20, k: "Estado", al: "center" },
+    ];
+    const filaIns = (a) => ({ ins: a.nombre, unidad: a.unidad, necesito: r2(a.necesito), tengo: r2(a.tengo), camino: r2(a.enCamino), falta: r2(a.falta), prom: Math.round(a.promedio || 0), costo: Math.round(a.costoFalta || 0), _estado: a.estado, _faltaRojo: a.estado === "comprar" });
+
+    // ── Resumen (portada) ──
+    const nPedidos = new Set(resultado.porRef.flatMap((r) => r.pedidos)).size;
+    const nPrendas = resultado.porRef.reduce((s, r) => s + (Number(r.unidades) || 0), 0);
+    const porConfirmar = (resultado.coloresTela || []).filter((v) => v.estado !== "seguro" && v.estado !== "deducido").length;
+    const insumosComprar = resultado.insumos.filter((a) => a.estado === "comprar").length;
+    const wr = wb.addWorksheet("Resumen", { views: [{ showGridLines: false }], properties: { tabColor: { argb: "FF2D9E6B" } } });
+    wr.columns = [{ width: 38 }, { width: 22 }, { width: 14 }, { width: 14 }, { width: 18 }];
+    wr.mergeCells("A1:E1");
+    wr.getCell("A1").value = "Explosión de materiales";
+    wr.getCell("A1").font = { bold: true, size: 20, color: { argb: INK } };
+    wr.getRow(1).height = 34;
+    wr.mergeCells("A2:E2");
+    wr.getCell("A2").value = subtitulo;
+    wr.getCell("A2").font = { size: 10.5, color: { argb: GRIS } };
+    const kpis = [
+      ["Referencias en el cálculo", resultado.porRef.length, FMT_ENT], ["Pedidos", nPedidos, FMT_ENT], ["Prendas por cortar", nPrendas, FMT_ENT],
+      ["Telas distintas", resultado.gruposTela.length, FMT_ENT], ["Telas por color a comprar", `${nColoresFalta} de ${nColores}`, null],
+      ["Insumos a comprar", `${insumosComprar} de ${resultado.insumos.length}`, null], ["Costo estimado de lo que falta", Math.round(costoTotal), FMT_COP],
+    ];
+    let fila = 4;
+    kpis.forEach(([t, v, f], i) => {
+      const a = wr.getCell(fila, 1), b = wr.getCell(fila, 2);
+      a.value = t; b.value = v;
+      a.font = { size: 11, color: { argb: GRIS } };
+      b.font = { size: i === kpis.length - 1 ? 14 : 12, bold: true, color: { argb: i === kpis.length - 1 ? ROJO_TXT : INK } };
+      b.alignment = { horizontal: "right" };
+      if (f) b.numFmt = f;
+      a.border = borde; b.border = borde;
+      fila += 1;
     });
-    add("Telas por color", resumenTela);
-    add("Insumos", resultado.insumos.map(filaIns));
-    add("Para comprar", [...resultado.telas.filter((a) => a.estado === "comprar").map(filaTela), ...resultado.insumos.filter((a) => a.estado === "comprar").map(filaIns)]);
+    const avisos = [];
+    if (porConfirmar) avisos.push(`${porConfirmar} código(s) de color de tela por confirmar (hoja "Códigos de color").`);
+    if (resultado.sinFicha.length) avisos.push(`Sin ficha de materiales en Busint (no entran al cálculo): ${resultado.sinFicha.map((s) => `${s.ref} (${fmt(s.unidades, 0)} u)`).join(", ")}.`);
+    if (avisos.length) {
+      fila += 1;
+      wr.mergeCells(fila, 1, fila, 5);
+      wr.getCell(fila, 1).value = "Para revisar";
+      wr.getCell(fila, 1).font = { bold: true, size: 12, color: { argb: INK } };
+      avisos.forEach((t) => {
+        fila += 1;
+        wr.mergeCells(fila, 1, fila, 5);
+        const c = wr.getCell(fila, 1);
+        c.value = `• ${t}`;
+        c.font = { size: 10.5, color: { argb: "FF7A5B00" } };
+        c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFF3BF" } };
+        c.alignment = { wrapText: true, vertical: "top" };
+        wr.getRow(fila).height = Math.max(18, Math.ceil(t.length / 95) * 16);
+      });
+    }
+    const top = [...aComprar].sort((x, y) => (y.costoFalta || 0) - (x.costoFalta || 0)).slice(0, 12);
+    if (top.length) {
+      fila += 2;
+      wr.mergeCells(fila, 1, fila, 5);
+      wr.getCell(fila, 1).value = "Lo más urgente de comprar (por costo estimado)";
+      wr.getCell(fila, 1).font = { bold: true, size: 12, color: { argb: INK } };
+      fila += 1;
+      ["Material", "Color", "Falta", "Unidad", "Costo estimado"].forEach((h, i) => {
+        const c = wr.getCell(fila, i + 1);
+        c.value = h;
+        c.font = { bold: true, color: { argb: BLANCO }, size: 10.5 };
+        c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: INK } };
+        c.alignment = { horizontal: i >= 2 && i !== 3 ? "right" : "left", vertical: "middle" };
+      });
+      top.forEach((a) => {
+        fila += 1;
+        const vals = [a.nombre, a.tipo === "tela" ? [a.color, nombreColorDe(a)].filter(Boolean).join(" · ") : "", r2(a.falta), a.unidad, Math.round(a.costoFalta || 0)];
+        vals.forEach((v, i) => {
+          const c = wr.getCell(fila, i + 1);
+          c.value = v;
+          c.border = borde;
+          c.font = { size: 10.5, color: { argb: INK }, bold: i === 4 };
+          c.alignment = { horizontal: i >= 2 && i !== 3 ? "right" : "left", vertical: "top" };
+          if (i === 2) c.numFmt = FMT_CANT;
+          if (i === 4) c.numFmt = FMT_COP;
+        });
+      });
+    }
+    wr.pageSetup = { orientation: "portrait", fitToPage: true, fitToWidth: 1, fitToHeight: 0, paperSize: 9 };
+
+    // ── Hojas de detalle ──
+    const filasTelas = [];
+    resultado.gruposTela.forEach((g) => { filasTelas.push(filaTotalTela(g)); g.colores.forEach((c) => filasTelas.push(filaTela(c))); });
+    hojaTabla("Telas por color", "Telas por color", COL_TELA, filasTelas, { congelar: 2, tab: "FF2B5C8A" });
+    hojaTabla("Insumos", "Insumos", COL_INS, resultado.insumos.map(filaIns), { congelar: 1, tab: "FF2B5C8A" });
+
+    // Para comprar: telas e insumos juntos, ordenados por costo estimado (lo más caro primero) y con total.
+    const COL_COMPRAR = [
+      { h: "Tipo", w: 9, k: "tipo", al: "center" }, ...COL_TELA.map((c) => (c.k === "tela" ? { ...c, h: "Material", w: 34, k: "tela" } : c)),
+    ];
+    const itemsComprar = [...resultado.telas.filter((a) => a.estado === "comprar").map((a) => ({ ...filaTela(a), tipo: "Tela", _sangria: null, _costo: a.costoFalta || 0 })), ...resultado.insumos.filter((a) => a.estado === "comprar").map((a) => ({ tela: a.nombre, tipo: "Insumo", unidad: a.unidad, necesito: r2(a.necesito), tengo: r2(a.tengo), camino: r2(a.enCamino), falta: r2(a.falta), prom: Math.round(a.promedio || 0), costo: Math.round(a.costoFalta || 0), _estado: a.estado, _faltaRojo: true, _costo: a.costoFalta || 0 }))].sort((x, y) => y._costo - x._costo);
+    if (itemsComprar.length) itemsComprar.push({ tela: "TOTAL A COMPRAR", costo: Math.round(costoTotal), _total: true });
+    hojaTabla("Para comprar", "Para comprar (de mayor a menor costo)", COL_COMPRAR, itemsComprar, { congelar: 2, tab: "FFE85D4A" });
+
+    const COL_REF = [
+      { h: "Referencia", w: 14, k: "ref" }, { h: "Pedidos", w: 18, k: "pedidos", wrap: true }, { h: "Tipo", w: 9, k: "tipo", al: "center" }, { h: "Material", w: 34, k: "mat" },
+      { h: "Color (cód.)", w: 11, k: "cod", al: "center" }, { h: "Color de la prenda (pedido)", w: 26, k: "colorPrenda", wrap: true }, { h: "Combina con (otra tela)", w: 24, k: "combina", wrap: true },
+      { h: "Unidad", w: 9, k: "unidad", al: "center" }, { h: "Prendas por cortar", w: 12, k: "prendas", fmt: FMT_ENT, al: "right" }, { h: "Consumo por prenda", w: 12, k: "consumo", fmt: "0.0000", al: "right" },
+      { h: "Cantidad", w: 13, k: "cant", fmt: FMT_CANT, al: "right" }, { h: "Falta (estimado)", w: 14, k: "falta", fmt: FMT_CANT, al: "right" }, { h: "Costo falta (estimado)", w: 17, k: "costo", fmt: FMT_COP, al: "right" },
+    ];
     const filasRef = [];
     resultado.porRef.forEach((r) => {
-      r.items.forEach((i) => filasRef.push({ Referencia: r.ref, Pedidos: r.pedidos.join(", "), Tipo: i.tipo === "tela" ? "Tela" : "Insumo", Material: i.nombre, "Color (cód.)": i.colorCod || "", "Color de la prenda (pedido)": i.colorNombre || "", "Combina con (otra tela)": (i.combina || []).join(" + "), Unidad: i.unidad, "Prendas por cortar": i.unidades, "Consumo por prenda": +Number(i.consumo).toFixed(4), Cantidad: r2(i.cant), "Falta (estimado)": r2(i.faltaParte), "Costo falta (estimado)": Math.round(i.costoParte || 0) }));
-      filasRef.push({ Referencia: r.ref, Pedidos: "", Tipo: "TOTAL", Material: `${r.unidades} prendas`, "Costo falta (estimado)": Math.round(r.costoFalta) });
+      r.items.forEach((i) => filasRef.push({ ref: r.ref, pedidos: r.pedidos.join(", "), tipo: i.tipo === "tela" ? "Tela" : "Insumo", mat: i.nombre, cod: i.colorCod || "", colorPrenda: i.colorNombre || "", combina: (i.combina || []).join(" + "), unidad: i.unidad, prendas: i.unidades, consumo: +Number(i.consumo).toFixed(4), cant: r2(i.cant), falta: r2(i.faltaParte), costo: Math.round(i.costoParte || 0), _faltaRojo: (i.faltaParte || 0) > 0.005 }));
+      filasRef.push({ ref: r.ref, mat: `TOTAL · ${fmt(r.unidades, 0)} prendas`, costo: Math.round(r.costoFalta || 0), _total: true });
     });
-    add("Por referencia", filasRef);
-    add("Códigos de color", (resultado.coloresTela || []).map((v) => ({ "Código de color": v.codigo, "Telas que lo usan": (v.telas || []).join(", "), "Color elegido": v.nombre || "", Estado: v.estado === "seguro" ? "Seguro" : v.estado === "deducido" ? "Deducido" : "Por confirmar", "Prendas (ref + color) que lo usan": v.prendas, "Nombres vistos (votos)": (v.votos || []).map((x) => `${x.nombre} (${x.votos})`).join("; "), "Prendas que no cuadran": (v.noCuadran || []).slice(0, 8).join("; ") + ((v.noCuadran || []).length > 8 ? ` … +${v.noCuadran.length - 8}` : "") })));
-    XLSX.writeFile(wb, `Explosion de materiales ${hoyISO()}.xlsx`);
+    hojaTabla("Por referencia", "Materiales por referencia", COL_REF, filasRef, { congelar: 1, tab: "FF7C5CBF" });
+
+    // Códigos de color: el estado va con color (Por confirmar resaltado).
+    const ESTADO_COD = { seguro: ["Seguro", "FFE3F5EC", "FF1E7A52"], deducido: ["Deducido", "FFFDF1DA", "FFA8660B"] };
+    const COL_COD = [
+      { h: "Código de color", w: 12, k: "cod", al: "center" }, { h: "Telas que lo usan", w: 36, k: "telas", wrap: true }, { h: "Color elegido", w: 24, k: "nombre" },
+      { h: "Estado", w: 15, k: "Estado", al: "center" }, { h: "Prendas (ref + color) que lo usan", w: 16, k: "prendas", fmt: FMT_ENT, al: "right" },
+      { h: "Nombres vistos (votos)", w: 42, k: "votos", wrap: true }, { h: "Prendas que no cuadran", w: 54, k: "noCuadran", wrap: true },
+    ];
+    const filasCod = (resultado.coloresTela || []).map((v) => ({
+      cod: v.codigo, telas: (v.telas || []).join(", "), nombre: v.nombre || "", Estado: (ESTADO_COD[v.estado] || ["Por confirmar"])[0], prendas: v.prendas,
+      votos: (v.votos || []).map((x) => `${x.nombre} (${x.votos})`).join("; "),
+      noCuadran: (v.noCuadran || []).slice(0, 8).join("; ") + ((v.noCuadran || []).length > 8 ? ` … +${v.noCuadran.length - 8}` : ""), _est: v.estado,
+    }));
+    const wc = hojaTabla("Códigos de color", "Códigos de color de las telas", COL_COD, filasCod, { congelar: 1, tab: "FFE0A93B" });
+    filasCod.forEach((f, i) => {
+      const cell = wc.getRow(4 + i).getCell(4);
+      const [, bg, fg] = ESTADO_COD[f._est] || ["", "FFFFF3BF", "FF7A5B00"];
+      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: bg } };
+      cell.font = { size: 10.5, bold: true, color: { argb: fg } };
+    });
+
+    const buf = await wb.xlsx.writeBuffer();
+    const url = URL.createObjectURL(new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `Explosion de materiales ${hoyISO()}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
   }
 
   function imprimir() {
