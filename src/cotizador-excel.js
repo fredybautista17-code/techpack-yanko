@@ -7,7 +7,7 @@
 // datos de la referencia 975093 ni sus fotos). Las tasas (ICA, retención...)
 // en su hoja están escritas DENTRO de las fórmulas, así que aquí se reescriben
 // esas fórmulas con las tasas de la versión (ficha del cliente).
-import { TASAS_BASE, FIJOS_BASE, num } from "./cotizador-calculo";
+import { TASAS_BASE, FIJOS_BASE, num, calcularCotizacion } from "./cotizador-calculo";
 
 // Posiciones de la hoja de Fredy (las mismas que lee el importador).
 const FILAS_TELA = [6, 7, 8, 9]; // consumo de cada tela: fila + 5
@@ -178,6 +178,28 @@ export async function generarLibroCotizaciones(ExcelJS, plantilla, lista, opcion
       ws.addImage(idImg, { tl: { col: 13.1, row: 0.5 }, ext: { width: w, height: Math.round(w * (opciones.imagen.alto / opciones.imagen.ancho)) } });
     }
     hojas.push({ cot, ver, nombre });
+    // (2026-10-21) Libro DEFINITIVO: si la versión tiene "costos reales", va una hoja extra con esos costos,
+    // el precio aprobado FIJO (el que se vendió) y la utilidad/margen real que quedó.
+    if (esDef && opciones.costosReales && ver.real && ver.real.v) {
+      const fijo = Number(ver.precio) || (cot.precioAplicado && cot.precioAplicado.version === ver.numero ? Number(cot.precioAplicado.valor) : 0) || 0;
+      const nombreReal = nombreHojaUnico(`V${ver.numero} COSTOS REALES`, usados);
+      const wr = wb.addWorksheet(nombreReal);
+      wr.model = Object.assign(structuredClone(modelo), { mergeCells: modelo.merges, name: nombreReal });
+      const vReal = { ...ver, v: { ...ver.real.v, precioClienteIva: fijo > 0 ? fijo : ver.real.v.precioClienteIva } };
+      llenarHoja(wr, cot, vReal);
+      let nuevo = 0;
+      try { nuevo = Number(calcularCotizacion(ver.real.v).precioAplicar) || 0; } catch (e) { nuevo = 0; }
+      const pct = fijo > 0 && nuevo > 0 ? ((nuevo - fijo) / fijo) * 100 : null;
+      const txtPct = pct == null ? "" : ` (${pct >= 0 ? "+" : ""}${pct.toFixed(1).replace(".", ",")}%)`;
+      const money = (n) => `$${Math.round(n).toLocaleString("es-CO")}`;
+      const c = wr.getCell("D1");
+      c.value = `COSTOS REALES · V${ver.numero} · Precio aprobado FIJO ${fijo > 0 ? money(fijo) : "—"}${nuevo > 0 ? ` · Con costos reales daría ${money(nuevo)}${txtPct}` : ""} · Dado por cumplido ${fechaColombia(opciones.costosReales.fecha)}${opciones.costosReales.lote ? ` · LOTE ${opciones.costosReales.lote}` : ""}`;
+      c.font = { bold: true, size: 12, color: { argb: "FF7C2D12" } };
+      c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFDE7C8" } };
+      c.alignment = { vertical: "middle", horizontal: "left" };
+      wr.properties = { ...(wr.properties || {}), tabColor: { argb: "FFE08A1E" } };
+      hojas.push({ cot, ver: { ...ver, nota: `Costos reales · precio aprobado fijo` }, nombre: nombreReal });
+    }
   }));
   wb.removeWorksheet(molde.id);
 
@@ -286,6 +308,7 @@ export async function excelLibroBase64(cot, imagenDataUrl, opcionesDef) {
   const { buf } = await construirExcelCotizaciones([cot], imagenDataUrl, {
     soloAprobadas: true,
     definitivaNumero: opcionesDef ? opcionesDef.numero : null,
+    costosReales: opcionesDef ? { fecha: opcionesDef.fecha, lote: opcionesDef.lote } : null,
     leyenda: (c, ver) => leyendaCotizacion(ver, opcionesDef),
   });
   const dataUrl = await new Promise((resolve, reject) => {
