@@ -3045,7 +3045,36 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
   );
 }
 
-function Card({ item, kind, onClick, onPromote, onPasarAPreorden, onDeshacerEnviadoAPreorden, role, perms, stages }) {
+// ─── Búsqueda de Cápsulas (2026-10-21, a pedido de Fredy) ───────────────────────
+// Sin importar mayúsculas ni tildes; varias palabras = todas deben aparecer (en cualquier orden).
+function normBusq(s) { return String(s == null ? "" : s).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase(); }
+function tokensBusq(s) { return normBusq(s).split(/\s+/).filter(Boolean); }
+// Pinta en amarillo lo que coincide con la búsqueda (tolerante a tildes).
+function Resaltado({ texto, tokens }) {
+  const t = texto == null ? "" : String(texto);
+  if (!tokens || !tokens.length || !t) return t;
+  const norm = [];
+  const idx = [];
+  for (let i = 0; i < t.length; i++) { for (const ch of normBusq(t[i])) { norm.push(ch); idx.push(i); } }
+  const ns = norm.join("");
+  const marca = new Array(t.length).fill(false);
+  tokens.forEach((tk) => {
+    let p = ns.indexOf(tk);
+    while (p >= 0) { for (let k = p; k < p + tk.length; k++) marca[idx[k]] = true; p = ns.indexOf(tk, p + tk.length); }
+  });
+  if (!marca.some(Boolean)) return t;
+  const out = [];
+  let i = 0;
+  while (i < t.length) {
+    let j = i;
+    while (j < t.length && marca[j] === marca[i]) j++;
+    const seg = t.slice(i, j);
+    out.push(marca[i] ? <mark key={i} style={{ background: "#FFE066", color: "inherit", borderRadius: 3, padding: "0 1px" }}>{seg}</mark> : <span key={i}>{seg}</span>);
+    i = j;
+  }
+  return <>{out}</>;
+}
+function Card({ item, kind, onClick, onPromote, onPasarAPreorden, onDeshacerEnviadoAPreorden, role, perms, stages, resaltar }) {
   const overdue = isOverdue(item, stages), pending = item.observations.filter((o) => !o.done).length;
   return (
     <div onClick={onClick} style={{ background: T.white, borderRadius: 12, padding: 18, cursor: "pointer", border: `1px solid ${overdue ? T.coral : T.border}`, transition: "box-shadow 0.15s" }}
@@ -3057,11 +3086,11 @@ function Card({ item, kind, onClick, onPromote, onPasarAPreorden, onDeshacerEnvi
         <div>
           <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 4, flexWrap: "wrap" }}>
             {item.categoria && <CatTag text={item.categoria} />}
-            <span style={{ fontSize: 11, color: T.slate }}>{item.reference}</span>
+            <span style={{ fontSize: 11, color: T.slate }}><Resaltado texto={item.reference} tokens={resaltar} /></span>
             {pending > 0 && <span style={{ fontSize: 10, background: T.amberBg, color: T.amber, padding: "1px 6px", borderRadius: 10, fontWeight: 700 }}>💬 {pending}</span>}
           </div>
-          <div style={{ fontSize: 15, fontWeight: 800, color: T.ink }}>{item.name}</div>
-          {(item.silueta || item.mes) && <div style={{ fontSize: 11, color: T.slate, marginTop: 2 }}>{item.silueta}{item.rango ? ` · ${item.rango}` : ""}{item.mes ? ` · ${item.mes}` : ""}</div>}
+          <div style={{ fontSize: 15, fontWeight: 800, color: T.ink }}><Resaltado texto={item.name} tokens={resaltar} /></div>
+          {(item.silueta || item.mes) && <div style={{ fontSize: 11, color: T.slate, marginTop: 2 }}><Resaltado texto={item.silueta} tokens={resaltar} />{item.rango ? ` · ${item.rango}` : ""}{item.mes ? ` · ${item.mes}` : ""}</div>}
         </div>
         {overdue && <span style={{ color: T.coral, fontSize: 18 }}>⚑</span>}
       </div>
@@ -3236,7 +3265,7 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
     </div>
   );
 }
-function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCapsula, onNewRef, onEditCapsula, stages, isAdmin, onDeleteCapsula, onDeleteRef, config, onSetIlustracion, onSendObsCapsula, onMarkDoneObsCapsula, onCrearEnvio, onPasarAPreorden, onPasarCapsulaCompleta, onDeshacerEnviadoAPreorden }) {
+function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCapsula, onNewRef, onEditCapsula, stages, isAdmin, onDeleteCapsula, onDeleteRef, config, onSetIlustracion, onSendObsCapsula, onMarkDoneObsCapsula, onCrearEnvio, onPasarAPreorden, onPasarCapsulaCompleta, onDeshacerEnviadoAPreorden, protos }) {
   const [filter, setFilter] = useState("todos");
   const [clienteFiltro, setClienteFiltro] = useState("todos");
   const [mesFiltro, setMesFiltro] = useState("todos");
@@ -3336,37 +3365,40 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
   // tengan referencias en esos estados) para no saturar el tablero. Siguen
   // disponibles en las pestañas "Aprobadas"/"Declinadas". El filtro de
   // cliente y el de mes se combinan (AND) con el de estado.
-  const busquedaNorm = busqueda.trim().toLowerCase();
+  // Buscador: cápsula, referencia, nombre, categoría, silueta, línea, # prototipo, prototipo de origen,
+  // tela, asignado y cliente. Varias palabras = todas deben coincidir (aunque estén en campos distintos).
+  const tokens = tokensBusq(busqueda);
+  const buscando = tokens.length > 0;
+  const textoCap = (cap) => normBusq([cap.name, cap.cliente, capCliente(cap), cap.mes, cap.season].filter(Boolean).join(" "));
+  const capCalza = (cap) => { const t = textoCap(cap); return tokens.every((k) => t.includes(k)); };
+  const valTxt = (v) => (typeof v === "string" || typeof v === "number" ? String(v) : "");
+  const camposRef = (cap, r) => {
+    const o = r.fromProtoId ? (protos || []).find((p) => p.id === r.fromProtoId) : null;
+    return [
+      ["Referencia", valTxt(r.reference)], ["Nombre", valTxt(r.name)], ["Categoría", valTxt(r.categoria)], ["Silueta", valTxt(r.silueta)],
+      ["Línea", valTxt(r.linea)], ["# Prototipo", valTxt(r.numPrototipo)],
+      ["Prototipo de origen", o ? `${valTxt(o.numPrototipo)} ${valTxt(o.reference)} ${valTxt(o.name)}` : ""],
+      ["Tela", valTxt(r.tipoTela)], ["Asignado a", valTxt(r.assignedTo)], ["Cliente", valTxt(refCliente(cap, r))],
+    ];
+  };
+  const refCoincide = (cap, r) => {
+    const hay = normBusq(textoCap(cap) + " " + camposRef(cap, r).map((c) => c[1]).join(" "));
+    return tokens.every((k) => hay.includes(k));
+  };
+  // En qué campos de la referencia aparece lo buscado (para avisarlo bajo la tarjeta).
+  const dondeCoincide = (cap, r) => camposRef(cap, r).filter((c) => c[1] && tokens.some((k) => normBusq(c[1]).includes(k))).map((c) => c[0]);
   function filteredRefs(cap) {
-    let refs = filter === "todos" ? cap.referencias.filter((r) => !["aprobado", "declinado"].includes(r.status)) : cap.referencias.filter((r) => r.status === filter);
+    // Al buscar, "Todos" también incluye Aprobadas y Declinadas (si buscas un código lo quieres encontrar sin importar el estado).
+    let refs = filter === "todos" ? (buscando ? cap.referencias.slice() : cap.referencias.filter((r) => !["aprobado", "declinado"].includes(r.status))) : cap.referencias.filter((r) => r.status === filter);
     if (clienteFiltro !== "todos") refs = refs.filter((r) => refCliente(cap, r) === clienteFiltro);
     if (mesFiltro !== "todos") refs = mesFiltro === cap.mes ? refs : [];
-    if (busquedaNorm) {
-      // Si el nombre/cliente de la cápsula ya calza con la búsqueda, se
-      // muestran todas sus referencias (ya filtradas arriba); si no, se
-      // filtra referencia por referencia (nombre, código o cliente propio).
-      const capCalza = (cap.name || "").toLowerCase().includes(busquedaNorm) || (capCliente(cap) || "").toLowerCase().includes(busquedaNorm);
-      if (!capCalza) {
-        refs = refs.filter((r) =>
-          (r.name || "").toLowerCase().includes(busquedaNorm) ||
-          (r.reference || "").toLowerCase().includes(busquedaNorm) ||
-          (refCliente(cap, r) || "").toLowerCase().includes(busquedaNorm)
-        );
-      }
-    }
+    // Si el nombre/cliente/mes de la cápsula ya calza, se muestran todas sus referencias; si no, solo las que coinciden.
+    if (buscando && !capCalza(cap)) refs = refs.filter((r) => refCoincide(cap, r));
     return refs;
   }
-  // Una cápsula recién creada empieza con referencias: [] — sin este OR
-  // quedaba oculta en TODAS las pestañas de filtro (nunca cumple
-  // filteredRefs(cap).length > 0) y el usuario no podía volver a encontrarla
-  // para agregarle referencias. Una cápsula vacía siempre se muestra en
-  // "Todos" (para poder encontrarla y agregarle referencias), pero YA NO en
-  // una pestaña de estado puntual (Aprobadas, Declinadas, En proceso, etc.)
-  // -- (2026-09-30, a pedido de Fredy) antes aparecía igual en "Aprobadas"
-  // aunque no tuviera absolutamente nada aprobado (0 referencias), lo cual
-  // no tiene sentido: "Aprobadas" debe mostrar solo lo que de verdad está
-  // aprobado.
-  const visibleCapsulas = capsulas.filter((cap) => (filter === "todos" && cap.referencias.length === 0) || filteredRefs(cap).length > 0);
+  // Una cápsula vacía (sin referencias) se muestra en "Todos" para poder agregarle referencias;
+  // buscando, solo si su propio nombre/cliente calza con lo escrito.
+  const visibleCapsulas = capsulas.filter((cap) => (filter === "todos" && cap.referencias.length === 0 && (!buscando || capCalza(cap))) || filteredRefs(cap).length > 0);
   return (
     <div>
       {editCap && (
@@ -3414,12 +3446,17 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
           <option value="todos">Todos</option>
           {mesesDisponibles.map((m) => <option key={m} value={m}>{m} ({conteoPorMes[m] || 0})</option>)}
         </select>
-        <input
-          value={busqueda}
-          onChange={(e) => setBusqueda(e.target.value)}
-          placeholder="🔍 Buscar por cápsula, referencia o cliente..."
-          style={{ padding: "7px 12px", border: `1.5px solid ${busqueda ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, minWidth: 240, outline: "none", fontFamily: "inherit" }}
-        />
+        <span style={{ position: "relative", display: "inline-flex", alignItems: "center" }}>
+          <input
+            value={busqueda}
+            onChange={(e) => setBusqueda(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Escape") setBusqueda(""); }}
+            placeholder="🔍 Cápsula, referencia, nombre, categoría o prototipo..."
+            style={{ padding: "7px 30px 7px 12px", border: `1.5px solid ${busqueda ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, minWidth: 330, outline: "none", fontFamily: "inherit" }}
+          />
+          {busqueda && <button onClick={() => setBusqueda("")} title="Limpiar búsqueda (Esc)" style={{ position: "absolute", right: 6, width: 20, height: 20, borderRadius: 10, border: "none", background: T.border, color: T.ink, fontSize: 11, cursor: "pointer", lineHeight: "20px", padding: 0 }}>✕</button>}
+        </span>
+        {buscando && <span style={{ fontSize: 12, color: T.slate, fontWeight: 700 }}>{visibleCapsulas.length} cápsula{visibleCapsulas.length === 1 ? "" : "s"} con resultados</span>}
       </div>
       <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap" }}>
         {FILTERS.map(([v, label]) => (
@@ -3439,6 +3476,8 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
       {!visibleCapsulas.length && <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>No hay cápsulas con este filtro.</div>}
       {visibleCapsulas.map((cap) => {
         const refs = filteredRefs(cap);
+        // Al buscar, las cápsulas con coincidencias se abren solas.
+        const abierta = buscando || !!expandidas[cap.id];
         const od = cap.referencias.filter((r) => isOverdue(r, stages)).length;
         const aprobada = ilustracionAprobada(cap);
         const estadoIlustracion = ILUSTRACION_CAPSULA_ESTADO[cap.ilustracionEstado] || ILUSTRACION_CAPSULA_ESTADO.aprobado;
@@ -3447,12 +3486,13 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
         return (
           <div key={cap.id} style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, marginBottom: 20, overflow: "hidden" }}>
             <div style={{ padding: "16px 20px", borderBottom: `1px solid ${T.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", background: T.canvas, flexWrap: "wrap", gap: 10 }}>
-              <div onClick={() => toggleExpandCapsula(cap.id)} title={expandidas[cap.id] ? "Clic para colapsar" : "Clic para ver las referencias"} style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
-                <span style={{ fontSize: 12, color: T.slate, width: 14, display: "inline-block" }}>{expandidas[cap.id] ? "▾" : "▸"}</span>
+              <div onClick={() => toggleExpandCapsula(cap.id)} title={abierta ? "Clic para colapsar" : "Clic para ver las referencias"} style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+                <span style={{ fontSize: 12, color: T.slate, width: 14, display: "inline-block" }}>{abierta ? "▾" : "▸"}</span>
                 <span style={{ fontSize: 20 }}>🗂</span>
-                <div><div style={{ fontWeight: 800, fontSize: 16, color: T.ink }}>{cap.name}</div><div style={{ fontSize: 12, color: T.slate }}>{cap.cliente ? `${cap.cliente} · ` : ""}{cap.mes ? `${cap.mes} · ` : ""}{cap.season} · {cap.referencias.length} ref · {cap.createdAt}{cap.assignedTo ? ` · 👤 ${cap.assignedTo}` : ""}</div></div>
+                <div><div style={{ fontWeight: 800, fontSize: 16, color: T.ink }}><Resaltado texto={cap.name} tokens={buscando ? tokens : null} /></div><div style={{ fontSize: 12, color: T.slate }}>{cap.cliente ? `${cap.cliente} · ` : ""}{cap.mes ? `${cap.mes} · ` : ""}{cap.season} · {cap.referencias.length} ref · {cap.createdAt}{cap.assignedTo ? ` · 👤 ${cap.assignedTo}` : ""}</div></div>
               </div>
               <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                {buscando && <span style={{ padding: "3px 10px", background: "#FFF3BF", color: "#7A5B00", borderRadius: 6, fontSize: 12, fontWeight: 700 }}>🔎 {capCalza(cap) ? "Coincide la cápsula" : `${refs.length} coincidencia${refs.length === 1 ? "" : "s"}`}</span>}
                 {od > 0 && <span style={{ padding: "3px 10px", background: T.coralBg, color: T.coral, borderRadius: 6, fontSize: 12, fontWeight: 700 }}>⚑ {od}</span>}
                 {!aprobada && <span title="La ilustración/concepto de la cápsula debe ser aprobado antes de poder agregarle referencias" style={{ padding: "3px 10px", background: estadoIlustracion.bg, color: estadoIlustracion.color, borderRadius: 6, fontSize: 11, fontWeight: 700 }}>🎨 {estadoIlustracion.label}{rondasIlustracion > 0 ? ` · ${rondasIlustracion} revisión${rondasIlustracion !== 1 ? "es" : ""}` : ""}</span>}
                 {/* Cuando TODA la cápsula (todas sus referencias rumbo a
@@ -3489,7 +3529,7 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
                 {isAdmin && <Btn small variant="danger" onClick={() => setConfirmDel(cap)}>🗑 Borrar</Btn>}
               </div>
             </div>
-            {expandidas[cap.id] && (!refs.length ? (
+            {abierta && (!refs.length ? (
               <div style={{ padding: 24, textAlign: "center", color: T.slate, fontSize: 13 }}>Sin referencias con este filtro.</div>
             ) : (
               <div style={{ padding: 16, display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(240px,1fr))", gap: 12 }}>
@@ -3514,7 +3554,8 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
                         🗑
                       </button>
                     )}
-                    <Card item={r} kind="ref" onClick={() => onSelectRef(cap.id, r.id)} role={role} perms={perms} stages={stages} onPasarAPreorden={() => onPasarAPreorden(cap, r)} onDeshacerEnviadoAPreorden={() => onDeshacerEnviadoAPreorden(cap, r)} />
+                    <Card item={r} kind="ref" resaltar={buscando ? tokens : null} onClick={() => onSelectRef(cap.id, r.id)} role={role} perms={perms} stages={stages} onPasarAPreorden={() => onPasarAPreorden(cap, r)} onDeshacerEnviadoAPreorden={() => onDeshacerEnviadoAPreorden(cap, r)} />
+                    {buscando && !capCalza(cap) && (() => { const d = dondeCoincide(cap, r); return d.length ? <div style={{ marginTop: 4, fontSize: 11, color: "#7A5B00", background: "#FFF3BF", borderRadius: 6, padding: "2px 8px", fontWeight: 700 }}>🔎 Coincide en: {d.join(" · ")}</div> : null; })()}
                   </div>
                 ))}
               </div>
@@ -18919,7 +18960,7 @@ function AppInner() {
               />
             )}
             {view === "capsulas" && (
-              <CapsulasView capsulas={capsulasVisibles} role={role} perms={perms} currentUser={currentUser?.name}
+              <CapsulasView capsulas={capsulasVisibles} protos={protosVisibles} role={role} perms={perms} currentUser={currentUser?.name}
                 onSelectRef={(capId, refId) => { setSelCapId(capId); setSelRefId(refId); setView("ref-detail"); }}
                 onNewCapsula={() => setModal("new-capsula")}
                 onNewRef={(cap) => { setNewRefCap(cap); setModal("new-ref"); }}
