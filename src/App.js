@@ -3398,7 +3398,14 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
   const tokens = tokensBusq(busqueda);
   const buscando = tokens.length > 0;
   const textoCap = (cap) => normBusq([cap.name, cap.cliente, capCliente(cap), cap.mes, cap.season].filter(Boolean).join(" "));
-  const capCalza = (cap) => { const t = textoCap(cap); return tokens.every((k) => t.includes(k)); };
+  // (2026-10-21) Coincidencia tolerante: sin tildes y sin guiones/espacios en códigos (ej. "986678" encuentra "98-6678").
+  const coincideTokCap = (txt, k) => {
+    const h = normBusq(txt);
+    const kc = k.replace(/[^a-z0-9]/g, "");
+    return h.includes(k) || (kc && h.replace(/[^a-z0-9]/g, "").includes(kc));
+  };
+  const STATUS_REF_TXT = { aprobado: "Aprobada", declinado: "Declinada", en_proceso: "En proceso", en_revision: "En revisión", enviado_cotizacion: "En cotización", enviar_cliente: "Enviar al Cliente", preparada_para_enviar: "Preparada para Enviar", enviado: "Enviado", recibido_cliente: "Recibida por Cliente", borrador: "Borrador" };
+  const capCalza = (cap) => { const t = textoCap(cap); return tokens.every((k) => coincideTokCap(t, k)); };
   const valTxt = (v) => (typeof v === "string" || typeof v === "number" ? String(v) : "");
   const camposRef = (cap, r) => {
     const o = r.fromProtoId ? (protos || []).find((p) => p.id === r.fromProtoId) : null;
@@ -3410,16 +3417,16 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
     ];
   };
   const refCoincide = (cap, r) => {
-    const hay = normBusq(textoCap(cap) + " " + camposRef(cap, r).map((c) => c[1]).join(" "));
-    return tokens.every((k) => hay.includes(k));
+    const hay = textoCap(cap) + " " + camposRef(cap, r).map((c) => c[1]).join(" ");
+    return tokens.every((k) => coincideTokCap(hay, k));
   };
   // En qué campos de la referencia aparece lo buscado (para avisarlo bajo la tarjeta).
-  const dondeCoincide = (cap, r) => camposRef(cap, r).filter((c) => c[1] && tokens.some((k) => normBusq(c[1]).includes(k))).map((c) => c[0]);
+  const dondeCoincide = (cap, r) => camposRef(cap, r).filter((c) => c[1] && tokens.some((k) => coincideTokCap(c[1], k))).map((c) => c[0]);
   function filteredRefs(cap) {
-    // Al buscar, "Todos" también incluye Aprobadas y Declinadas (si buscas un código lo quieres encontrar sin importar el estado).
-    let refs = filter === "todos" ? (buscando ? cap.referencias.slice() : cap.referencias.filter((r) => !["aprobado", "declinado"].includes(r.status))) : cap.referencias.filter((r) => r.status === filter);
-    if (clienteFiltro !== "todos") refs = refs.filter((r) => refCliente(cap, r) === clienteFiltro);
-    if (mesFiltro !== "todos") refs = mesFiltro === cap.mes ? refs : [];
+    // (2026-10-21) Al buscar se ignoran los filtros de estado, cliente y mes: si buscas un código lo quieres encontrar sin importar dónde esté.
+    let refs = buscando ? cap.referencias.slice() : filter === "todos" ? cap.referencias.filter((r) => !["aprobado", "declinado"].includes(r.status)) : cap.referencias.filter((r) => r.status === filter);
+    if (!buscando && clienteFiltro !== "todos") refs = refs.filter((r) => refCliente(cap, r) === clienteFiltro);
+    if (!buscando && mesFiltro !== "todos") refs = mesFiltro === cap.mes ? refs : [];
     // Si el nombre/cliente/mes de la cápsula ya calza, se muestran todas sus referencias; si no, solo las que coinciden.
     if (buscando && !capCalza(cap)) refs = refs.filter((r) => refCoincide(cap, r));
     return refs;
@@ -3484,9 +3491,9 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
           />
           {busqueda && <button onClick={() => setBusqueda("")} title="Limpiar búsqueda (Esc)" style={{ position: "absolute", right: 6, width: 20, height: 20, borderRadius: 10, border: "none", background: T.border, color: T.ink, fontSize: 11, cursor: "pointer", lineHeight: "20px", padding: 0 }}>✕</button>}
         </span>
-        {buscando && <span style={{ fontSize: 12, color: T.slate, fontWeight: 700 }}>{visibleCapsulas.length} cápsula{visibleCapsulas.length === 1 ? "" : "s"} con resultados</span>}
+        {buscando && <span style={{ fontSize: 12, color: T.slate, fontWeight: 700 }}>{visibleCapsulas.length} cápsula{visibleCapsulas.length === 1 ? "" : "s"} con resultados · en todos los estados</span>}
       </div>
-      <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap", opacity: buscando ? 0.45 : 1 }}>
         {FILTERS.map(([v, label]) => (
           <button key={v} onClick={() => cambiarFiltro(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${filter === v ? T.ink : T.border}`, background: filter === v ? T.ink : T.white, color: filter === v ? T.white : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
         ))}
@@ -3583,7 +3590,7 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
                       </button>
                     )}
                     <Card item={r} kind="ref" resaltar={buscando ? tokens : null} onClick={() => onSelectRef(cap.id, r.id)} role={role} perms={perms} stages={stages} onPasarAPreorden={() => onPasarAPreorden(cap, r)} onDeshacerEnviadoAPreorden={() => onDeshacerEnviadoAPreorden(cap, r)} />
-                    {buscando && !capCalza(cap) && (() => { const d = dondeCoincide(cap, r); return d.length ? <div style={{ marginTop: 4, fontSize: 11, color: "#7A5B00", background: "#FFF3BF", borderRadius: 6, padding: "2px 8px", fontWeight: 700 }}>🔎 Coincide en: {d.join(" · ")}</div> : null; })()}
+                    {buscando && (() => { const d = !capCalza(cap) ? dondeCoincide(cap, r) : []; return <div style={{ marginTop: 4, fontSize: 11, color: "#7A5B00", background: "#FFF3BF", borderRadius: 6, padding: "2px 8px", fontWeight: 700 }}>{STATUS_REF_TXT[r.status] || r.status || "—"}{d.length ? ` · 🔎 Coincide en: ${d.join(" · ")}` : ""}</div>; })()}
                   </div>
                 ))}
               </div>
