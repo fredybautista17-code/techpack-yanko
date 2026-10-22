@@ -1364,6 +1364,116 @@ exports.aprobarDadoPorCumplido = onCallAuth(
     return { ok: true, ...calculo };
   }
 );
+
+// (2026-10-22, a pedido de Fredy) Editar un lote YA aprobado de Dado por
+// Cumplido. Solo lo puede hacer un admin o un rol con el permiso
+// "contabilidad_editar_dado_por_cumplido" (se valida aquí, en el servidor,
+// no solo escondiendo el botón). Recalcula con la misma fórmula; los
+// porcentajes quedan los que se usaron al aprobar, y la BASE también salvo
+// que se cambie de categoría. Exige un motivo y deja el antes/después en
+// `ediciones` para auditoría.
+exports.editarDadoPorCumplidoAprobado = onCallAuth(
+  { timeoutSeconds: 60, memory: "256MiB" },
+  async (request) => {
+    const snapUser = await db.collection("users").where("authUid", "==", request.auth.uid).limit(1).get();
+    if (snapUser.empty) throw new HttpsError("permission-denied", "No tienes permiso para hacer esto.");
+    const u = snapUser.docs[0].data();
+    let permitido = !!u.isAdmin;
+    if (!permitido) {
+      const cfg = await db.collection("config").doc("main").get();
+      const roles = (cfg.exists && Array.isArray(cfg.data().roles)) ? cfg.data().roles : [];
+      const rol = roles.find((r) => r.name === u.role);
+      permitido = !!(rol && Array.isArray(rol.modulos) && rol.modulos.includes("contabilidad_editar_dado_por_cumplido"));
+    }
+    if (!permitido) throw new HttpsError("permission-denied", "No tienes permiso para editar lotes ya aprobados.");
+
+    const id = String(request.data?.id || "").trim();
+    const motivo = String(request.data?.motivo || "").trim();
+    if (!id) throw new HttpsError("invalid-argument", "Falta el id del lote.");
+    if (motivo.length < 5) throw new HttpsError("invalid-argument", "Escribe el motivo del cambio (mínimo 5 letras).");
+    const ref = db.collection("dado_por_cumplido_lotes").doc(id);
+    const snap = await ref.get();
+    if (!snap.exists) throw new HttpsError("not-found", "No se encontró ese lote.");
+    const datos = snap.data();
+    if (datos.estado !== "aprobado") throw new HttpsError("failed-precondition", "Este lote todavía no está aprobado; edítalo desde Pendientes.");
+
+    const cambios = request.data?.cambios || {};
+    const num = (k, previo) => (cambios[k] === undefined || cambios[k] === null || cambios[k] === "" ? Number(previo) || 0 : Number(cambios[k]));
+    const costoRealTotal = num("costoRealTotal", datos.costoRealTotal);
+    const cantCortada = num("cantCortada", datos.cantCortada);
+    const cantDespachada = num("cantDespachada", datos.cantDespachada);
+    const precioVentaUnitario = num("precioVentaUnitario", datos.precioVentaUnitario);
+    for (const [k, v] of Object.entries({ costoRealTotal, cantCortada, cantDespachada, precioVentaUnitario })) {
+      if (!Number.isFinite(v) || v < 0) throw new HttpsError("invalid-argument", `Valor inválido en ${k}.`);
+    }
+    if (costoRealTotal <= 0) throw new HttpsError("invalid-argument", "El Costo Real Total debe ser mayor que cero.");
+
+    const categoriaBaseId = String(cambios.categoriaBaseId || datos.categoriaBaseId || "").trim();
+    let baseValor = Number(datos.baseValorUsado) || 0;
+    if (categoriaBaseId !== String(datos.categoriaBaseId || "")) {
+      const baseSnap = await db.collection("dado_por_cumplido_bases").doc(categoriaBaseId).get();
+      if (!baseSnap.exists) throw new HttpsError("failed-precondition", "La categoría BASE elegida no existe.");
+      baseValor = Number(baseSnap.data().valor) || 0;
+    }
+    // Costo Definitivo: si lo mandan, queda manual; si vacío y ya era manual, se conserva; si no, se calcula.
+    let costoDefinitivoManual = null;
+    let marcarManual = !!datos.costoDefinitivoManual;
+    if (cambios.costoDefinitivo !== undefined && cambios.costoDefinitivo !== null && cambios.costoDefinitivo !== "") {
+      costoDefinitivoManual = Number(cambios.costoDefinitivo);
+      if (!Number.isFinite(costoDefinitivoManual) || costoDefinitivoManual <= 0) throw new HttpsError("invalid-argument", "Costo Definitivo inválido.");
+      marcarManual = true;
+    } else if (cambios.costoDefinitivo === "") {
+      marcarManual = false;
+    } else if (marcarManual) {
+      costoDefinitivoManual = Number(datos.costoDefinitivo) || null;
+    }
+    const calculo = calcularDadoPorCumplido({
+      costoRealTotal,
+      cantCortada,
+      cantDespachada,
+      precioVentaUnitario,
+      baseValor,
+      porcentajeSobreCosto: datos.porcentajeSobreCostoUsado ?? DADO_POR_CUMPLIDO_PORCENTAJES_DEFAULT.porcentajeSobreCosto,
+      porcentajeSobreVenta: datos.porcentajeSobreVentaUsado ?? DADO_POR_CUMPLIDO_PORCENTAJES_DEFAULT.porcentajeSobreVenta,
+      costoDefinitivoManual,
+    });
+    const campos = ["costoRealTotal", "cantCortada", "cantDespachada", "precioVentaUnitario", "categoriaBaseId", "baseValorUsado", "costoDefinitivo", "costoT", "ventaT", "ganancia", "gananciaPctLote"];
+    const despues = { costoRealTotal, cantCortada, cantDespachada, precioVentaUnitario, categoriaBaseId, baseValorUsado: baseValor, ...calculo };
+    const antes = {};
+    const nuevoValor = {};
+    for (const k of campos) { antes[k] = datos[k] ?? null; nuevoValor[k] = despues[k] ?? null; }
+    const entrada = {
+      fecha: new Date().toISOString(),
+      por: u.name || request.auth?.token?.email || request.auth.uid,
+      motivo,
+      antes,
+      despues: nuevoValor,
+    };
+    const previas = Array.isArray(datos.ediciones) ? datos.ediciones : [];
+    await ref.set(
+      {
+        ...calculo,
+        costoRealTotal,
+        cantCortada,
+        cantDespachada,
+        precioVentaUnitario,
+        categoriaBaseId,
+        baseValorUsado: baseValor,
+        costoDefinitivoManual: marcarManual,
+        // Se fijan como manuales para que la sincronización con Busint no los pise.
+        cantCortadaManual: true,
+        cantDespachadaManual: true,
+        precioVentaUnitarioManual: true,
+        editado: true,
+        ultimaEdicion: entrada,
+        ediciones: [...previas, entrada].slice(-30),
+      },
+      { merge: true }
+    );
+    logger.info("editarDadoPorCumplidoAprobado", { id, numLote: datos.numLote, por: entrada.por, motivo, gananciaAntes: datos.ganancia, gananciaDespues: calculo.ganancia });
+    return { ok: true, ...calculo };
+  }
+);
 // ─────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────

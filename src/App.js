@@ -13467,7 +13467,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
   // control. Agregar una llave nueva a un área existente (o un área nueva)
   // es solo agregarla a este array; el render de abajo es genérico.
   const GRUPOS_MODULOS_DEF = [
-    { area: "💰 Contabilidad", items: [["contabilidad", "Contabilidad"], ["contabilidad_bases_dado_por_cumplido", "Puede crear y configurar Bases (Dado por Cumplido)"], ["contabilidad_sincronizar_dado_por_cumplido", "Puede sincronizar con Busint (Buscar lotes nuevos)"], ["contabilidad_ordenes_compra", "🛒 Puede ver Órdenes de compra"]] },
+    { area: "💰 Contabilidad", items: [["contabilidad", "Contabilidad"], ["contabilidad_bases_dado_por_cumplido", "Puede crear y configurar Bases (Dado por Cumplido)"], ["contabilidad_sincronizar_dado_por_cumplido", "Puede sincronizar con Busint (Buscar lotes nuevos)"], ["contabilidad_editar_dado_por_cumplido", "✎ Puede editar lotes ya aprobados (Dado por Cumplido)"], ["contabilidad_ordenes_compra", "🛒 Puede ver Órdenes de compra"]] },
     // (2026-10-16, a pedido de Fredy) El acceso al módulo sigue en la lista de Diseño ("cotizador"); estos dos son permisos extra por rol.
     { area: "🧮 Cotizaciones", items: [["cotizador_editar", "Puede crear y editar cotizaciones (sin esto, solo consulta)"], ["cotizador_borrar", "Puede borrar cotizaciones"], ["cotizador_aprobar", "Puede aprobar cotizaciones (y aplicar el precio)"], ["cotizador_deshabilitar", "Puede deshabilitar cotizaciones aprobadas"], ["cotizador_costos_reales", "Puede ajustar costos reales de cotizaciones aprobadas (sin cambiar el precio aprobado)"], ["cotizador_enviar_facturar", "Puede enviar cotizaciones aprobadas a facturar"], ["cotizador_facturar", "Facturación: ve Por facturar y registra el documento y su número"]] },
     { area: "📋 Planeación", items: [["planeacion", "Planeación"]] },
@@ -18633,6 +18633,8 @@ function AppInner() {
   // permiso puntual para que alguien sin admin total pueda usar el botón
   // "🔄 Buscar lotes nuevos" (sincronizar con Busint) en Dado por Cumplido.
   const puedeSincronizarDadoPorCumplido = moduloVisible(userRoleData, "contabilidad_sincronizar_dado_por_cumplido", currentUser?.isAdmin);
+  // (2026-10-22, a pedido de Fredy) "contabilidad_editar_dado_por_cumplido": permiso para editar lotes YA aprobados (el servidor lo valida también).
+  const puedeEditarAprobadosDadoPorCumplido = moduloVisible(userRoleData, "contabilidad_editar_dado_por_cumplido", currentUser?.isAdmin);
   // (2026-10-20, a pedido de Fredy) "contabilidad_ordenes_compra": permiso para que alguien sin admin total vea Contabilidad → 🛒 Órdenes de compra (antes solo el administrador).
   const puedeVerOrdenesCompra = moduloVisible(userRoleData, "contabilidad_ordenes_compra", currentUser?.isAdmin) && currentUser?.role !== "Cliente";
   // (2026-10-21, a pedido de Fredy) Quien tiene SOLO el permiso de Órdenes de compra (sin "Contabilidad" completo) entra al módulo Contabilidad y ve únicamente esa pestaña.
@@ -18824,13 +18826,13 @@ function AppInner() {
     return <ModuloCorte currentUser={currentUser} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} puedeAprobarCorte={perms.aprobarCorte} />;
   }
   if (isContabilidadPura) {
-    return <ModuloContabilidad currentUser={currentUser} pedidos={pedidos} puedeAdministrarBasesDadoPorCumplido={puedeAdministrarBasesDadoPorCumplido} puedeSincronizarDadoPorCumplido={puedeSincronizarDadoPorCumplido} puedeVerOrdenesCompra={puedeVerOrdenesCompra} soloOrdenesCompra={soloOrdenesCompra} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+    return <ModuloContabilidad currentUser={currentUser} pedidos={pedidos} puedeAdministrarBasesDadoPorCumplido={puedeAdministrarBasesDadoPorCumplido} puedeSincronizarDadoPorCumplido={puedeSincronizarDadoPorCumplido} puedeEditarAprobadosDadoPorCumplido={puedeEditarAprobadosDadoPorCumplido} puedeVerOrdenesCompra={puedeVerOrdenesCompra} soloOrdenesCompra={soloOrdenesCompra} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (canAccessCorte && moduloActivo === "corte") {
     return <ModuloCorte currentUser={currentUser} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} onVolver={() => setModuloActivo("diseno")} puedeAprobarCorte={perms.aprobarCorte} />;
   }
   if (moduloActivo === "contabilidad") {
-    return <ModuloContabilidad currentUser={currentUser} pedidos={pedidos} puedeAdministrarBasesDadoPorCumplido={puedeAdministrarBasesDadoPorCumplido} puedeSincronizarDadoPorCumplido={puedeSincronizarDadoPorCumplido} puedeVerOrdenesCompra={puedeVerOrdenesCompra} soloOrdenesCompra={soloOrdenesCompra} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+    return <ModuloContabilidad currentUser={currentUser} pedidos={pedidos} puedeAdministrarBasesDadoPorCumplido={puedeAdministrarBasesDadoPorCumplido} puedeSincronizarDadoPorCumplido={puedeSincronizarDadoPorCumplido} puedeEditarAprobadosDadoPorCumplido={puedeEditarAprobadosDadoPorCumplido} puedeVerOrdenesCompra={puedeVerOrdenesCompra} soloOrdenesCompra={soloOrdenesCompra} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (moduloActivo === "cotizaciones" && canAccessCotizador) {
     // (2026-10-16, a pedido de Fredy) Cotizaciones se abre como módulo aparte

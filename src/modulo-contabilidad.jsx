@@ -3045,7 +3045,100 @@ const FORMATO_PORCENTAJE_DPC = "0.00%";
 const COLUMNAS_MONEDA_DPC = new Set(["VR. TEORICO ", "VR. REAL ", "COSTO DEFINITIVO", "COSTO T", "PRECIO VENTA U.", "VENTA T.", "Venta T. - Costo T.", "Costo T. Ref.", "BASE", "TRANSPORTE", "TOTAL"]);
 const COLUMNAS_PORCENTAJE_DPC = new Set(["% Ganancia/Lote", "% Ganancia/Ref."]);
 
-function DadoPorCumplidoView({ currentUser, puedeAdministrarBases, puedeSincronizar }) {
+// (2026-10-22, a pedido de Fredy) Editar un lote ya aprobado. El servidor
+// (editarDadoPorCumplidoAprobado) vuelve a validar el permiso y recalcula;
+// aquí solo se muestra el antes/después y se exige el motivo.
+function EditarDadoPorCumplidoModal({ lote, bases, onClose, onGuardado }) {
+  const [f, setF] = useState({
+    costoRealTotal: String(lote.costoRealTotal ?? ""),
+    cantCortada: String(lote.cantCortada ?? ""),
+    cantDespachada: String(lote.cantDespachada ?? ""),
+    precioVentaUnitario: String(lote.precioVentaUnitario ?? ""),
+    categoriaBaseId: lote.categoriaBaseId || "",
+    costoDefinitivo: lote.costoDefinitivoManual ? String(lote.costoDefinitivo ?? "") : "",
+  });
+  const [motivo, setMotivo] = useState("");
+  const [guardando, setGuardando] = useState(false);
+  const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
+  const baseValor = f.categoriaBaseId === (lote.categoriaBaseId || "")
+    ? (Number(lote.baseValorUsado) || 0)
+    : (Number(bases.find((b) => b.id === f.categoriaBaseId)?.valor) || 0);
+  const nuevo = calcularDadoPorCumplidoPreview({
+    costoRealTotal: f.costoRealTotal,
+    cantCortada: f.cantCortada,
+    cantDespachada: f.cantDespachada,
+    precioVentaUnitario: f.precioVentaUnitario,
+    baseValor,
+    porcentajeSobreCosto: lote.porcentajeSobreCostoUsado ?? DADO_POR_CUMPLIDO_PORCENTAJES_SEMILLA.porcentajeSobreCosto,
+    porcentajeSobreVenta: lote.porcentajeSobreVentaUsado ?? DADO_POR_CUMPLIDO_PORCENTAJES_SEMILLA.porcentajeSobreVenta,
+    costoDefinitivoManual: f.costoDefinitivo !== "" ? f.costoDefinitivo : (lote.costoDefinitivoManual ? lote.costoDefinitivo : null),
+  });
+  const estiloInput = { width: "100%", padding: "7px 9px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 13, boxSizing: "border-box" };
+  const campo = (k, etiqueta, ayuda) => (
+    <label style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 12, color: C.slate }}>
+      {etiqueta}
+      <input type="number" value={f[k]} onChange={(e) => set(k, e.target.value)} style={estiloInput} placeholder={ayuda || ""} />
+    </label>
+  );
+  async function guardar() {
+    if (motivo.trim().length < 5) { alert("Escribe el motivo del cambio."); return; }
+    setGuardando(true);
+    try {
+      await httpsCallable(functionsClient, "editarDadoPorCumplidoAprobado")({
+        id: lote.id,
+        motivo: motivo.trim(),
+        cambios: { ...f },
+      });
+      onGuardado && onGuardado();
+      onClose();
+    } catch (err) {
+      alert("No se pudo guardar: " + (err?.message || err));
+    } finally {
+      setGuardando(false);
+    }
+  }
+  return (
+    <Modal title={`Editar Lote ${lote.numLote} (ya aprobado)`} onClose={onClose} width={560}>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 12 }}>
+        {lote.referencia} — {lote.cliente}. Los porcentajes quedan los que se usaron al aprobar. El cambio queda registrado con tu nombre, la fecha y el motivo.
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
+        {campo("costoRealTotal", "Costo Real Total")}
+        {campo("precioVentaUnitario", "Precio Venta Unitario")}
+        {campo("cantCortada", "Cant. Cortada")}
+        {campo("cantDespachada", "Cant. Despachada")}
+        {campo("costoDefinitivo", "Costo Definitivo (vacío = calculado)", "automático")}
+        <label style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 12, color: C.slate }}>
+          Categoría BASE
+          <select value={f.categoriaBaseId} onChange={(e) => set("categoriaBaseId", e.target.value)} style={estiloInput}>
+            {!bases.some((b) => b.id === f.categoriaBaseId) && <option value={f.categoriaBaseId}>{f.categoriaBaseId || "—"}</option>}
+            {bases.map((b) => <option key={b.id} value={b.id}>{b.nombre} ({fmtPesos(b.valor)})</option>)}
+          </select>
+        </label>
+      </div>
+      <div style={{ display: "flex", gap: 18, flexWrap: "wrap", padding: "10px 12px", background: C.canvas, borderRadius: 8, fontSize: 12, marginBottom: 12 }}>
+        <span>Antes: <strong style={{ color: lote.ganancia >= 0 ? C.green : C.red }}>{fmtPesos(lote.ganancia)} ({fmtPct(lote.gananciaPctLote)})</strong></span>
+        <span>Después: <strong style={{ color: nuevo.ganancia >= 0 ? C.green : C.red }}>{fmtPesos(nuevo.ganancia)} ({fmtPct(nuevo.gananciaPctLote)})</strong></span>
+        <span>Costo Def.: <strong>{fmtPesos(nuevo.costoDefinitivo)}</strong></span>
+      </div>
+      <label style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 12, color: C.slate, marginBottom: 16 }}>
+        Motivo del cambio (obligatorio)
+        <textarea value={motivo} onChange={(e) => setMotivo(e.target.value)} rows={2} style={{ ...estiloInput, resize: "vertical" }} placeholder="Ej: la factura salió con otro valor / se corrigió la cantidad despachada" />
+      </label>
+      {Array.isArray(lote.ediciones) && lote.ediciones.length > 0 && (
+        <div style={{ fontSize: 11, color: C.slate, marginBottom: 14 }}>
+          Ediciones anteriores: {lote.ediciones.slice(-3).map((e) => `${String(e.fecha || "").slice(0, 10)} ${e.por} — ${e.motivo}`).join(" · ")}
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={guardar} disabled={guardando}>{guardando ? "Guardando..." : "Guardar cambios"}</Btn>
+      </div>
+    </Modal>
+  );
+}
+
+function DadoPorCumplidoView({ currentUser, puedeAdministrarBases, puedeSincronizar, puedeEditarAprobados }) {
   const isAdmin = currentUser?.isAdmin;
   // (2026-09-17, a pedido de Fredy) "puedeAdministrarBases": permiso puntual
   // (rol, ver App.js) para que alguien SIN admin total pueda crear y
@@ -3057,6 +3150,9 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases, puedeSincroni
   // permiso puntual (rol, ver App.js) para que alguien SIN admin total pueda
   // usar el botón "🔄 Buscar lotes nuevos".
   const puedeUsarSincronizar = isAdmin || !!puedeSincronizar;
+  // (2026-10-22, a pedido de Fredy) permiso puntual (rol) para editar lotes ya aprobados; el servidor lo vuelve a validar.
+  const puedeEditarAprobadosDPC = isAdmin || !!puedeEditarAprobados;
+  const [editandoAprobado, setEditandoAprobado] = useState(null);
   const [lotes, setLotes] = useState([]);
   const [bases, setBases] = useState([]);
   const [config, setConfig] = useState(DADO_POR_CUMPLIDO_PORCENTAJES_SEMILLA);
@@ -3806,6 +3902,10 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases, puedeSincroni
                 ) : l.fechaAprobacion ? (
                   <Btn variant="ghost" small onClick={() => reintentarCotizacionDefinitiva(l)} disabled={guardandoDefId === l.id}>{guardandoDefId === l.id ? "Subiendo..." : "☁ Cotización"}</Btn>
                 ) : null}
+                {l.editado && <span title={l.ultimaEdicion ? `${String(l.ultimaEdicion.fecha || "").slice(0, 10)} — ${l.ultimaEdicion.por}: ${l.ultimaEdicion.motivo}` : ""} style={{ color: C.slate, fontWeight: 700 }}>✎ Editado</span>}
+                {puedeEditarAprobadosDPC && (
+                  <Btn variant="ghost" small onClick={() => setEditandoAprobado(l)}>✎ Editar</Btn>
+                )}
                 {isAdmin && (
                   <Btn variant="ghost" small onClick={() => eliminarLoteHistorico(l)}>🗑</Btn>
                 )}
@@ -3820,6 +3920,9 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases, puedeSincroni
         </div>
       )}
 
+      {editandoAprobado && (
+        <EditarDadoPorCumplidoModal lote={editandoAprobado} bases={bases} onClose={() => setEditandoAprobado(null)} />
+      )}
       {confirmAprobarTraslado && (
         <Modal title="Confirmar aprobación sin factura real" onClose={() => setConfirmAprobarTraslado(null)} width={480}>
           <div style={{ fontSize: 14, color: C.ink, marginBottom: 20 }}>
@@ -7139,7 +7242,7 @@ function CuadrePorClienteView({ currentUser, pedidos }) {
   );
 }
 
-export default function ModuloContabilidad({ currentUser, onVolver, onLogout, puedeAdministrarBasesDadoPorCumplido, puedeSincronizarDadoPorCumplido, puedeVerOrdenesCompra, soloOrdenesCompra, pedidos }) {
+export default function ModuloContabilidad({ currentUser, onVolver, onLogout, puedeAdministrarBasesDadoPorCumplido, puedeSincronizarDadoPorCumplido, puedeEditarAprobadosDadoPorCumplido, puedeVerOrdenesCompra, soloOrdenesCompra, pedidos }) {
   const [subView, setSubView] = useState(soloOrdenesCompra ? "ordenes_compra" : "home");
   const [movimientos, setMovimientos] = useState([]);
   const [compras, setCompras] = useState([]);
@@ -7684,7 +7787,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
           )}
           {subView === "facturacion_clientes" && <FacturacionClientesView />}
           {subView === "cartera_clientes" && <CarteraClientesView currentUser={currentUser} pedidos={pedidos} />}
-          {subView === "dado_por_cumplido" && <DadoPorCumplidoView currentUser={currentUser} puedeAdministrarBases={puedeAdministrarBasesDadoPorCumplido} puedeSincronizar={puedeSincronizarDadoPorCumplido} />}
+          {subView === "dado_por_cumplido" && <DadoPorCumplidoView currentUser={currentUser} puedeAdministrarBases={puedeAdministrarBasesDadoPorCumplido} puedeSincronizar={puedeSincronizarDadoPorCumplido} puedeEditarAprobados={puedeEditarAprobadosDadoPorCumplido} />}
           {subView === "ordenes_compra" && (isAdmin || puedeVerOrdenesCompra) && <OrdenesCompraView db={db} functionsClient={functionsClient} currentUser={currentUser} C={C} Btn={Btn} />}
           {subView === "cxp" && (
             <CuentasPorPagarView
