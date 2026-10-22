@@ -177,7 +177,7 @@ export default function OrdenesCompraView({ db, functionsClient, currentUser, C,
     XLSX.utils.book_append_sheet(wb, ws, "Datos");
     XLSX.writeFile(wb, `${nombre} ${hoy}.xlsx`);
   }
-  const filasOrdenes = (lista) => lista.map((o) => ({ Orden: o.n, Proveedor: o.pn, "Fecha orden": fmtF(o.fi), "Fecha entrega": fmtF(o.ff), Estado: o.est.txt, Unidades: o.unidades, Bruto: Math.round(o.bruto), Descuento: Math.round(o.desc), "Base sin IVA": Math.round(o.base), IVA: Math.round(o.iva), "Neto a pagar": Math.round(o.total), Elaboró: o.u }));
+  const filasOrdenes = (lista) => [...lista.map((o) => ({ Orden: o.n, Proveedor: o.pn, "Fecha orden": fmtF(o.fi), "Fecha entrega": fmtF(o.ff), Estado: o.est.txt, Unidades: o.unidades, Bruto: Math.round(o.bruto), Descuento: Math.round(o.desc), "Base sin IVA": Math.round(o.base), IVA: Math.round(o.iva), "Neto a pagar": Math.round(o.total), Elaboró: o.u })), ...(lista.length ? [{ Orden: "TOTAL", Proveedor: `${lista.length} órdenes`, Unidades: Math.round(lista.reduce((x, o) => x + o.unidades, 0)), Bruto: Math.round(lista.reduce((x, o) => x + o.bruto, 0)), Descuento: Math.round(lista.reduce((x, o) => x + o.desc, 0)), "Base sin IVA": Math.round(lista.reduce((x, o) => x + o.base, 0)), IVA: Math.round(lista.reduce((x, o) => x + o.iva, 0)), "Neto a pagar": Math.round(lista.reduce((x, o) => x + o.total, 0)) }] : [])];
 
   // ── piezas visuales ──
   const th = { textAlign: "left", fontSize: 11, letterSpacing: 0.5, textTransform: "uppercase", color: C.slate, padding: "8px 10px", background: "#FAF8F5", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" };
@@ -236,6 +236,51 @@ export default function OrdenesCompraView({ db, functionsClient, currentUser, C,
     );
   }
 
+  // (2026-10-22, a pedido de Fredy) Cuánto se necesita para pagar todas las órdenes que están a la vista (respeta los filtros).
+  const sumarOrdenes = (lista) => lista.reduce((t, o) => ({ n: t.n + 1, unidades: t.unidades + o.unidades, bruto: t.bruto + o.bruto, desc: t.desc + o.desc, base: t.base + o.base, iva: t.iva + o.iva, total: t.total + o.total }), { n: 0, unidades: 0, bruto: 0, desc: 0, base: 0, iva: 0, total: 0 });
+  function ResumenPagar({ lista, titulo }) {
+    if (!lista.length) return null;
+    const t = sumarOrdenes(lista);
+    const porProv = new Map();
+    lista.forEach((o) => {
+      const k = o.pn || "Sin proveedor";
+      const x = porProv.get(k) || { prov: k, n: 0, base: 0, iva: 0, total: 0 };
+      x.n += 1; x.base += o.base; x.iva += o.iva; x.total += o.total;
+      porProv.set(k, x);
+    });
+    const filasProv = [...porProv.values()].sort((a, b) => b.total - a.total);
+    return (
+      <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 16px", marginBottom: 14, background: "#FAF8F5" }}>
+        <div style={{ display: "flex", gap: 24, flexWrap: "wrap", alignItems: "flex-end", justifyContent: "space-between" }}>
+          <div>
+            <div style={{ fontSize: 11, letterSpacing: 0.5, textTransform: "uppercase", color: C.slate, fontWeight: 700 }}>{titulo}</div>
+            <div style={{ fontSize: 26, fontWeight: 800, color: C.ink }}>{fmtCOP(t.total)}</div>
+            <div style={{ fontSize: 12, color: C.slate }}>{plural(t.n, "orden", "órdenes")} · {filasProv.length} {filasProv.length === 1 ? "proveedor" : "proveedores"} · neto a pagar con IVA</div>
+          </div>
+          <div style={{ display: "flex", gap: 22, flexWrap: "wrap", fontSize: 12.5, color: C.slate, fontVariantNumeric: "tabular-nums" }}>
+            <span>Valor bruto<br /><strong style={{ color: C.ink, fontSize: 14 }}>{fmtCOP(t.bruto)}</strong></span>
+            <span>Descuento<br /><strong style={{ color: C.ink, fontSize: 14 }}>− {fmtCOP(t.desc)}</strong></span>
+            <span>Base sin IVA<br /><strong style={{ color: C.ink, fontSize: 14 }}>{fmtCOP(t.base)}</strong></span>
+            <span>IVA ({IVA * 100} %)<br /><strong style={{ color: C.ink, fontSize: 14 }}>{fmtCOP(t.iva)}</strong></span>
+          </div>
+        </div>
+        <details style={{ marginTop: 10 }}>
+          <summary style={{ cursor: "pointer", fontSize: 12.5, fontWeight: 700, color: C.ink }}>Cuánto se le paga a cada proveedor</summary>
+          <div style={{ overflowX: "auto", marginTop: 8 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead><tr><th style={th}>Proveedor</th><th style={{ ...th, textAlign: "right" }}>Órdenes</th><th style={{ ...th, textAlign: "right" }}>Base sin IVA</th><th style={{ ...th, textAlign: "right" }}>IVA</th><th style={{ ...th, textAlign: "right" }}>Neto a pagar</th></tr></thead>
+              <tbody>
+                {filasProv.map((x) => (
+                  <tr key={x.prov}><td style={td}>{x.prov}</td><td style={{ ...td, ...num }}>{x.n}</td><td style={{ ...td, ...num }}>{fmtCOP(x.base)}</td><td style={{ ...td, ...num }}>{fmtCOP(x.iva)}</td><td style={{ ...td, ...num, fontWeight: 800 }}>{fmtCOP(x.total)}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      </div>
+    );
+  }
+
   function TablaOrdenes({ lista, conPaginacion, seleccionable }) {
     const visibles = conPaginacion ? lista.slice(0, limite) : lista;
     return (
@@ -255,6 +300,16 @@ export default function OrdenesCompraView({ db, functionsClient, currentUser, C,
                   </td>
                 </tr>
               ))}
+              {lista.length > 0 && (() => {
+                const t = sumarOrdenes(lista);
+                const tdT = { ...td, ...num, fontWeight: 800, background: "#FAF8F5", borderTop: `1.5px solid ${C.ink}` };
+                return (
+                  <tr>
+                    <td style={{ ...tdT, textAlign: "left" }} colSpan={seleccionable ? 6 : 5}>TOTAL · {plural(t.n, "orden", "órdenes")}</td>
+                    <td style={tdT}>{t.unidades.toLocaleString("es-CO")}</td><td style={tdT}>{fmtCOP(t.base)}</td><td style={tdT}>{fmtCOP(t.iva)}</td><td style={tdT}>{fmtCOP(t.total)}</td><td style={tdT} />
+                  </tr>
+                );
+              })()}
               {!visibles.length && <tr><td colSpan={11} style={{ ...td, color: C.slate, textAlign: "center", padding: 24 }}>No hay órdenes con esos filtros.</td></tr>}
             </tbody>
           </table>
@@ -352,6 +407,8 @@ export default function OrdenesCompraView({ db, functionsClient, currentUser, C,
           </div>
 
           <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 16, padding: 14 }}>
+            {(tab === "vencidas" || tab === "vigentes") && <ResumenPagar lista={listaPend} titulo={tab === "vencidas" ? "Necesito para pagar todas las vencidas" : "Necesito para pagar todas las vigentes"} />}
+            {tab === "historial" && <ResumenPagar lista={listaHist} titulo="Total de las órdenes a la vista (historial)" />}
             {(tab === "vencidas" || tab === "vigentes") && <TablaOrdenes lista={listaPend} seleccionable={tab === "vencidas"} />}
             {tab === "historial" && <TablaOrdenes lista={listaHist} conPaginacion />}
 
