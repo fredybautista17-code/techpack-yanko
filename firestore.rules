@@ -48,7 +48,15 @@ service cloud.firestore {
       allow create: if signedIn() && (!esCliente()
         || (request.resource.data.get('creadoPorUid', '') == request.auth.uid
             && request.resource.data.get('estado', '') in ['reportada', 'en_camino']));
-      allow update, delete: if signedIn() && !esCliente();
+      // (2026-10-21) Editar: el personal interno siempre; un Cliente solo su propia devolución mientras
+      // está reportada / en camino (antes de que Bodega la reciba), sin cambiar de dueño ni de estado.
+      allow update: if signedIn() && (!esCliente()
+        || (resource.data.get('creadoPorUid', '') == request.auth.uid
+            && resource.data.get('estado', '') in ['reportada', 'en_camino']
+            && request.resource.data.get('creadoPorUid', '') == request.auth.uid
+            && request.resource.data.get('estado', '') in ['reportada', 'en_camino']));
+      // Borrar: solo el administrador.
+      allow delete: if esAdmin();
     }
 
     // Todo lo demás: cualquier cuenta con sesión, salvo lo sensible para el rol Cliente.

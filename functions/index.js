@@ -7096,7 +7096,7 @@ exports.getProduccionClienteDesdeBusintGen = onCallAuth(
 // servidor: la pantalla no decide nada de permisos.
 exports.consultarLoteParaDevolucion = onCallAuth(
   {
-    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY, BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 300,
     memory: "1GiB",
   },
@@ -7178,6 +7178,23 @@ exports.consultarLoteParaDevolucion = onCallAuth(
         logger.warn("consultarLoteParaDevolucion: no se pudo leer el nombre de los colores", { error: String(err) });
       }
     }
+    // (2026-10-21, a pedido de Fredy) Grupo de la referencia (Dama/Caballero/Niña/Niño) para rotular las tallas:
+    // línea de la referencia en el maestro de Busint (ApiGen_Referencias) -> mapa lineaGrupoMap de la configuración.
+    // Niña/Niño = tallas con número (6, 8, 10...); si no se encuentra, la pantalla usa letras. Nunca bloquea la consulta.
+    let linea = "", grupo = "";
+    try {
+      const [refsBusint, cfgSnap] = await Promise.all([
+        consultarCatalogoBusint("ApiGen_Referencias"),
+        db.collection("config").doc("main").get(),
+      ]);
+      const normRef = normalizarRefComparacion(orden.Ref);
+      const filaRef = refsBusint.find((f) => normalizarRefComparacion(f.ref) === normRef);
+      linea = String(filaRef?.linea || "").trim();
+      const mapa = cfgSnap.exists ? (cfgSnap.data().lineaGrupoMap || {}) : {};
+      grupo = String(mapa[linea] || "").trim();
+    } catch (err) {
+      logger.warn("consultarLoteParaDevolucion: no se pudo leer la línea de la referencia", { error: String(err) });
+    }
     return {
       lote,
       ref: String(orden.Ref || "").trim(),
@@ -7185,6 +7202,8 @@ exports.consultarLoteParaDevolucion = onCallAuth(
       cliente,
       tallas,
       colores,
+      linea,
+      grupo,
       sinDetalle: !colores.length,
     };
   }

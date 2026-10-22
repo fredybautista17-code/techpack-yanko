@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { getApps } from "firebase/app";
 import { getAuth } from "firebase/auth";
-import { collection, doc, setDoc, updateDoc, onSnapshot, query, where } from "firebase/firestore";
-import { httpsCallable } from "firebase/functions";
+import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, query, where } from "firebase/firestore";
+import { httpsCallable, getFunctions } from "firebase/functions";
 
 // ─── DEVOLUCIONES DE CLIENTES ────────────────────────────────────────────
 // (2026-10-20, a pedido de Fredy) El cliente (primero Kamila Colombia, pero sirve
@@ -23,6 +23,14 @@ import { httpsCallable } from "firebase/functions";
 
 const COL = "devoluciones_cliente";
 const TALLAS_ORDEN = ["T2", "T4", "T6", "T8", "T10", "T12", "T14", "T16", "T18", "T24", "T36"];
+// (2026-10-21, a pedido de Fredy) Las columnas de Busint (T6, T8...) se muestran como talla real: en ropa de adulto
+// con letras (T6 = S, T8 = M, T10 = L, T12 = XL...) y en ropa infantil con el número (T6 = 6, T8 = 8...).
+// Por dentro los datos siguen guardados como T6, T8, etc.
+const TALLAS_ADULTO = { T2: "U", T4: "XS", T6: "S", T8: "M", T10: "L", T12: "XL", T14: "2XL", T16: "3XL", T18: "4XL" };
+const etiquetaTalla = (t, infantil) => (infantil ? String(t).replace(/^T/, "") : TALLAS_ADULTO[t] || String(t));
+const esInfantilGrupo = (g) => /ni[ñn][oa]/i.test(String(g || ""));
+// Un cambio hecho a mano (tallasInfantil) manda sobre lo que se dedujo de la línea de la referencia.
+const esInfantilDev = (d) => (d?.tallasInfantil === true || d?.tallasInfantil === false ? d.tallasInfantil : esInfantilGrupo(d?.grupo));
 const MOTIVOS = ["Defecto de costura", "Defecto de tela", "Talla equivocada", "Excedente", "Otro"];
 const PASOS = ["reportada", "en_camino", "recibida", "revisada", "lista", "redespachada"];
 const TEMA_DEFECTO = {
@@ -109,7 +117,7 @@ function usuarioActual(currentUser) {
 // "A · BLANCO" si se conoce el nombre del color (viene del pedido); si no, solo la letra.
 const etiquetaColor = (c) => (c && c.nombre ? `${c.color} · ${c.nombre}` : String(c?.color ?? ""));
 // Tabla color x talla. `valores` = { "color|T6": n }. Con `editable` muestra inputs; `tope` = cantidades máximas del lote.
-function GrillaColorTalla({ T, colores, tallas, valores, onCambiar, tope, editable = true, comparar }) {
+function GrillaColorTalla({ T, colores, tallas, valores, onCambiar, tope, editable = true, comparar, infantil = false }) {
   const th = { padding: "6px 8px", fontSize: 11, color: T.slate, textAlign: "center", borderBottom: `1px solid ${T.border}` };
   const td = { padding: "6px 8px", textAlign: "center", borderBottom: `1px solid ${T.border}`, fontSize: 13 };
   return (
@@ -118,7 +126,7 @@ function GrillaColorTalla({ T, colores, tallas, valores, onCambiar, tope, editab
         <thead>
           <tr>
             <th style={{ ...th, textAlign: "left" }}>Color</th>
-            {tallas.map((t) => <th key={t} style={th}>{t}</th>)}
+            {tallas.map((t) => <th key={t} style={th} title={t}>{etiquetaTalla(t, infantil)}</th>)}
             <th style={th}>Total</th>
           </tr>
         </thead>
@@ -194,6 +202,7 @@ function Detalle({ T, d, mostrarConteo }) {
   const tallas = tallasDeLineas(d.lineas, d.tallas);
   const valores = valoresDeLineas(d.lineas);
   const conteoVal = valoresDeLineas(d.conteo);
+  const infantil = esInfantilDev(d);
   return (
     <div style={{ paddingTop: 10 }}>
       <Linea T={T} estado={d.estado} />
@@ -202,16 +211,16 @@ function Detalle({ T, d, mostrarConteo }) {
       </div>
       {d.observaciones ? <div style={{ fontSize: 12, color: T.slate, marginBottom: 8 }}>Nota del cliente: {d.observaciones}</div> : null}
       <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, margin: "6px 0" }}>DECLARADO POR EL CLIENTE</div>
-      <GrillaColorTalla T={T} colores={coloresDeLineas(d.lineas)} tallas={tallas} valores={valores} editable={false} />
+      <GrillaColorTalla T={T} colores={coloresDeLineas(d.lineas)} tallas={tallas} valores={valores} editable={false} infantil={infantil} />
       {mostrarConteo && d.conteo?.length ? (
         <>
           <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, margin: "12px 0 6px" }}>CONTADO POR CALIDAD</div>
-          <GrillaColorTalla T={T} colores={coloresDeLineas(d.conteo)} tallas={tallasDeLineas(d.conteo, tallas)} valores={conteoVal} editable={false} />
+          <GrillaColorTalla T={T} colores={coloresDeLineas(d.conteo)} tallas={tallasDeLineas(d.conteo, tallas)} valores={conteoVal} editable={false} infantil={infantil} />
           {(d.diferencias || []).length ? (
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
               {d.diferencias.map((x) => (
                 <Pill key={`${x.color}|${x.talla}`} T={T} bg={x.dif < 0 ? T.coralBg : T.amberBg} fg={x.dif < 0 ? T.coral : T.amber}>
-                  {x.colorNombre ? `${x.color} · ${x.colorNombre}` : x.color} {x.talla}: {x.dif < 0 ? `falta ${-x.dif}` : `sobra ${x.dif}`}
+                  {x.colorNombre ? `${x.color} · ${x.colorNombre}` : x.color} {etiquetaTalla(x.talla, infantil)}: {x.dif < 0 ? `falta ${-x.dif}` : `sobra ${x.dif}`}
                 </Pill>
               ))}
             </div>
@@ -238,6 +247,140 @@ function Detalle({ T, d, mostrarConteo }) {
 async function cambiarEstado(db, d, estado, extra, usuario, nota) {
   const ev = { estado, fecha: nowISO(), usuario: usuario || "", ...(nota ? { nota } : {}) };
   await updateDoc(doc(db, COL, d.id), limpio({ ...(extra || {}), estado, historial: [...(d.historial || []), ev], actualizadoEn: nowISO() }));
+}
+
+function recalcularDiferencias(lineasDecl, lineasConteo) {
+  const decl = valoresDeLineas(lineasDecl), cont = valoresDeLineas(lineasConteo);
+  const nombres = {};
+  [...(lineasDecl || []), ...(lineasConteo || [])].forEach((l) => { nombres[l.color] = l.colorNombre || ""; });
+  const dif = [];
+  new Set([...Object.keys(decl), ...Object.keys(cont)]).forEach((k) => {
+    const [color, talla] = k.split("|");
+    const x = (Number(cont[k]) || 0) - (Number(decl[k]) || 0);
+    if (x) dif.push({ color, colorNombre: nombres[color] || "", talla, dif: x });
+  });
+  return dif;
+}
+
+// (2026-10-21, a pedido de Fredy) Editar una devolución: la pueden editar todos los usuarios que tienen Devoluciones
+// (el cliente solo mientras está reportada / en camino, antes de que Bodega la reciba); borrarla, solo el administrador.
+const puedeEditarDev = (d, esCliente) => (esCliente ? ["reportada", "en_camino"].includes(d.estado) : true);
+function EditarDevolucionModal({ db, functionsClient, T, d, usuario, onClose }) {
+  const [info, setInfo] = useState(null);
+  const [cant, setCant] = useState(valoresDeLineas(d.lineas));
+  const [motivo, setMotivo] = useState(d.motivo || MOTIVOS[0]);
+  const [guia, setGuia] = useState(d.guia || "");
+  const [obs, setObs] = useState(d.observaciones || "");
+  const [infantil, setInfantil] = useState(esInfantilDev(d));
+  const [guardando, setGuardando] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let vivo = true;
+    let fx = functionsClient;
+    try { if (!fx) fx = getFunctions(getApps()[0]); } catch { fx = null; }
+    if (fx) {
+      httpsCallable(fx, "consultarLoteParaDevolucion")({ lote: String(d.lote) })
+        .then((r) => { if (vivo && r.data && !r.data.sinDetalle) setInfo(r.data); })
+        .catch(() => {}); // sin la consulta se edita solo lo que ya traía la devolución
+    }
+    return () => { vivo = false; };
+  }, []); // eslint-disable-line
+  const colores = info ? info.colores : coloresDeLineas(d.lineas);
+  const tallas = tallasDeLineas(d.lineas, [...(d.tallas || []), ...(info?.tallas || [])]);
+  const total = Object.values(cant).reduce((a, v) => a + (Number(v) || 0), 0);
+  function cambiar(k, v, cap) {
+    let n = v === "" ? "" : entero(v);
+    if (n !== "" && cap && n > cap) n = cap;
+    setCant((c) => ({ ...c, [k]: n }));
+  }
+  async function guardar() {
+    setError("");
+    if (!(total > 0)) { setError("Escribe al menos una unidad."); return; }
+    const lineas = colores
+      .map((c) => ({ color: c.color, colorNombre: c.nombre || "", cantidades: Object.fromEntries(tallas.map((t) => [t, Number(cant[`${c.color}|${t}`]) || 0]).filter(([, n]) => n > 0)) }))
+      .filter((l) => Object.keys(l.cantidades).length);
+    const cambios = [];
+    if (total !== d.total) cambios.push(`unidades ${d.total} → ${total}`);
+    else if (JSON.stringify(valoresDeLineas(lineas)) !== JSON.stringify(valoresDeLineas(d.lineas))) cambios.push("cantidades por color/talla");
+    if (motivo !== d.motivo) cambios.push(`motivo: ${motivo}`);
+    if (guia.trim() !== (d.guia || "")) cambios.push(`guía: ${guia.trim() || "—"}`);
+    if (obs.trim() !== (d.observaciones || "")) cambios.push("nota");
+    if (infantil !== esInfantilDev(d)) cambios.push(`tallas en ${infantil ? "números" : "letras"}`);
+    const extra = { lineas, tallas, total: totalLineas(lineas), motivo, guia: guia.trim(), observaciones: obs.trim(), tallasInfantil: infantil, editadoPor: usuario, editadoEn: nowISO() };
+    if (d.conteo?.length) {
+      extra.diferencias = recalcularDiferencias(lineas, d.conteo);
+      extra.resultado = extra.diferencias.length ? "diferencias" : "completa";
+    }
+    setGuardando(true);
+    try {
+      await cambiarEstado(db, d, d.estado, extra, usuario, `Editó la devolución${cambios.length ? `: ${cambios.join("; ")}` : ""}`);
+      onClose();
+    } catch (e) {
+      setError(e?.message || "No se pudo guardar la edición.");
+      setGuardando(false);
+    }
+  }
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 400, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+      <div style={{ background: T.white, borderRadius: 14, padding: 24, maxWidth: 760, width: "100%", maxHeight: "90vh", overflow: "auto", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}>
+        <div style={{ fontWeight: 800, fontSize: 16, color: T.ink, marginBottom: 4 }}>Editar devolución {d.numero}</div>
+        <div style={{ fontSize: 12, color: T.slate, marginBottom: 14 }}>Lote {d.lote} · Ref {d.ref || "—"}. {info ? "Cada casilla tiene como tope lo que trae el lote." : "Se editan las cantidades de los colores ya declarados."}</div>
+        <GrillaColorTalla T={T} colores={colores} tallas={tallas} valores={cant} onCambiar={cambiar} tope={!!info} infantil={infantil} />
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", margin: "14px 0" }}>
+          <div style={{ flex: 1, minWidth: 170 }}>
+            <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>Motivo</div>
+            <select value={motivo} onChange={(e) => setMotivo(e.target.value)} style={{ ...campo(T), width: "100%" }}>{[...new Set([...MOTIVOS, motivo])].map((m) => <option key={m}>{m}</option>)}</select>
+          </div>
+          <div style={{ flex: 1, minWidth: 170 }}>
+            <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>Guía de transporte</div>
+            <input value={guia} onChange={(e) => setGuia(e.target.value)} style={{ ...campo(T), width: "100%" }} />
+          </div>
+          <div style={{ flex: 1, minWidth: 170 }}>
+            <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>Tallas se muestran en</div>
+            <select value={infantil ? "num" : "let"} onChange={(e) => setInfantil(e.target.value === "num")} style={{ ...campo(T), width: "100%" }}>
+              <option value="let">Letras (adulto: S, M, L, XL)</option>
+              <option value="num">Números (niños: 6, 8, 10, 12)</option>
+            </select>
+          </div>
+        </div>
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>Nota</div>
+          <input value={obs} onChange={(e) => setObs(e.target.value)} style={{ ...campo(T), width: "100%" }} />
+        </div>
+        {d.conteo?.length ? <div style={{ fontSize: 12, color: T.amber, marginBottom: 10 }}>Esta devolución ya fue contada por Calidad: al guardar, las diferencias se recalculan contra lo nuevo declarado.</div> : null}
+        {error && <div style={{ background: T.coralBg, color: T.coral, borderRadius: 8, padding: "8px 12px", fontSize: 13, marginBottom: 10 }}>{error}</div>}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 13, color: T.slate }}>Total: <b style={{ color: T.ink }}>{total} unidades</b></span>
+          <span style={{ display: "flex", gap: 8 }}>
+            <button onClick={onClose} disabled={guardando} style={btn(T)}>Cancelar</button>
+            <button onClick={guardar} disabled={guardando} style={btn(T, "primario")}>{guardando ? "Guardando…" : "Guardar cambios"}</button>
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+// Botones ✎ Editar (quien tenga Devoluciones) y 🗑 Borrar (solo el administrador) + la ventana de edición.
+function AccionesDevolucion({ db, functionsClient, T, d, currentUser, esCliente, onBorrado }) {
+  const [editando, setEditando] = useState(false);
+  const [error, setError] = useState("");
+  const usuario = usuarioActual(currentUser);
+  const puedeEditar = puedeEditarDev(d, esCliente);
+  const puedeBorrar = !!currentUser?.isAdmin;
+  if (!puedeEditar && !puedeBorrar) return null;
+  async function borrar() {
+    if (!window.confirm(`¿Borrar la devolución ${d.numero} (lote ${d.lote})? No se puede deshacer.`)) return;
+    try { await deleteDoc(doc(db, COL, d.id)); onBorrado?.(); }
+    catch (e) { setError(e?.message || "No se pudo borrar."); }
+  }
+  return (
+    <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+      {puedeEditar && <button onClick={() => setEditando(true)} style={btn(T)}>✎ Editar</button>}
+      {puedeBorrar && <button onClick={borrar} style={{ ...btn(T), color: T.coral, borderColor: T.coral }}>🗑 Borrar</button>}
+      {error && <span style={{ color: T.coral, fontSize: 12 }}>{error}</span>}
+      {editando && <EditarDevolucionModal db={db} functionsClient={functionsClient} T={T} d={d} usuario={usuario} onClose={() => setEditando(false)} />}
+    </div>
+  );
 }
 
 // ─── PANTALLA DEL CLIENTE ────────────────────────────────────────────────
@@ -290,7 +433,7 @@ export function DevolucionesClienteView({ db, functionsClient, T: Tp, currentUse
     const estado = guia.trim() ? "en_camino" : "reportada";
     const d = {
       id, numero: numeroNuevo(), lote: info.lote, ref: info.ref, pedido: info.pedido, cliente: info.cliente,
-      tallas: info.tallas, lineas, total: totalLineas(lineas), motivo, guia: guia.trim(), observaciones: obs.trim(),
+      tallas: info.tallas, grupo: info.grupo || "", lineas, total: totalLineas(lineas), motivo, guia: guia.trim(), observaciones: obs.trim(),
       estado, creadoPorUid: uid, creadoPor: usuarioActual(currentUser), creadoEn: nowISO(),
       historial: [{ estado, fecha: nowISO(), usuario: usuarioActual(currentUser) }],
     };
@@ -326,7 +469,7 @@ export function DevolucionesClienteView({ db, functionsClient, T: Tp, currentUse
         {info && !info.sinDetalle && (
           <>
             <div style={{ fontSize: 12, color: T.slate, marginBottom: 6 }}>Unidades que devuelves, por color y talla (debajo de cada casilla: cantidad del lote)</div>
-            <GrillaColorTalla T={T} colores={info.colores} tallas={info.tallas} valores={cant} onCambiar={cambiar} tope />
+            <GrillaColorTalla T={T} colores={info.colores} tallas={info.tallas} valores={cant} onCambiar={cambiar} tope infantil={esInfantilGrupo(info.grupo)} />
             <div style={{ display: "flex", gap: 12, flexWrap: "wrap", margin: "14px 0" }}>
               <div style={{ flex: 1, minWidth: 170 }}>
                 <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>Motivo</div>
@@ -359,7 +502,12 @@ export function DevolucionesClienteView({ db, functionsClient, T: Tp, currentUse
                 <span><b>{d.numero}</b> · lote {d.lote} · {d.total} und · {fmtFecha(d.creadoEn)}</span>
                 <EstadoPill T={T} d={d} />
               </div>
-              {abierto === d.id && <Detalle T={T} d={d} mostrarConteo={!esCliente} />}
+              {abierto === d.id && (
+                <>
+                  <Detalle T={T} d={d} mostrarConteo={!esCliente} />
+                  <AccionesDevolucion db={db} functionsClient={functionsClient} T={T} d={d} currentUser={currentUser} esCliente={esCliente} onBorrado={() => setAbierto(null)} />
+                </>
+              )}
             </div>
           ))}
       </div>
@@ -466,13 +614,14 @@ function ListaEquipo({ db, T: Tp, currentUser, modo }) {
                     <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 6 }}>CUENTA LO QUE LLEGÓ (por color y talla)</div>
                     <GrillaColorTalla
                       T={T} colores={coloresDeLineas(d.lineas).concat([])} tallas={tallasDeLineas(d.lineas, d.tallas)}
-                      valores={conteo} comparar={valoresDeLineas(d.lineas)}
+                      valores={conteo} comparar={valoresDeLineas(d.lineas)} infantil={esInfantilDev(d)}
                       onCambiar={(k, v) => setConteo((c) => ({ ...c, [k]: v === "" ? "" : entero(v) }))}
                     />
                     <div style={{ marginTop: 10 }}><button disabled={trabajando === d.id} onClick={() => guardarConteo(d)} style={btn(T, "primario")}>Guardar conteo y marcar como revisada</button></div>
                   </div>
                 )}
                 <div style={{ marginTop: 12 }}>{botones(d)}</div>
+                <AccionesDevolucion db={db} T={T} d={d} currentUser={currentUser} esCliente={false} onBorrado={() => setAbierto(null)} />
               </>
             )}
           </div>
