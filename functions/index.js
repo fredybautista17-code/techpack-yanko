@@ -8576,14 +8576,20 @@ exports.sincronizarEntradasPlantaBusintBD = onCallAuth(
 
 exports.sincronizarEntradasPlantaDiario = onSchedule(
   {
-    schedule: "every day 06:00",
+    // (2026-10-23, a pedido de Fredy) Antes corría solo a las 6:00am y las
+    // entradas del día no aparecían hasta el día siguiente. Ahora corre 4
+    // veces al día; la de las 6:00am sigue trayendo 45 días y las demás solo
+    // los últimos 5 (más liviano).
+    schedule: "0 6,10,14,18 * * *",
     timeZone: "America/Bogota",
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     timeoutSeconds: 540,
     memory: "1GiB",
   },
   async () => {
-    const resultado = await entradasPlanta.sincronizar({ guardar: true, dias: 45, usuario: "Sincronización automática Busint" });
+    const horaBogota = new Date(Date.now() - 5 * 3600 * 1000).getUTCHours();
+    const diasASincronizar = horaBogota <= 7 ? 45 : 5;
+    const resultado = await entradasPlanta.sincronizar({ guardar: true, dias: diasASincronizar, usuario: "Sincronización automática Busint" });
     logger.info("Sincronización diaria de Entradas de Planta completada", resultado);
   }
 );

@@ -8193,6 +8193,28 @@ function LotesPorDiaView({ entradas, cargas }) {
   const [busqCliente, setBusqCliente] = useState("");
   const [ordenCliente, setOrdenCliente] = useState("lotes"); // lotes | unidades | nombre
   const [clienteAbierto, setClienteAbierto] = useState(null);
+  const [actualizando, setActualizando] = useState(false);
+  const [avisoSync, setAvisoSync] = useState(null); // { ok, texto }
+  // Trae de Busint las entradas de los últimos días (solo administrador).
+  // El tablero se refresca solo porque escucha planta_entradas_cargas.
+  async function actualizarEntradasAhora() {
+    setActualizando(true);
+    setAvisoSync(null);
+    try {
+      const fn = httpsCallable(functionsClient, "sincronizarEntradasPlantaBusintBD", { timeout: 540000 });
+      await fn({ modo: "guardar", dias: 7 });
+      setAvisoSync({ ok: true, texto: "Entradas actualizadas desde Busint." });
+    } catch (e) {
+      const m = String(e?.message || "");
+      setAvisoSync({ ok: false, texto: /admin/i.test(m) ? "Solo un administrador puede actualizar las entradas." : m || "No se pudo consultar Busint." });
+    }
+    setActualizando(false);
+  }
+  useEffect(() => {
+    if (!avisoSync) return undefined;
+    const t = setTimeout(() => setAvisoSync(null), 12000);
+    return () => clearTimeout(t);
+  }, [avisoSync]);
   useEffect(() => {
     if (meses.length && !meses.includes(mes)) setMes(meses[0]);
   }, [meses]);
@@ -8514,9 +8536,17 @@ function LotesPorDiaView({ entradas, cargas }) {
             ))}
           </select>
           <button onClick={() => irMes(-1)} disabled={meses.indexOf(mes) <= 0} title="Mes siguiente" style={{ border: `1.5px solid ${C.border}`, background: C.white, borderRadius: 8, padding: "7px 11px", cursor: "pointer", fontSize: 14, color: C.ink }}>›</button>
+          <Btn variant="secondary" onClick={actualizarEntradasAhora} disabled={actualizando} title="Trae de Busint las entradas de los últimos 7 días">
+            {actualizando ? "Actualizando…" : "🔄 Actualizar entradas de hoy"}
+          </Btn>
           <Btn onClick={exportarExcel} disabled={!total || !total.lotes}>⬇ Excel</Btn>
         </div>
       </div>
+      {avisoSync && (
+        <div style={{ marginBottom: 12, padding: "9px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600, background: avisoSync.ok ? C.greenBg : C.redBg, color: avisoSync.ok ? C.green : C.red }}>
+          {avisoSync.ok ? "✓ " : "⚠ "}{avisoSync.texto}
+        </div>
+      )}
       {detalle && (
         <DetalleEntregasModal
           titulo={detalle.titulo}
