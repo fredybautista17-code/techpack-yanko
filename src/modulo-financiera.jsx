@@ -325,6 +325,14 @@ function unirFilasPersona(filas) {
   });
   return [...m.values()];
 }
+// Búsqueda de trabajadores: sin mayúsculas ni tildes; varias palabras = todas deben aparecer (nombre o cédula).
+const normBusq = (v) => String(v ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+function coincideBusqueda(f, q) {
+  const palabras = normBusq(q).split(/\s+/).filter(Boolean);
+  if (!palabras.length) return true;
+  const pajar = normBusq(`${f.nombre} ${f.cedula}`);
+  return palabras.every((w) => pajar.includes(w));
+}
 const estadoDe = (neto, pagado, falta) => (neto < 1 ? "Sin valor" : falta < 1 ? "Pagado" : pagado < 1 ? "Pendiente" : "Parcial");
 const ESTADO_COLOR = {
   "Pagado": { bg: C.greenBg, fg: C.green }, "Pagada": { bg: C.greenBg, fg: C.green },
@@ -373,6 +381,8 @@ function NominaPorAreaSection({ porTipo, trabajadores, tipoPeriodo, rangoTexto, 
   const [verPagos, setVerPagos] = useState(null); // fila
   const [confirmArea, setConfirmArea] = useState(null); // area
   const [confirmDel, setConfirmDel] = useState(null); // pago
+  const [busqGlobal, setBusqGlobal] = useState("");
+  const [busqArea, setBusqArea] = useState({});
   const [editPago, setEditPago] = useState(null); // pago en edición
   const [editFecha, setEditFecha] = useState("");
   const [editMonto, setEditMonto] = useState("");
@@ -600,6 +610,23 @@ function NominaPorAreaSection({ porTipo, trabajadores, tipoPeriodo, rangoTexto, 
         <KPI icon="📈" label="Avance de pagos" value={`${pct(tot.pagado, tot.neto)} %`} color={C.blue} bg={C.blueBg} />
       </div>
 
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+        <div style={{ position: "relative", flex: "1 1 280px", maxWidth: 420 }}>
+          <input
+            value={busqGlobal}
+            onChange={(e) => { setBusqGlobal(e.target.value); setAbiertas({}); }}
+            placeholder="Buscar un trabajador en todas las áreas (nombre o cédula)"
+            style={{ width: "100%", padding: "9px 32px 9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, color: C.ink, background: C.white, outline: "none", fontFamily: "inherit", boxSizing: "border-box" }}
+          />
+          {busqGlobal && <span onClick={() => { setBusqGlobal(""); setAbiertas({}); }} style={{ position: "absolute", right: 10, top: 9, cursor: "pointer", color: C.slate, fontSize: 14 }} title="Limpiar búsqueda">✕</span>}
+        </div>
+        {busqGlobal.trim() && (() => {
+          const coinc = filas.filter((f) => coincideBusqueda(f, busqGlobal));
+          const nAreas = new Set(coinc.map((f) => f.areaKey)).size;
+          return <span style={{ fontSize: 12, color: coinc.length ? C.green : C.red, fontWeight: 700 }}>{coinc.length ? `${coinc.length} coincidencia${coinc.length === 1 ? "" : "s"} en ${nAreas} área${nAreas === 1 ? "" : "s"}` : "Nadie coincide con esa búsqueda"}</span>;
+        })()}
+      </div>
+
       <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
           <thead>
@@ -609,11 +636,16 @@ function NominaPorAreaSection({ porTipo, trabajadores, tipoPeriodo, rangoTexto, 
           </thead>
           <tbody>
             {areas.map((a) => {
-              const abierta = !!abiertas[a.key];
+              const qGlobal = busqGlobal.trim();
+              const qArea = busqArea[a.key] || "";
+              const qTotal = `${qGlobal} ${qArea}`.trim();
+              const nCoincGlobal = qGlobal ? a.filas.filter((f) => coincideBusqueda(f, qGlobal)).length : 0;
+              const abierta = abiertas[a.key] ?? (!!qGlobal && nCoincGlobal > 0);
+              const filasVis = qTotal ? a.filas.filter((f) => coincideBusqueda(f, qTotal)) : a.filas;
               return (
                 <Fragment key={a.key}>
-                  <tr onClick={() => setAbiertas((s) => ({ ...s, [a.key]: !s[a.key] }))} style={{ cursor: "pointer", background: abierta ? C.canvas : C.white }}>
-                    {td(<span>{abierta ? "▾" : "▸"} {a.nombre}</span>, { l: true, b: true })}
+                  <tr onClick={() => setAbiertas((s) => ({ ...s, [a.key]: !abierta }))} style={{ cursor: "pointer", background: abierta ? C.canvas : C.white }}>
+                    {td(<span>{abierta ? "▾" : "▸"} {a.nombre}{qGlobal && nCoincGlobal > 0 && <span style={{ marginLeft: 8, fontSize: 10.5, fontWeight: 800, color: C.green, background: C.greenBg, borderRadius: 5, padding: "1px 6px" }}>{nCoincGlobal} coincide{nCoincGlobal === 1 ? "" : "n"}</span>}</span>, { l: true, b: true })}
                     {td(a.personas)}{td(fm(a.sueldo))}
                     {td(fm(a.bonif), { c: a.bonif ? C.green : C.slate, b: !!a.bonif })}
                     {td(fm(a.he), { c: a.he ? C.amber : C.slate, b: !!a.he })}
@@ -639,6 +671,19 @@ function NominaPorAreaSection({ porTipo, trabajadores, tipoPeriodo, rangoTexto, 
                               {puedePagar && <Btn small onClick={() => setConfirmArea(a)} disabled={a.falta < 1}>Pagar todo lo pendiente del área</Btn>}
                             </div>
                           </div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+                            <div style={{ position: "relative", flex: "1 1 260px", maxWidth: 360 }}>
+                              <input
+                                value={qArea}
+                                onChange={(e) => { const v = e.target.value; setBusqArea((m) => ({ ...m, [a.key]: v })); }}
+                                placeholder={`Buscar trabajador en ${a.nombre}`}
+                                style={{ width: "100%", padding: "8px 30px 8px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, color: C.ink, background: C.white, outline: "none", fontFamily: "inherit", boxSizing: "border-box" }}
+                              />
+                              {qArea && <span onClick={() => setBusqArea((m) => ({ ...m, [a.key]: "" }))} style={{ position: "absolute", right: 10, top: 8, cursor: "pointer", color: C.slate, fontSize: 14 }} title="Limpiar búsqueda">✕</span>}
+                            </div>
+                            {qTotal && <span style={{ fontSize: 12, color: C.slate, fontWeight: 600 }}>Mostrando {filasVis.length} de {a.personas} persona{a.personas === 1 ? "" : "s"}</span>}
+                          </div>
+                          {qTotal && filasVis.length === 0 && <div style={{ padding: "10px 12px", fontSize: 13, color: C.slate }}>Nadie coincide con esa búsqueda en esta área.</div>}
                           <div style={{ overflow: "auto", background: C.white, borderRadius: 10, border: `1px solid ${C.border}` }}>
                             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                               <thead>
@@ -649,7 +694,7 @@ function NominaPorAreaSection({ porTipo, trabajadores, tipoPeriodo, rangoTexto, 
                                 </tr>
                               </thead>
                               <tbody>
-                                {a.filas.map((f) => (
+                                {filasVis.map((f) => (
                                   <tr key={`${f.tipo}|${f.trabajadorId}`}>
                                     {td(<div><div style={{ fontWeight: 800 }}>{f.nombre}</div><div style={{ fontSize: 10.5, color: C.slate, fontWeight: 500 }}>{[f.cedula, f.tipo, f.empleador].filter(Boolean).join(" · ")}</div></div>, { l: true, wrap: true })}
                                     {td(f.forma, { l: true })}
