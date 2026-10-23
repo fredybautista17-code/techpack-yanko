@@ -63,6 +63,8 @@ service cloud.firestore {
     match /{col}/{rest=**} {
       allow read, write: if signedIn()
         && col != 'users' && col != 'cotizaciones' && col != 'devoluciones_cliente'
+        // El asistente solo escribe/lee estas dos con el servidor (Admin SDK): ningún usuario las toca directo.
+        && col != 'asistente_log' && col != 'asistente_recordatorios'
         && (!esCliente() || !sensible(col));
     }
   }

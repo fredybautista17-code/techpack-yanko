@@ -12121,6 +12121,116 @@ async function asiDespachos(args) {
   };
 }
 
+// ── Recordatorios y resumen de la mañana (2026-10-23) ──
+const asiEsc = (v) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+// Hora de Colombia = UTC-5 todo el año (no hay horario de verano).
+function asiLocalADate(txt) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/.exec(String(txt || "").trim());
+  if (!m) return null;
+  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4] + 5, +m[5]));
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+const asiFmtBogota = (d) => new Date(d.getTime() - 5 * 3600000).toISOString().slice(0, 16).replace("T", " ");
+
+async function asiRecordatoriosDe(uid) {
+  const snap = await db.collection("asistente_recordatorios").where("uid", "==", uid).get();
+  const ahora = Date.now();
+  return snap.docs
+    .map((d) => ({ id: d.id, ...d.data() }))
+    .filter((r) => r.estado === "pendiente" || r.estado === "avisado")
+    .sort((a, b) => String(a.cuandoISO).localeCompare(String(b.cuandoISO)))
+    .slice(0, 20)
+    .map((r) => ({ id: r.id, texto: r.texto, cuando: r.cuandoLocal, estado: r.estado, vencido: Date.parse(r.cuandoISO) <= ahora, porCorreo: r.correoEnviado === true }));
+}
+
+async function asiCrearRecordatorio(args, ctx) {
+  const texto = String(args?.texto || "").trim().slice(0, 300);
+  if (!texto) return { error: "Falta el texto del recordatorio." };
+  const cuando = asiLocalADate(args?.cuando);
+  if (!cuando) return { error: "La fecha y hora deben venir como AAAA-MM-DDTHH:MM, en hora de Colombia." };
+  if (cuando.getTime() < Date.now() - 60000) return { error: "Esa fecha y hora ya pasó." };
+  if (cuando.getTime() > Date.now() + 400 * 86400000) return { error: "Solo puedo programar recordatorios hasta dentro de un año." };
+  const email = String(ctx?.u?.email || "").trim();
+  const ref = await db.collection("asistente_recordatorios").add({
+    uid: ctx.uid,
+    usuario: ctx?.u?.name || "",
+    email,
+    texto,
+    cuandoISO: cuando.toISOString(),
+    cuandoLocal: asiFmtBogota(cuando),
+    estado: "pendiente",
+    creadoEn: admin.firestore.FieldValue.serverTimestamp(),
+  });
+  return {
+    ok: true, id: ref.id, texto, cuando: asiFmtBogota(cuando),
+    nota: email ? `Se avisará por correo a ${email} a esa hora y quedará visible en el asistente.` : "Este usuario no tiene correo cargado en Usuarios: el recordatorio solo se verá en el asistente, no llegará por correo.",
+  };
+}
+
+async function asiCancelarRecordatorio(args, ctx) {
+  const id = String(args?.id || "").trim();
+  if (!id) return { error: "Falta el id del recordatorio (usa listar_recordatorios)." };
+  const ref = db.collection("asistente_recordatorios").doc(id);
+  const s = await ref.get();
+  if (!s.exists || s.data().uid !== ctx.uid) return { error: "No encontré ese recordatorio." };
+  await ref.update({ estado: "cancelado", canceladoEn: admin.firestore.FieldValue.serverTimestamp() });
+  return { ok: true, cancelado: s.data().texto };
+}
+
+async function asiArmarResumenManana() {
+  const hoy = asiHoyBogota();
+  const ayer = new Date(Date.parse(hoy) - 86400000).toISOString().slice(0, 10);
+  const fmt = (n) => Number(n || 0).toLocaleString("es-CO");
+  const tabla = (cols, filas) => `<table border="1" cellpadding="5" style="border-collapse:collapse;font-size:13px"><tr>${cols.map((c) => `<th style="background:#f0f0f4">${asiEsc(c)}</th>`).join("")}</tr>${filas.map((f) => `<tr>${f.map((c, i) => `<td${typeof c === "number" ? ' style="text-align:right"' : ""}>${asiEsc(typeof c === "number" ? fmt(c) : c)}</td>`).join("")}</tr>`).join("")}</table>`;
+  const secciones = [];
+  const intentar = async (titulo, fn) => {
+    try { secciones.push(`<h3 style="margin:18px 0 6px">${titulo}</h3>${await fn()}`); }
+    catch (err) {
+      logger.warn("resumen de la mañana: falló una sección", { titulo, error: String(err) });
+      secciones.push(`<h3 style="margin:18px 0 6px">${titulo}</h3><p style="color:#B3261E">No se pudo consultar: ${asiEsc(err?.message || String(err))}</p>`);
+    }
+  };
+  await intentar(`Entradas a planta de ayer (${ayer})`, async () => {
+    const r = await asiEntradasPlanta({ desde: ayer, hasta: ayer });
+    if (!r.totalUnidades) return `<p>No hay entradas registradas${r.aviso ? ` (${asiEsc(r.aviso)})` : ""}.</p>`;
+    return `<p><b>${fmt(r.totalUnidades)}</b> unidades en <b>${r.lotesDistintos}</b> lote(s).</p>${tabla(["Planta", "Unidades", "Lotes"], r.porPlanta.map((p) => [p.planta, p.unidades, p.lotes]))}`;
+  });
+  await intentar("Planta: pendientes y prioridades", async () => {
+    const r = await asiProgramacionPlanta({ estado: "pendiente" });
+    if (!r.cantidadDeLotesProgramados) return "<p>No hay lotes pendientes en la programación de planta.</p>";
+    const resumen = Object.entries(r.porPrioridad).map(([k, v]) => `${asiEsc(k)}: ${v}`).join(" · ");
+    const altos = r.lotes.filter((l) => String(l.prioridad || "").toUpperCase() === "ALTA").slice(0, 10);
+    return `<p><b>${r.cantidadDeLotesProgramados}</b> lote(s) pendientes (${fmt(r.unidades)} unidades). ${resumen}</p>${altos.length ? tabla(["Lote", "Referencia", "Pedido", "Unid.", "Fecha sugerida"], altos.map((l) => [String(l.numLote ?? ""), String(l.referencia ?? ""), String(l.numPedido ?? ""), asiNum(l.cantidad), `${l.fechaSugerida || "—"}${l.fechaSugeridaYaPaso ? " (ya pasó)" : ""}`])) : ""}`;
+  });
+  await intentar(`Despachos de ayer (${ayer})`, async () => {
+    const r = await asiDespachos({ desde: ayer, hasta: ayer });
+    if (!r.documentosDespacho && !r.documentosDevolucion) return "<p>No hay despachos registrados.</p>";
+    return `<p><b>${r.documentosDespacho}</b> documento(s), <b>${fmt(r.unidadesDespachadas)}</b> unidades, $${fmt(r.montoDespachado)}. Devoluciones: ${r.documentosDevolucion} (${fmt(r.unidadesDevueltas)} unid.).</p>${r.porCliente.length ? tabla(["Cliente", "Unid.", "Monto"], r.porCliente.slice(0, 10).map((c) => [c.cliente, c.unidades, `$${fmt(c.monto)}`])) : ""}`;
+  });
+  await intentar("Órdenes de compra vencidas", async () => {
+    const r = await asiOrdenesCompra({ solo: "vencidas" });
+    if (!r.ordenesEncontradas) return "<p>No hay órdenes de compra vencidas.</p>";
+    return `<p><b>${r.ordenesEncontradas}</b> orden(es) vencida(s), por pagar/recibir: <b>$${fmt(r.totalNetoAPagar)}</b> (con IVA).</p>${tabla(["Proveedor", "Órdenes", "Neto"], r.porProveedor.slice(0, 8).map((p) => [p.proveedor, p.ordenes, `$${fmt(p.netoAPagar)}`]))}`;
+  });
+  return { hoy, html: secciones.join("") };
+}
+
+function asiHtmlCorreoResumen(hoy, cuerpo, recordatorios) {
+  const rec = recordatorios.length
+    ? `<h3 style="margin:18px 0 6px">Tus recordatorios</h3><ul>${recordatorios.map((r) => `<li>${asiEsc(r.cuando)} — ${asiEsc(r.texto)}${r.vencido ? " <b>(ya venció)</b>" : ""}</li>`).join("")}</ul>`
+    : "";
+  return `<div style="font-family:system-ui,Arial,sans-serif;max-width:680px"><h2 style="margin:0">Buenos días — resumen de ATLAS</h2><p style="color:#666;margin:2px 0 0">${hoy}</p>${rec}${cuerpo}<p style="color:#888;font-size:12px;margin-top:20px">Generado automáticamente por ATLAS. Puedes preguntarle más detalle al asistente.</p></div>`;
+}
+
+async function asiEnviarResumenAUsuario(ctx) {
+  const email = String(ctx?.u?.email || "").trim();
+  if (!email) return { error: "Tu usuario no tiene correo cargado en Usuarios, no puedo enviarlo." };
+  const { hoy, html } = await asiArmarResumenManana();
+  const recs = (await asiRecordatoriosDe(ctx.uid)).filter((r) => r.vencido || String(r.cuando || "").slice(0, 10) === hoy);
+  await mandarCorreo(crearTransporte(), [email], `Resumen de ATLAS — ${hoy}`, asiHtmlCorreoResumen(hoy, html, recs));
+  return { ok: true, enviadoA: email };
+}
+
 const ASI_HERRAMIENTAS = [
   { name: "buscar_lote", description: "Busca todo lo que ATLAS y Busint saben de un número de lote: corte, ubicación e inventario en planeación, planta, programación de procesos, lo pagado en nómina, contabilidad (Dado por Cumplido), devoluciones, orden de producción y facturas de Busint.", input_schema: { type: "object", properties: { numLote: { type: "string", description: "Número de lote, solo dígitos" } }, required: ["numLote"] } },
   { name: "buscar_pedido", description: "Busca un pedido por su número: cliente, fechas, referencias y unidades, las 17 etapas de seguimiento (hechas y pendientes), cortes realizados y lotes del pedido en planeación.", input_schema: { type: "object", properties: { numPedido: { type: "string", description: "Número de pedido" } }, required: ["numPedido"] } },
@@ -12128,10 +12238,14 @@ const ASI_HERRAMIENTAS = [
   { name: "ordenes_compra", description: "Consulta órdenes de compra a proveedores (Busint). Devuelve el total a pagar (con IVA) de las órdenes que cumplan el filtro, el desglose por proveedor y las órdenes. Úsala para preguntas como cuánto necesito para pagar las órdenes vigentes.", input_schema: { type: "object", properties: { solo: { type: "string", enum: ["pendientes", "vencidas", "todas"], description: "pendientes = vigentes (por llegar) y vencidas recientes; por defecto pendientes" }, proveedor: { type: "string", description: "Parte del nombre del proveedor (opcional)" }, numero: { type: "string", description: "Número de una orden específica (opcional, trae sus líneas)" } } } },
   { name: "entradas_planta", description: "Lotes que ENTRARON a planta (producto que regresa de confección) en un rango de fechas: unidades totales, por planta, y los lotes con referencia, pedido y planta. Úsala para 'qué lotes ingresaron a planta hoy/ayer/esta semana' o 'cuánto entró de la planta X'. Las entradas llegan de Busint una vez al día a las 6 a. m., así que el día de hoy casi nunca está completo: avisa la última fecha con datos.", input_schema: { type: "object", properties: { desde: { type: "string", description: "Fecha inicial AAAA-MM-DD (si falta, usa 'hasta')." }, hasta: { type: "string", description: "Fecha final AAAA-MM-DD (si falta, hoy)." }, planta: { type: "string", description: "Parte del nombre de la planta, opcional." }, numLote: { type: "string", description: "Número de lote, opcional." } } } },
   { name: "programacion_planta", description: "Programación de planta de ATLAS: lotes enviados a planta con su prioridad (ALTA/MEDIA/NORMAL), motivo, fecha sugerida y estado (pendiente o cumplido). Úsala para 'qué está pendiente en planta', 'qué es prioridad alta', 'qué está atrasado'.", input_schema: { type: "object", properties: { estado: { type: "string", enum: ["pendiente", "cumplido", "todos"] }, prioridad: { type: "string", enum: ["ALTA", "MEDIA", "NORMAL"] }, numLote: { type: "string" }, numPedido: { type: "string" } } } },
-  { name: "despachos", description: "Despachos y facturación de la bitácora de despachos (facturas de Busint): documentos, unidades y monto despachado, devoluciones, y el desglose por cliente, en un rango de fechas. Úsala para 'cuánto despachamos hoy / esta semana / este mes' o 'qué se le despachó al cliente X'.", input_schema: { type: "object", properties: { desde: { type: "string", description: "AAAA-MM-DD" }, hasta: { type: "string", description: "AAAA-MM-DD (si falta, hoy)" }, cliente: { type: "string", description: "Parte del nombre del cliente, opcional." } } } }
+  { name: "despachos", description: "Despachos y facturación de la bitácora de despachos (facturas de Busint): documentos, unidades y monto despachado, devoluciones, y el desglose por cliente, en un rango de fechas. Úsala para 'cuánto despachamos hoy / esta semana / este mes' o 'qué se le despachó al cliente X'.", input_schema: { type: "object", properties: { desde: { type: "string", description: "AAAA-MM-DD" }, hasta: { type: "string", description: "AAAA-MM-DD (si falta, hoy)" }, cliente: { type: "string", description: "Parte del nombre del cliente, opcional." } } } },
+  { name: "crear_recordatorio", description: "Crea un recordatorio para el usuario que habla. Se le avisa por correo a la hora indicada y queda visible en el asistente. Si el usuario no dice la hora, pregúntasela antes de llamar a esta herramienta. Calcula la fecha y hora a partir de la fecha y hora actuales que figuran en las instrucciones.", input_schema: { type: "object", properties: { texto: { type: "string", description: "Qué hay que recordar, en una frase corta." }, cuando: { type: "string", description: "Fecha y hora de Colombia, formato AAAA-MM-DDTHH:MM (por ejemplo 2026-10-24T08:00)." } }, required: ["texto", "cuando"] } },
+  { name: "listar_recordatorios", description: "Lista los recordatorios pendientes o ya avisados (aún sin cerrar) del usuario que habla, con su id.", input_schema: { type: "object", properties: {} } },
+  { name: "cancelar_recordatorio", description: "Cancela o da por hecho un recordatorio del usuario, usando el id que devuelve listar_recordatorios.", input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } },
+  { name: "enviar_resumen_manana", description: "Arma el resumen de la mañana (entradas a planta de ayer, prioridades de planta, despachos de ayer, órdenes de compra vencidas, recordatorios) y lo envía por correo al usuario que habla, ahora mismo. Úsala cuando pida que le envíes o le mandes el resumen.", input_schema: { type: "object", properties: {} } }
 ];
 
-async function asiEjecutarHerramienta(nombre, args) {
+async function asiEjecutarHerramienta(nombre, args, ctx) {
   switch (nombre) {
     case "buscar_lote": return asiBuscarLote(args);
     case "buscar_pedido": return asiBuscarPedido(args);
@@ -12140,6 +12254,10 @@ async function asiEjecutarHerramienta(nombre, args) {
     case "entradas_planta": return asiEntradasPlanta(args);
     case "programacion_planta": return asiProgramacionPlanta(args);
     case "despachos": return asiDespachos(args);
+    case "crear_recordatorio": return asiCrearRecordatorio(args, ctx);
+    case "listar_recordatorios": return { recordatorios: await asiRecordatoriosDe(ctx.uid) };
+    case "cancelar_recordatorio": return asiCancelarRecordatorio(args, ctx);
+    case "enviar_resumen_manana": return asiEnviarResumenAUsuario(ctx);
     default: return { error: `Herramienta desconocida: ${nombre}` };
   }
 }
@@ -12160,7 +12278,7 @@ async function asiLlamarClaude(system, messages) {
 
 exports.asistenteAtlas = onCallAuth(
   {
-    secrets: [ANTHROPIC_API_KEY, BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY, BUSINT_TOKEN, BUSINT_BASE_URL],
+    secrets: [ANTHROPIC_API_KEY, BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY, BUSINT_TOKEN, BUSINT_BASE_URL, EMAIL_USER, EMAIL_APP_PASSWORD],
     timeoutSeconds: 300,
     memory: "1GiB",
   },
@@ -12169,7 +12287,14 @@ exports.asistenteAtlas = onCallAuth(
     const usuarioDoc = await verificarLlamadorEsAdmin(request);
     const u = usuarioDoc.data();
     // El cliente lo usa para saber si debe mostrar el botón (solo admins).
-    if (request.data?.ping) return { ok: true, nombre: u.name || "" };
+    if (request.data?.accion === "hecho") {
+      const idR = String(request.data?.id || "");
+      const refR = idR ? db.collection("asistente_recordatorios").doc(idR) : null;
+      const sR = refR ? await refR.get() : null;
+      if (sR && sR.exists && sR.data().uid === request.auth.uid) await refR.update({ estado: "hecho", hechoEn: admin.firestore.FieldValue.serverTimestamp() });
+      return { ok: true, recordatorios: await asiRecordatoriosDe(request.auth.uid) };
+    }
+    if (request.data?.ping) return { ok: true, nombre: u.name || "", recordatorios: await asiRecordatoriosDe(request.auth.uid) };
     const entrada = Array.isArray(request.data?.mensajes) ? request.data.mensajes.slice(-12) : [];
     const messages = entrada
       .map((m) => ({ role: m?.role === "assistant" ? "assistant" : "user", content: String(m?.texto || "").slice(0, 2000) }))
@@ -12178,12 +12303,13 @@ exports.asistenteAtlas = onCallAuth(
     while (messages.length && messages[0].role !== "user") messages.shift();
     const pregunta = messages[messages.length - 1].content;
     const hoyTxt = new Date(Date.now() - 5 * 3600000).toISOString().slice(0, 10);
-    const system = `Eres el asistente de voz de ATLAS, el ERP de Industrias Yanko (empresa de confección en Colombia). Hablas con ${u.name || "el administrador"}, gerente de la empresa. Hoy es ${hoyTxt}.
+    const horaTxt = new Date(Date.now() - 5 * 3600000).toISOString().slice(11, 16);
+    const system = `Eres el asistente de voz de ATLAS, el ERP de Industrias Yanko (empresa de confección en Colombia). Hablas con ${u.name || "el administrador"}, gerente de la empresa. Hoy es ${hoyTxt} y son las ${horaTxt} (hora de Colombia).
 Reglas:
 - Responde SIEMPRE en español, con frases cortas y naturales, pensadas para escucharse en voz alta: sin tablas, sin viñetas, sin markdown y sin emojis. Máximo unas 6 frases, salvo que pidan más detalle.
 - Usa SOLO los datos que devuelven las herramientas. Si un dato no aparece, dilo y no lo inventes. Cuando des una cifra, di de dónde sale (por ejemplo "según Contabilidad", "según Busint", "según Planeación").
 - Para fechas relativas (hoy, ayer, esta semana, este mes) calcúlalas a partir de la fecha de hoy y pasa las herramientas en formato AAAA-MM-DD. Si una herramienta avisa que los datos del día no están completos, díselo al gerente.
-- Eres de solo lectura: no puedes cambiar ni crear nada en ATLAS ni en Busint.
+- Eres de solo lectura: no puedes cambiar ni crear nada en ATLAS ni en Busint. Lo único que puedes hacer es manejar los recordatorios del gerente (crear, listar, cancelar) y enviarle por correo el resumen de la mañana. Para un recordatorio necesitas el texto y la hora: si falta la hora, pregúntala. Después de crearlo, confírmalo en una frase con el día y la hora dichos en palabras, y si la herramienta avisa que no hay correo cargado, díselo.
 - Si te preguntan algo que ninguna herramienta cubre (por ejemplo sueldos de una persona, inventario de telas, cartera), di con claridad que todavía no puedes consultarlo.
 - Di el dinero con separadores o en palabras, por ejemplo "un millón doscientos mil pesos", y las fechas en palabras ("el 31 de octubre").
 - Vocabulario: lote = número de lote de corte y producción; BPT = bodega de producto terminado; Dado por Cumplido = revisión de la ganancia de cada lote en Contabilidad; las 17 etapas son el seguimiento de un pedido.`;
@@ -12206,7 +12332,7 @@ Reglas:
         usadas.push(`${uso.name}(${JSON.stringify(uso.input || {})})`);
         let contenido;
         try {
-          const res = await asiEjecutarHerramienta(uso.name, uso.input || {});
+          const res = await asiEjecutarHerramienta(uso.name, uso.input || {}, { uid: request.auth.uid, u });
           contenido = JSON.stringify(res);
           if (contenido.length > 14000) contenido = `${contenido.slice(0, 14000)}… [recortado]`;
         } catch (err) {
@@ -12235,5 +12361,55 @@ Reglas:
       logger.warn("asistente: no se pudo guardar el registro", { error: String(err) });
     }
     return { respuesta, herramientas: usadas };
+  }
+);
+
+// (2026-10-23, a pedido de Fredy) Avisa por correo los recordatorios del asistente cuando llega su hora.
+exports.recordatoriosAtlas = onSchedule(
+  { schedule: "every 5 minutes", timeZone: "America/Bogota", secrets: [EMAIL_USER, EMAIL_APP_PASSWORD], timeoutSeconds: 120, memory: "256MiB" },
+  async () => {
+    const snap = await db.collection("asistente_recordatorios").where("estado", "==", "pendiente").get();
+    const ahora = Date.now();
+    const vencidos = snap.docs.filter((d) => Date.parse(d.data().cuandoISO) <= ahora);
+    if (!vencidos.length) return;
+    let transporte = null;
+    for (const d of vencidos) {
+      const r = d.data();
+      let enviado = false;
+      if (r.email) {
+        try {
+          transporte = transporte || crearTransporte();
+          await mandarCorreo(transporte, [r.email], `Recordatorio ATLAS: ${String(r.texto || "").slice(0, 80)}`,
+            `<div style="font-family:system-ui,Arial,sans-serif"><h3 style="margin:0">Recordatorio</h3><p style="font-size:16px">${asiEsc(r.texto)}</p><p style="color:#888;font-size:12px">Programado para ${asiEsc(r.cuandoLocal)} desde el asistente de ATLAS.</p></div>`);
+          enviado = true;
+        } catch (err) {
+          logger.error("recordatoriosAtlas: no se pudo enviar el correo", { id: d.id, error: String(err) });
+        }
+      }
+      await d.ref.update({ estado: "avisado", avisadoEn: admin.firestore.FieldValue.serverTimestamp(), correoEnviado: enviado });
+    }
+    logger.info("recordatoriosAtlas: avisados", { cantidad: vencidos.length });
+  }
+);
+
+// (2026-10-23, a pedido de Fredy) Resumen de la mañana: lunes a sábado 7:00 a. m. (hora de Colombia), a los
+// administradores con correo cargado en Usuarios (más los extras de Administración -> Notificaciones, si existen).
+exports.resumenMananaAtlas = onSchedule(
+  { schedule: "0 7 * * 1-6", timeZone: "America/Bogota", secrets: [EMAIL_USER, EMAIL_APP_PASSWORD, BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY, BUSINT_TOKEN, BUSINT_BASE_URL], timeoutSeconds: 300, memory: "1GiB" },
+  async () => {
+    const [usersSnap, configSnap] = await Promise.all([db.collection("users").get(), db.collection("config").doc("main").get()]);
+    const admins = usersSnap.docs.map((d) => d.data()).filter((u) => u.isAdmin && u.email);
+    const extras = ((configSnap.data() || {}).notificacionesExtras?.resumenMananaAtlas || []).map((e) => e.correo).filter(Boolean);
+    if (!admins.length && !extras.length) { logger.warn("resumenMananaAtlas: no hay administradores con correo cargado"); return; }
+    const { hoy, html } = await asiArmarResumenManana();
+    const transporte = crearTransporte();
+    for (const u of admins) {
+      const recs = u.authUid ? (await asiRecordatoriosDe(u.authUid)).filter((r) => r.vencido || String(r.cuando || "").slice(0, 10) === hoy) : [];
+      await mandarCorreo(transporte, [u.email], `Resumen de ATLAS — ${hoy}`, asiHtmlCorreoResumen(hoy, html, recs));
+    }
+    const yaEnviados = new Set(admins.map((u) => u.email));
+    const otros = extras.filter((c) => !yaEnviados.has(c));
+    if (otros.length) await mandarCorreo(transporte, otros, `Resumen de ATLAS — ${hoy}`, asiHtmlCorreoResumen(hoy, html, []));
+    logger.info("resumenMananaAtlas: enviado", { destinatarios: admins.length + otros.length });
   }
 );
