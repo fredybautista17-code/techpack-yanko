@@ -15,17 +15,31 @@ const EJEMPLOS = [
   "Envíame el resumen de la mañana",
 ];
 
-function leerEnVoz(texto) {
+const LS_VOZ = "atlas_asistente_voz";
+const LS_VEL = "atlas_asistente_vel";
+const guardado = (k) => { try { return window.localStorage.getItem(k); } catch { return null; } };
+const guardar = (k, v) => { try { window.localStorage.setItem(k, v); } catch { /* sin almacenamiento */ } };
+
+// Voces en español que tiene este navegador: es-CO primero y las "naturales" (Edge) antes que las básicas.
+function vocesEspanol() {
+  try {
+    const todas = window.speechSynthesis ? window.speechSynthesis.getVoices() : [];
+    const puntaje = (v) => (/natural|online/i.test(v.name) ? 0 : 2) + (v.lang === "es-CO" ? 0 : v.lang === "es-MX" || v.lang === "es-US" ? 1 : 2);
+    return todas.filter((v) => v.lang && v.lang.toLowerCase().startsWith("es")).sort((a, b) => puntaje(a) - puntaje(b) || a.name.localeCompare(b.name));
+  } catch { return []; }
+}
+
+function leerEnVoz(texto, voiceURI, velocidad) {
   try {
     const synth = window.speechSynthesis;
     if (!synth) return;
     synth.cancel();
     const u = new SpeechSynthesisUtterance(texto);
     u.lang = "es-CO";
-    const voces = synth.getVoices();
-    const v = voces.find((x) => x.lang === "es-CO") || voces.find((x) => x.lang && x.lang.startsWith("es"));
-    if (v) u.voice = v;
-    u.rate = 1.02;
+    const voces = vocesEspanol();
+    const v = voces.find((x) => x.voiceURI === voiceURI) || voces[0];
+    if (v) { u.voice = v; u.lang = v.lang; }
+    u.rate = Number(velocidad) > 0 ? Number(velocidad) : 1;
     synth.speak(u);
   } catch { /* sin voz, se queda el texto */ }
 }
@@ -38,6 +52,12 @@ export default function AsistenteAtlas() {
   const [pensando, setPensando] = useState(false);
   const [escuchando, setEscuchando] = useState(false);
   const [hablar, setHablar] = useState(true);
+  const [voces, setVoces] = useState([]);
+  const [vozUri, setVozUri] = useState(() => guardado(LS_VOZ) || "");
+  const [vel, setVel] = useState(() => Number(guardado(LS_VEL)) || 1);
+  const [verAjustes, setVerAjustes] = useState(false);
+  const vozRef = useRef({ uri: "", vel: 1 });
+  vozRef.current = { uri: vozUri, vel };
   const [aviso, setAviso] = useState("");
   const [recordatorios, setRecordatorios] = useState([]);
   const [verRecs, setVerRecs] = useState(false);
@@ -72,6 +92,15 @@ export default function AsistenteAtlas() {
     return () => { vivo = false; if (timer) clearTimeout(timer); off(); };
   }, [funciones]);
 
+  useEffect(() => {
+    const cargar = () => setVoces(vocesEspanol());
+    cargar();
+    try { window.speechSynthesis.addEventListener("voiceschanged", cargar); } catch { /* sin voz */ }
+    return () => { try { window.speechSynthesis.removeEventListener("voiceschanged", cargar); } catch { /* nada */ } };
+  }, []);
+  const elegirVoz = (uri) => { setVozUri(uri); guardar(LS_VOZ, uri); };
+  const cambiarVel = (v) => { setVel(v); guardar(LS_VEL, String(v)); };
+  const probarVoz = () => leerEnVoz("Hola, soy el asistente de ATLAS. Así sueno con esta voz.", vozUri, vel);
   useEffect(() => { if (finRef.current) finRef.current.scrollIntoView({ block: "end" }); }, [mensajes, pensando]);
   useEffect(() => () => { try { window.speechSynthesis?.cancel(); recRef.current?.abort(); } catch { /* nada */ } }, []);
 
@@ -104,7 +133,7 @@ export default function AsistenteAtlas() {
       });
       const resp = String(r?.data?.respuesta || "").trim() || "No obtuve respuesta.";
       setMensajes((prev) => [...prev, { role: "assistant", texto: resp, herramientas: r?.data?.herramientas || [] }]);
-      if (hablar) leerEnVoz(resp);
+      if (hablar) leerEnVoz(resp, vozRef.current.uri, vozRef.current.vel);
       if ((r?.data?.herramientas || []).some((h) => /recordatorio/.test(h))) refrescarRecs();
     } catch (err) {
       const msg = err?.message || "No se pudo consultar al asistente.";
@@ -167,10 +196,33 @@ export default function AsistenteAtlas() {
           <input type="checkbox" checked={hablar} onChange={(e) => { setHablar(e.target.checked); if (!e.target.checked) { try { window.speechSynthesis?.cancel(); } catch { /* nada */ } } }} />
           Voz
         </label>
+        <button onClick={() => setVerAjustes((v) => !v)} title="Elegir la voz" aria-label="Ajustes de voz" style={{ background: verAjustes ? "rgba(255,255,255,.25)" : "transparent", color: "#fff", border: "none", borderRadius: 6, fontSize: 15, cursor: "pointer", lineHeight: 1, padding: "3px 6px" }}>⚙</button>
         {mensajes.length > 0 && <button onClick={() => { setMensajes([]); try { window.speechSynthesis?.cancel(); } catch { /* nada */ } }} title="Nueva conversación" style={{ background: "transparent", color: "#fff", border: "1px solid rgba(255,255,255,.5)", borderRadius: 6, fontSize: 11, padding: "2px 8px", cursor: "pointer" }}>Nueva</button>}
         <button onClick={() => { setAbierto(false); try { window.speechSynthesis?.cancel(); recRef.current?.abort(); } catch { /* nada */ } }} aria-label="Cerrar" style={{ background: "transparent", color: "#fff", border: "none", fontSize: 18, cursor: "pointer", lineHeight: 1 }}>✕</button>
       </div>
 
+      {verAjustes && (
+        <div style={{ padding: "10px 12px", borderBottom: `1px solid ${C.line}`, background: C.bg, display: "flex", flexDirection: "column", gap: 8, fontSize: 12.5 }}>
+          <label style={{ display: "flex", flexDirection: "column", gap: 3, fontWeight: 700 }}>
+            Voz
+            {voces.length === 0 ? (
+              <span style={{ fontWeight: 400, color: C.mut }}>Este navegador no tiene voces en español. Prueba con Edge o Chrome.</span>
+            ) : (
+              <select value={voces.some((v) => v.voiceURI === vozUri) ? vozUri : voces[0].voiceURI} onChange={(e) => elegirVoz(e.target.value)} style={{ border: `1px solid ${C.line}`, borderRadius: 6, padding: "5px 6px", fontSize: 13, color: C.ink, background: C.bg }}>
+                {voces.map((v) => <option key={v.voiceURI} value={v.voiceURI}>{v.name.replace(/^Microsoft /, "")} ({v.lang})</option>)}
+              </select>
+            )}
+          </label>
+          <label style={{ display: "flex", flexDirection: "column", gap: 3, fontWeight: 700 }}>
+            Velocidad: {vel.toFixed(1)}×
+            <input type="range" min="0.7" max="1.4" step="0.1" value={vel} onChange={(e) => cambiarVel(Number(e.target.value))} />
+          </label>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <button onClick={probarVoz} disabled={voces.length === 0} style={{ border: "none", borderRadius: 6, background: C.acc, color: "#fff", padding: "5px 12px", fontWeight: 700, fontSize: 12, cursor: "pointer" }}>🔊 Probar voz</button>
+            <span style={{ color: C.mut, fontSize: 11.5 }}>Edge trae las voces más naturales.</span>
+          </div>
+        </div>
+      )}
       {recordatorios.length > 0 && (
         <div style={{ borderBottom: `1px solid ${C.line}`, background: nVencidos ? "#FEF3C7" : C.bg }}>
           <button onClick={() => setVerRecs((v) => !v)} style={{ width: "100%", textAlign: "left", background: "none", border: "none", padding: "7px 12px", fontSize: 12.5, fontWeight: 700, color: C.ink, cursor: "pointer" }}>
@@ -204,7 +256,7 @@ export default function AsistenteAtlas() {
             <div style={{ background: m.role === "user" ? C.acc : C.bg, color: m.role === "user" ? "#fff" : m.error ? C.err : C.ink, border: m.role === "user" ? "none" : `1px solid ${C.line}`, borderRadius: 10, padding: "8px 11px", fontSize: 13.5, lineHeight: 1.45, whiteSpace: "pre-wrap" }}>{m.texto}</div>
             {m.role === "assistant" && !m.error && (
               <div style={{ display: "flex", gap: 10, marginTop: 3, fontSize: 11, color: C.mut }}>
-                <button onClick={() => leerEnVoz(m.texto)} style={{ background: "none", border: "none", color: C.mut, cursor: "pointer", padding: 0, fontSize: 11 }}>🔊 Escuchar</button>
+                <button onClick={() => leerEnVoz(m.texto, vozUri, vel)} style={{ background: "none", border: "none", color: C.mut, cursor: "pointer", padding: 0, fontSize: 11 }}>🔊 Escuchar</button>
                 {m.herramientas?.length > 0 && <span title={m.herramientas.join("\n")}>Consultó: {m.herramientas.map((h) => h.split("(")[0]).join(", ")}</span>}
               </div>
             )}
