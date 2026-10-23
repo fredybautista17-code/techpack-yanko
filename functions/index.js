@@ -12006,7 +12006,7 @@ async function asiEjecutarHerramienta(nombre, args) {
 async function asiLlamarClaude(system, messages) {
   const resp = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
-    headers: { "content-type": "application/json", "x-api-key": ANTHROPIC_API_KEY.value(), "anthropic-version": "2023-06-01" },
+    headers: { "content-type": "application/json", "x-api-key": String(ANTHROPIC_API_KEY.value() || "").replace(/[\s"']/g, ""), "anthropic-version": "2023-06-01" },
     body: JSON.stringify({ model: MODELO_ASISTENTE, max_tokens: 1200, system, tools: ASI_HERRAMIENTAS, messages }),
   });
   const texto = await resp.text();
