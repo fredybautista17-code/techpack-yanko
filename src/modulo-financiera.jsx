@@ -1,7 +1,8 @@
 import { useState, useEffect, Fragment } from "react";
 import { initializeApp, getApps } from "firebase/app";
-import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot } from "firebase/firestore";
+import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, query, where, writeBatch } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
+import { abrirRecibosLiquidacionLote } from "./modulo-nomina";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
@@ -275,6 +276,449 @@ const CATS_INGRESO = [
   "Anticipo Tela",
   "Anticipo Maquinaria",
 ];
+// ═════════════════════════════════════════════════════════════════════
+// NÓMINA POR ÁREA (2026-10-23, a pedido de Fredy) -- dentro de Pago de
+// Nómina: cada área con su sueldo causado y sus bonificaciones aparte, la
+// lista de personas por pagar, y el control de pagos (completos o parciales)
+// por persona. Los pagos viven en `financiera_pagos_persona` (uno por pago,
+// amarrado a la liquidación de esa persona en esa quincena); la "falta por
+// pagar" es el neto de la liquidación menos lo ya pagado. NO reemplaza el
+// "+ Pago" por forma/empleador de arriba: son dos registros independientes.
+// "Sueldo causado" = devengado básico, calculado como lo que queda del neto
+// al quitar bonificaciones y horas extra y devolver los descuentos, así
+// siempre cuadra con el Neto a pagar de la liquidación.
+const COL_PAGOS_PERSONA = "financiera_pagos_persona";
+const FORMAS_PERSONA = ["Efectivo", "Banco", "Banco + Efectivo"];
+const escH = (v) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const hoyISOBogota = () => new Date(Date.now() - 5 * 3600000).toISOString().slice(0, 10);
+function formaPrincipalDe(tipo, efectivoAparte) {
+  const f = FORMA_PAGO_POR_TIPO[tipo] || "Efectivo";
+  return f === "Banco" && efectivoAparte > 0 ? "Banco + Efectivo" : f;
+}
+function filaPersonaDe(tipo, l, t) {
+  const bonifPuntual = l.bonificacionPuntual || 0;
+  const bonif = bonifPuntual + (l.bonificacionCausacion || 0);
+  const he = l.totalHorasExtra || 0;
+  const desc = (l.epsTrabajador || 0) + (l.pensionTrabajador || 0) + (l.descuentoCobros || 0) + (l.descuentoDeducciones || 0);
+  const neto = l.netoAPagar || 0;
+  const area = (t?.area || "").trim() || "Sin área";
+  return {
+    liqKeys: [`${l.periodoId}|${tipo}|${l.trabajadorId}`],
+    periodoId: l.periodoId, tipo, trabajadorId: l.trabajadorId,
+    nombre: t?.nombre || l.nombre || "(sin nombre)", cedula: t?.cedula || "",
+    area, areaKey: area.toUpperCase(),
+    empleador: t?.empleador && EMPLEADORES_COLUMNAS.includes(t.empleador) ? t.empleador : "Sin asignar",
+    forma: formaPrincipalDe(tipo, he + bonifPuntual),
+    sueldo: neto - bonif - he + desc, bonif, he, desc, neto,
+    liqs: [{ tipo, l, t }],
+  };
+}
+function unirFilasPersona(filas) {
+  const m = new Map();
+  filas.forEach((f) => {
+    const k = `${f.tipo}|${f.trabajadorId}`;
+    const p = m.get(k);
+    if (!p) { m.set(k, { ...f, liqKeys: [...f.liqKeys], liqs: [...f.liqs] }); return; }
+    ["sueldo", "bonif", "he", "desc", "neto"].forEach((c) => { p[c] += f[c]; });
+    p.liqKeys.push(...f.liqKeys);
+    p.liqs.push(...f.liqs);
+  });
+  return [...m.values()];
+}
+const estadoDe = (neto, pagado, falta) => (neto < 1 ? "Sin valor" : falta < 1 ? "Pagado" : pagado < 1 ? "Pendiente" : "Parcial");
+const ESTADO_COLOR = {
+  "Pagado": { bg: C.greenBg, fg: C.green }, "Pagada": { bg: C.greenBg, fg: C.green },
+  "Parcial": { bg: C.amberBg, fg: C.amber },
+  "Pendiente": { bg: C.redBg, fg: C.red },
+  "Sin valor": { bg: C.canvas, fg: C.slate },
+};
+function EstadoPill({ estado }) {
+  const c = ESTADO_COLOR[estado] || ESTADO_COLOR["Sin valor"];
+  return <span style={{ display: "inline-block", fontSize: 11, fontWeight: 800, borderRadius: 6, padding: "2px 8px", background: c.bg, color: c.fg }}>{estado}</span>;
+}
+function BarraAvance({ pct }) {
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+      <span style={{ display: "inline-block", width: 70, height: 7, borderRadius: 4, background: C.border, overflow: "hidden" }}>
+        <span style={{ display: "block", height: "100%", width: `${Math.max(0, Math.min(100, pct))}%`, background: C.green }} />
+      </span>
+      <span style={{ fontSize: 11, color: C.slate, minWidth: 30 }}>{pct} %</span>
+    </span>
+  );
+}
+function abrirHojaImpresion(titulo, cuerpo) {
+  const html = `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"/><title>${escH(titulo)}</title><style>
+*{box-sizing:border-box}body{font-family:'Segoe UI',Arial,sans-serif;color:#1A1A2E;margin:0;padding:28px 34px;font-size:12px}
+h1{font-size:19px;margin:0}.sub{color:#5A5A7A;margin:3px 0 14px}h2{font-size:13px;margin:18px 0 6px}
+table{width:100%;border-collapse:collapse;margin-bottom:10px}th{background:#1A1A2E;color:#fff;padding:6px 7px;font-size:10.5px;text-align:right}
+th.l,td.l{text-align:left}td{padding:6px 7px;border-bottom:1px solid #DDD;text-align:right;font-variant-numeric:tabular-nums}
+tr.tot td{font-weight:bold;border-top:2px solid #222;border-bottom:none}.k{display:flex;gap:10px;margin:8px 0 14px}
+.k div{flex:1;border:1px solid #DDD;border-radius:8px;padding:8px 12px;color:#5A5A7A}.k b{display:block;font-size:16px;color:#1A1A2E}
+.firmas{display:flex;gap:50px;margin-top:46px}.firmas div{flex:1;border-top:1px solid #333;padding-top:5px;color:#555;font-size:11px}
+.bar{margin-bottom:14px}.bar button{background:#1A1A2E;color:#C8B8A2;border:none;border-radius:6px;padding:7px 16px;font-weight:700;cursor:pointer}
+@media print{.bar{display:none}body{padding:10mm}}</style></head><body>
+<div class="bar"><button onclick="window.print()">🖨 Imprimir / PDF</button></div>${cuerpo}</body></html>`;
+  const url = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8;" }));
+  const w = window.open(url, "_blank");
+  setTimeout(() => URL.revokeObjectURL(url), 120000);
+  return !!w;
+}
+function NominaPorAreaSection({ porTipo, trabajadores, tipoPeriodo, rangoTexto, anio, mes, currentUser, matrizPago, columnasPago }) {
+  const isAdmin = !!currentUser?.isAdmin;
+  const puedePagar = tipoPeriodo === "quincena";
+  const quienRegistra = currentUser?.name || currentUser?.username || currentUser?.email || "";
+  const [pagosP, setPagosP] = useState([]);
+  const [abiertas, setAbiertas] = useState({});
+  const [modalPago, setModalPago] = useState(null); // { fila }
+  const [verPagos, setVerPagos] = useState(null); // fila
+  const [confirmArea, setConfirmArea] = useState(null); // area
+  const [confirmDel, setConfirmDel] = useState(null); // pago
+  const [fechaP, setFechaP] = useState("");
+  const [montoP, setMontoP] = useState("");
+  const [formaP, setFormaP] = useState("Efectivo");
+  const [obsP, setObsP] = useState("");
+  const [errorP, setErrorP] = useState("");
+  const [guardando, setGuardando] = useState(false);
+  const [aviso, setAviso] = useState(null); // { texto, deshacer: [ids], error }
+  useEffect(() => {
+    const q = query(collection(db, COL_PAGOS_PERSONA), where("mesClave", "==", `${anio}-${mes}`));
+    return onSnapshot(q, (snap) => setPagosP(snap.docs.map((d) => ({ ...d.data(), id: d.id }))), () => setPagosP([]));
+  }, [anio, mes]);
+  useEffect(() => {
+    if (!aviso) return undefined;
+    const t = setTimeout(() => setAviso(null), 9000);
+    return () => clearTimeout(t);
+  }, [aviso]);
+
+  const trabajadorPorId = new Map(trabajadores.map((t) => [t.id, t]));
+  const filasBase = porTipo.flatMap((g) => g.liquidaciones.map((l) => filaPersonaDe(g.tipo, l, trabajadorPorId.get(l.trabajadorId))));
+  const filas = unirFilasPersona(filasBase);
+  const pagadoPorLiq = {};
+  pagosP.forEach((p) => { pagadoPorLiq[p.liqKey] = (pagadoPorLiq[p.liqKey] || 0) + (Number(p.monto) || 0); });
+  filas.forEach((f) => {
+    f.pagado = f.liqKeys.reduce((s, k) => s + (pagadoPorLiq[k] || 0), 0);
+    f.falta = Math.max(0, f.neto - f.pagado);
+    f.estado = estadoDe(f.neto, f.pagado, f.falta);
+  });
+  const areasMap = new Map();
+  filas.forEach((f) => {
+    let a = areasMap.get(f.areaKey);
+    if (!a) { a = { key: f.areaKey, nombre: f.area, filas: [] }; areasMap.set(f.areaKey, a); }
+    a.filas.push(f);
+  });
+  const areas = [...areasMap.values()]
+    .map((a) => {
+      a.filas.sort((x, y) => x.nombre.localeCompare(y.nombre, "es"));
+      const sum = (k) => a.filas.reduce((s, f) => s + f[k], 0);
+      const neto = sum("neto"), pagado = sum("pagado"), falta = sum("falta");
+      return { ...a, personas: a.filas.length, sueldo: sum("sueldo"), bonif: sum("bonif"), he: sum("he"), desc: sum("desc"), neto, pagado, falta, estado: estadoDe(neto, pagado, falta) };
+    })
+    .sort((x, y) => (x.key === "SIN ÁREA" ? 1 : y.key === "SIN ÁREA" ? -1 : x.nombre.localeCompare(y.nombre, "es")));
+  const tot = areas.reduce((s, a) => ({ personas: s.personas + a.personas, sueldo: s.sueldo + a.sueldo, bonif: s.bonif + a.bonif, he: s.he + a.he, desc: s.desc + a.desc, neto: s.neto + a.neto, pagado: s.pagado + a.pagado, falta: s.falta + a.falta }), { personas: 0, sueldo: 0, bonif: 0, he: 0, desc: 0, neto: 0, pagado: 0, falta: 0 });
+  const pct = (pagado, neto) => (neto > 0 ? Math.min(100, Math.round((pagado / neto) * 100)) : 0);
+
+  function abrirRegistrar(fila) {
+    setModalPago({ fila });
+    setFechaP(hoyISOBogota());
+    setMontoP(fila.falta >= 1 ? String(Math.round(fila.falta)) : "");
+    setFormaP(fila.forma);
+    setObsP("");
+    setErrorP("");
+  }
+  function docPago(fila, monto, fecha, forma, observacion) {
+    return {
+      liqKey: fila.liqKeys[0], periodoId: fila.periodoId, mesClave: `${anio}-${mes}`, tipoNomina: fila.tipo,
+      trabajadorId: fila.trabajadorId, nombre: fila.nombre, cedula: fila.cedula, area: fila.area, empleador: fila.empleador,
+      monto, fecha, forma, observacion: observacion || "", registradoPor: quienRegistra, creadoEn: new Date().toISOString(),
+    };
+  }
+  async function pagarCompleto(fila) {
+    if (fila.falta < 1) return;
+    try {
+      const ref = doc(collection(db, COL_PAGOS_PERSONA));
+      await setDoc(ref, docPago(fila, fila.falta, hoyISOBogota(), fila.forma, ""));
+      setAviso({ texto: `Pago registrado: ${fila.nombre} · ${fmtMoney(fila.falta)}`, deshacer: [ref.id] });
+    } catch (e) {
+      setAviso({ texto: "No se pudo guardar el pago. Revisa tu conexión e intenta de nuevo.", error: true });
+    }
+  }
+  async function guardarPagoParcial() {
+    const fila = modalPago?.fila;
+    if (!fila) return;
+    const monto = Number(montoP);
+    if (!fechaP) { setErrorP("Elige la fecha del pago."); return; }
+    if (!(monto > 0)) { setErrorP("Escribe un monto mayor a cero."); return; }
+    if (monto > fila.falta + 1) { setErrorP(`No puede ser mayor a lo que falta por pagar (${fmtMoney(fila.falta)}).`); return; }
+    setGuardando(true);
+    try {
+      const ref = doc(collection(db, COL_PAGOS_PERSONA));
+      await setDoc(ref, docPago(fila, monto, fechaP, formaP, (obsP || "").trim()));
+      setModalPago(null);
+      setAviso({ texto: `Pago registrado: ${fila.nombre} · ${fmtMoney(monto)}`, deshacer: [ref.id] });
+    } catch (e) {
+      setErrorP("No se pudo guardar el pago. Revisa tu conexión e intenta de nuevo.");
+    } finally {
+      setGuardando(false);
+    }
+  }
+  async function pagarAreaPendiente(area) {
+    const pendientes = area.filas.filter((f) => f.falta >= 1);
+    if (!pendientes.length) { setConfirmArea(null); return; }
+    setGuardando(true);
+    try {
+      const batch = writeBatch(db);
+      const ids = [];
+      pendientes.forEach((f) => {
+        const ref = doc(collection(db, COL_PAGOS_PERSONA));
+        ids.push(ref.id);
+        batch.set(ref, docPago(f, f.falta, hoyISOBogota(), f.forma, `Pago del área ${area.nombre}`));
+      });
+      await batch.commit();
+      setConfirmArea(null);
+      setAviso({ texto: `Pagos registrados en ${area.nombre}: ${pendientes.length} persona${pendientes.length === 1 ? "" : "s"} · ${fmtMoney(pendientes.reduce((s, f) => s + f.falta, 0))}`, deshacer: ids });
+    } catch (e) {
+      setConfirmArea(null);
+      setAviso({ texto: "No se pudieron guardar los pagos del área. Revisa tu conexión e intenta de nuevo.", error: true });
+    } finally {
+      setGuardando(false);
+    }
+  }
+  async function deshacer(ids) {
+    setAviso(null);
+    try { await Promise.all(ids.map((id) => fsDelete(COL_PAGOS_PERSONA, id))); } catch (e) { setAviso({ texto: "No se pudo deshacer. Solo un administrador puede borrar pagos.", error: true }); }
+  }
+  function desprendibles(filasSel, titulo) {
+    const items = filasSel.flatMap((f) => f.liqs.map((x) => ({ tipoNomina: x.tipo, trabajador: x.t || { id: x.l.trabajadorId, nombre: f.nombre }, liquidacion: x.l })));
+    if (!items.length) return;
+    if (!abrirRecibosLiquidacionLote(items, titulo)) setAviso({ texto: "El navegador bloqueó la ventana. Permite las ventanas emergentes de ATLAS e intenta de nuevo.", error: true });
+  }
+  const fm = (n) => (n ? fmtMoney(n) : "—");
+  const fechaImpresion = new Date().toLocaleDateString("es-CO", { dateStyle: "long" });
+  function imprimirResumen() {
+    const filasA = areas.map((a) => `<tr><td class="l">${escH(a.nombre)}</td><td>${a.personas}</td><td>${fm(a.sueldo)}</td><td>${fm(a.bonif)}</td><td>${fm(a.he)}</td><td>${fm(a.desc)}</td><td>${fm(a.neto)}</td><td>${fm(a.pagado)}</td><td>${fm(a.falta)}</td></tr>`).join("");
+    const filasM = ["Efectivo", "Banco"].map((forma) => `<tr><td class="l">${forma}</td>${columnasPago.map((e) => `<td>${fm(matrizPago[forma][e])}</td>`).join("")}<td>${fm(columnasPago.reduce((s, e) => s + matrizPago[forma][e], 0))}</td></tr>`).join("");
+    const totM = columnasPago.map((e) => matrizPago.Efectivo[e] + matrizPago.Banco[e]);
+    const cuerpo = `<h1>Industrias Yanko · Resumen de nómina por área</h1><div class="sub">${escH(rangoTexto)} · Impreso el ${escH(fechaImpresion)}${quienRegistra ? ` por ${escH(quienRegistra)}` : ""}</div>
+<div class="k"><div>Neto a pagar<b>${fmtMoney(tot.neto)}</b></div><div>Ya pagado<b>${fmtMoney(tot.pagado)}</b></div><div>Falta por pagar<b>${fmtMoney(tot.falta)}</b></div><div>Avance<b>${pct(tot.pagado, tot.neto)} %</b></div></div>
+<table><tr><th class="l">Área</th><th>Pers.</th><th>Sueldo causado</th><th>Bonificaciones</th><th>Horas extra</th><th>Descuentos</th><th>Neto a pagar</th><th>Pagado</th><th>Falta</th></tr>${filasA}
+<tr class="tot"><td class="l">TOTAL</td><td>${tot.personas}</td><td>${fm(tot.sueldo)}</td><td>${fm(tot.bonif)}</td><td>${fm(tot.he)}</td><td>${fm(tot.desc)}</td><td>${fm(tot.neto)}</td><td>${fm(tot.pagado)}</td><td>${fm(tot.falta)}</td></tr></table>
+<h2>¿Cómo pagar?</h2><table><tr><th class="l">Forma de pago</th>${columnasPago.map((e) => `<th>${escH(e)}</th>`).join("")}<th>Total</th></tr>${filasM}
+<tr class="tot"><td class="l">TOTAL</td>${totM.map((v) => `<td>${fm(v)}</td>`).join("")}<td>${fm(totM.reduce((s, v) => s + v, 0))}</td></tr></table>
+<div class="firmas"><div>Elaboró</div><div>Revisó</div><div>Aprobó</div></div>`;
+    if (!abrirHojaImpresion("Resumen de nómina por área", cuerpo)) setAviso({ texto: "El navegador bloqueó la ventana. Permite las ventanas emergentes de ATLAS e intenta de nuevo.", error: true });
+  }
+  function imprimirArea(a) {
+    const filasP = a.filas.map((f) => `<tr><td class="l">${escH(f.nombre)}</td><td class="l">${escH(f.cedula)}</td><td class="l">${escH(f.tipo)}</td><td class="l">${escH(f.empleador)}</td><td class="l">${escH(f.forma)}</td><td>${fm(f.sueldo)}</td><td>${fm(f.bonif)}</td><td>${fm(f.he)}</td><td>${fm(f.desc)}</td><td>${fm(f.neto)}</td><td>${fm(f.pagado)}</td><td>${fm(f.falta)}</td></tr>`).join("");
+    const cuerpo = `<h1>Industrias Yanko · Nómina del área ${escH(a.nombre)}</h1><div class="sub">${escH(rangoTexto)} · ${a.personas} persona${a.personas === 1 ? "" : "s"} · Impreso el ${escH(fechaImpresion)}</div>
+<table><tr><th class="l">Trabajador</th><th class="l">Cédula</th><th class="l">Nómina</th><th class="l">Empresa</th><th class="l">Pagar en</th><th>Sueldo causado</th><th>Bonif.</th><th>Horas extra</th><th>Desc.</th><th>Neto a pagar</th><th>Pagado</th><th>Falta</th></tr>${filasP}
+<tr class="tot"><td class="l" colspan="5">TOTAL ${escH(a.nombre)}</td><td>${fm(a.sueldo)}</td><td>${fm(a.bonif)}</td><td>${fm(a.he)}</td><td>${fm(a.desc)}</td><td>${fm(a.neto)}</td><td>${fm(a.pagado)}</td><td>${fm(a.falta)}</td></tr></table>
+<div class="firmas"><div>Elaboró</div><div>Revisó</div><div>Aprobó</div></div>`;
+    if (!abrirHojaImpresion(`Nómina ${a.nombre}`, cuerpo)) setAviso({ texto: "El navegador bloqueó la ventana. Permite las ventanas emergentes de ATLAS e intenta de nuevo.", error: true });
+  }
+
+  const th = (txt, l) => <th style={{ padding: "9px 10px", color: C.seam, textAlign: l ? "left" : "right", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{txt}</th>;
+  const td = (v, o = {}) => <td style={{ padding: "8px 10px", textAlign: o.l ? "left" : "right", borderTop: `1px solid ${C.border}`, fontWeight: o.b ? 800 : 500, color: o.c || C.ink, fontVariantNumeric: "tabular-nums", whiteSpace: o.wrap ? "normal" : "nowrap" }}>{v}</td>;
+  const pagosDeFila = verPagos ? pagosP.filter((p) => verPagos.liqKeys.includes(p.liqKey)).sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)) || String(a.creadoEn).localeCompare(String(b.creadoEn))) : [];
+
+  return (
+    <div style={{ marginBottom: 28 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 12, flexWrap: "wrap", marginBottom: 10 }}>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 15, color: C.ink }}>Nómina por área</div>
+          <div style={{ fontSize: 12, color: C.slate, maxWidth: 760, marginTop: 3 }}>
+            Sueldo causado (sueldo del período + auxilio, producción o valor del contrato) y bonificaciones por separado, con lo pagado y lo que falta por pagar. Toca un área para ver a quién se le debe pagar.
+            {!puedePagar && " Para registrar pagos, elige \"Una quincena\" arriba; en el mes completo se ven las sumas."}
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <Btn variant="secondary" small onClick={imprimirResumen}>🖨 Imprimir resumen</Btn>
+          <Btn variant="secondary" small onClick={() => desprendibles(filas, "Desprendibles de nómina")}>📄 Desprendibles (todos)</Btn>
+        </div>
+      </div>
+
+      {aviso && (
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "9px 14px", marginBottom: 10, borderRadius: 8, fontSize: 13, fontWeight: 600, background: aviso.error ? C.redBg : C.greenBg, color: aviso.error ? C.red : C.green }}>
+          <span>{aviso.texto}</span>
+          <span style={{ display: "flex", gap: 12 }}>
+            {aviso.deshacer && isAdmin && <span onClick={() => deshacer(aviso.deshacer)} style={{ cursor: "pointer", textDecoration: "underline" }}>Deshacer</span>}
+            <span onClick={() => setAviso(null)} style={{ cursor: "pointer" }}>✕</span>
+          </span>
+        </div>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 12, marginBottom: 14 }}>
+        <KPI icon="💵" label="Neto a pagar" value={fmtMoney(tot.neto)} color={C.ink} bg={C.canvas} />
+        <KPI icon="✅" label="Ya pagado" value={fmtMoney(tot.pagado)} color={C.green} bg={C.greenBg} />
+        <KPI icon="⏳" label="Falta por pagar" value={fmtMoney(tot.falta)} color={C.red} bg={C.redBg} />
+        <KPI icon="📈" label="Avance de pagos" value={`${pct(tot.pagado, tot.neto)} %`} color={C.blue} bg={C.blueBg} />
+      </div>
+
+      <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <thead>
+            <tr style={{ background: C.ink }}>
+              {th("Área", true)}{th("Pers.")}{th("Sueldo causado")}{th("Bonificaciones")}{th("Horas extra")}{th("Descuentos")}{th("Neto a pagar")}{th("Pagado")}{th("Falta")}{th("Avance", true)}{th("Estado", true)}
+            </tr>
+          </thead>
+          <tbody>
+            {areas.map((a) => {
+              const abierta = !!abiertas[a.key];
+              return (
+                <Fragment key={a.key}>
+                  <tr onClick={() => setAbiertas((s) => ({ ...s, [a.key]: !s[a.key] }))} style={{ cursor: "pointer", background: abierta ? C.canvas : C.white }}>
+                    {td(<span>{abierta ? "▾" : "▸"} {a.nombre}</span>, { l: true, b: true })}
+                    {td(a.personas)}{td(fm(a.sueldo))}
+                    {td(fm(a.bonif), { c: a.bonif ? C.green : C.slate, b: !!a.bonif })}
+                    {td(fm(a.he), { c: a.he ? C.amber : C.slate, b: !!a.he })}
+                    {td(a.desc ? `− ${fmtMoney(a.desc)}` : "—", { c: a.desc ? C.red : C.slate })}
+                    {td(fmtMoney(a.neto), { b: true })}
+                    {td(fm(a.pagado), { c: a.pagado ? C.green : C.slate })}
+                    {td(fm(a.falta), { c: a.falta >= 1 ? C.red : C.slate, b: a.falta >= 1 })}
+                    {td(<BarraAvance pct={pct(a.pagado, a.neto)} />, { l: true })}
+                    {td(<EstadoPill estado={a.falta < 1 && a.neto >= 1 ? "Pagada" : a.estado} />, { l: true })}
+                  </tr>
+                  {abierta && (
+                    <tr>
+                      <td colSpan={11} style={{ padding: 0, borderTop: `1px solid ${C.border}`, background: "#FBF9F5" }}>
+                        <div style={{ padding: "12px 14px" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+                            <div style={{ fontSize: 13, fontWeight: 800, color: C.ink }}>
+                              {a.nombre} · {a.personas} persona{a.personas === 1 ? "" : "s"}
+                              <span style={{ fontWeight: 600, color: C.slate, marginLeft: 8 }}>falta por pagar {fmtMoney(a.falta)}</span>
+                            </div>
+                            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                              <Btn variant="secondary" small onClick={() => imprimirArea(a)}>🖨 Imprimir esta área</Btn>
+                              <Btn variant="secondary" small onClick={() => desprendibles(a.filas, `Desprendibles ${a.nombre}`)}>📄 Desprendibles del área</Btn>
+                              {puedePagar && <Btn small onClick={() => setConfirmArea(a)} disabled={a.falta < 1}>Pagar todo lo pendiente del área</Btn>}
+                            </div>
+                          </div>
+                          <div style={{ overflow: "auto", background: C.white, borderRadius: 10, border: `1px solid ${C.border}` }}>
+                            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                              <thead>
+                                <tr style={{ background: C.canvas }}>
+                                  {["Trabajador", "Pagar en", "Sueldo causado", "Bonif.", "Horas extra", "Desc.", "Neto a pagar", "Pagado", "Falta", "Estado", "Acción"].map((h, i) => (
+                                    <th key={h} style={{ padding: "8px 10px", color: C.slate, textAlign: i === 0 || i === 1 || i === 9 ? "left" : "right", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
+                                  ))}
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {a.filas.map((f) => (
+                                  <tr key={`${f.tipo}|${f.trabajadorId}`}>
+                                    {td(<div><div style={{ fontWeight: 800 }}>{f.nombre}</div><div style={{ fontSize: 10.5, color: C.slate, fontWeight: 500 }}>{[f.cedula, f.tipo, f.empleador].filter(Boolean).join(" · ")}</div></div>, { l: true, wrap: true })}
+                                    {td(f.forma, { l: true })}
+                                    {td(fm(f.sueldo))}
+                                    {td(fm(f.bonif), { c: f.bonif ? C.green : C.slate, b: !!f.bonif })}
+                                    {td(fm(f.he), { c: f.he ? C.amber : C.slate, b: !!f.he })}
+                                    {td(f.desc ? `− ${fmtMoney(f.desc)}` : "—", { c: f.desc ? C.red : C.slate })}
+                                    {td(fmtMoney(f.neto), { b: true })}
+                                    {td(fm(f.pagado), { c: f.pagado ? C.green : C.slate })}
+                                    {td(fm(f.falta), { c: f.falta >= 1 ? C.red : C.slate, b: f.falta >= 1 })}
+                                    {td(<EstadoPill estado={f.estado} />, { l: true })}
+                                    <td style={{ padding: "6px 10px", textAlign: "right", borderTop: `1px solid ${C.border}`, whiteSpace: "nowrap" }}>
+                                      <span style={{ display: "inline-flex", gap: 6 }}>
+                                        {f.pagado > 0 && <Btn variant="secondary" small onClick={() => setVerPagos(f)}>Ver pagos</Btn>}
+                                        {puedePagar && f.estado === "Pendiente" && <Btn small onClick={() => pagarCompleto(f)}>Pagar completo</Btn>}
+                                        {puedePagar && (f.estado === "Pendiente" || f.estado === "Parcial") && <Btn variant={f.estado === "Parcial" ? "primary" : "secondary"} small onClick={() => abrirRegistrar(f)}>{f.estado === "Parcial" ? "Registrar pago" : "Parcial…"}</Btn>}
+                                      </span>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
+            <tr style={{ background: "#FBF9F5" }}>
+              {td("TOTAL", { l: true, b: true })}{td(tot.personas, { b: true })}{td(fm(tot.sueldo), { b: true })}
+              {td(fm(tot.bonif), { b: true, c: C.green })}{td(fm(tot.he), { b: true, c: C.amber })}
+              {td(tot.desc ? `− ${fmtMoney(tot.desc)}` : "—", { b: true, c: C.red })}
+              {td(fmtMoney(tot.neto), { b: true })}{td(fm(tot.pagado), { b: true, c: C.green })}{td(fm(tot.falta), { b: true, c: C.red })}
+              {td(<BarraAvance pct={pct(tot.pagado, tot.neto)} />, { l: true })}{td("", { l: true })}
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div style={{ fontSize: 11, color: C.slate, marginTop: 8, maxWidth: 820 }}>
+        El área y la empresa son las que tiene HOY cada trabajador. Sueldo causado = neto a pagar − bonificaciones − horas extra + descuentos (EPS, pensión, cobros de Bodega y deducciones). Maquila aparece aquí aunque esté excluida de las tarjetas de causación de arriba, porque sí hay que pagarle.
+      </div>
+
+      {modalPago && (
+        <Modal title={`Registrar pago — ${modalPago.fila.nombre}`} onClose={() => setModalPago(null)} width={460}>
+          <div style={{ fontSize: 12, color: C.slate, marginBottom: 14 }}>
+            Neto {fmtMoney(modalPago.fila.neto)} · ya pagado {fmtMoney(modalPago.fila.pagado)} · <strong style={{ color: C.red }}>falta {fmtMoney(modalPago.fila.falta)}</strong>
+          </div>
+          <Field label="Fecha del pago"><FInput type="date" value={fechaP} onChange={setFechaP} /></Field>
+          <Field label="Monto pagado"><FInput type="number" value={montoP} onChange={(v) => { setMontoP(v); setErrorP(""); }} placeholder="0" /></Field>
+          <Field label="Forma de pago"><FSel value={formaP} onChange={setFormaP} options={FORMAS_PERSONA} /></Field>
+          <Field label="Observación (opcional)"><FInput value={obsP} onChange={setObsP} placeholder="N° de comprobante, nota..." /></Field>
+          {errorP && <div style={{ fontSize: 12, color: C.red, fontWeight: 700, marginBottom: 12 }}>{errorP}</div>}
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setModalPago(null)}>Cancelar</Btn>
+            <Btn onClick={guardarPagoParcial} disabled={guardando}>{guardando ? "Guardando..." : "Guardar pago"}</Btn>
+          </div>
+        </Modal>
+      )}
+
+      {confirmArea && (
+        <Modal title={`Pagar todo lo pendiente — ${confirmArea.nombre}`} onClose={() => setConfirmArea(null)} width={460}>
+          <div style={{ fontSize: 14, color: C.ink, marginBottom: 18 }}>
+            Se registrará el pago completo de <strong>{confirmArea.filas.filter((f) => f.falta >= 1).length}</strong> persona(s) por un total de <strong>{fmtMoney(confirmArea.falta)}</strong>, con fecha de hoy y la forma de pago de cada una.
+            <div style={{ marginTop: 8, color: C.slate, fontSize: 12 }}>Quienes ya tenían un pago parcial solo se completan con lo que les faltaba.</div>
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setConfirmArea(null)}>Cancelar</Btn>
+            <Btn onClick={() => pagarAreaPendiente(confirmArea)} disabled={guardando}>{guardando ? "Guardando..." : "Sí, registrar los pagos"}</Btn>
+          </div>
+        </Modal>
+      )}
+
+      {verPagos && (
+        <Modal title={`Pagos de ${verPagos.nombre}`} onClose={() => setVerPagos(null)} width={560}>
+          <div style={{ fontSize: 12, color: C.slate, marginBottom: 12 }}>
+            Neto {fmtMoney(verPagos.neto)} · pagado {fmtMoney(pagosDeFila.reduce((s, p) => s + (Number(p.monto) || 0), 0))}
+          </div>
+          {pagosDeFila.length === 0 ? (
+            <div style={{ fontSize: 13, color: C.slate }}>Todavía no hay pagos registrados.</div>
+          ) : (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead><tr style={{ background: C.canvas }}>{["Fecha", "Monto", "Forma", "Registró", ""].map((h, i) => <th key={i} style={{ padding: "7px 8px", textAlign: i === 1 ? "right" : "left", color: C.slate, fontSize: 10, fontWeight: 700 }}>{h}</th>)}</tr></thead>
+              <tbody>
+                {pagosDeFila.map((p) => (
+                  <tr key={p.id}>
+                    <td style={{ padding: "7px 8px", borderTop: `1px solid ${C.border}` }}>{p.fecha}{p.observacion ? <div style={{ fontSize: 10.5, color: C.slate }}>{p.observacion}</div> : null}</td>
+                    <td style={{ padding: "7px 8px", borderTop: `1px solid ${C.border}`, textAlign: "right", fontWeight: 800 }}>{fmtMoney(p.monto)}</td>
+                    <td style={{ padding: "7px 8px", borderTop: `1px solid ${C.border}` }}>{p.forma}</td>
+                    <td style={{ padding: "7px 8px", borderTop: `1px solid ${C.border}`, color: C.slate }}>{p.registradoPor || "—"}</td>
+                    <td style={{ padding: "7px 8px", borderTop: `1px solid ${C.border}`, textAlign: "center" }}>{isAdmin && <span onClick={() => setConfirmDel(p)} style={{ cursor: "pointer", color: C.red }} title="Eliminar este pago">🗑</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </Modal>
+      )}
+
+      {confirmDel && (
+        <Modal title="Confirmar eliminación" onClose={() => setConfirmDel(null)} width={420}>
+          <div style={{ fontSize: 14, color: C.ink, marginBottom: 20 }}>
+            ¿Eliminar el pago de <strong>{fmtMoney(confirmDel.monto)}</strong> del {confirmDel.fecha} a {confirmDel.nombre}?
+            <div style={{ marginTop: 8, color: C.slate, fontSize: 13 }}>Esta acción no se puede deshacer.</div>
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setConfirmDel(null)}>Cancelar</Btn>
+            <Btn variant="danger" onClick={async () => { await fsDelete(COL_PAGOS_PERSONA, confirmDel.id); setConfirmDel(null); }}>Sí, eliminar</Btn>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 // (2026-09-19, a pedido de Fredy) Pantalla original de Financiera -- ahora
 // una vista más dentro del módulo (ver FinancieraStandalone al final del
 // archivo), no el módulo completo. Su lógica interna no cambió.
@@ -603,6 +1047,8 @@ function PagoNominaView({ currentUser }) {
                   </table>
                 </div>
               )}
+
+              <NominaPorAreaSection porTipo={porTipo} trabajadores={trabajadores} tipoPeriodo={tipoPeriodo} rangoTexto={rangoTexto} anio={anio} mes={mes} currentUser={currentUser} matrizPago={matrizPago} columnasPago={columnasPago} />
 
               <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>Desglose por tipo de nómina</div>
               <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "auto", marginBottom: 8 }}>

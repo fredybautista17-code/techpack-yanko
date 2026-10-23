@@ -8490,7 +8490,7 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
     </div>
   );
 }
-function exportReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
+function armarReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
   const fechaGen = new Date().toISOString().slice(0, 10);
   const esFiscal = tipoNomina === "Fiscal Destajo";
   const esFiscalConSegSocial = tipoNomina === "Fiscal";
@@ -8645,13 +8645,39 @@ function exportReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
 </div>
 </body>
 </html>`;
+  return { html, nombre };
+}
+function exportReciboLiquidacionHTML(args) {
+  const { html, nombre } = armarReciboLiquidacionHTML(args);
   const blob = new Blob([html], { type: "text/html;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `Recibo_Liquidacion_${(nombre || "trabajador").replace(/\s+/g, "_")}_${liquidacion.periodoId || ""}.html`;
+  a.download = `Recibo_Liquidacion_${(nombre || "trabajador").replace(/\s+/g, "_")}_${args.liquidacion.periodoId || ""}.html`;
   a.click();
   URL.revokeObjectURL(url);
+}
+// (2026-10-23, a pedido de Fredy) Para Financiera: junta varios recibos de liquidación (los mismos de
+// siempre) en UNA sola hoja imprimible, uno por página, y la abre en una pestaña nueva. items =
+// [{ tipoNomina, trabajador, liquidacion }]. Devuelve false si no hay nada o el navegador bloqueó la ventana.
+export function abrirRecibosLiquidacionLote(items, titulo = "Desprendibles de nómina") {
+  const docs = (items || []).map((it) => armarReciboLiquidacionHTML(it).html);
+  if (!docs.length) return false;
+  const estilos = (docs[0].match(/<style>([\s\S]*?)<\/style>/) || [])[1] || "";
+  const paginas = docs
+    .map((h) => {
+      const i = h.indexOf('<div class="page">');
+      const j = h.lastIndexOf("</body>");
+      return i >= 0 && j > i ? h.slice(i, j) : "";
+    })
+    .filter(Boolean);
+  const html = `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"/><title>${titulo}</title><style>${estilos}
+.page{margin-bottom:28px;page-break-after:always;break-after:page}
+@media print{.page{margin-bottom:0;box-shadow:none;border-radius:0}.footer button{display:none}}</style></head><body>${paginas.join("\n")}</body></html>`;
+  const url = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8;" }));
+  const w = window.open(url, "_blank");
+  setTimeout(() => URL.revokeObjectURL(url), 120000);
+  return !!w;
 }
 // (2026-09-14, a pedido de Fredy) Recibo/visualizador para una liquidacion
 // de RETIRO (cesantias/intereses/prima/vacaciones al retirarse) -- distinto

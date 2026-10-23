@@ -19,7 +19,7 @@ service cloud.firestore {
     // Colecciones internas que un usuario de rol Cliente nunca debe leer ni escribir.
     function sensible(col) {
       return col.matches('(nomina|contabilidad|centro_costo|kpi|cotizador|dado_por_cumplido|asistente)_.*')
-        || col in ['financiera_pagos', 'abonosVenezuela', 'cuentaYulianaVenezuela', 'despachosDubo',
+        || col in ['financiera_pagos', 'financiera_pagos_persona', 'abonosVenezuela', 'cuentaYulianaVenezuela', 'despachosDubo',
                    'despachosVenezuela', 'ventas_perdidas_cargas', 'precios_corte_cargas',
                    'lotes_servicio_confeccion'];
     }
