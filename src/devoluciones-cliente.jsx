@@ -383,6 +383,26 @@ function AccionesDevolucion({ db, functionsClient, T, d, currentUser, esCliente,
   );
 }
 
+// (2026-10-23, a pedido de Fredy) Qué se despachó de este lote según Busint (factura con "LOTE <n>" en el comentario;
+// si no hay, lo que aparece por pedido + referencia como guía).
+function AvisoFacturacion({ T, info }) {
+  const f = info?.facturacion;
+  if (!f || f.estado === "sin_consulta") return null;
+  const caja = (color, bg, txt) => <div style={{ background: bg, color, borderRadius: 8, padding: "8px 12px", fontSize: 13, marginBottom: 10 }}>{txt}</div>;
+  const listaFac = (f.facturas || []).map((x) => `${x.tipo || "FAC"} ${x.nfact}${x.fecha ? ` · ${fmtFecha(x.fecha)}` : ""}`).join("  |  ");
+  if (f.estado === "factura_lote") {
+    return caja(T.jade, T.jadeBg, <>Facturado: <b>{listaFac}</b> · {f.unidades} unidades despachadas. {f.porColor ? "Solo puedes devolver lo que se despachó en cada color y talla." : "No pude separar lo despachado por color; los topes siguen siendo la cantidad del lote."}</>);
+  }
+  if (f.estado === "por_pedido") {
+    const partes = [];
+    if (f.unidadesFactura > 0) partes.push(`${f.unidadesFactura} und facturadas${listaFac ? ` (${listaFac})` : ""}`);
+    if (f.unidadesTraslado) partes.push(`${f.unidadesTraslado} und en traslado ${(f.tiposTraslado || []).filter((t) => t === "TCO" || t === "TEX").join("/")}`.trim());
+    return caja(T.amber, T.amberBg, <>No encontré una factura con el número de este lote. Para el pedido {info.pedido} y la ref {info.ref} aparecen: {partes.join(" · ") || "movimientos"}{f.ultimaFecha ? ` · último ${fmtFecha(f.ultimaFecha)}` : ""} (puede incluir otros lotes del mismo pedido). Los topes son la cantidad del lote.</>);
+  }
+  if (f.estado === "sin_factura") return caja(T.amber, T.amberBg, "Este lote todavía no aparece facturado ni despachado en Busint. Los topes son la cantidad del lote.");
+  return null;
+}
+
 // ─── PANTALLA DEL CLIENTE ────────────────────────────────────────────────
 export function DevolucionesClienteView({ db, functionsClient, T: Tp, currentUser }) {
   const T = Tp || TEMA_DEFECTO;
@@ -416,15 +436,26 @@ export function DevolucionesClienteView({ db, functionsClient, T: Tp, currentUse
   }
   function cambiar(k, v, cap) {
     let n = v === "" ? "" : entero(v);
-    if (n !== "" && cap && n > cap) n = cap;
+    if (n !== "" && cap && n > cap) {
+      n = cap;
+      setAviso(""); setError(despachoPorColor ? `Solo se despacharon ${cap} unidades en esa casilla según la factura; no puedes devolver más.` : `El lote solo tiene ${cap} unidades en esa casilla.`);
+    } else if (n !== "") {
+      setError("");
+    }
     setCant((c) => ({ ...c, [k]: n }));
   }
   const total = useMemo(() => Object.values(cant).reduce((s, v) => s + (Number(v) || 0), 0), [cant]);
+  // (2026-10-23, a pedido de Fredy) Si Busint dice cuánto se despachó por color y talla (factura del lote), ese es el tope;
+  // si no, queda lo cortado del lote como antes.
+  const despachoPorColor = !!info?.facturacion?.porColor;
+  const coloresGrilla = useMemo(() => (info ? info.colores.map((c) => (despachoPorColor && c.despachado ? { ...c, tallas: c.despachado } : c)) : []), [info, despachoPorColor]);
 
   async function reportar() {
     setError(""); setAviso("");
     if (!info) return;
     if (!(total > 0)) { setError("Escribe al menos una unidad a devolver."); return; }
+    const pasadas = coloresGrilla.flatMap((col) => info.tallas.filter((t) => (Number(cant[`${col.color}|${t}`]) || 0) > (Number(col.tallas?.[t]) || 0)).map((t) => `${col.nombre || col.color} ${etiquetaTalla(t, esInfantilGrupo(info.grupo))}`));
+    if (pasadas.length) { setError(`Hay cantidades por encima de lo ${despachoPorColor ? "despachado" : "del lote"}: ${pasadas.join(", ")}.`); return; }
     if (!uid) { setError("No se pudo identificar tu sesión. Cierra sesión y vuelve a entrar."); return; }
     const lineas = info.colores
       .map((c) => ({ color: c.color, colorNombre: c.nombre || "", cantidades: Object.fromEntries(info.tallas.map((t) => [t, Number(cant[`${c.color}|${t}`]) || 0]).filter(([, n]) => n > 0)) }))
@@ -468,8 +499,9 @@ export function DevolucionesClienteView({ db, functionsClient, T: Tp, currentUse
         {info && info.sinDetalle && <div style={{ background: T.amberBg, color: T.amber, borderRadius: 8, padding: "8px 12px", fontSize: 13 }}>Encontramos el lote, pero no trae el detalle por color y talla. Avisa al equipo de Yanko.</div>}
         {info && !info.sinDetalle && (
           <>
-            <div style={{ fontSize: 12, color: T.slate, marginBottom: 6 }}>Unidades que devuelves, por color y talla (debajo de cada casilla: cantidad del lote)</div>
-            <GrillaColorTalla T={T} colores={info.colores} tallas={info.tallas} valores={cant} onCambiar={cambiar} tope infantil={esInfantilGrupo(info.grupo)} />
+            <AvisoFacturacion T={T} info={info} />
+            <div style={{ fontSize: 12, color: T.slate, marginBottom: 6 }}>Unidades que devuelves, por color y talla (debajo de cada casilla: {despachoPorColor ? "cantidad despachada según la factura" : "cantidad del lote"})</div>
+            <GrillaColorTalla T={T} colores={coloresGrilla} tallas={info.tallas} valores={cant} onCambiar={cambiar} tope infantil={esInfantilGrupo(info.grupo)} />
             <div style={{ display: "flex", gap: 12, flexWrap: "wrap", margin: "14px 0" }}>
               <div style={{ flex: 1, minWidth: 170 }}>
                 <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>Motivo</div>

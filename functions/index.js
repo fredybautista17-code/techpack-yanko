@@ -7305,6 +7305,102 @@ exports.consultarLoteParaDevolucion = onCallAuth(
     } catch (err) {
       logger.warn("consultarLoteParaDevolucion: no se pudo leer la línea de la referencia", { error: String(err) });
     }
+    // (2026-10-23, a pedido de Fredy) Lo DESPACHADO según Busint, para que el cliente solo pueda devolver
+    // lo que recibió. 1) Facturas cuyo comentario dice "LOTE <n>" -> sus líneas de "facturas detalles",
+    // por color y talla cuando la línea trae el color (campo `despachado` en cada color; solo ahí la
+    // pantalla bloquea). 2) Respaldo informativo por pedido+referencia (facturas sin "LOTE" en el
+    // comentario y traslados TCO/TEX netos de DTC/DTE): se muestra pero NO bloquea, porque puede
+    // incluir otros lotes del mismo pedido. Nunca impide la consulta si algo falla.
+    let facturacion = { estado: "sin_consulta" };
+    try {
+      const [facturas, detFact] = await Promise.all([
+        consultarTablaBusintBDCompleta("facturas"),
+        consultarTablaBusintBDCompleta("facturas detalles"),
+      ]);
+      const aISO = (f) => fechaBDaISO(f?.Fechaini) || fechaBDaISO(f?.UFECHA) || "";
+      const normC = (t) => String(t || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+      const refN = normalizarRefComparacion(orden.Ref);
+      const delLote = facturas.filter((f) => String(loteDesdeComentarios(f?.Comentarios) ?? "") === lote && !/anul|elimin/i.test(String(f?.Mensaje || "")));
+      const lineasDe = (conjunto) => {
+        const nf = new Set(conjunto.map((f) => String(f?.Nfact ?? "").trim()).filter(Boolean));
+        return detFact.filter((d) => nf.has(String(d?.Nfact ?? "").trim()) && (!refN || normalizarRefComparacion(d?.Ref) === refN));
+      };
+      if (delLote.length) {
+        const lineas = lineasDe(delLote);
+        const campoColor = lineas.length ? ["Color", "color", "Letra", "NomColor", "Ncolor"].find((k) => lineas.some((d) => String(d?.[k] ?? "").trim() !== "")) : null;
+        let unidades = 0;
+        const porC = new Map();
+        lineas.forEach((d) => {
+          const col = campoColor ? normC(d[campoColor]) : "";
+          TALLAS_DEV.forEach((t) => {
+            const n = Number(d[t]);
+            if (!Number.isFinite(n) || n <= 0) return;
+            unidades += n;
+            const m = porC.get(col) || {};
+            m[t] = (m[t] || 0) + n;
+            porC.set(col, m);
+          });
+        });
+        // Se cruza cada color del lote (letra o nombre) con el de la factura.
+        let casados = 0;
+        if (campoColor && unidades > 0) {
+          colores.forEach((c) => {
+            const claves = [normC(c.color), normC(c.nombre)].filter(Boolean);
+            const hallado = [...porC.keys()].find((k) => k && claves.includes(k));
+            c.despachado = hallado ? porC.get(hallado) : {};
+            if (hallado) casados += 1;
+          });
+        }
+        const porColor = !!campoColor && casados > 0;
+        if (!porColor) colores.forEach((c) => { delete c.despachado; });
+        facturacion = {
+          estado: "factura_lote",
+          metodo: "lote",
+          porColor,
+          unidades,
+          facturas: delLote.map((f) => ({ nfact: String(f?.Nfact ?? "").trim(), fecha: aISO(f), tipo: "FAC" })).sort((x, y) => x.fecha.localeCompare(y.fecha)),
+        };
+        if (!esCliente) facturacion.diag = { camposLinea: lineas[0] ? Object.keys(lineas[0]).filter((k) => lineas[0][k] !== null && lineas[0][k] !== "") : [], campoColor: campoColor || null, coloresCruzados: casados };
+      } else if (pedido) {
+        const delPed = facturas.filter((f) => String(f?.Numped ?? "").trim() === pedido && !/anul|elimin/i.test(String(f?.Mensaje || "")));
+        const lineas = lineasDe(delPed);
+        const unidadesFac = lineas.reduce((sum, d) => sum + TALLAS_DEV.reduce((x, t) => x + (Number(d[t]) > 0 ? Number(d[t]) : 0), 0), 0);
+        let unidadesTras = 0, hayTras = false, ultFecha = "";
+        const tipos = new Set();
+        try {
+          const hoyISO = new Date().toISOString().slice(0, 10);
+          const desdeISO = new Date(Date.now() - 365 * 86400000).toISOString().slice(0, 10);
+          const filasF = await consultarFacturadoBusint(desdeISO, hoyISO);
+          filasF.forEach((f) => {
+            const tipo = String(f.tipo || "").trim().toUpperCase();
+            if (!["TCO", "TEX", "DTC", "DTE"].includes(tipo)) return;
+            if (String(f.numped ?? "").trim() !== pedido || normalizarRefComparacion(f.ref) !== refN) return;
+            unidadesTras += Number(f.cant) || 0;
+            hayTras = true;
+            tipos.add(tipo);
+            const fi = soloFecha(f.fechaFact) || "";
+            if (fi > ultFecha) ultFecha = fi;
+          });
+        } catch (err) {
+          logger.warn("consultarLoteParaDevolucion: no se pudieron leer los traslados", { error: String(err) });
+        }
+        facturacion = {
+          estado: unidadesFac > 0 || hayTras ? "por_pedido" : "sin_factura",
+          metodo: "pedido",
+          porColor: false,
+          unidadesFactura: unidadesFac,
+          unidadesTraslado: unidadesTras,
+          tiposTraslado: [...tipos],
+          ultimaFecha: ultFecha || (delPed.map(aISO).sort().pop() || ""),
+          facturas: delPed.map((f) => ({ nfact: String(f?.Nfact ?? "").trim(), fecha: aISO(f), tipo: "FAC" })).filter((x) => x.nfact).slice(0, 10),
+        };
+      } else {
+        facturacion = { estado: "sin_factura" };
+      }
+    } catch (err) {
+      logger.warn("consultarLoteParaDevolucion: no se pudo consultar la facturación", { error: String(err) });
+      facturacion = { estado: "sin_consulta" };
+    }
     return {
       lote,
       ref: String(orden.Ref || "").trim(),
@@ -7314,6 +7410,7 @@ exports.consultarLoteParaDevolucion = onCallAuth(
       colores,
       linea,
       grupo,
+      facturacion,
       sinDetalle: !colores.length,
     };
   }
