@@ -11718,7 +11718,7 @@ exports.getLotesPorIntegrarBusint = onCallAuth(
 // solo recibe lo que devuelven estas funciones. Nada se escribe, salvo el registro de preguntas `asistente_log`.
 // Necesita el secreto ANTHROPIC_API_KEY:  firebase functions:secrets:set ANTHROPIC_API_KEY
 const ANTHROPIC_API_KEY = defineSecret("ANTHROPIC_API_KEY");
-const MODELO_ASISTENTE = process.env.ASISTENTE_MODELO || "claude-sonnet-4-5";
+const MODELO_ASISTENTE = process.env.ASISTENTE_MODELO || "claude-sonnet-5-5";
 const ASI_ETAPAS_PEDIDO = ["Hoja de Vida", "Verificación de Colorido", "Carta de Combinaciones, Textiles e Insumos", "Verificación de Ilustración", "Muestra", "Revisión de Insumos", "Cotización", "Ficha Técnica", "Pedido en Busint", "Explosión de Materiales", "Corte", "Control de Muestra de Corte", "Bodega de Materia Prima", "Confección", "Inventario de Procesos", "Semiterminado", "Despacho"];
 
 const asiClave = (v) => String(v ?? "").trim().replace(/\.0+$/, "");
