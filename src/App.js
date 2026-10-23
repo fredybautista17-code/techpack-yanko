@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useCallback, useMemo } from "react"
 import { createPortal } from "react-dom";
 import ModuloCorte from "./modulo-corte";
 import ModuloContabilidad from "./modulo-contabilidad";
+import AsistenteAtlas from "./asistente-atlas";
 import ModuloPlaneacion, { MiDiaStandalone, ProgramadorProcesosStandalone, AreasStandalone, MiDiaNominaStandalone } from "./modulo-planeacion";
 import { FinancieraStandalone } from "./modulo-financiera";
 import ModuloPlanta from "./modulo-planta";
@@ -19280,6 +19281,7 @@ export default function App() {
   return (
     <ErrorBoundary>
       <AppInner />
+      <AsistenteAtlas />
     </ErrorBoundary>
   );
 }

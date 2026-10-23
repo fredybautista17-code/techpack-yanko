@@ -11709,3 +11709,389 @@ exports.getLotesPorIntegrarBusint = onCallAuth(
     };
   }
 );
+
+// ─────────────────────────────────────────────────────────────────────────
+// (2026-10-23, a pedido de Fredy) ASISTENTE DE VOZ DE ATLAS -- primera versión, SOLO LECTURA.
+// La pantalla (src/asistente-atlas.jsx) manda la pregunta ya transcrita; aquí se valida que quien llama sea
+// ADMINISTRADOR (en el servidor, no solo en la pantalla), y se le da a Claude un puñado de herramientas de
+// lectura (lote, pedido, referencia, órdenes de compra). Claude nunca toca Firestore ni Busint directamente:
+// solo recibe lo que devuelven estas funciones. Nada se escribe, salvo el registro de preguntas `asistente_log`.
+// Necesita el secreto ANTHROPIC_API_KEY:  firebase functions:secrets:set ANTHROPIC_API_KEY
+const ANTHROPIC_API_KEY = defineSecret("ANTHROPIC_API_KEY");
+const MODELO_ASISTENTE = process.env.ASISTENTE_MODELO || "claude-sonnet-4-5";
+const ASI_ETAPAS_PEDIDO = ["Hoja de Vida", "Verificación de Colorido", "Carta de Combinaciones, Textiles e Insumos", "Verificación de Ilustración", "Muestra", "Revisión de Insumos", "Cotización", "Ficha Técnica", "Pedido en Busint", "Explosión de Materiales", "Corte", "Control de Muestra de Corte", "Bodega de Materia Prima", "Confección", "Inventario de Procesos", "Semiterminado", "Despacho"];
+
+const asiClave = (v) => String(v ?? "").trim().replace(/\.0+$/, "");
+const asiNum = (v) => (v !== undefined && v !== null && v !== "" && Number.isFinite(Number(v)) ? Number(v) : 0);
+// Convierte lo que viene de Firestore/Busint a algo que se pueda mandar como texto (fechas -> ISO, textos largos recortados).
+function asiPlano(v, prof = 0) {
+  if (v === null || v === undefined) return v;
+  if (typeof v === "string") return v.length > 300 ? `${v.slice(0, 300)}…` : v;
+  if (typeof v !== "object") return v;
+  if (typeof v.toDate === "function") { try { return v.toDate().toISOString(); } catch (e) { return null; } }
+  if (prof >= 4) return "[…]";
+  if (Array.isArray(v)) return v.slice(0, 40).map((x) => asiPlano(x, prof + 1));
+  const o = {};
+  Object.keys(v).slice(0, 60).forEach((k) => { o[k] = asiPlano(v[k], prof + 1); });
+  return o;
+}
+function asiPick(obj, campos) {
+  const o = {};
+  campos.forEach((c) => { if (obj && obj[c] !== undefined && obj[c] !== null && obj[c] !== "") o[c] = asiPlano(obj[c]); });
+  return o;
+}
+async function asiUltimaCargaPlaneacion() {
+  try {
+    const s = await db.collection("planeacion_cargas").orderBy("creadoEn", "desc").limit(1).get();
+    if (s.empty) return null;
+    const d = s.docs[0].data();
+    return { id: s.docs[0].id, fecha: asiPlano(d.fecha), lotes: Array.isArray(d.lotes) ? d.lotes : [] };
+  } catch (err) {
+    logger.warn("asistente: no se pudo leer la última carga de planeación", { error: String(err) });
+    return null;
+  }
+}
+
+async function asiBuscarLote(args) {
+  const lote = asiClave(args?.numLote);
+  if (!/^\d{1,9}$/.test(lote)) return { error: "El número de lote debe ser solo números." };
+  const claves = [lote, Number(lote)];
+  const out = { lote, fuentes: [] };
+  const [dpc, corte, nomina, planta, progProc, bmp, devs, carga] = await Promise.all([
+    db.collection("dado_por_cumplido_lotes").doc(`lote_${lote}`).get(),
+    db.collection("corte_lotes").doc(lote).get(),
+    db.collection("nomina_produccion").where("numLote", "in", claves).limit(60).get(),
+    db.collection("planta_programacion").where("numLote", "in", claves).limit(20).get(),
+    db.collection("planeacion_programacion_procesos").where("numLote", "in", claves).limit(40).get(),
+    db.collection("planeacion_programacion_bmp").where("numLote", "in", claves).limit(20).get(),
+    db.collection("devoluciones_cliente").where("lote", "in", claves).limit(20).get(),
+    asiUltimaCargaPlaneacion(),
+  ]);
+  if (corte.exists) {
+    out.corte = asiPick(corte.data(), ["numero", "numeroPedido", "pedidoId", "cliente", "cantidad", "fecha"]);
+    out.fuentes.push("Corte (corte_lotes)");
+  }
+  if (carga) {
+    const fila = carga.lotes.find((l) => asiClave(l?.numLote) === lote);
+    if (fila) {
+      out.planeacion = { cargaDelDia: carga.fecha, ...asiPlano(fila) };
+      out.fuentes.push("Planeación (foto de Busint de la última carga)");
+    }
+  }
+  if (!planta.empty) {
+    out.planta = planta.docs.map((d) => asiPick(d.data(), ["referencia", "cantidad", "fechaEnviado", "estado", "fechaCumplioISO", "numPedido", "prioridad", "motivo", "fechaSugerida"]));
+    out.fuentes.push("Planta (planta_programacion)");
+  }
+  if (!bmp.empty) {
+    out.programacionBMP = bmp.docs.map((d) => asiPick(d.data(), ["referencia", "cantidadBMP", "plantaDestino", "fechaProgramada", "programadoPor"]));
+    out.fuentes.push("Planeación (programación BMP)");
+  }
+  if (!progProc.empty) {
+    out.programacionProcesos = progProc.docs.map((d) => asiPick(d.data(), ["proceso", "fechaProgramada", "trabajadorNombre", "cantidad", "liderNombre"]));
+    out.fuentes.push("Planeación (programación de procesos)");
+  }
+  if (!nomina.empty) {
+    const filas = nomina.docs.map((d) => d.data());
+    out.nomina = {
+      registros: filas.length,
+      totalPagado: filas.reduce((s, f) => s + asiNum(f.total), 0),
+      detalle: filas.slice(0, 25).map((f) => asiPick(f, ["fecha", "proceso", "trabajadorNombre", "cantidad", "precioUnidad", "total"])),
+    };
+    out.fuentes.push("Nómina (nomina_produccion)");
+  }
+  if (dpc.exists) {
+    const d = dpc.data();
+    out.contabilidad = asiPick(d, ["numPedido", "referencia", "cliente", "fecha", "cantCortada", "cantDespachada", "precioVentaUnitario", "tieneFactura", "observacionesFactura", "enBpt", "estado", "costoRealTotal", "costoDefinitivo", "costoTRef", "costoT", "ventaT", "ganancia", "gananciaPctLote", "categoriaBaseId", "aprobadoPor", "fechaAprobacion", "editado"]);
+    out.fuentes.push("Contabilidad (Dado por Cumplido)");
+  }
+  if (!devs.empty) {
+    out.devoluciones = devs.docs.map((d) => asiPick(d.data(), ["numero", "estado", "total", "motivo", "creadoEn", "guia"]));
+    out.fuentes.push("Devoluciones (devoluciones_cliente)");
+  }
+  // Busint (orden de producción y facturas): pesado, por eso va al final y con aviso si falla.
+  try {
+    const [ordenes, facturas, detFact] = await Promise.all([
+      consultarTablaBusintBDCompleta("orden produccion"),
+      consultarTablaBusintBDCompleta("facturas"),
+      consultarTablaBusintBDCompleta("facturas detalles"),
+    ]);
+    const orden = ordenes.find((o) => asiClave(valorFlexible(o, ["NumLote", "Numlote"])) === lote && !/elimin/i.test(String(o.Mensaje || "")));
+    if (orden) {
+      out.busintOrden = { referencia: String(orden.Ref || "").trim(), pedido: asiClave(orden.Nped), cliente: clienteDeObservacionOrden(orden.Observacion) || "" };
+      out.fuentes.push("Busint (orden de producción)");
+    }
+    const delLote = facturas.filter((f) => String(loteDesdeComentarios(f?.Comentarios) ?? "") === lote);
+    if (delLote.length) {
+      const nf = new Set(delLote.map((f) => asiClave(f?.Nfact)));
+      const tallasBusint = ["T2", "T4", "T6", "T8", "T10", "T12", "T14", "T16", "T18", "T24", "T36"];
+      let unidades = 0, monto = 0;
+      detFact.filter((d) => nf.has(asiClave(d?.Nfact))).forEach((d) => {
+        const u = tallasBusint.reduce((s, t) => s + (asiNum(d[t]) > 0 ? asiNum(d[t]) : 0), 0);
+        unidades += u;
+        monto += u * asiNum(d.Precio) * (1 - asiNum(d.Desc) / 100);
+      });
+      out.busintFacturas = { facturas: delLote.map((f) => ({ numero: asiClave(f?.Nfact), fecha: fechaBDaISO(f?.Fechaini) || fechaBDaISO(f?.UFECHA) || "" })), unidadesFacturadas: unidades, montoSinIva: Math.round(monto) };
+      out.fuentes.push("Busint (facturas con LOTE en el comentario)");
+    } else {
+      out.busintFacturas = { facturas: [], nota: "No hay una factura de Busint con este número de lote en el comentario (puede estar en traslado o sin facturar)." };
+    }
+  } catch (err) {
+    out.busintError = `No se pudo consultar Busint: ${err?.message || String(err)}`;
+  }
+  if (!out.fuentes.length && !out.busintOrden) out.nota = "No encontré este lote en ninguna fuente.";
+  return out;
+}
+
+async function asiBuscarPedido(args) {
+  const numero = asiClave(args?.numPedido);
+  if (!numero) return { error: "Falta el número de pedido." };
+  const snap = await db.collection("pedidos_activos").doc(numero).get();
+  const out = { numero, fuentes: [] };
+  if (snap.exists) {
+    const d = snap.data();
+    const refs = Array.isArray(d.referencias) ? d.referencias : [];
+    const seg = d.seguimiento || {};
+    out.pedido = {
+      ...asiPick(d, ["cliente", "fechaPedido", "fechaDespacho", "estado", "motivoCierre", "fechaCumplido", "vendedor", "ciudad"]),
+      unidadesTotal: refs.reduce((s, r) => s + asiNum(r.total), 0),
+      referencias: refs.slice(0, 40).map((r) => ({ ref: r.ref, descripcion: r.descripcion, unidades: asiNum(r.total) })),
+      etapasHechas: ASI_ETAPAS_PEDIDO.filter((e) => seg[e] === true),
+      etapasPendientes: ASI_ETAPAS_PEDIDO.filter((e) => seg[e] !== true),
+      cortes: (Array.isArray(d.cortesRealizados) ? d.cortesRealizados : []).slice(0, 25).map((c) => asiPick(c, ["fecha", "planta", "lote", "totalUnidades", "cortador"])),
+    };
+    out.fuentes.push("Pedidos (pedidos_activos)");
+  } else {
+    out.nota = "Este pedido no está congelado en ATLAS (pedidos_activos).";
+  }
+  const carga = await asiUltimaCargaPlaneacion();
+  if (carga) {
+    const lotes = carga.lotes.filter((l) => asiClave(l?.numPedido) === numero);
+    if (lotes.length) {
+      out.lotesEnPlaneacion = lotes.slice(0, 40).map((l) => asiPick(l, ["numLote", "referencia", "cantCortada", "ubicacionActual", "unidadesUbicacion", "invCorte", "invPlanta", "invSemiterminado", "invBPT"]));
+      out.fuentes.push("Planeación (última carga)");
+    }
+  }
+  return out;
+}
+
+async function asiBuscarReferencia(args) {
+  const ref = String(args?.referencia || "").trim();
+  if (!ref) return { error: "Falta la referencia." };
+  const refN = normalizarRefComparacion(ref);
+  const out = { referencia: ref, fuentes: [] };
+  const cotSnap = await db.collection("cotizaciones").get();
+  const cots = cotSnap.docs.map((d) => ({ ...d.data(), id: d.id })).filter((c) => [c.referencia, c.vinculo?.reference].map(normalizarRefComparacion).filter(Boolean).includes(refN));
+  if (cots.length) {
+    out.cotizaciones = cots.slice(0, 5).map((c) => ({
+      cliente: c.cliente,
+      referencia: c.referencia,
+      versiones: (c.versiones || []).slice(-6).map((v) => ({ numero: v.numero, estado: v.estado, precio: asiPlano(v.precio), fecha: asiPlano(v.fecha) })),
+      facturacion: asiPlano(c.facturacion),
+    }));
+    out.fuentes.push("Cotizador (cotizaciones)");
+  }
+  try {
+    const filas = await consultarCatalogoBusint("ApiGen_Referencias");
+    const f = filas.find((x) => normalizarRefComparacion(x.ref) === refN);
+    if (f) {
+      out.busint = asiPick(f, ["ref", "referenciaExterna", "descripcionLarga", "linea", "categoria", "precioPM", "costoFT"]);
+      out.fuentes.push("Busint (maestro de referencias)");
+    }
+  } catch (err) {
+    out.busintError = `No se pudo consultar Busint: ${err?.message || String(err)}`;
+  }
+  const carga = await asiUltimaCargaPlaneacion();
+  if (carga) {
+    const lotes = carga.lotes.filter((l) => normalizarRefComparacion(l?.referencia) === refN);
+    if (lotes.length) {
+      out.lotesEnPlaneacion = lotes.slice(0, 30).map((l) => asiPick(l, ["numLote", "numPedido", "nombreCliente", "cantCortada", "ubicacionActual", "unidadesUbicacion"]));
+      out.fuentes.push("Planeación (última carga)");
+    }
+  }
+  if (!out.fuentes.length) out.nota = "No encontré esta referencia en cotizaciones, Busint ni planeación.";
+  return out;
+}
+
+async function asiOrdenesCompra(args) {
+  const filtroProv = String(args?.proveedor || "").trim().toUpperCase();
+  const numero = asiClave(args?.numero);
+  const solo = String(args?.solo || "pendientes");
+  const [cabeceras, detalles, proveedores, componentes, detallesDxc, marcasSnap] = await Promise.all([
+    consultarTablaBusintBDCompleta("orden de compra"),
+    consultarTablaBusintBDCompleta("orden de compra detalles"),
+    consultarTablaBusintBDCompleta("maestro de proveedores"),
+    consultarTablaBusintBDCompleta("estandar componentes prod"),
+    consultarTablaBusintBDCompleta("orden de compra detallesdxc"),
+    db.collection("contabilidad_ordenes_compra_recibidas").get(),
+  ]);
+  const marcas = new Set(marcasSnap.docs.map((d) => d.id));
+  const nombreProv = new Map();
+  proveedores.forEach((p) => { const k = asiClave(p?.Codigo); if (k) nombreProv.set(k, String(p.Nombre || "").trim()); });
+  const lineas = new Map();
+  detalles.forEach((d) => {
+    const oc = asiClave(d?.NumOC);
+    if (!oc) return;
+    if (!lineas.has(oc)) lineas.set(oc, []);
+    lineas.get(oc).push({ cod: asiClave(d?.Codcomp), cant: asiNum(d.Cant), costo: asiNum(d.Costo), dsc: asiNum(d.Dsc) });
+  });
+  const enDxc = new Set();
+  detallesDxc.forEach((d) => { const k = asiClave(d?.NumOC); if (k) enDxc.add(k); });
+  const hoy = new Date(Date.now() - 5 * 3600000).toISOString().slice(0, 10);
+  const dias = (iso) => (iso ? Math.round((Date.parse(iso) - Date.parse(hoy)) / 86400000) : null);
+  const ordenes = [];
+  cabeceras.forEach((c) => {
+    const n = asiClave(c?.NumOC);
+    if (!n) return;
+    const prov = asiClave(c?.codprove);
+    const ls = lineas.get(n) || [];
+    let bruto = 0, desc = 0;
+    ls.forEach((l) => { const b = l.cant * l.costo; bruto += b; desc += (b * l.dsc) / 100; });
+    const base = bruto - desc;
+    const textoMarca = String(c.DadoPorCumplido ?? "").trim();
+    const cumplidaBusint = !!fechaBDaISO(c.FechaDxC) || (textoMarca !== "" && !["0", "N", "NO", "FALSE", "NULL"].includes(textoMarca.toUpperCase())) || enDxc.has(n);
+    const ff = fechaBDaISO(c.FechaFin) || null;
+    let estado;
+    if (cumplidaBusint) estado = "cumplida en Busint";
+    else if (marcas.has(n)) estado = "recibida (marcada en ATLAS)";
+    else if (ff === null) estado = "sin fecha de entrega";
+    else if (dias(ff) < -60) estado = "vieja sin confirmar";
+    else if (dias(ff) < 0) estado = "vencida";
+    else if (dias(ff) <= 7) estado = "vence en 7 días o menos";
+    else estado = "a tiempo";
+    ordenes.push({ orden: Number(n), proveedor: nombreProv.get(prov) || (prov ? `Proveedor ${prov}` : ""), fechaOrden: fechaBDaISO(c.Fechaini) || null, fechaEntrega: ff, estado, unidades: ls.reduce((s, l) => s + l.cant, 0), baseSinIva: Math.round(base), iva: Math.round(base * 0.19), netoAPagar: Math.round(base * 1.19), _ls: ls });
+  });
+  let lista = ordenes;
+  if (numero) lista = lista.filter((o) => String(o.orden) === numero);
+  else {
+    if (filtroProv) lista = lista.filter((o) => o.proveedor.toUpperCase().includes(filtroProv));
+    if (solo === "pendientes") lista = lista.filter((o) => ["vencida", "vence en 7 días o menos", "a tiempo", "sin fecha de entrega"].includes(o.estado));
+    else if (solo === "vencidas") lista = lista.filter((o) => o.estado === "vencida");
+  }
+  lista.sort((a, b) => (a.fechaEntrega || "9999").localeCompare(b.fechaEntrega || "9999") || b.orden - a.orden);
+  const out = {
+    fuentes: ["Busint (órdenes de compra)", "ATLAS (marcas de recibida)"],
+    ordenesEncontradas: lista.length,
+    totalBaseSinIva: lista.reduce((s, o) => s + o.baseSinIva, 0),
+    totalIva: lista.reduce((s, o) => s + o.iva, 0),
+    totalNetoAPagar: lista.reduce((s, o) => s + o.netoAPagar, 0),
+    porProveedor: Object.values(lista.reduce((m, o) => { const x = m[o.proveedor] || (m[o.proveedor] = { proveedor: o.proveedor, ordenes: 0, netoAPagar: 0 }); x.ordenes += 1; x.netoAPagar += o.netoAPagar; return m; }, {})).sort((a, b) => b.netoAPagar - a.netoAPagar).slice(0, 15),
+    ordenes: lista.slice(0, 25).map(({ _ls, ...resto }) => resto),
+  };
+  if (numero && lista[0]) {
+    const cods = new Set(lista[0]._ls.map((l) => l.cod));
+    const nombres = {};
+    componentes.forEach((f) => { const c = asiClave(f?.Codcomp); if (c && cods.has(c) && !nombres[c]) nombres[c] = [String(f.Componente || "").trim(), String(f.Color || "").trim()].filter(Boolean).join(" "); });
+    out.lineas = lista[0]._ls.map((l) => ({ insumo: nombres[l.cod] || `código ${l.cod}`, cantidad: l.cant, precioUnitario: l.costo, descuentoPct: l.dsc }));
+  }
+  return out;
+}
+
+const ASI_HERRAMIENTAS = [
+  { name: "buscar_lote", description: "Busca todo lo que ATLAS y Busint saben de un número de lote: corte, ubicación e inventario en planeación, planta, programación de procesos, lo pagado en nómina, contabilidad (Dado por Cumplido), devoluciones, orden de producción y facturas de Busint.", input_schema: { type: "object", properties: { numLote: { type: "string", description: "Número de lote, solo dígitos" } }, required: ["numLote"] } },
+  { name: "buscar_pedido", description: "Busca un pedido por su número: cliente, fechas, referencias y unidades, las 17 etapas de seguimiento (hechas y pendientes), cortes realizados y lotes del pedido en planeación.", input_schema: { type: "object", properties: { numPedido: { type: "string", description: "Número de pedido" } }, required: ["numPedido"] } },
+  { name: "buscar_referencia", description: "Busca una referencia (por ejemplo 985662 o 98-440): cotizaciones y sus versiones, precio y costo en Busint, y los lotes de esa referencia en planeación.", input_schema: { type: "object", properties: { referencia: { type: "string", description: "Código de la referencia" } }, required: ["referencia"] } },
+  { name: "ordenes_compra", description: "Consulta órdenes de compra a proveedores (Busint). Devuelve el total a pagar (con IVA) de las órdenes que cumplan el filtro, el desglose por proveedor y las órdenes. Úsala para preguntas como cuánto necesito para pagar las órdenes vigentes.", input_schema: { type: "object", properties: { solo: { type: "string", enum: ["pendientes", "vencidas", "todas"], description: "pendientes = vigentes (por llegar) y vencidas recientes; por defecto pendientes" }, proveedor: { type: "string", description: "Parte del nombre del proveedor (opcional)" }, numero: { type: "string", description: "Número de una orden específica (opcional, trae sus líneas)" } } } },
+];
+
+async function asiEjecutarHerramienta(nombre, args) {
+  switch (nombre) {
+    case "buscar_lote": return asiBuscarLote(args);
+    case "buscar_pedido": return asiBuscarPedido(args);
+    case "buscar_referencia": return asiBuscarReferencia(args);
+    case "ordenes_compra": return asiOrdenesCompra(args);
+    default: return { error: `Herramienta desconocida: ${nombre}` };
+  }
+}
+
+async function asiLlamarClaude(system, messages) {
+  const resp = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-api-key": ANTHROPIC_API_KEY.value(), "anthropic-version": "2023-06-01" },
+    body: JSON.stringify({ model: MODELO_ASISTENTE, max_tokens: 1200, system, tools: ASI_HERRAMIENTAS, messages }),
+  });
+  const texto = await resp.text();
+  if (!resp.ok) {
+    logger.error("asistente: error de la API de Claude", { status: resp.status, cuerpo: texto.slice(0, 500) });
+    throw new HttpsError("unavailable", `La API de Claude respondió ${resp.status}: ${texto.slice(0, 200)}`);
+  }
+  return JSON.parse(texto);
+}
+
+exports.asistenteAtlas = onCallAuth(
+  {
+    secrets: [ANTHROPIC_API_KEY, BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY, BUSINT_TOKEN, BUSINT_BASE_URL],
+    timeoutSeconds: 300,
+    memory: "1GiB",
+  },
+  async (request) => {
+    // Primera versión: solo administradores (se valida aquí, en el servidor).
+    const usuarioDoc = await verificarLlamadorEsAdmin(request);
+    const u = usuarioDoc.data();
+    // El cliente lo usa para saber si debe mostrar el botón (solo admins).
+    if (request.data?.ping) return { ok: true, nombre: u.name || "" };
+    const entrada = Array.isArray(request.data?.mensajes) ? request.data.mensajes.slice(-12) : [];
+    const messages = entrada
+      .map((m) => ({ role: m?.role === "assistant" ? "assistant" : "user", content: String(m?.texto || "").slice(0, 2000) }))
+      .filter((m) => m.content.trim());
+    if (!messages.length || messages[messages.length - 1].role !== "user") throw new HttpsError("invalid-argument", "Escribe o di una pregunta.");
+    while (messages.length && messages[0].role !== "user") messages.shift();
+    const pregunta = messages[messages.length - 1].content;
+    const hoyTxt = new Date(Date.now() - 5 * 3600000).toISOString().slice(0, 10);
+    const system = `Eres el asistente de voz de ATLAS, el ERP de Industrias Yanko (empresa de confección en Colombia). Hablas con ${u.name || "el administrador"}, gerente de la empresa. Hoy es ${hoyTxt}.
+Reglas:
+- Responde SIEMPRE en español, con frases cortas y naturales, pensadas para escucharse en voz alta: sin tablas, sin viñetas, sin markdown y sin emojis. Máximo unas 6 frases, salvo que pidan más detalle.
+- Usa SOLO los datos que devuelven las herramientas. Si un dato no aparece, dilo y no lo inventes. Cuando des una cifra, di de dónde sale (por ejemplo "según Contabilidad", "según Busint", "según Planeación").
+- Eres de solo lectura: no puedes cambiar ni crear nada en ATLAS ni en Busint.
+- Si te preguntan algo que ninguna herramienta cubre (por ejemplo sueldos de una persona, inventario de telas, cartera), di con claridad que todavía no puedes consultarlo.
+- Di el dinero con separadores o en palabras, por ejemplo "un millón doscientos mil pesos", y las fechas en palabras ("el 31 de octubre").
+- Vocabulario: lote = número de lote de corte y producción; BPT = bodega de producto terminado; Dado por Cumplido = revisión de la ganancia de cada lote en Contabilidad; las 17 etapas son el seguimiento de un pedido.`;
+    const inicio = Date.now();
+    const usadas = [];
+    let tokensEntrada = 0, tokensSalida = 0, respuesta = "";
+    for (let ronda = 0; ronda < 6; ronda++) {
+      const r = await asiLlamarClaude(system, messages);
+      tokensEntrada += r.usage?.input_tokens || 0;
+      tokensSalida += r.usage?.output_tokens || 0;
+      const bloques = Array.isArray(r.content) ? r.content : [];
+      const usos = bloques.filter((b) => b.type === "tool_use");
+      if (r.stop_reason !== "tool_use" || !usos.length) {
+        respuesta = bloques.filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
+        break;
+      }
+      messages.push({ role: "assistant", content: bloques });
+      const resultados = [];
+      for (const uso of usos) {
+        usadas.push(`${uso.name}(${JSON.stringify(uso.input || {})})`);
+        let contenido;
+        try {
+          const res = await asiEjecutarHerramienta(uso.name, uso.input || {});
+          contenido = JSON.stringify(res);
+          if (contenido.length > 14000) contenido = `${contenido.slice(0, 14000)}… [recortado]`;
+        } catch (err) {
+          logger.error("asistente: falló una herramienta", { herramienta: uso.name, error: String(err) });
+          contenido = JSON.stringify({ error: `No se pudo consultar: ${err?.message || String(err)}` });
+        }
+        resultados.push({ type: "tool_result", tool_use_id: uso.id, content: contenido });
+      }
+      messages.push({ role: "user", content: resultados });
+    }
+    if (!respuesta) respuesta = "No alcancé a armar una respuesta con los datos. Intenta de nuevo con una pregunta más concreta.";
+    try {
+      await db.collection("asistente_log").add({
+        uid: request.auth.uid,
+        usuario: u.name || u.username || "",
+        pregunta,
+        respuesta,
+        herramientas: usadas,
+        tokensEntrada,
+        tokensSalida,
+        modelo: MODELO_ASISTENTE,
+        ms: Date.now() - inicio,
+        creadoEn: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    } catch (err) {
+      logger.warn("asistente: no se pudo guardar el registro", { error: String(err) });
+    }
+    return { respuesta, herramientas: usadas };
+  }
+);
