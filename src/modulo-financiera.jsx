@@ -373,6 +373,12 @@ function NominaPorAreaSection({ porTipo, trabajadores, tipoPeriodo, rangoTexto, 
   const [verPagos, setVerPagos] = useState(null); // fila
   const [confirmArea, setConfirmArea] = useState(null); // area
   const [confirmDel, setConfirmDel] = useState(null); // pago
+  const [editPago, setEditPago] = useState(null); // pago en edición
+  const [editFecha, setEditFecha] = useState("");
+  const [editMonto, setEditMonto] = useState("");
+  const [editForma, setEditForma] = useState("Efectivo");
+  const [editObs, setEditObs] = useState("");
+  const [editError, setEditError] = useState("");
   const [fechaP, setFechaP] = useState("");
   const [montoP, setMontoP] = useState("");
   const [formaP, setFormaP] = useState("Efectivo");
@@ -486,6 +492,47 @@ function NominaPorAreaSection({ porTipo, trabajadores, tipoPeriodo, rangoTexto, 
   async function deshacer(ids) {
     setAviso(null);
     try { await Promise.all(ids.map((id) => fsDelete(COL_PAGOS_PERSONA, id))); } catch (e) { setAviso({ texto: "No se pudo deshacer. Solo un administrador puede borrar pagos.", error: true }); }
+  }
+  // Lo máximo que puede valer un pago editado: el neto de ESA liquidación menos lo que ya tiene pagado en
+  // otros pagos de la misma liquidación (así nunca queda pagada de más).
+  function maximoParaEditar(fila, pago) {
+    const x = (fila?.liqs || []).find((y) => `${y.l.periodoId}|${y.tipo}|${y.l.trabajadorId}` === pago.liqKey);
+    const netoLiq = x ? x.l.netoAPagar || 0 : fila?.neto || 0;
+    const otros = pagosP.filter((q) => q.liqKey === pago.liqKey && q.id !== pago.id).reduce((s2, q) => s2 + (Number(q.monto) || 0), 0);
+    return Math.max(0, netoLiq - otros);
+  }
+  function abrirEditar(pago) {
+    setEditPago(pago);
+    setEditFecha(pago.fecha || hoyISOBogota());
+    setEditMonto(String(Math.round(Number(pago.monto) || 0)));
+    setEditForma(FORMAS_PERSONA.includes(pago.forma) ? pago.forma : "Efectivo");
+    setEditObs(pago.observacion || "");
+    setEditError("");
+  }
+  async function guardarEdicion() {
+    const p = editPago;
+    if (!p) return;
+    const monto = Number(editMonto);
+    const maximo = maximoParaEditar(verPagos, p);
+    if (!editFecha) { setEditError("Elige la fecha del pago."); return; }
+    if (!(monto > 0)) { setEditError("Escribe un monto mayor a cero."); return; }
+    if (monto > maximo + 1) { setEditError(`No puede ser mayor a ${fmtMoney(maximo)}: lo que sobra del neto después de los otros pagos de esta persona.`); return; }
+    const cambio = monto !== Number(p.monto) || editFecha !== p.fecha || editForma !== p.forma || (editObs || "").trim() !== (p.observacion || "");
+    if (!cambio) { setEditPago(null); return; }
+    setGuardando(true);
+    try {
+      const entrada = { por: quienRegistra, en: new Date().toISOString(), antes: { monto: Number(p.monto) || 0, fecha: p.fecha || "", forma: p.forma || "", observacion: p.observacion || "" } };
+      await fsSave(COL_PAGOS_PERSONA, p.id, {
+        monto, fecha: editFecha, forma: editForma, observacion: (editObs || "").trim(),
+        editado: true, ediciones: [...(Array.isArray(p.ediciones) ? p.ediciones : []), entrada].slice(-10),
+      });
+      setEditPago(null);
+      setAviso({ texto: `Pago corregido: ${p.nombre} · ${fmtMoney(monto)}` });
+    } catch (e) {
+      setEditError("No se pudo guardar el cambio. Revisa tu conexión e intenta de nuevo.");
+    } finally {
+      setGuardando(false);
+    }
   }
   function desprendibles(filasSel, titulo) {
     const items = filasSel.flatMap((f) => f.liqs.map((x) => ({ tipoNomina: x.tipo, trabajador: x.t || { id: x.l.trabajadorId, nombre: f.nombre }, liquidacion: x.l })));
@@ -686,20 +733,39 @@ function NominaPorAreaSection({ porTipo, trabajadores, tipoPeriodo, rangoTexto, 
             <div style={{ fontSize: 13, color: C.slate }}>Todavía no hay pagos registrados.</div>
           ) : (
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-              <thead><tr style={{ background: C.canvas }}>{["Fecha", "Monto", "Forma", "Registró", ""].map((h, i) => <th key={i} style={{ padding: "7px 8px", textAlign: i === 1 ? "right" : "left", color: C.slate, fontSize: 10, fontWeight: 700 }}>{h}</th>)}</tr></thead>
+              <thead><tr style={{ background: C.canvas }}>{["Fecha", "Monto", "Forma", "Registró", "", ""].map((h, i) => <th key={i} style={{ padding: "7px 8px", textAlign: i === 1 ? "right" : "left", color: C.slate, fontSize: 10, fontWeight: 700 }}>{h}</th>)}</tr></thead>
               <tbody>
                 {pagosDeFila.map((p) => (
                   <tr key={p.id}>
-                    <td style={{ padding: "7px 8px", borderTop: `1px solid ${C.border}` }}>{p.fecha}{p.observacion ? <div style={{ fontSize: 10.5, color: C.slate }}>{p.observacion}</div> : null}</td>
+                    <td style={{ padding: "7px 8px", borderTop: `1px solid ${C.border}` }}>{p.fecha}{p.editado && <span title={(p.ediciones || []).map((e) => `${(e.en || "").slice(0, 10)} · ${e.por || "—"} · antes: ${fmtMoney(e.antes?.monto)} (${e.antes?.fecha || ""}, ${e.antes?.forma || ""})`).join("\n")} style={{ marginLeft: 6, fontSize: 10, fontWeight: 800, color: C.amber, background: C.amberBg, borderRadius: 5, padding: "1px 6px" }}>editado</span>}{p.observacion ? <div style={{ fontSize: 10.5, color: C.slate }}>{p.observacion}</div> : null}</td>
                     <td style={{ padding: "7px 8px", borderTop: `1px solid ${C.border}`, textAlign: "right", fontWeight: 800 }}>{fmtMoney(p.monto)}</td>
                     <td style={{ padding: "7px 8px", borderTop: `1px solid ${C.border}` }}>{p.forma}</td>
                     <td style={{ padding: "7px 8px", borderTop: `1px solid ${C.border}`, color: C.slate }}>{p.registradoPor || "—"}</td>
+                    <td style={{ padding: "7px 8px", borderTop: `1px solid ${C.border}`, textAlign: "center" }}><span onClick={() => abrirEditar(p)} style={{ cursor: "pointer", color: C.blue }} title="Editar este pago">✎</span></td>
                     <td style={{ padding: "7px 8px", borderTop: `1px solid ${C.border}`, textAlign: "center" }}>{isAdmin && <span onClick={() => setConfirmDel(p)} style={{ cursor: "pointer", color: C.red }} title="Eliminar este pago">🗑</span>}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           )}
+        </Modal>
+      )}
+
+      {editPago && (
+        <Modal title={`Editar pago — ${editPago.nombre}`} onClose={() => setEditPago(null)} width={460}>
+          <div style={{ fontSize: 12, color: C.slate, marginBottom: 14 }}>
+            Pago registrado el {editPago.creadoEn ? editPago.creadoEn.slice(0, 10) : editPago.fecha} por {editPago.registradoPor || "—"} · máximo permitido <strong>{fmtMoney(maximoParaEditar(verPagos, editPago))}</strong>
+          </div>
+          <Field label="Fecha del pago"><FInput type="date" value={editFecha} onChange={setEditFecha} /></Field>
+          <Field label="Monto pagado"><FInput type="number" value={editMonto} onChange={(v) => { setEditMonto(v); setEditError(""); }} placeholder="0" /></Field>
+          <Field label="Forma de pago"><FSel value={editForma} onChange={setEditForma} options={FORMAS_PERSONA} /></Field>
+          <Field label="Observación (opcional)"><FInput value={editObs} onChange={setEditObs} placeholder="N° de comprobante, nota..." /></Field>
+          {editError && <div style={{ fontSize: 12, color: C.red, fontWeight: 700, marginBottom: 12 }}>{editError}</div>}
+          <div style={{ fontSize: 11, color: C.slate, marginBottom: 14 }}>Queda guardado el valor anterior, quién lo cambió y cuándo.</div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setEditPago(null)}>Cancelar</Btn>
+            <Btn onClick={guardarEdicion} disabled={guardando}>{guardando ? "Guardando..." : "Guardar cambios"}</Btn>
+          </div>
         </Modal>
       )}
 
