@@ -11986,11 +11986,149 @@ async function asiOrdenesCompra(args) {
   return out;
 }
 
+// ── Herramientas nuevas (2026-10-23): entradas a planta por fecha, programación de planta, despachos ──
+const asiFechaValida = (s) => /^\d{4}-\d{2}-\d{2}$/.test(String(s || "")) && !Number.isNaN(Date.parse(String(s)));
+const asiHoyBogota = () => new Date(Date.now() - 5 * 3600000).toISOString().slice(0, 10);
+function asiRango(args, porDefectoDias = 0) {
+  const hoy = asiHoyBogota();
+  let hasta = asiFechaValida(args?.hasta) ? String(args.hasta) : hoy;
+  let desde = asiFechaValida(args?.desde) ? String(args.desde) : null;
+  if (!desde) desde = new Date(Date.parse(hasta) - porDefectoDias * 86400000).toISOString().slice(0, 10);
+  if (desde > hasta) { const t = desde; desde = hasta; hasta = t; }
+  return { desde, hasta, hoy };
+}
+
+async function asiEntradasPlanta(args) {
+  const { desde, hasta, hoy } = asiRango(args, 0);
+  if ((Date.parse(hasta) - Date.parse(desde)) / 86400000 > 400) return { error: "El rango es muy largo; pide como máximo un año." };
+  const filtroPlanta = String(args?.planta || "").trim().toUpperCase();
+  const filtroLote = asiClave(args?.numLote);
+  const mapa = new Map();
+  const clave = (e) => `${e.numEnt}|${e.fecha}|${e.esDevolucion ? "D" : "E"}`;
+  const anioIni = Number(desde.slice(0, 4));
+  const anioFin = Number(hasta.slice(0, 4));
+  const refsDocs = [];
+  for (let a = anioIni; a <= anioFin; a++) refsDocs.push(db.collection("planta_entradas_cargas").doc(`sync-busint-${a}`));
+  const [docs, baseSnap] = await Promise.all([db.getAll(...refsDocs), db.collection("planta_entradas_cargas").orderBy("creadoEn", "desc").limit(15).get()]);
+  const baseDoc = baseSnap.docs.find((d) => !d.data().anio);
+  if (baseDoc) (baseDoc.data().entradas || []).forEach((e) => mapa.set(clave(e), e));
+  let ultimaSync = null;
+  docs.forEach((d) => {
+    if (!d.exists) return;
+    (d.data().entradas || []).forEach((e) => mapa.set(clave(e), e));
+    const t = asiPlano(d.data().creadoEn);
+    if (t && (!ultimaSync || t > ultimaSync)) ultimaSync = t;
+  });
+  let ultimaFechaConDatos = "";
+  mapa.forEach((e) => { if ((e.fecha || "") > ultimaFechaConDatos && (e.fecha || "") <= hoy) ultimaFechaConDatos = e.fecha; });
+  let filas = [...mapa.values()].filter((e) => (e.fecha || "") >= desde && (e.fecha || "") <= hasta && Number(e.cantidad));
+  if (filtroPlanta) filas = filas.filter((e) => String(e.nombrePlanta || "").toUpperCase().includes(filtroPlanta));
+  if (filtroLote) filas = filas.filter((e) => asiClave(e.numLote) === filtroLote);
+  const entradas = filas.filter((e) => !e.esDevolucion);
+  const devs = filas.filter((e) => e.esDevolucion);
+  const porPlanta = {};
+  entradas.forEach((e) => {
+    const p = e.nombrePlanta || "(sin planta)";
+    const x = porPlanta[p] || (porPlanta[p] = { planta: p, unidades: 0, lotes: new Set() });
+    x.unidades += Number(e.cantidad) || 0;
+    if (e.numLote !== null && e.numLote !== undefined && e.numLote !== "") x.lotes.add(asiClave(e.numLote));
+  });
+  const porLote = {};
+  entradas.forEach((e) => {
+    const k = asiClave(e.numLote) || `sin lote (entrada ${e.numEnt})`;
+    const x = porLote[k] || (porLote[k] = { lote: k, referencia: String(e.refExt || e.refN || "").trim(), pedido: asiClave(e.nPedido), planta: e.nombrePlanta || "", categoria: e.categoria || "", unidades: 0, fechas: new Set() });
+    x.unidades += Number(e.cantidad) || 0;
+    x.fechas.add(e.fecha);
+  });
+  const lotes = Object.values(porLote).sort((a, b) => b.unidades - a.unidades);
+  const out = {
+    fuentes: ["Entradas de Planta (planta_entradas_cargas, sincronizadas con Busint)"],
+    desde, hasta,
+    ultimaFechaConDatos: ultimaFechaConDatos || null,
+    aviso: ultimaFechaConDatos && ultimaFechaConDatos < hasta ? `Las entradas llegan de Busint una vez al día (6 a. m.): el último día con datos es ${ultimaFechaConDatos}, así que los días posteriores pueden estar incompletos.` : undefined,
+    totalUnidades: entradas.reduce((s, e) => s + (Number(e.cantidad) || 0), 0),
+    lotesDistintos: lotes.length,
+    devolucionesUnidades: Math.abs(devs.reduce((s, e) => s + (Number(e.cantidad) || 0), 0)),
+    porPlanta: Object.values(porPlanta).sort((a, b) => b.unidades - a.unidades).slice(0, 25).map((x) => ({ planta: x.planta, unidades: x.unidades, lotes: x.lotes.size })),
+    lotes: lotes.slice(0, 40).map((l) => ({ ...l, fechas: [...l.fechas].sort() })),
+  };
+  if (lotes.length > 40) out.nota = `Se muestran los 40 lotes con más unidades de ${lotes.length}.`;
+  if (!filas.length) out.nota = "No hay entradas a planta en ese rango con esos filtros.";
+  return out;
+}
+
+async function asiProgramacionPlanta(args) {
+  const estado = ["pendiente", "cumplido", "todos"].includes(String(args?.estado)) ? String(args.estado) : "pendiente";
+  const prioridad = String(args?.prioridad || "").trim().toUpperCase();
+  const filtroLote = asiClave(args?.numLote);
+  const filtroPed = asiClave(args?.numPedido);
+  let q = db.collection("planta_programacion");
+  if (estado !== "todos") q = q.where("estado", "==", estado);
+  const snap = await q.limit(600).get();
+  let filas = snap.docs.map((d) => d.data());
+  if (prioridad) filas = filas.filter((f) => String(f.prioridad || "").toUpperCase() === prioridad);
+  if (filtroLote) filas = filas.filter((f) => asiClave(f.numLote) === filtroLote);
+  if (filtroPed) filas = filas.filter((f) => asiClave(f.numPedido) === filtroPed);
+  const hoy = asiHoyBogota();
+  const porPrioridad = {};
+  filas.forEach((f) => { const p = String(f.prioridad || "SIN PRIORIDAD").toUpperCase(); porPrioridad[p] = (porPrioridad[p] || 0) + 1; });
+  const orden = { ALTA: 0, MEDIA: 1, NORMAL: 2 };
+  filas.sort((a, b) => (orden[String(a.prioridad || "").toUpperCase()] ?? 3) - (orden[String(b.prioridad || "").toUpperCase()] ?? 3) || String(a.fechaSugerida || "9999").localeCompare(String(b.fechaSugerida || "9999")));
+  return {
+    fuentes: ["Planta (planta_programacion)"],
+    hoy, estadoConsultado: estado,
+    cantidadDeLotesProgramados: filas.length,
+    unidades: filas.reduce((s, f) => s + asiNum(f.cantidad), 0),
+    porPrioridad,
+    lotes: filas.slice(0, 30).map((f) => {
+      const o = asiPick(f, ["numLote", "referencia", "categoria", "cantidad", "numPedido", "prioridad", "motivo", "fechaEnviado", "fechaSugerida", "estado", "fechaCumplioISO"]);
+      if (f.fechaSugerida && f.estado !== "cumplido" && String(f.fechaSugerida) < hoy) o.fechaSugeridaYaPaso = true;
+      return o;
+    }),
+    nota: filas.length > 30 ? `Se muestran 30 de ${filas.length}, ordenados por prioridad.` : (filas.length ? undefined : "No hay lotes programados con ese filtro."),
+  };
+}
+
+async function asiDespachos(args) {
+  const { desde, hasta } = asiRango(args, 0);
+  if ((Date.parse(hasta) - Date.parse(desde)) / 86400000 > 400) return { error: "El rango es muy largo; pide como máximo un año." };
+  const filtroCliente = String(args?.cliente || "").trim().toUpperCase();
+  const snap = await db.collection("bitacora_despachos").where("fecha", ">=", desde).where("fecha", "<=", hasta).get();
+  let filas = snap.docs.map((d) => d.data());
+  if (filtroCliente) filas = filas.filter((f) => String(f.nombreCliente || "").toUpperCase().includes(filtroCliente));
+  const desp = filas.filter((f) => !f.esDevolucion);
+  const devs = filas.filter((f) => f.esDevolucion);
+  const porCliente = {};
+  desp.forEach((f) => {
+    const c = f.nombreCliente || "(sin cliente)";
+    const x = porCliente[c] || (porCliente[c] = { cliente: c, documentos: 0, unidades: 0, monto: 0 });
+    x.documentos += 1; x.unidades += asiNum(f.unidades); x.monto += asiNum(f.monto);
+  });
+  const ult = [...snap.docs].map((d) => d.data()).reduce((m, f) => ((f.fecha || "") > m ? f.fecha : m), "");
+  return {
+    fuentes: ["Bitácora de Despachos (bitacora_despachos, tomada de las facturas de Busint)"],
+    desde, hasta,
+    documentosDespacho: desp.length,
+    unidadesDespachadas: desp.reduce((s, f) => s + asiNum(f.unidades), 0),
+    montoDespachado: Math.round(desp.reduce((s, f) => s + asiNum(f.monto), 0)),
+    documentosDevolucion: devs.length,
+    unidadesDevueltas: devs.reduce((s, f) => s + asiNum(f.unidades), 0),
+    montoDevuelto: Math.round(devs.reduce((s, f) => s + asiNum(f.monto), 0)),
+    porCliente: Object.values(porCliente).sort((a, b) => b.monto - a.monto).slice(0, 15).map((x) => ({ ...x, monto: Math.round(x.monto) })),
+    documentos: desp.sort((a, b) => String(b.fecha).localeCompare(String(a.fecha))).slice(0, 20).map((f) => asiPick(f, ["fecha", "nombreCliente", "numero", "tipo", "unidades", "monto", "transportador", "guia", "llego"])),
+    ultimaFechaEnBitacora: ult || null,
+    nota: !filas.length ? "No hay despachos registrados en la bitácora para ese rango y filtro." : undefined,
+  };
+}
+
 const ASI_HERRAMIENTAS = [
   { name: "buscar_lote", description: "Busca todo lo que ATLAS y Busint saben de un número de lote: corte, ubicación e inventario en planeación, planta, programación de procesos, lo pagado en nómina, contabilidad (Dado por Cumplido), devoluciones, orden de producción y facturas de Busint.", input_schema: { type: "object", properties: { numLote: { type: "string", description: "Número de lote, solo dígitos" } }, required: ["numLote"] } },
   { name: "buscar_pedido", description: "Busca un pedido por su número: cliente, fechas, referencias y unidades, las 17 etapas de seguimiento (hechas y pendientes), cortes realizados y lotes del pedido en planeación.", input_schema: { type: "object", properties: { numPedido: { type: "string", description: "Número de pedido" } }, required: ["numPedido"] } },
   { name: "buscar_referencia", description: "Busca una referencia (por ejemplo 985662 o 98-440): cotizaciones y sus versiones, precio y costo en Busint, y los lotes de esa referencia en planeación.", input_schema: { type: "object", properties: { referencia: { type: "string", description: "Código de la referencia" } }, required: ["referencia"] } },
   { name: "ordenes_compra", description: "Consulta órdenes de compra a proveedores (Busint). Devuelve el total a pagar (con IVA) de las órdenes que cumplan el filtro, el desglose por proveedor y las órdenes. Úsala para preguntas como cuánto necesito para pagar las órdenes vigentes.", input_schema: { type: "object", properties: { solo: { type: "string", enum: ["pendientes", "vencidas", "todas"], description: "pendientes = vigentes (por llegar) y vencidas recientes; por defecto pendientes" }, proveedor: { type: "string", description: "Parte del nombre del proveedor (opcional)" }, numero: { type: "string", description: "Número de una orden específica (opcional, trae sus líneas)" } } } },
+  { name: "entradas_planta", description: "Lotes que ENTRARON a planta (producto que regresa de confección) en un rango de fechas: unidades totales, por planta, y los lotes con referencia, pedido y planta. Úsala para 'qué lotes ingresaron a planta hoy/ayer/esta semana' o 'cuánto entró de la planta X'. Las entradas llegan de Busint una vez al día a las 6 a. m., así que el día de hoy casi nunca está completo: avisa la última fecha con datos.", input_schema: { type: "object", properties: { desde: { type: "string", description: "Fecha inicial AAAA-MM-DD (si falta, usa 'hasta')." }, hasta: { type: "string", description: "Fecha final AAAA-MM-DD (si falta, hoy)." }, planta: { type: "string", description: "Parte del nombre de la planta, opcional." }, numLote: { type: "string", description: "Número de lote, opcional." } } } },
+  { name: "programacion_planta", description: "Programación de planta de ATLAS: lotes enviados a planta con su prioridad (ALTA/MEDIA/NORMAL), motivo, fecha sugerida y estado (pendiente o cumplido). Úsala para 'qué está pendiente en planta', 'qué es prioridad alta', 'qué está atrasado'.", input_schema: { type: "object", properties: { estado: { type: "string", enum: ["pendiente", "cumplido", "todos"] }, prioridad: { type: "string", enum: ["ALTA", "MEDIA", "NORMAL"] }, numLote: { type: "string" }, numPedido: { type: "string" } } } },
+  { name: "despachos", description: "Despachos y facturación de la bitácora de despachos (facturas de Busint): documentos, unidades y monto despachado, devoluciones, y el desglose por cliente, en un rango de fechas. Úsala para 'cuánto despachamos hoy / esta semana / este mes' o 'qué se le despachó al cliente X'.", input_schema: { type: "object", properties: { desde: { type: "string", description: "AAAA-MM-DD" }, hasta: { type: "string", description: "AAAA-MM-DD (si falta, hoy)" }, cliente: { type: "string", description: "Parte del nombre del cliente, opcional." } } } }
 ];
 
 async function asiEjecutarHerramienta(nombre, args) {
@@ -11999,6 +12137,9 @@ async function asiEjecutarHerramienta(nombre, args) {
     case "buscar_pedido": return asiBuscarPedido(args);
     case "buscar_referencia": return asiBuscarReferencia(args);
     case "ordenes_compra": return asiOrdenesCompra(args);
+    case "entradas_planta": return asiEntradasPlanta(args);
+    case "programacion_planta": return asiProgramacionPlanta(args);
+    case "despachos": return asiDespachos(args);
     default: return { error: `Herramienta desconocida: ${nombre}` };
   }
 }
@@ -12041,6 +12182,7 @@ exports.asistenteAtlas = onCallAuth(
 Reglas:
 - Responde SIEMPRE en español, con frases cortas y naturales, pensadas para escucharse en voz alta: sin tablas, sin viñetas, sin markdown y sin emojis. Máximo unas 6 frases, salvo que pidan más detalle.
 - Usa SOLO los datos que devuelven las herramientas. Si un dato no aparece, dilo y no lo inventes. Cuando des una cifra, di de dónde sale (por ejemplo "según Contabilidad", "según Busint", "según Planeación").
+- Para fechas relativas (hoy, ayer, esta semana, este mes) calcúlalas a partir de la fecha de hoy y pasa las herramientas en formato AAAA-MM-DD. Si una herramienta avisa que los datos del día no están completos, díselo al gerente.
 - Eres de solo lectura: no puedes cambiar ni crear nada en ATLAS ni en Busint.
 - Si te preguntan algo que ninguna herramienta cubre (por ejemplo sueldos de una persona, inventario de telas, cartera), di con claridad que todavía no puedes consultarlo.
 - Di el dinero con separadores o en palabras, por ejemplo "un millón doscientos mil pesos", y las fechas en palabras ("el 31 de octubre").
