@@ -5,11 +5,14 @@
 // Todo en unidades y en pesos (precio matriculado de Busint). La capacidad de
 // cada área se puede mover aquí mismo para simular; solo el administrador la
 // guarda como la oficial. El cálculo vive en proyeccion-calculo.js.
-// Fase 1: NO mira materiales (tela e insumos); eso es la fase 2.
+// Fase 2 (paso A): revisa los insumos de los lotes ya cortados con la misma cuenta de Lotes por integrar;
+// un lote al que le faltan insumos no empieza a coserse hasta que llega su orden de compra.
+// Todavía NO revisa la tela ni los pedidos sin cortar (paso B).
 import React, { useState, useEffect, useMemo } from "react";
 import { doc, onSnapshot, setDoc } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
-import { AREAS_PROYECCION, simularProyeccion, capacidadSugerida } from "./proyeccion-calculo";
+import { AREAS_PROYECCION, simularProyeccion, capacidadSugerida, sumarDias } from "./proyeccion-calculo";
+import { cargarLotesPorIntegrar, asignarInventario, clasificarUbicacion } from "./lotes-por-integrar";
 
 const C = {
   ink: "#1A1A2E", slate: "#5A5A7A", border: "#E8E2DB", canvas: "#F7F4F0", white: "#FFFFFF",
@@ -85,6 +88,46 @@ function colorCarga(carga, cola) {
   return { bg: "transparent", fg: C.slate };
 }
 
+const TEXTO_MAT = { ok: "Completo", justo: "Completo (justo)", oc_ok: "Falta · llega OC", oc_tarde: "Falta · OC llega tarde", comprar: "Falta · sin OC", sin_ficha: "Sin ficha en Busint", sin_prendas: "Prendas por confirmar" };
+const COLOR_MAT = {
+  ok: { fg: "#1E7A52", bg: "#E3F5EC" }, justo: { fg: "#1E7A52", bg: "#E3F5EC" },
+  oc_ok: { fg: "#2D5A8C", bg: "#E6EEF8" }, oc_tarde: { fg: "#A8660B", bg: "#FDF1DA" },
+  comprar: { fg: "#9A3A2D", bg: "#FBE9E6" }, sin_ficha: { fg: C.slate, bg: C.canvas }, sin_prendas: { fg: C.slate, bg: C.canvas },
+  integrado: { fg: "#1E7A52", bg: "#E3F5EC" }, sin_revisar: { fg: C.slate, bg: C.canvas },
+};
+// Con lo que devuelve Lotes por integrar arma, por lote ya cortado, qué insumos faltan y desde cuándo hay material.
+export function armarMateriales(datos, dueDeLote, hoy, diasSinOC) {
+  const base = (datos?.lotes || [])
+    .map((l) => ({ ...l, ubicTipo: clasificarUbicacion(l.ubic ?? l.ub).tipo, despacho: dueDeLote.get(String(l.lote)) || null }))
+    .filter((l) => l.ubicTipo !== "fuera");
+  const res = asignarInventario({ lotes: base, fichas: datos?.fichas || {}, oc: datos?.oc || {} });
+  const mapa = new Map();
+  const sinOCISO = sumarDias(hoy, Math.max(0, Number(diasSinOC) || 0));
+  res.forEach((l) => {
+    const faltan = (l.insumos || []).filter((i) => i.estado === "comprar" || i.estado === "oc_ok" || i.estado === "oc_tarde");
+    let disponibleISO = null;
+    let sinOC = false;
+    faltan.forEach((i) => {
+      let f = hoy;
+      if (i.comprar > 0.005) { sinOC = true; f = sinOCISO; }
+      (i.oc || []).forEach((o) => { const ff = String(o.ff || "").slice(0, 10); if (ff > f) f = ff; });
+      if (f > (disponibleISO || "")) disponibleISO = f;
+    });
+    const nombres = faltan.map((i) => i.insumo);
+    mapa.set(String(l.lote), {
+      estado: l.estado,
+      pendientes: l.pendientes,
+      disponibleISO: faltan.length ? disponibleISO : null,
+      sinOC,
+      faltan: nombres,
+      texto: faltan.length
+        ? `${nombres.slice(0, 2).join(", ")}${nombres.length > 2 ? ` y ${nombres.length - 2} más` : ""}`
+        : "",
+    });
+  });
+  return mapa;
+}
+
 export default function ProyeccionAreasView({ db, functionsClient, currentUser, lotes, fechaCarga, entradas }) {
   const esAdmin = !!currentUser?.isAdmin;
   const hoy = useMemo(hoyBogota, []);
@@ -105,6 +148,11 @@ export default function ProyeccionAreasView({ db, functionsClient, currentUser, 
   const [filtro, setFiltro] = useState("riesgo"); // riesgo | todos | justo
   const [busqueda, setBusqueda] = useState("");
   const [verTodo, setVerTodo] = useState(false);
+  const [revisarMat, setRevisarMat] = useState(false);
+  const [datosMat, setDatosMat] = useState(null);
+  const [cargandoMat, setCargandoMat] = useState(false);
+  const [errorMat, setErrorMat] = useState("");
+  const [diasSinOC, setDiasSinOC] = useState(15);
 
   // Capacidad guardada
   useEffect(() => {
@@ -146,6 +194,16 @@ export default function ProyeccionAreasView({ db, functionsClient, currentUser, 
   useEffect(() => {
     if (incluirSinCortar && sinCortar === null && !cargandoSC) cargarSinCortar();
   }, [incluirSinCortar]);
+  // Insumos de los lotes ya cortados (misma carga que Lotes por integrar, con caché)
+  useEffect(() => {
+    if (!revisarMat || datosMat || cargandoMat) return;
+    setCargandoMat(true);
+    setErrorMat("");
+    cargarLotesPorIntegrar(functionsClient)
+      .then((d) => setDatosMat(d))
+      .catch((e) => { setErrorMat(e?.message || "No se pudieron revisar los insumos."); setRevisarMat(false); })
+      .finally(() => setCargandoMat(false));
+  }, [revisarMat]);
 
   const diasLab = sabado ? [1, 2, 3, 4, 5, 6] : [1, 2, 3, 4, 5];
   const sugerida = useMemo(() => capacidadSugerida(entradas, hoy, diasLab), [entradas, hoy, sabado]);
@@ -185,14 +243,21 @@ export default function ProyeccionAreasView({ db, functionsClient, currentUser, 
     return (ref) => Number(p[normRef(ref)]) || 0;
   }, [precios]);
 
+  const materiales = useMemo(() => {
+    if (!revisarMat || !datosMat) return null;
+    const due = new Map();
+    (lotes || []).forEach((l) => due.set(String(l.numLote), String(l.fechaEntregaPedidoISO || l.fechaEntregaConfISO || "").slice(0, 10) || null));
+    return armarMateriales(datosMat, due, hoy, diasSinOC);
+  }, [revisarMat, datosMat, lotes, hoy, diasSinOC]);
+
   const sim = useMemo(() => {
     if (!capEdit || precios === null) return null;
     return simularProyeccion({
       lotes: lotes || [],
       sinCortar: incluirSinCortar && Array.isArray(sinCortar) ? sinCortar : [],
-      precioDe, capacidad, hoyISO: hoy, sabado, colchonDias: colchon, semanas,
+      precioDe, capacidad, hoyISO: hoy, sabado, colchonDias: colchon, semanas, materiales,
     });
-  }, [lotes, sinCortar, incluirSinCortar, precioDe, capacidad, hoy, sabado, colchon, semanas, capEdit, precios]);
+  }, [lotes, sinCortar, incluirSinCortar, precioDe, capacidad, hoy, sabado, colchon, semanas, capEdit, precios, materiales]);
 
   function ajustar(porcentaje) {
     setCapEdit((e) => {
@@ -217,11 +282,22 @@ export default function ProyeccionAreasView({ db, functionsClient, currentUser, 
     setGuardando(false);
   }
 
+  function estadoMaterial(l) {
+    if (!revisarMat) return null;
+    if (l.tipo !== "lote") return { clave: "sin_revisar", texto: "Falta revisar tela (paso B)" };
+    if (!materiales) return { clave: "sin_revisar", texto: cargandoMat ? "Revisando…" : "Sin revisar" };
+    const m = materiales.get(String(l.numLote));
+    if (!m) return { clave: "integrado", texto: "Ya integrado" };
+    const base = TEXTO_MAT[m.estado] || "Sin dato";
+    if (m.estado === "oc_ok" || m.estado === "oc_tarde") return { clave: m.estado, texto: `${m.texto ? m.texto + " · " : ""}OC llega ${fmtFecha(m.disponibleISO)}${m.estado === "oc_tarde" ? " (tarde)" : ""}` };
+    if (m.estado === "comprar") return { clave: "comprar", texto: `${m.texto ? m.texto + " · " : ""}sin OC` };
+    return { clave: m.estado, texto: base };
+  }
   const filasLotes = useMemo(() => {
     if (!sim) return [];
     const q = busqueda.trim().toLowerCase();
     return sim.lotes
-      .filter((l) => (filtro === "riesgo" ? l.estado === "atrasado" || l.estado === "sin_horizonte" : filtro === "justo" ? l.estado === "justo" : true))
+      .filter((l) => (filtro === "riesgo" ? l.estado === "atrasado" || l.estado === "sin_horizonte" : filtro === "justo" ? l.estado === "justo" : filtro === "material" ? l.bloqueadas > 0 : true))
       .filter((l) => !q || [l.numLote, l.numPedido, l.ref, l.cliente, l.planta].join(" ").toLowerCase().includes(q))
       .sort((a, b) => (b.atraso ?? 9999) - (a.atraso ?? 9999) || b.valor - a.valor);
   }, [sim, filtro, busqueda]);
@@ -245,7 +321,7 @@ export default function ProyeccionAreasView({ db, functionsClient, currentUser, 
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(filasSem), "Semanas");
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sim.lotes.map((l) => ({
       Tipo: l.tipo === "lote" ? "Lote" : "Pedido sin cortar", Lote: l.numLote, Pedido: l.numPedido, Referencia: l.ref, Cliente: l.cliente, "Unidades": Math.round(l.unidades),
-      "Valor ($)": Math.round(l.valor), "Dónde está": NOMBRE_AREA[l.dondeEsta] || "", Entrega: l.entrega, "Listo proyectado": l.listoISO || "Fuera del horizonte",
+      "Valor ($)": Math.round(l.valor), "Dónde está": NOMBRE_AREA[l.dondeEsta] || "", ...(revisarMat ? { Materiales: estadoMaterial(l)?.texto || "", "Unidades esperando material": Math.round(l.bloqueadas || 0), "Material disponible desde": l.materialDesde || "" } : {}), Entrega: l.entrega, "Listo proyectado": l.listoISO || "Fuera del horizonte",
       "Días de atraso": l.atraso === null ? "" : l.atraso, Estado: ESTADOS[l.estado]?.txt || "",
     }))), "Lotes y pedidos");
     XLSX.writeFile(wb, `Proyeccion_por_area_${hoy}.xlsx`);
@@ -284,10 +360,22 @@ export default function ProyeccionAreasView({ db, functionsClient, currentUser, 
         <Chip activo={incluirSinCortar} onClick={() => setIncluirSinCortar((v) => !v)}>
           {cargandoSC ? "Calculando lo que falta cortar… (~1 min)" : `${incluirSinCortar ? "✓ " : ""}Incluir lo que falta por cortar`}
         </Chip>
+        <Chip activo={revisarMat} onClick={() => setRevisarMat((v) => !v)}>
+          {cargandoMat ? "Revisando insumos…" : `${revisarMat ? "✓ " : ""}Revisar insumos de lotes cortados`}
+        </Chip>
+        {revisarMat ? (
+          <>
+            <span style={{ fontSize: 12, color: C.slate }}>Si un insumo no tiene orden de compra, suponer entrega en</span>
+            <select value={diasSinOC} onChange={(e) => setDiasSinOC(Number(e.target.value))} style={{ padding: "7px 10px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", color: C.ink, background: C.white }}>
+              {[7, 15, 21, 30].map((n) => <option key={n} value={n}>{n} días</option>)}
+            </select>
+          </>
+        ) : null}
         <div style={{ marginLeft: "auto" }}>
           <Boton onClick={exportarExcel} disabled={!sim}>⬇ Excel</Boton>
         </div>
       </div>
+      {errorMat ? <div style={{ marginBottom: 12, fontSize: 13, color: C.red, fontWeight: 600 }}>⚠ {errorMat}</div> : null}
       {errorSC ? <div style={{ marginBottom: 12, fontSize: 13, color: C.red, fontWeight: 600 }}>⚠ {errorSC}</div> : null}
       {errorPrecios ? <div style={{ marginBottom: 12, fontSize: 13, color: C.red, fontWeight: 600 }}>⚠ {errorPrecios} Los valores en pesos saldrán en $0.</div> : null}
 
@@ -358,6 +446,14 @@ export default function ProyeccionAreasView({ db, functionsClient, currentUser, 
               color={sim.enRiesgo.cantidad ? C.red : C.green}
               sub={`${fmt(sim.enRiesgo.unidades)} und · ${millones(sim.enRiesgo.valor)} en juego`}
             />
+            {materiales ? (
+              <Tile
+                titulo="Esperan material"
+                valor={`${sim.esperanMaterial.lotes} ${sim.esperanMaterial.lotes === 1 ? "lote" : "lotes"} · ${fmt(sim.esperanMaterial.unidades)} und`}
+                color={sim.esperanMaterial.lotes ? C.amber : C.green}
+                sub={`${millones(sim.esperanMaterial.valor)} detenidos · ${sim.esperanMaterial.sinOC} sin orden de compra`}
+              />
+            ) : null}
             <Tile
               titulo="Todo listo hacia el"
               valor={(() => {
@@ -394,8 +490,9 @@ export default function ProyeccionAreasView({ db, functionsClient, currentUser, 
                     ["Procesa ($)", (x) => millones(x.valorSale)],
                     ["Carga", (x) => (x.capSemana > 0 ? `${Math.round(x.carga * 100)}%` : "—"), true],
                     ["Se acumula (und)", (x) => (x.cola > 0.5 ? fmt(x.cola) : "—")],
+                    ...(a.id === "confeccion" && materiales ? [["Esperando material (und)", null, false, true]] : []),
                   ];
-                  return medidas.map(([nombre, f, esCarga], i) => (
+                  return medidas.map(([nombre, f, esCarga, esEspera], i) => (
                     <tr key={`${a.id}-${nombre}`}>
                       {i === 0 ? (
                         <td rowSpan={medidas.length} style={{ ...td, textAlign: "left", fontWeight: 800, verticalAlign: "top", background: C.canvas, borderRight: `1px solid ${C.border}` }}>
@@ -403,9 +500,10 @@ export default function ProyeccionAreasView({ db, functionsClient, currentUser, 
                           <div style={{ fontSize: 11, fontWeight: 600, color: C.slate }}>{fmt(capacidad[a.id])} und/día</div>
                         </td>
                       ) : null}
-                      <td style={{ ...td, textAlign: "left", color: C.slate, fontSize: 12 }}>{nombre}</td>
-                      <td style={{ ...td, color: C.slate }}>{i === 0 ? fmt(resumen.colaHoy) : i === 1 ? millones(resumen.valorHoy) : ""}</td>
+                      <td style={{ ...td, textAlign: "left", color: esEspera ? C.amber : C.slate, fontSize: 12, fontWeight: esEspera ? 800 : 400 }}>{nombre}</td>
+                      <td style={{ ...td, color: esEspera ? C.amber : C.slate, fontWeight: esEspera ? 800 : 400 }}>{esEspera ? (sim.esperandoHoy > 0.5 ? fmt(sim.esperandoHoy) : "—") : i === 0 ? fmt(resumen.colaHoy) : i === 1 ? millones(resumen.valorHoy) : ""}</td>
                       {sim.semanas.map((s) => {
+                        if (esEspera) return <td key={s.lunes} style={{ ...td, color: C.amber, fontWeight: 800 }}>{s.esperando > 0.5 ? fmt(s.esperando) : "—"}</td>;
                         const x = s.areas[a.id];
                         const col = esCarga ? colorCarga(x.carga, x.cola) : null;
                         return (
@@ -440,6 +538,7 @@ export default function ProyeccionAreasView({ db, functionsClient, currentUser, 
             <div style={{ fontSize: 14, fontWeight: 800, color: C.ink }}>Lotes y pedidos</div>
             <Chip activo={filtro === "riesgo"} onClick={() => setFiltro("riesgo")}>Llegarían tarde</Chip>
             <Chip activo={filtro === "justo"} onClick={() => setFiltro("justo")}>Justos</Chip>
+            {revisarMat ? <Chip activo={filtro === "material"} onClick={() => setFiltro("material")}>Esperan material</Chip> : null}
             <Chip activo={filtro === "todos"} onClick={() => setFiltro("todos")}>Todos</Chip>
             <input
               value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder="🔍  Lote, pedido, referencia, cliente…"
@@ -457,6 +556,7 @@ export default function ProyeccionAreasView({ db, functionsClient, currentUser, 
                   <th style={th}>Und</th>
                   <th style={th}>Valor</th>
                   <th style={{ ...th, textAlign: "left" }}>Dónde está</th>
+                  {revisarMat ? <th style={{ ...th, textAlign: "left" }}>Materiales</th> : null}
                   <th style={th}>Entrega</th>
                   <th style={th}>Listo proyectado</th>
                   <th style={th}>Atraso</th>
@@ -477,6 +577,15 @@ export default function ProyeccionAreasView({ db, functionsClient, currentUser, 
                       <td style={td}>{fmt(l.unidades)}</td>
                       <td style={td}>{l.valor > 0 ? millones(l.valor) : "—"}</td>
                       <td style={{ ...td, textAlign: "left" }}>{NOMBRE_AREA[l.dondeEsta] || "—"}</td>
+                      {revisarMat ? (() => {
+                        const em = estadoMaterial(l);
+                        const cm = COLOR_MAT[em.clave] || COLOR_MAT.sin_revisar;
+                        return (
+                          <td style={{ ...td, textAlign: "left" }}>
+                            <span style={{ padding: "3px 10px", borderRadius: 12, fontSize: 11, fontWeight: 800, color: cm.fg, background: cm.bg }}>{em.texto}</span>
+                          </td>
+                        );
+                      })() : null}
                       <td style={td}>{l.entrega ? fmtFechaLarga(l.entrega) : "—"}</td>
                       <td style={td}>{l.listoISO ? fmtFechaLarga(l.listoISO) : "Fuera del horizonte"}</td>
                       <td style={{ ...td, fontWeight: 800, color: l.atraso > 0 ? C.red : C.slate }}>{l.atraso === null ? "—" : l.atraso > 0 ? `+${l.atraso} d` : `${l.atraso} d`}</td>
@@ -487,7 +596,7 @@ export default function ProyeccionAreasView({ db, functionsClient, currentUser, 
                   );
                 })}
                 {!filasLotes.length ? (
-                  <tr><td colSpan={10} style={{ ...td, textAlign: "center", color: C.slate, padding: 24 }}>No hay filas con este filtro.</td></tr>
+                  <tr><td colSpan={11} style={{ ...td, textAlign: "center", color: C.slate, padding: 24 }}>No hay filas con este filtro.</td></tr>
                 ) : null}
               </tbody>
             </table>
@@ -497,7 +606,7 @@ export default function ProyeccionAreasView({ db, functionsClient, currentUser, 
           ) : null}
           <div style={{ fontSize: 11, color: C.slate, marginTop: 10, lineHeight: 1.6 }}>
             Atraso en días de calendario contra la fecha de entrega del pedido (si no la tiene, la comprometida con el taller). «Justo» = termina con 2 días o menos de holgura.
-            Confección junta planta propia y talleres externos como una sola capacidad. Fase 2: semáforo de tela e insumos por lote.
+            Confección junta planta propia y talleres externos como una sola capacidad. Con «Revisar insumos» se usa la misma cuenta de Lotes por integrar (inventario y órdenes de compra repartidos lote por lote); la tela y los pedidos sin cortar se revisan en el paso B.
           </div>
         </>
       )}

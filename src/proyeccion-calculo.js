@@ -79,6 +79,10 @@ export function simularProyeccion({
   colchonDias = 0,
   semanas = 8,
   maxDias = 540,
+  // Fase 2: Map(String(numLote) -> { disponibleISO, pendientes, estado, texto, sinOC }) con lo que
+  // falta de insumos de cada lote ya cortado. Un lote con insumos faltantes no puede empezar a
+  // coserse (la parte que aún no se integra) hasta `disponibleISO`.
+  materiales = null,
 }) {
   const diasLaborales = sabado ? [1, 2, 3, 4, 5, 6] : [1, 2, 3, 4, 5];
   const orden = AREAS_PROYECCION.map((a) => a.id);
@@ -102,14 +106,17 @@ export function simularProyeccion({
     }
     return fichas.get(key);
   }
-  function agregar(area, key, base, unidades, precio) {
+  const jobsEnEspera = []; // trabajos de Confección que esperan material
+  function agregar(area, key, base, unidades, precio, extra = {}) {
     if (!(unidades > 0.0001)) return;
     const f = ficha(key, base);
     f.unidades += unidades;
     f.valor += unidades * precio;
     f.dondeEsta[area] = (f.dondeEsta[area] || 0) + unidades;
     if (!(precio > 0)) sinPrecioUnid += unidades;
-    colas[area].push({ key, units: unidades, ready: 0, due: base.entrega || SIN_FECHA, precio });
+    const job = { key, units: unidades, ready: extra.ready || 0, due: base.entrega || SIN_FECHA, precio, espera: !!extra.espera };
+    colas[area].push(job);
+    if (job.espera) jobsEnEspera.push(job);
   }
 
   lotes.forEach((l) => {
@@ -129,7 +136,22 @@ export function simularProyeccion({
     const enConf = NUM(l.invCorte) + NUM(l.invBMP) + NUM(l.invPlanta);
     const enTerm = NUM(l.invSemiterminado);
     const enBPT = NUM(l.invBPT);
-    agregar("confeccion", key, base, enConf, precio);
+    const mat = materiales ? materiales.get(String(l.numLote ?? "")) : null;
+    let bloqueadas = 0;
+    let readyBloq = 0;
+    if (mat && mat.disponibleISO && NUM(mat.pendientes) > 0) {
+      bloqueadas = Math.min(enConf, NUM(mat.pendientes));
+      readyBloq = Math.max(0, diasEntre(hoyISO, mat.disponibleISO));
+    }
+    agregar("confeccion", key, base, enConf - bloqueadas, precio);
+    if (bloqueadas > 0.0001) {
+      if (readyBloq > 0) agregar("confeccion", key, base, bloqueadas, precio, { ready: readyBloq, espera: true });
+      else agregar("confeccion", key, base, bloqueadas, precio);
+    }
+    const fch = ficha(key, base);
+    fch.mat = mat || null;
+    fch.bloqueadas = readyBloq > 0 ? bloqueadas : 0;
+    fch.readyBloq = readyBloq;
     agregar("terminacion", key, base, enTerm, precio);
     if (enBPT > 0.0001) {
       const f = ficha(key, base);
@@ -181,10 +203,13 @@ export function simularProyeccion({
     if (!semanasMap.has(lunes)) {
       const areas = {};
       orden.forEach((id) => { areas[id] = { entra: 0, sale: 0, valorSale: 0, cola: 0, colaValor: 0, diasLab: 0 }; });
-      semanasMap.set(lunes, { lunes, areas, listo: 0, listoValor: 0 });
+      semanasMap.set(lunes, { lunes, areas, listo: 0, listoValor: 0, esperando: 0 });
     }
     return semanasMap.get(lunes);
   }
+  // El trabajo que esperaba material "entra" a Confección la semana en que se libera.
+  jobsEnEspera.forEach((j) => { semanaDe(sumarDias(hoyISO, j.ready)).areas.confeccion.entra += j.units; });
+  const esperandoHoy = jobsEnEspera.reduce((sum, j) => sum + j.units, 0);
   const diaAbsoluto = [];
   let ultimoDiaConTrabajo = -1;
 
@@ -235,6 +260,7 @@ export function simularProyeccion({
       sem.areas[area].cola = u;
       sem.areas[area].colaValor = v;
     });
+    sem.esperando = colas.confeccion.reduce((sum, j) => sum + (j.espera && j.ready > d && j.units > 0.0001 ? j.units : 0), 0);
     diaAbsoluto.push({ d, fecha, pendiente: orden.reduce((s, a) => s + colas[a].reduce((x, j) => x + Math.max(0, j.units), 0), 0) });
     const pendiente = diaAbsoluto[diaAbsoluto.length - 1].pendiente;
     if (pendiente < 0.0001 && d > 0) {
@@ -257,7 +283,7 @@ export function simularProyeccion({
       const capSemana = cap[id] * diasLab;
       areas[id] = { ...a, diasLab, capSemana, carga: capSemana > 0 ? a.sale / capSemana : 0 };
     });
-    filasSemanas.push({ lunes, areas, listo: s.listo, listoValor: s.listoValor });
+    filasSemanas.push({ lunes, areas, listo: s.listo, listoValor: s.listoValor, esperando: s.esperando || 0 });
   }
 
   // ── Resumen por área ────────────────────────────────────────────────────────
@@ -295,8 +321,18 @@ export function simularProyeccion({
       entrega, listoISO, atraso, estado,
       dondeEsta: f.enBPT >= f.unidades - 0.5 ? "bpt" : donde[0] || "",
       sinHorizonte: !listoISO,
+      materiales: f.mat || null,
+      bloqueadas: f.bloqueadas || 0,
+      materialDesde: f.bloqueadas > 0 ? sumarDias(hoyISO, f.readyBloq) : null,
     };
   });
+  const esperan = filasLotes.filter((l) => l.bloqueadas > 0);
+  const esperanMaterial = {
+    lotes: esperan.length,
+    unidades: esperan.reduce((sum, l) => sum + l.bloqueadas, 0),
+    valor: esperan.reduce((sum, l) => sum + l.bloqueadas * (l.precio || 0), 0),
+    sinOC: esperan.filter((l) => l.materiales && l.materiales.sinOC).length,
+  };
   const enRiesgo = filasLotes.filter((l) => l.estado === "atrasado");
   const valorEnRiesgo = enRiesgo.reduce((s, l) => s + l.valor, 0);
   const unidadesEnRiesgo = enRiesgo.reduce((s, l) => s + l.unidades, 0);
@@ -314,6 +350,8 @@ export function simularProyeccion({
     totalValor: filasLotes.reduce((s, l) => s + l.valor, 0),
     sinPrecioUnid,
     enRiesgo: { cantidad: enRiesgo.length, unidades: unidadesEnRiesgo, valor: valorEnRiesgo },
+    esperanMaterial,
+    esperandoHoy,
     sinCapacidad: orden.filter((id) => cap[id] <= 0 && trabajoTotal[id] > 0),
   };
 }
