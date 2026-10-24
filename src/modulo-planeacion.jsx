@@ -13,6 +13,7 @@ import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "fire
 import CentroCostoCorteEnAreas, { CentroCostoCierreCorte } from "./modulo-corte-areas";
 import CentroCostoAnioPanel from "./centro-costo-historico";
 import { cargaEntradasActivaDe } from "./entradas-planta-util";
+import ProyeccionAreasView from "./proyeccion-areas";
 import { DevolucionesCalidadView } from "./devoluciones-cliente";
 import { claveArea as claveAreaHistorico } from "./centro-costo-historico-parser";
 const firebaseConfig = {
@@ -8980,6 +8981,7 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
     { id: "estadisticas", icon: "📈", label: "Estadísticas" },
     { id: "entradas_talleres", icon: "📥", label: "Entradas de Talleres" },
     { id: "lotes_por_dia", icon: "📅", label: "Lotes por Día" },
+    { id: "proyeccion_areas", icon: "🗓", label: "Proyección por Área" },
     { id: "control_calidad", icon: "🔍", label: "Control de Calidad" },
   ];
   if (loading) {
@@ -9075,6 +9077,16 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
           )}
           {subView === "entradas_talleres" && <EntradasTalleresView entradas={entradasTalleres} cargas={cargas} />}
           {subView === "lotes_por_dia" && <LotesPorDiaView entradas={entradasTalleres} cargas={cargas} />}
+          {subView === "proyeccion_areas" && (
+            <ProyeccionAreasView
+              db={db}
+              functionsClient={functionsClient}
+              currentUser={currentUser}
+              lotes={lotes}
+              fechaCarga={cargaActiva?.creadoEn || cargaActiva?.fecha || ""}
+              entradas={entradasTalleres}
+            />
+          )}
           {subView === "estadisticas" && (
             <EstadisticasPlaneacionView
               programaciones={programacionesProcesosTodas}
