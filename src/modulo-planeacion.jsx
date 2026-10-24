@@ -8945,6 +8945,12 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
     const ordenadas = [...cargas].sort((a, b) => (b.creadoEn || b.fecha).localeCompare(a.creadoEn || a.fecha));
     return ordenadas[0]?.lotes || [];
   }, [cargas]);
+  // Fecha de la carga de Busint más reciente (la que alimenta Proyección por Área).
+  const fechaCargaActivaPlaneacion = useMemo(() => {
+    if (!cargas.length) return "";
+    const ordenadas = [...cargas].sort((a, b) => (b.creadoEn || b.fecha).localeCompare(a.creadoEn || a.fecha));
+    return ordenadas[0]?.creadoEn || ordenadas[0]?.fecha || "";
+  }, [cargas]);
   async function actualizarMovimientosEstadisticas() {
     setCargandoMovimientosEstadisticas(true);
     try {
@@ -9082,8 +9088,8 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
               db={db}
               functionsClient={functionsClient}
               currentUser={currentUser}
-              lotes={lotes}
-              fechaCarga={cargaActiva?.creadoEn || cargaActiva?.fecha || ""}
+              lotes={lotesActivosPlaneacion}
+              fechaCarga={fechaCargaActivaPlaneacion}
               entradas={entradasTalleres}
             />
           )}
