@@ -22,6 +22,11 @@ import { collection, getDocs } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { cargarLotesPorIntegrar } from "./lotes-por-integrar";
 
+// Códigos de Busint en una sola línea ("3748, 3751 +2 más").
+const codigosTxt = (cods, max = 4) => {
+  const l = [...new Set((cods || []).map((c) => String(c).trim()).filter(Boolean))];
+  return l.length > max ? `${l.slice(0, max).join(", ")} +${l.length - max} más` : l.join(", ");
+};
 const fmt = (n, dec = 2) => (Number.isFinite(Number(n)) ? Number(n).toLocaleString("es-CO", { maximumFractionDigits: dec }) : "—");
 const money = (n) => "$ " + Math.round(Number(n) || 0).toLocaleString("es-CO");
 const normTxt = (t) => String(t || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
@@ -227,7 +232,7 @@ export function calcularExplosion({ lineas, fichas, enCamino, mermaTela, mermaIn
       const combina = ficha.telas.filter((x) => x !== t && x.nombre).map((x) => `${x.nombre}${x.color ? " " + x.color : ""} (${fmt(x.consumo, 2)} ${tipoUnidadTela(x.unidad) === "m2" ? "m²" : tipoUnidadTela(x.unidad) === "kg" ? "kg" : "m"})`);
       a.usos.push({ pedido: l.pedido, ref: l.ref, pinta: l.pinta, color: l.color, unidades: l.unidades, consumo: t.consumo, cant, combina });
       if (l.color) a.nombresColor.set(l.color, (a.nombresColor.get(l.color) || 0) + l.unidades);
-      r.items.push({ tipo: "tela", clave, nombre: t.nombre, colorCod: t.color, colorNombre: l.color, unidad: a.unidad, consumo: t.consumo, unidades: l.unidades, cant, combina });
+      r.items.push({ tipo: "tela", clave, nombre: t.nombre, codBus: t.codcomp || "", colorCod: t.color, colorNombre: l.color, unidad: a.unidad, consumo: t.consumo, unidades: l.unidades, cant, combina });
       if (t.motivo !== "ok") avisosTela.push(`${l.ref} (${l.pinta}) · ${t.nombre}: ${({ sin_detalle_color: "sin detalle de color en Busint", slot_sin_color: "sin color asignado", color_no_en_inventario: "ese color no está en inventario" })[t.motivo] || t.motivo}`);
     });
     if (uIns > 0) ficha.insumos.forEach((ins) => {
@@ -239,13 +244,13 @@ export function calcularExplosion({ lineas, fichas, enCamino, mermaTela, mermaIn
       const clave = ins.insumo.toUpperCase().replace(/-/g, " ").replace(/\s+/g, " ").trim();
       let a = insumos.get(clave);
       if (!a) {
-        a = { clave, tipo: "insumo", nombre: ins.insumo, unidad: ins.inventario.unidad || "", necesito: 0, tengo: ins.inventario.cantidad, colores: ins.inventario.colores, promedio: ins.inventario.promedio, codcomps: ins.inventario.codcomps, enCamino: 0, vencidas: 0, usos: [], nombresColor: new Map() };
+        a = { clave, tipo: "insumo", nombre: ins.insumo, unidad: ins.inventario.unidad || "", necesito: 0, tengo: ins.inventario.cantidad, colores: ins.inventario.colores, promedio: ins.inventario.promedio, codcomps: ins.inventario.codcomps, detalle: ins.inventario.detalle || [], enCamino: 0, vencidas: 0, usos: [], nombresColor: new Map() };
         insumos.set(clave, a);
       }
       const cant = uIns * ins.cant * (1 + mermaInsumo / 100);
       a.necesito += cant;
       a.usos.push({ pedido: l.pedido, ref: l.ref, color: l.color, unidades: uIns, consumo: ins.cant, cant, ubicacion: ins.ubicacion });
-      r.items.push({ tipo: "insumo", clave, nombre: ins.insumo, colorCod: null, colorNombre: l.color, unidad: a.unidad, consumo: ins.cant, unidades: uIns, cant, ubicacion: ins.ubicacion });
+      r.items.push({ tipo: "insumo", clave, nombre: ins.insumo, codBus: codigosTxt(ins.inventario.codcomps, 6), colorCod: null, colorNombre: l.color, unidad: a.unidad, consumo: ins.cant, unidades: uIns, cant, ubicacion: ins.ubicacion });
     });
   });
   const colorTela = resolverColoresTela(registrosColor);
@@ -258,6 +263,8 @@ export function calcularExplosion({ lineas, fichas, enCamino, mermaTela, mermaIn
       if (a.codcomp && enCamino.has(a.codcomp)) { a.enCamino = enCamino.get(a.codcomp).vig; a.vencidas = enCamino.get(a.codcomp).venc; }
     } else {
       (a.codcomps || []).forEach((c) => { const e = enCamino.get(c); if (e) { a.enCamino += e.vig; a.vencidas += e.venc; } });
+      // (2026-10-24) Detalle por código de Busint: existencia, orden de compra y costo de cada uno.
+      a.detalleCod = (a.detalle || []).map((d) => { const e = enCamino.get(d.cod); return { ...d, enCamino: e ? e.vig : 0, vencidas: e ? e.venc : 0 }; });
     }
     if (a.tengo === null || a.tengo === undefined) { a.falta = null; a.estado = "sindato"; }
     else {
@@ -590,16 +597,16 @@ export default function ExplosionMaterialesView({ db, functionsClient, T, pedido
     }
 
     const COL_TELA = [
-      { h: "Tela", w: 30, k: "tela" }, { h: "Color (cód.)", w: 11, k: "cod", al: "center" }, { h: "Color de la tela", w: 26, k: "colorTela", wrap: true },
+      { h: "Tela", w: 30, k: "tela" }, { h: "Cód. Busint", w: 11, k: "codBus", al: "center" }, { h: "Color (cód.)", w: 11, k: "cod", al: "center" }, { h: "Color de la tela", w: 26, k: "colorTela", wrap: true },
       { h: "Color de la prenda (pedido)", w: 26, k: "colorPrenda", wrap: true }, { h: "Usado en (ref · color de la prenda · combina con)", w: 54, k: "usado", wrap: true },
       { h: "Unidad", w: 9, k: "unidad", al: "center" }, { h: "Necesito", w: 13, k: "necesito", fmt: FMT_CANT, al: "right" }, { h: "Tengo", w: 13, k: "tengo", fmt: FMT_CANT, al: "right" },
       { h: "En camino (OC)", w: 14, k: "camino", fmt: FMT_CANT, al: "right" }, { h: "Falta comprar", w: 14, k: "falta", fmt: FMT_CANT, al: "right" },
       { h: "Costo prom. unidad", w: 15, k: "prom", fmt: FMT_COP, al: "right" }, { h: "Costo estimado", w: 17, k: "costo", fmt: FMT_COP, al: "right" }, { h: "Estado", w: 20, k: "Estado", al: "center" },
     ];
-    const filaTela = (a) => ({ tela: a.nombre, cod: a.color || "", colorTela: colorTelaTxt(a), colorPrenda: nombreColorDe(a), usado: usadoEn(a), unidad: a.unidad, necesito: r2(a.necesito), tengo: r2(a.tengo), camino: r2(a.enCamino), falta: r2(a.falta), prom: Math.round(a.promedio || 0), costo: Math.round(a.costoFalta || 0), _estado: a.estado, _faltaRojo: a.estado === "comprar", _sangria: "tela" });
+    const filaTela = (a) => ({ tela: a.nombre, codBus: a.codcomp || "", cod: a.color || "", colorTela: colorTelaTxt(a), colorPrenda: nombreColorDe(a), usado: usadoEn(a), unidad: a.unidad, necesito: r2(a.necesito), tengo: r2(a.tengo), camino: r2(a.enCamino), falta: r2(a.falta), prom: Math.round(a.promedio || 0), costo: Math.round(a.costoFalta || 0), _estado: a.estado, _faltaRojo: a.estado === "comprar", _sangria: "tela" });
     const filaTotalTela = (g) => ({ tela: g.nombre, cod: "TOTAL TELA", unidad: g.unidad, necesito: r2(g.necesito), tengo: g.tengoConocido ? r2(g.tengo) : null, camino: r2(g.enCamino), falta: r2(g.falta), costo: Math.round(g.costoFalta || 0), _estado: g.estado, _total: true, _faltaRojo: g.estado === "comprar" });
     const COL_INS = [
-      { h: "Insumo", w: 38, k: "ins" }, { h: "Unidad", w: 9, k: "unidad", al: "center" }, { h: "Necesito", w: 13, k: "necesito", fmt: FMT_CANT, al: "right" }, { h: "Tengo", w: 13, k: "tengo", fmt: FMT_CANT, al: "right" },
+      { h: "Insumo", w: 38, k: "ins" }, { h: "Cód. Busint", w: 14, k: "codBus", al: "center" }, { h: "Unidad", w: 9, k: "unidad", al: "center" }, { h: "Necesito", w: 13, k: "necesito", fmt: FMT_CANT, al: "right" }, { h: "Tengo", w: 13, k: "tengo", fmt: FMT_CANT, al: "right" },
       { h: "En camino (OC)", w: 14, k: "camino", fmt: FMT_CANT, al: "right" }, { h: "Falta comprar", w: 14, k: "falta", fmt: FMT_CANT, al: "right" },
       { h: "Costo prom. unidad", w: 15, k: "prom", fmt: FMT_COP, al: "right" }, { h: "Costo estimado", w: 17, k: "costo", fmt: FMT_COP, al: "right" }, { h: "Estado", w: 20, k: "Estado", al: "center" },
     ];
@@ -688,25 +695,35 @@ export default function ExplosionMaterialesView({ db, functionsClient, T, pedido
     const filasTelas = [];
     resultado.gruposTela.forEach((g) => { filasTelas.push(filaTotalTela(g)); g.colores.forEach((c) => filasTelas.push(filaTela(c))); });
     hojaTabla("Telas por color", "Telas por color", COL_TELA, filasTelas, { congelar: 2, tab: "FF2B5C8A" });
-    hojaTabla("Insumos", "Insumos", COL_INS, resultado.insumos.map(filaIns), { congelar: 1, tab: "FF2B5C8A" });
+    // Un insumo con varios códigos de Busint: fila de total + una fila por código (existencia, OC y costo de cada uno).
+    const filasInsumo = (a) => {
+      const det = a.detalleCod || [];
+      const base = { ...filaIns(a), codBus: det.length === 1 ? det[0].cod : det.length > 1 ? `${det.length} códigos` : codigosTxt(a.codcomps, 6) };
+      if (det.length <= 1) return [base];
+      return [
+        { ...base, _total: true },
+        ...det.map((d) => ({ ins: `${d.nombre}${d.color ? ` · ${d.color}` : ""}`, codBus: d.cod, unidad: a.unidad, tengo: r2(d.cantidad), camino: r2(d.enCamino), prom: Math.round(d.promedio || 0), _sangria: "ins" })),
+      ];
+    };
+    hojaTabla("Insumos", "Insumos", COL_INS, resultado.insumos.flatMap(filasInsumo), { congelar: 1, tab: "FF2B5C8A" });
 
     // Para comprar: telas e insumos juntos, ordenados por costo estimado (lo más caro primero) y con total.
     const COL_COMPRAR = [
       { h: "Tipo", w: 9, k: "tipo", al: "center" }, ...COL_TELA.map((c) => (c.k === "tela" ? { ...c, h: "Material", w: 34, k: "tela" } : c)),
     ];
-    const itemsComprar = [...resultado.telas.filter((a) => a.estado === "comprar").map((a) => ({ ...filaTela(a), tipo: "Tela", _sangria: null, _costo: a.costoFalta || 0 })), ...resultado.insumos.filter((a) => a.estado === "comprar").map((a) => ({ tela: a.nombre, tipo: "Insumo", unidad: a.unidad, necesito: r2(a.necesito), tengo: r2(a.tengo), camino: r2(a.enCamino), falta: r2(a.falta), prom: Math.round(a.promedio || 0), costo: Math.round(a.costoFalta || 0), _estado: a.estado, _faltaRojo: true, _costo: a.costoFalta || 0 }))].sort((x, y) => y._costo - x._costo);
+    const itemsComprar = [...resultado.telas.filter((a) => a.estado === "comprar").map((a) => ({ ...filaTela(a), tipo: "Tela", _sangria: null, _costo: a.costoFalta || 0 })), ...resultado.insumos.filter((a) => a.estado === "comprar").map((a) => ({ tela: a.nombre, codBus: codigosTxt((a.detalleCod || []).map((d) => d.cod).concat(a.detalleCod && a.detalleCod.length ? [] : a.codcomps || []), 4), tipo: "Insumo", unidad: a.unidad, necesito: r2(a.necesito), tengo: r2(a.tengo), camino: r2(a.enCamino), falta: r2(a.falta), prom: Math.round(a.promedio || 0), costo: Math.round(a.costoFalta || 0), _estado: a.estado, _faltaRojo: true, _costo: a.costoFalta || 0 }))].sort((x, y) => y._costo - x._costo);
     if (itemsComprar.length) itemsComprar.push({ tela: "TOTAL A COMPRAR", costo: Math.round(costoTotal), _total: true });
     hojaTabla("Para comprar", "Para comprar (de mayor a menor costo)", COL_COMPRAR, itemsComprar, { congelar: 2, tab: "FFE85D4A" });
 
     const COL_REF = [
-      { h: "Referencia", w: 14, k: "ref" }, { h: "Pedidos", w: 18, k: "pedidos", wrap: true }, { h: "Tipo", w: 9, k: "tipo", al: "center" }, { h: "Material", w: 34, k: "mat" },
+      { h: "Referencia", w: 14, k: "ref" }, { h: "Pedidos", w: 18, k: "pedidos", wrap: true }, { h: "Tipo", w: 9, k: "tipo", al: "center" }, { h: "Material", w: 34, k: "mat" }, { h: "Cód. Busint", w: 12, k: "codBus", al: "center" },
       { h: "Color (cód.)", w: 11, k: "cod", al: "center" }, { h: "Color de la prenda (pedido)", w: 26, k: "colorPrenda", wrap: true }, { h: "Combina con (otra tela)", w: 24, k: "combina", wrap: true },
       { h: "Unidad", w: 9, k: "unidad", al: "center" }, { h: "Prendas por cortar", w: 12, k: "prendas", fmt: FMT_ENT, al: "right" }, { h: "Consumo por prenda", w: 12, k: "consumo", fmt: "0.0000", al: "right" },
       { h: "Cantidad", w: 13, k: "cant", fmt: FMT_CANT, al: "right" }, { h: "Falta (estimado)", w: 14, k: "falta", fmt: FMT_CANT, al: "right" }, { h: "Costo falta (estimado)", w: 17, k: "costo", fmt: FMT_COP, al: "right" },
     ];
     const filasRef = [];
     resultado.porRef.forEach((r) => {
-      r.items.forEach((i) => filasRef.push({ ref: r.ref, pedidos: r.pedidos.join(", "), tipo: i.tipo === "tela" ? "Tela" : "Insumo", mat: i.nombre, cod: i.colorCod || "", colorPrenda: i.colorNombre || "", combina: (i.combina || []).join(" + "), unidad: i.unidad, prendas: i.unidades, consumo: +Number(i.consumo).toFixed(4), cant: r2(i.cant), falta: r2(i.faltaParte), costo: Math.round(i.costoParte || 0), _faltaRojo: (i.faltaParte || 0) > 0.005 }));
+      r.items.forEach((i) => filasRef.push({ ref: r.ref, pedidos: r.pedidos.join(", "), tipo: i.tipo === "tela" ? "Tela" : "Insumo", mat: i.nombre, codBus: i.codBus || "", cod: i.colorCod || "", colorPrenda: i.colorNombre || "", combina: (i.combina || []).join(" + "), unidad: i.unidad, prendas: i.unidades, consumo: +Number(i.consumo).toFixed(4), cant: r2(i.cant), falta: r2(i.faltaParte), costo: Math.round(i.costoParte || 0), _faltaRojo: (i.faltaParte || 0) > 0.005 }));
       filasRef.push({ ref: r.ref, mat: `TOTAL · ${fmt(r.unidades, 0)} prendas`, costo: Math.round(r.costoFalta || 0), _total: true });
     });
     hojaTabla("Por referencia", "Materiales por referencia", COL_REF, filasRef, { congelar: 1, tab: "FF7C5CBF" });
@@ -785,6 +802,17 @@ export default function ExplosionMaterialesView({ db, functionsClient, T, pedido
     a.usos.forEach((u) => { const x = m.get(u.ref) || { ref: u.ref, unidades: 0, cant: 0, consumo: u.consumo, colores: new Set(), pedidos: new Set(), pintas: new Set(), combina: new Set() }; x.unidades += u.unidades; x.cant += u.cant; if (u.color) x.colores.add(u.color); if (u.pinta) x.pintas.add(u.pinta); (u.combina || []).forEach((c) => x.combina.add(c)); x.pedidos.add(u.pedido); m.set(u.ref, x); });
     return [...m.values()].sort((x, y) => y.cant - x.cant);
   };
+  const DetalleCodigos = ({ a }) => (a.detalleCod && a.detalleCod.length ? (
+    <div style={{ padding: "8px 18px 4px 38px", background: "#F6F2EC", borderBottom: `1px solid ${T.border}` }}>
+      <div style={{ fontSize: 11, letterSpacing: 0.5, textTransform: "uppercase", color: T.slate, fontWeight: 700, marginBottom: 4 }}>Códigos de Busint de este insumo (el consumo se calcula por nombre; cada código tiene su existencia)</div>
+      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <thead><tr><th style={th}>Código</th><th style={th}>Nombre en Busint</th><th style={{ ...th, textAlign: "right" }}>En bodega</th><th style={{ ...th, textAlign: "right" }}>En camino (OC)</th><th style={{ ...th, textAlign: "right" }}>Costo prom.</th></tr></thead>
+        <tbody>{a.detalleCod.map((d) => (
+          <tr key={d.cod}><td style={{ ...td, fontWeight: 700 }}>{d.cod}</td><td style={td}>{d.nombre}{d.color ? ` · ${d.color}` : ""}</td><td style={{ ...td, textAlign: "right" }}>{fmt(d.cantidad)} {a.unidad}</td><td style={{ ...td, textAlign: "right" }}>{d.enCamino ? fmt(d.enCamino) : "—"}</td><td style={{ ...td, textAlign: "right" }}>{d.promedio ? money(d.promedio) : "—"}</td></tr>
+        ))}</tbody>
+      </table>
+    </div>
+  ) : null);
   const DetalleRefs = ({ a }) => (
     <div style={{ padding: "8px 18px 12px 38px", background: "#F6F2EC", borderBottom: `1px solid ${T.border}` }}>
       <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -975,13 +1003,14 @@ export default function ExplosionMaterialesView({ db, functionsClient, T, pedido
               {insumosVista.map((a) => (
                 <React.Fragment key={a.clave}>
                   <div onClick={() => alternar("i|" + a.clave)} style={{ display: "grid", gridTemplateColumns: COLS, gap: 12, alignItems: "center", padding: "11px 18px", borderBottom: "1px solid #F0ECE3", cursor: "pointer" }}>
-                    <div><b>{a.nombre}</b><div style={{ fontSize: 11.5, color: T.slate }}>{a.colores} color{a.colores === 1 ? "" : "es"} en bodega (se suman)</div></div>
+                    <div><b>{a.nombre}</b><div style={{ fontSize: 11.5, color: T.slate }}>{a.colores} color{a.colores === 1 ? "" : "es"} en bodega (se suman){codigosTxt((a.detalle || []).map((d) => d.cod).length ? (a.detalle || []).map((d) => d.cod) : a.codcomps, 3) ? ` · cód. ${codigosTxt((a.detalle || []).map((d) => d.cod).length ? (a.detalle || []).map((d) => d.cod) : a.codcomps, 3)}` : ""}</div></div>
                     <Num v={`${fmt(a.necesito)} ${a.unidad}`} />
                     <Num v={a.tengo == null ? "—" : `${fmt(a.tengo)} ${a.unidad}`} />
                     <Num v={a.enCamino ? fmt(a.enCamino) : "—"} sub={a.vencidas ? `+${fmt(a.vencidas)} en OC vencidas` : ""} />
                     <Num v={a.falta == null ? "?" : a.falta > 0 ? `${fmt(a.falta)} ${a.unidad}` : "0"} rojo={a.falta > 0} sub={a.costoFalta ? `≈ ${money(a.costoFalta)}` : ""} />
                     <div><Pill e={a.estado} /> <span style={{ color: T.slate, fontSize: 12 }}>{abierto["i|" + a.clave] ? "▾" : "▸"} {new Set(a.usos.map((u) => u.ref)).size} ref.</span></div>
                   </div>
+                  {abierto["i|" + a.clave] && <DetalleCodigos a={a} />}
                   {abierto["i|" + a.clave] && <DetalleRefs a={a} />}
                 </React.Fragment>
               ))}

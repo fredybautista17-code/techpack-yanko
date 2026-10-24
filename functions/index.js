@@ -11075,6 +11075,12 @@ exports.getFichaMaterialesBusint = onCallAuth(
                 unidad: coincidencias[0].unidad,
                 promedio: cantidad > 0 && valor > 0 ? valor / cantidad : (coincidencias.find((x) => x.promedio > 0)?.promedio || 0),
                 codcomps: coincidencias.map((x) => x.codcomp).filter(Boolean).slice(0, 60),
+                // (2026-10-24, a pedido de Fredy) Detalle por código de Busint: el inventario de un insumo se suma por
+                // nombre, pero cada código (color/variante) tiene su propia existencia y costo.
+                detalle: coincidencias
+                  .filter((x) => x.codcomp)
+                  .slice(0, 60)
+                  .map((x) => ({ cod: x.codcomp, nombre: x.componente, color: x.color || "", cantidad: x.cantidad, promedio: x.promedio })),
               };
             }
             return {
@@ -11561,7 +11567,7 @@ exports.getLotesPorIntegrarBusint = onCallAuth(
       if (String(f?.Telas ?? "").trim().toUpperCase() === "T") return;
       const k = normalizarInsumoBD(componente);
       if (!insumosInv.has(k)) insumosInv.set(k, []);
-      insumosInv.get(k).push({ cantidad: num(f.ICant), unidad: String(f.Unidad ?? f.UnidadT ?? "").trim(), codcomp: clave(f.Codcomp) });
+      insumosInv.get(k).push({ cantidad: num(f.ICant), unidad: String(f.Unidad ?? f.UnidadT ?? "").trim(), codcomp: clave(f.Codcomp), componente, color: String(f?.Color ?? "").trim() });
     });
     const refsNecesarias = new Set([...porIntegrar, ...candidatosInc].map((l) => normalizarRefComparacion(l.ref)));
     const gruposRef = new Map(); // refNorm -> Map(lit -> {maxId, filas})
@@ -11593,7 +11599,8 @@ exports.getLotesPorIntegrarBusint = onCallAuth(
           if (!coin.length || !(cant > 0)) return; // procesos / mano de obra no son material
           const codcomps = coin.map((x) => x.codcomp).filter(Boolean).slice(0, 60);
           codcomps.forEach((c) => codcompsUsados.add(c));
-          lista.push({ insumo: String(f.Insumo).trim(), cant, unidad: coin[0].unidad, bodega: coin.reduce((s, x) => s + x.cantidad, 0), codcomps });
+          const detalle = coin.filter((x) => x.codcomp).slice(0, 60).map((x) => ({ cod: x.codcomp, nombre: x.componente, color: x.color || "", cantidad: x.cantidad }));
+          lista.push({ insumo: String(f.Insumo).trim(), cant, unidad: coin[0].unidad, bodega: coin.reduce((s, x) => s + x.cantidad, 0), codcomps, detalle });
         });
       }
       fichas[l.ref] = lista;

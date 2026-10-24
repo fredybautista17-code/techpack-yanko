@@ -17,6 +17,10 @@ const refSG = (v) => String(v ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 const MESES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
 const fmtFecha = (iso) => (iso && /^\d{4}-\d{2}-\d{2}/.test(iso) ? `${Number(iso.slice(8, 10))} ${MESES[Number(iso.slice(5, 7)) - 1]}` : "—");
 const diasEntre = (a, b) => Math.round((Date.parse(b + "T00:00:00Z") - Date.parse(a + "T00:00:00Z")) / 86400000);
+// (2026-10-24, a pedido de Fredy) Código(s) de Busint de un insumo. El consumo se calcula por nombre; cada código
+// (color/variante) tiene su propia existencia en bodega.
+const codsDe = (i) => [...new Set(((i.detalle || []).length ? i.detalle.map((d) => d.cod) : i.codcomps || []).map((c) => String(c).trim()).filter(Boolean))];
+const codsTxt = (i, max = 3) => { const l = codsDe(i); return l.length > max ? `${l.slice(0, max).join(", ")} +${l.length - max} más` : l.join(", "); };
 const claveInsumo = (s) => String(s || "").toUpperCase().replace(/-/g, " ").replace(/\s+/g, " ").trim();
 
 // ── Carga con caché (la comparten este panel y la Explosión de materiales) ─────
@@ -78,7 +82,7 @@ export function asignarInventario({ lotes, fichas, oc }) {
     const pend = l.prendas == null ? null : Math.max(0, l.prendas - (l.integradas || 0));
     if (!ficha.length) { resultado.set(l.id ?? l.lote, { ...l, pendientes: pend, insumos: [], estado: "sin_ficha" }); return; }
     if (pend == null) {
-      resultado.set(l.id ?? l.lote, { ...l, pendientes: null, estado: "sin_prendas", insumos: ficha.map((i) => ({ insumo: i.insumo, unidad: i.unidad, consumo: i.cant, necesito: null, bodega: i.bodega, usaBodega: null, falta: null, oc: [], comprar: null, estado: "sin_prendas" })) });
+      resultado.set(l.id ?? l.lote, { ...l, pendientes: null, estado: "sin_prendas", insumos: ficha.map((i) => ({ insumo: i.insumo, codcomps: i.codcomps, detalle: i.detalle, unidad: i.unidad, consumo: i.cant, necesito: null, bodega: i.bodega, usaBodega: null, falta: null, oc: [], comprar: null, estado: "sin_prendas" })) });
       return;
     }
     let peor = "ok";
@@ -107,7 +111,7 @@ export function asignarInventario({ lotes, fichas, oc }) {
       else if (comprar > 0.005) estado = "comprar";
       else estado = ocAsig.some((o) => o.tarde) ? "oc_tarde" : "oc_ok";
       if (PESO[estado] > PESO[peor]) peor = estado;
-      return { insumo: i.insumo, unidad: i.unidad, consumo: i.cant, necesito, bodega: disp, usaBodega, falta: faltaInicial, oc: ocAsig, comprar, estado, pide: i.pide, entregado: i.entregado };
+      return { insumo: i.insumo, codcomps: i.codcomps, detalle: i.detalle, unidad: i.unidad, consumo: i.cant, necesito, bodega: disp, usaBodega, falta: faltaInicial, oc: ocAsig, comprar, estado, pide: i.pide, entregado: i.entregado };
     });
     const nFalta = insumos.filter((x) => x.estado === "comprar").length;
     const nOc = insumos.filter((x) => x.estado === "oc_ok" || x.estado === "oc_tarde").length;
@@ -262,14 +266,14 @@ export default function LotesPorIntegrarView({ db, functionsClient, T, pedidos }
     const r2 = (n) => (n == null ? "" : +Number(n).toFixed(2));
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(visibles.map((l) => ({ Lote: l.lote, Referencia: l.ref, Pedido: l.pedido || "", Cliente: l.cliente, Despacho: l.despacho || "", Corte: l.corte, "Dónde está": l.ubicTexto, "Días sin integrar": l.diasSin, "Prendas por integrar": l.pendientes ?? "", Estado: (ESTADOS[l.estado] || {}).txt }))), "Lotes");
     const filas = [];
-    visibles.forEach((l) => l.insumos.forEach((i) => filas.push({ Lote: l.lote, Referencia: l.ref, Insumo: i.insumo, Unidad: i.unidad, "Pide la ficha": i.pide == null ? "" : r2(i.pide), Entregado: i.entregado == null ? "" : r2(i.entregado), "Por prenda": i.consumo, Entregar: r2(i.necesito), "En bodega": r2(i.bodega), Falta: r2(i.falta), "Orden de compra": i.oc.map((o) => `OC ${o.n} (${o.prov}) ${fmt(o.cant)} · entrega ${o.ff}${o.tarde ? " · TARDE" : ""}`).join(" | "), "Sin orden de compra": r2(i.comprar), Estado: (ESTADO_INS[i.estado] || {}).txt })));
+    visibles.forEach((l) => l.insumos.forEach((i) => filas.push({ Lote: l.lote, Referencia: l.ref, Insumo: i.insumo, "Cód. Busint": codsDe(i).join(", "), Unidad: i.unidad, "Pide la ficha": i.pide == null ? "" : r2(i.pide), Entregado: i.entregado == null ? "" : r2(i.entregado), "Por prenda": i.consumo, Entregar: r2(i.necesito), "En bodega": r2(i.bodega), Falta: r2(i.falta), "Orden de compra": i.oc.map((o) => `OC ${o.n} (${o.prov}) ${fmt(o.cant)} · entrega ${o.ff}${o.tarde ? " · TARDE" : ""}`).join(" | "), "Sin orden de compra": r2(i.comprar), Estado: (ESTADO_INS[i.estado] || {}).txt })));
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(filas), "Insumos por lote");
     XLSX.writeFile(wb, `Lotes por integrar ${hoy || ""}.xlsx`);
   }
 
   function imprimir(lista) {
     const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-    const bloque = (l) => `<div class="lote"><h2>Lote ${esc(l.lote)} · ref ${esc(l.ref)} <small>Pedido ${esc(l.pedido || "—")} · ${esc(l.cliente)} · ${l.pendientes == null ? "prendas por confirmar" : fmt(l.pendientes, 0) + " prendas"} · despacha ${esc(fmtFecha(l.despacho))} · cortado ${esc(fmtFecha(l.corte))} · ${esc(l.ubicTexto)}</small></h2>${l.insumos.length ? `<table><tr><th>✓</th><th>Insumo</th><th>Entregar</th><th>En bodega</th><th>Orden de compra</th></tr>${l.insumos.map((i) => `<tr class="${i.estado === "comprar" ? "rojo" : ""}"><td class="c">☐</td><td>${esc(i.insumo)}</td><td class="n">${i.necesito == null ? `${fmt(i.consumo, 4)} por prenda` : `<b>${fmt(i.necesito)}</b> ${esc(i.unidad)}`}</td><td class="n">${fmt(i.bodega)} ${esc(i.unidad)}</td><td>${i.estado === "ok" || i.estado === "justo" ? "—" : i.oc.length ? i.oc.map((o) => `OC ${o.n} · ${esc(o.prov)} · ${fmt(o.cant)} · entrega ${esc(fmtFecha(o.ff))}${o.tarde ? " (llega tarde)" : ""}`).join("<br>") + (i.comprar > 0.005 ? `<br><b>Falta comprar ${fmt(i.comprar)}</b>` : "") : i.comprar > 0.005 ? `<b>Hay que comprar ${fmt(i.comprar)}</b> (sin OC)` : "—"}</td></tr>`).join("")}</table>` : "<p>Este lote no tiene insumos en la ficha de Busint.</p>"}</div>`;
+    const bloque = (l) => `<div class="lote"><h2>Lote ${esc(l.lote)} · ref ${esc(l.ref)} <small>Pedido ${esc(l.pedido || "—")} · ${esc(l.cliente)} · ${l.pendientes == null ? "prendas por confirmar" : fmt(l.pendientes, 0) + " prendas"} · despacha ${esc(fmtFecha(l.despacho))} · cortado ${esc(fmtFecha(l.corte))} · ${esc(l.ubicTexto)}</small></h2>${l.insumos.length ? `<table><tr><th>✓</th><th>Insumo</th><th>Entregar</th><th>En bodega</th><th>Orden de compra</th></tr>${l.insumos.map((i) => `<tr class="${i.estado === "comprar" ? "rojo" : ""}"><td class="c">☐</td><td>${esc(i.insumo)}${codsTxt(i) ? `<br><small>cód. ${esc(codsTxt(i))}</small>` : ""}</td><td class="n">${i.necesito == null ? `${fmt(i.consumo, 4)} por prenda` : `<b>${fmt(i.necesito)}</b> ${esc(i.unidad)}`}</td><td class="n">${fmt(i.bodega)} ${esc(i.unidad)}</td><td>${i.estado === "ok" || i.estado === "justo" ? "—" : i.oc.length ? i.oc.map((o) => `OC ${o.n} · ${esc(o.prov)} · ${fmt(o.cant)} · entrega ${esc(fmtFecha(o.ff))}${o.tarde ? " (llega tarde)" : ""}`).join("<br>") + (i.comprar > 0.005 ? `<br><b>Falta comprar ${fmt(i.comprar)}</b>` : "") : i.comprar > 0.005 ? `<b>Hay que comprar ${fmt(i.comprar)}</b> (sin OC)` : "—"}</td></tr>`).join("")}</table>` : "<p>Este lote no tiene insumos en la ficha de Busint.</p>"}</div>`;
     const html = `<!doctype html><html><head><meta charset="utf-8"><title>Lotes por integrar ${esc(hoy || "")}</title><style>body{font-family:Arial,sans-serif;color:#1A1A2E;margin:22px}h1{margin:0 0 4px;font-size:20px}h2{font-size:15px;margin:0 0 6px}h2 small{font-weight:400;color:#5A5A7A;font-size:11.5px;margin-left:8px}.lote{margin:0 0 18px;page-break-inside:avoid}table{width:100%;border-collapse:collapse;font-size:12px}th{text-align:left;background:#F1ECE5;padding:5px 8px}td{padding:5px 8px;border-bottom:1px solid #E8E2DB;vertical-align:top}td.n{text-align:right;white-space:nowrap}td.c{width:22px;text-align:center}tr.rojo td{color:#9A3A2D}p{color:#5A5A7A;font-size:12px}</style></head><body><h1>Lotes por integrar</h1><p>${esc(hoy || "")} · ${lista.length} lote${lista.length === 1 ? "" : "s"}</p>${lista.map(bloque).join("")}</body></html>`;
     const w = window.open(URL.createObjectURL(new Blob([html], { type: "text/html" })), "_blank");
     if (w) setTimeout(() => { try { w.print(); } catch {} }, 500);
@@ -298,7 +302,7 @@ export default function LotesPorIntegrarView({ db, functionsClient, T, pedidos }
     lotesIns.forEach((l) => (l.insumos || []).forEach((i) => {
       if (!(i.necesito > 0)) return;
       const k = claveInsumo(i.insumo);
-      const r = m.get(k) || { k, insumo: i.insumo, unidad: i.unidad, necesito: 0, usaBodega: 0, oc: 0, comprar: 0, bodega: 0, estado: "ok", lotes: [], ocs: new Map() };
+      const r = m.get(k) || { k, insumo: i.insumo, codcomps: i.codcomps || [], detalle: i.detalle || [], unidad: i.unidad, necesito: 0, usaBodega: 0, oc: 0, comprar: 0, bodega: 0, estado: "ok", lotes: [], ocs: new Map() };
       r.necesito += i.necesito; r.usaBodega += i.usaBodega || 0; r.comprar += i.comprar || 0; r.bodega = Math.max(r.bodega, i.bodega || 0);
       (i.oc || []).forEach((o) => { r.oc += o.cant; const p = r.ocs.get(o.n) || { n: o.n, prov: o.prov, ff: o.ff, cant: 0 }; p.cant += o.cant; r.ocs.set(o.n, p); });
       if ((PESO[i.estado] || 0) > (PESO[r.estado] || 0)) r.estado = i.estado;
@@ -321,15 +325,19 @@ export default function LotesPorIntegrarView({ db, functionsClient, T, pedidos }
     const XLSX = await import("xlsx");
     const wb = XLSX.utils.book_new();
     const r2 = (n) => +Number(n || 0).toFixed(2);
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(filasIns.map((r) => ({ Insumo: r.insumo, Unidad: r.unidad, "Necesito": r2(r.necesito), "En bodega": r2(r.bodega), "Sale de bodega": r2(r.usaBodega), "Viene en OC": r2(r.oc), "Falta comprar": r2(r.comprar), "OC (número · proveedor · fecha · cantidad)": r.ocLista.map((o) => `${o.n} · ${o.prov || ""} · ${o.ff || ""} · ${r2(o.cant)}`).join(" | "), Lotes: r.lotes.length }))), "Lista de insumos");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(filasIns.map((r) => ({ Insumo: r.insumo, "Cód. Busint": codsDe(r).join(", "), Unidad: r.unidad, "Necesito": r2(r.necesito), "En bodega": r2(r.bodega), "Sale de bodega": r2(r.usaBodega), "Viene en OC": r2(r.oc), "Falta comprar": r2(r.comprar), "OC (número · proveedor · fecha · cantidad)": r.ocLista.map((o) => `${o.n} · ${o.prov || ""} · ${o.ff || ""} · ${r2(o.cant)}`).join(" | "), Lotes: r.lotes.length }))), "Lista de insumos");
     const det = [];
-    filasIns.forEach((r) => r.lotes.forEach((x) => det.push({ Insumo: r.insumo, Unidad: r.unidad, Lote: x.lote, Etapa: x.etapa, Referencia: x.ref, Pedido: x.pedido || "", Cliente: x.cliente, Despacho: x.despacho || "", Prendas: x.prendas ?? "", "Necesito": r2(x.necesito), Estado: (ESTADO_INS[x.estado] || {}).txt || x.estado })));
+    filasIns.forEach((r) => r.lotes.forEach((x) => det.push({ Insumo: r.insumo, "Cód. Busint": codsDe(r).join(", "), Unidad: r.unidad, Lote: x.lote, Etapa: x.etapa, Referencia: x.ref, Pedido: x.pedido || "", Cliente: x.cliente, Despacho: x.despacho || "", Prendas: x.prendas ?? "", "Necesito": r2(x.necesito), Estado: (ESTADO_INS[x.estado] || {}).txt || x.estado })));
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(det), "Detalle por lote");
+    // Una fila por código de Busint: cuánto hay en bodega de cada uno (el "Necesito" es del insumo completo).
+    const porCodigo = [];
+    filasIns.forEach((r) => (r.detalle || []).forEach((d) => porCodigo.push({ Insumo: r.insumo, "Cód. Busint": d.cod, "Nombre en Busint": `${d.nombre || ""}${d.color ? ` · ${d.color}` : ""}`, Unidad: r.unidad, "En bodega (este código)": r2(d.cantidad), "Necesito (insumo completo)": r2(r.necesito) })));
+    if (porCodigo.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(porCodigo), "Por código");
     XLSX.writeFile(wb, `Lista de insumos ${hoy || ""}.xlsx`);
   }
   function imprimirInsumos() {
     const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-    const filas = filasIns.map((r) => `<tr><td>${esc(r.insumo)}</td><td>${esc(r.unidad)}</td><td class="n">${fmt(r.necesito)}</td><td class="n">${fmt(r.bodega)}</td><td class="n">${fmt(r.oc)}${r.oc > 0.005 ? ` <small>${esc(proxOc(r))}</small>` : ""}</td><td class="n"><b>${r.comprar > 0.005 ? fmt(r.comprar) : "—"}</b></td><td class="n">${r.lotes.length}</td></tr>`).join("");
+    const filas = filasIns.map((r) => `<tr><td>${esc(r.insumo)}${codsTxt(r) ? `<br><small>cód. ${esc(codsTxt(r))}</small>` : ""}</td><td>${esc(r.unidad)}</td><td class="n">${fmt(r.necesito)}</td><td class="n">${fmt(r.bodega)}</td><td class="n">${fmt(r.oc)}${r.oc > 0.005 ? ` <small>${esc(proxOc(r))}</small>` : ""}</td><td class="n"><b>${r.comprar > 0.005 ? fmt(r.comprar) : "—"}</b></td><td class="n">${r.lotes.length}</td></tr>`).join("");
     const html = `<!doctype html><html><head><meta charset="utf-8"><title>Lista de insumos ${esc(hoy || "")}</title><style>body{font-family:Arial,sans-serif;color:#1A1A2E;margin:22px}h1{margin:0 0 4px;font-size:20px}p{margin:0 0 12px;color:#5A5A7A;font-size:12px}table{width:100%;border-collapse:collapse;font-size:12px}th{text-align:left;border-bottom:2px solid #1A1A2E;padding:6px 8px;font-size:11px;text-transform:uppercase}td{padding:6px 8px;border-bottom:1px solid #DDD}.n{text-align:right}small{color:#5A5A7A}</style></head><body><h1>Lista de insumos</h1><p>${esc(hoy || "")} · ${filasIns.length} insumos · lotes por integrar${incluirCorte ? ", en corte" : ""}${incluirInc ? " e integración incompleta" : ""}</p><table><thead><tr><th>Insumo</th><th>Und</th><th class="n">Necesito</th><th class="n">En bodega</th><th class="n">Viene en OC</th><th class="n">Falta comprar</th><th class="n">Lotes</th></tr></thead><tbody>${filas}</tbody></table></body></html>`;
     const w = window.open(URL.createObjectURL(new Blob([html], { type: "text/html" })), "_blank");
     if (w) setTimeout(() => { try { w.print(); } catch {} }, 500);
@@ -362,7 +370,7 @@ export default function LotesPorIntegrarView({ db, functionsClient, T, pedidos }
             {filasIns.map((r) => (
               <React.Fragment key={r.k}>
                 <tr onClick={() => setAbierto(abierto === `ins|${r.k}` ? null : `ins|${r.k}`)} style={{ cursor: "pointer", background: abierto === `ins|${r.k}` ? "#F3F7FB" : "transparent" }}>
-                  <td style={{ ...td, fontWeight: 700 }}>{r.insumo}</td>
+                  <td style={{ ...td, fontWeight: 700 }}>{r.insumo}{codsTxt(r) ? <div style={{ fontSize: 11, fontWeight: 500, color: T.slate }}>cód. {codsTxt(r)}</div> : null}</td>
                   <td style={td}>{r.unidad}</td>
                   <td style={{ ...td, textAlign: "right" }}>{fmt(r.necesito)}</td>
                   <td style={{ ...td, textAlign: "right" }}>{fmt(r.bodega)}</td>
@@ -374,6 +382,15 @@ export default function LotesPorIntegrarView({ db, functionsClient, T, pedidos }
                 {abierto === `ins|${r.k}` && (
                   <tr><td colSpan={8} style={{ padding: 0, background: "#F3F7FB", borderBottom: `1px solid ${T.border}` }}>
                     <div style={{ padding: "12px 18px" }}>
+                      {(r.detalle || []).length > 0 && (
+                        <div style={{ marginBottom: 10 }}>
+                          <div style={{ fontSize: 11, letterSpacing: 0.5, textTransform: "uppercase", color: T.slate, fontWeight: 700, marginBottom: 4 }}>Códigos de Busint (el consumo es del insumo completo; cada código tiene su existencia)</div>
+                          <table style={{ borderCollapse: "collapse" }}>
+                            <thead><tr>{th(null, "Código")}{th(null, "Nombre en Busint")}{th(null, "En bodega", true)}</tr></thead>
+                            <tbody>{r.detalle.map((d) => (<tr key={d.cod}><td style={{ ...td, fontWeight: 700 }}>{d.cod}</td><td style={td}>{d.nombre}{d.color ? ` · ${d.color}` : ""}</td><td style={{ ...td, textAlign: "right" }}>{fmt(d.cantidad)} {r.unidad}</td></tr>))}</tbody>
+                          </table>
+                        </div>
+                      )}
                       {r.ocLista.length > 0 && <div style={{ fontSize: 12.5, color: T.slate, marginBottom: 8 }}>Órdenes de compra: {r.ocLista.map((o) => `OC ${o.n}${o.prov ? ` · ${o.prov}` : ""} · llega ${fmtFecha(o.ff)} · ${fmt(o.cant)} ${r.unidad}`).join("  |  ")}</div>}
                       <table style={{ width: "100%", borderCollapse: "collapse" }}>
                         <thead><tr>{th(null, "Lote")}{th(null, "Etapa")}{th(null, "Referencia")}{th(null, "Pedido · Cliente")}{th(null, "Despacho")}{th(null, "Prendas", true)}{th(null, "Necesito", true)}{th(null, "Estado")}</tr></thead>
@@ -439,7 +456,7 @@ export default function LotesPorIntegrarView({ db, functionsClient, T, pedidos }
                       <tbody>
                         {l.insumos.map((i) => (
                           <tr key={i.insumo}>
-                            <td style={td}>{i.insumo}</td>
+                            <td style={td}>{i.insumo}{codsTxt(i) ? <div style={{ fontSize: 11, color: T.slate }}>cód. {codsTxt(i)}</div> : null}</td>
                             <td style={{ ...td, textAlign: "right" }}>{fmt(i.pide)} {i.unidad}</td>
                             <td style={{ ...td, textAlign: "right" }}>{fmt(i.entregado)} {i.unidad}</td>
                             <td style={{ ...td, textAlign: "right", fontWeight: 800, color: "#B8402F" }}>{fmt(i.necesito)} {i.unidad}</td>
@@ -567,7 +584,7 @@ export default function LotesPorIntegrarView({ db, functionsClient, T, pedidos }
                               <tbody>
                                 {l.insumos.map((i) => (
                                   <tr key={i.insumo}>
-                                    <td style={td}>{i.insumo}</td>
+                                    <td style={td}>{i.insumo}{codsTxt(i) ? <div style={{ fontSize: 11, color: T.slate }}>cód. {codsTxt(i)}</div> : null}</td>
                                     <td style={{ ...td, textAlign: "right" }}>{fmt(i.consumo, 4)}</td>
                                     <td style={{ ...td, textAlign: "right", fontWeight: 800 }}>{i.necesito == null ? "—" : `${fmt(i.necesito)} ${i.unidad}`}</td>
                                     <td style={{ ...td, textAlign: "right" }}>{fmt(i.bodega)} {i.unidad}</td>
