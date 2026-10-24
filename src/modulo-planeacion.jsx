@@ -8007,12 +8007,21 @@ function textoCumplimiento(d) {
   if (d === 0) return "A tiempo";
   return d < 0 ? `${Math.abs(d)} d antes` : `${d} d tarde`;
 }
+// Referencia REAL del lote = RefN (la que ven Planeación y Busint). RefExt es
+// el código externo/familia (columna Color) y solo se muestra como apoyo.
+function refRealDeEntrada(e) {
+  return String(e.refN || e.refExt || "").trim();
+}
+function refFamiliaDeEntrada(e) {
+  const f = String(e.refExt || "").trim();
+  return f && f !== refRealDeEntrada(e) ? f : "";
+}
 function filasDetalleEntregas(lista, clienteDe) {
-  const cab = ["Entró", "Lote", "Taller / planta", "Referencia", "Categoría", "Cliente", "Pedido", "Unidades", "Enviado", "Comprometido", "Cumplimiento", "Precio entrada", "Precio teórico"];
+  const cab = ["Entró", "Lote", "Taller / planta", "Referencia", "Ref. externa", "Categoría", "Cliente", "Pedido", "Unidades", "Enviado", "Comprometido", "Cumplimiento", "Precio entrada", "Precio teórico"];
   const filas = [...lista]
     .sort((a, b) => a.fecha.localeCompare(b.fecha) || String(a.nombrePlanta).localeCompare(String(b.nombrePlanta)) || Number(a.numLote) - Number(b.numLote))
     .map((e) => [
-      fmtFechaISO(e.fecha), e.numLote ?? "", e.nombrePlanta || "", e.refExt || e.refN || "", e.categoria || "", clienteDe(e) || SIN_CLIENTE,
+      fmtFechaISO(e.fecha), e.numLote ?? "", e.nombrePlanta || "", refRealDeEntrada(e), refFamiliaDeEntrada(e), e.categoria || "", clienteDe(e) || SIN_CLIENTE,
       e.nPedido ?? "", e.cantidad, e.fechaInicio ? fmtFechaISO(e.fechaInicio) : "", e.fechaFin ? fmtFechaISO(e.fechaFin) : "",
       textoCumplimiento(e.diasCumplimiento), e.precioEntrada || "", e.precioTeorico || "",
     ]);
@@ -8106,7 +8115,7 @@ function DetalleEntregasModal({ titulo, lista, clienteDe, onClose, onExcel }) {
                           {e.numLote ?? "—"}
                           {e.cantidad < 0 ? <span title={e.observacion || "Corrección de una entrada"} style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: C.red, background: C.redBg, borderRadius: 8, padding: "1px 6px" }}>↩ corrección</span> : null}
                         </td>
-                        <td style={td}>{e.refExt || e.refN || "—"}</td>
+                        <td style={td}>{refRealDeEntrada(e) || "—"}{refFamiliaDeEntrada(e) ? <div style={{ fontSize: 10, color: C.slate }}>ext. {refFamiliaDeEntrada(e)}</div> : null}</td>
                         <td style={td}>{e.categoria || "—"}</td>
                         <td style={td}>{cli || <span style={{ color: C.slate }}>—</span>}</td>
                         <td style={td}>{e.nPedido ?? "—"}</td>
@@ -8495,7 +8504,7 @@ function LotesPorDiaView({ entradas, cargas }) {
                     <div key={`${e.numEnt}|${e.fecha}`} style={{ display: "grid", gridTemplateColumns: "64px minmax(140px,1.6fr) minmax(120px,1.2fr) 70px 110px", gap: 10, padding: "6px 12px", fontSize: 12.5, borderBottom: `1px solid ${C.border}`, alignItems: "center" }}>
                       <b>{e.numLote ?? "—"}{e.cantidad < 0 ? <span style={{ marginLeft: 4, fontSize: 10, color: C.red }}>↩</span> : null}</b>
                       <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.nombrePlanta}</span>
-                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: C.slate }}>{e.refExt || e.refN || "—"}{e.categoria ? ` · ${e.categoria}` : ""}</span>
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: C.slate }}>{refRealDeEntrada(e) || "—"}{e.categoria ? ` · ${e.categoria}` : ""}</span>
                       <span style={{ textAlign: "right", fontWeight: 700, color: e.cantidad < 0 ? C.red : C.ink }}>{fmtNum(e.cantidad)}</span>
                       <span>
                         {dc === null || dc === undefined ? <span style={{ color: C.slate }}>—</span> : (

@@ -933,6 +933,7 @@ function armarControlDevoluciones(entradas) {
         planta: d.nombrePlanta,
         lote: d.numLote,
         refExt: d.refExt,
+        refN: d.refN,
         unidades,
         motivo,
         texto,
@@ -1078,7 +1079,7 @@ function ControlDevolucionesView({ entradas }) {
                   <td style={td}>{fmtFechaISO(x.fecha)}</td>
                   <td style={td}>{x.planta}</td>
                   <td style={td}>{x.lote ?? "—"}</td>
-                  <td style={td}>{x.refExt || "—"}</td>
+                  <td style={td}>{x.refN || x.refExt || "—"}</td>
                   <td style={tdn}>{fmtNum(x.unidades)}</td>
                   <td style={td} title={x.texto || ""}>
                     <span style={{ padding: "3px 8px", borderRadius: 10, background: mo.bg, color: mo.color, fontWeight: 700, fontSize: 11 }}>{mo.label}</span>
