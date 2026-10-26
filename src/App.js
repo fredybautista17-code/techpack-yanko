@@ -15730,6 +15730,31 @@ function BusintCatalogoTestView() {
                   </div>
                 )}
               </div>
+              {[
+                { clave: "telasLote", titulo: "Tela del lote (orden produccion detalles telas)", cols: [["codcomp", "Código"], ["tela", "Tela"], ["largo", "Largo"], ["capas", "Capas"], ["ancho", "Ancho"], ["costotela", "Costotela"], ["ajuste", "Ajuste"], ["invFin", "InvFin"], ["metros", "Largo×Capas"], ["largoPorCapasPorCosto", "Largo×Capas×Costotela"], ["invFinPorCosto", "|InvFin|×Costotela"]] },
+                { clave: "salidasComp", titulo: "Salidas de insumos a planta (bmp - salida planta comp)", cols: [["salida", "Salida"], ["codcomp", "Código"], ["insumo", "Insumo"], ["cant", "Cantidad"], ["unidad", "Unidad"], ["costo", "Costo"], ["costoprommov", "CostoProm"], ["costoprommovBC", "CostoPromBC"], ["valorCosto", "Cant×Costo"], ["valorProm", "Cant×Prom"], ["valorPromBC", "Cant×PromBC"]] },
+              ].map((sec) => {
+                const filas = integracionResultado.detalle[sec.clave] || [];
+                return (
+                  <div key={sec.clave} style={{ padding: 14, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
+                    <div style={{ fontWeight: 800, fontSize: 14, color: T.ink, marginBottom: 6 }}>{sec.titulo} — lote {integracionResultado.lote} ({filas.length} filas)</div>
+                    {filas.length === 0 ? (
+                      <div style={{ fontSize: 12.5, color: T.coral, fontWeight: 600 }}>Este lote no tiene filas en esta tabla.</div>
+                    ) : (
+                      <div style={{ overflowX: "auto" }}>
+                        <table style={{ borderCollapse: "collapse", fontSize: 12 }}>
+                          <thead><tr>{sec.cols.map(([k, t]) => <th key={k} style={{ textAlign: "left", padding: "4px 8px", borderBottom: `1px solid ${T.border}`, whiteSpace: "nowrap" }}>{t}</th>)}</tr></thead>
+                          <tbody>
+                            {filas.map((f, i) => (
+                              <tr key={i}>{sec.cols.map(([k]) => <td key={k} style={{ padding: "4px 8px", borderBottom: `1px solid ${T.border}`, whiteSpace: "nowrap" }}>{f[k] === null || f[k] === undefined ? "" : String(f[k])}</td>)}</tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
               {(integracionResultado.detalle.tablas || []).map((t) => (
                 <div key={t.tabla} style={{ padding: 14, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
                   <div style={{ fontWeight: 800, fontSize: 14, color: T.ink }}>{t.tabla} <span style={{ fontWeight: 400, color: T.slate }}>— {t.totalFilas} filas · {t.coincidencias} del lote {integracionResultado.lote}</span></div>

@@ -11318,6 +11318,8 @@ exports.depurarIntegracionLoteBusint = onCallAuth(
       entPlantaRef: "bmp - entrada planta ref",
       entProc: "bmp - entrada plantaproc",
       entProcRef: "bmp - entrada plantaproc ref",
+      telasOP: "orden produccion detalles telas",
+      salidaComp: "bmp - salida planta comp",
     };
     const llaves = Object.keys(NOMBRES);
     const errores = [];
@@ -11383,6 +11385,37 @@ exports.depurarIntegracionLoteBusint = onCallAuth(
       });
       const op = T.orden.filter((f) => claveLote.orden && _diagMismoLote(f[claveLote.orden], lote));
       detalle.ordenProduccion = op.slice(0, 5);
+      // (2026-10-26) Costos reales: tela del lote ("orden produccion detalles telas") y salidas de insumos a planta
+      // ("bmp - salida planta comp"), con el nombre del componente. Exploratorio: se muestran varias formas de valorar.
+      const r2d = (n) => Math.round(n * 100) / 100;
+      detalle.telasLote = (claveLote.telasOP ? T.telasOP.filter((f) => _diagMismoLote(f[claveLote.telasOP], lote)) : []).map((f) => {
+        const cod = String(valorFlexible(f, ["Codcomp", "codcomp"]) ?? "").trim();
+        const largo = Number(valorFlexible(f, ["Largo", "largo"]) ?? 0) || 0;
+        const capas = Number(valorFlexible(f, ["Ncapas", "ncapas"]) ?? 0) || 0;
+        const ancho = Number(valorFlexible(f, ["Unidad", "unidad"]) ?? 0) || 0;
+        const costotela = Number(valorFlexible(f, ["Costotela", "costotela"]) ?? 0) || 0;
+        const ajuste = Number(valorFlexible(f, ["Ajuste", "ajuste"]) ?? 0) || 0;
+        const invFin = Number(valorFlexible(f, ["InvFin", "invfin"]) ?? 0) || 0;
+        return {
+          id: valorFlexible(f, ["ID", "id"]) ?? null, codcomp: cod, tela: nombreInsumo.get(cod) || null,
+          largo, capas, ancho, costotela, ajuste, invFin,
+          metros: r2d(largo * capas),
+          largoPorCapasPorCosto: r2d(largo * capas * costotela),
+          invFinPorCosto: r2d(Math.abs(invFin) * costotela),
+        };
+      });
+      detalle.salidasComp = (claveLote.salidaComp ? T.salidaComp.filter((f) => _diagMismoLote(f[claveLote.salidaComp], lote)) : []).map((f) => {
+        const cod = String(valorFlexible(f, ["Codcomp", "codcomp"]) ?? "").trim();
+        const cant = Number(valorFlexible(f, ["Cant", "cant"]) ?? 0) || 0;
+        const costo = Number(valorFlexible(f, ["Costo", "costo"]) ?? 0) || 0;
+        const prom = Number(valorFlexible(f, ["costoprommov", "Costoprommov"]) ?? 0) || 0;
+        const promBC = Number(valorFlexible(f, ["costoprommovBC", "CostoprommovBC", "costoprommovbc"]) ?? 0) || 0;
+        return {
+          salida: valorFlexible(f, ["Salida", "salida"]) ?? null, codcomp: cod, insumo: nombreInsumo.get(cod) || null,
+          cant, unidad: valorFlexible(f, ["unidad", "Unidad"]) ?? null, costo, costoprommov: prom, costoprommovBC: promBC,
+          valorCosto: r2d(cant * costo), valorProm: r2d(cant * prom), valorPromBC: r2d(cant * promBC),
+        };
+      });
     }
 
     // Resumen de los últimos 100 lotes (por FechaCorte en "orden produccion")
