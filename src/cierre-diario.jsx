@@ -438,9 +438,13 @@ export default function CierreDiarioView({ db }) {
                 <React.Fragment key={f.id}>
                   <tr onClick={() => setAbierta(abre ? null : f.id)} style={{ cursor: "pointer", background: abre ? C.canvas : C.white }}>
                     <td style={{ ...td, textAlign: "left", fontWeight: 800 }}>{abre ? "▾" : "▸"} {f.nombre}</td>
-                    <td colSpan={5} style={{ ...td, textAlign: "left", color: C.slate, fontSize: 12.5 }}>
-                      {errUnid[f.id] ? `No se pudo leer: ${errUnid[f.id]}` : f.u === null ? "Leyendo…" : "Se mide solo por unidades (todavía sin costo diario)"}
-                    </td>
+                    {errUnid[f.id] || f.u === null ? (
+                      <td colSpan={5} style={{ ...td, textAlign: "left", color: C.slate, fontSize: 12.5 }}>
+                        {errUnid[f.id] ? `No se pudo leer: ${errUnid[f.id]}` : "Leyendo…"}
+                      </td>
+                    ) : (
+                      [0, 1, 2, 3, 4].map((i) => <td key={i} style={td}>—</td>)
+                    )}
                     <td style={td}>{f.u === null ? "—" : celdaMeta(f.u, f.meta, f.em)}</td>
                     <td style={td}>{f.cumpl && f.meta > 0 ? `${f.cumpl.cumplidos} de ${f.cumpl.diasHabiles}` : "—"}</td>
                     <td style={td}><Pastilla texto="Solo unidades" color={C.slate} fondo={C.canvas} /></td>
@@ -478,6 +482,7 @@ export default function CierreDiarioView({ db }) {
         </table>
       </div>
       <div style={{ fontSize: 11, color: C.slate, lineHeight: 1.7, marginBottom: 8 }}>
+        Confección, Terminación y Despachos se miden solo por unidades (todavía sin costo diario).
         Costo del día = sueldo del mes ÷ días hábiles; los fines de semana cuentan lo producido pero no cobran costo. Un trabajador «cubre» cuando lo que produjo en el día alcanza su sueldo del día.
         El acumulado suma día a día (producido − costo) y vuelve a cero el día 1 de cada mes; «Año» y «Total» suman los meses. Corte sin cierre guardado se calcula en vivo con los cortes de ATLAS.
         Zona calor y Control de calidad solo muestran lo que se cerró (automático a las 10 pm o manual). Meta de Zona calor y Control de calidad: la de cada área en Nómina.
