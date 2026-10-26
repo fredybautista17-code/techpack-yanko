@@ -16,19 +16,13 @@ export function normProceso(s) {
 
 const ORDEN_PRIORIDAD = { Alta: 0, Media: 1, Normal: 2 };
 
-// Prioridad: si Planta ya le puso prioridad al lote (Planta → Programación
-// Diaria) se respeta. Si no, sale de qué tan cerca está la fecha de entrega
-// del pedido: vencida o a 3 días o menos = Alta; hasta 10 días = Media.
-export function prioridadDe(diasEntrega, prioridadPlanta) {
-  const p = String(prioridadPlanta || "").trim().toLowerCase();
-  if (p === "alta") return "Alta";
-  if (p === "media") return "Media";
-  if (p === "normal" || p === "baja") return "Normal";
-  if (diasEntrega === null || diasEntrega === undefined) return "Normal";
-  if (diasEntrega <= 3) return "Alta";
-  if (diasEntrega <= 10) return "Media";
-  return "Normal";
-}
+// Prioridad y "por qué" iguales a las de Planta (modulo-planta.jsx → «En planta Yanko sin programar»):
+//   Alta   = pedido vencido o que entrega en 7 días o menos, o pedido casi completo (3+ lotes, al menos uno ya salió a
+//            Semiterminado/BPT y faltan 1 o 2).
+//   Media  = pedido que entrega en 8 a 21 días, o avanzado (la mitad o más de sus lotes ya salió).
+//   Normal = el resto.
+// Fecha sugerida: Alta = hoy; el resto, 7 días antes de la entrega del pedido (nunca antes de hoy).
+const NOMBRE_PRIORIDAD = { alta: "Alta", media: "Media", normal: "Normal" };
 
 function diasEntreISO(fechaISO, hoyISO) {
   if (!fechaISO || !hoyISO) return null;
@@ -38,31 +32,62 @@ function diasEntreISO(fechaISO, hoyISO) {
   return Math.round((Date.UTC(y, m - 1, d) - Date.UTC(y2, m2 - 1, d2)) / 86400000);
 }
 
-// Lote → prioridad que Planta le dio (la programación más reciente no cumplida).
-export function prioridadesDePlanta(programacionPlanta) {
-  const m = new Map();
-  (programacionPlanta || [])
-    .filter((p) => p.estado !== "cumplido" && p.prioridad)
-    .forEach((p) => {
-      const k = String(p.numLote);
-      const prev = m.get(k);
-      if (!prev || String(p.creadoEn || "") > String(prev.creadoEn || "")) m.set(k, p);
-    });
-  const out = new Map();
-  m.forEach((v, k) => out.set(k, v.prioridad));
-  return out;
+function sumarDiasISO(iso, n) {
+  const [y, m, d] = String(iso).slice(0, 10).split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
+}
+
+// Por pedido: cuántos lotes tiene y cuántos ya salieron (BPT o Semiterminado) en la carga activa.
+export function estadisticasPedidos(lotes) {
+  const mapa = new Map();
+  (lotes || []).forEach((l) => {
+    if (l.numPedido === undefined || l.numPedido === null || l.numPedido === "") return;
+    const k = String(l.numPedido);
+    const e = mapa.get(k) || { total: 0, listos: 0 };
+    e.total += 1;
+    if (l.ubicacionActual === "BPT" || l.ubicacionActual === "Semiterminado") e.listos += 1;
+    mapa.set(k, e);
+  });
+  return mapa;
+}
+
+// Misma regla de Planta (prioridadDeLote). Devuelve prioridad ("Alta"/"Media"/"Normal"), la razón en texto y la fecha sugerida.
+export function prioridadPedido(lote, statsPedido, hoyISO) {
+  const dias = diasEntreISO(lote?.fechaEntregaPedidoISO, hoyISO);
+  const st = statsPedido?.get(String(lote?.numPedido));
+  const razones = [];
+  let nivel = "normal";
+  if (dias !== null) {
+    if (dias < 0) { razones.push(`Pedido vencido hace ${-dias} día${-dias === 1 ? "" : "s"}`); nivel = "alta"; }
+    else if (dias === 0) { razones.push("El pedido entrega hoy"); nivel = "alta"; }
+    else if (dias <= 7) { razones.push(`El pedido entrega en ${dias} día${dias === 1 ? "" : "s"}`); nivel = "alta"; }
+    else if (dias <= 21) { razones.push(`El pedido entrega en ${dias} días`); nivel = "media"; }
+  }
+  if (st && st.total >= 3 && st.listos >= 1) {
+    const faltan = st.total - st.listos;
+    if (faltan <= 2) { razones.push(`Faltan ${faltan} de ${st.total} lotes del pedido`); nivel = "alta"; }
+    else if (st.listos / st.total >= 0.5) { razones.push(`Pedido avanzado: ${st.listos} de ${st.total} lotes ya salieron`); if (nivel === "normal") nivel = "media"; }
+  }
+  if (!razones.length) razones.push(dias === null ? "Pedido sin fecha de entrega" : `El pedido entrega en ${dias} días`);
+  let fechaSugerida = hoyISO;
+  if (nivel !== "alta" && lote?.fechaEntregaPedidoISO) {
+    const previa = sumarDiasISO(lote.fechaEntregaPedidoISO, -7);
+    fechaSugerida = previa > hoyISO ? previa : hoyISO;
+  }
+  return { prioridad: NOMBRE_PRIORIDAD[nivel], razonesTxt: razones.join(" · "), diasEntrega: dias, fechaSugerida };
 }
 
 // Lotes de la carga activa que están en alguno de los procesos del área.
-export function lotesEnProcesos(lotes, procesos, hoyISO, prioPlanta) {
+export function lotesEnProcesos(lotes, procesos, hoyISO) {
   const mios = new Set((procesos || []).map(normProceso));
+  const statsPedido = estadisticasPedidos(lotes);
   const filas = [];
   (lotes || []).forEach((l) => {
     (l.procesos || []).forEach((p) => {
       if (!mios.has(normProceso(p.nombre))) return;
       const inv = Number(p.inventario) || 0;
       if (!(inv > 0)) return;
-      const dias = diasEntreISO(l.fechaEntregaPedidoISO, hoyISO);
+      const prio = prioridadPedido(l, statsPedido, hoyISO);
       filas.push({
         numLote: l.numLote,
         referencia: l.referencia,
@@ -71,8 +96,7 @@ export function lotesEnProcesos(lotes, procesos, hoyISO, prioPlanta) {
         inventario: inv,
         planta: p.planta || "",
         fechaEntregaPedido: l.fechaEntregaPedidoISO || null,
-        diasEntrega: dias,
-        prioridad: prioridadDe(dias, prioPlanta?.get(String(l.numLote))),
+        ...prio,
       });
     });
   });
@@ -136,7 +160,7 @@ export function estadosProgramaciones(programaciones, entradas, hoyISO) {
 }
 
 // Arma toda la lista: por programar / programados / vencidos / cumplidos.
-export function armarListaPorProgramar({ lotes, procesos, programaciones, entradas, hoyISO, prioPlanta }) {
+export function armarListaPorProgramar({ lotes, procesos, programaciones, entradas, hoyISO }) {
   const mios = new Set((procesos || []).map(normProceso));
   const progs = estadosProgramaciones(
     (programaciones || []).filter((p) => mios.has(normProceso(p.proceso))),
@@ -151,7 +175,7 @@ export function armarListaPorProgramar({ lotes, procesos, programaciones, entrad
     if (p.cantidad == null) { asignado.set(k, Infinity); return; }
     asignado.set(k, (asignado.get(k) || 0) + Math.max(0, (Number(p.cantidad) || 0) - (p.hecho || 0)));
   });
-  const enProceso = lotesEnProcesos(lotes, procesos, hoyISO, prioPlanta);
+  const enProceso = lotesEnProcesos(lotes, procesos, hoyISO);
   const porProgramar = enProceso
     .map((f) => {
       const a = asignado.get(claveLP(f.numLote, f.proceso)) || 0;
@@ -168,7 +192,7 @@ export function armarListaPorProgramar({ lotes, procesos, programaciones, entrad
   const infoLote = new Map(enProceso.map((f) => [claveLP(f.numLote, f.proceso), f]));
   const conDatosLote = (p) => {
     const f = infoLote.get(claveLP(p.numLote, p.proceso));
-    return { ...p, prioridad: f?.prioridad || null, diasEntrega: f?.diasEntrega ?? null };
+    return { ...p, prioridad: f?.prioridad || null, razonesTxt: f?.razonesTxt || "", diasEntrega: f?.diasEntrega ?? null };
   };
   const programados = progs.filter((p) => p.estado === "PROGRAMADO").map(conDatosLote);
   const vencidos = progs.filter((p) => p.estado === "VENCIDO").map(conDatosLote);

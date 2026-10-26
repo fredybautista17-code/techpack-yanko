@@ -19,7 +19,7 @@ import TableroCostosView from "./tablero-costos";
 import { num as numCotizador } from "./cotizador-calculo";
 import { DevolucionesCalidadView } from "./devoluciones-cliente";
 import { claveArea as claveAreaHistorico } from "./centro-costo-historico-parser";
-import { armarListaPorProgramar, prioridadesDePlanta } from "./lista-programar-calculo";
+import { armarListaPorProgramar, estadisticasPedidos, prioridadPedido } from "./lista-programar-calculo";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
   authDomain: "techpack-yanko-f37b8.firebaseapp.com",
@@ -3372,8 +3372,13 @@ function ProgramadorProcesosView({
   // (lo de siempre) o Auditoria (el panel de Auditoria Busint vs Nomina) --
   // para que no se vea todo amontonado en una sola pantalla.
   const [pestanaMiDia, setPestanaMiDia] = useState("programar");
+  // (2026-10-26, a pedido de Fredy) Cada lote por programar trae su «necesidad» como en Planta: prioridad, por qué y fecha
+  // sugerida (ver prioridadPedido en lista-programar-calculo.js). La tabla sale ordenada con las Alta arriba.
+  const [filtroPrioridad, setFiltroPrioridad] = useState("");
+  const statsPedidos = useMemo(() => estadisticasPedidos(lotesActivos), [lotesActivos]);
   const pendientes = useMemo(() => {
     const filas = [];
+    const hoyISO = hoyBogotaISO();
     (lotesActivos || []).forEach((l) => {
       (l.procesos || []).forEach((p) => {
         if (!misProcesos.includes(p.nombre)) return;
@@ -3385,11 +3390,13 @@ function ProgramadorProcesosView({
           proceso: p.nombre,
           inventario: p.inventario,
           planta: p.planta,
+          ...prioridadPedido(l, statsPedidos, hoyISO),
         });
       });
     });
-    return filas;
-  }, [lotesActivos, misProcesos]);
+    const rango = { Alta: 0, Media: 1, Normal: 2 };
+    return filas.sort((a, b) => (rango[a.prioridad] ?? 3) - (rango[b.prioridad] ?? 3) || (a.diasEntrega ?? 9999) - (b.diasEntrega ?? 9999));
+  }, [lotesActivos, misProcesos, statsPedidos]);
   const pendientesFiltrados = filtroProceso ? pendientes.filter((f) => f.proceso === filtroProceso) : pendientes;
   const lookupEntradas = useMemo(() => {
     const m = new Map();
@@ -3493,13 +3500,14 @@ function ProgramadorProcesosView({
   // "Ya programados" encima del filtro por proceso que ya existia.
   const pendientesMostrados = useMemo(() => {
     const q = busqueda.trim().toLowerCase();
-    const base = !q ? pendientesFiltrados : pendientesFiltrados.filter((f) => [f.numLote, f.referencia, f.cliente, f.proceso].some((v) => String(v ?? "").toLowerCase().includes(q)));
+    const porPrio = filtroPrioridad ? pendientesFiltrados.filter((f) => f.prioridad === filtroPrioridad) : pendientesFiltrados;
+    const base = !q ? porPrio : porPrio.filter((f) => [f.numLote, f.referencia, f.cliente, f.proceso].some((v) => String(v ?? "").toLowerCase().includes(q)));
     if (!filtroEstadoProgramado) return base;
     return base.filter((f) => {
       const yaProgramado = clavesYaProgramadas.has(`${f.numLote}||${f.proceso}`);
       return filtroEstadoProgramado === "programado" ? yaProgramado : !yaProgramado;
     });
-  }, [pendientesFiltrados, clavesYaProgramadas, filtroEstadoProgramado, busqueda]);
+  }, [pendientesFiltrados, clavesYaProgramadas, filtroEstadoProgramado, busqueda, filtroPrioridad]);
   // (2026-09-02, a pedido de Fredy) Para la tabla de "Lotes programados":
   // cuando un lote sale CUMPLIDO, mostrar qué entrada/salida real de Busint
   // fue la que lo cumplió (unidades y fecha), no solo la palabra "Cumplido".
@@ -3518,7 +3526,7 @@ function ProgramadorProcesosView({
   }
   function abrirProgramar(fila) {
     setModalProgramar(fila);
-    setFechaForm(today());
+    setFechaForm(fila.fechaSugerida || today());
     setHoraInicioForm("06:00");
     setTrabajadorForm("");
     setTambienTerminacion(true);
@@ -3581,6 +3589,7 @@ function ProgramadorProcesosView({
   })();
   const excedeCantidadModal = !!(modalProgramar && Number(cantidadForm) > 0 && (yaAsignadoModal + Number(cantidadForm)) > modalProgramar.inventario);
   const columnasPendientes = [
+    { key: "prioridad", label: "Prioridad", render: (f) => <PillPrioridad valor={f.prioridad} /> },
     { key: "numLote", label: "Lote" },
     { key: "referencia", label: "Referencia" },
     { key: "cliente", label: "Cliente" },
@@ -3594,6 +3603,8 @@ function ProgramadorProcesosView({
       const texto = asignado === Infinity ? "✓ Ya programado" : `✓ Programado: ${fmtNum(asignado)}/${fmtNum(f.inventario)}`;
       return <span style={{ fontSize: 11, fontWeight: 700, color: C.blue, background: C.blueBg, borderRadius: 20, padding: "2px 8px", whiteSpace: "nowrap" }}>{texto}</span>;
     } },
+    { key: "razonesTxt", label: "Por qué" },
+    { key: "fechaSugerida", label: "Fecha sugerida", render: (f) => fmtFechaISO(f.fechaSugerida) || "—" },
     { key: "_accion", label: "", render: (f) => <Btn small onClick={() => abrirProgramar(f)}>📅 Programar</Btn> },
   ];
   // (2026-09-28, a pedido de Fredy) Tarjetas por trabajador (ordenadas por
@@ -3654,6 +3665,7 @@ function ProgramadorProcesosView({
           <div style={{ fontSize: 13, color: C.slate, marginBottom: 14 }}>
             Referencia {modalProgramar.referencia} — {fmtNum(modalProgramar.inventario)} unidades pendientes en {modalProgramar.proceso}.
           </div>
+          <BannerPrioridad lote={modalProgramar} />
           <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
             <div style={{ flex: 1 }}>
               <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, display: "block", marginBottom: 6, textTransform: "uppercase" }}>Fecha programada</label>
@@ -3794,6 +3806,7 @@ function ProgramadorProcesosView({
             {renderTarjetasProgramacion(gruposHoyPorTrabajador, "No tienes nada programado para hoy.")}
           </div>
         )}
+        {vista === "bodega" && <ChipsPrioridad valor={filtroPrioridad} onChange={setFiltroPrioridad} filas={pendientesFiltrados} />}
         {vista === "bodega" && (
           <TablaSuave alto={520} vacio="No hay lotes pendientes en tus procesos ahora mismo." columnas={columnasPendientes} filas={pendientesMostrados} />
         )}
@@ -3959,6 +3972,36 @@ export function ProgramadorProcesosStandalone({ currentUser, onVolver, onLogout,
 // Procesos del área: los marcados en Nómina → Área Interna (procesosCentroCosto); si no hay, por defecto TERMOFIJACION para
 // Zona calor y EMPAQUE para Control de calidad; si tampoco, los «procesos que puede programar» de su usuario.
 const PROCESOS_DEFECTO_LISTA = { ZONACALOR: ["TERMOFIJACION"], CONTROLCALIDAD: ["EMPAQUE"] };
+// (2026-10-26, a pedido de Fredy) La «necesidad» del lote por programar, igual que en Planta («En planta Yanko sin programar»):
+// prioridad Alta/Media/Normal, por qué y fecha sugerida (regla en lista-programar-calculo.js → prioridadPedido).
+function BannerPrioridad({ lote }) {
+  if (!lote?.prioridad) return null;
+  const col = { Alta: [C.red, C.redBg], Media: [C.amber, C.amberBg], Normal: [C.green, C.greenBg] }[lote.prioridad] || [C.slate, C.canvas];
+  return (
+    <div style={{ padding: "10px 14px", background: col[1], borderRadius: 8, marginBottom: 14, fontSize: 12, color: col[0], fontWeight: 700 }}>
+      Prioridad {lote.prioridad.toUpperCase()}: {lote.razonesTxt}
+      {lote.fechaSugerida ? <div style={{ fontWeight: 500, marginTop: 4 }}>Fecha sugerida: {fmtFechaISO(lote.fechaSugerida)} (puedes cambiarla).</div> : null}
+    </div>
+  );
+}
+function ChipsPrioridad({ valor, onChange, filas }) {
+  const n = (v) => filas.filter((f) => f.prioridad === v).length;
+  const items = [
+    ["", `Todas (${filas.length})`, C.ink, C.canvas],
+    ["Alta", `🔴 Alta (${n("Alta")})`, C.red, C.redBg],
+    ["Media", `🟠 Media (${n("Media")})`, C.amber, C.amberBg],
+    ["Normal", `🟢 Normal (${n("Normal")})`, C.green, C.greenBg],
+  ];
+  return (
+    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+      {items.map(([v, txt, color, bg]) => (
+        <button key={v || "todas"} onClick={() => onChange(v)} style={{ padding: "6px 14px", borderRadius: 20, border: `1.5px solid ${valor === v ? color : "transparent"}`, background: bg, color, fontWeight: 800, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
+          {txt}
+        </button>
+      ))}
+    </div>
+  );
+}
 function PillPrioridad({ valor }) {
   const mapa = { Alta: { bg: C.redBg, color: C.red }, Media: { bg: C.amberBg, color: C.amber }, Normal: { bg: C.blueBg, color: C.blue } };
   const s = mapa[valor];
@@ -3976,7 +4019,6 @@ export function ListaPorProgramarBloque({ currentUser, incrustado = true }) {
   const [trabajadores, setTrabajadores] = useState([]);
   const [areas, setAreas] = useState([]);
   const [programaciones, setProgramaciones] = useState([]);
-  const [programacionPlanta, setProgramacionPlanta] = useState([]);
   const [movimientos, setMovimientos] = useState(null);
   const [cargandoMov, setCargandoMov] = useState(false);
   const [cargando, setCargando] = useState(true);
@@ -3996,9 +4038,8 @@ export function ListaPorProgramarBloque({ currentUser, incrustado = true }) {
     const u2 = onSnapshot(collection(db, "nomina_trabajadores"), (snap) => setTrabajadores(snap.docs.map((d) => ({ ...d.data(), id: d.id }))));
     const u3 = onSnapshot(collection(db, "nomina_areas"), (snap) => setAreas(snap.docs.map((d) => ({ ...d.data(), id: d.id }))));
     const u4 = onSnapshot(collection(db, "planeacion_programacion_procesos"), (snap) => setProgramaciones(snap.docs.map((d) => ({ ...d.data(), id: d.id }))));
-    const u5 = onSnapshot(collection(db, "planta_programacion"), (snap) => setProgramacionPlanta(snap.docs.map((d) => ({ ...d.data(), id: d.id }))), () => {});
     const u6 = onSnapshot(doc(db, "planeacion_cache", "movimientos_procesos"), (snap) => { if (snap.exists()) setMovimientos(snap.data()); });
-    return () => { u1(); u2(); u3(); u4(); u5(); u6(); };
+    return () => { u1(); u2(); u3(); u4(); u6(); };
   }, []);
   const hoy = hoyBogotaISO();
   const lotesActivos = useMemo(() => {
@@ -4019,17 +4060,17 @@ export function ListaPorProgramarBloque({ currentUser, incrustado = true }) {
     () => trabajadores.filter((t) => t.activo !== false && areaNombre && (t.area || "Sin asignar") === areaNombre),
     [trabajadores, areaNombre]
   );
-  const prioPlanta = useMemo(() => prioridadesDePlanta(programacionPlanta), [programacionPlanta]);
   const lista = useMemo(
-    () => armarListaPorProgramar({ lotes: lotesActivos, procesos, programaciones, entradas: movimientos?.entradas || [], hoyISO: hoy, prioPlanta }),
-    [lotesActivos, procesos, programaciones, movimientos, hoy, prioPlanta]
+    () => armarListaPorProgramar({ lotes: lotesActivos, procesos, programaciones, entradas: movimientos?.entradas || [], hoyISO: hoy }),
+    [lotesActivos, procesos, programaciones, movimientos, hoy]
   );
   const r = lista.resumen;
   const q = busqueda.trim().toLowerCase();
   const filtrarProc = (f) =>
     (!filtroProceso || normProcesoProg(f.proceso) === normProcesoProg(filtroProceso)) &&
     (!q || [f.numLote, f.referencia, f.cliente, f.trabajadorNombre, f.proceso].some((v) => String(v ?? "").toLowerCase().includes(q)));
-  const porProgramar = lista.porProgramar.filter(filtrarProc).filter((f) => !filtroPrioridad || f.prioridad === filtroPrioridad);
+  const porProgramarBase = lista.porProgramar.filter(filtrarProc);
+  const porProgramar = porProgramarBase.filter((f) => !filtroPrioridad || f.prioridad === filtroPrioridad);
   const programados = lista.programados.filter(filtrarProc);
   const vencidos = lista.vencidos.filter(filtrarProc);
   const cumplidosTodos = lista.cumplidos.filter(filtrarProc);
@@ -4049,7 +4090,7 @@ export function ListaPorProgramarBloque({ currentUser, incrustado = true }) {
   }
   function abrirProgramar(f) {
     setModal(f);
-    setFechaForm(hoy);
+    setFechaForm(f.fechaSugerida || hoy);
     setHoraForm("06:00");
     setTrabajadorForm("");
     setCantidadForm(String(f.restante));
@@ -4120,9 +4161,11 @@ export function ListaPorProgramarBloque({ currentUser, incrustado = true }) {
     { key: "referencia", label: "Referencia" },
     { key: "cliente", label: "Cliente" },
     { key: "proceso", label: "Proceso" },
+    { key: "razonesTxt", label: "Por qué" },
     { key: "fechaEntregaPedido", label: "Entrega del pedido", color: (f) => (f.diasEntrega !== null && f.diasEntrega < 0 ? C.red : C.ink), render: (f) => textoEntregaLista(f) },
     { key: "restante", label: "Por programar", align: "right", render: (f) => fmtNum(f.restante) },
     { key: "programado", label: "", render: (f) => (f.programado > 0 ? <span style={{ fontSize: 11, fontWeight: 700, color: C.blue, background: C.blueBg, borderRadius: 20, padding: "2px 8px", whiteSpace: "nowrap" }}>ya programado {fmtNum(f.programado)}</span> : null) },
+    { key: "fechaSugerida", label: "Fecha sugerida", render: (f) => fmtFechaISO(f.fechaSugerida) || "—" },
     { key: "_a", label: "", render: (f) => <Btn small onClick={() => abrirProgramar(f)}>📅 Programar</Btn> },
   ];
   if (cargando) {
@@ -4135,6 +4178,7 @@ export function ListaPorProgramarBloque({ currentUser, incrustado = true }) {
           <div style={{ fontSize: 13, color: C.slate, marginBottom: 14 }}>
             Referencia {modal.referencia} — faltan por programar {fmtNum(modal.restante)} de {fmtNum(modal.inventario)} unidades que hay en {modal.proceso}.
           </div>
+          <BannerPrioridad lote={modal} />
           <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
             <div style={{ flex: 1 }}>
               <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, display: "block", marginBottom: 6, textTransform: "uppercase" }}>Fecha</label>
@@ -4210,15 +4254,8 @@ export function ListaPorProgramarBloque({ currentUser, incrustado = true }) {
             {procesos.map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
         )}
-        {tab === "por_programar" && (
-          <select value={filtroPrioridad} onChange={(e) => setFiltroPrioridad(e.target.value)} style={estiloSelect}>
-            <option value="">Todas las prioridades</option>
-            <option value="Alta">Alta</option>
-            <option value="Media">Media</option>
-            <option value="Normal">Normal</option>
-          </select>
-        )}
       </div>
+      {tab === "por_programar" && <ChipsPrioridad valor={filtroPrioridad} onChange={setFiltroPrioridad} filas={porProgramarBase} />}
       {tab === "por_programar" && <TablaSuave alto={520} vacio="No tienes lotes pendientes por programar. ¡Todo programado!" columnas={colsPorProgramar} filas={porProgramar} />}
       {tab === "programados" && <TablaSuave alto={520} vacio="No hay lotes programados en tiempo." columnas={colsProgramados} filas={programados} />}
       {tab === "vencidos" && <TablaSuave alto={520} vacio="No hay lotes vencidos." columnas={colsProgramados} filas={vencidos} />}
