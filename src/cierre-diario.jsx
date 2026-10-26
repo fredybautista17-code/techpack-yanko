@@ -93,11 +93,80 @@ function celdaMeta(unidades, meta, nivelDe) {
   return <Pastilla texto={`${fmt(unidades)} de ${fmt(meta)} · ${Math.round(e.pct)} %`} color={col} fondo={bg} />;
 }
 
-export default function CierreDiarioView({ db }) {
-  const hoyISO = useMemo(() => new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 10), []);
-  const [diaSel, setDiaSel] = useState(hoyISO);
-  const [alcance, setAlcance] = useState("mes"); // mes | anio | total
-  const [abierta, setAbierta] = useState(null);
+// Tabla de cada trabajador de un área (día elegido y mes a la fecha). La usa el Tablero de costos y el Mi Día.
+export function TablaTrabajadores({ fila: f, esHabil, titulo }) {
+  const delMes = new Map(f.ac.trabajadores.map((t) => [t.id, t]));
+  const ids = new Set([...f.dia.trabajadores.map((t) => t.id), ...f.ac.trabajadores.map((t) => t.id)]);
+  const filas = [...ids].map((id) => {
+    const d = f.dia.trabajadores.find((t) => t.id === id);
+    const m = delMes.get(id);
+    return { id, nombre: (d || m).nombre, d, m, res: m ? m.valor - m.costo : 0 };
+  }).sort((a, b) => a.res - b.res);
+  return (
+    <>
+      {titulo ? <div style={{ padding: "12px 16px 4px", fontSize: 13, fontWeight: 800, color: C.ink }}>{titulo}</div> : null}
+      {filas.length ? (
+        <div style={{ overflow: "auto", margin: "0 16px", background: C.white, border: `1px solid ${C.border}`, borderRadius: 10 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr>
+                <th style={{ ...th, textAlign: "left" }}>Trabajador</th>
+                <th style={th}>Produjo hoy</th>
+                <th style={th}>Salario del día</th>
+                <th style={th}>¿Cubre?</th>
+                <th style={th}>Produjo en el mes</th>
+                <th style={th}>Salario a la fecha</th>
+                <th style={th}>Resultado a la fecha</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filas.map((r) => {
+                const cubre = r.d && r.d.costo > 0 && esHabil ? r.d.valor + 0.5 >= r.d.costo : null;
+                return (
+                  <tr key={r.id}>
+                    <td style={{ ...td, textAlign: "left", fontWeight: 700 }}>{r.nombre}</td>
+                    <td style={td}>{r.d ? money(r.d.valor) : "—"}</td>
+                    <td style={td}>{r.d ? money(r.d.costoContado) : "—"}</td>
+                    <td style={td}>{cubre === null ? "—" : cubre ? <Pastilla texto="cubre" color={C.green} fondo={C.greenBg} /> : <Pastilla texto={`faltan ${money(r.d.costo - r.d.valor)}`} color={C.red} fondo={C.redBg} />}</td>
+                    <td style={td}>{r.m ? money(r.m.valor) : "—"}</td>
+                    <td style={td}>{r.m ? money(r.m.costo) : "—"}</td>
+                    <td style={{ ...td, fontWeight: 800, color: r.m ? colorSaldo(r.res) : C.slate }}>{r.m ? signed(r.res) : "—"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div style={{ margin: "0 16px", fontSize: 12.5, color: C.slate }}>No hay cierre guardado ni trabajadores para este día.</div>
+      )}
+    </>
+  );
+}
+
+// Días hábiles del mes con su cantidad de unidades; en verde los que llegan a la meta.
+export function ChipsMetaDias({ porDia, meta, anio, mes, diaSel }) {
+  const dias = diasDelMesHasta(anio, mes, diaSel).filter(esHabilISO).map((iso) => ({ iso, u: porDia.get(iso) || 0 }));
+  return (
+    <>
+      <div style={{ padding: "12px 16px 4px", fontSize: 13, fontWeight: 800, color: C.ink }}>Meta día a día ({MESES[mes - 1].toLowerCase()}, días hábiles)</div>
+      <div style={{ margin: "0 16px", display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {dias.map((x) => {
+          const ok = x.u >= meta;
+          return (
+            <span key={x.iso} title={`${etiquetaDia(x.iso)}: ${fmt(x.u)} de ${fmt(meta)}`} style={{ padding: "4px 9px", borderRadius: 8, fontSize: 11.5, fontWeight: 700, color: ok ? C.green : C.red, background: ok ? C.greenBg : C.redBg }}>
+              {x.iso.slice(8)} · {fmt(x.u)}
+            </span>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+// (2026-10-26) Todo el cálculo del cierre del día vive aquí para que lo usen la pantalla del Tablero de costos y el
+// Mi Día de cada líder. `conUnidades` = también leer Confección, Terminación y Despachos (el Mi Día de un líder no lo necesita).
+export function useCierreDiario(db, diaSel, alcance, conUnidades = true) {
   const anio = Number(diaSel.slice(0, 4));
   const mes = Number(diaSel.slice(5, 7));
   const { historico, pedidos, trabajadoresCorte, cargando, cierres, cierresResueltos, datosArea, construirDatosArea, incluirTrabajador } = useCentroCostoDatos(anio, "CORTE");
@@ -119,6 +188,7 @@ export default function CierreDiarioView({ db }) {
   const inicioMes = `${anio}-${String(mes).padStart(2, "0")}-01`;
   const finMes = `${anio}-${String(mes).padStart(2, "0")}-31`;
   useEffect(() => {
+    if (!conUnidades) return undefined;
     let vivo = true;
     const listo = (id, mapa) => vivo && setUnid((u) => ({ ...u, [id]: mapa }));
     const fallo = (id, e) => { if (vivo) { setUnid((u) => ({ ...u, [id]: new Map() })); setErrUnid((x) => ({ ...x, [id]: e?.message || "No se pudo leer." })); } };
@@ -137,7 +207,7 @@ export default function CierreDiarioView({ db }) {
       .then((s) => listo("despachos", unidadesDespachos(s.docs.map((d) => d.data()))))
       .catch((e) => fallo("despachos", e));
     return () => { vivo = false; };
-  }, [db, inicioMes, finMes]);
+  }, [db, inicioMes, finMes, conUnidades]);
 
   const cierresMap = useMemo(() => cierresDiarios(cierres, claveArea, incluirTrabajador), [cierres, incluirTrabajador]);
   const corteIdx = useMemo(() => indiceCortes(pedidos), [pedidos]);
@@ -192,6 +262,16 @@ export default function CierreDiarioView({ db }) {
     const conMeta = [...filasCosto.map((f) => f.em), ...filasUnid.map((f) => f.em)].filter((e) => e.nivel !== "sin_meta");
     return { cierran: cierran.length, faltan, valor, costo, saldoDia: valor - costo, si, totalT, saldoAlc, metasOk: conMeta.filter((e) => e.nivel === "cumple").length, metasN: conMeta.length };
   }, [filasCosto, filasUnid]);
+
+  return { anio, mes, cargando, metas, errUnid, cierresMap, corteIdx, trabajadoresCorte, filasCosto, filasUnid, tot };
+}
+
+export default function CierreDiarioView({ db }) {
+  const hoyISO = useMemo(() => new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 10), []);
+  const [diaSel, setDiaSel] = useState(hoyISO);
+  const [alcance, setAlcance] = useState("mes"); // mes | anio | total
+  const [abierta, setAbierta] = useState(null);
+  const { anio, mes, cargando, metas, errUnid, filasCosto, filasUnid, tot } = useCierreDiario(db, diaSel, alcance);
 
   const etiquetaAlcance = alcance === "mes" ? `de ${MESES[mes - 1].toLowerCase()}` : alcance === "anio" ? `del año ${anio}` : "total";
   const esHabil = esHabilISO(diaSel);
@@ -344,66 +424,8 @@ export default function CierreDiarioView({ db }) {
                   {abre ? (
                     <tr>
                       <td colSpan={9} style={{ padding: "0 0 14px", background: C.canvas, borderBottom: `1px solid ${C.border}` }}>
-                        <div style={{ padding: "12px 16px 4px", fontSize: 13, fontWeight: 800, color: C.ink }}>{f.nombre} · cada trabajador</div>
-                        {f.dia.trabajadores.length || f.ac.trabajadores.length ? (
-                          <div style={{ overflow: "auto", margin: "0 16px", background: C.white, border: `1px solid ${C.border}`, borderRadius: 10 }}>
-                            <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                              <thead>
-                                <tr>
-                                  <th style={{ ...th, textAlign: "left" }}>Trabajador</th>
-                                  <th style={th}>Produjo hoy</th>
-                                  <th style={th}>Salario del día</th>
-                                  <th style={th}>¿Cubre?</th>
-                                  <th style={th}>Produjo en el mes</th>
-                                  <th style={th}>Salario a la fecha</th>
-                                  <th style={th}>Resultado a la fecha</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {(() => {
-                                  const delMes = new Map(f.ac.trabajadores.map((t) => [t.id, t]));
-                                  const ids = new Set([...f.dia.trabajadores.map((t) => t.id), ...f.ac.trabajadores.map((t) => t.id)]);
-                                  const filas = [...ids].map((id) => {
-                                    const d = f.dia.trabajadores.find((t) => t.id === id);
-                                    const m = delMes.get(id);
-                                    return { id, nombre: (d || m).nombre, d, m, res: m ? m.valor - m.costo : 0 };
-                                  }).sort((a, b) => a.res - b.res);
-                                  return filas.map((r) => {
-                                    const cubre = r.d && r.d.costo > 0 && esHabil ? r.d.valor + 0.5 >= r.d.costo : null;
-                                    return (
-                                      <tr key={r.id}>
-                                        <td style={{ ...td, textAlign: "left", fontWeight: 700 }}>{r.nombre}</td>
-                                        <td style={td}>{r.d ? money(r.d.valor) : "—"}</td>
-                                        <td style={td}>{r.d ? money(r.d.costoContado) : "—"}</td>
-                                        <td style={td}>{cubre === null ? "—" : cubre ? <Pastilla texto="cubre" color={C.green} fondo={C.greenBg} /> : <Pastilla texto={`faltan ${money(r.d.costo - r.d.valor)}`} color={C.red} fondo={C.redBg} />}</td>
-                                        <td style={td}>{r.m ? money(r.m.valor) : "—"}</td>
-                                        <td style={td}>{r.m ? money(r.m.costo) : "—"}</td>
-                                        <td style={{ ...td, fontWeight: 800, color: r.m ? colorSaldo(r.res) : C.slate }}>{r.m ? signed(r.res) : "—"}</td>
-                                      </tr>
-                                    );
-                                  });
-                                })()}
-                              </tbody>
-                            </table>
-                          </div>
-                        ) : (
-                          <div style={{ margin: "0 16px", fontSize: 12.5, color: C.slate }}>No hay cierre guardado ni trabajadores para este día.</div>
-                        )}
-                        {f.meta > 0 ? (
-                          <>
-                            <div style={{ padding: "12px 16px 4px", fontSize: 13, fontWeight: 800, color: C.ink }}>Meta día a día ({MESES[mes - 1].toLowerCase()}, días hábiles)</div>
-                            <div style={{ margin: "0 16px", display: "flex", gap: 6, flexWrap: "wrap" }}>
-                              {filaDias(f.porDia).map((x) => {
-                                const ok = x.u >= f.meta;
-                                return (
-                                  <span key={x.iso} title={`${etiquetaDia(x.iso)}: ${fmt(x.u)} de ${fmt(f.meta)}`} style={{ padding: "4px 9px", borderRadius: 8, fontSize: 11.5, fontWeight: 700, color: ok ? C.green : C.red, background: ok ? C.greenBg : C.redBg }}>
-                                    {x.iso.slice(8)} · {fmt(x.u)}
-                                  </span>
-                                );
-                              })}
-                            </div>
-                          </>
-                        ) : null}
+                        <TablaTrabajadores fila={f} esHabil={esHabil} titulo={`${f.nombre} · cada trabajador`} />
+                        {f.meta > 0 ? <ChipsMetaDias porDia={f.porDia} meta={f.meta} anio={anio} mes={mes} diaSel={diaSel} /> : null}
                       </td>
                     </tr>
                   ) : null}

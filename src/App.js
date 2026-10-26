@@ -4,6 +4,8 @@ import ModuloCorte from "./modulo-corte";
 import ModuloContabilidad from "./modulo-contabilidad";
 import AsistenteAtlas from "./asistente-atlas";
 import ModuloPlaneacion, { MiDiaStandalone, ProgramadorProcesosStandalone, AreasStandalone, MiDiaNominaStandalone } from "./modulo-planeacion";
+import MiDiaTarjetasStandalone from "./mi-dia-tarjetas";
+import { TARJETAS_MI_DIA, TARJETAS_DEFECTO_MIDIA, claveCierreDeArea } from "./mi-dia-tarjetas-catalogo";
 import { FinancieraStandalone } from "./modulo-financiera";
 import ModuloPlanta from "./modulo-planta";
 import ModuloBodega from "./modulo-bodega";
@@ -11538,7 +11540,7 @@ function EditNombreModal({ item, tipo, config, onSave, onClose }) {
 function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesosNomina }) {
   const [showForm, setShowForm] = useState(false);
   const [editUser, setEditUser] = useState(null);
-  const [form, setForm] = useState({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", clientesAsociados: [], modulosCliente: [], soloLecturaCliente: false, clienteProduccion: "", clientesProduccion: [], email: "", areaNomina: "", procesosPlaneacion: [], landingAreas: false });
+  const [form, setForm] = useState({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", clientesAsociados: [], modulosCliente: [], soloLecturaCliente: false, clienteProduccion: "", clientesProduccion: [], email: "", areaNomina: "", procesosPlaneacion: [], landingAreas: false, tarjetasMiDia: [] });
   const [changePwdId, setChangePwdId] = useState(null);
   const [newPwd, setNewPwd] = useState("");
   const [showPwd, setShowPwd] = useState(false);
@@ -11573,8 +11575,8 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
     }
     setMigrando(false);
   }
-  function openNew() { setForm({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", clientesAsociados: [], modulosCliente: [], soloLecturaCliente: false, clienteProduccion: "", clientesProduccion: [], email: "", areaNomina: "", procesosPlaneacion: [], landingAreas: false }); setEditUser(null); setShowForm(true); setError(""); }
-  function openEdit(u) { setForm({ name: u.name, username: u.username, password: "", role: u.role, isAdmin: u.isAdmin, clienteAsociado: u.clienteAsociado || "", clientesAsociados: u.clientesAsociados || [], modulosCliente: u.modulosCliente || [], soloLecturaCliente: u.soloLecturaCliente || false, clienteProduccion: u.clienteProduccion || "", clientesProduccion: u.clientesProduccion || [], email: u.email || "", areaNomina: u.areaNomina || "", procesosPlaneacion: u.procesosPlaneacion || [], landingAreas: u.landingAreas || false }); setEditUser(u); setShowForm(true); setError(""); }
+  function openNew() { setForm({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", clientesAsociados: [], modulosCliente: [], soloLecturaCliente: false, clienteProduccion: "", clientesProduccion: [], email: "", areaNomina: "", procesosPlaneacion: [], landingAreas: false, tarjetasMiDia: [] }); setEditUser(null); setShowForm(true); setError(""); }
+  function openEdit(u) { setForm({ name: u.name, username: u.username, password: "", role: u.role, isAdmin: u.isAdmin, clienteAsociado: u.clienteAsociado || "", clientesAsociados: u.clientesAsociados || [], modulosCliente: u.modulosCliente || [], soloLecturaCliente: u.soloLecturaCliente || false, clienteProduccion: u.clienteProduccion || "", clientesProduccion: u.clientesProduccion || [], email: u.email || "", areaNomina: u.areaNomina || "", procesosPlaneacion: u.procesosPlaneacion || [], landingAreas: u.landingAreas || false, tarjetasMiDia: u.tarjetasMiDia || [] }); setEditUser(u); setShowForm(true); setError(""); }
   // Crear usuario nuevo pasa por la Cloud Function `adminCrearUsuario` (Fase
   // B): a diferencia de editar, crear SÍ necesita generar una cuenta real de
   // Firebase Auth para que esa persona pueda entrar — eso no lo puede hacer
@@ -11591,7 +11593,7 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
       if (!form.name) { setError("El nombre es obligatorio."); return; }
       if (form.email && form.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) { setError("El correo no parece válido."); return; }
       const avatar = form.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
-      onUpdateUsers(users.map((u) => (u.id === editUser.id ? { ...u, name: form.name, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado || "", clientesAsociados: form.clientesAsociados || [], modulosCliente: form.modulosCliente || [], soloLecturaCliente: !!form.soloLecturaCliente, clienteProduccion: form.clienteProduccion || "", clientesProduccion: form.clientesProduccion || [], email: form.email ? form.email.trim() : "", areaNomina: form.areaNomina || "", procesosPlaneacion: form.procesosPlaneacion || [], landingAreas: !!form.landingAreas, avatar } : u)));
+      onUpdateUsers(users.map((u) => (u.id === editUser.id ? { ...u, name: form.name, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado || "", clientesAsociados: form.clientesAsociados || [], modulosCliente: form.modulosCliente || [], soloLecturaCliente: !!form.soloLecturaCliente, clienteProduccion: form.clienteProduccion || "", clientesProduccion: form.clientesProduccion || [], email: form.email ? form.email.trim() : "", areaNomina: form.areaNomina || "", procesosPlaneacion: form.procesosPlaneacion || [], landingAreas: !!form.landingAreas, tarjetasMiDia: form.tarjetasMiDia || [], avatar } : u)));
       setShowForm(false);
       return;
     }
@@ -11866,6 +11868,40 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
             </label>
           </div>
           <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>Le agrega el botón "☀️ Mi Día" a su menú lateral (sin quitarle nada de lo demás) donde puede elegir cualquier área y ver su Auditoría Busint vs Nómina. Deja "Área Interna" vacía arriba para que le salga el selector de TODAS las áreas en vez de quedar fija a una sola -- y verifica que su rol tenga activado el permiso "Centro de Costo" en 🗂️ Áreas (Admin → Roles).</div>
+          {/* (2026-10-26, a pedido de Fredy) Tarjetas del «Mi Día» de cada líder. Primera entrega: las del cierre diario
+              de su área (Corte, Zona calor, Control de calidad). Sin ninguna marcada, su Mi Día sigue igual que siempre.
+              Se guarda al editar un usuario que ya existe (al crearlo todavía no). */}
+          {editUser && (
+            <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px solid ${T.border}` }}>
+              <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Tarjetas de «☀️ Mi Día»</label>
+              {!claveCierreDeArea(form.areaNomina) ? (
+                <div style={{ fontSize: 12, color: T.slate }}>Para marcar tarjetas, primero elige su «Área Interna» (hoy con cierre diario: Corte, Zona calor y Control de calidad).</div>
+              ) : (
+                <>
+                  <div style={{ fontSize: 12, color: T.slate, marginBottom: 8 }}>Marca lo que quieres que vea en su Mi Día. Si no marcas ninguna, ve su Mi Día de siempre.</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "8px 18px" }}>
+                    {TARJETAS_MI_DIA.map((t) => {
+                      const marcado = (form.tarjetasMiDia || []).includes(t.id);
+                      return (
+                        <label key={t.id} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, color: T.ink }}>
+                          <input
+                            type="checkbox"
+                            checked={marcado}
+                            onChange={(e) => setForm((f) => {
+                              const actuales = f.tarjetasMiDia || [];
+                              return { ...f, tarjetasMiDia: e.target.checked ? [...actuales, t.id] : actuales.filter((x) => x !== t.id) };
+                            })}
+                          />
+                          {t.label}
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <button type="button" onClick={() => setForm((f) => ({ ...f, tarjetasMiDia: [...TARJETAS_DEFECTO_MIDIA] }))} style={{ marginTop: 10, padding: "6px 12px", borderRadius: 8, border: `1.5px solid ${T.border}`, background: T.white, fontSize: 12, fontWeight: 700, color: T.ink, cursor: "pointer", fontFamily: "inherit" }}>Marcar las recomendadas para su área</button>
+                </>
+              )}
+            </div>
+          )}
           {error && <div style={{ marginTop: 12, padding: "8px 12px", background: T.coralBg, borderRadius: 8, fontSize: 13, color: T.coral, fontWeight: 600 }}>⚠ {error}</div>}
           <div style={{ display: "flex", gap: 10, marginTop: 16, justifyContent: "flex-end" }}>
             <Btn variant="secondary" onClick={() => { setShowForm(false); setError(""); }}>Cancelar</Btn>
@@ -18860,6 +18896,11 @@ function AppInner() {
     // viendo el contenido original de siempre.
     const onVolverMiDia = () => setModuloActivo("diseno");
     const onLogoutMiDia = () => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); };
+    // (2026-10-26, a pedido de Fredy) Con tarjetas marcadas en Usuarios (tarjetasMiDia) se muestra su Mi Día por
+    // tarjetas; sin ninguna marcada todo sigue como antes.
+    if ((currentUser?.tarjetasMiDia || []).length > 0) {
+      return <MiDiaTarjetasStandalone db={db} currentUser={currentUser} onVolver={onVolverMiDia} onLogout={onLogoutMiDia} />;
+    }
     if ((currentUser?.procesosPlaneacion || []).length > 0) {
       return <ProgramadorProcesosStandalone currentUser={currentUser} onVolver={onVolverMiDia} onLogout={onLogoutMiDia} />;
     }
@@ -18941,7 +18982,7 @@ function AppInner() {
               su Auditoría Busint vs Nómina de todas las áreas SIN perder
               el resto de su menú normal (antes las mandaba a una
               pantalla de pantalla completa aparte). */}
-          {(/^planeadora?$/i.test(currentUser?.username || currentUser?.name || "") || (currentUser?.procesosPlaneacion || []).length > 0 || currentUser?.landingAreas) && (
+          {(/^planeadora?$/i.test(currentUser?.username || currentUser?.name || "") || (currentUser?.procesosPlaneacion || []).length > 0 || currentUser?.landingAreas || (currentUser?.tarjetasMiDia || []).length > 0) && (
             <button onClick={() => setModuloActivo("mi_dia")} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 12px", border: "none", borderRadius: 8, cursor: "pointer", background: moduloActivo === "mi_dia" ? T.seam : "transparent", color: moduloActivo === "mi_dia" ? T.ink : "#8888AA", fontWeight: moduloActivo === "mi_dia" ? 800 : 500, fontSize: 13, textAlign: "left", marginBottom: 8 }}><span style={{ fontSize: 15 }}>☀️</span> Mi Día</button>
           )}
           {(currentUser?.procesosPlaneacion || []).length > 0 && (
