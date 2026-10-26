@@ -15,6 +15,7 @@ import CentroCostoCorteEnAreas, { CentroCostoCierreCorte } from "./modulo-corte-
 import CentroCostoAnioPanel from "./centro-costo-historico";
 import { cargaEntradasActivaDe } from "./entradas-planta-util";
 import ProyeccionAreasView from "./proyeccion-areas";
+import TableroCostosView from "./tablero-costos";
 import { num as numCotizador } from "./cotizador-calculo";
 import { DevolucionesCalidadView } from "./devoluciones-cliente";
 import { claveArea as claveAreaHistorico } from "./centro-costo-historico-parser";
@@ -9060,6 +9061,7 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
     { id: "entradas_talleres", icon: "📥", label: "Entradas de Talleres" },
     { id: "lotes_por_dia", icon: "📅", label: "Lotes por Día" },
     { id: "proyeccion_areas", icon: "🗓", label: "Proyección por Área" },
+    ...(isAdmin ? [{ id: "tablero_costos", icon: "💹", label: "Tablero de Costos" }] : []),
     { id: "control_calidad", icon: "🔍", label: "Control de Calidad" },
   ];
   if (loading) {
@@ -9165,6 +9167,7 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
               entradas={entradasTalleres}
             />
           )}
+          {subView === "tablero_costos" && isAdmin && <TableroCostosView db={db} />}
           {subView === "estadisticas" && (
             <EstadisticasPlaneacionView
               programaciones={programacionesProcesosTodas}

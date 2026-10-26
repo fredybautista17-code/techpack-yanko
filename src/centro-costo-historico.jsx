@@ -541,20 +541,15 @@ function CargarHistoricoModal({ onClose, currentUser, anioInicial }) {
 }
 
 // ─── PANEL "AÑO" ─────────────────────────────────────────────────────────────
-export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentUser, puedeCargar }) {
-  const [anioSel, setAnioSel] = useState(anioInicial || new Date().getFullYear());
+// (2026-10-26) Lectura compartida del Centro de Costo: la usan el panel «Año» y el Tablero de costos.
+// Devuelve, por área y mes, lo producido y el costo de nómina (histórico cargado, CORTE en vivo o cierres guardados).
+export function useCentroCostoDatos(anioSel, claveSel) {
   const [historico, setHistorico] = useState([]);
   const [cierres, setCierres] = useState([]);
   const [pedidos, setPedidos] = useState([]);
   const [trabajadoresCorte, setTrabajadoresCorte] = useState([]);
   const [fichas, setFichas] = useState([]);
   const [cargando, setCargando] = useState(true);
-  const [modal, setModal] = useState(false);
-  const [mesAbierto, setMesAbierto] = useState(null);
-  const [ordenHist, setOrdenHist] = useState("ayuda");
-  const [busqHist, setBusqHist] = useState("");
-  const [trabAbierto, setTrabAbierto] = useState(null);
-
   useEffect(() => {
     const unsubs = [
       onSnapshot(collection(db, "centro_costo_historico_mes"), (snap) => { setHistorico(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); setCargando(false); }, () => setCargando(false)),
@@ -569,8 +564,6 @@ export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentU
     ];
     return () => unsubs.forEach((u) => u());
   }, []);
-
-  const claveSel = claveArea(areaNombre || "CORTE");
   // Solo cuentan los trabajadores de destajo (Destajo y Fiscal Destajo); los Fiscal (sueldo fijo)
   // no se comparan. La nómina de CORTE no tiene ficha de tipo de nómina, así que entra completa.
   const tiposDestajo = useMemo(() => new Set(fichas.filter((f) => f.tipoNomina === "Destajo" || f.tipoNomina === "Fiscal Destajo").map((f) => f.id)), [fichas]);
@@ -621,6 +614,20 @@ export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentU
     });
     return out;
   }, [historico, cierresResueltos, corteVivo, anioSel, claveSel]);
+  return { historico, cierres, pedidos, trabajadoresCorte, fichas, cargando, cierresResueltos, datosArea };
+}
+
+export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentUser, puedeCargar }) {
+  const [anioSel, setAnioSel] = useState(anioInicial || new Date().getFullYear());
+  const [modal, setModal] = useState(false);
+  const [mesAbierto, setMesAbierto] = useState(null);
+  const [ordenHist, setOrdenHist] = useState("ayuda");
+  const [busqHist, setBusqHist] = useState("");
+  const [trabAbierto, setTrabAbierto] = useState(null);
+
+
+  const claveSel = claveArea(areaNombre || "CORTE");
+  const { historico, pedidos, trabajadoresCorte, cargando, cierresResueltos, datosArea } = useCentroCostoDatos(anioSel, claveSel);
 
   const resumenAreas = Object.entries(datosArea)
     .filter(([, d]) => d.mesesConDato > 0 && d.costo > 0)
