@@ -29,6 +29,10 @@ export const GRUPOS_MI_DIA = [
     ],
   },
   {
+    id: "lista", titulo: "Lista de pendientes por programar", requiere: "areaInterna",
+    tarjetas: [{ id: "lista_programar", label: "Mi lista por programar (lotes de mi proceso: por programar, programados, vencidos, cumplidos)" }],
+  },
+  {
     id: "programacion", titulo: "Programación de procesos", requiere: "procesos",
     tarjetas: [{ id: "programador", label: "Mi programación (Programador de Procesos)" }],
   },

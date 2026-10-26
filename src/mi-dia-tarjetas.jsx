@@ -7,7 +7,7 @@ import React, { useState, useEffect, useMemo, useRef } from "react";
 import { useCierreDiario, TablaTrabajadores, ChipsMetaDias } from "./cierre-diario";
 import { diaDeArea, diasDelMesHasta, esHabilISO, sumarDiasISO } from "./cierre-diario-calculo";
 import { claveCierreDeArea, IDS_CIERRE, IDS_PLANEACION } from "./mi-dia-tarjetas-catalogo";
-import { MiDiaPlaneacionBloque, ProgramadorProcesosStandalone, MiDiaNominaStandalone } from "./modulo-planeacion";
+import { MiDiaPlaneacionBloque, ProgramadorProcesosStandalone, MiDiaNominaStandalone, ListaPorProgramarBloque } from "./modulo-planeacion";
 
 const C = {
   ink: "#1A1A2E", slate: "#5A5A7A", border: "#E8E2DB", canvas: "#F7F4F0", white: "#FFFFFF", seam: "#C8B8A2",
@@ -223,6 +223,7 @@ export default function MiDiaTarjetasStandalone({ db, currentUser, onVolver, onL
               <MiDiaPlaneacionBloque visibles={idsPlaneacion} />
             </div>
           ) : null}
+          {marcadas.includes("lista_programar") ? <ListaPorProgramarBloque currentUser={currentUser} /> : null}
           {marcadas.includes("programador") ? (
             <div style={{ marginBottom: 18 }}>
               <div style={{ fontSize: 17, fontWeight: 800, color: C.ink, marginBottom: 10 }}>📋 Mi programación de procesos</div>

@@ -19,6 +19,7 @@ import TableroCostosView from "./tablero-costos";
 import { num as numCotizador } from "./cotizador-calculo";
 import { DevolucionesCalidadView } from "./devoluciones-cliente";
 import { claveArea as claveAreaHistorico } from "./centro-costo-historico-parser";
+import { armarListaPorProgramar, prioridadesDePlanta } from "./lista-programar-calculo";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
   authDomain: "techpack-yanko-f37b8.firebaseapp.com",
@@ -3904,6 +3905,279 @@ export function ProgramadorProcesosStandalone({ currentUser, onVolver, onLogout,
           />
         </div>
       </div>
+    </div>
+  );
+}
+// ─── MI LISTA POR PROGRAMAR (Zona calor / Control de calidad) ───────────────
+// (2026-10-26, a pedido de Fredy) "Un TODO con las programaciones": el líder ve los lotes que ya llegaron al proceso de su
+// área y le falta programar, y programa desde ahí (fecha, hora, trabajador de su equipo y cantidad). "Cumplido" sale SOLO de
+// Busint (entrada registrada en el proceso). Cálculo en lista-programar-calculo.js; guarda en la misma colección del
+// Programador de Procesos (planeacion_programacion_procesos), así las dos pantallas ven las mismas programaciones.
+// Procesos del área: los marcados en Nómina → Área Interna (procesosCentroCosto); si no hay, por defecto TERMOFIJACION para
+// Zona calor y EMPAQUE para Control de calidad; si tampoco, los «procesos que puede programar» de su usuario.
+const PROCESOS_DEFECTO_LISTA = { ZONACALOR: ["TERMOFIJACION"], CONTROLCALIDAD: ["EMPAQUE"] };
+function PillPrioridad({ valor }) {
+  const mapa = { Alta: { bg: C.redBg, color: C.red }, Media: { bg: C.amberBg, color: C.amber }, Normal: { bg: C.blueBg, color: C.blue } };
+  const s = mapa[valor];
+  if (!s) return <span style={{ color: C.slate }}>—</span>;
+  return <span style={{ padding: "2px 9px", borderRadius: 20, fontSize: 11, fontWeight: 800, background: s.bg, color: s.color, whiteSpace: "nowrap" }}>{valor}</span>;
+}
+function textoEntregaLista(f) {
+  if (!f.fechaEntregaPedido) return "—";
+  const d = f.diasEntrega;
+  const cuando = d === null || d === undefined ? "" : d < 0 ? ` · vencido hace ${-d} d` : d === 0 ? " · hoy" : ` · en ${d} d`;
+  return `${fmtFechaISO(f.fechaEntregaPedido)}${cuando}`;
+}
+export function ListaPorProgramarBloque({ currentUser, incrustado = true }) {
+  const [cargas, setCargas] = useState([]);
+  const [trabajadores, setTrabajadores] = useState([]);
+  const [areas, setAreas] = useState([]);
+  const [programaciones, setProgramaciones] = useState([]);
+  const [programacionPlanta, setProgramacionPlanta] = useState([]);
+  const [movimientos, setMovimientos] = useState(null);
+  const [cargandoMov, setCargandoMov] = useState(false);
+  const [cargando, setCargando] = useState(true);
+  const [tab, setTab] = useState("por_programar");
+  const [filtroProceso, setFiltroProceso] = useState("");
+  const [filtroPrioridad, setFiltroPrioridad] = useState("");
+  const [modal, setModal] = useState(null);
+  const [fechaForm, setFechaForm] = useState(hoyBogotaISO());
+  const [horaForm, setHoraForm] = useState("06:00");
+  const [trabajadorForm, setTrabajadorForm] = useState("");
+  const [cantidadForm, setCantidadForm] = useState("");
+  const [guardando, setGuardando] = useState(false);
+  useEffect(() => {
+    const u1 = onSnapshot(collection(db, "planeacion_cargas"), (snap) => { setCargas(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); setCargando(false); });
+    const u2 = onSnapshot(collection(db, "nomina_trabajadores"), (snap) => setTrabajadores(snap.docs.map((d) => ({ ...d.data(), id: d.id }))));
+    const u3 = onSnapshot(collection(db, "nomina_areas"), (snap) => setAreas(snap.docs.map((d) => ({ ...d.data(), id: d.id }))));
+    const u4 = onSnapshot(collection(db, "planeacion_programacion_procesos"), (snap) => setProgramaciones(snap.docs.map((d) => ({ ...d.data(), id: d.id }))));
+    const u5 = onSnapshot(collection(db, "planta_programacion"), (snap) => setProgramacionPlanta(snap.docs.map((d) => ({ ...d.data(), id: d.id }))), () => {});
+    const u6 = onSnapshot(doc(db, "planeacion_cache", "movimientos_procesos"), (snap) => { if (snap.exists()) setMovimientos(snap.data()); });
+    return () => { u1(); u2(); u3(); u4(); u5(); u6(); };
+  }, []);
+  const hoy = hoyBogotaISO();
+  const lotesActivos = useMemo(() => {
+    if (!cargas.length) return [];
+    const ordenadas = [...cargas].sort((a, b) => (b.creadoEn || b.fecha).localeCompare(a.creadoEn || a.fecha));
+    return ordenadas[0]?.lotes || [];
+  }, [cargas]);
+  const areaNombre = currentUser?.areaNomina || "";
+  const area = useMemo(() => areas.find((a) => normProcesoProg(a.nombre) === normProcesoProg(areaNombre)), [areas, areaNombre]);
+  const procesos = useMemo(() => {
+    const deArea = area?.procesosCentroCosto || [];
+    if (deArea.length) return deArea;
+    const porDefecto = PROCESOS_DEFECTO_LISTA[claveAreaHistorico(areaNombre)];
+    if (porDefecto) return porDefecto;
+    return currentUser?.procesosPlaneacion || [];
+  }, [area, areaNombre, currentUser]);
+  const equipo = useMemo(
+    () => trabajadores.filter((t) => t.activo !== false && areaNombre && (t.area || "Sin asignar") === areaNombre),
+    [trabajadores, areaNombre]
+  );
+  const prioPlanta = useMemo(() => prioridadesDePlanta(programacionPlanta), [programacionPlanta]);
+  const lista = useMemo(
+    () => armarListaPorProgramar({ lotes: lotesActivos, procesos, programaciones, entradas: movimientos?.entradas || [], hoyISO: hoy, prioPlanta }),
+    [lotesActivos, procesos, programaciones, movimientos, hoy, prioPlanta]
+  );
+  const r = lista.resumen;
+  const filtrarProc = (f) => !filtroProceso || normProcesoProg(f.proceso) === normProcesoProg(filtroProceso);
+  const porProgramar = lista.porProgramar.filter(filtrarProc).filter((f) => !filtroPrioridad || f.prioridad === filtroPrioridad);
+  const programados = lista.programados.filter(filtrarProc);
+  const vencidos = lista.vencidos.filter(filtrarProc);
+  const cumplidos = lista.cumplidos.filter(filtrarProc).slice(0, 60);
+  async function actualizarCumplimiento() {
+    setCargandoMov(true);
+    try {
+      const llamar = httpsCallable(functionsClient, "getMovimientosProcesoBusintBD");
+      const resp = await llamar();
+      setMovimientos(resp.data);
+      await fsSave("planeacion_cache", "movimientos_procesos", resp.data);
+    } catch (err) {
+      alert(`No se pudo consultar el cumplimiento en Busint: ${err?.message || String(err)}`);
+    } finally {
+      setCargandoMov(false);
+    }
+  }
+  function abrirProgramar(f) {
+    setModal(f);
+    setFechaForm(hoy);
+    setHoraForm("06:00");
+    setTrabajadorForm("");
+    setCantidadForm(String(f.restante));
+  }
+  const excede = !!(modal && Number(cantidadForm) > modal.restante);
+  const puedeGuardar = !!(modal && trabajadorForm && horaForm && fechaForm && Number(cantidadForm) > 0 && !excede && !guardando);
+  async function guardarProgramacion() {
+    if (!puedeGuardar) return;
+    const t = equipo.find((x) => x.id === trabajadorForm);
+    setGuardando(true);
+    try {
+      await fsSave("planeacion_programacion_procesos", uid(), {
+        numLote: modal.numLote,
+        referencia: modal.referencia,
+        proceso: modal.proceso,
+        fechaProgramada: fechaForm,
+        horaInicio: horaForm,
+        trabajadorId: trabajadorForm,
+        trabajadorNombre: t?.name || t?.nombre || "",
+        cantidad: Number(cantidadForm),
+        liderUsername: currentUser?.username || "",
+        liderNombre: currentUser?.name || "",
+        creadoEn: new Date().toISOString(),
+        origen: "lista_por_programar",
+      });
+      setModal(null);
+    } finally {
+      setGuardando(false);
+    }
+  }
+  async function cancelar(p) {
+    if (!window.confirm(`¿Quitar la programación del lote ${p.numLote} (${p.proceso}) de ${p.trabajadorNombre || "sin nombre"}?`)) return;
+    await fsDelete("planeacion_programacion_procesos", p.id);
+  }
+  function btnTab(id, label, n) {
+    const act = tab === id;
+    return (
+      <button key={id} onClick={() => setTab(id)} style={{ padding: "7px 14px", borderRadius: 8, border: `1px solid ${act ? C.ink : C.border}`, background: act ? C.ink : C.white, color: act ? "#fff" : C.slate, fontWeight: 800, fontSize: 12, cursor: "pointer" }}>
+        {label} ({n})
+      </button>
+    );
+  }
+  const estiloSelect = { padding: "5px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12, fontFamily: "inherit" };
+  const colsProgramados = [
+    { key: "fechaProgramada", label: "Fecha", render: (p) => fmtFechaISO(p.fechaProgramada) },
+    { key: "horaInicio", label: "Hora", render: (p) => p.horaInicio || "—" },
+    { key: "numLote", label: "Lote" },
+    { key: "referencia", label: "Referencia" },
+    { key: "trabajadorNombre", label: "Trabajador" },
+    { key: "cantidad", label: "Cantidad", align: "right", render: (p) => (p.cantidad != null ? fmtNum(p.cantidad) : "todo") },
+    { key: "prioridad", label: "Prioridad", render: (p) => <PillPrioridad valor={p.prioridad} /> },
+    { key: "estado", label: "Estado", render: (p) => (
+      <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+        <EstadoBadge estado={p.estado} />
+        {p.parcial && <span style={{ fontSize: 10.5, color: C.amber, fontWeight: 700 }}>parcial {fmtNum(p.hecho)}/{fmtNum(p.cantidad)}</span>}
+      </span>
+    ) },
+    { key: "_x", label: "", render: (p) => <span onClick={() => cancelar(p)} style={{ cursor: "pointer", color: C.red, fontSize: 15 }} title="Quitar programación">✕</span> },
+  ];
+  const colsCumplidos = [
+    { key: "fechaCumplimiento", label: "Cumplido (Busint)", render: (p) => fmtFechaISO(p.fechaCumplimiento) },
+    { key: "numLote", label: "Lote" },
+    { key: "referencia", label: "Referencia" },
+    { key: "proceso", label: "Proceso" },
+    { key: "trabajadorNombre", label: "Trabajador" },
+    { key: "cantidad", label: "Cantidad", align: "right", render: (p) => (p.cantidad != null ? fmtNum(p.cantidad) : fmtNum(p.hecho)) },
+    { key: "fechaProgramada", label: "Programado para", render: (p) => fmtFechaISO(p.fechaProgramada) },
+    { key: "llegoVencido", label: "", render: (p) => (p.llegoVencido ? <span style={{ fontSize: 10.5, fontWeight: 700, color: C.red }}>⚠️ Llegó vencido</span> : <span style={{ fontSize: 10.5, fontWeight: 700, color: C.green }}>A tiempo</span>) },
+  ];
+  const colsPorProgramar = [
+    { key: "prioridad", label: "Prioridad", render: (f) => <PillPrioridad valor={f.prioridad} /> },
+    { key: "numLote", label: "Lote" },
+    { key: "referencia", label: "Referencia" },
+    { key: "cliente", label: "Cliente" },
+    { key: "proceso", label: "Proceso" },
+    { key: "fechaEntregaPedido", label: "Entrega del pedido", color: (f) => (f.diasEntrega !== null && f.diasEntrega < 0 ? C.red : C.ink), render: (f) => textoEntregaLista(f) },
+    { key: "restante", label: "Por programar", align: "right", render: (f) => fmtNum(f.restante) },
+    { key: "programado", label: "", render: (f) => (f.programado > 0 ? <span style={{ fontSize: 11, fontWeight: 700, color: C.blue, background: C.blueBg, borderRadius: 20, padding: "2px 8px", whiteSpace: "nowrap" }}>ya programado {fmtNum(f.programado)}</span> : null) },
+    { key: "_a", label: "", render: (f) => <Btn small onClick={() => abrirProgramar(f)}>📅 Programar</Btn> },
+  ];
+  if (cargando) {
+    return <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>Cargando tu lista por programar...</div>;
+  }
+  return (
+    <div style={incrustado ? { marginBottom: 28 } : {}}>
+      {modal && (
+        <Modal title={`Programar Lote ${modal.numLote} — ${modal.proceso}`} onClose={() => setModal(null)} width={480}>
+          <div style={{ fontSize: 13, color: C.slate, marginBottom: 14 }}>
+            Referencia {modal.referencia} — faltan por programar {fmtNum(modal.restante)} de {fmtNum(modal.inventario)} unidades que hay en {modal.proceso}.
+          </div>
+          <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
+            <div style={{ flex: 1 }}>
+              <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, display: "block", marginBottom: 6, textTransform: "uppercase" }}>Fecha</label>
+              <input type="date" value={fechaForm} onChange={(e) => setFechaForm(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, fontFamily: "inherit" }} />
+            </div>
+            <div style={{ flex: 1 }}>
+              <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, display: "block", marginBottom: 6, textTransform: "uppercase" }}>Hora de inicio</label>
+              <input type="time" value={horaForm} onChange={(e) => setHoraForm(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, fontFamily: "inherit" }} />
+            </div>
+          </div>
+          <div style={{ marginBottom: 14 }}>
+            <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, display: "block", marginBottom: 6, textTransform: "uppercase" }}>Trabajador de tu equipo</label>
+            <select value={trabajadorForm} onChange={(e) => setTrabajadorForm(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, fontFamily: "inherit" }}>
+              <option value="">Seleccionar...</option>
+              {equipo.map((t) => <option key={t.id} value={t.id}>{t.name || t.nombre}</option>)}
+            </select>
+            {!equipo.length && (
+              <div style={{ fontSize: 11, color: C.red, marginTop: 6 }}>
+                No hay trabajadores en tu equipo (Área Interna «{areaNombre || "sin área"}») — pide a un administrador que los asigne en Nómina → Trabajadores.
+              </div>
+            )}
+          </div>
+          <div style={{ marginBottom: 14 }}>
+            <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, display: "block", marginBottom: 6, textTransform: "uppercase" }}>Cantidad a programarle</label>
+            <input type="number" min="1" value={cantidadForm} onChange={(e) => setCantidadForm(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, fontFamily: "inherit" }} />
+            <div style={{ fontSize: 11.5, color: C.slate, marginTop: 6 }}>Puedes repartir el lote entre varios trabajadores: programa una parte ahora y el resto después.</div>
+          </div>
+          {excede && (
+            <div style={{ background: C.redBg, border: `1px solid ${C.red}`, borderRadius: 10, padding: "10px 14px", fontSize: 12.5, color: C.red, fontWeight: 700, marginBottom: 14 }}>
+              Solo faltan {fmtNum(modal.restante)} por programar en este lote — la cantidad no puede pasar de ahí.
+            </div>
+          )}
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setModal(null)}>Cancelar</Btn>
+            <Btn onClick={guardarProgramacion} disabled={!puedeGuardar}>{guardando ? "Guardando..." : "Guardar programación"}</Btn>
+          </div>
+        </Modal>
+      )}
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
+        <div style={{ flex: 1, minWidth: 260 }}>
+          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 900, color: C.ink }}>📝 Mi lista por programar</h2>
+          <p style={{ margin: "6px 0 0", fontSize: 13, color: C.slate }}>
+            {areaNombre || "Sin área"} · procesos: {procesos.length ? procesos.join(", ") : "ninguno asignado todavía"}. «Cumplido» sale solo de Busint.
+          </p>
+        </div>
+        <div style={{ textAlign: "right" }}>
+          <Btn small variant="secondary" onClick={actualizarCumplimiento} disabled={cargandoMov}>{cargandoMov ? "Consultando Busint..." : "🔄 Actualizar cumplimiento"}</Btn>
+          <div style={{ fontSize: 11, color: movimientos?.generadoEn ? C.slate : C.amber, marginTop: 4 }}>
+            {movimientos?.generadoEn ? `Cumplimiento al ${fmtFechaHora(movimientos.generadoEn)}` : "Aún no se ha consultado Busint"}
+          </div>
+        </div>
+      </div>
+      {!procesos.length && (
+        <div style={{ background: C.white, borderRadius: 14, padding: 22, border: `1px solid ${C.border}`, color: C.slate, fontSize: 13, marginBottom: 16 }}>
+          Tu área todavía no tiene procesos asignados. Un administrador debe marcarlos en Nómina → Administrativo → Área Interna («{areaNombre || "tu área"}») para que aparezcan los lotes.
+        </div>
+      )}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 14, marginBottom: 20 }}>
+        <StatMini icon="📦" label={`Por programar · ${fmtNum(r.unidadesPorProgramar)} und`} value={r.porProgramar} color={C.blue} bg={C.blueBg} />
+        <StatMini icon="⏳" label={`Programados · ${r.programadosHoy} para hoy`} value={r.programados} color={C.amber} bg={C.amberBg} />
+        <StatMini icon="⚠️" label="Vencidos" value={r.vencidos} color={C.red} bg={C.redBg} />
+        <StatMini icon="✅" label="Cumplidos (Busint)" value={r.cumplidos} color={C.green} bg={C.greenBg} />
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+        {btnTab("por_programar", "Por programar", lista.porProgramar.filter(filtrarProc).length)}
+        {btnTab("programados", "Programados", programados.length)}
+        {btnTab("vencidos", "Vencidos", vencidos.length)}
+        {btnTab("cumplidos", "Cumplidos", cumplidos.length)}
+        {procesos.length > 1 && (
+          <select value={filtroProceso} onChange={(e) => setFiltroProceso(e.target.value)} style={{ ...estiloSelect, marginLeft: "auto" }}>
+            <option value="">Todos mis procesos</option>
+            {procesos.map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
+        )}
+        {tab === "por_programar" && (
+          <select value={filtroPrioridad} onChange={(e) => setFiltroPrioridad(e.target.value)} style={{ ...estiloSelect, marginLeft: procesos.length > 1 ? 0 : "auto" }}>
+            <option value="">Todas las prioridades</option>
+            <option value="Alta">Alta</option>
+            <option value="Media">Media</option>
+            <option value="Normal">Normal</option>
+          </select>
+        )}
+      </div>
+      {tab === "por_programar" && <TablaSuave vacio="No tienes lotes pendientes por programar. ¡Todo programado!" columnas={colsPorProgramar} filas={porProgramar} />}
+      {tab === "programados" && <TablaSuave vacio="No hay lotes programados en tiempo." columnas={colsProgramados} filas={programados} />}
+      {tab === "vencidos" && <TablaSuave vacio="No hay lotes vencidos." columnas={colsProgramados} filas={vencidos} />}
+      {tab === "cumplidos" && <TablaSuave vacio="Todavía no hay lotes cumplidos en Busint." columnas={colsCumplidos} filas={cumplidos} />}
     </div>
   );
 }
