@@ -3200,25 +3200,49 @@ function estadoProgramacion(fechaProgramada, movEntrada, movSalida) {
 // suavizan bordes/sombras y se da mas espacio, sin tocar los componentes
 // KPI/Tabla compartidos que usa el resto del ERP (Corte, Contabilidad,
 // Bodega, etc.).
-function StatMini({ icon, label, value, color, bg }) {
+// (2026-10-26, a pedido de Fredy) Fila baja de totales (en vez de 4 recuadros grandes) para que Mi Día no sea tan largo.
+function KpiFila({ items }) {
   return (
-    <div style={{ background: bg || C.canvas, borderRadius: 16, padding: "20px 20px", boxShadow: "0 1px 3px rgba(15,15,25,0.06)" }}>
-      <div style={{ fontSize: 22, marginBottom: 8 }}>{icon}</div>
-      <div style={{ fontSize: 24, fontWeight: 900, color, lineHeight: 1 }}>{value}</div>
-      <div style={{ fontSize: 11, color: C.slate, marginTop: 6, fontWeight: 600 }}>{label}</div>
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12, marginBottom: 16 }}>
+      {items.map((it) => (
+        <div key={it.label} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", borderRadius: 14, background: it.bg }}>
+          <span style={{ fontSize: 20 }}>{it.icon}</span>
+          <span style={{ fontSize: 26, fontWeight: 900, color: it.color, lineHeight: 1 }}>{it.value}</span>
+          <span style={{ fontSize: 11.5, fontWeight: 600, color: C.slate, lineHeight: 1.25 }}>{it.label}</span>
+        </div>
+      ))}
     </div>
   );
 }
-function TablaSuave({ columnas, filas, vacio, onRowClick }) {
+// Botón de sub-pestaña (Hoy / Por programar / Programados...), compartido por el Programador y la lista por programar.
+function SubTab({ activo, onClick, children }) {
+  return (
+    <button onClick={onClick} style={{ padding: "7px 14px", borderRadius: 8, border: `1px solid ${activo ? C.ink : C.border}`, background: activo ? C.ink : C.white, color: activo ? "#fff" : C.slate, fontWeight: 800, fontSize: 12, cursor: "pointer" }}>
+      {children}
+    </button>
+  );
+}
+function BuscadorMiDia({ value, onChange }) {
+  return (
+    <input
+      type="search"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder="🔎 Buscar lote, ref. o trabajador"
+      style={{ width: 230, padding: "6px 12px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12, fontFamily: "inherit", background: C.white }}
+    />
+  );
+}
+function TablaSuave({ columnas, filas, vacio, onRowClick, alto }) {
   const [hoverIdx, setHoverIdx] = useState(null);
   if (!filas.length) {
     return <div style={{ textAlign: "center", padding: 44, color: C.slate, fontSize: 13 }}>{vacio || "Sin datos."}</div>;
   }
   return (
-    <div style={{ background: C.white, borderRadius: 16, boxShadow: "0 1px 3px rgba(15,15,25,0.06)", overflow: "auto" }}>
+    <div style={{ background: C.white, borderRadius: 16, boxShadow: "0 1px 3px rgba(15,15,25,0.06)", overflow: "auto", ...(alto ? { maxHeight: alto } : {}) }}>
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
         <thead>
-          <tr style={{ background: C.ink, position: "sticky", top: 0 }}>
+          <tr style={{ background: C.ink, position: "sticky", top: 0, zIndex: 1 }}>
             {columnas.map((c) => (
               <th key={c.key} style={{ padding: "12px 16px", color: C.seam, textAlign: c.align || "left", fontWeight: 700, fontSize: 10, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>
                 {c.label}
@@ -3338,7 +3362,12 @@ function ProgramadorProcesosView({
   const [guardando, setGuardando] = useState(false);
   // (2026-09-03, a pedido de Fredy) Pestaña activa de "Lotes
   // programados" -- "programados" | "vencidos" | "historicos".
-  const [tabLotes, setTabLotes] = useState("programados");
+  // (2026-10-26, a pedido de Fredy) Mi Día compacto: una sola vista a la vez ("hoy" | "bodega" | "programados" |
+  // "vencidos" | "historicos") en vez de todo apilado, con buscador y los últimos 30 históricos.
+  const [vista, setVista] = useState("hoy");
+  const [busqueda, setBusqueda] = useState("");
+  const [verTodosHistoricos, setVerTodosHistoricos] = useState(false);
+  const tabLotes = vista === "vencidos" ? "vencidos" : vista === "historicos" ? "historicos" : "programados";
   // (2026-09-07, a pedido de Fredy) Pestana activa de "Mi Dia": Programar
   // (lo de siempre) o Auditoria (el panel de Auditoria Busint vs Nomina) --
   // para que no se vea todo amontonado en una sola pantalla.
@@ -3445,22 +3474,17 @@ function ProgramadorProcesosView({
   const vencidos = misProgramaciones.filter((p) => p.estado === "VENCIDO");
   const cumplidos = misProgramaciones.filter((p) => p.estado === "CUMPLIDO");
   const pendientesProg = misProgramaciones.filter((p) => p.estado === "PROGRAMADO");
-  const filasLotesTab = tabLotes === "vencidos" ? vencidos : tabLotes === "historicos" ? cumplidos : pendientesProg;
+  const textoBuscado = busqueda.trim().toLowerCase();
+  const coincideBusqueda = (o) =>
+    (!filtroProceso || o.proceso === filtroProceso) &&
+    (!textoBuscado || [o.numLote, o.referencia, o.cliente, o.trabajadorNombre, o.proceso].some((v) => String(v ?? "").toLowerCase().includes(textoBuscado)));
+  const filasLotesBase = (tabLotes === "vencidos" ? vencidos : tabLotes === "historicos" ? cumplidos : pendientesProg).filter(coincideBusqueda);
+  const filasLotesTab = tabLotes === "historicos" && !verTodosHistoricos ? filasLotesBase.slice(-30) : filasLotesBase;
   const vacioLotesTab = tabLotes === "vencidos"
     ? "No hay lotes vencidos ahora mismo."
     : tabLotes === "historicos"
     ? "Todavía no hay lotes cumplidos."
     : "No hay lotes programados en tiempo ahora mismo.";
-  function tabLotesBtn(id, label, count) {
-    return (
-      <button
-        onClick={() => setTabLotes(id)}
-        style={{ padding: "7px 14px", borderRadius: 8, border: `1px solid ${tabLotes === id ? C.ink : C.border}`, background: tabLotes === id ? C.ink : C.white, color: tabLotes === id ? "#fff" : C.slate, fontWeight: 800, fontSize: 12, cursor: "pointer" }}
-      >
-        {label} ({count})
-      </button>
-    );
-  }
   // (2026-09-02, a pedido de Fredy) Para marcar en la tabla de arriba
   // ("Pendientes por programar") los lote+proceso que YA tienen una
   // programación activa -- así no parece que falta programarlos de nuevo.
@@ -3468,12 +3492,14 @@ function ProgramadorProcesosView({
   // (2026-09-30, a pedido de Fredy) Aplica el filtro de "Sin programar" /
   // "Ya programados" encima del filtro por proceso que ya existia.
   const pendientesMostrados = useMemo(() => {
-    if (!filtroEstadoProgramado) return pendientesFiltrados;
-    return pendientesFiltrados.filter((f) => {
+    const q = busqueda.trim().toLowerCase();
+    const base = !q ? pendientesFiltrados : pendientesFiltrados.filter((f) => [f.numLote, f.referencia, f.cliente, f.proceso].some((v) => String(v ?? "").toLowerCase().includes(q)));
+    if (!filtroEstadoProgramado) return base;
+    return base.filter((f) => {
       const yaProgramado = clavesYaProgramadas.has(`${f.numLote}||${f.proceso}`);
       return filtroEstadoProgramado === "programado" ? yaProgramado : !yaProgramado;
     });
-  }, [pendientesFiltrados, clavesYaProgramadas, filtroEstadoProgramado]);
+  }, [pendientesFiltrados, clavesYaProgramadas, filtroEstadoProgramado, busqueda]);
   // (2026-09-02, a pedido de Fredy) Para la tabla de "Lotes programados":
   // cuando un lote sale CUMPLIDO, mostrar qué entrada/salida real de Busint
   // fue la que lo cumplió (unidades y fecha), no solo la palabra "Cumplido".
@@ -3591,20 +3617,20 @@ function ProgramadorProcesosView({
   // programación de otro día), para que "Mi Día" abra mostrando primero lo
   // que toca hoy.
   const misProgramacionesHoy = useMemo(() => misProgramaciones.filter((p) => p.fechaProgramada === today()), [misProgramaciones]);
-  const gruposHoyPorTrabajador = useMemo(() => agruparPorTrabajador(misProgramacionesHoy), [misProgramacionesHoy]);
+  const gruposHoyPorTrabajador = agruparPorTrabajador(misProgramacionesHoy.filter(coincideBusqueda));
   function renderTarjetasProgramacion(grupos, textoVacio) {
     if (!grupos.length) {
       return <div style={{ padding: 20, textAlign: "center", color: C.slate, fontSize: 13, background: C.white, border: `1px solid ${C.border}`, borderRadius: 14 }}>{textoVacio}</div>;
     }
-    return grupos.map((g) => (
-      <div key={g.trabajadorNombre} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, marginBottom: 14, overflow: "hidden" }}>
+    return <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(400px, 1fr))", gap: 14, alignItems: "start" }}>{grupos.map((g) => (
+      <div key={g.trabajadorNombre} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, overflow: "hidden" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", background: C.canvas, borderBottom: `1px solid ${C.border}` }}>
           <AvatarIniciales nombre={g.trabajadorNombre} />
           <div style={{ fontWeight: 700, fontSize: 14, flex: 1 }}>{g.trabajadorNombre}</div>
           <div style={{ fontSize: 11, color: C.slate, fontWeight: 700, background: C.white, border: `1px solid ${C.border}`, borderRadius: 20, padding: "3px 10px" }}>{g.items.length} {g.items.length === 1 ? "lote" : "lotes"}</div>
         </div>
         {g.items.map((f, i) => (
-          <div key={f.id} style={{ display: "grid", gridTemplateColumns: "64px 1fr auto auto", gap: 14, alignItems: "center", padding: "12px 16px", borderBottom: i === g.items.length - 1 ? "none" : `1px solid ${C.border}` }}>
+          <div key={f.id} style={{ display: "grid", gridTemplateColumns: "52px 1fr auto auto", gap: 10, alignItems: "center", padding: "9px 14px", borderBottom: i === g.items.length - 1 ? "none" : `1px solid ${C.border}` }}>
             <div style={{ fontSize: 15, fontWeight: 800, color: C.ink, fontVariantNumeric: "tabular-nums" }}>{f.horaInicio || "—"}</div>
             <div>
               <div style={{ fontWeight: 700, fontSize: 13 }}>Lote {f.numLote} — Ref. {f.referencia}</div>
@@ -3619,7 +3645,7 @@ function ProgramadorProcesosView({
           </div>
         ))}
       </div>
-    ));
+    ))}</div>;
   }
   return (
     <div>
@@ -3733,39 +3759,56 @@ function ProgramadorProcesosView({
         {!movimientos && (
           <div style={{ fontSize: 11, color: C.amber, marginBottom: 14 }}>Todavía no se ha consultado el cumplimiento contra Busint en esta sesión (se actualiza desde Estadísticas o Mi Día) — mientras tanto, lo que ya esté registrado en Nómina de todos modos se ve Cumplido.</div>
         )}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 18, marginBottom: 28 }}>
-          <StatMini icon="📦" label="Pendientes por programar" value={pendientes.length} color={C.blue} bg={C.blueBg} />
-          <StatMini icon="⏳" label="Programados — en tiempo" value={pendientesProg.length} color={C.amber} bg={C.amberBg} />
-          <StatMini icon="✅" label="Cumplidos" value={cumplidos.length} color={C.green} bg={C.greenBg} />
-          <StatMini icon="⚠️" label="Vencidos" value={vencidos.length} color={C.red} bg={C.redBg} />
-        </div>
-        <div style={{ marginBottom: 28 }}>
-          <div style={{ fontWeight: 800, fontSize: 14, color: C.ink, marginBottom: 10 }}>☀️ Hoy — {fmtFechaISO(today())}</div>
-          {renderTarjetasProgramacion(gruposHoyPorTrabajador, "No tienes nada programado para hoy.")}
-        </div>
-        <div style={{ marginBottom: 28 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-            <div style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>Bodega de tu proceso — pendiente de programar</div>
-            <select value={filtroProceso} onChange={(e) => setFiltroProceso(e.target.value)} style={{ padding: "5px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12, fontFamily: "inherit" }}>
-              <option value="">Todos tus procesos</option>
-              {misProcesos.map((p) => <option key={p} value={p}>{p}</option>)}
-            </select>
-            <select value={filtroEstadoProgramado} onChange={(e) => setFiltroEstadoProgramado(e.target.value)} style={{ padding: "5px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12, fontFamily: "inherit" }}>
-              <option value="">Programados y sin programar</option>
-              <option value="sin_programar">Solo sin programar</option>
-              <option value="programado">Solo ya programados</option>
-            </select>
+        <KpiFila items={[
+          { icon: "📦", label: "Pendientes por programar", value: pendientes.length, color: C.blue, bg: C.blueBg },
+          { icon: "⏳", label: "Programados en tiempo", value: pendientesProg.length, color: C.amber, bg: C.amberBg },
+          { icon: "⚠️", label: "Vencidos", value: vencidos.length, color: C.red, bg: C.redBg },
+          { icon: "✅", label: "Cumplidos", value: cumplidos.length, color: C.green, bg: C.greenBg },
+        ]} />
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+          <SubTab activo={vista === "hoy"} onClick={() => setVista("hoy")}>☀️ Hoy · {misProgramacionesHoy.length}</SubTab>
+          <SubTab activo={vista === "bodega"} onClick={() => setVista("bodega")}>Por programar · {pendientes.length}</SubTab>
+          <SubTab activo={vista === "programados"} onClick={() => setVista("programados")}>Programados · {pendientesProg.length}</SubTab>
+          <SubTab activo={vista === "vencidos"} onClick={() => setVista("vencidos")}>Vencidos · {vencidos.length}</SubTab>
+          <SubTab activo={vista === "historicos"} onClick={() => setVista("historicos")}>Cumplidos · {cumplidos.length}</SubTab>
+          <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <BuscadorMiDia value={busqueda} onChange={setBusqueda} />
+            {misProcesos.length > 1 && (
+              <select value={filtroProceso} onChange={(e) => setFiltroProceso(e.target.value)} style={{ padding: "6px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12, fontFamily: "inherit" }}>
+                <option value="">Todos mis procesos</option>
+                {misProcesos.map((p) => <option key={p} value={p}>{p}</option>)}
+              </select>
+            )}
+            {vista === "bodega" && (
+              <select value={filtroEstadoProgramado} onChange={(e) => setFiltroEstadoProgramado(e.target.value)} style={{ padding: "6px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12, fontFamily: "inherit" }}>
+                <option value="">Programados y sin programar</option>
+                <option value="sin_programar">Solo sin programar</option>
+                <option value="programado">Solo ya programados</option>
+              </select>
+            )}
           </div>
-          <TablaSuave vacio="No hay lotes pendientes en tus procesos ahora mismo." columnas={columnasPendientes} filas={pendientesMostrados} />
         </div>
-        <div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
-            {tabLotesBtn("programados", "Lotes programados", pendientesProg.length)}
-            {tabLotesBtn("vencidos", "Vencidos", vencidos.length)}
-            {tabLotesBtn("historicos", "Históricos", cumplidos.length)}
+        {vista === "hoy" && (
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 13, color: C.slate, marginBottom: 10 }}>☀️ Hoy — {fmtFechaISO(today())}</div>
+            {renderTarjetasProgramacion(gruposHoyPorTrabajador, "No tienes nada programado para hoy.")}
           </div>
-          {renderTarjetasProgramacion(gruposLotesPorTrabajador, vacioLotesTab)}
-        </div>
+        )}
+        {vista === "bodega" && (
+          <TablaSuave alto={520} vacio="No hay lotes pendientes en tus procesos ahora mismo." columnas={columnasPendientes} filas={pendientesMostrados} />
+        )}
+        {(vista === "programados" || vista === "vencidos" || vista === "historicos") && (
+          <div>
+            {renderTarjetasProgramacion(gruposLotesPorTrabajador, vacioLotesTab)}
+            {vista === "historicos" && filasLotesBase.length > 30 && (
+              <div style={{ marginTop: 12, textAlign: "center" }}>
+                <Btn small variant="secondary" onClick={() => setVerTodosHistoricos((v) => !v)}>
+                  {verTodosHistoricos ? "Ver solo los últimos 30" : `Ver los ${filasLotesBase.length} cumplidos`}
+                </Btn>
+              </div>
+            )}
+          </div>
+        )}
         </>
       )}
     </div>
@@ -3940,6 +3983,8 @@ export function ListaPorProgramarBloque({ currentUser, incrustado = true }) {
   const [tab, setTab] = useState("por_programar");
   const [filtroProceso, setFiltroProceso] = useState("");
   const [filtroPrioridad, setFiltroPrioridad] = useState("");
+  const [busqueda, setBusqueda] = useState("");
+  const [verTodosCumplidos, setVerTodosCumplidos] = useState(false);
   const [modal, setModal] = useState(null);
   const [fechaForm, setFechaForm] = useState(hoyBogotaISO());
   const [horaForm, setHoraForm] = useState("06:00");
@@ -3980,11 +4025,15 @@ export function ListaPorProgramarBloque({ currentUser, incrustado = true }) {
     [lotesActivos, procesos, programaciones, movimientos, hoy, prioPlanta]
   );
   const r = lista.resumen;
-  const filtrarProc = (f) => !filtroProceso || normProcesoProg(f.proceso) === normProcesoProg(filtroProceso);
+  const q = busqueda.trim().toLowerCase();
+  const filtrarProc = (f) =>
+    (!filtroProceso || normProcesoProg(f.proceso) === normProcesoProg(filtroProceso)) &&
+    (!q || [f.numLote, f.referencia, f.cliente, f.trabajadorNombre, f.proceso].some((v) => String(v ?? "").toLowerCase().includes(q)));
   const porProgramar = lista.porProgramar.filter(filtrarProc).filter((f) => !filtroPrioridad || f.prioridad === filtroPrioridad);
   const programados = lista.programados.filter(filtrarProc);
   const vencidos = lista.vencidos.filter(filtrarProc);
-  const cumplidos = lista.cumplidos.filter(filtrarProc).slice(0, 60);
+  const cumplidosTodos = lista.cumplidos.filter(filtrarProc);
+  const cumplidos = verTodosCumplidos ? cumplidosTodos : cumplidosTodos.slice(0, 30);
   async function actualizarCumplimiento() {
     setCargandoMov(true);
     try {
@@ -4036,12 +4085,7 @@ export function ListaPorProgramarBloque({ currentUser, incrustado = true }) {
     await fsDelete("planeacion_programacion_procesos", p.id);
   }
   function btnTab(id, label, n) {
-    const act = tab === id;
-    return (
-      <button key={id} onClick={() => setTab(id)} style={{ padding: "7px 14px", borderRadius: 8, border: `1px solid ${act ? C.ink : C.border}`, background: act ? C.ink : C.white, color: act ? "#fff" : C.slate, fontWeight: 800, fontSize: 12, cursor: "pointer" }}>
-        {label} ({n})
-      </button>
-    );
+    return <SubTab key={id} activo={tab === id} onClick={() => setTab(id)}>{label} · {n}</SubTab>;
   }
   const estiloSelect = { padding: "5px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12, fontFamily: "inherit" };
   const colsProgramados = [
@@ -4148,25 +4192,26 @@ export function ListaPorProgramarBloque({ currentUser, incrustado = true }) {
           Tu área todavía no tiene procesos asignados. Un administrador debe marcarlos en Nómina → Administrativo → Área Interna («{areaNombre || "tu área"}») para que aparezcan los lotes.
         </div>
       )}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 14, marginBottom: 20 }}>
-        <StatMini icon="📦" label={`Por programar · ${fmtNum(r.unidadesPorProgramar)} und`} value={r.porProgramar} color={C.blue} bg={C.blueBg} />
-        <StatMini icon="⏳" label={`Programados · ${r.programadosHoy} para hoy`} value={r.programados} color={C.amber} bg={C.amberBg} />
-        <StatMini icon="⚠️" label="Vencidos" value={r.vencidos} color={C.red} bg={C.redBg} />
-        <StatMini icon="✅" label="Cumplidos (Busint)" value={r.cumplidos} color={C.green} bg={C.greenBg} />
-      </div>
+      <KpiFila items={[
+        { icon: "📦", label: `Por programar · ${fmtNum(r.unidadesPorProgramar)} und`, value: r.porProgramar, color: C.blue, bg: C.blueBg },
+        { icon: "⏳", label: `Programados · ${r.programadosHoy} para hoy`, value: r.programados, color: C.amber, bg: C.amberBg },
+        { icon: "⚠️", label: "Vencidos", value: r.vencidos, color: C.red, bg: C.redBg },
+        { icon: "✅", label: "Cumplidos (Busint)", value: r.cumplidos, color: C.green, bg: C.greenBg },
+      ]} />
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
-        {btnTab("por_programar", "Por programar", lista.porProgramar.filter(filtrarProc).length)}
+        {btnTab("por_programar", "Por programar", porProgramar.length)}
         {btnTab("programados", "Programados", programados.length)}
         {btnTab("vencidos", "Vencidos", vencidos.length)}
-        {btnTab("cumplidos", "Cumplidos", cumplidos.length)}
+        {btnTab("cumplidos", "Cumplidos", cumplidosTodos.length)}
+        <span style={{ marginLeft: "auto" }}><BuscadorMiDia value={busqueda} onChange={setBusqueda} /></span>
         {procesos.length > 1 && (
-          <select value={filtroProceso} onChange={(e) => setFiltroProceso(e.target.value)} style={{ ...estiloSelect, marginLeft: "auto" }}>
+          <select value={filtroProceso} onChange={(e) => setFiltroProceso(e.target.value)} style={estiloSelect}>
             <option value="">Todos mis procesos</option>
             {procesos.map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
         )}
         {tab === "por_programar" && (
-          <select value={filtroPrioridad} onChange={(e) => setFiltroPrioridad(e.target.value)} style={{ ...estiloSelect, marginLeft: procesos.length > 1 ? 0 : "auto" }}>
+          <select value={filtroPrioridad} onChange={(e) => setFiltroPrioridad(e.target.value)} style={estiloSelect}>
             <option value="">Todas las prioridades</option>
             <option value="Alta">Alta</option>
             <option value="Media">Media</option>
@@ -4174,10 +4219,19 @@ export function ListaPorProgramarBloque({ currentUser, incrustado = true }) {
           </select>
         )}
       </div>
-      {tab === "por_programar" && <TablaSuave vacio="No tienes lotes pendientes por programar. ¡Todo programado!" columnas={colsPorProgramar} filas={porProgramar} />}
-      {tab === "programados" && <TablaSuave vacio="No hay lotes programados en tiempo." columnas={colsProgramados} filas={programados} />}
-      {tab === "vencidos" && <TablaSuave vacio="No hay lotes vencidos." columnas={colsProgramados} filas={vencidos} />}
-      {tab === "cumplidos" && <TablaSuave vacio="Todavía no hay lotes cumplidos en Busint." columnas={colsCumplidos} filas={cumplidos} />}
+      {tab === "por_programar" && <TablaSuave alto={520} vacio="No tienes lotes pendientes por programar. ¡Todo programado!" columnas={colsPorProgramar} filas={porProgramar} />}
+      {tab === "programados" && <TablaSuave alto={520} vacio="No hay lotes programados en tiempo." columnas={colsProgramados} filas={programados} />}
+      {tab === "vencidos" && <TablaSuave alto={520} vacio="No hay lotes vencidos." columnas={colsProgramados} filas={vencidos} />}
+      {tab === "cumplidos" && (
+        <>
+          <TablaSuave alto={520} vacio="Todavía no hay lotes cumplidos en Busint." columnas={colsCumplidos} filas={cumplidos} />
+          {cumplidosTodos.length > 30 && (
+            <div style={{ marginTop: 12, textAlign: "center" }}>
+              <Btn small variant="secondary" onClick={() => setVerTodosCumplidos((v) => !v)}>{verTodosCumplidos ? "Ver solo los últimos 30" : `Ver los ${cumplidosTodos.length} cumplidos`}</Btn>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }

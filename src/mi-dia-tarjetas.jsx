@@ -202,11 +202,30 @@ function BloqueCierre({ db, currentUser }) {
   );
 }
 
-// Pantalla «☀️ Mi Día» por tarjetas: junta, una debajo de otra, las piezas que el administrador marcó para este usuario.
+// Pantalla «☀️ Mi Día» por tarjetas: una barra de pestañas con UNA sección a la vez (en vez de apilar todo y obligar a bajar),
+// solo con las piezas que el administrador marcó para este usuario.
 export default function MiDiaTarjetasStandalone({ db, currentUser, onVolver, onLogout }) {
   const marcadas = currentUser?.tarjetasMiDia || [];
   const hayCierre = marcadas.some((id) => IDS_CIERRE.includes(id));
   const idsPlaneacion = marcadas.filter((id) => IDS_PLANEACION.includes(id));
+  const secciones = [];
+  if (marcadas.includes("programador")) {
+    secciones.push({ id: "programador", icon: "📋", label: "Programación", render: () => <ProgramadorProcesosStandalone currentUser={currentUser} incrustado /> });
+  }
+  if (marcadas.includes("lista_programar")) {
+    secciones.push({ id: "lista", icon: "📝", label: "Mi lista por programar", render: () => <ListaPorProgramarBloque currentUser={currentUser} /> });
+  }
+  if (hayCierre) {
+    secciones.push({ id: "cierre", icon: "💰", label: "Cierre diario", render: () => <BloqueCierre db={db} currentUser={currentUser} /> });
+  }
+  if (idsPlaneacion.length) {
+    secciones.push({ id: "planeacion", icon: "📊", label: "Planeación", render: () => <MiDiaPlaneacionBloque visibles={idsPlaneacion} /> });
+  }
+  if (marcadas.includes("auditoria_nomina")) {
+    secciones.push({ id: "auditoria", icon: "🔍", label: "Auditoría Nómina", render: () => <MiDiaNominaStandalone currentUser={currentUser} incrustado /> });
+  }
+  const [elegida, setElegida] = useState(null);
+  const actual = secciones.find((x) => x.id === elegida) || secciones[0];
   return (
     <div style={{ minHeight: "100vh", background: C.canvas, fontFamily: "'Inter',-apple-system,sans-serif" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "16px 32px", background: C.ink }}>
@@ -214,28 +233,26 @@ export default function MiDiaTarjetasStandalone({ db, currentUser, onVolver, onL
         <div style={{ flex: 1, fontSize: 14, fontWeight: 800, color: C.white }}>☀️ Mi Día — {currentUser?.name}</div>
         {onLogout && <button onClick={onLogout} style={{ background: "transparent", border: "none", cursor: "pointer", color: "rgba(232,93,74,0.85)", fontWeight: 700, fontSize: 12 }}>⏏ Cerrar sesión</button>}
       </div>
-      <div style={{ padding: "28px 32px" }}>
+      <div style={{ padding: "22px 32px" }}>
         <div style={{ maxWidth: 1400, margin: "0 auto" }}>
-          <h1 style={{ margin: "0 0 14px", fontSize: 28, fontWeight: 900, color: C.ink }}>☀️ Mi Día</h1>
-          {hayCierre ? <BloqueCierre db={db} currentUser={currentUser} /> : null}
-          {idsPlaneacion.length ? (
-            <div style={{ marginBottom: 18 }}>
-              <MiDiaPlaneacionBloque visibles={idsPlaneacion} />
+          <h1 style={{ margin: "0 0 14px", fontSize: 26, fontWeight: 900, color: C.ink }}>☀️ Mi Día</h1>
+          {secciones.length > 1 && (
+            <div style={{ display: "inline-flex", flexWrap: "wrap", gap: 4, padding: 5, background: "#EFE9E1", borderRadius: 14, marginBottom: 18 }}>
+              {secciones.map((x) => {
+                const act = actual && actual.id === x.id;
+                return (
+                  <button
+                    key={x.id}
+                    onClick={() => setElegida(x.id)}
+                    style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 18px", borderRadius: 10, border: "none", background: act ? C.white : "transparent", color: act ? C.ink : "#5A5A7A", fontWeight: 800, fontSize: 13, cursor: "pointer", boxShadow: act ? "0 1px 4px rgba(15,15,25,0.10)" : "none", fontFamily: "inherit" }}
+                  >
+                    <span style={{ fontSize: 15 }}>{x.icon}</span> {x.label}
+                  </button>
+                );
+              })}
             </div>
-          ) : null}
-          {marcadas.includes("lista_programar") ? <ListaPorProgramarBloque currentUser={currentUser} /> : null}
-          {marcadas.includes("programador") ? (
-            <div style={{ marginBottom: 18 }}>
-              <div style={{ fontSize: 17, fontWeight: 800, color: C.ink, marginBottom: 10 }}>📋 Mi programación de procesos</div>
-              <ProgramadorProcesosStandalone currentUser={currentUser} incrustado />
-            </div>
-          ) : null}
-          {marcadas.includes("auditoria_nomina") ? (
-            <div style={{ marginBottom: 18 }}>
-              <div style={{ fontSize: 17, fontWeight: 800, color: C.ink, marginBottom: 10 }}>Auditoría Busint vs Nómina</div>
-              <MiDiaNominaStandalone currentUser={currentUser} incrustado />
-            </div>
-          ) : null}
+          )}
+          {actual ? <div key={actual.id}>{actual.render()}</div> : null}
         </div>
       </div>
     </div>
