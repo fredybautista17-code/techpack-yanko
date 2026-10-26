@@ -7,6 +7,7 @@ import {
   setDoc,
   deleteDoc,
   onSnapshot,
+  getDocs,
 } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
@@ -14,6 +15,7 @@ import CentroCostoCorteEnAreas, { CentroCostoCierreCorte } from "./modulo-corte-
 import CentroCostoAnioPanel from "./centro-costo-historico";
 import { cargaEntradasActivaDe } from "./entradas-planta-util";
 import ProyeccionAreasView from "./proyeccion-areas";
+import { num as numCotizador } from "./cotizador-calculo";
 import { DevolucionesCalidadView } from "./devoluciones-cliente";
 import { claveArea as claveAreaHistorico } from "./centro-costo-historico-parser";
 const firebaseConfig = {
@@ -1641,7 +1643,65 @@ function BloqueBPT({ data }) {
 function normalizarRef(v) {
   return String(v || "").trim().toUpperCase().replace(/[-\s]/g, "");
 }
+// ─── PRECIO DE CONFECCIÓN DE LA COTIZACIÓN APROBADA ───────────────────────────
+// (2026-10-26, a pedido de Fredy) Cuando una referencia no tiene entradas a talleres, se muestra el valor del
+// proceso "Confección" de su cotización APROBADA en ATLAS (solo la MISMA referencia, sin la vinculada).
+// Por cada cotización se toma la última versión aprobada. Solo se lee Firestore ("cotizaciones").
+let cacheConfeccionCotizada = null; // { en, mapa }
+async function cargarConfeccionCotizada() {
+  if (cacheConfeccionCotizada && Date.now() - cacheConfeccionCotizada.en < 5 * 60 * 1000) return cacheConfeccionCotizada.mapa;
+  const snap = await getDocs(collection(db, "cotizaciones"));
+  const mapa = new Map();
+  snap.docs.forEach((d) => {
+    const c = d.data() || {};
+    const k = normalizarRef(c.referencia);
+    if (!k) return;
+    const aprobadas = (c.versiones || []).filter((v) => v?.estado === "aprobada");
+    if (!aprobadas.length) return;
+    const ver = [...aprobadas].sort((a, b) => String(b.decision?.fecha || "").localeCompare(String(a.decision?.fecha || "")) || (Number(b.numero) || 0) - (Number(a.numero) || 0))[0];
+    const proc = (ver.v?.procesos || []).find((p) => String(p?.nombre || "").normalize("NFD").replace(/[̀-ͯ]/g, "").trim().toLowerCase() === "confeccion");
+    const valor = numCotizador(proc?.valor);
+    if (!(valor > 0)) return;
+    if (!mapa.has(k)) mapa.set(k, []);
+    mapa.get(k).push({ id: d.id, cliente: c.cliente || "General", referencia: c.referencia, version: ver.numero, fecha: String(ver.decision?.fecha || "").slice(0, 10), valor });
+  });
+  mapa.forEach((lista) => lista.sort((a, b) => b.fecha.localeCompare(a.fecha)));
+  cacheConfeccionCotizada = { en: Date.now(), mapa };
+  return mapa;
+}
+function useConfeccionCotizada() {
+  const [mapa, setMapa] = useState(cacheConfeccionCotizada ? cacheConfeccionCotizada.mapa : null);
+  useEffect(() => {
+    let vivo = true;
+    cargarConfeccionCotizada().then((m) => { if (vivo) setMapa(m); }).catch(() => { if (vivo) setMapa(new Map()); });
+    return () => { vivo = false; };
+  }, []);
+  return mapa;
+}
+function CotizacionConfeccionBox({ items, referencia, onUsar }) {
+  if (!items || !items.length) return null;
+  return (
+    <div style={{ marginBottom: 16, padding: "10px 12px", background: C.blueBg, borderRadius: 8, border: `1px solid ${C.border}` }}>
+      <div style={{ fontSize: 10, fontWeight: 800, color: C.ink, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+        📄 Cotización aprobada · {referencia}
+      </div>
+      {items.map((it) => (
+        <div key={it.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6, fontSize: 12, padding: "5px 0" }}>
+          <span style={{ color: C.slate }}>{it.cliente} · V{it.version}{it.fecha ? ` · aprobada ${fmtFechaISO(it.fecha)}` : ""}</span>
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontWeight: 800, color: C.blue }}>Confección ${fmtNum(it.valor)}</span>
+            {onUsar ? (
+              <button type="button" onClick={() => onUsar(it.valor)} style={{ fontSize: 11, color: C.blue, background: "none", border: "none", cursor: "pointer", textDecoration: "underline", padding: 0 }}>usar</button>
+            ) : null}
+          </span>
+        </div>
+      ))}
+      <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>No es una entrada real: es el valor del proceso «Confección» de la cotización aprobada para esta misma referencia.</div>
+    </div>
+  );
+}
 function VerificadorPrecioTalleresView({ entradas }) {
+  const cotizadas = useConfeccionCotizada();
   const [busqueda, setBusqueda] = useState("");
   // (2026-09-25, a pedido de Fredy) Fuente EN VIVO desde Busint, además de
   // las Entradas de Planta subidas a mano (que siguen igual, abajo). Se
@@ -1758,6 +1818,9 @@ function VerificadorPrecioTalleresView({ entradas }) {
               )}
             </div>
           )}
+          {!resultado.length && !resultadoBusint.length && cotizadas && (cotizadas.get(normalizarRef(busqueda)) || []).length > 0 && (
+            <CotizacionConfeccionBox items={cotizadas.get(normalizarRef(busqueda))} referencia={busqueda.trim().toUpperCase()} />
+          )}
           <div style={{ fontSize: 12.5, fontWeight: 800, color: C.ink, marginBottom: 8 }}>Entradas de Planta (subidas a mano)</div>
           {!entradas.length ? (
             <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13, background: C.canvas, borderRadius: 12, border: `1px dashed ${C.border}` }}>
@@ -1807,6 +1870,7 @@ function VerificadorPrecioTalleresView({ entradas }) {
 // Firestore ("planeacion_programacion_bmp") para que quede el registro
 // aunque cambie la carga de Hoja1.
 function ProgramarLoteBMPModal({ lote, existente, plantas, entradasTalleres, onConfirm, onClose }) {
+  const cotizadas = useConfeccionCotizada();
   const [refBuscada, setRefBuscada] = useState(lote.referencia || "");
   const [planta, setPlanta] = useState(existente?.plantaDestino || "");
   const [fecha, setFecha] = useState(existente?.fechaProgramada || today());
@@ -1819,6 +1883,7 @@ function ProgramarLoteBMPModal({ lote, existente, plantas, entradasTalleres, onC
       .sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""))
       .slice(0, 5);
   }, [entradasTalleres, refBuscada]);
+  const cotizacionesRef = !historial.length && cotizadas ? cotizadas.get(normalizarRef(refBuscada)) || [] : [];
   const valorLote = Number(precioConfeccion || 0) * Number(lote.cantidadBMP || 0);
   function confirmar() {
     if (!planta.trim() || !fecha) return;
@@ -1864,6 +1929,13 @@ function ProgramarLoteBMPModal({ lote, existente, plantas, entradasTalleres, onC
             </div>
           ))}
         </div>
+      ) : cotizacionesRef.length > 0 ? (
+        <>
+          <div style={{ fontSize: 11, color: C.slate, marginBottom: 8 }}>
+            Sin entradas registradas para "{refBuscada}": se muestra lo que quedó en la cotización aprobada.
+          </div>
+          <CotizacionConfeccionBox items={cotizacionesRef} referencia={refBuscada.trim().toUpperCase()} onUsar={(valor) => setPrecioConfeccion(valor)} />
+        </>
       ) : !(entradasTalleres || []).length ? (
         <div style={{ fontSize: 11, color: C.slate, marginBottom: 16 }}>
           Aún no hay ninguna carga de "Entradas de Planta" subida (se sube desde el módulo Planta) — por eso no hay historial para ninguna referencia todavía. Esto no impide programar el lote.
