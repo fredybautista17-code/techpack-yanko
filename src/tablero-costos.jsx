@@ -11,6 +11,7 @@ import { collection, getDocs } from "firebase/firestore";
 import { useCentroCostoDatos } from "./centro-costo-historico";
 import { AREAS_HISTORICO } from "./centro-costo-historico-parser";
 import { cotizadoVsReal, resumenAreaMes } from "./costos-calculo";
+import CierreDiarioView from "./cierre-diario";
 
 const C = {
   ink: "#1A1A2E", slate: "#5A5A7A", border: "#E8E2DB", canvas: "#F7F4F0", white: "#FFFFFF",
@@ -58,7 +59,7 @@ function Chip({ activo, onClick, children }) {
 const th = { padding: "8px 10px", fontSize: 11, fontWeight: 800, color: C.slate, textTransform: "uppercase", letterSpacing: 0.3, textAlign: "right", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap", background: C.white };
 const td = { padding: "9px 10px", fontSize: 13, color: C.ink, textAlign: "right", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" };
 
-export default function TableroCostosView({ db }) {
+function ManoDeObraYCotizaciones({ db }) {
   const hoy = useMemo(() => new Date(Date.now() - 5 * 3600 * 1000), []);
   const [anio, setAnio] = useState(hoy.getUTCFullYear());
   const [mes, setMes] = useState(hoy.getUTCMonth() + 1);
@@ -262,6 +263,21 @@ export default function TableroCostosView({ db }) {
       <div style={{ background: C.amberBg, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 16px", fontSize: 13, color: C.amber, fontWeight: 600, lineHeight: 1.5 }}>
         Próximas versiones: materiales por comprar (con su costo), trabajo en curso frente a su costo estimado y los costos de Confección y Terminación.
       </div>
+    </div>
+  );
+}
+
+// (2026-10-26) Dos pestañas: el cierre diario por área (para la persona encargada de costos) y lo que ya había
+// (mano de obra por mes y cotizado frente a real).
+export default function TableroCostosView({ db }) {
+  const [pestana, setPestana] = useState("cierre");
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+        <Chip activo={pestana === "cierre"} onClick={() => setPestana("cierre")}>Cierre diario</Chip>
+        <Chip activo={pestana === "analisis"} onClick={() => setPestana("analisis")}>Mano de obra y cotizaciones</Chip>
+      </div>
+      {pestana === "cierre" ? <CierreDiarioView db={db} /> : <ManoDeObraYCotizaciones db={db} />}
     </div>
   );
 }

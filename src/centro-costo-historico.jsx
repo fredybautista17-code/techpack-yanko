@@ -570,37 +570,35 @@ export function useCentroCostoDatos(anioSel, claveSel) {
   const incluir = useMemo(() => (t) => t.area === "CORTE" || !fichas.length || tiposDestajo.has(t.id), [fichas, tiposDestajo]);
   const cierresResueltos = useMemo(() => unificarTrabajadoresRepetidos(resolverCierres(cierres, incluir)), [cierres, incluir]);
 
-  // CORTE en vivo por mes (cortes registrados en ATLAS + sueldos de la nómina de corte)
-  const corteVivo = useMemo(() => {
-    const meses = {};
+  // (2026-10-26) Se arma por año para que el Tablero de costos también pueda leer años anteriores (Total).
+  // Para un año, devuelve una lectura por área y mes: { valor, costo, unidades, fuente }.
+  const construirDatosArea = useMemo(() => (anio, claveExtra) => {
+    // CORTE en vivo por mes (cortes registrados en ATLAS + sueldos de la nómina de corte)
+    const corteVivo = {};
     pedidos.forEach((p) => {
       (p.cortesRealizados || []).forEach((c) => {
         const f = String(c.fecha || "");
-        if (f.slice(0, 4) !== String(anioSel)) return;
+        if (f.slice(0, 4) !== String(anio)) return;
         const m = Number(f.slice(5, 7));
         if (!m) return;
-        if (!meses[m]) meses[m] = { valor: 0, unidades: 0 };
-        meses[m].valor += Number(c.ingresoCorte) || 0;
-        meses[m].unidades += Number(c.totalUnidades) || 0;
+        if (!corteVivo[m]) corteVivo[m] = { valor: 0, unidades: 0 };
+        corteVivo[m].valor += Number(c.ingresoCorte) || 0;
+        corteVivo[m].unidades += Number(c.totalUnidades) || 0;
       });
     });
-    Object.keys(meses).forEach((m) => {
-      const mk = `${anioSel}-${String(m).padStart(2, "0")}`;
-      meses[m].costo = trabajadoresCorte.filter((t) => !t.fechaSalida || mk <= String(t.fechaSalida).slice(0, 7)).reduce((s, t) => s + (Number(t.sueldo) || 0), 0);
+    Object.keys(corteVivo).forEach((m) => {
+      const mk = `${anio}-${String(m).padStart(2, "0")}`;
+      corteVivo[m].costo = trabajadoresCorte.filter((t) => !t.fechaSalida || mk <= String(t.fechaSalida).slice(0, 7)).reduce((s, t) => s + (Number(t.sueldo) || 0), 0);
     });
-    return meses;
-  }, [pedidos, trabajadoresCorte, anioSel]);
-
-  // Una lectura por área y mes: { valor, costo, unidades, fuente }
-  const datosArea = useMemo(() => {
+    // Una lectura por área y mes: { valor, costo, unidades, fuente }
     const out = {};
-    const claves = new Set([...AREAS_HISTORICO.map((a) => a.clave), claveSel]);
+    const claves = new Set([...AREAS_HISTORICO.map((a) => a.clave), claveExtra]);
     claves.forEach((clave) => {
       const meses = {};
       for (let m = 1; m <= 12; m++) {
-        const mk = `${anioSel}-${String(m).padStart(2, "0")}`;
+        const mk = `${anio}-${String(m).padStart(2, "0")}`;
         const vivo = clave === "CORTE" ? corteVivo[m] : null;
-        const h = historico.find((x) => x.clave === clave && x.anio === Number(anioSel) && x.mes === m);
+        const h = historico.find((x) => x.clave === clave && x.anio === Number(anio) && x.mes === m);
         const cierre = cierresResueltos.get(`${clave}|${mk}`);
         if (h && h.prioridad) meses[m] = { valor: Number(h.valor) || 0, costo: Number(h.costo) || 0, unidades: h.unidades, fuente: "historico" };
         else if (vivo && vivo.valor > 0) meses[m] = { valor: vivo.valor, costo: vivo.costo, unidades: vivo.unidades, fuente: "vivo" };
@@ -613,8 +611,9 @@ export function useCentroCostoDatos(anioSel, claveSel) {
       out[clave] = { meses, valor, costo, cobertura: costo > 0 ? (valor / costo) * 100 : 0, mesesConDato: lista.length };
     });
     return out;
-  }, [historico, cierresResueltos, corteVivo, anioSel, claveSel]);
-  return { historico, cierres, pedidos, trabajadoresCorte, fichas, cargando, cierresResueltos, datosArea };
+  }, [historico, cierresResueltos, pedidos, trabajadoresCorte]);
+  const datosArea = useMemo(() => construirDatosArea(anioSel, claveSel), [construirDatosArea, anioSel, claveSel]);
+  return { historico, cierres, pedidos, trabajadoresCorte, fichas, cargando, cierresResueltos, datosArea, construirDatosArea, incluirTrabajador: incluir };
 }
 
 export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentUser, puedeCargar }) {
