@@ -4602,6 +4602,121 @@ exports.getVerificadorPrecioBusintGen = onCallAuth(
   }
 );
 
+// (2026-10-26, a pedido de Fredy) Costos REALES de un lote desde Busint, para
+// que "Ajustar costos reales" del Cotizador y el Dado por Cumplido dejen de
+// digitarse a mano. Es el informe de Gerencia "Histórico de lote": por cada
+// concepto (tela, insumo, mano de obra) el costo Teórico vs el Real del lote.
+// Validado a mano con el lote 7434 (ref 98-257): la suma de la columna "Real"
+// da $3.527.424 y es el mismo Costo Real Total que Contabilidad digitó en
+// Dado por Cumplido (por prenda: AMORELA $1.735.117 / 288 = $6.025).
+// Tabla: "lotes cumplidos teorico vs real valor" (la misma de
+// getVerificadorPrecioBusintGen, que solo se quedaba con MDEO). OJO: es una
+// HIPÓTESIS que esta tabla traiga TODOS los conceptos del informe; por eso
+// con `numLote` devuelve también los campos crudos para comprobarlo en
+// Administración → Busint (prueba) → "Costos reales de un lote".
+// Entradas: { numLote } (un lote) o { referencia, maxLotes } (últimos lotes
+// cumplidos de esa referencia). La API de Busint no filtra: se trae la tabla
+// completa y se filtra acá.
+exports.getCostosRealesLoteBusint = onCallAuth(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 540,
+    memory: "1GiB",
+  },
+  async (request) => {
+    await verificarLlamadorConModulos(request, ["cotizador_costos_reales", "contabilidad"], "los costos reales de los lotes");
+    const numLoteBuscado = String(request.data?.numLote ?? "").trim();
+    const refBuscada = String(request.data?.referencia ?? "").trim();
+    const maxLotes = Math.min(20, Math.max(1, Number(request.data?.maxLotes) || 8));
+    if (!numLoteBuscado && !refBuscada) throw new HttpsError("invalid-argument", "Indica el número de lote o la referencia.");
+    let todas;
+    try {
+      todas = await consultarTablaBusintBDCompleta("lotes cumplidos teorico vs real valor");
+    } catch (err) {
+      logger.error("Error consultando Busint BD (getCostosRealesLoteBusint)", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar Busint BD: ${err?.message || String(err)}`);
+    }
+    const normRefBuscada = normalizarRefComparacion(refBuscada);
+    const numero = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+    const porLote = new Map();
+    const crudos = new Map(); // lote -> primeras filas crudas (solo cuando se pide un lote)
+    todas.forEach((f) => {
+      const lote = String(f?.Numlote ?? f?.NumLote ?? "").trim();
+      if (!lote) return;
+      if (numLoteBuscado) {
+        if (lote !== numLoteBuscado) return;
+      } else if (normalizarRefComparacion(f?.Ref) !== normRefBuscada) return;
+      const concepto = String(f?.Concepto ?? "").trim();
+      if (!concepto) return;
+      if (!porLote.has(lote)) porLote.set(lote, { numLote: lote, ref: String(f?.Ref ?? "").trim(), fechaISO: null, nfact: null, conceptos: new Map() });
+      const l = porLote.get(lote);
+      const fecha = fechaBusintBDaDateSoloDia(f?.fecha);
+      const iso = fecha ? fecha.toISOString().slice(0, 10) : null;
+      if (iso && (!l.fechaISO || iso > l.fechaISO)) l.fechaISO = iso;
+      if (!l.nfact && f?.Nfact) l.nfact = f.Nfact;
+      if (!l.conceptos.has(concepto)) l.conceptos.set(concepto, { concepto, teorico: 0, real: 0, difer: 0, filas: 0, emp: null });
+      const c = l.conceptos.get(concepto);
+      c.teorico += numero(f?.Teorico);
+      c.real += numero(f?.Real);
+      c.difer += numero(f?.Difer);
+      c.filas += 1;
+      if (!c.emp && f?.emp) c.emp = f.emp;
+      if (numLoteBuscado) {
+        if (!crudos.has(lote)) crudos.set(lote, []);
+        if (crudos.get(lote).length < 40) {
+          crudos.get(lote).push(Object.fromEntries(Object.entries(f).filter(([, v]) => v !== null && v !== undefined && v !== "").map(([k, v]) => [k, typeof v === "object" ? JSON.stringify(v) : v])));
+        }
+      }
+    });
+    let lotes = [...porLote.values()].sort((a, b) => (b.fechaISO || "").localeCompare(a.fechaISO || "") || Number(b.numLote) - Number(a.numLote));
+    if (!numLoteBuscado) lotes = lotes.slice(0, maxLotes);
+    // Cantidad cortada y el Costo Real Total que Contabilidad ya digitó (si el lote existe en Dado por Cumplido).
+    const refsDpc = lotes.map((l) => db.collection("dado_por_cumplido_lotes").doc(`lote_${l.numLote}`));
+    const docsDpc = refsDpc.length ? await db.getAll(...refsDpc) : [];
+    const dpc = new Map();
+    docsDpc.forEach((d, i) => { if (d.exists) dpc.set(lotes[i].numLote, d.data()); });
+    // Lotes que no están en Dado por Cumplido: las prendas cortadas salen de "orden produccion detalles" (T2..T36).
+    const sinCantidad = lotes.filter((l) => !(Number(dpc.get(l.numLote)?.cantCortada) > 0));
+    const cantidadDetalle = new Map();
+    const avisos = [];
+    if (sinCantidad.length) {
+      try {
+        const det = await consultarTablaBusintBDCompleta("orden produccion detalles");
+        const buscados = new Set(sinCantidad.map((l) => l.numLote));
+        det.forEach((f) => {
+          const lote = String(f?.NumLote ?? f?.Numlote ?? "").trim();
+          if (!buscados.has(lote)) return;
+          const u = Object.keys(f).reduce((s, k) => (/^T\d+$/i.test(k) ? s + numero(f[k]) : s), 0);
+          cantidadDetalle.set(lote, (cantidadDetalle.get(lote) || 0) + u);
+        });
+      } catch (err) {
+        avisos.push(`No se pudo leer "orden produccion detalles" para la cantidad cortada de algunos lotes: ${err?.message || String(err)}`);
+      }
+    }
+    const salida = lotes.map((l) => {
+      const filas = [...l.conceptos.values()];
+      const d = dpc.get(l.numLote);
+      const cantDpc = Number(d?.cantCortada) || 0;
+      const cantCortada = cantDpc > 0 ? cantDpc : (cantidadDetalle.get(l.numLote) || 0);
+      return {
+        numLote: l.numLote,
+        ref: l.ref,
+        fechaISO: l.fechaISO,
+        nfact: l.nfact,
+        cantCortada,
+        fuenteCantidad: cantDpc > 0 ? "dado_por_cumplido" : cantidadDetalle.has(l.numLote) ? "orden produccion detalles" : null,
+        costoRealDado: d && Number(d.costoRealTotal) > 0 ? Number(d.costoRealTotal) : null,
+        totalTeorico: filas.reduce((s, c) => s + c.teorico, 0),
+        totalReal: filas.reduce((s, c) => s + c.real, 0),
+        filas,
+        crudos: numLoteBuscado ? crudos.get(l.numLote) || [] : undefined,
+      };
+    });
+    const campos = todas.length ? Object.keys(todas[0]) : [];
+    logger.info("getCostosRealesLoteBusint OK", { numLote: numLoteBuscado || null, referencia: refBuscada || null, lotes: salida.length });
+    return { ok: true, lotes: salida, campos, totalFilasTabla: todas.length, avisos, generadoEn: new Date().toISOString() };
+  }
+);
 // (2026-08-29) Fredy pidió ver, por lote, cuánto entró REALMENTE a cada
 // proceso (no lo que quedó pendiente, sino lo que Busint registró como
 // entrada) — validado a mano contra el lote 7250: "BAJADA DE VINILO" tenía

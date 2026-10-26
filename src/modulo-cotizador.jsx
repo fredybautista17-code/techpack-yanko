@@ -7,6 +7,7 @@ import {
   REGEX_INSUMO_TERMO, num, versionVacia, calcularCotizacion, parsearArchivoCotizacion,
 } from "./cotizador-calculo";
 import { descargarCotizacionesExcel, excelLibroBase64, CARPETA_DISENO } from "./cotizador-excel";
+import TraerRealesBusintModal from "./costos-reales-busint-vista";
 import {
   FILAS_VINILO, IMPREVISTOS_PCT, filasViniloVacias, calcularVinilo, aplicarInsumoAFila,
   tituloVinilo, mesLargo, descargarViniloExcel, baseVigente, aplicarBases, normalizarFilas, grupoFila,
@@ -354,6 +355,7 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
   const [factTipo, setFactTipo] = useState(inicial.facturacion?.tipo || "facturacion"); // formulario de facturación
   const [factNum, setFactNum] = useState(inicial.facturacion?.numero || "");
   const [modoReal, setModoReal] = useState(false); // viendo / editando los costos reales de la versión aprobada
+  const [realesBusint, setRealesBusint] = useState(false); // ventana "Traer costos reales de Busint" (precarga desde el informe de Gerencia)
   const [viniloGrande, setViniloGrande] = useState(() => { try { return localStorage.getItem("cotizador_vinilo_grande") === "1"; } catch (e) { return false; } }); // ventana de Vinilo / DTF en pantalla casi completa
   const alternarViniloGrande = () => setViniloGrande((g) => { try { localStorage.setItem("cotizador_vinilo_grande", g ? "0" : "1"); } catch (e) { /* sin almacenamiento */ } return !g; });
   const [viniloModal, setViniloModal] = useState(null); // {id} = hoja de Vinilo / DTF abierta sobre esta cotización
@@ -730,6 +732,20 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
     conEvento(n, `abrió los costos reales de la V${vv.numero} (el precio aprobado ${fmtCOP(precioAprobadoDe(n, vv))} queda fijo)`);
     await persistir(n, "Costos reales abiertos: cambia lo que haga falta, el precio aprobado no se mueve");
     setModoReal(true);
+    setRealesBusint(true); // (2026-10-26) precarga de una vez con lo real que quedó en Busint
+  }
+  // (2026-10-26, a pedido de Fredy) Aplica a la copia de costos reales lo que trajo el informe de Gerencia de Busint.
+  // Queda como cambio sin guardar: se revisa y se pulsa "Guardar versión".
+  function aplicarRealesBusint(nuevoV, info) {
+    mutar((n) => {
+      const vv = n.versiones[n.activa];
+      if (!vv.real) return;
+      vv.real.v = nuevoV;
+      vv.real.busint = { lote: String(info.lote), fechaCumplido: info.fechaCumplido, cantCortada: info.cantCortada, realPorPrenda: Math.round(info.realPorPrenda), por: usuario || "", fecha: new Date().toISOString() };
+      conEvento(n, `precargó los costos reales de la V${vv.numero} con el lote ${info.lote} de Busint (${fmtCOP(info.realPorPrenda)} por prenda)`);
+    });
+    setRealesBusint(false);
+    notify?.(`Costos reales cargados del lote ${info.lote}. Revísalos y pulsa «Guardar versión».`);
   }
   async function proponerNuevoPrecio() {
     const rr1 = resumenCostosReales(cot, verBase, umbralDeCliente(parametros, cot.cliente));
@@ -834,7 +850,13 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
             <b style={{ color: C.blue }}>Costos reales de la V{ver.numero}.</b> El precio de venta aprobado ({fmtCOP(precioAprobadoDe(cot, verBase))}) queda <b>fijo</b>: aquí se ajustan los costos (consumos, precios, procesos) con lo que realmente salió, y a la derecha se ve cuánto cambia la utilidad.
             {!puedeCostosReales && " Estás en modo consulta."}
           </div>
+          {puedeCostosReales && <button onClick={() => setRealesBusint(true)} title="Trae de Busint lo que de verdad costó cada concepto en los últimos lotes cumplidos de esta referencia" style={btn(C.blue, C.white)}>⬇ Traer costos reales de Busint</button>}
           <button onClick={() => setModoReal(false)} style={btn(C.white, C.blue, C.blue)}>← Volver a la versión aprobada</button>
+        </div>
+      )}
+      {enReal && verBase.real?.busint && (
+        <div style={{ fontSize: 12, color: C.slate, margin: "-6px 0 12px 4px" }}>
+          Precargado de Busint · lote {verBase.real.busint.lote}{verBase.real.busint.fechaCumplido ? ` (cumplido ${fmtFecha(verBase.real.busint.fechaCumplido)})` : ""} · {fmtCOP(verBase.real.busint.realPorPrenda)} por prenda{verBase.real.busint.por ? ` · ${verBase.real.busint.por}` : ""}
         </div>
       )}
       {estadoV === "aprobada" && !enReal && (
@@ -1208,6 +1230,9 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
         </div>
       </div>
 
+      {realesBusint && verBase.real && (
+        <TraerRealesBusintModal referencia={cot.referencia} v={verBase.real.v} functionsClient={functionsClient} C={C} onAplicar={aplicarRealesBusint} onCerrar={() => setRealesBusint(false)} />
+      )}
       {telaBusint !== null && telas[telaBusint] && (
         <ModalTelaBusint inicial={telas[telaBusint].material} rendimiento={telas[telaBusint].rendimiento} onClose={() => setTelaBusint(null)}
           onElegir={(r) => { setV((v) => { Object.assign(v.telas[telaBusint], r); }); setTelaBusint(null); }} />

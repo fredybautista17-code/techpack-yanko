@@ -14233,6 +14233,27 @@ function BusintCatalogoTestView() {
       setCargandoInventarioGen(false);
     }
   }
+  // (2026-10-26, a pedido de Fredy) Diagnóstico: costos REALES de un lote
+  // desde Busint (informe de Gerencia "Histórico de lote"), para comprobar
+  // que la tabla "lotes cumplidos teorico vs real valor" trae todos los
+  // conceptos y que la suma da el Costo Real Total de Dado por Cumplido.
+  const [buscarCostosLote, setBuscarCostosLote] = useState("");
+  const [cargandoCostosLote, setCargandoCostosLote] = useState(false);
+  const [costosRealesLote, setCostosRealesLote] = useState(null);
+  async function consultarCostosRealesLote() {
+    const numLote = buscarCostosLote.trim();
+    if (!numLote) return;
+    setCargandoCostosLote(true);
+    setCostosRealesLote(null);
+    try {
+      const resp = await httpsCallable(functionsClient, "getCostosRealesLoteBusint", { timeout: 540000 })({ numLote });
+      setCostosRealesLote(resp.data);
+    } catch (err) {
+      setCostosRealesLote({ error: err?.message || "No se pudo consultar los costos reales del lote." });
+    } finally {
+      setCargandoCostosLote(false);
+    }
+  }
   // (2026-08-26) Diagnóstico rápido para el aviso de tela por color en
   // Corte: buscar, dentro de "estandar componentes prod", todas las filas
   // de un nombre de tela puntual (ej. "MARLY") y ver de un vistazo qué pinta
@@ -14932,6 +14953,87 @@ function BusintCatalogoTestView() {
               </details>
             </>
           )}
+        </div>
+      )}
+      <div style={{ height: 1, background: T.border, margin: "24px 0" }} />
+      <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Costos reales de un lote (Gerencia · Histórico de lote)</div>
+      <div style={{ fontSize: 13, color: T.slate, marginBottom: 16 }}>
+        Escribe el número de lote (ej. 7434). Trae, de la tabla "lotes cumplidos teorico vs real valor", cada concepto con su costo Teórico y Real, la suma y el costo por prenda. Compáralo con el informe de Busint: la suma de "Real" debe dar el Costo Real Total de Dado por Cumplido.
+      </div>
+      <div style={{ display: "flex", gap: 10, marginBottom: 16, maxWidth: 520 }}>
+        <FInput value={buscarCostosLote} onChange={setBuscarCostosLote} placeholder="Ej: 7434" />
+        <Btn onClick={consultarCostosRealesLote} disabled={cargandoCostosLote || !buscarCostosLote.trim()}>{cargandoCostosLote ? "Consultando... (trae tablas completas)" : "🔍 Consultar lote"}</Btn>
+      </div>
+      {costosRealesLote && (
+        <div style={{ marginBottom: 24, padding: 16, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
+          {costosRealesLote.error ? (
+            <div style={{ color: T.coral, fontSize: 13, fontWeight: 600 }}>⚠ {costosRealesLote.error}</div>
+          ) : costosRealesLote.lotes.length === 0 ? (
+            <div style={{ fontSize: 13, color: T.slate }}>Ese lote no aparece en "lotes cumplidos teorico vs real valor" ({costosRealesLote.totalFilasTabla} filas en la tabla). Puede que todavía no esté cumplido.</div>
+          ) : (
+            costosRealesLote.lotes.map((l) => {
+              const fmt = (n) => Math.round(Number(n) || 0).toLocaleString("es-CO");
+              const porPrenda = (n) => (l.cantCortada > 0 ? Math.round((Number(n) || 0) / l.cantCortada).toLocaleString("es-CO") : "—");
+              return (
+                <div key={l.numLote}>
+                  <div style={{ fontSize: 13, color: T.ink, marginBottom: 8 }}>
+                    <b>Lote {l.numLote}</b> · Ref {l.ref || "—"} · cumplido {l.fechaISO || "—"} · {l.cantCortada > 0 ? `${l.cantCortada} cortadas (${l.fuenteCantidad})` : "sin cantidad cortada"}
+                  </div>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                    <thead>
+                      <tr style={{ borderBottom: `1px solid ${T.border}` }}>
+                        <th style={{ textAlign: "left", padding: "6px 8px" }}>Concepto</th>
+                        <th style={{ textAlign: "right", padding: "6px 8px" }}>Teórico lote</th>
+                        <th style={{ textAlign: "right", padding: "6px 8px" }}>Real lote</th>
+                        <th style={{ textAlign: "right", padding: "6px 8px" }}>Difer.</th>
+                        <th style={{ textAlign: "right", padding: "6px 8px" }}>Real por prenda</th>
+                        <th style={{ textAlign: "right", padding: "6px 8px" }}>Variación</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {l.filas.map((c) => (
+                        <tr key={c.concepto} style={{ borderBottom: `1px solid ${T.border}` }}>
+                          <td style={{ padding: "6px 8px" }}>{c.concepto}</td>
+                          <td style={{ padding: "6px 8px", textAlign: "right" }}>{fmt(c.teorico)}</td>
+                          <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700 }}>{fmt(c.real)}</td>
+                          <td style={{ padding: "6px 8px", textAlign: "right" }}>{fmt(c.difer)}</td>
+                          <td style={{ padding: "6px 8px", textAlign: "right" }}>{porPrenda(c.real)}</td>
+                          <td style={{ padding: "6px 8px", textAlign: "right" }}>{c.teorico ? `${(((c.real - c.teorico) / c.teorico) * 100).toFixed(1)}%` : "—"}</td>
+                        </tr>
+                      ))}
+                      <tr style={{ fontWeight: 800 }}>
+                        <td style={{ padding: "8px" }}>TOTAL</td>
+                        <td style={{ padding: "8px", textAlign: "right" }}>{fmt(l.totalTeorico)}</td>
+                        <td style={{ padding: "8px", textAlign: "right" }}>{fmt(l.totalReal)}</td>
+                        <td style={{ padding: "8px", textAlign: "right" }}>{fmt(l.totalReal - l.totalTeorico)}</td>
+                        <td style={{ padding: "8px", textAlign: "right" }}>{porPrenda(l.totalReal)}</td>
+                        <td style={{ padding: "8px" }} />
+                      </tr>
+                    </tbody>
+                  </table>
+                  <div style={{ marginTop: 10, fontSize: 13, fontWeight: 700, color: l.costoRealDado == null ? T.slate : Math.abs(l.costoRealDado - l.totalReal) <= 2 ? T.jade : T.coral }}>
+                    {l.costoRealDado == null
+                      ? "Este lote todavía no tiene Costo Real Total digitado en Dado por Cumplido."
+                      : Math.abs(l.costoRealDado - l.totalReal) <= 2
+                        ? `✔ Coincide con el Costo Real Total de Dado por Cumplido ($${fmt(l.costoRealDado)}).`
+                        : `⚠ Dado por Cumplido tiene $${fmt(l.costoRealDado)} y la suma de Busint da $${fmt(l.totalReal)} (diferencia $${fmt(l.totalReal - l.costoRealDado)}).`}
+                  </div>
+                  <details style={{ marginTop: 12 }}>
+                    <summary style={{ cursor: "pointer", fontSize: 13, fontWeight: 700, color: T.coral }}>Campos crudos de la tabla (diagnóstico)</summary>
+                    <div style={{ fontSize: 11, marginTop: 8, lineHeight: 1.5 }}>Columnas de la tabla: {(costosRealesLote.campos || []).join(", ")}</div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
+                      {(l.crudos || []).map((f, i) => (
+                        <div key={i} style={{ padding: 8, border: `1px solid ${T.border}`, borderRadius: 8, fontSize: 11, lineHeight: 1.5, wordBreak: "break-word" }}>
+                          {Object.entries(f).map(([k, v]) => (<span key={k} style={{ display: "inline-block", marginRight: 10 }}><b>{k}</b>={String(v)}</span>))}
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                </div>
+              );
+            })
+          )}
+          {(costosRealesLote.avisos || []).map((a, i) => (<div key={i} style={{ marginTop: 8, fontSize: 12, color: T.coral }}>⚠ {a}</div>))}
         </div>
       )}
       <div style={{ height: 1, background: T.border, margin: "24px 0" }} />
