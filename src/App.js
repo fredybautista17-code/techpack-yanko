@@ -5,7 +5,7 @@ import ModuloContabilidad from "./modulo-contabilidad";
 import AsistenteAtlas from "./asistente-atlas";
 import ModuloPlaneacion, { MiDiaStandalone, ProgramadorProcesosStandalone, AreasStandalone, MiDiaNominaStandalone } from "./modulo-planeacion";
 import MiDiaTarjetasStandalone from "./mi-dia-tarjetas";
-import { TARJETAS_MI_DIA, TARJETAS_DEFECTO_MIDIA, claveCierreDeArea } from "./mi-dia-tarjetas-catalogo";
+import { GRUPOS_MI_DIA, TARJETAS_DEFECTO_MIDIA, claveCierreDeArea } from "./mi-dia-tarjetas-catalogo";
 import { FinancieraStandalone } from "./modulo-financiera";
 import ModuloPlanta from "./modulo-planta";
 import ModuloBodega from "./modulo-bodega";
@@ -11593,7 +11593,7 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
       if (!form.name) { setError("El nombre es obligatorio."); return; }
       if (form.email && form.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) { setError("El correo no parece válido."); return; }
       const avatar = form.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
-      onUpdateUsers(users.map((u) => (u.id === editUser.id ? { ...u, name: form.name, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado || "", clientesAsociados: form.clientesAsociados || [], modulosCliente: form.modulosCliente || [], soloLecturaCliente: !!form.soloLecturaCliente, clienteProduccion: form.clienteProduccion || "", clientesProduccion: form.clientesProduccion || [], email: form.email ? form.email.trim() : "", areaNomina: form.areaNomina || "", procesosPlaneacion: form.procesosPlaneacion || [], landingAreas: !!form.landingAreas, tarjetasMiDia: form.tarjetasMiDia || [], avatar } : u)));
+      onUpdateUsers(users.map((u) => (u.id === editUser.id ? { ...u, name: form.name, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado || "", clientesAsociados: form.clientesAsociados || [], modulosCliente: form.modulosCliente || [], soloLecturaCliente: !!form.soloLecturaCliente, clienteProduccion: form.clienteProduccion || "", clientesProduccion: form.clientesProduccion || [], email: form.email ? form.email.trim() : "", areaNomina: form.areaNomina || "", procesosPlaneacion: form.procesosPlaneacion || [], landingAreas: !!form.landingAreas, tarjetasMiDia: form.tarjetasMiDia || [], avatar } : (form.aplicarTarjetasArea && form.areaNomina && u.areaNomina === form.areaNomina ? { ...u, tarjetasMiDia: form.tarjetasMiDia || [] } : u))));
       setShowForm(false);
       return;
     }
@@ -11871,37 +11871,62 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
           {/* (2026-10-26, a pedido de Fredy) Tarjetas del «Mi Día» de cada líder. Primera entrega: las del cierre diario
               de su área (Corte, Zona calor, Control de calidad). Sin ninguna marcada, su Mi Día sigue igual que siempre.
               Se guarda al editar un usuario que ya existe (al crearlo todavía no). */}
-          {editUser && (
-            <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px solid ${T.border}` }}>
-              <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Tarjetas de «☀️ Mi Día»</label>
-              {!claveCierreDeArea(form.areaNomina) ? (
-                <div style={{ fontSize: 12, color: T.slate }}>Para marcar tarjetas, primero elige su «Área Interna» (hoy con cierre diario: Corte, Zona calor y Control de calidad).</div>
-              ) : (
-                <>
-                  <div style={{ fontSize: 12, color: T.slate, marginBottom: 8 }}>Marca lo que quieres que vea en su Mi Día. Si no marcas ninguna, ve su Mi Día de siempre.</div>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "8px 18px" }}>
-                    {TARJETAS_MI_DIA.map((t) => {
-                      const marcado = (form.tarjetasMiDia || []).includes(t.id);
-                      return (
-                        <label key={t.id} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, color: T.ink }}>
-                          <input
-                            type="checkbox"
-                            checked={marcado}
-                            onChange={(e) => setForm((f) => {
-                              const actuales = f.tarjetasMiDia || [];
-                              return { ...f, tarjetasMiDia: e.target.checked ? [...actuales, t.id] : actuales.filter((x) => x !== t.id) };
-                            })}
-                          />
-                          {t.label}
-                        </label>
-                      );
-                    })}
-                  </div>
-                  <button type="button" onClick={() => setForm((f) => ({ ...f, tarjetasMiDia: [...TARJETAS_DEFECTO_MIDIA] }))} style={{ marginTop: 10, padding: "6px 12px", borderRadius: 8, border: `1.5px solid ${T.border}`, background: T.white, fontSize: 12, fontWeight: 700, color: T.ink, cursor: "pointer", fontFamily: "inherit" }}>Marcar las recomendadas para su área</button>
-                </>
-              )}
-            </div>
-          )}
+          {editUser && (() => {
+            const tiene = (id) => (form.tarjetasMiDia || []).includes(id);
+            const alternar = (id, on) => setForm((f) => {
+              const actuales = f.tarjetasMiDia || [];
+              return { ...f, tarjetasMiDia: on ? [...new Set([...actuales, id])] : actuales.filter((x) => x !== id) };
+            });
+            const hayArea = !!claveCierreDeArea(form.areaNomina);
+            const hayProcesos = (form.procesosPlaneacion || []).length > 0;
+            const otrosConTarjetas = users.filter((u) => u.id !== editUser.id && (u.tarjetasMiDia || []).length > 0);
+            const delArea = form.areaNomina ? users.filter((u) => u.id !== editUser.id && u.areaNomina === form.areaNomina) : [];
+            return (
+              <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px solid ${T.border}` }}>
+                <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Tarjetas de «☀️ Mi Día»</label>
+                <div style={{ fontSize: 12, color: T.slate, marginBottom: 10 }}>Marca lo que quieres que vea en su Mi Día; se muestran una debajo de otra. Si no marcas ninguna, ve su Mi Día de siempre.</div>
+                {GRUPOS_MI_DIA.map((g) => {
+                  const bloqueado = (g.requiere === "area" && !hayArea) || (g.requiere === "procesos" && !hayProcesos);
+                  return (
+                    <div key={g.id} style={{ marginBottom: 12, opacity: bloqueado ? 0.6 : 1 }}>
+                      <div style={{ fontSize: 12, fontWeight: 800, color: T.ink, marginBottom: 6 }}>{g.titulo}</div>
+                      {bloqueado && (
+                        <div style={{ fontSize: 11.5, color: T.slate, marginBottom: 6 }}>
+                          {g.requiere === "area" ? "Primero elige su «Área Interna» (hoy con cierre diario: Corte, Zona calor y Control de calidad)." : "Primero marca los procesos que puede programar."}
+                        </div>
+                      )}
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "6px 18px" }}>
+                        {g.tarjetas.map((t) => (
+                          <label key={t.id} style={{ display: "flex", alignItems: "center", gap: 8, cursor: bloqueado ? "default" : "pointer", fontSize: 13, color: T.ink }}>
+                            <input type="checkbox" disabled={bloqueado} checked={tiene(t.id)} onChange={(e) => alternar(t.id, e.target.checked)} />
+                            {t.label}
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 4 }}>
+                  {hayArea && (
+                    <button type="button" onClick={() => setForm((f) => ({ ...f, tarjetasMiDia: [...new Set([...(f.tarjetasMiDia || []), ...TARJETAS_DEFECTO_MIDIA])] }))} style={{ padding: "6px 12px", borderRadius: 8, border: `1.5px solid ${T.border}`, background: T.white, fontSize: 12, fontWeight: 700, color: T.ink, cursor: "pointer", fontFamily: "inherit" }}>Marcar las recomendadas del cierre</button>
+                  )}
+                  <button type="button" onClick={() => setForm((f) => ({ ...f, tarjetasMiDia: [] }))} style={{ padding: "6px 12px", borderRadius: 8, border: `1.5px solid ${T.border}`, background: T.white, fontSize: 12, fontWeight: 700, color: T.ink, cursor: "pointer", fontFamily: "inherit" }}>Quitar todas</button>
+                  {otrosConTarjetas.length > 0 && (
+                    <select value="" onChange={(e) => { const u = users.find((x) => x.id === e.target.value); if (u) setForm((f) => ({ ...f, tarjetasMiDia: [...(u.tarjetasMiDia || [])] })); }} style={{ padding: "6px 10px", borderRadius: 8, border: `1.5px solid ${T.border}`, fontSize: 12, color: T.ink, background: T.white, fontFamily: "inherit" }}>
+                      <option value="">Copiar de otro líder…</option>
+                      {otrosConTarjetas.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+                    </select>
+                  )}
+                </div>
+                {delArea.length > 0 && (
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 12.5, color: T.ink, marginTop: 10 }}>
+                    <input type="checkbox" checked={!!form.aplicarTarjetasArea} onChange={(e) => setForm((f) => ({ ...f, aplicarTarjetasArea: e.target.checked }))} />
+                    Aplicar estas mismas tarjetas a los otros {delArea.length} usuario{delArea.length === 1 ? "" : "s"} de su Área Interna ({form.areaNomina})
+                  </label>
+                )}
+              </div>
+            );
+          })()}
           {error && <div style={{ marginTop: 12, padding: "8px 12px", background: T.coralBg, borderRadius: 8, fontSize: 13, color: T.coral, fontWeight: 600 }}>⚠ {error}</div>}
           <div style={{ display: "flex", gap: 10, marginTop: 16, justifyContent: "flex-end" }}>
             <Btn variant="secondary" onClick={() => { setShowForm(false); setError(""); }}>Cancelar</Btn>

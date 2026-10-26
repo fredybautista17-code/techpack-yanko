@@ -2882,7 +2882,11 @@ function HomePlaneacion({ onGoInformes, onGoCentroCosto, onGoEstadisticas, onGoC
 // programar hacia planta), lotes que se reciben hoy, y programación de
 // mesones de hoy (leída de Corte, solo lectura). Cada KPI es clicable y
 // despliega el detalle correspondiente en una ventana emergente.
-function MiDiaPlaneadoraView({ lotes, reporteBMP, programacionBMP, programacionCorte, corteConfig, bloqueosMeson }) {
+// (2026-10-26, a pedido de Fredy) `visibles`: lista de piezas que se muestran (null = todas, como siempre). Así el Mi Día
+// por tarjetas de cada líder puede mostrar solo las que le marcaron en Usuarios. Ids: recibir_hoy, mesones_hoy,
+// bmp_vencidos, bmp_urgentes, plantas_vencidas, plantas_urgentes, tabla_plantas, tabla_bmp.
+function MiDiaPlaneadoraView({ lotes, reporteBMP, programacionBMP, programacionCorte, corteConfig, bloqueosMeson, visibles = null }) {
+  const ver = (id) => !visibles || visibles.includes(id);
   const miDia = useMemo(() => generarMiDiaPlaneadora(lotes, reporteBMP, programacionBMP), [lotes, reporteBMP, programacionBMP]);
   const lotesRecibirHoy = useMemo(() => generarLotesRecibirHoy(lotes), [lotes]);
   const mesonesHoy = useMemo(() => generarMesonesHoy(programacionCorte, corteConfig, bloqueosMeson), [programacionCorte, corteConfig, bloqueosMeson]);
@@ -2954,43 +2958,58 @@ function MiDiaPlaneadoraView({ lotes, reporteBMP, programacionBMP, programacionC
           <Tabla vacio="No hay cortes programados para hoy en Corte." columnas={columnasMesones} filas={mesonesHoy} />
         </Modal>
       )}
+      {!visibles && (
       <div style={{ marginBottom: 22 }}>
         <h2 style={{ margin: 0, fontSize: 22, fontWeight: 900, color: C.ink }}>☀️ Mi Día</h2>
         <p style={{ margin: "6px 0 0", fontSize: 14, color: C.slate }}>
           Prioridades de hoy, ordenadas por cercanía de la Fecha Entrega Pedido — lo más próximo a vencer va primero. Haz clic en cualquier KPI para ver el detalle.
         </p>
       </div>
+      )}
       {!lotes.length && (
         <div style={{ background: C.white, borderRadius: 14, padding: 24, border: `1px solid ${C.border}`, color: C.slate, fontSize: 13, marginBottom: 20 }}>
           Aún no hay ninguna carga de Hoja1 subida en Informes. Sube una carga para ver aquí las prioridades del día.
         </div>
       )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 24 }}>
+        {ver("recibir_hoy") && (
         <KPI
           icon="📥" label="Lotes por recibir hoy" value={lotesRecibirHoy.length} color={C.blue} bg={C.blueBg}
           onClick={() => setDetalle({ titulo: "Plantas que deben entregar hoy (Fecha Entrega Conf.)", columnas: columnasRecibirHoy, filas: lotesRecibirHoy, vacio: "Ninguna planta tiene entrega programada para hoy." })}
         />
+        )}
+        {ver("mesones_hoy") && (
         <KPI
           icon="✂️" label="Programación de mesones (hoy)" value={mesonesHoy.length} color={C.violet} bg={C.violetBg}
           onClick={() => setMostrarMesonesModal(true)}
         />
+        )}
+        {ver("bmp_vencidos") && (
         <KPI
           icon="📦" label="BMP vencidos (pedido)" value={bmpVencidos.length} color={C.red} bg={C.redBg}
           onClick={() => setDetalle({ titulo: "BMP vencidos respecto al pedido", columnas: columnasBMP, filas: bmpVencidos, vacio: "Sin BMP vencidos." })}
         />
+        )}
+        {ver("bmp_urgentes") && (
         <KPI
           icon="📦" label="BMP urgentes (≤7 días)" value={bmpUrgentes.length} color={C.amber} bg={C.amberBg}
           onClick={() => setDetalle({ titulo: "BMP urgentes respecto al pedido", columnas: columnasBMP, filas: bmpUrgentes, vacio: "Sin BMP urgentes." })}
         />
+        )}
+        {ver("plantas_vencidas") && (
         <KPI
           icon="🏭" label="Plantas vencidas" value={plantasVencidas.length} color={C.red} bg={C.redBg}
           onClick={() => setDetalle({ titulo: "Plantas — pedidos vencidos", columnas: columnasPlantas, filas: plantasVencidas, vacio: "Sin plantas vencidas." })}
         />
+        )}
+        {ver("plantas_urgentes") && (
         <KPI
           icon="🏭" label="Plantas urgentes (≤7 días)" value={plantasUrgentes.length} color={C.amber} bg={C.amberBg}
           onClick={() => setDetalle({ titulo: "Plantas — pedidos urgentes", columnas: columnasPlantas, filas: plantasUrgentes, vacio: "Sin plantas urgentes." })}
         />
+        )}
       </div>
+      {ver("tabla_plantas") && (
       <div style={{ marginBottom: 28 }}>
         <div
           onClick={() => setMostrarPlantas((v) => !v)}
@@ -3004,6 +3023,8 @@ function MiDiaPlaneadoraView({ lotes, reporteBMP, programacionBMP, programacionC
           <Tabla vacio="No hay lotes en planta en la carga activa." columnas={columnasPlantas} filas={miDia.plantasIncumpliendo} />
         )}
       </div>
+      )}
+      {ver("tabla_bmp") && (
       <div style={{ marginBottom: 28 }}>
         <div
           onClick={() => setMostrarBMPPendiente((v) => !v)}
@@ -3017,6 +3038,7 @@ function MiDiaPlaneadoraView({ lotes, reporteBMP, programacionBMP, programacionC
           <Tabla vacio="No hay lotes de BMP pendientes de programar." columnas={columnasBMP} filas={miDia.bmpPendiente} />
         )}
       </div>
+      )}
     </div>
   );
 }
@@ -3025,6 +3047,40 @@ function MiDiaPlaneadoraView({ lotes, reporteBMP, programacionBMP, programacionC
 // Planeación. Trae sus propias suscripciones de Firestore (las mismas 4 que
 // antes vivían dentro de ModuloPlaneacion) porque es una pantalla
 // independiente, montada por separado desde App.js.
+// (2026-10-26, a pedido de Fredy) Las tarjetas de planeación del Mi Día, para mostrarlas dentro del Mi Día por tarjetas de
+// cada líder (mismas suscripciones y mismo contenido de MiDiaStandalone, sin encabezado de pantalla completa).
+export function MiDiaPlaneacionBloque({ visibles }) {
+  const [cargas, setCargas] = useState([]);
+  const [programacionBMP, setProgramacionBMP] = useState([]);
+  const [programacionCorte, setProgramacionCorte] = useState([]);
+  const [corteConfig, setCorteConfig] = useState(null);
+  const [bloqueosMeson, setBloqueosMeson] = useState([]);
+  useEffect(() => {
+    const u1 = onSnapshot(collection(db, "planeacion_cargas"), (snap) => setCargas(snap.docs.map((d) => ({ ...d.data(), id: d.id }))));
+    const u2 = onSnapshot(collection(db, "planeacion_programacion_bmp"), (snap) => setProgramacionBMP(snap.docs.map((d) => ({ ...d.data(), id: d.id }))));
+    const u3 = onSnapshot(collection(db, "corte_programacion"), (snap) => setProgramacionCorte(snap.docs.map((d) => ({ ...d.data(), id: d.id }))));
+    const u4 = onSnapshot(doc(db, "corte_config", "main"), (snap) => setCorteConfig(snap.exists() ? snap.data() : null));
+    const u5 = onSnapshot(collection(db, "corte_bloqueos_meson"), (snap) => setBloqueosMeson(snap.docs.map((d) => ({ id: d.id, ...d.data() }))));
+    return () => { u1(); u2(); u3(); u4(); u5(); };
+  }, []);
+  const lotesActivos = useMemo(() => {
+    if (!cargas.length) return [];
+    const ordenadas = [...cargas].sort((a, b) => (b.creadoEn || b.fecha).localeCompare(a.creadoEn || a.fecha));
+    return ordenadas[0]?.lotes || [];
+  }, [cargas]);
+  const reporteBMPActivo = useMemo(() => generarBMP(lotesActivos), [lotesActivos]);
+  return (
+    <MiDiaPlaneadoraView
+      lotes={lotesActivos}
+      reporteBMP={reporteBMPActivo}
+      programacionBMP={programacionBMP}
+      programacionCorte={programacionCorte}
+      corteConfig={corteConfig}
+      bloqueosMeson={bloqueosMeson}
+      visibles={visibles}
+    />
+  );
+}
 export function MiDiaStandalone({ currentUser, onVolver, onLogout }) {
   const [cargas, setCargas] = useState([]);
   const [programacionBMP, setProgramacionBMP] = useState([]);
@@ -3717,7 +3773,7 @@ function ProgramadorProcesosView({
 // Acceso directo de nivel superior a "Programador de Procesos" — igual
 // patrón que MiDiaStandalone arriba: pantalla independiente montada desde
 // App.js, con sus propias suscripciones de Firestore.
-export function ProgramadorProcesosStandalone({ currentUser, onVolver, onLogout }) {
+export function ProgramadorProcesosStandalone({ currentUser, onVolver, onLogout, incrustado = false }) {
   const [cargas, setCargas] = useState([]);
   const [trabajadores, setTrabajadores] = useState([]);
   const [programaciones, setProgramaciones] = useState([]);
@@ -3805,7 +3861,7 @@ export function ProgramadorProcesosStandalone({ currentUser, onVolver, onLogout 
   }
   if (loading) {
     return (
-      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: C.canvas }}>
+      <div style={{ minHeight: incrustado ? 120 : "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: C.canvas }}>
         <div style={{ textAlign: "center" }}>
           <div style={{ fontSize: 36, marginBottom: 12 }}>📋</div>
           <div style={{ color: C.slate }}>Cargando Programador de Procesos...</div>
@@ -3814,8 +3870,9 @@ export function ProgramadorProcesosStandalone({ currentUser, onVolver, onLogout 
     );
   }
   return (
-    <div style={{ minHeight: "100vh", background: C.canvas, fontFamily: "'Inter',-apple-system,sans-serif" }}>
+    <div style={incrustado ? {} : { minHeight: "100vh", background: C.canvas, fontFamily: "'Inter',-apple-system,sans-serif" }}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;}`}</style>
+      {!incrustado && (
       <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "16px 32px", background: C.ink }}>
         {onVolver && (
           <button onClick={onVolver} style={{ background: "transparent", border: "1px solid rgba(200,184,162,0.3)", borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13, color: C.seam }}>
@@ -3829,7 +3886,8 @@ export function ProgramadorProcesosStandalone({ currentUser, onVolver, onLogout 
           </button>
         )}
       </div>
-      <div style={{ padding: "28px 32px" }}>
+      )}
+      <div style={incrustado ? {} : { padding: "28px 32px" }}>
         <div style={{ maxWidth: 1400, margin: "0 auto" }}>
           <ProgramadorProcesosView
             currentUser={currentUser}
@@ -6161,7 +6219,7 @@ function AuditoriaBusintNominaPanel({ area, currentUser }) {
 // App.js. Se llega aqui como un boton mas del menu normal (con Volver),
 // NO como pantalla completa aparte: elige el area con los botones de
 // arriba y ve directo su auditoria, sin tener que navegar por pestanas.
-export function MiDiaNominaStandalone({ currentUser, onVolver, onLogout }) {
+export function MiDiaNominaStandalone({ currentUser, onVolver, onLogout, incrustado = false }) {
   const [areas, setAreas] = useState([]);
   const [auditoriaHistorial, setAuditoriaHistorial] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -6184,7 +6242,7 @@ export function MiDiaNominaStandalone({ currentUser, onVolver, onLogout }) {
   const tieneAuditoria = (nombre) => AREAS_CON_AUDITORIA_BUSINT.includes(nombre) || auditoriaHistorial.some((h) => h.area === nombre);
   if (loading) {
     return (
-      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: C.canvas }}>
+      <div style={{ minHeight: incrustado ? 120 : "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: C.canvas }}>
         <div style={{ textAlign: "center" }}>
           <div style={{ fontSize: 36, marginBottom: 12 }}>☀️</div>
           <div style={{ color: C.slate }}>Cargando Mi Dia...</div>
@@ -6193,8 +6251,9 @@ export function MiDiaNominaStandalone({ currentUser, onVolver, onLogout }) {
     );
   }
   return (
-    <div style={{ minHeight: "100vh", background: C.canvas, fontFamily: "'Inter',-apple-system,sans-serif" }}>
+    <div style={incrustado ? {} : { minHeight: "100vh", background: C.canvas, fontFamily: "'Inter',-apple-system,sans-serif" }}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;}`}</style>
+      {!incrustado && (
       <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "16px 32px", background: C.ink }}>
         {onVolver && (
           <button onClick={onVolver} style={{ background: "transparent", border: "1px solid rgba(200,184,162,0.3)", borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13, color: C.seam }}>
@@ -6208,7 +6267,8 @@ export function MiDiaNominaStandalone({ currentUser, onVolver, onLogout }) {
           </button>
         )}
       </div>
-      <div style={{ padding: "28px 32px" }}>
+      )}
+      <div style={incrustado ? {} : { padding: "28px 32px" }}>
         <div style={{ maxWidth: 1400, margin: "0 auto" }}>
           <div style={{ marginBottom: 22 }}>
             <h2 style={{ margin: 0, fontSize: 22, fontWeight: 900, color: C.ink }}>☀️ Mi Dia</h2>
