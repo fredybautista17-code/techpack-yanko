@@ -7,12 +7,17 @@
 // guarda como la oficial. El cálculo vive en proyeccion-calculo.js.
 // Fase 2 (paso A): revisa los insumos de los lotes ya cortados con la misma cuenta de Lotes por integrar;
 // un lote al que le faltan insumos no empieza a coserse hasta que llega su orden de compra.
-// Todavía NO revisa la tela ni los pedidos sin cortar (paso B).
+// Fase 2, paso B: revisa la tela y los insumos de lo que falta por cortar (ficha de Busint × unidades, repartiendo
+// inventario y órdenes de compra por fecha de despacho); lo que espera material no entra a Corte antes de que llegue.
+// La capacidad de Corte se sugiere con los cortes registrados en ATLAS.
 import React, { useState, useEffect, useMemo } from "react";
-import { doc, onSnapshot, setDoc } from "firebase/firestore";
+import { doc, onSnapshot, setDoc, collection, getDocs } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { AREAS_PROYECCION, simularProyeccion, capacidadSugerida, sumarDias } from "./proyeccion-calculo";
 import { cargarLotesPorIntegrar, asignarInventario, clasificarUbicacion } from "./lotes-por-integrar";
+import { agruparSinCortar, lineasDeSinCortar, ocPorCodigo, capacidadCorteSugerida, repartirMaterialSinCortar } from "./proyeccion-materiales-corte";
+
+let cacheOCProy = null; // { en, datos: { ordenes, marcas } }
 
 const C = {
   ink: "#1A1A2E", slate: "#5A5A7A", border: "#E8E2DB", canvas: "#F7F4F0", white: "#FFFFFF",
@@ -153,6 +158,23 @@ export default function ProyeccionAreasView({ db, functionsClient, currentUser, 
   const [cargandoMat, setCargandoMat] = useState(false);
   const [errorMat, setErrorMat] = useState("");
   const [diasSinOC, setDiasSinOC] = useState(15);
+  const [revisarCorte, setRevisarCorte] = useState(false);
+  const [datosCorte, setDatosCorte] = useState(null);
+  const [cargandoCorte, setCargandoCorte] = useState(false);
+  const [errorCorte, setErrorCorte] = useState("");
+  const [avisoCorte, setAvisoCorte] = useState("");
+  const [pedidosAtlas, setPedidosAtlas] = useState([]);
+  const [pedidosCargados, setPedidosCargados] = useState(false);
+
+  // Pedidos de ATLAS: sus cortes dan la capacidad de Corte y sus líneas (pinta · color) reparten lo que falta por cortar.
+  useEffect(() => {
+    let vivo = true;
+    getDocs(collection(db, "pedidos_activos"))
+      .then((snap) => { if (vivo) setPedidosAtlas(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); })
+      .catch(() => {})
+      .finally(() => { if (vivo) setPedidosCargados(true); });
+    return () => { vivo = false; };
+  }, [db]);
 
   // Capacidad guardada
   useEffect(() => {
@@ -188,6 +210,7 @@ export default function ProyeccionAreasView({ db, functionsClient, currentUser, 
     } catch (e) {
       setErrorSC(e?.message || "No se pudo calcular lo que falta por cortar.");
       setIncluirSinCortar(false);
+      setRevisarCorte(false);
     }
     setCargandoSC(false);
   }
@@ -205,20 +228,60 @@ export default function ProyeccionAreasView({ db, functionsClient, currentUser, 
       .finally(() => setCargandoMat(false));
   }, [revisarMat]);
 
+  // Tela e insumos de lo que falta por cortar: fichas de Busint + órdenes de compra vigentes
+  useEffect(() => {
+    if (!revisarCorte || datosCorte || cargandoCorte || !pedidosCargados || !Array.isArray(sinCortar)) return;
+    let vivo = true;
+    (async () => {
+      setCargandoCorte(true);
+      setErrorCorte("");
+      setAvisoCorte("");
+      try {
+        const grupos = lineasDeSinCortar(agruparSinCortar(sinCortar), pedidosAtlas);
+        const unicos = [...new Map(grupos.flatMap((g) => g.lineas.map((l) => [`${String(g.ref).trim()}|${l.pinta}`, { ref: String(g.ref).trim(), pinta: l.pinta }]))).values()];
+        const trozos = [];
+        for (let i = 0; i < unicos.length; i += 500) trozos.push(unicos.slice(i, i + 500));
+        const respuestas = await Promise.all(trozos.map((items) => httpsCallable(functionsClient, "getFichaMaterialesBusint", { timeout: 540000 })({ items })));
+        const fichas = new Map();
+        respuestas.forEach((r) => (r.data?.items || []).forEach((i) => fichas.set(`${i.ref}|${i.pinta}`, i)));
+        let oc = cacheOCProy && Date.now() - cacheOCProy.en < 15 * 60 * 1000 ? cacheOCProy.datos : null;
+        if (!oc) {
+          try {
+            const [resp, marcasSnap] = await Promise.all([
+              httpsCallable(functionsClient, "getOrdenesCompraBusint", { timeout: 540000 })({}),
+              getDocs(collection(db, "contabilidad_ordenes_compra_recibidas")),
+            ]);
+            oc = { ordenes: resp.data?.ordenes || [], marcas: new Set(marcasSnap.docs.map((d) => d.id)) };
+            cacheOCProy = { en: Date.now(), datos: oc };
+          } catch (err) {
+            oc = { ordenes: [], marcas: new Set() };
+            if (vivo) setAvisoCorte("No pude traer las órdenes de compra (la consulta es para administradores o quien tenga ese permiso): lo que no alcance con la bodega se supone que llega en el plazo de «sin orden de compra».");
+          }
+        }
+        if (vivo) setDatosCorte({ grupos, fichas, ordenes: oc.ordenes, marcas: oc.marcas });
+      } catch (e) {
+        if (vivo) { setErrorCorte(e?.message || "No se pudo revisar la tela y los insumos."); setRevisarCorte(false); }
+      }
+      if (vivo) setCargandoCorte(false);
+    })();
+    return () => { vivo = false; };
+  }, [revisarCorte, sinCortar, pedidosCargados]); // eslint-disable-line
+
   const diasLab = sabado ? [1, 2, 3, 4, 5, 6] : [1, 2, 3, 4, 5];
   const sugerida = useMemo(() => capacidadSugerida(entradas, hoy, diasLab), [entradas, hoy, sabado]);
+  const sugeridaCorte = useMemo(() => capacidadCorteSugerida(pedidosAtlas, hoy, diasLab), [pedidosAtlas, hoy, sabado]); // eslint-disable-line
   const capGuardada = useMemo(() => {
     const g = cfg?.capacidad || {};
     const dflt = sugerida;
     return {
-      corte: Number(g.corte) > 0 ? Number(g.corte) : dflt,
+      corte: Number(g.corte) > 0 ? Number(g.corte) : sugeridaCorte > 0 ? sugeridaCorte : dflt,
       confeccion: Number(g.confeccion) > 0 ? Number(g.confeccion) : dflt,
       terminacion: Number(g.terminacion) > 0 ? Number(g.terminacion) : dflt,
     };
-  }, [cfg, sugerida]);
+  }, [cfg, sugerida, sugeridaCorte]);
   // Al cargar la configuración se parte de la guardada; después el usuario la mueve a su gusto.
   useEffect(() => {
-    if (!cfgCargada) return;
+    if (!cfgCargada || !pedidosCargados) return;
     setCapEdit((prev) => prev || {
       corte: String(capGuardada.corte), confeccion: String(capGuardada.confeccion), terminacion: String(capGuardada.terminacion),
     });
@@ -226,7 +289,7 @@ export default function ProyeccionAreasView({ db, functionsClient, currentUser, 
       if (typeof cfg.sabado === "boolean") setSabado(cfg.sabado);
       if (Number.isFinite(Number(cfg.colchonDias))) setColchon(Number(cfg.colchonDias));
     }
-  }, [cfgCargada]);
+  }, [cfgCargada, pedidosCargados]);
 
   const capacidad = useMemo(() => {
     const e = capEdit || {};
@@ -250,14 +313,21 @@ export default function ProyeccionAreasView({ db, functionsClient, currentUser, 
     return armarMateriales(datosMat, due, hoy, diasSinOC);
   }, [revisarMat, datosMat, lotes, hoy, diasSinOC]);
 
+  const materialesCorte = useMemo(() => {
+    if (!revisarCorte || !datosCorte) return null;
+    const oc = ocPorCodigo(datosCorte.ordenes, datosCorte.marcas, hoy);
+    return repartirMaterialSinCortar({ grupos: datosCorte.grupos, fichas: datosCorte.fichas, oc, hoyISO: hoy, diasSinOC });
+  }, [revisarCorte, datosCorte, hoy, diasSinOC]);
+
   const sim = useMemo(() => {
     if (!capEdit || precios === null) return null;
     return simularProyeccion({
       lotes: lotes || [],
-      sinCortar: incluirSinCortar && Array.isArray(sinCortar) ? sinCortar : [],
-      precioDe, capacidad, hoyISO: hoy, sabado, colchonDias: colchon, semanas, materiales,
+      sinCortar: incluirSinCortar && Array.isArray(sinCortar) ? agruparSinCortar(sinCortar) : [],
+      precioDe, capacidad, hoyISO: hoy, sabado, colchonDias: colchon, semanas, materiales, materialesCorte,
     });
-  }, [lotes, sinCortar, incluirSinCortar, precioDe, capacidad, hoy, sabado, colchon, semanas, capEdit, precios, materiales]);
+  }, [lotes, sinCortar, incluirSinCortar, precioDe, capacidad, hoy, sabado, colchon, semanas, capEdit, precios, materiales, materialesCorte]);
+  const hayMat = revisarMat || revisarCorte;
 
   function ajustar(porcentaje) {
     setCapEdit((e) => {
@@ -283,8 +353,17 @@ export default function ProyeccionAreasView({ db, functionsClient, currentUser, 
   }
 
   function estadoMaterial(l) {
-    if (!revisarMat) return null;
-    if (l.tipo !== "lote") return { clave: "sin_revisar", texto: "Falta revisar tela (paso B)" };
+    if (l.tipo !== "lote") {
+      if (!revisarCorte) return { clave: "sin_revisar", texto: "Sin revisar" };
+      const mc = materialesCorte ? materialesCorte.get(l.key) : null;
+      if (!mc) return { clave: "sin_revisar", texto: cargandoCorte || !materialesCorte ? "Revisando…" : "Sin revisar" };
+      const nota = mc.aprox ? " (color aprox.)" : "";
+      if (mc.estado === "sin_ficha") return { clave: "sin_ficha", texto: "Sin ficha en Busint" };
+      if (mc.estado === "oc_ok") return { clave: "oc_ok", texto: `${mc.texto ? mc.texto + " · " : ""}OC llega ${fmtFecha(mc.disponibleISO)}${nota}` };
+      if (mc.estado === "comprar") return { clave: "comprar", texto: `${mc.texto ? mc.texto + " · " : ""}sin OC (se supone ${fmtFecha(mc.disponibleISO)})${nota}` };
+      return { clave: "ok", texto: `Completo${mc.sinDato > 0 ? ` (${mc.sinDato} sin dato)` : ""}${nota}` };
+    }
+    if (!revisarMat) return { clave: "sin_revisar", texto: "Sin revisar" };
     if (!materiales) return { clave: "sin_revisar", texto: cargandoMat ? "Revisando…" : "Sin revisar" };
     const m = materiales.get(String(l.numLote));
     if (!m) return { clave: "integrado", texto: "Ya integrado" };
@@ -321,7 +400,7 @@ export default function ProyeccionAreasView({ db, functionsClient, currentUser, 
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(filasSem), "Semanas");
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sim.lotes.map((l) => ({
       Tipo: l.tipo === "lote" ? "Lote" : "Pedido sin cortar", Lote: l.numLote, Pedido: l.numPedido, Referencia: l.ref, Cliente: l.cliente, "Unidades": Math.round(l.unidades),
-      "Valor ($)": Math.round(l.valor), "Dónde está": NOMBRE_AREA[l.dondeEsta] || "", ...(revisarMat ? { Materiales: estadoMaterial(l)?.texto || "", "Unidades esperando material": Math.round(l.bloqueadas || 0), "Material disponible desde": l.materialDesde || "" } : {}), Entrega: l.entrega, "Listo proyectado": l.listoISO || "Fuera del horizonte",
+      "Valor ($)": Math.round(l.valor), "Dónde está": NOMBRE_AREA[l.dondeEsta] || "", ...(hayMat ? { Materiales: estadoMaterial(l)?.texto || "", "Unidades esperando material": Math.round(l.bloqueadas || 0), "Material disponible desde": l.materialDesde || "" } : {}), Entrega: l.entrega, "Listo proyectado": l.listoISO || "Fuera del horizonte",
       "Días de atraso": l.atraso === null ? "" : l.atraso, Estado: ESTADOS[l.estado]?.txt || "",
     }))), "Lotes y pedidos");
     XLSX.writeFile(wb, `Proyeccion_por_area_${hoy}.xlsx`);
@@ -338,7 +417,7 @@ export default function ProyeccionAreasView({ db, functionsClient, currentUser, 
         <p style={{ margin: "4px 0 0", fontSize: 13, color: C.slate, lineHeight: 1.5, maxWidth: 820 }}>
           Cuánto trabajo le llega a cada área de Corte a Terminación, cuánto alcanza a sacar por semana con su capacidad y qué pedidos llegarían tarde.
           Parte de lo que hay hoy en el tubo productivo{fechaCarga ? ` (carga de Busint del ${fmtFechaLarga(String(fechaCarga).slice(0, 10))})` : ""}, valorizado con el precio matriculado.
-          Todavía no mira si hay tela e insumos.
+          Con «Revisar insumos» y «Revisar tela e insumos de lo que falta por cortar» también mira si hay material y desde cuándo.
         </p>
       </div>
 
@@ -357,15 +436,18 @@ export default function ProyeccionAreasView({ db, functionsClient, currentUser, 
         <select value={colchon} onChange={(e) => setColchon(Number(e.target.value))} style={{ padding: "7px 10px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", color: C.ink, background: C.white }}>
           {[0, 1, 2, 3].map((n) => <option key={n} value={n}>{n === 0 ? "Sin colchón" : `${n} día${n > 1 ? "s" : ""}`}</option>)}
         </select>
-        <Chip activo={incluirSinCortar} onClick={() => setIncluirSinCortar((v) => !v)}>
+        <Chip activo={incluirSinCortar} onClick={() => { if (incluirSinCortar) setRevisarCorte(false); setIncluirSinCortar((v) => !v); }}>
           {cargandoSC ? "Calculando lo que falta cortar… (~1 min)" : `${incluirSinCortar ? "✓ " : ""}Incluir lo que falta por cortar`}
         </Chip>
         <Chip activo={revisarMat} onClick={() => setRevisarMat((v) => !v)}>
           {cargandoMat ? "Revisando insumos…" : `${revisarMat ? "✓ " : ""}Revisar insumos de lotes cortados`}
         </Chip>
-        {revisarMat ? (
+        <Chip activo={revisarCorte} onClick={() => { if (!revisarCorte) setIncluirSinCortar(true); setRevisarCorte((v) => !v); }}>
+          {cargandoCorte || (revisarCorte && !materialesCorte && !errorCorte) ? "Revisando tela e insumos… (~1 min)" : `${revisarCorte ? "✓ " : ""}Revisar tela e insumos de lo que falta por cortar`}
+        </Chip>
+        {hayMat ? (
           <>
-            <span style={{ fontSize: 12, color: C.slate }}>Si un insumo no tiene orden de compra, suponer entrega en</span>
+            <span style={{ fontSize: 12, color: C.slate }}>Si un material no tiene orden de compra, suponer entrega en</span>
             <select value={diasSinOC} onChange={(e) => setDiasSinOC(Number(e.target.value))} style={{ padding: "7px 10px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", color: C.ink, background: C.white }}>
               {[7, 15, 21, 30].map((n) => <option key={n} value={n}>{n} días</option>)}
             </select>
@@ -375,6 +457,8 @@ export default function ProyeccionAreasView({ db, functionsClient, currentUser, 
           <Boton onClick={exportarExcel} disabled={!sim}>⬇ Excel</Boton>
         </div>
       </div>
+      {errorCorte ? <div style={{ marginBottom: 12, fontSize: 13, color: C.red, fontWeight: 600 }}>⚠ {errorCorte}</div> : null}
+      {avisoCorte ? <div style={{ marginBottom: 12, fontSize: 12, color: C.amber, fontWeight: 600 }}>{avisoCorte}</div> : null}
       {errorMat ? <div style={{ marginBottom: 12, fontSize: 13, color: C.red, fontWeight: 600 }}>⚠ {errorMat}</div> : null}
       {errorSC ? <div style={{ marginBottom: 12, fontSize: 13, color: C.red, fontWeight: 600 }}>⚠ {errorSC}</div> : null}
       {errorPrecios ? <div style={{ marginBottom: 12, fontSize: 13, color: C.red, fontWeight: 600 }}>⚠ {errorPrecios} Los valores en pesos saldrán en $0.</div> : null}
@@ -384,7 +468,8 @@ export default function ProyeccionAreasView({ db, functionsClient, currentUser, 
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
           <div style={{ fontSize: 14, fontWeight: 800, color: C.ink }}>Capacidad de cada área (unidades por día laboral)</div>
           <div style={{ fontSize: 12, color: C.slate }}>
-            Sugerida por lo que de verdad entró a planta en las últimas 8 semanas: <b>{fmt(sugerida)}</b> und/día. Corte no tiene dato propio: ajústala.
+            Confección y Terminación: lo que de verdad entró a planta en las últimas 8 semanas (<b>{fmt(sugerida)}</b> und/día).{" "}
+            Corte: {sugeridaCorte > 0 ? <>lo cortado en ATLAS en esas 8 semanas (<b>{fmt(sugeridaCorte)}</b> und/día)</> : "no hay cortes registrados en ATLAS: ajústala"}.
           </div>
         </div>
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
@@ -448,10 +533,18 @@ export default function ProyeccionAreasView({ db, functionsClient, currentUser, 
             />
             {materiales ? (
               <Tile
-                titulo="Esperan material"
+                titulo="Lotes cortados esperan material"
                 valor={`${sim.esperanMaterial.lotes} ${sim.esperanMaterial.lotes === 1 ? "lote" : "lotes"} · ${fmt(sim.esperanMaterial.unidades)} und`}
                 color={sim.esperanMaterial.lotes ? C.amber : C.green}
                 sub={`${millones(sim.esperanMaterial.valor)} detenidos · ${sim.esperanMaterial.sinOC} sin orden de compra`}
+              />
+            ) : null}
+            {materialesCorte ? (
+              <Tile
+                titulo="Esperan tela/insumos para cortar"
+                valor={`${sim.esperanCorte.lotes} ${sim.esperanCorte.lotes === 1 ? "pedido" : "pedidos"} · ${fmt(sim.esperanCorte.unidades)} und`}
+                color={sim.esperanCorte.lotes ? C.amber : C.green}
+                sub={`${millones(sim.esperanCorte.valor)} detenidos · ${sim.esperanCorte.sinOC} sin orden de compra`}
               />
             ) : null}
             <Tile
@@ -490,7 +583,7 @@ export default function ProyeccionAreasView({ db, functionsClient, currentUser, 
                     ["Procesa ($)", (x) => millones(x.valorSale)],
                     ["Carga", (x) => (x.capSemana > 0 ? `${Math.round(x.carga * 100)}%` : "—"), true],
                     ["Se acumula (und)", (x) => (x.cola > 0.5 ? fmt(x.cola) : "—")],
-                    ...(a.id === "confeccion" && materiales ? [["Esperando material (und)", null, false, true]] : []),
+                    ...((a.id === "confeccion" && materiales) || (a.id === "corte" && materialesCorte) ? [["Esperando material (und)", null, false, true]] : []),
                   ];
                   return medidas.map(([nombre, f, esCarga, esEspera], i) => (
                     <tr key={`${a.id}-${nombre}`}>
@@ -501,9 +594,9 @@ export default function ProyeccionAreasView({ db, functionsClient, currentUser, 
                         </td>
                       ) : null}
                       <td style={{ ...td, textAlign: "left", color: esEspera ? C.amber : C.slate, fontSize: 12, fontWeight: esEspera ? 800 : 400 }}>{nombre}</td>
-                      <td style={{ ...td, color: esEspera ? C.amber : C.slate, fontWeight: esEspera ? 800 : 400 }}>{esEspera ? (sim.esperandoHoy > 0.5 ? fmt(sim.esperandoHoy) : "—") : i === 0 ? fmt(resumen.colaHoy) : i === 1 ? millones(resumen.valorHoy) : ""}</td>
+                      <td style={{ ...td, color: esEspera ? C.amber : C.slate, fontWeight: esEspera ? 800 : 400 }}>{esEspera ? ((a.id === "corte" ? sim.esperandoHoyCorte : sim.esperandoHoy) > 0.5 ? fmt(a.id === "corte" ? sim.esperandoHoyCorte : sim.esperandoHoy) : "—") : i === 0 ? fmt(resumen.colaHoy) : i === 1 ? millones(resumen.valorHoy) : ""}</td>
                       {sim.semanas.map((s) => {
-                        if (esEspera) return <td key={s.lunes} style={{ ...td, color: C.amber, fontWeight: 800 }}>{s.esperando > 0.5 ? fmt(s.esperando) : "—"}</td>;
+                        if (esEspera) { const v = a.id === "corte" ? s.esperandoCorte : s.esperando; return <td key={s.lunes} style={{ ...td, color: C.amber, fontWeight: 800 }}>{v > 0.5 ? fmt(v) : "—"}</td>; }
                         const x = s.areas[a.id];
                         const col = esCarga ? colorCarga(x.carga, x.cola) : null;
                         return (
@@ -538,7 +631,7 @@ export default function ProyeccionAreasView({ db, functionsClient, currentUser, 
             <div style={{ fontSize: 14, fontWeight: 800, color: C.ink }}>Lotes y pedidos</div>
             <Chip activo={filtro === "riesgo"} onClick={() => setFiltro("riesgo")}>Llegarían tarde</Chip>
             <Chip activo={filtro === "justo"} onClick={() => setFiltro("justo")}>Justos</Chip>
-            {revisarMat ? <Chip activo={filtro === "material"} onClick={() => setFiltro("material")}>Esperan material</Chip> : null}
+            {hayMat ? <Chip activo={filtro === "material"} onClick={() => setFiltro("material")}>Esperan material</Chip> : null}
             <Chip activo={filtro === "todos"} onClick={() => setFiltro("todos")}>Todos</Chip>
             <input
               value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder="🔍  Lote, pedido, referencia, cliente…"
@@ -556,7 +649,7 @@ export default function ProyeccionAreasView({ db, functionsClient, currentUser, 
                   <th style={th}>Und</th>
                   <th style={th}>Valor</th>
                   <th style={{ ...th, textAlign: "left" }}>Dónde está</th>
-                  {revisarMat ? <th style={{ ...th, textAlign: "left" }}>Materiales</th> : null}
+                  {hayMat ? <th style={{ ...th, textAlign: "left" }}>Materiales</th> : null}
                   <th style={th}>Entrega</th>
                   <th style={th}>Listo proyectado</th>
                   <th style={th}>Atraso</th>
@@ -577,7 +670,7 @@ export default function ProyeccionAreasView({ db, functionsClient, currentUser, 
                       <td style={td}>{fmt(l.unidades)}</td>
                       <td style={td}>{l.valor > 0 ? millones(l.valor) : "—"}</td>
                       <td style={{ ...td, textAlign: "left" }}>{NOMBRE_AREA[l.dondeEsta] || "—"}</td>
-                      {revisarMat ? (() => {
+                      {hayMat ? (() => {
                         const em = estadoMaterial(l);
                         const cm = COLOR_MAT[em.clave] || COLOR_MAT.sin_revisar;
                         return (
@@ -606,7 +699,7 @@ export default function ProyeccionAreasView({ db, functionsClient, currentUser, 
           ) : null}
           <div style={{ fontSize: 11, color: C.slate, marginTop: 10, lineHeight: 1.6 }}>
             Atraso en días de calendario contra la fecha de entrega del pedido (si no la tiene, la comprometida con el taller). «Justo» = termina con 2 días o menos de holgura.
-            Confección junta planta propia y talleres externos como una sola capacidad. Con «Revisar insumos» se usa la misma cuenta de Lotes por integrar (inventario y órdenes de compra repartidos lote por lote); la tela y los pedidos sin cortar se revisan en el paso B.
+            Confección junta planta propia y talleres externos como una sola capacidad. Con «Revisar insumos» se usa la misma cuenta de Lotes por integrar (inventario y órdenes de compra repartidos lote por lote). Con «Revisar tela e insumos de lo que falta por cortar» se reparte el inventario y las órdenes de compra entre los pedidos, primero el despacho más cercano; no descuenta lo que ya tienen asignado los lotes cortados ni usa la merma de Explosión de materiales, y el color de pedidos que ATLAS no tiene queda aproximado.
           </div>
         </>
       )}

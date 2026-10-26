@@ -13,7 +13,7 @@
 //    Planta cuenta como trabajo pendiente de Confección; lo Semiterminado
 //    (incluye lo que anda en procesos externos) es trabajo de Terminación;
 //    lo que falta por cortar es trabajo de Corte.
-//  - NO mira materiales todavía (tela e insumos): es la fase 2.
+//  - Materiales (fase 2): lo que espera tela/insumos no avanza hasta que llegan (ver `materiales` y `materialesCorte`).
 
 export const AREAS_PROYECCION = [
   { id: "corte", label: "Corte" },
@@ -83,6 +83,9 @@ export function simularProyeccion({
   // falta de insumos de cada lote ya cortado. Un lote con insumos faltantes no puede empezar a
   // coserse (la parte que aún no se integra) hasta `disponibleISO`.
   materiales = null,
+  // Fase 2, paso B: Map(key del pedido sin cortar `P|pedido|ref` -> { tandas:[{unid, disponibleISO|null}], ... })
+  // con desde cuándo hay tela e insumos para cortar cada parte. Lo que espera material no entra a Corte antes.
+  materialesCorte = null,
 }) {
   const diasLaborales = sabado ? [1, 2, 3, 4, 5, 6] : [1, 2, 3, 4, 5];
   const orden = AREAS_PROYECCION.map((a) => a.id);
@@ -114,7 +117,7 @@ export function simularProyeccion({
     f.valor += unidades * precio;
     f.dondeEsta[area] = (f.dondeEsta[area] || 0) + unidades;
     if (!(precio > 0)) sinPrecioUnid += unidades;
-    const job = { key, units: unidades, ready: extra.ready || 0, due: base.entrega || SIN_FECHA, precio, espera: !!extra.espera };
+    const job = { key, units: unidades, ready: extra.ready || 0, due: base.entrega || SIN_FECHA, precio, espera: !!extra.espera, area };
     colas[area].push(job);
     if (job.espera) jobsEnEspera.push(job);
   }
@@ -177,7 +180,25 @@ export function simularProyeccion({
       entrega: soloFecha(s.fechaDespacho),
       precio,
     };
-    agregar("corte", key, base, NUM(s.unid), precio);
+    const matC = materialesCorte ? materialesCorte.get(key) : null;
+    let bloqC = 0;
+    let readyC = 0;
+    if (matC && Array.isArray(matC.tandas) && matC.tandas.length) {
+      matC.tandas.forEach((t) => {
+        const ready = t.disponibleISO ? Math.max(0, diasEntre(hoyISO, t.disponibleISO)) : 0;
+        if (ready > 0) {
+          bloqC += NUM(t.unid);
+          readyC = Math.max(readyC, ready);
+          agregar("corte", key, base, NUM(t.unid), precio, { ready, espera: true });
+        } else agregar("corte", key, base, NUM(t.unid), precio);
+      });
+    } else agregar("corte", key, base, NUM(s.unid), precio);
+    if (matC) {
+      const fc = ficha(key, base);
+      fc.mat = matC;
+      fc.bloqueadas = (fc.bloqueadas || 0) + bloqC;
+      fc.readyBloq = Math.max(fc.readyBloq || 0, readyC);
+    }
   });
 
   // ── Contadores de trabajo que pasa por cada área (para el cuello) ──────────
@@ -203,13 +224,14 @@ export function simularProyeccion({
     if (!semanasMap.has(lunes)) {
       const areas = {};
       orden.forEach((id) => { areas[id] = { entra: 0, sale: 0, valorSale: 0, cola: 0, colaValor: 0, diasLab: 0 }; });
-      semanasMap.set(lunes, { lunes, areas, listo: 0, listoValor: 0, esperando: 0 });
+      semanasMap.set(lunes, { lunes, areas, listo: 0, listoValor: 0, esperando: 0, esperandoCorte: 0 });
     }
     return semanasMap.get(lunes);
   }
   // El trabajo que esperaba material "entra" a Confección la semana en que se libera.
-  jobsEnEspera.forEach((j) => { semanaDe(sumarDias(hoyISO, j.ready)).areas.confeccion.entra += j.units; });
-  const esperandoHoy = jobsEnEspera.reduce((sum, j) => sum + j.units, 0);
+  jobsEnEspera.forEach((j) => { semanaDe(sumarDias(hoyISO, j.ready)).areas[j.area].entra += j.units; });
+  const esperandoHoy = jobsEnEspera.filter((j) => j.area === "confeccion").reduce((sum, j) => sum + j.units, 0);
+  const esperandoHoyCorte = jobsEnEspera.filter((j) => j.area === "corte").reduce((sum, j) => sum + j.units, 0);
   const diaAbsoluto = [];
   let ultimoDiaConTrabajo = -1;
 
@@ -261,6 +283,7 @@ export function simularProyeccion({
       sem.areas[area].colaValor = v;
     });
     sem.esperando = colas.confeccion.reduce((sum, j) => sum + (j.espera && j.ready > d && j.units > 0.0001 ? j.units : 0), 0);
+    sem.esperandoCorte = colas.corte.reduce((sum, j) => sum + (j.espera && j.ready > d && j.units > 0.0001 ? j.units : 0), 0);
     diaAbsoluto.push({ d, fecha, pendiente: orden.reduce((s, a) => s + colas[a].reduce((x, j) => x + Math.max(0, j.units), 0), 0) });
     const pendiente = diaAbsoluto[diaAbsoluto.length - 1].pendiente;
     if (pendiente < 0.0001 && d > 0) {
@@ -283,7 +306,7 @@ export function simularProyeccion({
       const capSemana = cap[id] * diasLab;
       areas[id] = { ...a, diasLab, capSemana, carga: capSemana > 0 ? a.sale / capSemana : 0 };
     });
-    filasSemanas.push({ lunes, areas, listo: s.listo, listoValor: s.listoValor, esperando: s.esperando || 0 });
+    filasSemanas.push({ lunes, areas, listo: s.listo, listoValor: s.listoValor, esperando: s.esperando || 0, esperandoCorte: s.esperandoCorte || 0 });
   }
 
   // ── Resumen por área ────────────────────────────────────────────────────────
@@ -326,13 +349,14 @@ export function simularProyeccion({
       materialDesde: f.bloqueadas > 0 ? sumarDias(hoyISO, f.readyBloq) : null,
     };
   });
-  const esperan = filasLotes.filter((l) => l.bloqueadas > 0);
-  const esperanMaterial = {
-    lotes: esperan.length,
-    unidades: esperan.reduce((sum, l) => sum + l.bloqueadas, 0),
-    valor: esperan.reduce((sum, l) => sum + l.bloqueadas * (l.precio || 0), 0),
-    sinOC: esperan.filter((l) => l.materiales && l.materiales.sinOC).length,
-  };
+  const resumirEspera = (arr) => ({
+    lotes: arr.length,
+    unidades: arr.reduce((sum, l) => sum + l.bloqueadas, 0),
+    valor: arr.reduce((sum, l) => sum + l.bloqueadas * (l.precio || 0), 0),
+    sinOC: arr.filter((l) => l.materiales && l.materiales.sinOC).length,
+  });
+  const esperanMaterial = resumirEspera(filasLotes.filter((l) => l.tipo === "lote" && l.bloqueadas > 0));
+  const esperanCorte = resumirEspera(filasLotes.filter((l) => l.tipo === "pedido" && l.bloqueadas > 0));
   const enRiesgo = filasLotes.filter((l) => l.estado === "atrasado");
   const valorEnRiesgo = enRiesgo.reduce((s, l) => s + l.valor, 0);
   const unidadesEnRiesgo = enRiesgo.reduce((s, l) => s + l.unidades, 0);
@@ -351,7 +375,9 @@ export function simularProyeccion({
     sinPrecioUnid,
     enRiesgo: { cantidad: enRiesgo.length, unidades: unidadesEnRiesgo, valor: valorEnRiesgo },
     esperanMaterial,
+    esperanCorte,
     esperandoHoy,
+    esperandoHoyCorte,
     sinCapacidad: orden.filter((id) => cap[id] <= 0 && trabajoTotal[id] > 0),
   };
 }
