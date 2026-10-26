@@ -15,6 +15,8 @@ import { doc, onSnapshot, setDoc, collection, getDocs } from "firebase/firestore
 import { httpsCallable } from "firebase/functions";
 import { AREAS_PROYECCION, simularProyeccion, capacidadSugerida, sumarDias } from "./proyeccion-calculo";
 import { cargarLotesPorIntegrar, asignarInventario, clasificarUbicacion } from "./lotes-por-integrar";
+import PedidosSemaforoView from "./proyeccion-pedidos-vista";
+import { armarPedidos } from "./proyeccion-pedidos";
 import { agruparSinCortar, lineasDeSinCortar, ocPorCodigo, capacidadCorteSugerida, repartirMaterialSinCortar } from "./proyeccion-materiales-corte";
 
 let cacheOCProy = null; // { en, datos: { ordenes, marcas } }
@@ -153,6 +155,7 @@ export default function ProyeccionAreasView({ db, functionsClient, currentUser, 
   const [filtro, setFiltro] = useState("riesgo"); // riesgo | todos | justo
   const [busqueda, setBusqueda] = useState("");
   const [verTodo, setVerTodo] = useState(false);
+  const [vistaTabla, setVistaTabla] = useState("lote"); // lote | pedido
   const [revisarMat, setRevisarMat] = useState(false);
   const [datosMat, setDatosMat] = useState(null);
   const [cargandoMat, setCargandoMat] = useState(false);
@@ -328,6 +331,11 @@ export default function ProyeccionAreasView({ db, functionsClient, currentUser, 
     });
   }, [lotes, sinCortar, incluirSinCortar, precioDe, capacidad, hoy, sabado, colchon, semanas, capEdit, precios, materiales, materialesCorte]);
   const hayMat = revisarMat || revisarCorte;
+  // Vista «Por pedido» (semáforo): junta las filas de la simulación por pedido y referencia.
+  const pedidos = useMemo(() => {
+    if (!sim) return [];
+    return armarPedidos({ filas: sim.lotes, lotes: lotes || [], sinCortar: incluirSinCortar && Array.isArray(sinCortar) ? agruparSinCortar(sinCortar) : [], hoyISO: hoy });
+  }, [sim, lotes, sinCortar, incluirSinCortar, hoy]);
 
   function ajustar(porcentaje) {
     setCapEdit((e) => {
@@ -403,6 +411,23 @@ export default function ProyeccionAreasView({ db, functionsClient, currentUser, 
       "Valor ($)": Math.round(l.valor), "Dónde está": NOMBRE_AREA[l.dondeEsta] || "", ...(hayMat ? { Materiales: estadoMaterial(l)?.texto || "", "Unidades esperando material": Math.round(l.bloqueadas || 0), "Material disponible desde": l.materialDesde || "" } : {}), Entrega: l.entrega, "Listo proyectado": l.listoISO || "Fuera del horizonte",
       "Días de atraso": l.atraso === null ? "" : l.atraso, Estado: ESTADOS[l.estado]?.txt || "",
     }))), "Lotes y pedidos");
+    const filasPed = [];
+    const filasRef = [];
+    pedidos.forEach((p) => {
+      filasPed.push({
+        Pedido: p.pedido, Cliente: p.cliente, Entrega: p.entrega, "Días a la entrega": p.diasEntrega ?? "", Unidades: Math.round(p.unidades), "Valor ($)": Math.round(p.valor),
+        "Sin cortar": Math.round(p.etapas.sinCortar), "Corte/BMP": Math.round(p.etapas.corte), Planta: Math.round(p.etapas.planta), Semiterminado: Math.round(p.etapas.semi), BPT: Math.round(p.etapas.bpt),
+        "Listo proyectado": p.listoTodo ? "Ya listo" : p.listoISO || "Fuera del horizonte", "Días de atraso": p.listoTodo || p.atraso === null ? "" : p.atraso, Semáforo: p.estadoTxt, Falta: p.faltaTxt,
+      });
+      p.refs.forEach((r) => filasRef.push({
+        Pedido: p.pedido, Referencia: r.ref, Lotes: r.lotes.join(", "), "Área actual": r.areaActual, Unidades: Math.round(r.unidades),
+        "Sin cortar": Math.round(r.etapas.sinCortar), "Corte/BMP": Math.round(r.etapas.corte), Planta: Math.round(r.etapas.planta), Semiterminado: Math.round(r.etapas.semi), BPT: Math.round(r.etapas.bpt),
+        "Listo proyectado": r.listoTodo ? "Ya listo" : r.listoISO || "Fuera del horizonte", "Días de atraso": r.listoTodo || r.atraso === null ? "" : r.atraso, Semáforo: r.estadoTxt,
+        "Unidades esperando material": Math.round(r.bloqueadas || 0),
+      }));
+    });
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(filasPed), "Pedidos (semáforo)");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(filasRef), "Referencias por pedido");
     XLSX.writeFile(wb, `Proyeccion_por_area_${hoy}.xlsx`);
   }
 
@@ -626,6 +651,14 @@ export default function ProyeccionAreasView({ db, functionsClient, currentUser, 
             La semana de hoy cuenta solo los días que faltan. Cada área atiende primero lo que tiene la entrega más cercana. «Sale terminado» es lo que termina Terminación en la semana (lo que ya estaba en BPT va en «Hoy»).
           </div>
 
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+            <Chip activo={vistaTabla === "lote"} onClick={() => setVistaTabla("lote")}>Por lote</Chip>
+            <Chip activo={vistaTabla === "pedido"} onClick={() => setVistaTabla("pedido")}>🚦 Por pedido</Chip>
+          </div>
+          {vistaTabla === "pedido" ? (
+            <PedidosSemaforoView pedidos={pedidos} />
+          ) : (
+          <>
           {/* Lotes y pedidos */}
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
             <div style={{ fontSize: 14, fontWeight: 800, color: C.ink }}>Lotes y pedidos</div>
@@ -697,6 +730,8 @@ export default function ProyeccionAreasView({ db, functionsClient, currentUser, 
           {filasLotes.length > 150 && !verTodo ? (
             <div style={{ marginTop: 8 }}><Boton onClick={() => setVerTodo(true)}>Ver las {filasLotes.length} filas</Boton></div>
           ) : null}
+          </>
+          )}
           <div style={{ fontSize: 11, color: C.slate, marginTop: 10, lineHeight: 1.6 }}>
             Atraso en días de calendario contra la fecha de entrega del pedido (si no la tiene, la comprometida con el taller). «Justo» = termina con 2 días o menos de holgura.
             Confección junta planta propia y talleres externos como una sola capacidad. Con «Revisar insumos» se usa la misma cuenta de Lotes por integrar (inventario y órdenes de compra repartidos lote por lote). Con «Revisar tela e insumos de lo que falta por cortar» se reparte el inventario y las órdenes de compra entre los pedidos, primero el despacho más cercano; no descuenta lo que ya tienen asignado los lotes cortados ni usa la merma de Explosión de materiales, y el color de pedidos que ATLAS no tiene queda aproximado.
