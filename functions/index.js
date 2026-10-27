@@ -10842,6 +10842,78 @@ exports.getCarteraTNS = onCallAuth(
   }
 );
 
+// Saldos de proveedores (cuentas por pagar) desde TNS (2026-10-27, a pedido de
+// Fredy): paso 1 = DIAGNOSTICO. Trae por proveedor (NIT) el saldo de cada cuenta
+// candidata para ver cual coincide con el corte de Busint:
+//   2205 = proveedores nacionales, 2335 = costos y gastos por pagar,
+//   1330 = anticipos a proveedores (saldo debito, se resta de lo que se debe).
+// Los pasivos vienen en NEGATIVO en TNS, por eso "debe" = -saldo. Solo LEE.
+const CUENTAS_CXP_TNS = [
+  { clave: "c2205", ini: "2205", fin: "220599" },
+  { clave: "c2335", ini: "2335", fin: "233599" },
+  { clave: "a1330", ini: "1330", fin: "133099" },
+];
+exports.getCuentasPorPagarTNS = onCallAuth(
+  {
+    secrets: TNS_SECRETS_TODAS,
+    timeoutSeconds: 300,
+    memory: "512MiB",
+  },
+  async (request) => {
+    if (!request.auth) throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+    const empresa = request.data?.empresa === "indutex" ? "indutex" : "yanko";
+    const cfg = await db.collection("config").doc("tns_sucursales").get();
+    const sucursales = clavesSucursalesTNS(cfg.exists ? cfg.data()?.[empresa] : null);
+    if (!sucursales.length) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Faltan las sucursales de TNS de esta empresa. Entra a Nómina → Conexión TNS → \"Explorar sucursales\", marca las que son de esta empresa y pulsa \"Guardar\"."
+      );
+    }
+    const { fechaFinal, fechaInicial } = fechasCorteTNS(request);
+    try {
+      const consultas = [];
+      sucursales.forEach((sucursal) =>
+        CUENTAS_CXP_TNS.forEach((cta) =>
+          consultas.push(
+            tercerosBalanceTNS({ empresa, sucursal, fechaInicial, fechaFinal, cuentaInicial: cta.ini, cuentaFinal: cta.fin }).then((terceros) => ({ clave: cta.clave, terceros }))
+          )
+        )
+      );
+      const resultados = await Promise.all(consultas);
+      const porNit = new Map();
+      resultados.forEach(({ clave, terceros }) => {
+        terceros.forEach((t) => {
+          const base = baseNitTNS(t);
+          if (!porNit.has(base)) porNit.set(base, { nit: String(t.nit || "").trim(), nombre: String(t.nombre || "").trim(), c2205: 0, c2335: 0, a1330: 0 });
+          porNit.get(base)[clave] += numeroTNS(t.nuevoSaldo);
+        });
+      });
+      const limpio = (n) => (Math.abs(n) < 100 ? 0 : r2TNS(n));
+      const proveedores = [...porNit.values()]
+        .map((p) => {
+          // En TNS lo que se debe es saldo crédito (negativo): se invierte el signo.
+          const c2205 = limpio(-p.c2205);
+          const c2335 = limpio(-p.c2335);
+          const a1330 = limpio(p.a1330); // anticipo: saldo débito (positivo) = a favor nuestro
+          return { nit: p.nit, nombre: p.nombre, c2205, c2335, a1330 };
+        })
+        .filter((p) => p.c2205 !== 0 || p.c2335 !== 0 || p.a1330 !== 0)
+        .sort((a, b) => b.c2205 + b.c2335 - (a.c2205 + a.c2335));
+      const totales = proveedores.reduce(
+        (t, p) => ({ c2205: t.c2205 + p.c2205, c2335: t.c2335 + p.c2335, a1330: t.a1330 + p.a1330 }),
+        { c2205: 0, c2335: 0, a1330: 0 }
+      );
+      Object.keys(totales).forEach((k) => (totales[k] = r2TNS(totales[k])));
+      logger.info("getCuentasPorPagarTNS OK", { empresa, fechaFinal, sucursales, proveedores: proveedores.length, totales });
+      return { ok: true, empresa, corte: fechaFinal, sucursales, proveedores, totales };
+    } catch (err) {
+      logger.error("getCuentasPorPagarTNS falló", { mensaje: err?.message, stack: err?.stack, empresa });
+      throw new HttpsError("internal", err?.message || "Error desconocido al traer las cuentas por pagar de TNS.");
+    }
+  }
+);
+
 // Explora las sucursales de TNS (2026-10-14, a pedido de Fredy): Yanko e Indutex
 // comparten código de empresa y se separan por sucursal. Consulta el saldo por
 // cliente (1305 + 2805) en cada código de sucursal (por defecto 00 a 09) y dice

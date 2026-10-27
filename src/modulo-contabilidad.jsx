@@ -4679,6 +4679,183 @@ function CategorizarProveedorCXPModal({ nombre, categoriaActual, categoriaAutoma
     </Modal>
   );
 }
+// (2026-10-27, a pedido de Fredy) Paso 1 de "Cuentas por pagar: Busint vs TNS".
+// Trae de TNS el saldo por proveedor de las cuentas 2205 (proveedores
+// nacionales), 2335 (costos y gastos por pagar) y 1330 (anticipos a
+// proveedores) y lo compara contra el corte de Busint que esta en pantalla,
+// para decidir CUAL cuenta (o combinacion) es la que cuadra. Solo lee, no
+// guarda nada.
+const FORMULAS_TNS_CXP = [
+  { id: "2205", label: "Solo 2205 (proveedores nacionales)", f: (p) => p.c2205 },
+  { id: "2335", label: "Solo 2335 (costos y gastos por pagar)", f: (p) => p.c2335 },
+  { id: "2205+2335", label: "2205 + 2335", f: (p) => p.c2205 + p.c2335 },
+  { id: "2205+2335-1330", label: "2205 + 2335 − anticipos 1330", f: (p) => p.c2205 + p.c2335 - p.a1330 },
+];
+function claveNombreCxpTns(nombre) {
+  return normalizarTexto(nombre)
+    .replace(/[^a-z0-9 ]/g, " ")
+    .split(/\s+/)
+    .filter((w) => w && !["sas", "s", "a", "sa", "ltda", "y", "cia", "e", "de", "la", "el"].includes(w))
+    .join(" ");
+}
+function ComparacionTnsCxp({ proveedoresBusint }) {
+  const [abierto, setAbierto] = useState(false);
+  const [empresa, setEmpresa] = useState("yanko");
+  const [datos, setDatos] = useState({});
+  const [cargando, setCargando] = useState("");
+  const [error, setError] = useState("");
+  const [formulaId, setFormulaId] = useState("2205+2335");
+  const [soloDif, setSoloDif] = useState(true);
+  const [busqueda, setBusqueda] = useState("");
+  async function traer(emp) {
+    setCargando(emp);
+    setError("");
+    try {
+      const resp = await httpsCallable(functionsClient, "getCuentasPorPagarTNS", { timeout: 300000 })({ empresa: emp });
+      setDatos((d) => ({ ...d, [emp]: resp.data }));
+      setEmpresa(emp);
+    } catch (err) {
+      setError(err?.message || "No se pudo traer las cuentas por pagar de TNS.");
+    } finally {
+      setCargando("");
+    }
+  }
+  const d = datos[empresa];
+  const formula = FORMULAS_TNS_CXP.find((x) => x.id === formulaId) || FORMULAS_TNS_CXP[2];
+  const totalBusint = (proveedoresBusint || []).reduce((s, p) => s + (Number(p.total) || 0), 0);
+  let filas = [];
+  let totalTns = 0;
+  if (d) {
+    const mapa = new Map();
+    (proveedoresBusint || []).forEach((p) => {
+      const k = claveNombreCxpTns(p.nombre);
+      if (!mapa.has(k)) mapa.set(k, { nombre: p.nombre, tns: 0, busint: 0, enTns: false });
+      mapa.get(k).busint += Number(p.total) || 0;
+    });
+    (d.proveedores || []).forEach((p) => {
+      const k = claveNombreCxpTns(p.nombre) || p.nit;
+      const v = formula.f(p);
+      totalTns += v;
+      if (!mapa.has(k)) mapa.set(k, { nombre: p.nombre, tns: 0, busint: 0, enTns: true });
+      const x = mapa.get(k);
+      x.tns += v;
+      x.enTns = true;
+      x.nit = p.nit;
+    });
+    filas = [...mapa.values()].map((x) => ({ ...x, dif: x.tns - x.busint }));
+    if (soloDif) filas = filas.filter((x) => Math.abs(x.dif) >= 1000);
+    if (busqueda.trim()) {
+      const q = normalizarTexto(busqueda);
+      filas = filas.filter((x) => normalizarTexto(x.nombre).includes(q));
+    }
+    filas.sort((a, b) => Math.abs(b.dif) - Math.abs(a.dif));
+  }
+  const th = { textAlign: "right", padding: "6px 10px", fontSize: 12, color: C.slate, borderBottom: `1px solid ${C.border}` };
+  const td = { textAlign: "right", padding: "6px 10px", fontSize: 13, borderBottom: `1px solid ${C.border}`, fontVariantNumeric: "tabular-nums" };
+  return (
+    <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, padding: 14, marginBottom: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <div style={{ fontWeight: 700, fontSize: 14, flex: 1 }}>🔎 Comparar con TNS (diagnóstico)</div>
+        <Btn small variant="secondary" onClick={() => setAbierto(!abierto)}>{abierto ? "Ocultar" : "Abrir"}</Btn>
+      </div>
+      {abierto && (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ fontSize: 12, color: C.slate, marginBottom: 10 }}>
+            Trae de TNS el saldo por proveedor de las cuentas 2205, 2335 y 1330 y lo compara con el corte de Busint que tienes seleccionado
+            ({fmtCOP(totalBusint)}). Sirve para ver cuál cuenta cuadra. No guarda nada.
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+            <Btn onClick={() => traer("yanko")} disabled={!!cargando}>{cargando === "yanko" ? "Consultando TNS..." : "Traer Yanko"}</Btn>
+            <Btn variant="secondary" onClick={() => traer("indutex")} disabled={!!cargando}>{cargando === "indutex" ? "Consultando TNS..." : "Traer Indutex"}</Btn>
+            {Object.keys(datos).length > 1 && (
+              <select value={empresa} onChange={(e) => setEmpresa(e.target.value)} style={{ padding: "6px 10px", borderRadius: 8, border: `1px solid ${C.border}` }}>
+                {Object.keys(datos).map((k) => <option key={k} value={k}>{k === "yanko" ? "Yanko" : "Indutex"}</option>)}
+              </select>
+            )}
+          </div>
+          {error && <div style={{ color: C.red, fontSize: 13, fontWeight: 600, marginBottom: 10 }}>⚠ {error}</div>}
+          {d && (
+            <>
+              <div style={{ fontSize: 12, color: C.slate, marginBottom: 6 }}>
+                {empresa === "yanko" ? "Yanko" : "Indutex"} · corte TNS {d.corte} · sucursales {(d.sucursales || []).join(", ")} · {(d.proveedores || []).length} proveedores con saldo
+              </div>
+              <div style={{ overflowX: "auto", marginBottom: 12 }}>
+                <table style={{ borderCollapse: "collapse", minWidth: 480 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ ...th, textAlign: "left" }}>Cuenta TNS</th>
+                      <th style={th}>Total</th>
+                      <th style={th}>Diferencia vs Busint</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[
+                      ["2205 proveedores nacionales", d.totales.c2205],
+                      ["2335 costos y gastos por pagar", d.totales.c2335],
+                      ["2205 + 2335", d.totales.c2205 + d.totales.c2335],
+                      ["2205 + 2335 − anticipos 1330", d.totales.c2205 + d.totales.c2335 - d.totales.a1330],
+                      ["1330 anticipos a proveedores (a favor)", d.totales.a1330],
+                    ].map(([label, v]) => (
+                      <tr key={label}>
+                        <td style={{ ...td, textAlign: "left" }}>{label}</td>
+                        <td style={td}>{fmtCOP(v)}</td>
+                        <td style={{ ...td, color: Math.abs(v - totalBusint) < 1000 ? C.green : undefined, fontWeight: Math.abs(v - totalBusint) < 1000 ? 700 : 400 }}>
+                          {label.startsWith("1330") ? "—" : fmtCOP(v - totalBusint)}
+                        </td>
+                      </tr>
+                    ))}
+                    <tr>
+                      <td style={{ ...td, textAlign: "left", fontWeight: 700 }}>Corte Busint en pantalla</td>
+                      <td style={{ ...td, fontWeight: 700 }}>{fmtCOP(totalBusint)}</td>
+                      <td style={td}></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
+                <select value={formulaId} onChange={(e) => setFormulaId(e.target.value)} style={{ padding: "6px 10px", borderRadius: 8, border: `1px solid ${C.border}` }}>
+                  {FORMULAS_TNS_CXP.map((f) => <option key={f.id} value={f.id}>{f.label}</option>)}
+                </select>
+                <input value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder="Buscar proveedor" style={{ padding: "6px 10px", borderRadius: 8, border: `1px solid ${C.border}` }} />
+                <label style={{ fontSize: 13 }}>
+                  <input type="checkbox" checked={soloDif} onChange={(e) => setSoloDif(e.target.checked)} /> Solo con diferencia
+                </label>
+                <span style={{ fontSize: 12, color: C.slate }}>{filas.length} proveedores · TNS {fmtCOP(totalTns)}</span>
+              </div>
+              <div style={{ overflowX: "auto", maxHeight: 420, overflowY: "auto" }}>
+                <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 520 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ ...th, textAlign: "left" }}>Proveedor</th>
+                      <th style={th}>TNS</th>
+                      <th style={th}>Busint</th>
+                      <th style={th}>Diferencia</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filas.slice(0, 300).map((x, i) => (
+                      <tr key={i}>
+                        <td style={{ ...td, textAlign: "left" }}>
+                          {x.nombre}
+                          {x.busint === 0 && x.tns !== 0 ? <span style={{ color: C.slate, fontSize: 11 }}> · solo en TNS</span> : null}
+                          {x.tns === 0 && x.busint !== 0 ? <span style={{ color: C.slate, fontSize: 11 }}> · solo en Busint</span> : null}
+                        </td>
+                        <td style={td}>{fmtCOP(x.tns)}</td>
+                        <td style={td}>{fmtCOP(x.busint)}</td>
+                        <td style={{ ...td, color: Math.abs(x.dif) >= 1000 ? C.red : C.slate }}>{fmtCOP(x.dif)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {filas.length > 300 && <div style={{ fontSize: 12, color: C.slate, marginTop: 6 }}>Mostrando los 300 con mayor diferencia.</div>}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, nombresProveedor, categoriasCxp, categoriasLista, categoriasPorConcepto, onImportarCorte, onDeleteCorte, onAddManual, onDeleteManual, onDeleteProveedorCorte, onGuardarNombreConcepto, onGuardarNombreProveedor, onGuardarCategoria, isAdmin }) {
   const [showImport, setShowImport] = useState(false);
   const [showManual, setShowManual] = useState(false);
@@ -4956,6 +5133,7 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
           )}
         </div>
       </div>
+      {isAdmin && <ComparacionTnsCxp proveedoresBusint={corteActivo?.proveedores || []} />}
       {errorBusint && (
         <div style={{ padding: "10px 14px", background: C.redBg, color: C.red, borderRadius: 8, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
           ⚠ {errorBusint}
