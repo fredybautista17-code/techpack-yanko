@@ -3027,23 +3027,6 @@ function fmtPct(n) {
   return (Number(n) * 100 || 0).toLocaleString("es-CO", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + "%";
 }
 
-// Estilo del Excel de "Dado por cumplido" (exportarDadoPorCumplidoExcel más
-// abajo) -- usa "xlsx-js-style" en vez de "xlsx" (mismo criterio ya usado en
-// los Excel de Bodega) porque xlsx (SheetJS) gratis no soporta colores de
-// celda. Encabezado azul con letra blanca, filas alternadas para que se lea
-// mejor, y en rojo negrita las filas sin Costo Definitivo todavía (el ~20%
-// que hay que revisar a mano) -- igual a como Fredy ya marca esas filas en
-// su propio Excel.
-const BORDE_FINO_DPC = { style: "thin", color: { rgb: "B7B7B7" } };
-const TODOS_BORDES_DPC = { top: BORDE_FINO_DPC, bottom: BORDE_FINO_DPC, left: BORDE_FINO_DPC, right: BORDE_FINO_DPC };
-const ESTILO_HEADER_DPC = { font: { bold: true, color: { rgb: "FFFFFF" } }, fill: { fgColor: { rgb: "1F4E78" } }, alignment: { horizontal: "center", vertical: "center", wrapText: true }, border: TODOS_BORDES_DPC };
-const ESTILO_FILA_DPC = { border: TODOS_BORDES_DPC, alignment: { vertical: "center" } };
-const ESTILO_FILA_ALT_DPC = { fill: { fgColor: { rgb: "F2F6FB" } }, border: TODOS_BORDES_DPC, alignment: { vertical: "center" } };
-const ESTILO_FILA_SIN_COSTO_DPC = { font: { bold: true, color: { rgb: "C0392B" } }, border: TODOS_BORDES_DPC, alignment: { vertical: "center" } };
-const FORMATO_MONEDA_DPC = '"$" #,##0';
-const FORMATO_PORCENTAJE_DPC = "0.00%";
-const COLUMNAS_MONEDA_DPC = new Set(["VR. TEORICO ", "VR. REAL ", "COSTO DEFINITIVO", "COSTO T", "PRECIO VENTA U.", "VENTA T.", "Venta T. - Costo T.", "Costo T. Ref.", "BASE", "TRANSPORTE", "TOTAL"]);
-const COLUMNAS_PORCENTAJE_DPC = new Set(["% Ganancia/Lote", "% Ganancia/Ref."]);
 
 // (2026-10-22, a pedido de Fredy) Editar un lote ya aprobado. El servidor
 // (editarDadoPorCumplidoAprobado) vuelve a validar el permiso y recalcula;
@@ -3336,75 +3319,31 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases, puedeSincroni
     await fsSave("dado_por_cumplido_lotes", id, { precioVentaUnitario: parseFloat(valor) || 0, precioVentaUnitarioManual: true });
   }
 
-  // Descarga la pantalla completa (pendientes + aprobados) con la misma
-  // estructura de columnas del Excel histórico de Contabilidad. Para los
-  // lotes aún no aprobados, calcula con la misma fórmula que la vista previa
-  // (puede venir incompleto si todavía falta Costo Real Total o Categoría BASE).
+  // (2026-10-27, a pedido de Fredy) "Descargar Excel": es EL MISMO archivo que se guarda en Dropbox (lo arma la función
+  // exportarDadoPorCumplidoDescargar en la nube, con lo que está guardado en la base). Los lotes aún no aprobados salen
+  // con los cálculos en blanco; se congelan al aprobar.
+  const [descargandoExcel, setDescargandoExcel] = useState(false);
   async function exportarDadoPorCumplidoExcel() {
-    const XLSX = await import("xlsx-js-style");
-    const filas = [...lotes]
-      .sort((a, b) => (a.fecha || "").localeCompare(b.fecha || ""))
-      .map((l) => {
-        let datos = l;
-        if (l.estado !== "aprobado") {
-          const baseElegida = bases.find((b) => b.id === l.categoriaBaseId);
-          const preview = calcularDadoPorCumplidoPreview({
-            costoRealTotal: l.costoRealTotal,
-            cantCortada: l.cantCortada,
-            cantDespachada: despachadaEfectiva(l),
-            precioVentaUnitario: l.precioVentaUnitario,
-            baseValor: baseElegida?.valor,
-            porcentajeSobreCosto: config.porcentajeSobreCosto,
-            porcentajeSobreVenta: config.porcentajeSobreVenta,
-            costoDefinitivoManual: l.costoDefinitivoManual ? l.costoDefinitivo : null,
-          });
-          datos = { ...l, ...preview, cantDespachada: despachadaEfectiva(l), baseValorUsado: baseElegida?.valor ?? l.baseValorUsado };
-        }
-        return {
-          "FECHA": datos.fecha || "",
-          "NRO LOTE": datos.numLote,
-          "REFERENCIA ": datos.referencia || "",
-          "CANT. CORTADA": datos.cantCortada ?? "",
-          "CANT . DESPACHADA ": datos.cantDespachada ?? "",
-          "VR. TEORICO ": datos.vrTeorico ?? "",
-          "VR. REAL ": datos.costoRealTotal ?? "",
-          "COSTO DEFINITIVO": datos.costoDefinitivo ?? "",
-          "COSTO T": datos.costoT ?? "",
-          "PRECIO VENTA U.": datos.precioVentaUnitario ?? "",
-          "VENTA T.": datos.ventaT ?? "",
-          "Venta T. - Costo T.": datos.ganancia ?? "",
-          "% Ganancia/Lote": datos.gananciaPctLote ?? "",
-          "Costo T. Ref.": datos.costoTRef ?? "",
-          "% Ganancia/Ref.": datos.gananciaPctRef ?? "",
-          "CLIENTE": datos.cliente || "",
-          "OBS.": datos.observaciones || "",
-          "BASE": datos.baseValorUsado ?? "",
-          "TRANSPORTE": datos.transporte ?? "",
-          "TOTAL": datos.total ?? "",
-        };
-      });
-    const ws = XLSX.utils.json_to_sheet(filas);
-    const encabezados = Object.keys(filas[0] || {});
-    encabezados.forEach((_, c) => {
-      const addr = XLSX.utils.encode_cell({ r: 0, c });
-      if (ws[addr]) ws[addr].s = ESTILO_HEADER_DPC;
-    });
-    filas.forEach((fila, i) => {
-      const r = i + 1; // la fila 0 es el encabezado
-      const sinCostoDefinitivo = !fila["COSTO DEFINITIVO"];
-      encabezados.forEach((h, c) => {
-        const addr = XLSX.utils.encode_cell({ r, c });
-        const cell = ws[addr];
-        if (!cell) return;
-        cell.s = sinCostoDefinitivo ? ESTILO_FILA_SIN_COSTO_DPC : (i % 2 === 1 ? ESTILO_FILA_ALT_DPC : ESTILO_FILA_DPC);
-        if (COLUMNAS_MONEDA_DPC.has(h)) cell.z = FORMATO_MONEDA_DPC;
-        if (COLUMNAS_PORCENTAJE_DPC.has(h)) cell.z = FORMATO_PORCENTAJE_DPC;
-      });
-    });
-    ws["!cols"] = encabezados.map((h) => ({ wch: Math.max(12, h.length + 2) }));
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Dado por cumplido");
-    XLSX.writeFile(wb, `DADO POR CUMPLIDO ${today()}.xlsx`);
+    setDescargandoExcel(true);
+    try {
+      const r = await httpsCallable(functionsClient, "exportarDadoPorCumplidoDescargar", { timeout: 120000 })();
+      const bin = atob(r.data.archivoBase64 || "");
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+      const blob = new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `DADO POR CUMPLIDO ${today()}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+    } catch (e) {
+      window.alert("No se pudo descargar el Excel: " + (e?.message || e));
+    } finally {
+      setDescargandoExcel(false);
+    }
   }
 
   // Respaldo en Excel de lotes del historial -- se descarga automático justo
@@ -3630,7 +3569,7 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases, puedeSincroni
               </Btn>
             )}
             {isAdmin && (
-              <Btn variant="ghost" small onClick={exportarDadoPorCumplidoExcel}>📥 Descargar Excel</Btn>
+              <Btn variant="ghost" small onClick={exportarDadoPorCumplidoExcel} disabled={descargandoExcel}>{descargandoExcel ? "Preparando Excel…" : "📥 Descargar Excel"}</Btn>
             )}
           </div>
         )}

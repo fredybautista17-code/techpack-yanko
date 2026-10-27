@@ -1295,7 +1295,7 @@ exports.revisarDadoPorCumplidoPendientes = onSchedule(
 // (Paso 1: NO crea nada en bitacora_despachos todavía -- ver comentario
 // arriba de sincronizarDadoPorCumplidoPendientes.)
 exports.aprobarDadoPorCumplido = onCallAuth(
-  { timeoutSeconds: 60, memory: "256MiB" },
+  { secrets: [DROPBOX_APP_KEY, DROPBOX_APP_SECRET, DROPBOX_REFRESH_TOKEN], timeoutSeconds: 120, memory: "512MiB" },
   async (request) => {
     if (!request.auth) {
       throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
@@ -1361,7 +1361,12 @@ exports.aprobarDadoPorCumplido = onCallAuth(
     );
 
     logger.info("aprobarDadoPorCumplido aprobado", { id, numLote: datos.numLote, ...calculo });
-    return { ok: true, ...calculo };
+    // (2026-10-27) El Excel de Dropbox se actualiza al aprobar (ya no solo a las 6:00 a.m.). Si Dropbox falla, la
+    // aprobación ya quedó guardada: solo se avisa en el resultado y se reintenta con el botón del administrador o a las 6 a.m.
+    let dropbox = "ok";
+    try { await exportarDadoPorCumplidoADropbox(); }
+    catch (err) { dropbox = "error"; logger.error("aprobarDadoPorCumplido: no se pudo actualizar Dropbox", { error: String(err) }); }
+    return { ok: true, ...calculo, dropbox };
   }
 );
 
@@ -1575,62 +1580,78 @@ async function subirArchivoADropbox(buffer, rutaDestino, intento = 1) {
   return resp.json();
 }
 
-const DADO_POR_CUMPLIDO_COLUMNAS = [
-  { header: "Lote", key: "numLote", width: 10 },
-  { header: "Pedido", key: "numPedido", width: 12 },
-  { header: "Referencia", key: "referencia", width: 16 },
-  { header: "Cliente", key: "cliente", width: 26 },
-  { header: "Fecha", key: "fecha", width: 12 },
-  { header: "Cant. Cortada", key: "cantCortada", width: 14 },
-  { header: "Cant. Despachada", key: "cantDespachada", width: 16 },
-  { header: "Precio Venta Unit.", key: "precioVentaUnitario", width: 16 },
-  { header: "Costo Real Total", key: "costoRealTotal", width: 16 },
-  { header: "Costo Definitivo", key: "costoDefinitivo", width: 16 },
-  { header: "Costo T Ref", key: "costoTRef", width: 14 },
-  { header: "Costo T", key: "costoT", width: 14 },
-  { header: "Venta T", key: "ventaT", width: 14 },
-  { header: "Ganancia", key: "ganancia", width: 14 },
-  { header: "% Ganancia Lote", key: "gananciaPctLote", width: 16 },
-  { header: "% Ganancia Ref", key: "gananciaPctRef", width: 16 },
-  { header: "Base x Cortada (Total)", key: "total", width: 20 },
-  { header: "Categoría BASE", key: "categoriaBaseId", width: 16 },
-  { header: "Estado", key: "estado", width: 12 },
-  { header: "Aprobado Por", key: "aprobadoPor", width: 22 },
+// (2026-10-27, a pedido de Fredy) UN SOLO Excel de "Dado por Cumplido": el botón "Descargar Excel" de Contabilidad
+// (exportarDadoPorCumplidoDescargar), la subida diaria de las 6:00 a.m., la manual del administrador y la que se hace
+// al aprobar un lote usan ESTE generador, así que los archivos salen siempre iguales. Formato = el histórico de
+// Contabilidad (mismos encabezados de siempre, con sus espacios) + ESTADO, APROBADO POR y ÚLTIMA ACTUALIZACIÓN.
+// Lee lo GUARDADO en dado_por_cumplido_lotes: los lotes aún no aprobados salen con los cálculos en blanco (se
+// congelan al aprobar); no se inventa una vista previa. Los lotes en la Papelera (eliminado) no salen.
+const DPC_COLUMNAS = [
+  ["FECHA", (d) => d.fecha || ""],
+  ["NRO LOTE", (d) => d.numLote ?? ""],
+  ["REFERENCIA ", (d) => d.referencia || ""],
+  ["CANT. CORTADA", (d) => d.cantCortada ?? ""],
+  ["CANT . DESPACHADA ", (d) => despachadaEfectivaLote(d)],
+  ["VR. TEORICO ", (d) => d.vrTeorico ?? ""],
+  ["VR. REAL ", (d) => d.costoRealTotal ?? ""],
+  ["COSTO DEFINITIVO", (d, ap) => (ap ? d.costoDefinitivo ?? "" : "")],
+  ["COSTO T", (d, ap) => (ap ? d.costoT ?? "" : "")],
+  ["PRECIO VENTA U.", (d) => d.precioVentaUnitario ?? ""],
+  ["VENTA T.", (d, ap) => (ap ? d.ventaT ?? "" : "")],
+  ["Venta T. - Costo T.", (d, ap) => (ap ? d.ganancia ?? "" : "")],
+  ["% Ganancia/Lote", (d, ap) => (ap ? d.gananciaPctLote ?? "" : "")],
+  ["Costo T. Ref.", (d, ap) => (ap ? d.costoTRef ?? "" : "")],
+  ["% Ganancia/Ref.", (d, ap) => (ap ? d.gananciaPctRef ?? "" : "")],
+  ["CLIENTE", (d) => d.cliente || ""],
+  ["OBS.", (d) => d.observaciones || ""],
+  ["BASE", (d, ap) => (ap ? d.baseValorUsado ?? "" : "")],
+  ["TRANSPORTE", (d) => d.transporte ?? ""],
+  ["TOTAL", (d, ap) => (ap ? d.total ?? "" : "")],
+  ["ESTADO", (d) => (d.estado === "aprobado" ? "aprobado" : "pendiente")],
+  ["APROBADO POR", (d) => d.aprobadoPor || ""],
+  ["ÚLTIMA ACTUALIZACIÓN", (d) => {
+    const t = d.actualizadoEn?.toDate ? d.actualizadoEn.toDate() : (d.fechaAprobacion?.toDate ? d.fechaAprobacion.toDate() : null);
+    return t ? t.toLocaleString("sv-SE", { timeZone: "America/Bogota" }).slice(0, 16) : "";
+  }],
 ];
+const DPC_MONEDA = new Set(["VR. TEORICO ", "VR. REAL ", "COSTO DEFINITIVO", "COSTO T", "PRECIO VENTA U.", "VENTA T.", "Venta T. - Costo T.", "Costo T. Ref.", "BASE", "TRANSPORTE", "TOTAL"]);
+const DPC_PORCENTAJE = new Set(["% Ganancia/Lote", "% Ganancia/Ref."]);
 
 async function generarExcelDadoPorCumplido() {
-  const snap = await db.collection("dado_por_cumplido_lotes").orderBy("numLote", "desc").get();
+  const snap = await db.collection("dado_por_cumplido_lotes").get();
+  const lotes = snap.docs.map((x) => x.data()).filter((d) => !d.eliminado);
+  lotes.sort((a, b) => String(a.fecha || "").localeCompare(String(b.fecha || "")) || (Number(a.numLote) || 0) - (Number(b.numLote) || 0));
   const wb = new ExcelJS.Workbook();
-  const ws = wb.addWorksheet("Dado por Cumplido");
-  ws.columns = DADO_POR_CUMPLIDO_COLUMNAS;
-  ws.getRow(1).font = { bold: true };
-  snap.docs.forEach((doc) => {
-    const d = doc.data();
-    ws.addRow({
-      numLote: d.numLote ?? "",
-      numPedido: d.numPedido ?? "",
-      referencia: d.referencia || "",
-      cliente: d.cliente || "",
-      fecha: d.fecha || "",
-      cantCortada: d.cantCortada ?? "",
-      cantDespachada: d.cantDespachada ?? "",
-      precioVentaUnitario: d.precioVentaUnitario ?? "",
-      costoRealTotal: d.costoRealTotal ?? "",
-      costoDefinitivo: d.costoDefinitivo ?? "",
-      costoTRef: d.costoTRef ?? "",
-      costoT: d.costoT ?? "",
-      ventaT: d.ventaT ?? "",
-      ganancia: d.ganancia ?? "",
-      gananciaPctLote: d.gananciaPctLote ?? "",
-      gananciaPctRef: d.gananciaPctRef ?? "",
-      total: d.total ?? "",
-      categoriaBaseId: d.categoriaBaseId || "",
-      estado: d.estado || "",
-      aprobadoPor: d.aprobadoPor || "",
+  const ws = wb.addWorksheet("Dado por cumplido");
+  const borde = { style: "thin", color: { argb: "FFBFBFBF" } };
+  const bordes = { top: borde, bottom: borde, left: borde, right: borde };
+  ws.columns = DPC_COLUMNAS.map(([h]) => ({ header: h, key: h, width: Math.max(12, h.length + 2) }));
+  const enc = ws.getRow(1);
+  enc.eachCell((c) => {
+    c.font = { bold: true, color: { argb: "FFFFFFFF" } };
+    c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1F4E78" } };
+    c.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+    c.border = bordes;
+  });
+  lotes.forEach((d, i) => {
+    const aprobado = d.estado === "aprobado";
+    const fila = {};
+    DPC_COLUMNAS.forEach(([h, f]) => { fila[h] = f(d, aprobado); });
+    const row = ws.addRow(fila);
+    const sinCosto = !fila["COSTO DEFINITIVO"];
+    row.eachCell({ includeEmpty: true }, (c, n) => {
+      const h = DPC_COLUMNAS[n - 1]?.[0];
+      c.border = bordes;
+      c.alignment = { vertical: "middle" };
+      if (sinCosto) c.font = { bold: true, color: { argb: "FFC0392B" } };
+      else if (i % 2 === 1) c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF2F6FB" } };
+      if (DPC_MONEDA.has(h)) c.numFmt = '"$" #,##0';
+      if (DPC_PORCENTAJE.has(h)) c.numFmt = "0.00%";
     });
   });
+  ws.views = [{ state: "frozen", ySplit: 1 }];
   const buffer = await wb.xlsx.writeBuffer();
-  return { buffer, totalLotes: snap.size };
+  return { buffer, totalLotes: lotes.length };
 }
 
 async function exportarDadoPorCumplidoADropbox() {
@@ -1658,6 +1679,15 @@ exports.exportarDadoPorCumplidoADropboxAhora = onCallAuth(
 // Corre sola todos los días a las 6:00 a.m. hora Bogotá -- genera el Excel
 // de "Dado por Cumplido" (todos los lotes, pendientes + aprobados) y lo
 // sobrescribe siempre en la misma ruta de Dropbox.
+// Botón "📥 Descargar Excel" de Contabilidad -> Dado por Cumplido: devuelve EL MISMO archivo que se sube a Dropbox.
+exports.exportarDadoPorCumplidoDescargar = onCallAuth(
+  { timeoutSeconds: 120, memory: "512MiB" },
+  async (request) => {
+    await verificarLlamadorConModulos(request, ["contabilidad"], "el Dado por Cumplido");
+    const { buffer, totalLotes } = await generarExcelDadoPorCumplido();
+    return { ok: true, totalLotes, archivoBase64: Buffer.from(buffer).toString("base64") };
+  }
+);
 exports.exportarDadoPorCumplidoADropboxDiario = onSchedule(
   {
     schedule: "0 6 * * *",
