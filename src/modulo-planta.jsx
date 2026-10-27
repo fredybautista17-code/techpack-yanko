@@ -329,9 +329,12 @@ function ProgramarLoteModal({ lote, onConfirm, onClose }) {
 }
 function EditarFechaModal({ fila, onConfirm, onClose }) {
   const [fecha, setFecha] = useState(fila.fechaEnviado || today());
+  const [motivo, setMotivo] = useState("");
+  const cambia = fecha !== fila.fechaEnviado;
+  const puede = !!fecha && (!cambia || motivo.trim().length >= 3);
   function confirmar() {
-    if (!fecha) return;
-    onConfirm(fila.id, fecha);
+    if (!puede) return;
+    onConfirm(fila.id, fecha, motivo.trim());
     onClose();
   }
   return (
@@ -349,9 +352,14 @@ function EditarFechaModal({ fila, onConfirm, onClose }) {
       <Field label="Nueva fecha comprometida de entrega">
         <FInput type="date" value={fecha} onChange={setFecha} />
       </Field>
+      {cambia && (
+        <Field label="Motivo del cambio (va en el correo)">
+          <FInput value={motivo} onChange={setMotivo} placeholder="Ej. falta de insumo, cambio de prioridad…" />
+        </Field>
+      )}
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
-        <Btn variant="danger" onClick={confirmar} disabled={!fecha}>Guardar</Btn>
+        <Btn variant="danger" onClick={confirmar} disabled={!puede}>Guardar y avisar</Btn>
       </div>
     </Modal>
   );
@@ -424,7 +432,7 @@ function ProgramacionDiariaView({ cargaActiva, programacion, onProgramar, onCanc
       {editando && (
         <EditarFechaModal
           fila={editando}
-          onConfirm={(id, fecha) => onEditarFecha(id, fecha)}
+          onConfirm={(id, fecha, motivo) => onEditarFecha(id, fecha, motivo)}
           onClose={() => setEditando(null)}
         />
       )}
@@ -1879,6 +1887,16 @@ export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
   }, [cargasPlaneacion]);
   // Base (Excel o sync viejo) + un documento por año de Busint encima.
   const cargaEntradasActiva = useMemo(() => cargaEntradasActivaDe(cargasEntradas), [cargasEntradas]);
+  // (2026-10-27, a pedido de Fredy) Correo a la lista de Planta de confección al programar, cambiar o cancelar
+  // (destinatarios en Administración → Notificaciones). Si falla, la programación igual queda guardada.
+  function avisarPorCorreo(tipo, items, motivo) {
+    httpsCallable(functionsClient, "notificarProgramacionCorreo")({ area: "planta", tipo, items, motivo: motivo || "", programadoPor: currentUser?.name || currentUser?.username || "" })
+      .then((resp) => {
+        if (resp.data?.sinDestinatarios) alert("Quedó guardado, pero no salió correo: Planta de confección no tiene destinatarios (Administración → Notificaciones).");
+        else if (resp.data?.ok === false) alert("Quedó guardado, pero no se pudo enviar el correo.");
+      })
+      .catch((err) => alert(`Quedó guardado, pero no se pudo enviar el correo: ${err?.message || err}`));
+  }
   async function programarLote(lote, fechaEnviado) {
     const nuevo = {
       id: uid(),
@@ -1898,14 +1916,23 @@ export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
     };
     setProgramacion((ps) => [...ps, nuevo]);
     await fsSave("planta_programacion", nuevo.id, nuevo);
+    avisarPorCorreo("nueva", [{ numLote: nuevo.numLote, referencia: nuevo.referencia, cantidad: nuevo.cantidad, numPedido: nuevo.numPedido ?? "", prioridad: NIVELES_PRIO[nuevo.prioridad]?.txt || "", fecha: fechaEnviado }]);
   }
   async function cancelarProgramacion(id) {
+    const fila = programacion.find((p) => p.id === id);
+    const motivo = window.prompt(`¿Por qué se cancela la programación${fila ? ` del lote ${fila.numLote}` : ""}? (el motivo va en el correo)`);
+    if (!motivo || !motivo.trim()) return;
     setProgramacion((ps) => ps.filter((p) => p.id !== id));
     await fsDelete("planta_programacion", id);
+    if (fila) avisarPorCorreo("cancelada", [{ numLote: fila.numLote, referencia: fila.referencia, cantidad: fila.cantidad, numPedido: fila.numPedido ?? "", prioridad: NIVELES_PRIO[fila.prioridad]?.txt || "", fecha: fila.fechaEnviado }], motivo.trim());
   }
-  async function editarFechaProgramacion(id, nuevaFecha) {
+  async function editarFechaProgramacion(id, nuevaFecha, motivo) {
+    const fila = programacion.find((p) => p.id === id);
     setProgramacion((ps) => ps.map((p) => (p.id === id ? { ...p, fechaEnviado: nuevaFecha } : p)));
     await fsSave("planta_programacion", id, { fechaEnviado: nuevaFecha });
+    if (fila && fila.fechaEnviado !== nuevaFecha) {
+      avisarPorCorreo("cambio", [{ numLote: fila.numLote, referencia: fila.referencia, cantidad: fila.cantidad, numPedido: fila.numPedido ?? "", prioridad: NIVELES_PRIO[fila.prioridad]?.txt || "", fecha: nuevaFecha, antes: { fecha: fila.fechaEnviado } }], motivo);
+    }
   }
   // Cada Excel "ENTRADAS DE PLANTA" que se sube es una carga completa nueva;
   // igual que en Planeación con Hoja1, se guarda como un documento nuevo y el

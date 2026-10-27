@@ -91,6 +91,7 @@ export function lotesEnProcesos(lotes, procesos, hoyISO) {
       filas.push({
         numLote: l.numLote,
         referencia: l.referencia,
+        numPedido: l.numPedido ?? null,
         cliente: l.clienteAgrupado || l.nombreCliente || "",
         proceso: p.nombre,
         inventario: inv,

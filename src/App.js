@@ -13428,6 +13428,96 @@ function NotificacionesProgramadasPanel({ users, config, onUpdateConfig }) {
     </div>
   );
 }
+// (2026-10-27, a pedido de Fredy) Destinatarios de los correos de programación, por área. Se guardan en
+// config/correos_programacion { planta: [], calidad: [], zonacalor: [] }; los lee notificarProgramacionCorreo
+// (al programar, cambiar o cancelar) y enviarCumplimientoProgramacionDiario (7:15 a. m., cumplimiento de ayer).
+const AREAS_CORREO_PROG = [
+  { id: "planta", nombre: "Planta de confección", detalle: "Programación Diaria de Planta Yanko" },
+  { id: "calidad", nombre: "Control de calidad", detalle: "Mi lista por programar y Programador de Procesos" },
+  { id: "zonacalor", nombre: "Zona calor", detalle: "Mi lista por programar y Programador de Procesos" },
+];
+function CorreosProgramacionPanel() {
+  const [listas, setListas] = useState({ planta: [], calidad: [], zonacalor: [] });
+  const [nuevo, setNuevo] = useState({ planta: "", calidad: "", zonacalor: "" });
+  const [msg, setMsg] = useState("");
+  const [probando, setProbando] = useState(false);
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, "config", "correos_programacion"), (snap) => {
+      const d = snap.exists() ? snap.data() : {};
+      const arr = (v) => (Array.isArray(v) ? v : []);
+      setListas({ planta: arr(d.planta), calidad: arr(d.calidad), zonacalor: arr(d.zonacalor) });
+    }, () => {});
+    return unsub;
+  }, []);
+  async function guardar(area, lista) {
+    setListas((l) => ({ ...l, [area]: lista }));
+    await setDoc(doc(db, "config", "correos_programacion"), { [area]: lista }, { merge: true });
+  }
+  async function agregar(area) {
+    const c = String(nuevo[area] || "").trim().toLowerCase();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(c)) { setMsg("Escribe un correo válido, por ejemplo nombre@empresa.com."); return; }
+    if (listas[area].includes(c)) { setNuevo((n) => ({ ...n, [area]: "" })); return; }
+    setMsg("");
+    setNuevo((n) => ({ ...n, [area]: "" }));
+    await guardar(area, [...listas[area], c]);
+  }
+  async function probar() {
+    setProbando(true);
+    setMsg("");
+    try {
+      const resp = await httpsCallable(functionsClient, "enviarCumplimientoProgramacionAhora", { timeout: 540000 })({ paraMi: true });
+      const r = resp.data?.resultado || [];
+      const enviados = r.filter((x) => x.enviado).length;
+      setMsg(enviados
+        ? `Te mandé ${enviados} correo(s) de prueba con el cumplimiento de ${resp.data.ayer}.`
+        : `No hubo nada programado para ${resp.data?.ayer} en ninguna área, por eso no salió correo.`);
+    } catch (err) {
+      setMsg(err?.message || "No se pudo enviar la prueba.");
+    } finally {
+      setProbando(false);
+    }
+  }
+  return (
+    <div style={{ marginBottom: 28, paddingBottom: 22, borderBottom: `1px solid ${T.border}` }}>
+      <div style={{ fontWeight: 700, fontSize: 15, color: T.ink }}>Correos de programación por área</div>
+      <div style={{ fontSize: 12.5, color: T.slate, marginTop: 4, marginBottom: 14, lineHeight: 1.5 }}>
+        A estas personas les llega, de una vez, el tablerito cuando alguien programa, cambia o cancela una programación de su área, y cada mañana a las 7:15 el cumplimiento de lo programado el día anterior.
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(300px,1fr))", gap: 14 }}>
+        {AREAS_CORREO_PROG.map((a) => (
+          <div key={a.id} style={{ border: `1px solid ${T.border}`, borderRadius: 12, padding: 14, background: T.white }}>
+            <div style={{ fontWeight: 800, fontSize: 13.5, color: T.ink }}>{a.nombre}</div>
+            <div style={{ fontSize: 11.5, color: T.slate, marginBottom: 10 }}>{a.detalle}</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+              {listas[a.id].map((c) => (
+                <div key={c} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 6px 4px 10px", background: T.white, borderRadius: 20, border: `1px solid ${T.border}` }}>
+                  <span style={{ fontSize: 12.5, fontWeight: 600, color: T.ink }}>{c}</span>
+                  <button onClick={() => guardar(a.id, listas[a.id].filter((x) => x !== c))} title="Quitar" style={{ width: 18, height: 18, borderRadius: "50%", border: "none", background: "transparent", color: T.coral, fontWeight: 800, fontSize: 12, cursor: "pointer" }}>✕</button>
+                </div>
+              ))}
+              {!listas[a.id].length && <span style={{ fontSize: 12, color: T.coral, fontStyle: "italic" }}>Sin destinatarios: no se manda ningún correo.</span>}
+            </div>
+            <div style={{ display: "flex", gap: 6 }}>
+              <input
+                type="email"
+                value={nuevo[a.id]}
+                onChange={(e) => setNuevo((n) => ({ ...n, [a.id]: e.target.value }))}
+                onKeyDown={(e) => { if (e.key === "Enter") agregar(a.id); }}
+                placeholder="correo@empresa.com"
+                style={{ flex: 1, minWidth: 0, padding: "7px 10px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 12.5, color: T.ink, outline: "none", fontFamily: "inherit" }}
+              />
+              <Btn small variant="secondary" onClick={() => agregar(a.id)}>Agregar</Btn>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
+        <Btn small variant="secondary" onClick={probar} disabled={probando}>{probando ? "Enviando prueba…" : "✉ Mandarme una prueba del cumplimiento de ayer"}</Btn>
+        {msg && <span style={{ fontSize: 12.5, color: T.slate }}>{msg}</span>}
+      </div>
+    </div>
+  );
+}
 function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsulas, onUpdateProto, onUpdateCapsula, onDeleteProto, onDeleteCapsula, onRestaurarProto, onRestaurarCapsula, onRestaurarRef, onPurgarProto, onPurgarCapsula, onPurgarRef, isAdmin, areasNomina, procesosNomina }) {
   const [tab, setTab] = useState("etapas");
   const [newItem, setNewItem] = useState("");
@@ -13982,7 +14072,12 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
           </div>
         )}
         {tab === "usuarios" && <UsersTab users={users} onUpdateUsers={onUpdateUsers} config={config} isAdmin={isAdmin} areasNomina={areasNomina} procesosNomina={procesosNomina} />}
-        {tab === "notificaciones" && <NotificacionesProgramadasPanel users={users} config={config} onUpdateConfig={onUpdateConfig} />}
+        {tab === "notificaciones" && (
+          <>
+            <CorreosProgramacionPanel />
+            <NotificacionesProgramadasPanel users={users} config={config} onUpdateConfig={onUpdateConfig} />
+          </>
+        )}
         {tab === "clientes" && <ClientesTab config={config} onUpdateConfig={onUpdateConfig} />}
         {tab === "contenido" && (
           <div>

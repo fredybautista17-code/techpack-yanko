@@ -1207,6 +1207,127 @@ function normProcesoProg(s) {
 function hoyBogotaISO() {
   return new Date().toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
 }
+// (2026-10-27, a pedido de Fredy) Correos de programación (Control de calidad / Zona calor): al programar, cambiar o cancelar
+// sale de una vez un tablerito (lote, cantidad, pedido, prioridad) a la lista de esa área (Administración → Notificaciones).
+// Si el correo falla, la programación igual queda guardada.
+function itemCorreoProgramacion(p) {
+  return {
+    numLote: p.numLote,
+    referencia: p.referencia || "",
+    proceso: p.proceso || "",
+    cantidad: p.cantidad ?? null,
+    numPedido: p.numPedido ?? "",
+    prioridad: p.prioridad || "",
+    fecha: p.fechaProgramada || "",
+    hora: p.horaInicio || "",
+    trabajador: p.trabajadorNombre || "",
+  };
+}
+function avisarProgramacionPorCorreo({ tipo, areaTexto, items, motivo, programadoPor }) {
+  httpsCallable(functionsClient, "notificarProgramacionCorreo")({ tipo, areaTexto: areaTexto || "", items, motivo: motivo || "", programadoPor: programadoPor || "" })
+    .then((resp) => {
+      if (resp.data?.sinDestinatarios) alert(`Quedó guardado, pero no salió correo: ${resp.data.area || "esta área"} no tiene destinatarios (Administración → Notificaciones).`);
+      else if (resp.data?.ok === false && resp.data?.motivo === "area_desconocida") return; // otras áreas (no Calidad/Zona calor): sin correo
+      else if (resp.data?.ok === false) alert("Quedó guardado, pero no se pudo enviar el correo.");
+    })
+    .catch((err) => alert(`Quedó guardado, pero no se pudo enviar el correo: ${err?.message || err}`));
+}
+function lotesDeUltimaCarga(cargas) {
+  if (!cargas?.length) return [];
+  return [...cargas].sort((a, b) => (b.creadoEn || b.fecha || "").localeCompare(a.creadoEn || a.fecha || ""))[0]?.lotes || [];
+}
+// Pedido y prioridad del lote (misma regla de Planta) para guardarlos con la programación y mostrarlos en el correo.
+function enriquecerProgramacionConLote(datos, lotes) {
+  const l = (lotes || []).find((x) => String(x.numLote) === String(datos.numLote));
+  if (!l) return {};
+  const prio = prioridadPedido(l, estadisticasPedidos(lotes), hoyBogotaISO());
+  return { numPedido: l.numPedido ?? null, prioridad: prio.prioridad };
+}
+async function cancelarProgramacionConAviso(p, { areaTexto, programadoPor }) {
+  const motivo = window.prompt(`¿Por qué se cancela la programación del lote ${p?.numLote || ""}${p?.proceso ? ` (${p.proceso})` : ""}? (el motivo va en el correo)`);
+  if (!motivo || !motivo.trim()) return false;
+  await fsDelete("planeacion_programacion_procesos", p.id);
+  avisarProgramacionPorCorreo({ tipo: "cancelada", areaTexto, items: [itemCorreoProgramacion(p)], motivo: motivo.trim(), programadoPor });
+  return true;
+}
+async function cambiarProgramacionProceso(p, nuevo, motivo, { areaTexto, programadoPor }) {
+  const parche = {
+    fechaProgramada: nuevo.fechaProgramada,
+    horaInicio: nuevo.horaInicio,
+    trabajadorId: nuevo.trabajadorId,
+    trabajadorNombre: nuevo.trabajadorNombre,
+    cantidad: nuevo.cantidad,
+    ultimoCambio: { por: programadoPor || "", motivo, en: new Date().toISOString() },
+  };
+  await fsSave("planeacion_programacion_procesos", p.id, parche);
+  avisarProgramacionPorCorreo({
+    tipo: "cambio",
+    areaTexto,
+    items: [{ ...itemCorreoProgramacion({ ...p, ...parche }), antes: { fecha: p.fechaProgramada || "", hora: p.horaInicio || "", cantidad: p.cantidad ?? null, trabajador: p.trabajadorNombre || "" } }],
+    motivo,
+    programadoPor,
+  });
+}
+// Modal "Cambiar programación": fecha, hora, trabajador y cantidad nuevos + motivo obligatorio; al guardar avisa por correo.
+function CambiarProgramacionModal({ p, equipo, onGuardar, onClose }) {
+  const [fecha, setFecha] = useState(p.fechaProgramada || hoyBogotaISO());
+  const [hora, setHora] = useState(p.horaInicio || "06:00");
+  const [trabajadorId, setTrabajadorId] = useState(p.trabajadorId || "");
+  const [cantidad, setCantidad] = useState(p.cantidad != null ? String(p.cantidad) : "");
+  const [motivo, setMotivo] = useState("");
+  const [guardando, setGuardando] = useState(false);
+  const lista = equipo || [];
+  const t = lista.find((x) => x.id === trabajadorId);
+  const hayCambio = fecha !== (p.fechaProgramada || "") || hora !== (p.horaInicio || "") || trabajadorId !== (p.trabajadorId || "") || (cantidad !== "" && Number(cantidad) !== Number(p.cantidad));
+  const puede = hayCambio && fecha && hora && trabajadorId && Number(cantidad) > 0 && motivo.trim().length >= 3 && !guardando;
+  const campo = { width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, fontFamily: "inherit" };
+  const etiqueta = { fontSize: 11, fontWeight: 700, color: C.slate, display: "block", marginBottom: 6, textTransform: "uppercase" };
+  async function guardar() {
+    if (!puede) return;
+    setGuardando(true);
+    try {
+      await onGuardar(p, { fechaProgramada: fecha, horaInicio: hora, trabajadorId, trabajadorNombre: t?.name || t?.nombre || p.trabajadorNombre || "", cantidad: Number(cantidad) }, motivo.trim());
+      onClose();
+    } finally {
+      setGuardando(false);
+    }
+  }
+  return (
+    <Modal title={`Cambiar programación — Lote ${p.numLote}${p.proceso ? ` · ${p.proceso}` : ""}`} onClose={onClose} width={480}>
+      <div style={{ fontSize: 12.5, color: C.slate, marginBottom: 14 }}>Cambia lo que haga falta y escribe por qué. Al guardar, le llega un correo a la lista de tu área con lo anterior y lo nuevo.</div>
+      <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
+        <div style={{ flex: 1 }}>
+          <label style={etiqueta}>Fecha</label>
+          <input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} style={campo} />
+        </div>
+        <div style={{ flex: 1 }}>
+          <label style={etiqueta}>Hora de inicio</label>
+          <input type="time" value={hora} onChange={(e) => setHora(e.target.value)} style={campo} />
+        </div>
+      </div>
+      <div style={{ marginBottom: 14 }}>
+        <label style={etiqueta}>Trabajador</label>
+        <select value={trabajadorId} onChange={(e) => setTrabajadorId(e.target.value)} style={campo}>
+          {!lista.some((x) => x.id === p.trabajadorId) && p.trabajadorId ? <option value={p.trabajadorId}>{p.trabajadorNombre || p.trabajadorId}</option> : null}
+          <option value="">Seleccionar...</option>
+          {lista.map((x) => <option key={x.id} value={x.id}>{x.name || x.nombre}</option>)}
+        </select>
+      </div>
+      <div style={{ marginBottom: 14 }}>
+        <label style={etiqueta}>Cantidad</label>
+        <input type="number" min="1" value={cantidad} onChange={(e) => setCantidad(e.target.value)} style={campo} />
+      </div>
+      <div style={{ marginBottom: 16 }}>
+        <label style={etiqueta}>Motivo del cambio (va en el correo)</label>
+        <input value={motivo} onChange={(e) => setMotivo(e.target.value)} placeholder="Ej. falta de insumo, la máquina estará ocupada…" style={campo} />
+      </div>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={guardar} disabled={!puede}>{guardando ? "Guardando..." : "Guardar y avisar"}</Btn>
+      </div>
+    </Modal>
+  );
+}
 function programacionesDeLote(programaciones, numLote, proceso) {
   const np = normProcesoProg(proceso);
   return (programaciones || [])
@@ -3330,9 +3451,11 @@ function ProgramadorProcesosView({
   onActualizarMovimientos,
   onProgramar,
   onCancelarProgramacion,
+  onCambiarProgramacion,
 }) {
   const misProcesos = procesos || currentUser?.procesosPlaneacion || [];
   const [modalProgramar, setModalProgramar] = useState(null);
+  const [cambiandoProg, setCambiandoProg] = useState(null);
   const [fechaForm, setFechaForm] = useState(today());
   // (2026-09-28, a pedido de Fredy) Hora de inicio de ESTA tanda
   // programada -- permite programar el mismo lote+proceso más de una vez
@@ -3653,7 +3776,10 @@ function ProgramadorProcesosView({
               {f.llegoVencido && <span style={{ fontSize: 10, fontWeight: 700, color: C.red }}>⚠️ Llegó vencido</span>}
               {detalleCumplimiento(f) && <span style={{ fontSize: 10.5, color: C.green, fontWeight: 600, textAlign: "right" }}>{detalleCumplimiento(f)}</span>}
             </div>
-            <span onClick={() => onCancelarProgramacion(f.id)} style={{ cursor: "pointer", color: C.red, fontSize: 16 }} title="Cancelar programación">✕</span>
+            <span style={{ display: "inline-flex", gap: 8, alignItems: "center" }}>
+              {onCambiarProgramacion && f.estado !== "CUMPLIDO" && <span onClick={() => setCambiandoProg(f)} style={{ cursor: "pointer", color: C.blue, fontSize: 15 }} title="Cambiar programación y avisar">✎</span>}
+              <span onClick={() => onCancelarProgramacion(f.id)} style={{ cursor: "pointer", color: C.red, fontSize: 16 }} title="Cancelar programación">✕</span>
+            </span>
           </div>
         ))}
       </div>
@@ -3661,6 +3787,9 @@ function ProgramadorProcesosView({
   }
   return (
     <div>
+      {cambiandoProg && onCambiarProgramacion && (
+        <CambiarProgramacionModal p={cambiandoProg} equipo={trabajadoresEquipo} onGuardar={onCambiarProgramacion} onClose={() => setCambiandoProg(null)} />
+      )}
       {modalProgramar && (
         <Modal title={`Programar Lote ${modalProgramar.numLote} — ${modalProgramar.proceso}`} onClose={() => setModalProgramar(null)} width={480}>
           <div style={{ fontSize: 13, color: C.slate, marginBottom: 14 }}>
@@ -3907,15 +4036,23 @@ export function ProgramadorProcesosStandalone({ currentUser, onVolver, onLogout,
   }
   async function guardarProgramacion(datos) {
     const id = uid();
+    const extra = enriquecerProgramacionConLote(datos, lotesActivos);
     await fsSave("planeacion_programacion_procesos", id, {
       ...datos,
+      ...extra,
       liderUsername: currentUser?.username || "",
       liderNombre: currentUser?.name || "",
       creadoEn: new Date().toISOString(),
     });
+    avisarProgramacionPorCorreo({ tipo: "nueva", areaTexto: currentUser?.areaNomina, items: [itemCorreoProgramacion({ ...datos, ...extra })], programadoPor: currentUser?.name || currentUser?.username });
   }
   async function cancelarProgramacion(id) {
-    await fsDelete("planeacion_programacion_procesos", id);
+    const fila = programaciones.find((x) => x.id === id);
+    if (!fila) return;
+    await cancelarProgramacionConAviso(fila, { areaTexto: currentUser?.areaNomina, programadoPor: currentUser?.name || currentUser?.username });
+  }
+  async function cambiarProgramacion(p, nuevo, motivo) {
+    await cambiarProgramacionProceso(p, nuevo, motivo, { areaTexto: currentUser?.areaNomina, programadoPor: currentUser?.name || currentUser?.username });
   }
   if (loading) {
     return (
@@ -3959,6 +4096,7 @@ export function ProgramadorProcesosStandalone({ currentUser, onVolver, onLogout,
             onActualizarMovimientos={actualizarMovimientos}
             onProgramar={guardarProgramacion}
             onCancelarProgramacion={cancelarProgramacion}
+            onCambiarProgramacion={cambiarProgramacion}
           />
         </div>
       </div>
@@ -4029,6 +4167,7 @@ export function ListaPorProgramarBloque({ currentUser, incrustado = true }) {
   const [busqueda, setBusqueda] = useState("");
   const [verTodosCumplidos, setVerTodosCumplidos] = useState(false);
   const [modal, setModal] = useState(null);
+  const [cambiando, setCambiando] = useState(null);
   const [fechaForm, setFechaForm] = useState(hoyBogotaISO());
   const [horaForm, setHoraForm] = useState("06:00");
   const [trabajadorForm, setTrabajadorForm] = useState("");
@@ -4116,6 +4255,14 @@ export function ListaPorProgramarBloque({ currentUser, incrustado = true }) {
         liderNombre: currentUser?.name || "",
         creadoEn: new Date().toISOString(),
         origen: "lista_por_programar",
+        numPedido: modal.numPedido ?? null,
+        prioridad: modal.prioridad || null,
+      });
+      avisarProgramacionPorCorreo({
+        tipo: "nueva",
+        areaTexto: areaNombre,
+        items: [itemCorreoProgramacion({ numLote: modal.numLote, referencia: modal.referencia, proceso: modal.proceso, cantidad: Number(cantidadForm), numPedido: modal.numPedido, prioridad: modal.prioridad, fechaProgramada: fechaForm, horaInicio: horaForm, trabajadorNombre: t?.name || t?.nombre || "" })],
+        programadoPor: currentUser?.name || currentUser?.username,
       });
       setModal(null);
     } finally {
@@ -4124,7 +4271,10 @@ export function ListaPorProgramarBloque({ currentUser, incrustado = true }) {
   }
   async function cancelar(p) {
     if (!window.confirm(`¿Quitar la programación del lote ${p.numLote} (${p.proceso}) de ${p.trabajadorNombre || "sin nombre"}?`)) return;
-    await fsDelete("planeacion_programacion_procesos", p.id);
+    await cancelarProgramacionConAviso(p, { areaTexto: areaNombre, programadoPor: currentUser?.name || currentUser?.username });
+  }
+  async function cambiarProgramacion(p, nuevo, motivo) {
+    await cambiarProgramacionProceso(p, { ...nuevo, prioridad: p.prioridad, numPedido: p.numPedido }, motivo, { areaTexto: areaNombre, programadoPor: currentUser?.name || currentUser?.username });
   }
   function btnTab(id, label, n) {
     return <SubTab key={id} activo={tab === id} onClick={() => setTab(id)}>{label} · {n}</SubTab>;
@@ -4144,7 +4294,12 @@ export function ListaPorProgramarBloque({ currentUser, incrustado = true }) {
         {p.parcial && <span style={{ fontSize: 10.5, color: C.amber, fontWeight: 700 }}>parcial {fmtNum(p.hecho)}/{fmtNum(p.cantidad)}</span>}
       </span>
     ) },
-    { key: "_x", label: "", render: (p) => <span onClick={() => cancelar(p)} style={{ cursor: "pointer", color: C.red, fontSize: 15 }} title="Quitar programación">✕</span> },
+    { key: "_x", label: "", render: (p) => (
+      <span style={{ display: "inline-flex", gap: 10, alignItems: "center" }}>
+        <span onClick={() => setCambiando(p)} style={{ cursor: "pointer", color: C.blue, fontSize: 14 }} title="Cambiar la programación y avisar">✎</span>
+        <span onClick={() => cancelar(p)} style={{ cursor: "pointer", color: C.red, fontSize: 15 }} title="Quitar programación">✕</span>
+      </span>
+    ) },
   ];
   const colsCumplidos = [
     { key: "fechaCumplimiento", label: "Cumplido (Busint)", render: (p) => fmtFechaISO(p.fechaCumplimiento) },
@@ -4174,6 +4329,7 @@ export function ListaPorProgramarBloque({ currentUser, incrustado = true }) {
   }
   return (
     <div style={incrustado ? { marginBottom: 28 } : {}}>
+      {cambiando && <CambiarProgramacionModal p={cambiando} equipo={equipo} onGuardar={cambiarProgramacion} onClose={() => setCambiando(null)} />}
       {modal && (
         <Modal title={`Programar Lote ${modal.numLote} — ${modal.proceso}`} onClose={() => setModal(null)} width={480}>
           <div style={{ fontSize: 13, color: C.slate, marginBottom: 14 }}>
@@ -7067,16 +7223,24 @@ export function AreasStandalone({ currentUser, onVolver, onLogout, puedeCentroCo
   }
   async function guardarProgramacion(datos) {
     const id = uid();
+    const extra = enriquecerProgramacionConLote(datos, lotesDeUltimaCarga(cargas));
     await fsSave("planeacion_programacion_procesos", id, {
       ...datos,
+      ...extra,
       liderUsername: currentUser?.username || "",
       liderNombre: currentUser?.name || "",
       programadoDesdeArea: areaActual?.nombre || "",
       creadoEn: new Date().toISOString(),
     });
+    avisarProgramacionPorCorreo({ tipo: "nueva", areaTexto: areaActual?.nombre, items: [itemCorreoProgramacion({ ...datos, ...extra })], programadoPor: currentUser?.name || currentUser?.username });
   }
   async function cancelarProgramacion(id) {
-    await fsDelete("planeacion_programacion_procesos", id);
+    const fila = programaciones.find((x) => x.id === id);
+    if (!fila) return;
+    await cancelarProgramacionConAviso(fila, { areaTexto: areaActual?.nombre, programadoPor: currentUser?.name || currentUser?.username });
+  }
+  async function cambiarProgramacion(p, nuevo, motivo) {
+    await cambiarProgramacionProceso(p, nuevo, motivo, { areaTexto: areaActual?.nombre, programadoPor: currentUser?.name || currentUser?.username });
   }
   function abrirArea(nombre) {
     setAreaSel(nombre);
@@ -7219,6 +7383,7 @@ export function AreasStandalone({ currentUser, onVolver, onLogout, puedeCentroCo
                   onActualizarMovimientos={actualizarMovimientos}
                   onProgramar={guardarProgramacion}
                   onCancelarProgramacion={cancelarProgramacion}
+                  onCambiarProgramacion={cambiarProgramacion}
                 />
               )}
               {seccion === "cierre" && PERMISO_TAB.cierre && (

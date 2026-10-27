@@ -9372,6 +9372,267 @@ async function agregarSeccionNotificacion({ correos, titulo, horaOrigen, html })
     });
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// (2026-10-27, a pedido de Fredy) Correos de programación por área.
+//  - Al programar (Planta de confección, Control de calidad, Zona calor) la pantalla llama a
+//    `notificarProgramacionCorreo`: sale de una vez un tablerito con lote, cantidad, pedido y
+//    prioridad a la lista de esa área. Lo mismo al CAMBIAR o CANCELAR una programación (con motivo).
+//  - Cada mañana (7:15) `enviarCumplimientoProgramacionDiario` manda, por área, el cumplimiento de lo
+//    que estaba programado AYER: Planta contra la carga de Planeación (el lote ya no está en Planta
+//    Yanko) y Zona calor / Control de calidad contra las ENTRADAS de Busint.
+//  - Los destinatarios viven en config/correos_programacion { planta: [], calidad: [], zonacalor: [] }
+//    y se editan en Administración. Todo queda en programacion_correos_log.
+// ─────────────────────────────────────────────────────────────────────────
+const AREAS_CORREO_PROGRAMACION = { planta: "Planta de confección", calidad: "Control de calidad", zonacalor: "Zona calor" };
+function claveAreaCorreoProgramacion(texto) {
+  const t = String(texto || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+  if (t.includes("calor")) return "zonacalor";
+  if (t.includes("calidad")) return "calidad";
+  if (t.includes("planta") || t.includes("confec")) return "planta";
+  return "";
+}
+function escHtmlCP(v) {
+  return String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+function fechaLatinaCP(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ""));
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : String(iso || "—");
+}
+function sumarDiasISOCP(iso, n) {
+  const [y, m, d] = String(iso).slice(0, 10).split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
+}
+async function destinatariosProgramacionCP(area) {
+  const snap = await db.collection("config").doc("correos_programacion").get();
+  const lista = snap.exists ? snap.data()?.[area] : [];
+  return [...new Set((Array.isArray(lista) ? lista : String(lista || "").split(/[\s,;]+/)).map((x) => String(x).trim()).filter((x) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(x)))];
+}
+const COLOR_PRIORIDAD_CP = { alta: ["#b42318", "#fee4e2"], media: ["#b54708", "#fef0c7"], normal: ["#067647", "#d1fadf"] };
+function chipPrioridadCP(prio) {
+  const txt = String(prio || "").trim();
+  if (!txt) return "—";
+  const [c, bg] = COLOR_PRIORIDAD_CP[txt.toLowerCase()] || ["#475467", "#f2f4f7"];
+  return `<span style="display:inline-block;padding:2px 10px;border-radius:999px;font-weight:700;font-size:12px;color:${c};background:${bg}">${escHtmlCP(txt)}</span>`;
+}
+function tablaHtmlCP(columnas, filas) {
+  const th = (c) => `<th style="text-align:${c.align || "left"};padding:8px 10px;background:#101828;color:#fff;font-size:12px;white-space:nowrap">${escHtmlCP(c.label)}</th>`;
+  const td = (c, f) => `<td style="text-align:${c.align || "left"};padding:8px 10px;border-bottom:1px solid #eaecf0;font-size:13px">${c.html ? c.html(f) : escHtmlCP(c.val(f))}</td>`;
+  return `<table style="border-collapse:collapse;width:100%;max-width:760px;font-family:Arial,Helvetica,sans-serif"><thead><tr>${columnas.map(th).join("")}</tr></thead><tbody>${filas.map((f) => `<tr>${columnas.map((c) => td(c, f)).join("")}</tr>`).join("")}</tbody></table>`;
+}
+function envolverCorreoCP(titulo, intro, cuerpoHtml, pie) {
+  return `<div style="font-family:Arial,Helvetica,sans-serif;color:#101828"><h2 style="margin:0 0 6px;font-size:18px">${escHtmlCP(titulo)}</h2><p style="margin:0 0 14px;font-size:13px;color:#475467">${intro}</p>${cuerpoHtml}${pie ? `<p style="margin-top:14px;font-size:12px;color:#667085">${pie}</p>` : ""}</div>`;
+}
+function limpiarItemProgramacionCP(it) {
+  const s = (v, n = 80) => String(v ?? "").slice(0, n);
+  const antes = it?.antes && typeof it.antes === "object" ? { fecha: s(it.antes.fecha, 10), hora: s(it.antes.hora, 5), cantidad: it.antes.cantidad ?? null, trabajador: s(it.antes.trabajador) } : null;
+  return { numLote: s(it?.numLote, 20), referencia: s(it?.referencia, 40), proceso: s(it?.proceso, 60), cantidad: it?.cantidad ?? null, numPedido: s(it?.numPedido, 20), prioridad: s(it?.prioridad, 12), fecha: s(it?.fecha, 10), hora: s(it?.hora, 5), trabajador: s(it?.trabajador), antes };
+}
+exports.notificarProgramacionCorreo = onCallAuth(
+  { secrets: [EMAIL_USER, EMAIL_APP_PASSWORD], timeoutSeconds: 60, memory: "256MiB" },
+  async (request) => {
+    const d = request.data || {};
+    const area = AREAS_CORREO_PROGRAMACION[d.area] ? d.area : claveAreaCorreoProgramacion(d.areaTexto);
+    if (!area) return { ok: false, motivo: "area_desconocida" };
+    const tipo = ["nueva", "cambio", "cancelada"].includes(d.tipo) ? d.tipo : "nueva";
+    const items = (Array.isArray(d.items) ? d.items : []).slice(0, 60).map(limpiarItemProgramacionCP);
+    if (!items.length) throw new HttpsError("invalid-argument", "No hay lotes para avisar.");
+    const motivo = String(d.motivo || "").trim().slice(0, 500);
+    if (tipo !== "nueva" && !motivo) throw new HttpsError("invalid-argument", "Falta el motivo del cambio.");
+    const por = String(d.programadoPor || "").slice(0, 80) || "—";
+    const nombreArea = AREAS_CORREO_PROGRAMACION[area];
+    const hoyLatino = fechaLatinaCP(fechaHoyBogota());
+    const lotesTxt = items.length === 1 ? ` — lote ${items[0].numLote}` : ` — ${items.length} lotes`;
+    const prefijo = tipo === "cambio" ? "CAMBIO — " : tipo === "cancelada" ? "CANCELADO — " : "";
+    const asunto = `${prefijo}Programación ${nombreArea}${lotesTxt} — ${hoyLatino}`;
+    const hayProceso = items.some((i) => i.proceso);
+    const hayTrabajador = items.some((i) => i.trabajador);
+    const hayHora = items.some((i) => i.hora);
+    const cambio = (a, b) => (a !== undefined && a !== null && String(a) !== "" && String(a) !== String(b) ? `<span style="color:#98a2b3;text-decoration:line-through">${escHtmlCP(a)}</span> → <b>${escHtmlCP(b)}</b>` : escHtmlCP(b));
+    const columnas = [
+      { label: "Lote", html: (f) => `<b>${escHtmlCP(f.numLote)}</b>` },
+      { label: "Referencia", val: (f) => f.referencia || "—" },
+      ...(hayProceso ? [{ label: "Proceso", val: (f) => f.proceso || "—" }] : []),
+      { label: "Cantidad", align: "right", html: (f) => (tipo === "cambio" && f.antes ? cambio(f.antes.cantidad, f.cantidad ?? "—") : escHtmlCP(f.cantidad ?? "—")) },
+      { label: "Pedido", val: (f) => f.numPedido || "—" },
+      { label: "Prioridad", html: (f) => chipPrioridadCP(f.prioridad) },
+      { label: hayHora ? "Fecha y hora" : "Fecha", html: (f) => {
+        const ahora = `${fechaLatinaCP(f.fecha)}${f.hora ? ` ${escHtmlCP(f.hora)}` : ""}`;
+        if (tipo === "cambio" && f.antes && (f.antes.fecha !== f.fecha || f.antes.hora !== f.hora)) {
+          return `<span style="color:#98a2b3;text-decoration:line-through">${fechaLatinaCP(f.antes.fecha)}${f.antes.hora ? ` ${escHtmlCP(f.antes.hora)}` : ""}</span> → <b>${ahora}</b>`;
+        }
+        return ahora;
+      } },
+      ...(hayTrabajador ? [{ label: "Trabajador", html: (f) => (tipo === "cambio" && f.antes ? cambio(f.antes.trabajador, f.trabajador || "—") : escHtmlCP(f.trabajador || "—")) }] : []),
+    ];
+    const titulo = tipo === "cambio" ? `Cambio en la programación — ${nombreArea}` : tipo === "cancelada" ? `Programación cancelada — ${nombreArea}` : `Programación — ${nombreArea}`;
+    const intro = `${tipo === "nueva" ? "Programó" : tipo === "cambio" ? "Cambió" : "Canceló"}: <b>${escHtmlCP(por)}</b> · ${hoyLatino}.${motivo ? `<br><b>Motivo:</b> ${escHtmlCP(motivo)}` : ""}`;
+    const html = envolverCorreoCP(titulo, intro, tablaHtmlCP(columnas, items), "Mensaje automático de ATLAS.");
+    const para = await destinatariosProgramacionCP(area);
+    const registro = { area, tipo, items, motivo, programadoPor: por, uid: request.auth?.uid || "", asunto, destinatarios: para, creadoEn: new Date().toISOString() };
+    if (!para.length) {
+      await db.collection("programacion_correos_log").add({ ...registro, enviado: false, error: "sin destinatarios" });
+      return { ok: false, sinDestinatarios: true, area: nombreArea };
+    }
+    try {
+      await mandarCorreo(crearTransporte(), para, asunto, html);
+      await db.collection("programacion_correos_log").add({ ...registro, enviado: true });
+      return { ok: true, enviados: para.length, area: nombreArea };
+    } catch (err) {
+      logger.error("notificarProgramacionCorreo: falló el envío", { error: String(err), area, tipo });
+      await db.collection("programacion_correos_log").add({ ...registro, enviado: false, error: String(err).slice(0, 300) });
+      return { ok: false, error: "No se pudo enviar el correo." };
+    }
+  }
+);
+
+// Misma regla de la pantalla (src/lista-programar-calculo.js → estadosProgramaciones): solo ENTRADAS de Busint.
+function estadosProgramacionesCP(programaciones, entradas, hoyISO) {
+  const claveLP = (n, p) => `${n}||${String(p || "").normalize("NFD").replace(/[̀-ͯ]/g, "").trim().toUpperCase()}`;
+  const entPorClave = new Map();
+  (entradas || []).forEach((r) => entPorClave.set(claveLP(r.numLote, r.proceso), r));
+  const grupos = new Map();
+  programaciones.forEach((p) => {
+    const k = claveLP(p.numLote, p.proceso);
+    if (!grupos.has(k)) grupos.set(k, []);
+    grupos.get(k).push(p);
+  });
+  const out = [];
+  grupos.forEach((lista, k) => {
+    const ent = entPorClave.get(k);
+    const ord = [...lista].sort((a, b) => (a.fechaProgramada || "").localeCompare(b.fechaProgramada || "") || (a.horaInicio || "").localeCompare(b.horaInicio || ""));
+    const desde = ord.map((p) => String(p.creadoEn || "").slice(0, 10)).filter(Boolean).sort()[0] || "";
+    const vale = !!ent && (!desde || (ent.ultima || ent.primera || "") >= desde);
+    let disponible = vale ? Number(ent.total) || 0 : 0;
+    ord.forEach((p) => {
+      const cant = p.cantidad == null ? null : Number(p.cantidad) || 0;
+      let hecho = 0;
+      if (disponible > 0) {
+        hecho = cant === null ? disponible : Math.min(cant, disponible);
+        disponible = Math.max(0, disponible - hecho);
+      }
+      const completo = cant === null ? hecho > 0 : hecho >= cant;
+      const fechaCumplimiento = vale ? ent.ultima || ent.primera || null : null;
+      out.push({ ...p, hecho, completo, parcial: !completo && hecho > 0, fechaCumplimiento: completo ? fechaCumplimiento : null, llegoTarde: completo && !!fechaCumplimiento && fechaCumplimiento > (p.fechaProgramada || "") });
+    });
+  });
+  return out;
+}
+async function armarCumplimientoProgramacionCP(fechaRef) {
+  const ayer = sumarDiasISOCP(fechaRef, -1);
+  const porArea = { planta: [], calidad: [], zonacalor: [] };
+  // ── Planta de confección: contra la última carga de Planeación (igual que la pantalla) ──
+  const plantaSnap = await db.collection("planta_programacion").where("fechaEnviado", "==", ayer).get();
+  if (!plantaSnap.empty) {
+    let enPlanta = null;
+    let fechaCarga = null;
+    try {
+      const s = await db.collection("planeacion_cargas").orderBy("creadoEn", "desc").limit(1).get();
+      if (!s.empty) {
+        const c = s.docs[0].data();
+        fechaCarga = c.fecha || null;
+        enPlanta = new Set((c.lotes || []).filter((l) => l.nombrePlanta === "INDUSTRIAS YANKO MODULO CENTRO" && (l.ubicacionActual ? l.ubicacionActual === "Planta" : l.invPlanta > 0)).map((l) => String(l.numLote)));
+      }
+    } catch (err) {
+      logger.warn("cumplimiento programación: no se pudo leer la carga de planeación", { error: String(err) });
+    }
+    plantaSnap.docs.forEach((dc) => {
+      const p = dc.data();
+      const cumplido = p.estado === "cumplido" || (enPlanta && !enPlanta.has(String(p.numLote)));
+      const fecha = p.fechaCumplioISO || (cumplido ? fechaCarga : null);
+      porArea.planta.push({ numLote: String(p.numLote), referencia: p.referencia || "", proceso: "", trabajador: "", cantidad: p.cantidad ?? null, hecho: cumplido ? p.cantidad ?? null : 0, numPedido: p.numPedido ?? "", prioridad: p.prioridad ? String(p.prioridad).charAt(0).toUpperCase() + String(p.prioridad).slice(1) : "", estado: cumplido ? (fecha && fecha > ayer ? "tarde" : "cumplido") : "no", fechaCumplimiento: fecha });
+    });
+  }
+  // ── Zona calor / Control de calidad: contra las ENTRADAS de Busint ──
+  const progSnap = await db.collection("planeacion_programacion_procesos").get();
+  const todas = progSnap.docs.map((dc) => ({ id: dc.id, ...dc.data() }));
+  if (todas.some((p) => p.fechaProgramada === ayer)) {
+    const [areasSnap, usersSnap] = await Promise.all([db.collection("nomina_areas").get(), db.collection("users").get()]);
+    const norm = (s) => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").trim().toUpperCase();
+    const areaPorProceso = new Map();
+    areasSnap.docs.forEach((dc) => {
+      const a = dc.data();
+      const clave = claveAreaCorreoProgramacion(a.nombre);
+      (a.procesosCentroCosto || []).forEach((p) => { if (clave) areaPorProceso.set(norm(p), clave); });
+    });
+    areaPorProceso.set("TERMOFIJACION", areaPorProceso.get("TERMOFIJACION") || "zonacalor");
+    areaPorProceso.set("EMPAQUE", areaPorProceso.get("EMPAQUE") || "calidad");
+    const areaPorLider = new Map(usersSnap.docs.map((u) => [u.data().username, claveAreaCorreoProgramacion(u.data().areaNomina)]));
+    const [entradasRef, fechasEntrada] = await Promise.all([
+      consultarTablaBusintBDCompleta("bmp - entrada plantaproc ref"),
+      fechasPorDocumentoBusintBD("bmp - entrada plantaproc", ["Entrada", "entrada"]),
+    ]);
+    const entradas = resumenMovimientosPorLoteProceso(entradasRef, fechasEntrada, "Entrada");
+    const estados = estadosProgramacionesCP(todas, entradas, fechaRef);
+    estados.filter((p) => p.fechaProgramada === ayer).forEach((p) => {
+      const area = claveAreaCorreoProgramacion(p.programadoDesdeArea) || areaPorLider.get(p.liderUsername) || areaPorProceso.get(norm(p.proceso)) || "";
+      if (!area || area === "planta") return;
+      porArea[area].push({ numLote: String(p.numLote), referencia: p.referencia || "", proceso: p.proceso || "", trabajador: p.trabajadorNombre || "", cantidad: p.cantidad ?? null, hecho: p.hecho, numPedido: p.numPedido ?? "", prioridad: p.prioridad || "", estado: p.completo ? (p.llegoTarde ? "tarde" : "cumplido") : p.parcial ? "parcial" : "no", fechaCumplimiento: p.fechaCumplimiento });
+    });
+  }
+  return { ayer, porArea };
+}
+async function enviarCumplimientoProgramacionCP({ fechaRef, soloArea, destinoPrueba }) {
+  const { ayer, porArea } = await armarCumplimientoProgramacionCP(fechaRef || fechaHoyBogota());
+  const resultado = [];
+  for (const area of Object.keys(AREAS_CORREO_PROGRAMACION)) {
+    if (soloArea && soloArea !== area) continue;
+    const filas = porArea[area];
+    if (!filas.length) { resultado.push({ area, filas: 0, enviado: false, motivo: "nada programado para ese día" }); continue; }
+    const para = destinoPrueba ? [destinoPrueba] : await destinatariosProgramacionCP(area);
+    if (!para.length) { resultado.push({ area, filas: filas.length, enviado: false, motivo: "sin destinatarios" }); continue; }
+    const cumplidos = filas.filter((f) => f.estado === "cumplido" || f.estado === "tarde").length;
+    const nombreArea = AREAS_CORREO_PROGRAMACION[area];
+    const hayProceso = filas.some((f) => f.proceso);
+    const chip = (f) => {
+      const mapa = { cumplido: ["Cumplido", "#067647", "#d1fadf"], tarde: ["Cumplido tarde", "#b54708", "#fef0c7"], parcial: [`Parcial ${f.hecho ?? 0} de ${f.cantidad ?? "?"}`, "#b54708", "#fef0c7"], no: ["No cumplido", "#b42318", "#fee4e2"] };
+      const [t, c, bg] = mapa[f.estado];
+      return `<span style="display:inline-block;padding:2px 10px;border-radius:999px;font-weight:700;font-size:12px;color:${c};background:${bg}">${escHtmlCP(t)}</span>${f.fechaCumplimiento && f.estado !== "no" ? `<div style="font-size:11px;color:#667085">${fechaLatinaCP(f.fechaCumplimiento)}</div>` : ""}`;
+    };
+    const columnas = [
+      { label: "Lote", html: (f) => `<b>${escHtmlCP(f.numLote)}</b>` },
+      { label: "Referencia", val: (f) => f.referencia || "—" },
+      ...(hayProceso ? [{ label: "Proceso", val: (f) => f.proceso || "—" }, { label: "Trabajador", val: (f) => f.trabajador || "—" }] : []),
+      { label: "Cantidad", align: "right", val: (f) => f.cantidad ?? "—" },
+      { label: "Pedido", val: (f) => f.numPedido || "—" },
+      { label: "Prioridad", html: (f) => chipPrioridadCP(f.prioridad) },
+      { label: "Resultado", html: chip },
+    ];
+    const orden = { no: 0, parcial: 1, tarde: 2, cumplido: 3 };
+    const ordenadas = [...filas].sort((a, b) => orden[a.estado] - orden[b.estado] || String(a.numLote).localeCompare(String(b.numLote)));
+    const asunto = `Cumplimiento programación ${nombreArea} — ${fechaLatinaCP(ayer)} (${cumplidos} de ${filas.length})`;
+    const intro = `Lo que estaba programado para el <b>${fechaLatinaCP(ayer)}</b>: <b>${cumplidos} de ${filas.length}</b> cumplidos.${area === "planta" ? " Planta se mide contra la última carga de Planeación (el lote ya no está en Planta Yanko)." : " Se mide contra las entradas registradas en Busint."}`;
+    try {
+      await mandarCorreo(crearTransporte(), para, asunto, envolverCorreoCP(`Cumplimiento — ${nombreArea}`, intro, tablaHtmlCP(columnas, ordenadas), "Mensaje automático de ATLAS."));
+      await db.collection("programacion_correos_log").add({ area, tipo: "cumplimiento", fecha: ayer, resumen: { total: filas.length, cumplidos }, destinatarios: para, enviado: true, creadoEn: new Date().toISOString() });
+      resultado.push({ area, filas: filas.length, cumplidos, enviado: true, destinatarios: para.length });
+    } catch (err) {
+      logger.error("cumplimiento programación: falló el envío", { area, error: String(err) });
+      resultado.push({ area, filas: filas.length, enviado: false, motivo: String(err).slice(0, 200) });
+    }
+  }
+  return { ayer, resultado };
+}
+exports.enviarCumplimientoProgramacionDiario = onSchedule(
+  { schedule: "every day 07:15", timeZone: "America/Bogota", secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY, EMAIL_USER, EMAIL_APP_PASSWORD], timeoutSeconds: 540, memory: "1GiB" },
+  async () => {
+    const r = await enviarCumplimientoProgramacionCP({});
+    logger.info("Cumplimiento de programación enviado", r);
+  }
+);
+// Prueba manual (solo admin): manda el cumplimiento de AYER (o de la fecha dada: se evalúa el día anterior a `fecha`).
+// Con `paraMi: true` lo manda solo al correo del admin que lo pide, sin molestar a las listas.
+exports.enviarCumplimientoProgramacionAhora = onCallAuth(
+  { secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY, EMAIL_USER, EMAIL_APP_PASSWORD], timeoutSeconds: 540, memory: "1GiB" },
+  async (request) => {
+    await verificarLlamadorEsAdmin(request);
+    const fecha = /^\d{4}-\d{2}-\d{2}$/.test(String(request.data?.fecha || "")) ? request.data.fecha : null;
+    const soloArea = AREAS_CORREO_PROGRAMACION[request.data?.area] ? request.data.area : null;
+    const destinoPrueba = request.data?.paraMi ? request.auth?.token?.email || null : null;
+    if (request.data?.paraMi && !destinoPrueba) throw new HttpsError("failed-precondition", "Tu usuario no tiene correo para la prueba.");
+    return enviarCumplimientoProgramacionCP({ fechaRef: fecha, soloArea, destinoPrueba });
+  }
+);
+
 // (2026-09-14, a pedido de Fredy) Panel de solo lectura en Administración ->
 // Notificaciones automáticas: enumera las tareas programadas del sistema
 // (correos + sincronizaciones) y, para las que mandan correo, calcula EN
