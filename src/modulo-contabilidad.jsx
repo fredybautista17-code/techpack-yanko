@@ -4951,12 +4951,14 @@ function CuadreCxpView({ proveedoresBusint, corteActivo, detalleFacturas, factur
   const [filtro, setFiltro] = useState("revisar");
   const [busqueda, setBusqueda] = useState("");
   const [enlaces, setEnlaces] = useState({});
+  // Proveedores que NO se registran en TNS (talleres y personas): { claveDocCxp(nombre Busint): true }.
+  const [sinTns, setSinTns] = useState({});
   const [historial, setHistorial] = useState([]);
   const [abierto, setAbierto] = useState(null); // clave de la fila con el detalle abierto
   const [movs, setMovs] = useState({}); // clave -> { cargando, error, data }
   const [soloCreditos, setSoloCreditos] = useState(true);
   useEffect(() => {
-    const u1 = onSnapshot(doc(db, "contabilidad_cxp_enlaces", "main"), (snap) => setEnlaces(snap.exists() ? snap.data()?.enlaces || {} : {}), () => {});
+    const u1 = onSnapshot(doc(db, "contabilidad_cxp_enlaces", "main"), (snap) => { setEnlaces(snap.exists() ? snap.data()?.enlaces || {} : {}); setSinTns(snap.exists() ? snap.data()?.sinTns || {} : {}); }, () => {});
     const u2 = onSnapshot(collection(db, "contabilidad_cxp_cuadres"), (snap) => setHistorial(snap.docs.map((d) => ({ id: d.id, ...d.data() }))), () => {});
     return () => {
       u1();
@@ -4989,6 +4991,12 @@ function CuadreCxpView({ proveedoresBusint, corteActivo, detalleFacturas, factur
   async function asociar(nombreBusint, nit) {
     await fsSave("contabilidad_cxp_enlaces", "main", { enlaces: { [claveDocCxp(nombreBusint)]: nit || "" } });
   }
+  // Marca (o desmarca) proveedores como "no se registra en TNS" (talleres / personas). Se guarda una vez y vale para los próximos cortes.
+  async function marcarSinTns(nombres, valor) {
+    const mapa = {};
+    nombres.forEach((n) => { mapa[claveDocCxp(n)] = !!valor; });
+    await fsSave("contabilidad_cxp_enlaces", "main", { sinTns: mapa });
+  }
   async function traerMovimientos(fila) {
     const k = fila.clave;
     setMovs((m) => ({ ...m, [k]: { cargando: true, error: "", data: null } }));
@@ -5014,8 +5022,9 @@ function CuadreCxpView({ proveedoresBusint, corteActivo, detalleFacturas, factur
       const nit = nitProp || nitEnl;
       const nk = claveNombreCxpTns(p.nombre);
       const key = nit ? `n:${nit}` : `m:${nk}`;
-      if (!mapa.has(key)) mapa.set(key, { clave: key, nombre: p.nombreMostrado || p.nombre, nombreBusint: p.nombre, nombreTns: "", nit, busint: 0, vencido: 0, tns: 0, enBusint: true, enTns: false, porEnlace: !nitProp && !!nitEnl });
+      if (!mapa.has(key)) mapa.set(key, { clave: key, nombre: p.nombreMostrado || p.nombre, nombreBusint: p.nombre, nombreTns: "", nit, busint: 0, vencido: 0, tns: 0, enBusint: true, enTns: false, porEnlace: !nitProp && !!nitEnl, sinTns: false });
       const r = mapa.get(key);
+      if (sinTns[claveDocCxp(p.nombre)]) r.sinTns = true;
       r.busint += Number(p.total) || 0;
       r.vencido += (Number(p.dias0a30) || 0) + (Number(p.dias31a60) || 0) + (Number(p.dias61a90) || 0) + (Number(p.dias91mas) || 0);
       if (nit) porNit.set(nit, key);
@@ -5037,19 +5046,21 @@ function CuadreCxpView({ proveedoresBusint, corteActivo, detalleFacturas, factur
       let estado;
       if (r.enBusint && r.enTns) estado = Math.abs(dif) < 1000 ? "cuadra" : "revisar";
       else if (r.enTns) estado = "solotns";
-      else estado = "solobusint";
+      else estado = r.sinTns ? "taller" : "solobusint";
       return { ...r, dif, estado };
-    }).filter((r) => (r.estado === "solotns" ? Math.abs(r.tns) >= 1000 : r.estado === "solobusint" ? Math.abs(r.busint) >= 1 : true));
+    }).filter((r) => (r.estado === "solotns" ? Math.abs(r.tns) >= 1000 : r.estado === "solobusint" || r.estado === "taller" ? Math.abs(r.busint) >= 1 : true));
     const suma = (arr, f) => arr.reduce((s, x) => s + f(x), 0);
     const por = (e) => todas.filter((r) => r.estado === e);
     resumen = {
       totalTns: suma(todas, (r) => r.tns),
-      totalBusint: suma(todas, (r) => r.busint),
+      // "Debe según Busint" NO incluye a los talleres/personas que no se registran en TNS: así la diferencia compara lo mismo.
+      totalBusint: suma(todas.filter((r) => r.estado !== "taller"), (r) => r.busint),
+      talleres: suma(por("taller"), (r) => r.busint),
       vencido: suma(todas, (r) => r.vencido),
       soloTns: suma(por("solotns"), (r) => r.tns),
       soloBusint: suma(por("solobusint"), (r) => r.busint),
       ambosDif: suma(por("revisar"), (r) => r.dif),
-      n: { todos: todas.length, revisar: por("revisar").length, cuadra: por("cuadra").length, solotns: por("solotns").length, solobusint: por("solobusint").length },
+      n: { todos: todas.length, revisar: por("revisar").length, cuadra: por("cuadra").length, solotns: por("solotns").length, solobusint: por("solobusint").length, taller: por("taller").length },
       soloTnsLista: por("solotns").filter((r) => r.nit).sort((a, b) => b.tns - a.tns),
     };
     resumen.dif = resumen.totalTns - resumen.totalBusint;
@@ -5074,6 +5085,7 @@ function CuadreCxpView({ proveedoresBusint, corteActivo, detalleFacturas, factur
       diferencia: Math.round(resumen.dif),
       soloTns: Math.round(resumen.soloTns),
       soloBusint: Math.round(resumen.soloBusint),
+      talleresNoTns: Math.round(resumen.talleres),
       ambosDif: Math.round(resumen.ambosDif),
       proveedoresConDiferencia: resumen.n.revisar + resumen.n.solotns + resumen.n.solobusint,
     });
@@ -5088,6 +5100,7 @@ function CuadreCxpView({ proveedoresBusint, corteActivo, detalleFacturas, factur
     revisar: ["Revisar", C.amber, C.amberBg],
     solotns: ["Solo en TNS", C.blue, C.blueBg],
     solobusint: ["Solo en Busint", C.violet, C.violetBg],
+    taller: ["Taller · no va en TNS", C.slate, C.canvas],
   };
   const chip = (texto, color, bg) => <span style={{ display: "inline-block", fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 999, color, background: bg, whiteSpace: "nowrap" }}>{texto}</span>;
   function detalleDe(fila) {
@@ -5366,6 +5379,7 @@ function CuadreCxpView({ proveedoresBusint, corteActivo, detalleFacturas, factur
             <KPI icon="🧾" label="Debe según Busint" value={fmtMillCxp(resumen.totalBusint)} color={C.violet} bg={C.violetBg} />
             <KPI icon="📒" label={`Debe según TNS (2205 + 2335 − anticipos 1330)`} value={fmtMillCxp(resumen.totalTns)} color={C.blue} bg={C.blueBg} />
             <KPI icon="⚖" label="Diferencia (TNS − Busint)" value={fmtMillCxp(resumen.dif)} color={Math.abs(resumen.dif) < 1000 ? C.green : C.red} bg={Math.abs(resumen.dif) < 1000 ? C.greenBg : C.redBg} sub={`Solo TNS ${fmtMillCxp(resumen.soloTns)} · solo Busint ${fmtMillCxp(-resumen.soloBusint)} · ambos ${fmtMillCxp(resumen.ambosDif)}`} />
+            {resumen.n.taller > 0 && <KPI icon="🧵" label="Talleres y personas (no van en TNS)" value={fmtMillCxp(resumen.talleres)} color={C.slate} bg={C.canvas} sub={`${resumen.n.taller} proveedores, fuera de la diferencia`} />}
             <KPI icon="⚠" label="Vencido (con plazo propio donde hay)" value={fmtMillCxp(resumen.vencido)} color={C.amber} bg={C.amberBg} />
           </div>
           <FranjaVencimientosCxp proveedores={proveedoresBusint} fechaCorte={corteActivo?.fechaCorte} nPlazo={(proveedoresBusint || []).filter((p) => p.plazoAplicado).length} nTotal={(proveedoresBusint || []).length} />
@@ -5373,10 +5387,22 @@ function CuadreCxpView({ proveedoresBusint, corteActivo, detalleFacturas, factur
             <div style={{ width: 220 }}>
               <FInput value={busqueda} onChange={setBusqueda} placeholder="Buscar proveedor..." icon="🔍" />
             </div>
-            {[["todos", `Todos ${resumen.n.todos}`], ["revisar", `Revisar ${resumen.n.revisar}`], ["cuadra", `Cuadran ${resumen.n.cuadra}`], ["solotns", `Solo TNS ${resumen.n.solotns}`], ["solobusint", `Solo Busint ${resumen.n.solobusint}`]].map(([k, label]) => (
+            {[["todos", `Todos ${resumen.n.todos}`], ["revisar", `Revisar ${resumen.n.revisar}`], ["cuadra", `Cuadran ${resumen.n.cuadra}`], ["solotns", `Solo TNS ${resumen.n.solotns}`], ["solobusint", `Solo Busint ${resumen.n.solobusint}`], ["taller", `Talleres ${resumen.n.taller}`]].map(([k, label]) => (
               <Btn key={k} small variant={filtro === k ? "primary" : "secondary"} onClick={() => setFiltro(k)}>{label}</Btn>
             ))}
             <div style={{ flex: 1 }} />
+            {filtro === "solobusint" && filas.length > 0 && (
+              <Btn
+                small
+                variant="secondary"
+                onClick={() => {
+                  if (window.confirm(`¿Marcar los ${filas.length} proveedores visibles como talleres/personas que no se registran en TNS? Podrás desmarcarlos uno por uno.`)) marcarSinTns(filas.map((x) => x.nombreBusint), true);
+                }}
+                title="Marca como taller todos los de esta lista (usa el buscador para acotarla)"
+              >
+                🧵 Marcar los {filas.length} visibles como talleres
+              </Btn>
+            )}
             <Btn small variant="secondary" onClick={guardarCuadre}>💾 Guardar este cuadre</Btn>
           </div>
           <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "auto" }}>
@@ -5415,14 +5441,18 @@ function CuadreCxpView({ proveedoresBusint, corteActivo, detalleFacturas, factur
                           {x.porEnlace && (
                             <button type="button" title="Quitar la asociación a mano" onClick={() => asociar(x.nombreBusint, "")} style={{ border: "none", background: "none", cursor: "pointer", color: C.red, marginLeft: 4, fontSize: 11 }}>✕</button>
                           )}
+                          {x.estado === "taller" && (
+                            <button type="button" title="Quitar la marca de taller" onClick={() => marcarSinTns([x.nombreBusint], false)} style={{ border: "none", background: "none", cursor: "pointer", color: C.red, marginLeft: 4, fontSize: 11 }}>✕</button>
+                          )}
                           {x.estado === "solobusint" && (
                             <select
                               value=""
-                              onChange={(e) => e.target.value && asociar(x.nombreBusint, e.target.value)}
+                              onChange={(e) => { if (e.target.value === "__sinTns") marcarSinTns([x.nombreBusint], true); else if (e.target.value) asociar(x.nombreBusint, e.target.value); }}
                               style={{ ...selStyle, marginLeft: 6, padding: "2px 6px", fontSize: 11, maxWidth: 170 }}
                               title="Asócialo al proveedor de TNS que es el mismo"
                             >
                               <option value="">asociar a…</option>
+                              <option value="__sinTns">🧵 No se registra en TNS (taller / persona)</option>
                               {resumen.soloTnsLista.map((t) => (
                                 <option key={t.clave} value={t.nit}>{t.nombre} · {fmtCOP(t.tns)}</option>
                               ))}
