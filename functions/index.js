@@ -4661,7 +4661,12 @@ exports.getCostosRealesLoteBusint = onCallAuth(
     const numLoteBuscado = String(request.data?.numLote ?? "").trim();
     const refBuscada = String(request.data?.referencia ?? "").trim();
     const maxLotes = Math.min(20, Math.max(1, Number(request.data?.maxLotes) || 8));
-    if (!numLoteBuscado && !refBuscada) throw new HttpsError("invalid-argument", "Indica el número de lote o la referencia.");
+    // (2026-10-27) `numLotes`: varios lotes a la vez (máx. 15) para compararlos contra Dado por Cumplido.
+    const numLotesLista = Array.isArray(request.data?.numLotes)
+      ? [...new Set(request.data.numLotes.map((x) => String(x ?? "").trim()).filter(Boolean))].slice(0, 15)
+      : [];
+    const lotesPedidos = new Set(numLotesLista.length ? numLotesLista : (numLoteBuscado ? [numLoteBuscado] : []));
+    if (!lotesPedidos.size && !refBuscada) throw new HttpsError("invalid-argument", "Indica el número de lote o la referencia.");
     const avisos = [];
     let todas;
     let compDet = [], salidasComp = [], telasOP = [], ordenes = [], entradasProc = [];
@@ -4689,8 +4694,8 @@ exports.getCostosRealesLoteBusint = onCallAuth(
     todas.forEach((f) => {
       const lote = String(f?.Numlote ?? f?.NumLote ?? "").trim();
       if (!lote) return;
-      if (numLoteBuscado) {
-        if (lote !== numLoteBuscado) return;
+      if (lotesPedidos.size) {
+        if (!lotesPedidos.has(lote)) return;
       } else if (normalizarRefComparacion(f?.Ref) !== normRefBuscada) return;
       const concepto = String(f?.Concepto ?? "").trim();
       if (!concepto) return;
@@ -4715,12 +4720,14 @@ exports.getCostosRealesLoteBusint = onCallAuth(
       }
     });
     // Lote pedido por número que todavía no está cumplido: se arma igual con telas e insumos.
-    if (numLoteBuscado && !porLote.has(numLoteBuscado)) {
-      const fo = ordenes.find((f) => String(f?.NumLote ?? f?.Numlote ?? "").trim() === numLoteBuscado && !/elimin/i.test(String(f?.Mensaje || "")));
-      porLote.set(numLoteBuscado, { numLote: numLoteBuscado, ref: String(fo?.Ref ?? "").trim(), fechaISO: null, nfact: null, conceptos: new Map(), cumplido: false });
+    for (const pedido of lotesPedidos) {
+      if (porLote.has(pedido)) continue;
+      const fo = ordenes.find((f) => String(f?.NumLote ?? f?.Numlote ?? "").trim() === pedido && !/elimin/i.test(String(f?.Mensaje || "")));
+      if (!fo && lotesPedidos.size > 1) { avisos.push(`El lote ${pedido} no aparece en Busint (ni cumplido ni en órdenes de producción).`); continue; }
+      porLote.set(pedido, { numLote: pedido, ref: String(fo?.Ref ?? "").trim(), fechaISO: null, nfact: null, conceptos: new Map(), cumplido: false });
     }
     let lotes = [...porLote.values()].sort((a, b) => (b.fechaISO || "").localeCompare(a.fechaISO || "") || Number(b.numLote) - Number(a.numLote));
-    if (!numLoteBuscado) {
+    if (!lotesPedidos.size) {
       lotes = lotes.slice(0, maxLotes);
       // (2026-10-27) Además, hasta 3 lotes recientes de la referencia que todavía NO están cumplidos (trae tela, insumos y los procesos que ya entraron a planta).
       const yaEstan = new Set(lotes.map((l) => l.numLote));

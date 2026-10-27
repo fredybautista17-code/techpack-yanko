@@ -14099,6 +14099,27 @@ function BusintCatalogoTestView() {
       setBvCargando(false);
     }
   }
+  // Comparar el Real de Busint (sumado por lote) contra el VR. Real de Dado por Cumplido (2026-10-27).
+  const [cmpLotes, setCmpLotes] = useState("7337,7339,7342");
+  const [cmpCargando, setCmpCargando] = useState(false);
+  const [cmpRes, setCmpRes] = useState(null);
+  const [cmpError, setCmpError] = useState("");
+  async function compararLotesDpc() {
+    const lista = cmpLotes.split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean);
+    if (!lista.length) return;
+    setCmpCargando(true);
+    setCmpError("");
+    setCmpRes(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "getCostosRealesLoteBusint", { timeout: 540000 });
+      const resp = await llamar({ numLotes: lista });
+      setCmpRes(resp.data);
+    } catch (err) {
+      setCmpError(err?.message || "No se pudieron traer los lotes de Busint.");
+    } finally {
+      setCmpCargando(false);
+    }
+  }
   const [cargandoLotes, setCargandoLotes] = useState(false);
   const [lotesReconstruidos, setLotesReconstruidos] = useState(null);
   const [cargandoValidacion, setCargandoValidacion] = useState(false);
@@ -15812,6 +15833,71 @@ function BusintCatalogoTestView() {
           </details>
         </div>
       )}
+      <div style={{ height: 1, background: T.border, margin: "24px 0" }} />
+      <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Comparar lotes: Busint vs Dado por Cumplido</div>
+      <div style={{ fontSize: 13, color: T.slate, marginBottom: 16 }}>
+        Suma en Busint el costo real de cada lote (tela + insumos + procesos) y lo compara con el VR. Real que hay en Dado por Cumplido. Si la diferencia ronda el 2,859 %, el Real digitado probablemente ya trae el porcentaje sobre costo. Escribe los números de lote separados por coma (máx. 15). Solo lee: no cambia nada.
+      </div>
+      <div style={{ display: "flex", gap: 10, alignItems: "end", marginBottom: 16, flexWrap: "wrap" }}>
+        <Field label="Lotes (separados por coma)"><FInput value={cmpLotes} onChange={setCmpLotes} placeholder="7337,7339,7342" /></Field>
+        <div style={{ marginBottom: 14 }}>
+          <Btn onClick={compararLotesDpc} disabled={cmpCargando || !cmpLotes.trim()}>{cmpCargando ? "Comparando... (puede tardar)" : "⚖ Comparar"}</Btn>
+        </div>
+      </div>
+      {cmpError && <div style={{ padding: "10px 14px", background: T.coralBg, color: T.coral, borderRadius: 8, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>⚠ {cmpError}</div>}
+      {cmpRes && cmpRes.ok && (() => {
+        const pesos = (n) => "$ " + Math.round(Number(n) || 0).toLocaleString("es-CO");
+        const filas = (cmpRes.lotes || []).slice().sort((a, b) => Number(a.numLote) - Number(b.numLote)).map((l) => {
+          const busint = Math.round(l.totalReal || 0);
+          const dpc = l.costoRealDado;
+          const dif = dpc !== null && dpc !== undefined ? dpc - busint : null;
+          const pct = dif !== null && busint ? (dif / busint) * 100 : null;
+          let lectura, color, bg;
+          if (!l.cumplido) { lectura = "Lote sin cumplir: Busint aún trae el costo parcial"; color = T.amber; bg = T.amberBg; }
+          else if (dpc === null || dpc === undefined) { lectura = "Todavía no tiene Costo Real Total en Dado por Cumplido"; color = T.slate; bg = T.canvas; }
+          else if (Math.abs(dif) <= Math.max(2, Math.abs(busint) * 0.001)) { lectura = "Cuadra con Busint"; color = T.jade; bg = T.jadeBg; }
+          else if (Math.abs(pct - 2.859) <= 0.3) { lectura = "Dif. ≈ 2,859 %: el Real digitado parece traer el % sobre costo incluido"; color = T.coral; bg = T.coralBg; }
+          else { lectura = "No cuadra: revisar de dónde salió el Real digitado"; color = T.coral; bg = T.coralBg; }
+          return { l, busint, dpc, dif, pct, lectura, color, bg };
+        });
+        const repetidos = [];
+        filas.forEach((a, i) => filas.slice(i + 1).forEach((b) => { if (a.busint > 0 && a.busint === b.busint) repetidos.push(`${a.l.numLote} y ${b.l.numLote}`); }));
+        const celda = { padding: "6px 10px", borderBottom: `1px solid ${T.border}`, whiteSpace: "nowrap", textAlign: "right" };
+        return (
+          <div style={{ marginBottom: 24, padding: 16, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}`, fontSize: 12.5 }}>
+            {(cmpRes.avisos || []).map((a, i) => <div key={i} style={{ color: T.amber, fontWeight: 600, marginBottom: 6 }}>⚠ {a}</div>)}
+            {repetidos.length > 0 && <div style={{ color: T.coral, fontWeight: 700, marginBottom: 8 }}>Busint trae exactamente el mismo total real en los lotes {repetidos.join("; ")}.</div>}
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ borderCollapse: "collapse", fontSize: 12.5, width: "100%" }}>
+                <thead>
+                  <tr>{["Lote", "Ref.", "Cortada", "Tela", "Insumos", "Procesos", "Real Busint", "VR. Real en Dado por Cumplido", "Diferencia", "Dif. %"].map((h, i) => <th key={h} style={{ ...celda, textAlign: i < 2 ? "left" : "right", color: T.slate, fontWeight: 700 }}>{h}</th>)}</tr>
+                </thead>
+                <tbody>
+                  {filas.map(({ l, busint, dpc, dif, pct }) => (
+                    <tr key={l.numLote}>
+                      <td style={{ ...celda, textAlign: "left", fontWeight: 800 }}>{l.numLote}</td>
+                      <td style={{ ...celda, textAlign: "left" }}>{l.ref || "—"}</td>
+                      <td style={celda}>{l.cantCortada ? l.cantCortada.toLocaleString("es-CO") : "—"}</td>
+                      <td style={celda}>{pesos(l.subtotales?.tela)}</td>
+                      <td style={celda}>{pesos(l.subtotales?.insumo)}</td>
+                      <td style={celda}>{pesos(l.subtotales?.proceso)}</td>
+                      <td style={{ ...celda, fontWeight: 800 }}>{pesos(busint)}</td>
+                      <td style={{ ...celda, fontWeight: 800 }}>{dpc !== null && dpc !== undefined ? pesos(dpc) : "—"}</td>
+                      <td style={celda}>{dif !== null ? (dif > 0 ? "+" : "") + pesos(dif) : "—"}</td>
+                      <td style={celda}>{pct !== null ? (pct > 0 ? "+" : "") + pct.toFixed(2).replace(".", ",") + " %" : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 12 }}>
+              {filas.map(({ l, lectura, color, bg }) => (
+                <div key={l.numLote} style={{ padding: "6px 10px", borderRadius: 8, background: bg, color, fontWeight: 700 }}>Lote {l.numLote}: {lectura}</div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
       <div style={{ height: 1, background: T.border, margin: "24px 0" }} />
       <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Reconstruir lotes cruzando 3 tablas (exploratorio)</div>
       <div style={{ fontSize: 13, color: T.slate, marginBottom: 16 }}>
