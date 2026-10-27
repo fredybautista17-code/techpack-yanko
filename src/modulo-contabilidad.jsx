@@ -4788,6 +4788,17 @@ function ComparacionTnsCxp({ proveedoresBusint, fechaCorteBusint, campoNit }) {
     };
   }, []);
   const claveEnl = (n) => String(n || "").replace(/[./\s]/g, "_");
+  // Movimientos de un proveedor en TNS (Libro Auxiliar), para ver de qué documentos sale su saldo.
+  const [mov, setMov] = useState(null); // { nombre, nit, cargando, error, data }
+  async function verMovimientos(x) {
+    setMov({ nombre: x.nombreTns || x.nombre, nit: x.nit, cargando: true, error: "", data: null });
+    try {
+      const resp = await httpsCallable(functionsClient, "getMovimientosProveedorTNS", { timeout: 300000 })({ empresa, nit: x.nit });
+      setMov({ nombre: x.nombreTns || x.nombre, nit: x.nit, cargando: false, error: "", data: resp.data });
+    } catch (err) {
+      setMov({ nombre: x.nombreTns || x.nombre, nit: x.nit, cargando: false, error: err?.message || "No se pudieron traer los movimientos.", data: null });
+    }
+  }
   async function traer(emp) {
     setCargando(emp);
     setError("");
@@ -4962,6 +4973,9 @@ function ComparacionTnsCxp({ proveedoresBusint, fechaCorteBusint, campoNit }) {
                         <td style={{ ...td, color: Math.abs(x.dif) >= 1000 ? C.red : C.slate }}>{fmtCOP(x.dif)}</td>
                         <td style={{ ...td, textAlign: "left", fontSize: 12, color: C.slate }}>
                           {x.enTns && !x.enBusint && "Solo en TNS"}
+                          {x.enTns && baseNitCxp(x.nit) && (
+                            <button type="button" onClick={() => verMovimientos(x)} disabled={!!mov?.cargando} title="Ver los movimientos de este proveedor en TNS" style={{ marginLeft: 6, border: `1px solid ${C.border}`, background: "transparent", borderRadius: 6, cursor: "pointer", fontSize: 11, padding: "1px 6px", color: C.ink }}>🔍 Movimientos</button>
+                          )}
                           {x.enBusint && !x.enTns && Math.abs(x.busint) >= 1000 && (
                             <select
                               value=""
@@ -4987,6 +5001,61 @@ function ComparacionTnsCxp({ proveedoresBusint, fechaCorteBusint, campoNit }) {
                   </tbody>
                 </table>
               </div>
+              {mov && (
+                <div style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: 10, marginTop: 10 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                    <div style={{ fontWeight: 700, fontSize: 13, flex: 1 }}>Movimientos en TNS · {mov.nombre} (NIT {baseNitCxp(mov.nit)})</div>
+                    <Btn small variant="secondary" onClick={() => setMov(null)}>Cerrar</Btn>
+                  </div>
+                  {mov.cargando && <div style={{ fontSize: 12, color: C.slate }}>Consultando el Libro Auxiliar de TNS...</div>}
+                  {mov.error && <div style={{ fontSize: 12, color: C.red, fontWeight: 600 }}>⚠ {mov.error}</div>}
+                  {mov.data && (
+                    <>
+                      <div style={{ fontSize: 11, color: C.slate, marginBottom: 6 }}>
+                        Del {mov.data.desde} al {mov.data.corte} · cuentas 2205 / 2335 / 1330 · {mov.data.totalFilas} movimientos
+                        {mov.data.totalFilas > (mov.data.filas || []).length ? " (se muestran los 600 más recientes)" : ""}
+                      </div>
+                      {(mov.data.filas || []).length > 0 ? (
+                        <div style={{ overflowX: "auto", maxHeight: 360, overflowY: "auto" }}>
+                          <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 640 }}>
+                            <thead>
+                              <tr>
+                                {["Fecha", "Cuenta", "Documento", "Detalle", "Débito", "Crédito"].map((h, i) => (
+                                  <th key={h} style={{ ...th, textAlign: i < 4 ? "left" : "right" }}>{h}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {mov.data.filas.map((f, i) => (
+                                <tr key={i}>
+                                  <td style={{ ...td, textAlign: "left" }}>{f.fecha}</td>
+                                  <td style={{ ...td, textAlign: "left" }}>{f.cuenta}</td>
+                                  <td style={{ ...td, textAlign: "left" }}>{f.documento}</td>
+                                  <td style={{ ...td, textAlign: "left", maxWidth: 260, whiteSpace: "normal" }}>{f.detalle}</td>
+                                  <td style={td}>{f.debito ? fmtCOP(f.debito) : ""}</td>
+                                  <td style={td}>{f.credito ? fmtCOP(f.credito) : ""}</td>
+                                </tr>
+                              ))}
+                              <tr>
+                                <td style={{ ...td, textAlign: "left", fontWeight: 700 }} colSpan={4}>Totales del periodo (crédito − débito = lo que se debe)</td>
+                                <td style={{ ...td, fontWeight: 700 }}>{fmtCOP(mov.data.filas.reduce((t, f) => t + f.debito, 0))}</td>
+                                <td style={{ ...td, fontWeight: 700 }}>{fmtCOP(mov.data.filas.reduce((t, f) => t + f.credito, 0))}</td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </div>
+                      ) : (
+                        <div style={{ fontSize: 12, color: C.slate }}>
+                          TNS respondió pero no se reconocieron movimientos. Esto es lo que contestó (mándame una captura):
+                          <pre style={{ whiteSpace: "pre-wrap", fontSize: 11, maxHeight: 200, overflow: "auto" }}>
+                            {`Campos que pide TNS: ${(mov.data.esquema?.campos || []).join(", ") || "(no se pudo leer)"}\nEnviado: ${JSON.stringify(mov.data.enviado)}\n${mov.data.muestraCruda || ""}`}
+                          </pre>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
               {filas.length > 300 && <div style={{ fontSize: 12, color: C.slate, marginTop: 6 }}>Mostrando los 300 con mayor diferencia.</div>}
             </>
           )}

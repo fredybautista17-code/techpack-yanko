@@ -11037,6 +11037,148 @@ exports.getCuentasPorPagarTNS = onCallAuth(
   }
 );
 
+// Movimientos de UN proveedor en TNS (2026-10-27, a pedido de Fredy): para ver de qué documentos sale el saldo que TNS
+// tiene de un proveedor (cuentas 2205, 2335 y 1330) y compararlo con Busint. Usa el Libro Auxiliar de TNS
+// (POST /v2/contabilidad/Reportes/LibroAuxiliar). Como en el proyecto todavía no se usaba, el cuerpo se arma leyendo
+// el swagger de TNS (nombres de los campos) y, si algo no se reconoce, se devuelve tal cual lo que contestó TNS para
+// poder ajustarlo. Solo LEE.
+async function esquemaCuerpoTNS(path, empresa) {
+  const candidatos = ["/swagger/v2/swagger.json", "/swagger/v1/swagger.json", "/swagger/swagger.json", "/swagger.json", "/v2/swagger.json"];
+  let token = null;
+  for (const u of candidatos) {
+    try {
+      token = token || (await obtenerTokenTNS(empresa));
+      const r = await fetch(`${TNS_BASE_URL}${u}`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!r.ok) continue;
+      const spec = await r.json();
+      if (!spec?.paths) continue;
+      const llave = Object.keys(spec.paths).find((k) => k.toLowerCase() === path.toLowerCase());
+      if (!llave) return null;
+      const esquemas = spec.components?.schemas || spec.definitions || {};
+      const resolver = (sch, n = 0) => {
+        let a = sch;
+        let g = 0;
+        while (a && a.$ref && g++ < 10) a = esquemas[String(a.$ref).split("/").pop()];
+        if (a && Array.isArray(a.allOf) && n < 4) {
+          return a.allOf.reduce((acc, x) => {
+            const r2 = resolver(x, n + 1) || {};
+            return { properties: { ...(acc.properties || {}), ...(r2.properties || {}) }, required: [...(acc.required || []), ...(r2.required || [])] };
+          }, {});
+        }
+        return a;
+      };
+      const op = spec.paths[llave].post || spec.paths[llave].get || {};
+      let sch = null;
+      const contenido = op.requestBody?.content;
+      if (contenido) sch = (contenido["application/json"] || Object.values(contenido)[0])?.schema;
+      else sch = (op.parameters || []).find((x) => x.in === "body")?.schema;
+      const res = resolver(sch);
+      return { campos: Object.keys(res?.properties || {}), requeridos: res?.required || [] };
+    } catch (e) {
+      /* se prueba la siguiente ruta */
+    }
+  }
+  return null;
+}
+function cuerpoLibroAuxiliarTNS(campos, { fechaInicial, fechaFinal, cuentaInicial, cuentaFinal, nit }) {
+  const lista = campos && campos.length ? campos : ["fechaInicial", "fechaFinal", "cuentaInicial", "cuentaFinal", "nit"];
+  const body = {};
+  lista.forEach((c) => {
+    const k = c.toLowerCase();
+    if (/(fecha).*(ini|desde)|(ini|desde).*fecha/.test(k)) body[c] = fechaInicial;
+    else if (/(fecha).*(fin|hasta)|(fin|hasta).*fecha/.test(k)) body[c] = fechaFinal;
+    else if (/cuenta.*(ini|desde)|(ini|desde).*cuenta/.test(k)) body[c] = cuentaInicial;
+    else if (/cuenta.*(fin|hasta)|(fin|hasta).*cuenta/.test(k)) body[c] = cuentaFinal;
+    else if (/nit|tercero|identific/.test(k) && !/(nombre|ini|fin|desde|hasta)/.test(k)) body[c] = nit;
+  });
+  return body;
+}
+function extraerFilasTNS(data) {
+  const hallar = (x, n = 0) => {
+    if (n > 5 || x === null || typeof x !== "object") return null;
+    if (Array.isArray(x)) {
+      if (x.length && typeof x[0] === "object" && !Array.isArray(x[0])) {
+        const llaves = Object.keys(x[0]).join(" ").toLowerCase();
+        if (/debit|credit|saldo/.test(llaves)) return x;
+      }
+      for (const el of x) {
+        const r = hallar(el, n + 1);
+        if (r) return r;
+      }
+      return null;
+    }
+    for (const v of Object.values(x)) {
+      const r = hallar(v, n + 1);
+      if (r) return r;
+    }
+    return null;
+  };
+  return hallar(data) || [];
+}
+function normalizarFilaLibroTNS(f) {
+  const ll = Object.keys(f);
+  const val = (re, excluir) => {
+    const k = ll.find((x) => re.test(x) && !(excluir && excluir.test(x)));
+    return k === undefined ? "" : f[k];
+  };
+  const tipo = val(/^(tipo|prefijo|codcomprobante|tipodoc)/i);
+  const numero = val(/(numero|numdoc|nrodoc|^doc|comprobante|documento)/i);
+  return {
+    fecha: String(val(/fecha/i) || "").slice(0, 10),
+    cuenta: String(val(/cuenta|puc/i, /nombre|descr/i) || ""),
+    documento: [tipo, numero].filter((x) => x !== "" && x !== null && x !== undefined).join(" ").trim(),
+    detalle: String(val(/(detalle|concepto|descripcion|nota|observ)/i) || ""),
+    debito: numeroTNS(val(/debit/i)),
+    credito: numeroTNS(val(/credit/i)),
+    saldo: numeroTNS(val(/saldo/i)),
+  };
+}
+exports.getMovimientosProveedorTNS = onCallAuth(
+  {
+    secrets: TNS_SECRETS_TODAS,
+    timeoutSeconds: 180,
+    memory: "512MiB",
+  },
+  async (request) => {
+    if (!request.auth) throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+    const empresa = request.data?.empresa === "indutex" ? "indutex" : "yanko";
+    const nit = String(request.data?.nit || "").split("-")[0].replace(/\D/g, "");
+    if (!nit) throw new HttpsError("invalid-argument", "Falta el NIT del proveedor.");
+    const cfg = await db.collection("config").doc("tns_sucursales").get();
+    const sucursales = clavesSucursalesTNS(cfg.exists ? cfg.data()?.[empresa] : null);
+    if (!sucursales.length) throw new HttpsError("failed-precondition", "Faltan las sucursales de TNS de esta empresa (Nómina → Conexión TNS).");
+    const { fechaFinal, fechaInicial } = fechasCorteTNS(request);
+    const path = "/v2/contabilidad/Reportes/LibroAuxiliar";
+    try {
+      const esquema = await esquemaCuerpoTNS(path, empresa);
+      const filas = [];
+      let muestraCruda = null;
+      let ultimoBody = null;
+      for (const sucursal of sucursales) {
+        for (const cta of CUENTAS_CXP_TNS) {
+          ultimoBody = cuerpoLibroAuxiliarTNS(esquema?.campos, { fechaInicial, fechaFinal, cuentaInicial: cta.ini, cuentaFinal: cta.fin, nit });
+          const resp = await llamarTNS(`${path}?codigosucursal=${encodeURIComponent(sucursal)}`, { method: "POST", body: ultimoBody, empresa });
+          if (resp && resp.status === false) throw new Error(resp.message || "TNS rechazó la consulta del Libro Auxiliar.");
+          const crudas = extraerFilasTNS(resp);
+          if (!muestraCruda) muestraCruda = crudas.length ? crudas.slice(0, 2) : resp;
+          crudas.forEach((f) => {
+            // Si TNS devolvió varios terceros, se dejan solo los de este NIT.
+            const kNit = Object.keys(f).find((k) => /(^|_)(nit|tercero|identific)/i.test(k) && !/nombre/i.test(k));
+            if (kNit && String(f[kNit] ?? "").replace(/\D/g, "") && !String(f[kNit]).replace(/\D/g, "").startsWith(nit)) return;
+            filas.push({ ...normalizarFilaLibroTNS(f), sucursal, grupo: cta.clave });
+          });
+        }
+      }
+      filas.sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)));
+      logger.info("getMovimientosProveedorTNS OK", { empresa, nit, filas: filas.length, esquema });
+      return { ok: true, empresa, nit, corte: fechaFinal, desde: fechaInicial, sucursales, filas: filas.slice(0, 600), totalFilas: filas.length, esquema, enviado: ultimoBody, muestraCruda: filas.length ? null : (typeof muestraCruda === "string" ? muestraCruda : JSON.stringify(muestraCruda)).slice(0, 3000) };
+    } catch (err) {
+      logger.error("getMovimientosProveedorTNS falló", { mensaje: err?.message, stack: err?.stack, empresa, nit });
+      throw new HttpsError("internal", err?.message || "Error desconocido al traer los movimientos del proveedor en TNS.");
+    }
+  }
+);
+
 // Explora las sucursales de TNS (2026-10-14, a pedido de Fredy): Yanko e Indutex
 // comparten código de empresa y se separan por sucursal. Consulta el saldo por
 // cliente (1305 + 2805) en cada código de sucursal (por defecto 00 a 09) y dice
