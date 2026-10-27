@@ -3675,12 +3675,47 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases, puedeSincroni
                     <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
                       <div>
                         <div style={{ fontWeight: 800, fontSize: 15, color: C.ink }}>Lote {l.numLote} — {l.referencia || "(sin referencia)"}</div>
-                        <div style={{ fontSize: 12, color: C.slate }}>{l.cliente || "(sin cliente)"} · {l.fecha || "(sin fecha)"}</div>
+                        <div style={{ fontSize: 12, color: C.slate }}>{l.clienteDetalle || l.cliente || "(sin cliente)"} · {l.fecha || "(sin fecha)"}</div>
                         {l.observacionesFactura && (
                           <div style={{ fontSize: 11, fontWeight: 700, marginTop: 4, color: esTraslado ? C.amber : C.green }}>
                             {esTraslado ? "🔄 " : "🧾 "}{l.observacionesFactura}
                           </div>
                         )}
+                        {Array.isArray(l.facturasDetalle) && l.facturasDetalle.length > 1 && (() => {
+                          const totU = l.facturasDetalle.reduce((s, x) => s + (Number(x.unidades) || 0), 0);
+                          const totM = l.facturasDetalle.reduce((s, x) => s + (Number(x.monto) || 0), 0);
+                          const celdaF = { padding: "3px 10px", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap", textAlign: "right" };
+                          return (
+                            <details style={{ marginTop: 6, fontSize: 12 }}>
+                              <summary style={{ cursor: "pointer", fontWeight: 700, color: C.ink }}>🧾 {l.facturasDetalle.length} facturas{l.clienteDetalle ? " · varios clientes" : ""} — ver desglose</summary>
+                              <div style={{ overflowX: "auto", marginTop: 6 }}>
+                                <table style={{ borderCollapse: "collapse", fontSize: 12 }}>
+                                  <thead>
+                                    <tr>{["Factura", "Fecha", "Cliente", "Unidades", "Precio U.", "Valor"].map((h, i) => <th key={h} style={{ ...celdaF, textAlign: i < 3 ? "left" : "right", color: C.slate, fontWeight: 700 }}>{h}</th>)}</tr>
+                                  </thead>
+                                  <tbody>
+                                    {l.facturasDetalle.map((x, i) => (
+                                      <tr key={`${x.nfact}-${i}`}>
+                                        <td style={{ ...celdaF, textAlign: "left", fontWeight: 700 }}>{x.nfact}</td>
+                                        <td style={{ ...celdaF, textAlign: "left" }}>{x.fecha || "—"}</td>
+                                        <td style={{ ...celdaF, textAlign: "left" }}>{x.cliente || "(sin cliente)"}</td>
+                                        <td style={celdaF}>{Number(x.unidades).toLocaleString("es-CO")}</td>
+                                        <td style={celdaF}>{fmtPesos(x.precio)}</td>
+                                        <td style={celdaF}>{fmtPesos(x.monto)}</td>
+                                      </tr>
+                                    ))}
+                                    <tr>
+                                      <td style={{ ...celdaF, textAlign: "left", fontWeight: 800 }} colSpan={3}>Total (precio promedio {fmtPesos(totU ? totM / totU : 0)})</td>
+                                      <td style={{ ...celdaF, fontWeight: 800 }}>{totU.toLocaleString("es-CO")}</td>
+                                      <td style={celdaF}></td>
+                                      <td style={{ ...celdaF, fontWeight: 800 }}>{fmtPesos(totM)}</td>
+                                    </tr>
+                                  </tbody>
+                                </table>
+                              </div>
+                            </details>
+                          );
+                        })()}
                         {sinFactura && (
                           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 4 }}>
                             <span style={{ fontSize: 11, fontWeight: 700, color: C.red }}>🚫 Sin factura de Busint (no se encontró el número de lote en ningún comentario)</span>

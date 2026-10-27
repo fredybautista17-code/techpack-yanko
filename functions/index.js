@@ -1017,10 +1017,16 @@ async function sincronizarDadoPorCumplidoPendientes() {
     let fechaMasReciente = null;
     let numPedido = null;
     const numerosFactura = new Set();
+    // (2026-10-27, a pedido de Fredy) Desglose por factura: un lote puede salir en varias facturas, incluso a
+    // clientes/empresas distintos y a precios distintos (p.ej. 280 a una empresa y 20 a otra). El total y el precio
+    // promedio ponderado de abajo no cambian; esto solo deja visible de dónde sale cada parte.
+    const facturasDetalle = [];
 
     facturasDelLote.forEach((f) => {
       const nfact = String(f?.Nfact ?? "").trim();
       if (nfact) numerosFactura.add(nfact);
+      let unidadesFactura = 0;
+      let montoFactura = 0;
       (detallesPorNfact.get(nfact) || []).forEach((d) => {
         const unidades = TALLAS_VP_BUSINT.reduce((s, t) => s + (Number(d?.[t]) || 0), 0);
         if (!unidades) return;
@@ -1029,13 +1035,30 @@ async function sincronizarDadoPorCumplidoPendientes() {
         const precioNeto = precio * (1 - desc / 100);
         totalUnidades += unidades;
         totalMonto += unidades * precioNeto;
+        unidadesFactura += unidades;
+        montoFactura += unidades * precioNeto;
         if (!refPrincipal) refPrincipal = String(d?.Ref || "").trim();
       });
       if (!clienteNombre) clienteNombre = String(f?.Observaciones || "").trim();
       if (numPedido == null && f?.Numped != null) numPedido = f.Numped;
       const fechaISO = fechaBDaISO(f?.Fechaini) || fechaBDaISO(f?.UFECHA);
       if (fechaISO && (!fechaMasReciente || fechaISO > fechaMasReciente)) fechaMasReciente = fechaISO;
+      if (unidadesFactura > 0) {
+        facturasDetalle.push({
+          nfact,
+          fecha: fechaISO || null,
+          cliente: String(f?.Observaciones || "").trim(),
+          unidades: unidadesFactura,
+          precio: Math.round((montoFactura / unidadesFactura) * 100) / 100,
+          monto: Math.round(montoFactura * 100) / 100,
+        });
+      }
     });
+    facturasDetalle.sort((a, b) => String(a.fecha || "").localeCompare(String(b.fecha || "")) || String(a.nfact).localeCompare(String(b.nfact)));
+    // Texto "EMPRESA A (280) / EMPRESA B (20)" solo cuando hay más de un cliente distinto en las facturas del lote.
+    const unidadesPorCliente = new Map();
+    facturasDetalle.forEach((x) => { const c = x.cliente || "(sin cliente)"; unidadesPorCliente.set(c, (unidadesPorCliente.get(c) || 0) + x.unidades); });
+    const clienteDetalle = unidadesPorCliente.size > 1 ? [...unidadesPorCliente].map(([c, u]) => `${c} (${u})`).join(" / ") : "";
 
     if (totalUnidades <= 0) continue;
 
@@ -1082,6 +1105,8 @@ async function sincronizarDadoPorCumplidoPendientes() {
       precioVentaUnitario,
       tieneFactura: true,
       observacionesFactura,
+      facturasDetalle,
+      clienteDetalle,
       enBpt: true, // ya tiene factura real -- quedo cumplido sin importar la etapa actual en Busint
       actualizadoEn: admin.firestore.FieldValue.serverTimestamp(),
     };
@@ -1602,7 +1627,7 @@ const DPC_COLUMNAS = [
   ["% Ganancia/Lote", (d, ap) => (ap ? d.gananciaPctLote ?? "" : "")],
   ["Costo T. Ref.", (d, ap) => (ap ? d.costoTRef ?? "" : "")],
   ["% Ganancia/Ref.", (d, ap) => (ap ? d.gananciaPctRef ?? "" : "")],
-  ["CLIENTE", (d) => d.cliente || ""],
+  ["CLIENTE", (d) => d.clienteDetalle || d.cliente || ""],
   ["OBS.", (d) => d.observaciones || ""],
   ["BASE", (d, ap) => (ap ? d.baseValorUsado ?? "" : "")],
   ["TRANSPORTE", (d) => d.transporte ?? ""],
@@ -1633,6 +1658,17 @@ function notaEncabezadosDPC(config) {
     "TRANSPORTE": "Informativo: no se suma aparte al costo (se considera incluido en el BASE).",
     "TOTAL": "TOTAL = BASE × Cant. Cortada.",
   };
+}
+function notaFacturasLoteDPC(d) {
+  const fs = d.facturasDetalle || [];
+  const totalU = fs.reduce((s, x) => s + (Number(x.unidades) || 0), 0);
+  const totalM = fs.reduce((s, x) => s + (Number(x.monto) || 0), 0);
+  return [
+    `Este lote salió en ${fs.length} facturas:`,
+    ...fs.map((x) => `Factura ${x.nfact}${x.fecha ? ` (${x.fecha})` : ""} · ${x.cliente || "sin cliente"}: ${DPC_FMT(x.unidades, 0)} und × $ ${DPC_FMT(x.precio)} = $ ${DPC_FMT(x.monto, 0)}`),
+    `Total: ${DPC_FMT(totalU, 0)} und = $ ${DPC_FMT(totalM, 0)}`,
+    `Precio promedio: $ ${DPC_FMT(totalU ? totalM / totalU : 0)}`,
+  ].join("\n");
 }
 function notaCostoTRefLote(d) {
   if (d.porcentajeSobreCostoUsado === undefined || d.porcentajeSobreCostoUsado === null) {
@@ -1668,7 +1704,7 @@ async function generarExcelDadoPorCumplido() {
   const ws = wb.addWorksheet("Dado por cumplido");
   const borde = { style: "thin", color: { argb: "FFBFBFBF" } };
   const bordes = { top: borde, bottom: borde, left: borde, right: borde };
-  ws.columns = DPC_COLUMNAS.map(([h]) => ({ header: h, key: h, width: Math.max(12, h.length + 2) }));
+  ws.columns = DPC_COLUMNAS.map(([h]) => ({ header: h, key: h, width: h === "CLIENTE" ? 34 : Math.max(12, h.length + 2) }));
   const enc = ws.getRow(1);
   enc.eachCell((c) => {
     c.font = { bold: true, color: { argb: "FFFFFFFF" } };
@@ -1692,6 +1728,7 @@ async function generarExcelDadoPorCumplido() {
       else if (i % 2 === 1) c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF2F6FB" } };
       if (DPC_MONEDA.has(h)) c.numFmt = '"$" #,##0';
       if (DPC_PORCENTAJE.has(h)) c.numFmt = "0.00%";
+      if (h === "PRECIO VENTA U." && Array.isArray(d.facturasDetalle) && d.facturasDetalle.length > 1) c.note = { texts: [{ text: notaFacturasLoteDPC(d) }], editAs: "twoCells" };
       if (h === "Costo T. Ref." && aprobado && fila["Costo T. Ref."] !== "") c.note = { texts: [{ text: notaCostoTRefLote(d) }], editAs: "twoCells" };
     });
   });
