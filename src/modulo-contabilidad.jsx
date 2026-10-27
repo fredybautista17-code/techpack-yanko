@@ -4749,18 +4749,15 @@ function CategorizarProveedorCXPModal({ nombre, categoriaActual, categoriaAutoma
     </Modal>
   );
 }
-// (2026-10-27, a pedido de Fredy) "Cuentas por pagar: Busint vs TNS".
-// Trae de TNS el saldo por proveedor y lo cruza con el corte de Busint que
-// esta en pantalla. Lo que se debe segun TNS = cuenta 2205 (proveedores
-// nacionales) + 2335 (costos y gastos por pagar) - 1330 (anticipos a
-// proveedores): esa fue la combinacion que mas se acerco a Busint (en Yanko la
-// 2335 esta en cero). El cruce es por NIT; si un proveedor no trae NIT
-// (ej. "Proveedor 16", que no existe en el maestro de Busint) se cruza por
-// nombre, o se asocia a mano una sola vez (queda guardado en
-// contabilidad_cxp_enlaces). Los totales de cada comparacion se pueden guardar
-// (contabilidad_cxp_cuadres) para ver si el descuadre sube o baja.
+// (2026-10-27, a pedido de Fredy) Cuentas por pagar: vista "Comparar" Busint contra TNS, con vencimientos.
+// Lo que se debe según TNS = cuenta 2205 (proveedores nacionales) + 2335 (costos y gastos por pagar) − 1330 (anticipos
+// a proveedores). El cruce con Busint es por NIT; si un proveedor no trae NIT (ej. "Proveedor 16", que no existe en el
+// maestro de Busint) se cruza por nombre o se asocia a mano una sola vez (contabilidad_cxp_enlaces). Los vencimientos
+// salen de Busint (TNS no entrega vencimiento por factura): por semana desde el corte guardado y, por proveedor, con las
+// facturas abiertas guardadas en contabilidad_cxp_facturas. Cada cuadre se puede guardar (contabilidad_cxp_cuadres).
 const baseNitCxp = (v) => String(v || "").split("-")[0].replace(/\D/g, "");
 const netoTnsCxp = (p) => (p.c2205 || 0) + (p.c2335 || 0) - (p.a1330 || 0);
+const claveDocCxp = (n) => String(n || "").replace(/[./\s]/g, "_");
 function claveNombreCxpTns(nombre) {
   return normalizarTexto(nombre)
     .replace(/[^a-z0-9 ]/g, " ")
@@ -4768,17 +4765,70 @@ function claveNombreCxpTns(nombre) {
     .filter((w) => w && !["sas", "s", "a", "sa", "ltda", "y", "cia", "e", "de", "la", "el"].includes(w))
     .join(" ");
 }
-function ComparacionTnsCxp({ proveedoresBusint, fechaCorteBusint, campoNit }) {
-  const [abierto, setAbierto] = useState(false);
+function sumarDiasISOCxp(iso, dias) {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + dias);
+  return d.toISOString().slice(0, 10);
+}
+function lunesDeISOCxp(iso) {
+  const d = new Date(`${iso}T00:00:00Z`);
+  const dow = (d.getUTCDay() + 6) % 7;
+  return sumarDiasISOCxp(iso, -dow);
+}
+const fmtMillCxp = (n) => `${n < 0 ? "-" : ""}$${(Math.abs(n) / 1e6).toLocaleString("es-CO", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} M`;
+// Qué vence y cuándo, según las fechas de Busint (vencimientosPorSemana viene guardado en cada proveedor del corte).
+function FranjaVencimientosCxp({ proveedores, fechaCorte }) {
+  const base = /^\d{4}-\d{2}-\d{2}$/.test(String(fechaCorte || "")) ? lunesDeISOCxp(fechaCorte) : null;
+  if (!base) return null;
+  const casillas = { vencido: 0, s1: 0, s2: 0, s3: 0, despues: 0, sinFecha: 0 };
+  (proveedores || []).forEach((p) => {
+    Object.entries(p.vencimientosPorSemana || {}).forEach(([k, v]) => {
+      const m = Number(v) || 0;
+      if (k === "vencido") casillas.vencido += m;
+      else if (k === "sinFecha") casillas.sinFecha += m;
+      else if (k < base) casillas.vencido += m;
+      else if (k === base) casillas.s1 += m;
+      else if (k === sumarDiasISOCxp(base, 7)) casillas.s2 += m;
+      else if (k === sumarDiasISOCxp(base, 14)) casillas.s3 += m;
+      else casillas.despues += m;
+    });
+  });
+  const hay = Object.values(casillas).some((v) => v);
+  if (!hay) return null;
+  const lista = [
+    ["Ya vencido", casillas.vencido, C.red, C.redBg],
+    ["Esta semana", casillas.s1, C.amber, C.amberBg],
+    ["Semana 2", casillas.s2, C.slate, C.canvas],
+    ["Semana 3", casillas.s3, C.slate, C.canvas],
+    ["Después", casillas.despues, C.slate, C.canvas],
+  ];
+  if (casillas.sinFecha) lista.push(["Sin fecha", casillas.sinFecha, C.slate, C.canvas]);
+  return (
+    <div style={{ marginBottom: 18 }}>
+      <div style={{ fontSize: 12, color: C.slate, fontWeight: 600, marginBottom: 6 }}>Lo que vence, según las fechas de Busint (semanas desde el lunes {base})</div>
+      <div style={{ display: "grid", gridTemplateColumns: `repeat(${lista.length},minmax(0,1fr))`, gap: 8 }}>
+        {lista.map(([label, v, color, bg]) => (
+          <div key={label} style={{ background: bg, border: `1px solid ${color}33`, borderRadius: 10, padding: "8px 10px" }}>
+            <div style={{ fontSize: 11, color, fontWeight: 700 }}>{label}</div>
+            <div style={{ fontSize: 15, fontWeight: 800, color: C.ink }}>{fmtMillCxp(v)}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+function CuadreCxpView({ proveedoresBusint, corteActivo, detalleFacturas, facturasGuardadas, onTraerBusint, cargandoBusint }) {
   const [empresa, setEmpresa] = useState("yanko");
   const [datos, setDatos] = useState({});
   const [cargando, setCargando] = useState("");
   const [error, setError] = useState("");
   const [mensaje, setMensaje] = useState("");
-  const [soloDif, setSoloDif] = useState(true);
+  const [filtro, setFiltro] = useState("revisar");
   const [busqueda, setBusqueda] = useState("");
   const [enlaces, setEnlaces] = useState({});
   const [historial, setHistorial] = useState([]);
+  const [abierto, setAbierto] = useState(null); // clave de la fila con el detalle abierto
+  const [movs, setMovs] = useState({}); // clave -> { cargando, error, data }
   useEffect(() => {
     const u1 = onSnapshot(doc(db, "contabilidad_cxp_enlaces", "main"), (snap) => setEnlaces(snap.exists() ? snap.data()?.enlaces || {} : {}), () => {});
     const u2 = onSnapshot(collection(db, "contabilidad_cxp_cuadres"), (snap) => setHistorial(snap.docs.map((d) => ({ id: d.id, ...d.data() }))), () => {});
@@ -4787,19 +4837,7 @@ function ComparacionTnsCxp({ proveedoresBusint, fechaCorteBusint, campoNit }) {
       u2();
     };
   }, []);
-  const claveEnl = (n) => String(n || "").replace(/[./\s]/g, "_");
-  // Movimientos de un proveedor en TNS (Libro Auxiliar), para ver de qué documentos sale su saldo.
-  const [mov, setMov] = useState(null); // { nombre, nit, cargando, error, data }
-  async function verMovimientos(x) {
-    setMov({ nombre: x.nombreTns || x.nombre, nit: x.nit, cargando: true, error: "", data: null });
-    try {
-      const resp = await httpsCallable(functionsClient, "getMovimientosProveedorTNS", { timeout: 300000 })({ empresa, nit: x.nit });
-      setMov({ nombre: x.nombreTns || x.nombre, nit: x.nit, cargando: false, error: "", data: resp.data });
-    } catch (err) {
-      setMov({ nombre: x.nombreTns || x.nombre, nit: x.nit, cargando: false, error: err?.message || "No se pudieron traer los movimientos.", data: null });
-    }
-  }
-  async function traer(emp) {
+  async function traerTns(emp) {
     setCargando(emp);
     setError("");
     setMensaje("");
@@ -4813,26 +4851,47 @@ function ComparacionTnsCxp({ proveedoresBusint, fechaCorteBusint, campoNit }) {
       setCargando("");
     }
   }
+  async function actualizarAmbos() {
+    setError("");
+    try {
+      await onTraerBusint();
+    } catch (err) {
+      /* el error de Busint ya se muestra arriba */
+    }
+    await traerTns(empresa);
+  }
   async function asociar(nombreBusint, nit) {
-    await fsSave("contabilidad_cxp_enlaces", "main", { enlaces: { [claveEnl(nombreBusint)]: nit || "" } });
+    await fsSave("contabilidad_cxp_enlaces", "main", { enlaces: { [claveDocCxp(nombreBusint)]: nit || "" } });
+  }
+  async function traerMovimientos(fila) {
+    const k = fila.clave;
+    setMovs((m) => ({ ...m, [k]: { cargando: true, error: "", data: null } }));
+    try {
+      const resp = await httpsCallable(functionsClient, "getMovimientosProveedorTNS", { timeout: 300000 })({ empresa, nit: fila.nit });
+      setMovs((m) => ({ ...m, [k]: { cargando: false, error: "", data: resp.data } }));
+    } catch (err) {
+      setMovs((m) => ({ ...m, [k]: { cargando: false, error: err?.message || "No se pudieron traer los movimientos.", data: null } }));
+    }
   }
   const d = datos[empresa];
-  // ---- cruce ----
-  let filas = [];
-  let resumen = null;
   const conNit = (proveedoresBusint || []).filter((p) => baseNitCxp(p.nit)).length;
+  // ---- cruce Busint / TNS ----
+  let todas = [];
+  let resumen = null;
   if (d) {
     const mapa = new Map();
     const porNit = new Map();
     const porNombre = new Map();
     (proveedoresBusint || []).forEach((p) => {
       const nitProp = baseNitCxp(p.nit);
-      const nitEnl = baseNitCxp(enlaces[claveEnl(p.nombre)]);
+      const nitEnl = baseNitCxp(enlaces[claveDocCxp(p.nombre)]);
       const nit = nitProp || nitEnl;
       const nk = claveNombreCxpTns(p.nombre);
       const key = nit ? `n:${nit}` : `m:${nk}`;
-      if (!mapa.has(key)) mapa.set(key, { nombre: p.nombre, nombreBusint: p.nombre, nombreTns: "", nit, busint: 0, tns: 0, enBusint: true, enTns: false, porEnlace: !nitProp && !!nitEnl });
-      mapa.get(key).busint += Number(p.total) || 0;
+      if (!mapa.has(key)) mapa.set(key, { clave: key, nombre: p.nombreMostrado || p.nombre, nombreBusint: p.nombre, nombreTns: "", nit, busint: 0, vencido: 0, tns: 0, enBusint: true, enTns: false, porEnlace: !nitProp && !!nitEnl });
+      const r = mapa.get(key);
+      r.busint += Number(p.total) || 0;
+      r.vencido += (Number(p.dias0a30) || 0) + (Number(p.dias31a60) || 0) + (Number(p.dias61a90) || 0) + (Number(p.dias91mas) || 0);
       if (nit) porNit.set(nit, key);
       if (nk && !porNombre.has(nk)) porNombre.set(nk, key);
     });
@@ -4840,39 +4899,42 @@ function ComparacionTnsCxp({ proveedoresBusint, fechaCorteBusint, campoNit }) {
       const nit = baseNitCxp(p.nit);
       const nk = claveNombreCxpTns(p.nombre);
       const key = (nit && porNit.get(nit)) || porNombre.get(nk) || (nit ? `n:${nit}` : `m:${nk}`);
-      if (!mapa.has(key)) mapa.set(key, { nombre: p.nombre, nombreBusint: "", nombreTns: p.nombre, nit, busint: 0, tns: 0, enBusint: false, enTns: false });
+      if (!mapa.has(key)) mapa.set(key, { clave: key, nombre: p.nombre, nombreBusint: "", nombreTns: p.nombre, nit, busint: 0, vencido: 0, tns: 0, enBusint: false, enTns: false });
       const r = mapa.get(key);
       r.tns += netoTnsCxp(p);
       r.enTns = true;
       r.nombreTns = p.nombre;
       if (!r.nit) r.nit = nit;
     });
-    const todas = [...mapa.values()].map((r) => ({ ...r, dif: r.tns - r.busint }));
+    todas = [...mapa.values()].map((r) => {
+      const dif = r.tns - r.busint;
+      let estado;
+      if (r.enBusint && r.enTns) estado = Math.abs(dif) < 1000 ? "cuadra" : "revisar";
+      else if (r.enTns) estado = "solotns";
+      else estado = "solobusint";
+      return { ...r, dif, estado };
+    }).filter((r) => (r.estado === "solotns" ? Math.abs(r.tns) >= 1000 : r.estado === "solobusint" ? Math.abs(r.busint) >= 1 : true));
     const suma = (arr, f) => arr.reduce((s, x) => s + f(x), 0);
-    const soloTns = todas.filter((r) => r.enTns && !r.enBusint);
-    const soloBusint = todas.filter((r) => r.enBusint && !r.enTns);
-    const ambos = todas.filter((r) => r.enBusint && r.enTns);
+    const por = (e) => todas.filter((r) => r.estado === e);
     resumen = {
       totalTns: suma(todas, (r) => r.tns),
       totalBusint: suma(todas, (r) => r.busint),
-      soloTns: suma(soloTns, (r) => r.tns),
-      soloBusint: suma(soloBusint, (r) => r.busint),
-      ambosDif: suma(ambos, (r) => r.dif),
-      nSoloTns: soloTns.length,
-      nSoloBusint: soloBusint.length,
-      nConDif: todas.filter((r) => Math.abs(r.dif) >= 1000).length,
-      nTotal: todas.length,
-      soloTnsLista: soloTns.filter((r) => r.nit && Math.abs(r.tns) >= 1000).sort((a, b) => b.tns - a.tns),
+      vencido: suma(todas, (r) => r.vencido),
+      soloTns: suma(por("solotns"), (r) => r.tns),
+      soloBusint: suma(por("solobusint"), (r) => r.busint),
+      ambosDif: suma(por("revisar"), (r) => r.dif),
+      n: { todos: todas.length, revisar: por("revisar").length, cuadra: por("cuadra").length, solotns: por("solotns").length, solobusint: por("solobusint").length },
+      soloTnsLista: por("solotns").filter((r) => r.nit).sort((a, b) => b.tns - a.tns),
     };
     resumen.dif = resumen.totalTns - resumen.totalBusint;
-    filas = todas;
-    if (soloDif) filas = filas.filter((x) => Math.abs(x.dif) >= 1000);
-    if (busqueda.trim()) {
-      const q = normalizarTexto(busqueda);
-      filas = filas.filter((x) => normalizarTexto(x.nombre).includes(q) || normalizarTexto(x.nombreTns).includes(q));
-    }
-    filas.sort((a, b) => Math.abs(b.dif) - Math.abs(a.dif));
   }
+  let filas = todas;
+  if (filtro !== "todos") filas = filas.filter((r) => r.estado === filtro);
+  if (busqueda.trim()) {
+    const q = normalizarTexto(busqueda);
+    filas = filas.filter((x) => normalizarTexto(x.nombre).includes(q) || normalizarTexto(x.nombreTns).includes(q));
+  }
+  filas = [...filas].sort((a, b) => Math.abs(b.dif) - Math.abs(a.dif) || b.busint - a.busint);
   async function guardarCuadre() {
     if (!d || !resumen) return;
     const ahora = new Date();
@@ -4880,187 +4942,230 @@ function ComparacionTnsCxp({ proveedoresBusint, fechaCorteBusint, campoNit }) {
       empresa,
       traidoEn: ahora.toISOString(),
       corteTns: d.corte,
-      corteBusint: fechaCorteBusint || "",
+      corteBusint: corteActivo?.fechaCorte || "",
       totalTns: Math.round(resumen.totalTns),
       totalBusint: Math.round(resumen.totalBusint),
       diferencia: Math.round(resumen.dif),
       soloTns: Math.round(resumen.soloTns),
       soloBusint: Math.round(resumen.soloBusint),
       ambosDif: Math.round(resumen.ambosDif),
-      proveedoresConDiferencia: resumen.nConDif,
+      proveedoresConDiferencia: resumen.n.revisar + resumen.n.solotns + resumen.n.solobusint,
     });
     setMensaje("Cuadre guardado en el historial.");
   }
   const hist = historial.filter((h) => h.empresa === empresa).sort((a, b) => String(b.traidoEn).localeCompare(String(a.traidoEn))).slice(0, 6);
-  const th = { textAlign: "right", padding: "6px 10px", fontSize: 12, color: C.slate, borderBottom: `1px solid ${C.border}` };
-  const td = { textAlign: "right", padding: "6px 10px", fontSize: 13, borderBottom: `1px solid ${C.border}`, fontVariantNumeric: "tabular-nums" };
-  const selStyle = { padding: "6px 10px", borderRadius: 8, border: `1px solid ${C.border}` };
+  const th = { textAlign: "right", padding: "8px 10px", fontSize: 11, color: C.slate, fontWeight: 700, borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" };
+  const td = { textAlign: "right", padding: "8px 10px", fontSize: 12.5, borderBottom: `1px solid ${C.border}`, fontVariantNumeric: "tabular-nums" };
+  const selStyle = { padding: "6px 10px", borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 12, fontFamily: "inherit", background: C.white, color: C.ink };
+  const chipEstado = {
+    cuadra: ["Cuadra", C.green, C.greenBg],
+    revisar: ["Revisar", C.amber, C.amberBg],
+    solotns: ["Solo en TNS", C.blue, C.blueBg],
+    solobusint: ["Solo en Busint", C.violet, C.violetBg],
+  };
+  const chip = (texto, color, bg) => <span style={{ display: "inline-block", fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 999, color, background: bg, whiteSpace: "nowrap" }}>{texto}</span>;
+  function detalleDe(fila) {
+    const g = facturasGuardadas?.[claveDocCxp(fila.nombreBusint)];
+    const guardadas = g && g.corteId === corteActivo?.id ? g.facturas : null;
+    const lista = guardadas || (detalleFacturas || {})[fila.nombreBusint] || null;
+    const m = movs[fila.clave];
+    return (
+      <tr>
+        <td colSpan={6} style={{ padding: "0 10px 14px", background: C.canvas, borderBottom: `1px solid ${C.border}` }}>
+          <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: 14, display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(300px,1fr))", gap: 16 }}>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, marginBottom: 6 }}>Facturas abiertas en Busint, con vencimiento</div>
+              {!fila.enBusint ? (
+                <div style={{ fontSize: 12, color: C.slate }}>Este proveedor no está en el corte de Busint.</div>
+              ) : !lista ? (
+                <div style={{ fontSize: 12, color: C.slate }}>Todavía no hay facturas guardadas de este corte. Pulsa "Actualizar ambos" para traerlas.</div>
+              ) : lista.length === 0 ? (
+                <div style={{ fontSize: 12, color: C.slate }}>Sin facturas abiertas.</div>
+              ) : (
+                <div style={{ overflowX: "auto", maxHeight: 280, overflowY: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                    <thead>
+                      <tr>
+                        <th style={{ ...th, textAlign: "left" }}>Factura</th>
+                        <th style={th}>Vence</th>
+                        <th style={th}>Días</th>
+                        <th style={th}>Saldo</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[...lista].sort((a, b) => (b.diasVencido || 0) - (a.diasVencido || 0)).map((f, i) => (
+                        <tr key={i}>
+                          <td style={{ ...td, textAlign: "left" }}>{f.nfact}</td>
+                          <td style={td}>{f.fechaVctoISO || "—"}</td>
+                          <td style={td}>
+                            {f.diasVencido > 0 ? chip(`${f.diasVencido} d vencida`, f.diasVencido > 60 ? C.red : C.amber, f.diasVencido > 60 ? C.redBg : C.amberBg) : <span style={{ color: C.slate }}>{f.fechaVctoISO ? `en ${Math.abs(f.diasVencido || 0)} d` : "—"}</span>}
+                          </td>
+                          <td style={{ ...td, fontWeight: 700 }}>{fmtCOP(f.saldo)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, flex: 1 }}>Movimientos en TNS (este año)</div>
+                {fila.enTns && baseNitCxp(fila.nit) && (
+                  <Btn small variant="secondary" onClick={() => traerMovimientos(fila)} disabled={!!m?.cargando}>
+                    {m?.cargando ? "Consultando..." : m?.data ? "Actualizar" : "Traer movimientos"}
+                  </Btn>
+                )}
+              </div>
+              {!fila.enTns && <div style={{ fontSize: 12, color: C.slate }}>Este proveedor no tiene saldo en TNS.</div>}
+              {m?.error && <div style={{ fontSize: 12, color: C.red, fontWeight: 600 }}>⚠ {m.error}</div>}
+              {m?.data && (m.data.filas || []).length > 0 && (
+                <div style={{ overflowX: "auto", maxHeight: 280, overflowY: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                    <thead>
+                      <tr>
+                        <th style={{ ...th, textAlign: "left" }}>Fecha</th>
+                        <th style={{ ...th, textAlign: "left" }}>Documento</th>
+                        <th style={th}>Débito</th>
+                        <th style={th}>Crédito</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {m.data.filas.map((f, i) => (
+                        <tr key={i} title={`${f.cuenta} ${f.detalle || ""}`}>
+                          <td style={{ ...td, textAlign: "left" }}>{f.fecha}</td>
+                          <td style={{ ...td, textAlign: "left" }}>{f.documento}</td>
+                          <td style={td}>{f.debito ? fmtCOP(f.debito) : ""}</td>
+                          <td style={td}>{f.credito ? fmtCOP(f.credito) : ""}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              {m?.data && (m.data.filas || []).length === 0 && (
+                <div style={{ fontSize: 12, color: C.slate }}>
+                  TNS respondió pero no se reconocieron movimientos. Esto es lo que contestó (mándame una captura):
+                  <pre style={{ whiteSpace: "pre-wrap", fontSize: 11, maxHeight: 160, overflow: "auto" }}>
+                    {`Campos que pide TNS: ${(m.data.esquema?.campos || []).join(", ") || "(no se pudo leer)"}\nEnviado: ${JSON.stringify(m.data.enviado)}\n${m.data.muestraCruda || ""}`}
+                  </pre>
+                </div>
+              )}
+            </div>
+          </div>
+        </td>
+      </tr>
+    );
+  }
+  const fechaBusint = corteActivo ? `${corteActivo.fechaCorte}${corteActivo.creadoEn ? ` · ${new Date(corteActivo.creadoEn).toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" })}` : ""}` : "";
   return (
-    <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, padding: 14, marginBottom: 16 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-        <div style={{ fontWeight: 700, fontSize: 14, flex: 1 }}>🔎 Cuadre Busint vs TNS</div>
-        <Btn small variant="secondary" onClick={() => setAbierto(!abierto)}>{abierto ? "Ocultar" : "Abrir"}</Btn>
+    <div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
+        <Btn onClick={actualizarAmbos} disabled={!!cargando || !!cargandoBusint}>
+          {cargando || cargandoBusint ? "Actualizando..." : "🔄 Actualizar ambos"}
+        </Btn>
+        <Btn small variant={empresa === "yanko" ? "primary" : "secondary"} onClick={() => (datos.yanko ? setEmpresa("yanko") : traerTns("yanko"))} disabled={!!cargando}>
+          {cargando === "yanko" ? "Consultando TNS..." : "Yanko"}
+        </Btn>
+        <Btn small variant={empresa === "indutex" ? "primary" : "secondary"} onClick={() => (datos.indutex ? setEmpresa("indutex") : traerTns("indutex"))} disabled={!!cargando}>
+          {cargando === "indutex" ? "Consultando TNS..." : "Indutex"}
+        </Btn>
+        {d && <Btn small variant="secondary" onClick={() => traerTns(empresa)} disabled={!!cargando}>Volver a traer TNS</Btn>}
+        <span style={{ fontSize: 12, color: C.slate }}>
+          Busint {fechaBusint || "sin corte"}{d ? ` · TNS ${d.corte} (sucursales ${(d.sucursales || []).join(", ")})` : ""}
+        </span>
       </div>
-      {abierto && (
-        <div style={{ marginTop: 12 }}>
-          <div style={{ fontSize: 12, color: C.slate, marginBottom: 6 }}>
-            Compara el corte de Busint seleccionado{fechaCorteBusint ? ` (${fechaCorteBusint})` : ""} con lo que debe TNS: cuenta 2205 + 2335 − anticipos 1330. No cambia ningún dato del corte.
+      <div style={{ fontSize: 12, color: conNit ? C.slate : C.red, marginBottom: 12 }}>
+        {conNit
+          ? `${conNit} de ${(proveedoresBusint || []).length} proveedores del corte de Busint traen NIT${corteActivo?.campoNit ? ` (columna ${corteActivo.campoNit})` : ""}; los demás se cruzan por nombre o se asocian a mano.`
+          : "Este corte de Busint no trae NIT de proveedores (se cruza solo por nombre). Pulsa \"Actualizar ambos\" para actualizarlo."}
+      </div>
+      {error && <div style={{ padding: "10px 14px", background: C.redBg, color: C.red, borderRadius: 8, fontSize: 13, fontWeight: 600, marginBottom: 12 }}>⚠ {error}</div>}
+      {mensaje && <div style={{ color: C.green, fontSize: 13, fontWeight: 600, marginBottom: 10 }}>✓ {mensaje}</div>}
+      {!d ? (
+        <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 14 }}>
+          Pulsa "Actualizar ambos" (o elige Yanko o Indutex) para traer lo que debe TNS y compararlo con el corte de Busint.
+        </div>
+      ) : (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(170px,1fr))", gap: 12, marginBottom: 18 }}>
+            <KPI icon="🧾" label="Debe según Busint" value={fmtMillCxp(resumen.totalBusint)} color={C.violet} bg={C.violetBg} />
+            <KPI icon="📒" label={`Debe según TNS (2205 + 2335 − anticipos 1330)`} value={fmtMillCxp(resumen.totalTns)} color={C.blue} bg={C.blueBg} />
+            <KPI icon="⚖" label="Diferencia (TNS − Busint)" value={fmtMillCxp(resumen.dif)} color={Math.abs(resumen.dif) < 1000 ? C.green : C.red} bg={Math.abs(resumen.dif) < 1000 ? C.greenBg : C.redBg} sub={`Solo TNS ${fmtMillCxp(resumen.soloTns)} · solo Busint ${fmtMillCxp(-resumen.soloBusint)} · ambos ${fmtMillCxp(resumen.ambosDif)}`} />
+            <KPI icon="⚠" label="Vencido (Busint)" value={fmtMillCxp(resumen.vencido)} color={C.amber} bg={C.amberBg} />
           </div>
-          <div style={{ fontSize: 12, color: conNit ? C.slate : C.red, marginBottom: 10 }}>
-            {conNit
-              ? `${conNit} de ${(proveedoresBusint || []).length} proveedores del corte traen NIT${campoNit ? ` (columna ${campoNit})` : ""}; los demás se cruzan por nombre.`
-              : "Este corte no trae NIT de proveedores (se cruza solo por nombre). Pulsa \"🔄 Traer desde Busint\" para actualizarlo."}
+          <FranjaVencimientosCxp proveedores={proveedoresBusint} fechaCorte={corteActivo?.fechaCorte} />
+          <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}>
+            <div style={{ width: 220 }}>
+              <FInput value={busqueda} onChange={setBusqueda} placeholder="Buscar proveedor..." icon="🔍" />
+            </div>
+            {[["todos", `Todos ${resumen.n.todos}`], ["revisar", `Revisar ${resumen.n.revisar}`], ["cuadra", `Cuadran ${resumen.n.cuadra}`], ["solotns", `Solo TNS ${resumen.n.solotns}`], ["solobusint", `Solo Busint ${resumen.n.solobusint}`]].map(([k, label]) => (
+              <Btn key={k} small variant={filtro === k ? "primary" : "secondary"} onClick={() => setFiltro(k)}>{label}</Btn>
+            ))}
+            <div style={{ flex: 1 }} />
+            <Btn small variant="secondary" onClick={guardarCuadre}>💾 Guardar este cuadre</Btn>
           </div>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
-            <Btn onClick={() => traer("yanko")} disabled={!!cargando}>{cargando === "yanko" ? "Consultando TNS..." : "Traer Yanko"}</Btn>
-            <Btn variant="secondary" onClick={() => traer("indutex")} disabled={!!cargando}>{cargando === "indutex" ? "Consultando TNS..." : "Traer Indutex"}</Btn>
-            {Object.keys(datos).length > 1 && (
-              <select value={empresa} onChange={(e) => setEmpresa(e.target.value)} style={selStyle}>
-                {Object.keys(datos).map((k) => <option key={k} value={k}>{k === "yanko" ? "Yanko" : "Indutex"}</option>)}
-              </select>
-            )}
-          </div>
-          {error && <div style={{ color: C.red, fontSize: 13, fontWeight: 600, marginBottom: 10 }}>⚠ {error}</div>}
-          {mensaje && <div style={{ color: C.green, fontSize: 13, fontWeight: 600, marginBottom: 10 }}>✓ {mensaje}</div>}
-          {d && resumen && (
-            <>
-              <div style={{ fontSize: 12, color: C.slate, marginBottom: 6 }}>
-                {empresa === "yanko" ? "Yanko" : "Indutex"} · corte TNS {d.corte} · sucursales {(d.sucursales || []).join(", ")} · TNS: 2205 {fmtCOP(d.totales.c2205)} + 2335 {fmtCOP(d.totales.c2335)} − anticipos 1330 {fmtCOP(d.totales.a1330)}
-              </div>
-              <div style={{ overflowX: "auto", marginBottom: 12 }}>
-                <table style={{ borderCollapse: "collapse", minWidth: 480 }}>
-                  <tbody>
-                    <tr><td style={{ ...td, textAlign: "left" }}>Debe según TNS</td><td style={td}>{fmtCOP(resumen.totalTns)}</td></tr>
-                    <tr><td style={{ ...td, textAlign: "left" }}>Debe según Busint (corte)</td><td style={td}>{fmtCOP(resumen.totalBusint)}</td></tr>
-                    <tr>
-                      <td style={{ ...td, textAlign: "left", fontWeight: 700 }}>Diferencia (TNS − Busint)</td>
-                      <td style={{ ...td, fontWeight: 700, color: Math.abs(resumen.dif) < 1000 ? C.green : C.red }}>{fmtCOP(resumen.dif)}</td>
-                    </tr>
-                    <tr><td style={{ ...td, textAlign: "left", color: C.slate }}>↳ proveedores solo en TNS ({resumen.nSoloTns})</td><td style={td}>{fmtCOP(resumen.soloTns)}</td></tr>
-                    <tr><td style={{ ...td, textAlign: "left", color: C.slate }}>↳ proveedores solo en Busint ({resumen.nSoloBusint})</td><td style={td}>{fmtCOP(-resumen.soloBusint)}</td></tr>
-                    <tr><td style={{ ...td, textAlign: "left", color: C.slate }}>↳ proveedores en ambos con valor distinto</td><td style={td}>{fmtCOP(resumen.ambosDif)}</td></tr>
-                  </tbody>
-                </table>
-              </div>
-              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
-                <input value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder="Buscar proveedor" style={selStyle} />
-                <label style={{ fontSize: 13 }}>
-                  <input type="checkbox" checked={soloDif} onChange={(e) => setSoloDif(e.target.checked)} /> Solo con diferencia
-                </label>
-                <span style={{ fontSize: 12, color: C.slate }}>{filas.length} de {resumen.nTotal} proveedores</span>
-                <Btn small variant="secondary" onClick={guardarCuadre}>💾 Guardar este cuadre</Btn>
-              </div>
-              <div style={{ overflowX: "auto", maxHeight: 440, overflowY: "auto" }}>
-                <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 640 }}>
-                  <thead>
-                    <tr>
-                      <th style={{ ...th, textAlign: "left" }}>Proveedor</th>
-                      <th style={th}>TNS</th>
-                      <th style={th}>Busint</th>
-                      <th style={th}>Diferencia</th>
-                      <th style={{ ...th, textAlign: "left" }}>Cruce</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filas.slice(0, 300).map((x, i) => (
-                      <tr key={i}>
-                        <td style={{ ...td, textAlign: "left" }}>
+          <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
+              <thead>
+                <tr style={{ background: C.canvas }}>
+                  <th style={{ ...th, textAlign: "left" }}>Proveedor</th>
+                  <th style={th}>Busint</th>
+                  <th style={th}>Vencido</th>
+                  <th style={th}>TNS</th>
+                  <th style={th}>Diferencia</th>
+                  <th style={{ ...th, textAlign: "left" }}>Estado</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filas.length === 0 && (
+                  <tr><td colSpan={6} style={{ ...td, textAlign: "center", color: C.slate, padding: 28 }}>No hay proveedores para este filtro.</td></tr>
+                )}
+                {filas.slice(0, 300).map((x) => {
+                  const [txt, col, bg] = chipEstado[x.estado];
+                  const abiertoFila = abierto === x.clave;
+                  return (
+                    <Fragment key={x.clave}>
+                      <tr onClick={() => setAbierto(abiertoFila ? null : x.clave)} style={{ cursor: "pointer", background: abiertoFila ? C.canvas : undefined }}>
+                        <td style={{ ...td, textAlign: "left", fontWeight: 600, color: C.ink }}>
+                          <span style={{ display: "inline-block", transition: "transform 0.15s", transform: abiertoFila ? "rotate(90deg)" : "none", fontSize: 11, marginRight: 6, color: C.slate }}>›</span>
                           {x.nombre}
-                          {x.nombreTns && x.nombreBusint && claveNombreCxpTns(x.nombreTns) !== claveNombreCxpTns(x.nombreBusint) ? <span style={{ color: C.slate, fontSize: 11 }}> · en TNS: {x.nombreTns}</span> : null}
+                          {x.nombreTns && x.nombreBusint && claveNombreCxpTns(x.nombreTns) !== claveNombreCxpTns(x.nombreBusint) ? <span style={{ color: C.slate, fontSize: 11, fontWeight: 400 }}> · en TNS: {x.nombreTns}</span> : null}
                         </td>
-                        <td style={td}>{fmtCOP(x.tns)}</td>
                         <td style={td}>{fmtCOP(x.busint)}</td>
-                        <td style={{ ...td, color: Math.abs(x.dif) >= 1000 ? C.red : C.slate }}>{fmtCOP(x.dif)}</td>
-                        <td style={{ ...td, textAlign: "left", fontSize: 12, color: C.slate }}>
-                          {x.enTns && !x.enBusint && "Solo en TNS"}
-                          {x.enTns && baseNitCxp(x.nit) && (
-                            <button type="button" onClick={() => verMovimientos(x)} disabled={!!mov?.cargando} title="Ver los movimientos de este proveedor en TNS" style={{ marginLeft: 6, border: `1px solid ${C.border}`, background: "transparent", borderRadius: 6, cursor: "pointer", fontSize: 11, padding: "1px 6px", color: C.ink }}>🔍 Movimientos</button>
+                        <td style={{ ...td, color: x.vencido > 0 ? C.red : C.slate }}>{fmtCOP(x.vencido)}</td>
+                        <td style={td}>{fmtCOP(x.tns)}</td>
+                        <td style={{ ...td, fontWeight: 700, color: Math.abs(x.dif) >= 1000 ? C.red : C.slate }}>{fmtCOP(x.dif)}</td>
+                        <td style={{ ...td, textAlign: "left" }} onClick={(e) => e.stopPropagation()}>
+                          {chip(txt, col, bg)}
+                          {x.porEnlace && (
+                            <button type="button" title="Quitar la asociación a mano" onClick={() => asociar(x.nombreBusint, "")} style={{ border: "none", background: "none", cursor: "pointer", color: C.red, marginLeft: 4, fontSize: 11 }}>✕</button>
                           )}
-                          {x.enBusint && !x.enTns && Math.abs(x.busint) >= 1000 && (
+                          {x.estado === "solobusint" && (
                             <select
                               value=""
                               onChange={(e) => e.target.value && asociar(x.nombreBusint, e.target.value)}
-                              style={{ ...selStyle, padding: "3px 6px", fontSize: 12, maxWidth: 220 }}
-                              title="Solo está en Busint: asócialo al proveedor de TNS que es el mismo"
+                              style={{ ...selStyle, marginLeft: 6, padding: "2px 6px", fontSize: 11, maxWidth: 170 }}
+                              title="Asócialo al proveedor de TNS que es el mismo"
                             >
-                              <option value="">Solo en Busint · asociar a…</option>
+                              <option value="">asociar a…</option>
                               {resumen.soloTnsLista.map((t) => (
-                                <option key={t.nit} value={t.nit}>{t.nombre} · {fmtCOP(t.tns)}</option>
+                                <option key={t.clave} value={t.nit}>{t.nombre} · {fmtCOP(t.tns)}</option>
                               ))}
                             </select>
                           )}
-                          {x.enBusint && x.enTns && (x.porEnlace ? (
-                            <span>
-                              Asociado a mano{" "}
-                              <button type="button" onClick={() => asociar(x.nombreBusint, "")} style={{ border: "none", background: "none", cursor: "pointer", color: C.red }} title="Quitar la asociación">✕</button>
-                            </span>
-                          ) : baseNitCxp(x.nit) ? "Por NIT" : "Por nombre")}
                         </td>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              {mov && (
-                <div style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: 10, marginTop: 10 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                    <div style={{ fontWeight: 700, fontSize: 13, flex: 1 }}>Movimientos en TNS · {mov.nombre} (NIT {baseNitCxp(mov.nit)})</div>
-                    <Btn small variant="secondary" onClick={() => setMov(null)}>Cerrar</Btn>
-                  </div>
-                  {mov.cargando && <div style={{ fontSize: 12, color: C.slate }}>Consultando el Libro Auxiliar de TNS...</div>}
-                  {mov.error && <div style={{ fontSize: 12, color: C.red, fontWeight: 600 }}>⚠ {mov.error}</div>}
-                  {mov.data && (
-                    <>
-                      <div style={{ fontSize: 11, color: C.slate, marginBottom: 6 }}>
-                        Del {mov.data.desde} al {mov.data.corte} · cuentas 2205 / 2335 / 1330 · {mov.data.totalFilas} movimientos
-                        {mov.data.totalFilas > (mov.data.filas || []).length ? " (se muestran los 600 más recientes)" : ""}
-                      </div>
-                      {(mov.data.filas || []).length > 0 ? (
-                        <div style={{ overflowX: "auto", maxHeight: 360, overflowY: "auto" }}>
-                          <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 640 }}>
-                            <thead>
-                              <tr>
-                                {["Fecha", "Cuenta", "Documento", "Detalle", "Débito", "Crédito"].map((h, i) => (
-                                  <th key={h} style={{ ...th, textAlign: i < 4 ? "left" : "right" }}>{h}</th>
-                                ))}
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {mov.data.filas.map((f, i) => (
-                                <tr key={i}>
-                                  <td style={{ ...td, textAlign: "left" }}>{f.fecha}</td>
-                                  <td style={{ ...td, textAlign: "left" }}>{f.cuenta}</td>
-                                  <td style={{ ...td, textAlign: "left" }}>{f.documento}</td>
-                                  <td style={{ ...td, textAlign: "left", maxWidth: 260, whiteSpace: "normal" }}>{f.detalle}</td>
-                                  <td style={td}>{f.debito ? fmtCOP(f.debito) : ""}</td>
-                                  <td style={td}>{f.credito ? fmtCOP(f.credito) : ""}</td>
-                                </tr>
-                              ))}
-                              <tr>
-                                <td style={{ ...td, textAlign: "left", fontWeight: 700 }} colSpan={4}>Totales del periodo (crédito − débito = lo que se debe)</td>
-                                <td style={{ ...td, fontWeight: 700 }}>{fmtCOP(mov.data.filas.reduce((t, f) => t + f.debito, 0))}</td>
-                                <td style={{ ...td, fontWeight: 700 }}>{fmtCOP(mov.data.filas.reduce((t, f) => t + f.credito, 0))}</td>
-                              </tr>
-                            </tbody>
-                          </table>
-                        </div>
-                      ) : (
-                        <div style={{ fontSize: 12, color: C.slate }}>
-                          TNS respondió pero no se reconocieron movimientos. Esto es lo que contestó (mándame una captura):
-                          <pre style={{ whiteSpace: "pre-wrap", fontSize: 11, maxHeight: 200, overflow: "auto" }}>
-                            {`Campos que pide TNS: ${(mov.data.esquema?.campos || []).join(", ") || "(no se pudo leer)"}\nEnviado: ${JSON.stringify(mov.data.enviado)}\n${mov.data.muestraCruda || ""}`}
-                          </pre>
-                        </div>
-                      )}
-                    </>
-                  )}
-                </div>
-              )}
-              {filas.length > 300 && <div style={{ fontSize: 12, color: C.slate, marginTop: 6 }}>Mostrando los 300 con mayor diferencia.</div>}
-            </>
-          )}
+                      {abiertoFila && detalleDe(x)}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          {filas.length > 300 && <div style={{ fontSize: 12, color: C.slate, marginTop: 6 }}>Mostrando los 300 con mayor diferencia.</div>}
           {hist.length > 0 && (
-            <div style={{ marginTop: 14 }}>
+            <div style={{ marginTop: 16 }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: C.slate, marginBottom: 4 }}>Historial de cuadres guardados ({empresa === "yanko" ? "Yanko" : "Indutex"})</div>
               <table style={{ borderCollapse: "collapse" }}>
                 <thead>
@@ -5084,7 +5189,7 @@ function ComparacionTnsCxp({ proveedoresBusint, fechaCorteBusint, campoNit }) {
               </table>
             </div>
           )}
-        </div>
+        </>
       )}
     </div>
   );
@@ -5107,6 +5212,18 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
   const [origenFiltro, setOrigenFiltro] = useState("");
   const [corteSeleccionado, setCorteSeleccionado] = useState(null);
   const [vista, setVista] = useState("tabla");
+  // (2026-10-27, a pedido de Fredy) "busint" = la tabla de siempre; "comparar" = cuadre Busint vs TNS con vencimientos.
+  const [vistaDatos, setVistaDatos] = useState("busint");
+  // Facturas abiertas de cada proveedor del ultimo corte (guardadas aparte porque en el corte no caben: limite de 1MB).
+  const [facturasGuardadas, setFacturasGuardadas] = useState({});
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "contabilidad_cxp_facturas"), (snap) => {
+      const m = {};
+      snap.docs.forEach((d) => { m[d.id] = d.data(); });
+      setFacturasGuardadas(m);
+    }, () => {});
+    return unsub;
+  }, []);
   const [cargandoBusint, setCargandoBusint] = useState(false);
   const [errorBusint, setErrorBusint] = useState("");
   // (2026-09-26, a pedido de Fredy) Detalle de facturas por proveedor de la
@@ -5187,8 +5304,25 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
       (resp.data.proveedores || []).forEach((p) => { detalle[p.nombre] = p.facturas || []; });
       setDetalleFacturasPorProveedor(detalle);
       setVerFacturasDe(null);
+      const corteId = uid();
+      // Las facturas abiertas de cada proveedor se guardan APARTE (un documento por proveedor, el ultimo corte) para ver
+      // sus vencimientos en la vista Comparar sin volver a consultar Busint.
+      try {
+        const lote = writeBatch(db);
+        (resp.data.proveedores || []).forEach((p) => {
+          lote.set(doc(db, "contabilidad_cxp_facturas", claveDocCxp(p.nombre)), {
+            nombre: p.nombre,
+            corteId,
+            fechaCorte: resp.data.fechaCorte,
+            facturas: (p.facturas || []).map((f) => ({ nfact: f.nfact, saldo: Math.round(f.saldo || 0), fechaVctoISO: f.fechaVctoISO || null, diasVencido: f.diasVencido || 0 })),
+          });
+        });
+        await lote.commit();
+      } catch (e) {
+        console.warn("No se pudieron guardar las facturas del corte", e);
+      }
       await onImportarCorte({
-        id: uid(),
+        id: corteId,
         fechaCorte: resp.data.fechaCorte,
         campoNit: resp.data.campoNit || "",
         proveedores: proveedoresSinDetalle,
@@ -5349,6 +5483,20 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
               ))}
             </select>
           )}
+          {isAdmin && vista === "tabla" && (
+            <div style={{ display: "inline-flex", border: `1.5px solid ${C.border}`, borderRadius: 8, overflow: "hidden" }}>
+              {[["busint", "Busint"], ["comparar", "Comparar con TNS"]].map(([k, label]) => (
+                <button
+                  key={k}
+                  type="button"
+                  onClick={() => setVistaDatos(k)}
+                  style={{ padding: "8px 14px", border: "none", cursor: "pointer", fontSize: 13, fontFamily: "inherit", fontWeight: vistaDatos === k ? 800 : 500, background: vistaDatos === k ? C.ink : C.white, color: vistaDatos === k ? C.white : C.slate }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
           <Btn variant="secondary" onClick={() => setVista(vista === "tabla" ? "estadistica" : "tabla")}>
             {vista === "tabla" ? "📊 Estadística" : "📋 Ver tabla"}
           </Btn>
@@ -5367,7 +5515,6 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
           )}
         </div>
       </div>
-      {isAdmin && <ComparacionTnsCxp proveedoresBusint={corteActivo?.proveedores || []} fechaCorteBusint={corteActivo?.fechaCorte || ""} campoNit={corteActivo?.campoNit || ""} />}
       {errorBusint && (
         <div style={{ padding: "10px 14px", background: C.redBg, color: C.red, borderRadius: 8, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
           ⚠ {errorBusint}
@@ -5375,6 +5522,15 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
       )}
       {vista === "estadistica" ? (
         <EstadisticaCxpView totalAdeudado={totalAdeudado} calendario={calendario} />
+      ) : isAdmin && vistaDatos === "comparar" ? (
+        <CuadreCxpView
+          proveedoresBusint={filasCorte}
+          corteActivo={corteActivo}
+          detalleFacturas={detalleFacturasPorProveedor}
+          facturasGuardadas={facturasGuardadas}
+          onTraerBusint={traerCorteDesdeBusint}
+          cargandoBusint={cargandoBusint}
+        />
       ) : !hayProveedores ? (
         <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>
           Aún no has importado ningún corte de Cuentas por Pagar. Usa "Importar TNS" para subir el primero.
@@ -5393,6 +5549,7 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
             <KPI icon="⚠" label="Total vencido" value={fmtCOP(totalVencido)} color={C.amber} bg={C.amberBg} />
             <KPI icon="🔴" label="91+ días (más urgente)" value={fmtCOP(total91)} color={C.red} bg={C.redBg} />
           </div>
+          <FranjaVencimientosCxp proveedores={filasCorte} fechaCorte={corteActivo?.fechaCorte} />
           <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 14, flexWrap: "wrap" }}>
             <div style={{ width: 240 }}>
               <FInput value={busquedaProveedor} onChange={setBusquedaProveedor} placeholder="Buscar proveedor..." icon="🔍" />
