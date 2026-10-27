@@ -18,6 +18,8 @@ const hoyISO = () => new Date().toLocaleDateString("en-CA", { timeZone: "America
 const diasEntre = (a, b) => Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86400000);
 const sumarDias = (iso, d) => new Date(Date.parse(`${iso}T00:00:00Z`) + d * 86400000).toISOString().slice(0, 10);
 const normTxt = (t) => String(t || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+const unidadesCompatibles = (a, b) => !a.und || !b.und || a.und === b.und;
+const etqUnidad = (u) => (u === "KG" ? "kg" : u === "M" ? "m" : "?");
 const plural = (n, uno, varios) => `${n} ${n === 1 ? uno : varios}`;
 let cacheDatos = null; // se conserva mientras la pestaña esté abierta, para no volver a consultar Busint al cambiar de pantalla
 
@@ -73,10 +75,10 @@ export default function OrdenesCompraView({ db, functionsClient, currentUser, C,
     const nombres = datos?.insumos || {};
     return (datos?.ordenes || []).map((o) => {
       let bruto = 0, desc = 0, unidades = 0;
-      const lineas = o.l.map(([cod, cant, costo, dsc]) => {
+      const lineas = o.l.map(([cod, cant, costo, dsc, und]) => {
         const b = cant * costo, d = (b * dsc) / 100;
         bruto += b; desc += d; unidades += cant;
-        return { cod, nombre: nombres[cod] || `Insumo cód. ${cod}`, cant, costo, dsc, neto: costo * (1 - dsc / 100), total: b - d };
+        return { cod, nombre: nombres[cod] || `Insumo cód. ${cod}`, cant, costo, dsc, und: und || "", neto: costo * (1 - dsc / 100), total: b - d };
       });
       const base = bruto - desc;
       return { ...o, lineas, unidades, bruto, desc, base, iva: base * IVA, total: base * (1 + IVA) };
@@ -89,13 +91,19 @@ export default function OrdenesCompraView({ db, functionsClient, currentUser, C,
     ordenes.forEach((o) => o.lineas.forEach((l) => {
       if (!(l.neto > 0)) return;
       if (!m.has(l.cod)) m.set(l.cod, { cod: l.cod, nombre: l.nombre, compras: [] });
-      m.get(l.cod).compras.push({ oc: o.n, fecha: o.fi || o.ff || "", prov: o.pn, cant: l.cant, costo: l.costo, dsc: l.dsc, neto: l.neto });
+      m.get(l.cod).compras.push({ oc: o.n, fecha: o.fi || o.ff || "", prov: o.pn, cant: l.cant, costo: l.costo, dsc: l.dsc, neto: l.neto, und: l.und });
     }));
+    // (2026-10-27) Solo se comparan compras de la MISMA unidad (kilos con kilos, metros con metros). Si la unidad de una
+    // de las dos no se pudo leer ("?"), se compara igual que antes. Si las dos son conocidas y distintas, no es comparable.
     const ant = new Map();
     m.forEach((ins) => {
       ins.compras.sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)) || a.oc - b.oc);
       ins.compras.forEach((c, i) => {
-        if (i > 0) { const p = ins.compras[i - 1]; ant.set(`${c.oc}|${ins.cod}`, { neto: p.neto, fecha: p.fecha, pct: ((c.neto - p.neto) / p.neto) * 100 }); }
+        if (i === 0) return;
+        let p = null;
+        for (let j = i - 1; j >= 0; j--) { if (unidadesCompatibles(ins.compras[j], c)) { p = ins.compras[j]; break; } }
+        if (p) ant.set(`${c.oc}|${ins.cod}`, { neto: p.neto, fecha: p.fecha, pct: ((c.neto - p.neto) / p.neto) * 100 });
+        else { const q = ins.compras[i - 1]; ant.set(`${c.oc}|${ins.cod}`, { cambioUnidad: true, neto: q.neto, fecha: q.fecha, und: c.und, undAnt: q.und }); }
       });
     });
     return { porInsumo: [...m.values()], anteriorDeLinea: ant };
@@ -188,6 +196,7 @@ export default function OrdenesCompraView({ db, functionsClient, currentUser, C,
   const Cambio = ({ pct }) => pct === undefined || pct === null ? <span style={{ color: C.slate }}>—</span>
     : Math.abs(pct) < 0.05 ? <span style={{ color: C.slate }}>● igual</span>
     : <span style={{ color: pct > 0 ? C.red : C.green, fontWeight: 700 }}>{pct > 0 ? "▲" : "▼"} {Math.abs(pct).toLocaleString("es-CO", { maximumFractionDigits: 1 })} %</span>;
+  const CambioUnidad = ({ ahora, antes }) => <span title="La compra anterior está en otra unidad (kilos vs metros): el precio no es comparable." style={{ color: C.amber, fontWeight: 700 }}>⇄ cambio de unidad ({etqUnidad(antes)} → {etqUnidad(ahora)})</span>;
   const Kpi = ({ titulo, valor, detalle, tono }) => (
     <div style={{ background: tono === "rojo" ? C.redBg : tono === "ambar" ? C.amberBg : C.white, border: `1px solid ${tono === "rojo" ? "#F3B9B1" : tono === "ambar" ? "#F0CF95" : C.border}`, borderRadius: 14, padding: "12px 16px" }}>
       <div style={{ fontSize: 11, letterSpacing: 0.5, textTransform: "uppercase", color: C.slate, fontWeight: 700 }}>{titulo}</div>
@@ -214,9 +223,9 @@ export default function OrdenesCompraView({ db, functionsClient, currentUser, C,
                 return (
                   <tr key={i}>
                     <td style={td}>{l.cod}</td><td style={td}>{l.nombre}</td>
-                    <td style={{ ...td, ...num }}>{l.cant.toLocaleString("es-CO")}</td><td style={{ ...td, ...num }}>{fmtCOP(l.costo)}</td>
+                    <td style={{ ...td, ...num }}>{l.cant.toLocaleString("es-CO")}{l.und ? ` ${etqUnidad(l.und)}` : ""}</td><td style={{ ...td, ...num }}>{fmtCOP(l.costo)}{l.und ? ` /${etqUnidad(l.und)}` : ""}</td>
                     <td style={{ ...td, ...num }}>{l.dsc ? `${l.dsc} %` : "—"}</td><td style={{ ...td, ...num }}>{fmtCOP(l.neto)}</td><td style={{ ...td, ...num }}>{fmtCOP(l.total)}</td>
-                    <td style={td}>{a ? <><Cambio pct={a.pct} /> <span style={{ fontSize: 11.5, color: C.slate }}>antes {fmtCOP(a.neto)} · {fmtF(a.fecha)}</span></> : <span style={{ fontSize: 12, color: C.slate }}>primera compra registrada</span>}</td>
+                    <td style={td}>{a ? (a.cambioUnidad ? <><CambioUnidad ahora={a.und} antes={a.undAnt} /> <span style={{ fontSize: 11.5, color: C.slate }}>antes {fmtCOP(a.neto)} · {fmtF(a.fecha)}</span></> : <><Cambio pct={a.pct} /> <span style={{ fontSize: 11.5, color: C.slate }}>antes {fmtCOP(a.neto)} · {fmtF(a.fecha)}</span></>) : <span style={{ fontSize: 12, color: C.slate }}>primera compra registrada</span>}</td>
                   </tr>
                 );
               })}
@@ -326,10 +335,19 @@ export default function OrdenesCompraView({ db, functionsClient, currentUser, C,
     .sort((a, b) => String(b.ult.fecha).localeCompare(String(a.ult.fecha))), [porInsumo, qn]);
   const cambios = useMemo(() => {
     const limiteF = sumarDias(hoy, -periodoCosto);
+    // (2026-10-27) Se compara la última compra con la anterior de la MISMA unidad. Si la anterior está en otra unidad
+    // (kilos vs metros) la fila sale marcada "cambio de unidad", sin porcentaje, y no cuenta como aumento.
     return porInsumo.filter((i) => i.compras.length >= 2)
-      .map((i) => { const u = i.compras[i.compras.length - 1], p = i.compras[i.compras.length - 2]; return { cod: i.cod, nombre: i.nombre, ult: u, ant: p, pct: ((u.neto - p.neto) / p.neto) * 100, dif: u.neto - p.neto }; })
-      .filter((c) => String(c.ult.fecha) >= limiteF && (!qn || normTxt(c.nombre).includes(qn)) && (!soloSubieron || c.pct > 0.05))
-      .sort((a, b) => b.pct - a.pct);
+      .map((i) => {
+        const u = i.compras[i.compras.length - 1];
+        const previas = i.compras.slice(0, -1);
+        const p = [...previas].reverse().find((x) => unidadesCompatibles(x, u));
+        if (p) return { cod: i.cod, nombre: i.nombre, ult: u, ant: p, pct: ((u.neto - p.neto) / p.neto) * 100, dif: u.neto - p.neto, cambioUnidad: false };
+        const q = previas[previas.length - 1];
+        return { cod: i.cod, nombre: i.nombre, ult: u, ant: q, pct: null, dif: null, cambioUnidad: true };
+      })
+      .filter((c) => String(c.ult.fecha) >= limiteF && (!qn || normTxt(c.nombre).includes(qn)) && (!soloSubieron || (!c.cambioUnidad && c.pct > 0.05)))
+      .sort((a, b) => (a.cambioUnidad ? 1 : 0) - (b.cambioUnidad ? 1 : 0) || (b.pct ?? 0) - (a.pct ?? 0));
   }, [porInsumo, periodoCosto, qn, soloSubieron, hoy]);
 
   // Cuadro al frente con el detalle de la orden (se abre al hacer clic en una fila)
@@ -403,7 +421,7 @@ export default function OrdenesCompraView({ db, functionsClient, currentUser, C,
               );
             })()}
             {tab === "historial" && <Btn variant="secondary" small onClick={() => exportar(filasOrdenes(listaHist), "Historial ordenes de compra")}>⬇ Exportar a Excel</Btn>}
-            {tab === "costo" && <Btn variant="secondary" small onClick={() => exportar(cambios.map((c) => ({ Cód: c.cod, Insumo: c.nombre, "Precio anterior": Math.round(c.ant.neto), "Fecha anterior": fmtF(c.ant.fecha), "Precio ahora": Math.round(c.ult.neto), "Fecha ahora": fmtF(c.ult.fecha), "Cambio %": Math.round(c.pct * 10) / 10, Proveedor: c.ult.prov })), "Control de costo compras")}>⬇ Exportar a Excel</Btn>}
+            {tab === "costo" && <Btn variant="secondary" small onClick={() => exportar(cambios.map((c) => ({ Cód: c.cod, Insumo: c.nombre, "Unidad anterior": etqUnidad(c.ant.und), "Precio anterior": Math.round(c.ant.neto), "Fecha anterior": fmtF(c.ant.fecha), "Unidad ahora": etqUnidad(c.ult.und), "Precio ahora": Math.round(c.ult.neto), "Fecha ahora": fmtF(c.ult.fecha), "Cambio %": c.cambioUnidad ? "" : Math.round(c.pct * 10) / 10, Nota: c.cambioUnidad ? "Cambio de unidad: no comparable" : "", Proveedor: c.ult.prov })), "Control de costo compras")}>⬇ Exportar a Excel</Btn>}
           </div>
 
           <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 16, padding: 14 }}>
@@ -442,11 +460,12 @@ export default function OrdenesCompraView({ db, functionsClient, currentUser, C,
                         <thead><tr><th style={th}>Fecha</th><th style={th}>Orden</th><th style={th}>Proveedor</th><th style={{ ...th, textAlign: "right" }}>Cant.</th><th style={{ ...th, textAlign: "right" }}>Unit.</th><th style={{ ...th, textAlign: "right" }}>Desc.</th><th style={{ ...th, textAlign: "right" }}>Neto</th><th style={th}>Cambio</th></tr></thead>
                         <tbody>
                           {lista.map((c, k) => {
-                            const prev = lista[k + 1];
+                            const prev = lista.slice(k + 1).find((x) => unidadesCompatibles(x, c));
+                            const prevOtraUnidad = !prev ? lista[k + 1] : null;
                             return (
                               <tr key={`${c.oc}-${k}`}>
-                                <td style={td}>{fmtF(c.fecha)}</td><td style={td}>{c.oc}</td><td style={td}>{c.prov}</td><td style={{ ...td, ...num }}>{c.cant.toLocaleString("es-CO")}</td><td style={{ ...td, ...num }}>{fmtCOP(c.costo)}</td><td style={{ ...td, ...num }}>{c.dsc ? `${c.dsc} %` : "—"}</td><td style={{ ...td, ...num, fontWeight: 700 }}>{fmtCOP(c.neto)}</td>
-                                <td style={td}>{prev ? <Cambio pct={((c.neto - prev.neto) / prev.neto) * 100} /> : <span style={{ color: C.slate, fontSize: 12 }}>primera</span>}</td>
+                                <td style={td}>{fmtF(c.fecha)}</td><td style={td}>{c.oc}</td><td style={td}>{c.prov}</td><td style={{ ...td, ...num }}>{c.cant.toLocaleString("es-CO")}{c.und ? ` ${etqUnidad(c.und)}` : ""}</td><td style={{ ...td, ...num }}>{fmtCOP(c.costo)}{c.und ? ` /${etqUnidad(c.und)}` : ""}</td><td style={{ ...td, ...num }}>{c.dsc ? `${c.dsc} %` : "—"}</td><td style={{ ...td, ...num, fontWeight: 700 }}>{fmtCOP(c.neto)}</td>
+                                <td style={td}>{prev ? <Cambio pct={((c.neto - prev.neto) / prev.neto) * 100} /> : prevOtraUnidad ? <CambioUnidad ahora={c.und} antes={prevOtraUnidad.und} /> : <span style={{ color: C.slate, fontSize: 12 }}>primera</span>}</td>
                               </tr>
                             );
                           })}
@@ -460,14 +479,14 @@ export default function OrdenesCompraView({ db, functionsClient, currentUser, C,
 
             {tab === "costo" && (
               <div style={{ overflowX: "auto" }}>
-                <div style={{ fontSize: 12, color: C.slate, marginBottom: 8 }}>Precio neto (sin IVA, con descuento) de la última compra de cada insumo frente a la anterior. {cambios.length} insumo(s) en este período.</div>
+                <div style={{ fontSize: 12, color: C.slate, marginBottom: 8 }}>Precio neto (sin IVA, con descuento) de la última compra de cada insumo frente a la anterior <b>de la misma unidad</b> (kilos con kilos, metros con metros; la unidad se lee de la observación de la orden). {cambios.length} insumo(s) en este período{cambios.some((c) => c.cambioUnidad) ? <> · <span style={{ color: C.amber, fontWeight: 700 }}>{cambios.filter((c) => c.cambioUnidad).length} con cambio de unidad (no comparables, van al final y no cuentan como aumento)</span></> : ""}.</div>
                 <table style={{ width: "100%", borderCollapse: "collapse" }}>
                   <thead><tr><th style={th}>Cód.</th><th style={th}>Insumo</th><th style={th}>Proveedor</th><th style={{ ...th, textAlign: "right" }}>Antes</th><th style={{ ...th, textAlign: "right" }}>Ahora</th><th style={{ ...th, textAlign: "right" }}>Diferencia</th><th style={th}>Cambio</th><th style={th}>Última compra</th></tr></thead>
                   <tbody>
                     {cambios.slice(0, 300).map((c) => (
                       <tr key={c.cod} onClick={() => { setInsumoSel(c.cod); setTab("insumo"); setQ(""); }} style={{ cursor: "pointer" }}>
-                        <td style={td}>{c.cod}</td><td style={td}>{c.nombre}</td><td style={td}>{c.ult.prov}</td><td style={{ ...td, ...num }}>{fmtCOP(c.ant.neto)}</td><td style={{ ...td, ...num }}>{fmtCOP(c.ult.neto)}</td>
-                        <td style={{ ...td, ...num, color: c.dif > 0 ? C.red : C.green }}>{c.dif > 0 ? "+" : "−"}{fmtCOP(Math.abs(c.dif))}</td><td style={td}><Cambio pct={c.pct} /></td><td style={td}>{fmtF(c.ult.fecha)} · OC {c.ult.oc}</td>
+                        <td style={td}>{c.cod}</td><td style={td}>{c.nombre}</td><td style={td}>{c.ult.prov}</td><td style={{ ...td, ...num }}>{fmtCOP(c.ant.neto)}{c.ant.und ? ` /${etqUnidad(c.ant.und)}` : ""}</td><td style={{ ...td, ...num }}>{fmtCOP(c.ult.neto)}{c.ult.und ? ` /${etqUnidad(c.ult.und)}` : ""}</td>
+                        <td style={{ ...td, ...num, color: c.cambioUnidad ? C.slate : c.dif > 0 ? C.red : C.green }}>{c.cambioUnidad ? "—" : <>{c.dif > 0 ? "+" : "−"}{fmtCOP(Math.abs(c.dif))}</>}</td><td style={td}>{c.cambioUnidad ? <CambioUnidad ahora={c.ult.und} antes={c.ant.und} /> : <Cambio pct={c.pct} />}</td><td style={td}>{fmtF(c.ult.fecha)} · OC {c.ult.oc}</td>
                       </tr>
                     ))}
                     {!cambios.length && <tr><td colSpan={8} style={{ ...td, color: C.slate, textAlign: "center", padding: 24 }}>No hay insumos con cambios en este período.</td></tr>}

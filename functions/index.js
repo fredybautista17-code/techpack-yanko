@@ -11416,13 +11416,22 @@ exports.getOrdenesCompraBusint = onCallAuth(
     proveedores.forEach((p) => { const k = clave(p?.Codigo); if (k) nombreProv.set(k, String(p.Nombre || "").trim()); });
     const lineasPorOrden = new Map();
     const codigosUsados = new Set();
+    // (2026-10-27, a pedido de Fredy) Las líneas de las órdenes NO traen columna de unidad: solo el texto libre
+    // "Observacion" (ej. "KILOS "). Se lee de ahí para no comparar precios por kilo contra precios por metro.
+    // "KG", "M" o "" (no se pudo saber).
+    const unidadDeObservacion = (texto) => {
+      const s = String(texto ?? "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+      const kg = /kilo|\bkgs?\b|\bkls?\b/.test(s);
+      const m = /metro|\bmts?\b|\bmtrs?\b|\bml\b/.test(s);
+      return kg && !m ? "KG" : m && !kg ? "M" : "";
+    };
     detalles.forEach((d) => {
       const oc = clave(d?.NumOC);
       if (!oc) return;
       const cod = clave(d?.Codcomp);
       codigosUsados.add(cod);
       if (!lineasPorOrden.has(oc)) lineasPorOrden.set(oc, []);
-      lineasPorOrden.get(oc).push([cod, num(d.Cant), num(d.Costo), num(d.Dsc)]);
+      lineasPorOrden.get(oc).push([cod, num(d.Cant), num(d.Costo), num(d.Dsc), unidadDeObservacion(d.Observacion)]);
     });
     // "Dado por cumplido" en Busint: la cabecera trae DadoPorCumplido / FechaDxC / UsuarioDxC y las líneas de las órdenes
     // ya cerradas se copian a "orden de compra detallesdxc". Una orden cuenta como cumplida si tiene fecha de cumplimiento,
