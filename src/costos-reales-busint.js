@@ -62,6 +62,8 @@ export function sugerirAsignaciones(conceptos, v) {
     candidatos.forEach((cand) => {
       if (usados.has(`${cand.tipo}:${cand.idx}`)) return;
       if (esMdeo && cand.tipo !== "proceso") return;
+      // Si el servidor ya dijo de qué tabla viene el concepto (tela / insumo / proceso), solo se empareja con líneas del mismo tipo.
+      if (c.origen && cand.tipo !== c.origen) return;
       const p = Math.max(puntaje(n, cand.norm), esMdeo ? puntaje(sinMdeo(n), cand.norm) : 0);
       if (p < 60) return;
       if (!mejor || p > mejor.puntaje) mejor = { tipo: cand.tipo, idx: cand.idx, puntaje: p };
@@ -72,7 +74,8 @@ export function sugerirAsignaciones(conceptos, v) {
     } else if (!(Math.abs(c.real) > 0) && !(Math.abs(c.teorico) > 0)) {
       salida[i] = { tipo: "ignorar", idx: null, puntaje: 0 };
     } else {
-      salida[i] = { tipo: PROCESO_RE.test(n) ? "nuevo_proceso" : "nuevo_insumo", idx: null, puntaje: 0 };
+      const esProceso = c.origen ? c.origen === "proceso" : PROCESO_RE.test(n);
+      salida[i] = { tipo: esProceso ? "nuevo_proceso" : "nuevo_insumo", idx: null, puntaje: 0 };
     }
   });
   return salida;
@@ -154,7 +157,7 @@ export function aplicarCostosReales({ v, conceptos, asignaciones, cantCortada, l
   // dejan en cero y se avisa cuáles fueron; si no, quedan como estaban.
   const tocadas = new Set([...acum.keys()]);
   const sinDatoBusint = [];
-  const poner0 = ponerEnCeroSinDato !== false;
+  const poner0 = ponerEnCeroSinDato === true;
   const marca0 = { lote: String(lote), concepto: "(no aparece en Busint)", real: 0, porPrenda: 0 };
   nuevo.telas.forEach((t, i) => {
     if (tocadas.has(`tela:${i}`) || t.realBusint || !(num(t.consumo) > 0 && num(t.precioKg) > 0)) return;

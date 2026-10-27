@@ -1231,7 +1231,7 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
       </div>
 
       {realesBusint && verBase.real && (
-        <TraerRealesBusintModal referencia={cot.referencia} v={verBase.real.v} functionsClient={functionsClient} C={C} onAplicar={aplicarRealesBusint} onCerrar={() => setRealesBusint(false)} />
+        <TraerRealesBusintModal referencia={cot.referencia} v={verBase.real.v} vAprobado={verBase.v} precioAprobado={precioAprobadoDe(cot, verBase)} functionsClient={functionsClient} C={C} onAplicar={aplicarRealesBusint} onCerrar={() => setRealesBusint(false)} />
       )}
       {telaBusint !== null && telas[telaBusint] && (
         <ModalTelaBusint inicial={telas[telaBusint].material} rendimiento={telas[telaBusint].rendimiento} onClose={() => setTelaBusint(null)}
