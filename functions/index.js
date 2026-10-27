@@ -921,13 +921,42 @@ function calcularDadoPorCumplido({ costoRealTotal, cantCortada, cantDespachada, 
 // cuanto se despacho de verdad de este lote, ese numero manda sobre el que
 // llega sincronizado de Busint (que a veces junta dos lotes en una sola
 // factura y le suma el total combinado a uno solo).
+// (2026-10-27, a pedido de Fredy) Pedido adicional: unidades del mismo lote que se facturaron/trasladaron a OTRO
+// cliente en un pedido aparte (cantDespachadaAdicional, calculada por la sincronización). Se SUMAN a la de Bodega o
+// a la de Busint. Al aprobar, el total queda congelado en cantDespachada (adicionalesIncluidosAlAprobar).
 function despachadaEfectivaLote(datos) {
-  return datos?.cantidadDespachadaBodega !== undefined ? (Number(datos.cantidadDespachadaBodega) || 0) : (Number(datos?.cantDespachada) || 0);
+  if (datos?.estado === "aprobado" && datos?.adicionalesIncluidosAlAprobar) return Number(datos.cantDespachada) || 0;
+  const base = datos?.cantidadDespachadaBodega !== undefined ? (Number(datos.cantidadDespachadaBodega) || 0) : (Number(datos?.cantDespachada) || 0);
+  return base + (Number(datos?.cantDespachadaAdicional) || 0);
+}
+
+// Ordena el desglose de documentos de un lote y arma el texto "EMPRESA A (280) / EMPRESA B (4)" cuando hay más de un cliente.
+function resumenFacturasLote(entradas) {
+  const facturasDetalle = [...entradas].sort((a, b) => String(a.fecha || "").localeCompare(String(b.fecha || "")) || (a.adicional ? 1 : 0) - (b.adicional ? 1 : 0) || String(a.nfact).localeCompare(String(b.nfact), "es", { numeric: true }));
+  const unidadesPorCliente = new Map();
+  facturasDetalle.forEach((x) => { const c = x.cliente || "(sin cliente)"; unidadesPorCliente.set(c, (unidadesPorCliente.get(c) || 0) + (Number(x.unidades) || 0)); });
+  const clienteDetalle = unidadesPorCliente.size > 1 ? [...unidadesPorCliente].map(([c, u]) => `${c} (${u})`).join(" / ") : "";
+  return { facturasDetalle, clienteDetalle };
 }
 
 async function sincronizarDadoPorCumplidoPendientes() {
   const desdeISO = new Date(Date.now() - DIAS_VENTANA_DADO_POR_CUMPLIDO * 86400000).toISOString().slice(0, 10);
   const hoyISO = new Date().toISOString().slice(0, 10);
+
+  // (2026-10-27, a pedido de Fredy) "Pedido adicional": cuando de un lote salen unidades a OTRO cliente en un pedido
+  // aparte (p.ej. lote 7263: 200 a Kamila en el pedido 1395 y 4 a Grupo Dubo en el 1840), Contabilidad escribe ese
+  // pedido en la tarjeta del lote (pedidosAdicionales) y aquí se suman sus traslados/facturas de la misma referencia.
+  const adicionalesPorLote = new Map(); // lote (número) -> [numPed, ...]
+  try {
+    const pend = await db.collection("dado_por_cumplido_lotes").where("estado", "==", "pendiente").get();
+    pend.docs.forEach((d) => {
+      const x = d.data();
+      const arr = Array.isArray(x.pedidosAdicionales) ? x.pedidosAdicionales.map((v) => String(v).trim()).filter(Boolean) : [];
+      if (arr.length) adicionalesPorLote.set(Number(x.numLote), arr);
+    });
+  } catch (err) {
+    logger.error("sincronizarDadoPorCumplidoPendientes: no se pudieron leer los pedidos adicionales", { error: String(err) });
+  }
 
   let facturas, detalles, panelFlujo, filasFacturado;
   try {
@@ -970,13 +999,111 @@ async function sincronizarDadoPorCumplidoPendientes() {
     const descPct = Number(f.desc) || 0;
     const monto = cant * precio * (1 - descPct / 100);
     const clave = `${numped}__${ref}`;
-    if (!trasladosPorPedidoRef.has(clave)) trasladosPorPedidoRef.set(clave, { unidades: 0, monto: 0, fecha: null });
+    if (!trasladosPorPedidoRef.has(clave)) trasladosPorPedidoRef.set(clave, { unidades: 0, monto: 0, fecha: null, docs: new Map() });
     const t = trasladosPorPedidoRef.get(clave);
     t.unidades += cant;
     t.monto += monto;
     const fechaISO = soloFecha(f.fechaFact) || null;
     if (fechaISO && (!t.fecha || fechaISO > t.fecha)) t.fecha = fechaISO;
+    // Cada documento (TCO/TEX/DTC/DTE) por separado, para el desglose.
+    const doc = String(f.doc ?? "").trim();
+    const claveDoc = `${tipo}|${doc}`;
+    if (!t.docs.has(claveDoc)) t.docs.set(claveDoc, { tipo, doc: doc && doc !== "0" ? doc : "", unidades: 0, monto: 0, fecha: fechaISO });
+    const dd = t.docs.get(claveDoc);
+    dd.unidades += cant;
+    dd.monto += monto;
   });
+
+  // Traslados y facturas de los pedidos adicionales (consulta aparte, en tandas de 30 días hacia atrás -- Busint se
+  // cae con rangos largos de una sola vez; ver getDocumentosPorPedidoBusint). Solo se hace si algún lote pendiente
+  // tiene pedido adicional, para no cargar la sincronización normal.
+  const indiceAdicionales = new Map(); // numPed -> Map(refNormalizada -> { ref, entradas: Map(tipo|doc -> {...}) })
+  const clienteAdicional = new Map(); // numPed -> nombre
+  if (adicionalesPorLote.size) {
+    const numpedsAdic = new Set([...adicionalesPorLote.values()].flat());
+    const DIAS_ATRAS_ADIC = 90;
+    for (let desdeDias = DIAS_ATRAS_ADIC; desdeDias > 0; desdeDias -= 30) {
+      const ini = new Date(Date.now() - desdeDias * 86400000).toISOString().slice(0, 10);
+      const fin = new Date(Date.now() - Math.max(desdeDias - 30, 0) * 86400000).toISOString().slice(0, 10);
+      let filasTanda = [];
+      try {
+        filasTanda = await consultarFacturadoBusint(ini, fin);
+      } catch (err) {
+        logger.error("sincronizarDadoPorCumplidoPendientes: no se pudo leer ApiGen_FacturadoBusint para pedidos adicionales", { tanda: `${ini}..${fin}`, error: String(err) });
+        continue;
+      }
+      filasTanda.forEach((f) => {
+        const tipo = String(f.tipo || "").trim().toUpperCase();
+        if (!["FAC", "TCO", "TEX", "DTC", "DTE"].includes(tipo)) return;
+        const numped = String(f.numped ?? "").trim();
+        if (!numpedsAdic.has(numped)) return;
+        const ref = String(f.ref || "").trim();
+        if (!ref) return;
+        const cant = Number(f.cant) || 0;
+        const monto = cant * (Number(f.precio) || 0) * (1 - (Number(f.desc) || 0) / 100);
+        const refN = normalizarRefComparacion(ref);
+        if (!indiceAdicionales.has(numped)) indiceAdicionales.set(numped, new Map());
+        const porRef = indiceAdicionales.get(numped);
+        if (!porRef.has(refN)) porRef.set(refN, { ref, entradas: new Map() });
+        const g = porRef.get(refN);
+        const doc = String(f.doc ?? "").trim();
+        const claveDoc = `${tipo}|${doc}`;
+        if (!g.entradas.has(claveDoc)) g.entradas.set(claveDoc, { tipo, doc: doc && doc !== "0" ? doc : "", unidades: 0, monto: 0, fecha: soloFecha(f.fechaFact) || null });
+        const e = g.entradas.get(claveDoc);
+        e.unidades += cant;
+        e.monto += monto;
+        const nombre = String(f.nombreCliente || f.NombreCliente || f.cliente || f.Cliente || "").trim();
+        if (nombre && !clienteAdicional.has(numped)) clienteAdicional.set(numped, nombre);
+      });
+    }
+    const sinNombre = [...numpedsAdic].filter((n) => !clienteAdicional.has(n));
+    if (sinNombre.length) {
+      try {
+        const [pedidosClientes, maestroClientes] = await Promise.all([
+          consultarTablaBusintBDCompleta("pedidos clientes"),
+          consultarTablaBusintBDCompleta("maestro de clientes"),
+        ]);
+        const nombrePorCodigo = new Map();
+        maestroClientes.forEach((c) => { const cod = Number(c.Codigo); if (Number.isFinite(cod)) nombrePorCodigo.set(cod, c.Nombre || c.NombreFact || null); });
+        pedidosClientes.forEach((pc) => {
+          const n = String(pc?.NumPed ?? "").trim();
+          if (!sinNombre.includes(n)) return;
+          const nombre = nombrePorCodigo.get(Number(pc.Codigo));
+          if (nombre) clienteAdicional.set(n, nombre);
+        });
+      } catch (err) {
+        logger.error("sincronizarDadoPorCumplidoPendientes: no se pudo buscar el cliente de los pedidos adicionales", { error: String(err) });
+      }
+    }
+  }
+  // Documentos de los pedidos adicionales de UN lote (misma referencia que el lote).
+  const resolverAdicionales = (lote, referencia) => {
+    const out = { unidades: 0, monto: 0, entradas: [], avisos: [] };
+    const refN = normalizarRefComparacion(referencia);
+    (adicionalesPorLote.get(Number(lote)) || []).forEach((numped) => {
+      const g = indiceAdicionales.get(numped)?.get(refN);
+      if (!g || !g.entradas.size) {
+        out.avisos.push(`El pedido ${numped} no tiene traslados ni facturas de la referencia ${referencia || "(sin referencia)"} en Busint (últimos 90 días).`);
+        return;
+      }
+      g.entradas.forEach((e) => {
+        out.unidades += e.unidades;
+        out.monto += e.monto;
+        out.entradas.push({
+          nfact: e.doc,
+          tipo: e.tipo,
+          pedido: numped,
+          fecha: e.fecha,
+          cliente: clienteAdicional.get(numped) || `Pedido ${numped}`,
+          unidades: e.unidades,
+          precio: e.unidades ? Math.round((e.monto / e.unidades) * 100) / 100 : 0,
+          monto: Math.round(e.monto * 100) / 100,
+          adicional: true,
+        });
+      });
+    });
+    return out;
+  };
 
   const detallesPorNfact = new Map();
   detalles.forEach((d) => {
@@ -1046,6 +1173,8 @@ async function sincronizarDadoPorCumplidoPendientes() {
       if (unidadesFactura > 0) {
         facturasDetalle.push({
           nfact,
+          tipo: "FAC",
+          pedido: f?.Numped != null ? String(f.Numped) : "",
           fecha: fechaISO || null,
           cliente: String(f?.Observaciones || "").trim(),
           unidades: unidadesFactura,
@@ -1054,11 +1183,6 @@ async function sincronizarDadoPorCumplidoPendientes() {
         });
       }
     });
-    facturasDetalle.sort((a, b) => String(a.fecha || "").localeCompare(String(b.fecha || "")) || String(a.nfact).localeCompare(String(b.nfact)));
-    // Texto "EMPRESA A (280) / EMPRESA B (20)" solo cuando hay más de un cliente distinto en las facturas del lote.
-    const unidadesPorCliente = new Map();
-    facturasDetalle.forEach((x) => { const c = x.cliente || "(sin cliente)"; unidadesPorCliente.set(c, (unidadesPorCliente.get(c) || 0) + x.unidades); });
-    const clienteDetalle = unidadesPorCliente.size > 1 ? [...unidadesPorCliente].map(([c, u]) => `${c} (${u})`).join(" / ") : "";
 
     if (totalUnidades <= 0) continue;
 
@@ -1066,7 +1190,9 @@ async function sincronizarDadoPorCumplidoPendientes() {
     const cantCortada = Number(datosPanel?.cantCortada) || 0;
     const referencia = refPrincipal || datosPanel?.referencia || "";
     const cliente = clienteNombre || datosPanel?.nombreCliente || "";
-    const precioVentaUnitario = Math.round((totalMonto / totalUnidades) * 100) / 100;
+    const adic = resolverAdicionales(lote, referencia);
+    const resumen = resumenFacturasLote([...facturasDetalle, ...adic.entradas]);
+    const precioVentaUnitario = Math.round(((totalMonto + adic.monto) / (totalUnidades + adic.unidades || 1)) * 100) / 100;
     const observacionesFactura = numerosFactura.size ? `Facturado -- Factura(s): ${[...numerosFactura].join(", ")}` : "";
 
     const id = `lote_${lote}`;
@@ -1105,8 +1231,10 @@ async function sincronizarDadoPorCumplidoPendientes() {
       precioVentaUnitario,
       tieneFactura: true,
       observacionesFactura,
-      facturasDetalle,
-      clienteDetalle,
+      facturasDetalle: resumen.facturasDetalle,
+      clienteDetalle: resumen.clienteDetalle,
+      cantDespachadaAdicional: adic.unidades,
+      avisoPedidoAdicional: adic.avisos.join(" "),
       enBpt: true, // ya tiene factura real -- quedo cumplido sin importar la etapa actual en Busint
       actualizadoEn: admin.firestore.FieldValue.serverTimestamp(),
     };
@@ -1200,7 +1328,19 @@ async function sincronizarDadoPorCumplidoPendientes() {
       const cantDespachadaFinal = datosPrevios?.cantDespachadaManual
         ? Number(datosPrevios?.cantDespachada) || 0
         : traslado.unidades;
-      const precioVentaUnitario = Math.round((traslado.monto / traslado.unidades) * 100) / 100;
+      const adic = resolverAdicionales(lote, referenciaPanel);
+      const entradasPrincipal = [...traslado.docs.values()].map((d) => ({
+        nfact: d.doc,
+        tipo: d.tipo,
+        pedido: String(numPedidoPanel),
+        fecha: d.fecha,
+        cliente: String(datosPanel?.nombreCliente || "").trim(),
+        unidades: d.unidades,
+        precio: d.unidades ? Math.round((d.monto / d.unidades) * 100) / 100 : 0,
+        monto: Math.round(d.monto * 100) / 100,
+      }));
+      const resumen = resumenFacturasLote([...entradasPrincipal, ...adic.entradas]);
+      const precioVentaUnitario = Math.round(((traslado.monto + adic.monto) / (traslado.unidades + adic.unidades || 1)) * 100) / 100;
 
       const camposTraslado = {
         numLote: lote,
@@ -1213,6 +1353,10 @@ async function sincronizarDadoPorCumplidoPendientes() {
         precioVentaUnitario,
         tieneFactura: true,
         observacionesFactura: "Traslado en consignación/externo -- todavía no hay factura real de Busint.",
+        facturasDetalle: resumen.facturasDetalle,
+        clienteDetalle: resumen.clienteDetalle,
+        cantDespachadaAdicional: adic.unidades,
+        avisoPedidoAdicional: adic.avisos.join(" "),
         enBpt: true, // traslado confirmado -- quedo cumplido sin importar la etapa actual en Busint
         actualizadoEn: admin.firestore.FieldValue.serverTimestamp(),
       };
@@ -1375,6 +1519,7 @@ exports.aprobarDadoPorCumplido = onCallAuth(
         // -- de ahora en más la sincronización con Busint ya no toca este lote
         // (estado === "aprobado"), así que este queda como el valor definitivo.
         cantDespachada: cantDespachadaEfectiva,
+        adicionalesIncluidosAlAprobar: (Number(datos.cantDespachadaAdicional) || 0) > 0,
         baseValorUsado: baseValor,
         porcentajeSobreCostoUsado: Number(config.porcentajeSobreCosto ?? DADO_POR_CUMPLIDO_PORCENTAJES_DEFAULT.porcentajeSobreCosto),
         porcentajeSobreVentaUsado: Number(config.porcentajeSobreVenta ?? DADO_POR_CUMPLIDO_PORCENTAJES_DEFAULT.porcentajeSobreVenta),
@@ -1659,13 +1804,14 @@ function notaEncabezadosDPC(config) {
     "TOTAL": "TOTAL = BASE × Cant. Cortada.",
   };
 }
+const DPC_ETIQUETA_DOC = { FAC: "Factura", TCO: "Traslado consignación", TEX: "Traslado externo", DTC: "Devolución traslado", DTE: "Devolución traslado" };
 function notaFacturasLoteDPC(d) {
   const fs = d.facturasDetalle || [];
   const totalU = fs.reduce((s, x) => s + (Number(x.unidades) || 0), 0);
   const totalM = fs.reduce((s, x) => s + (Number(x.monto) || 0), 0);
   return [
-    `Este lote salió en ${fs.length} facturas:`,
-    ...fs.map((x) => `Factura ${x.nfact}${x.fecha ? ` (${x.fecha})` : ""} · ${x.cliente || "sin cliente"}: ${DPC_FMT(x.unidades, 0)} und × $ ${DPC_FMT(x.precio)} = $ ${DPC_FMT(x.monto, 0)}`),
+    `Este lote salió en ${fs.length} documentos:`,
+    ...fs.map((x) => `${DPC_ETIQUETA_DOC[x.tipo] || "Factura"} ${x.nfact || ""}${x.pedido ? ` · pedido ${x.pedido}` : ""}${x.fecha ? ` (${x.fecha})` : ""} · ${x.cliente || "sin cliente"}: ${DPC_FMT(x.unidades, 0)} und × $ ${DPC_FMT(x.precio)} = $ ${DPC_FMT(x.monto, 0)}`),
     `Total: ${DPC_FMT(totalU, 0)} und = $ ${DPC_FMT(totalM, 0)}`,
     `Precio promedio: $ ${DPC_FMT(totalU ? totalM / totalU : 0)}`,
   ].join("\n");

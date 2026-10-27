@@ -3017,7 +3017,10 @@ function calcularDadoPorCumplidoPreview({ costoRealTotal, cantCortada, cantDespa
 // combinado a uno solo). Mismo criterio en functions/index.js,
 // despachadaEfectivaLote (aprobarDadoPorCumplido usa esa version server-side).
 function despachadaEfectiva(l) {
-  return l?.cantidadDespachadaBodega !== undefined ? (Number(l.cantidadDespachadaBodega) || 0) : (Number(l?.cantDespachada) || 0);
+  // (2026-10-27) Pedido adicional: se suma lo que salió a otro cliente (misma lógica que despachadaEfectivaLote del servidor).
+  if (l?.estado === "aprobado" && l?.adicionalesIncluidosAlAprobar) return Number(l.cantDespachada) || 0;
+  const base = l?.cantidadDespachadaBodega !== undefined ? (Number(l.cantidadDespachadaBodega) || 0) : (Number(l?.cantDespachada) || 0);
+  return base + (Number(l?.cantDespachadaAdicional) || 0);
 }
 
 function fmtPesos(n) {
@@ -3269,6 +3272,38 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases, puedeSincroni
 
   async function guardarCampo(id, campo, valor) {
     await fsSave("dado_por_cumplido_lotes", id, { [campo]: valor });
+  }
+
+  // (2026-10-27, a pedido de Fredy) Pedido adicional: unidades del mismo lote que salieron a OTRO cliente en un pedido
+  // aparte (ej. lote 7263: 200 a Kamila en el pedido 1395 y 4 a Grupo Dubo en el 1840). Se guarda el número de pedido y
+  // se corre la sincronización, que suma sus traslados/facturas de la misma referencia (ver sincronizarDadoPorCumplidoPendientes).
+  const [pedidoAdicionalTxt, setPedidoAdicionalTxt] = useState({});
+  const [guardandoAdicional, setGuardandoAdicional] = useState(null);
+  async function cambiarPedidosAdicionales(l, nuevos) {
+    setGuardandoAdicional(l.id);
+    try {
+      const datos = { pedidosAdicionales: nuevos };
+      if (!nuevos.length) { datos.cantDespachadaAdicional = 0; datos.avisoPedidoAdicional = ""; }
+      await fsSave("dado_por_cumplido_lotes", l.id, datos);
+      if (puedeUsarSincronizar) await sincronizarAhora();
+      else alert("Guardado. El pedido se sumará en la próxima revisión automática (cada 2 horas).");
+    } catch (err) {
+      alert("No se pudo guardar el pedido adicional: " + (err?.message || err));
+    } finally {
+      setGuardandoAdicional(null);
+    }
+  }
+  async function agregarPedidoAdicional(l) {
+    const n = String(pedidoAdicionalTxt[l.id] || "").replace(/\D/g, "");
+    if (!n) return;
+    const actuales = Array.isArray(l.pedidosAdicionales) ? l.pedidosAdicionales.map(String) : [];
+    if (actuales.includes(n)) { alert(`El pedido ${n} ya está agregado a este lote.`); return; }
+    setPedidoAdicionalTxt((p) => ({ ...p, [l.id]: "" }));
+    await cambiarPedidosAdicionales(l, [...actuales, n]);
+  }
+  async function quitarPedidoAdicional(l, n) {
+    const actuales = Array.isArray(l.pedidosAdicionales) ? l.pedidosAdicionales.map(String) : [];
+    await cambiarPedidosAdicionales(l, actuales.filter((x) => x !== n));
   }
 
   // Corrección manual de Cant. Cortada -- para lotes que Busint ya sacó de su
@@ -3687,16 +3722,17 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases, puedeSincroni
                           const celdaF = { padding: "3px 10px", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap", textAlign: "right" };
                           return (
                             <details style={{ marginTop: 6, fontSize: 12 }}>
-                              <summary style={{ cursor: "pointer", fontWeight: 700, color: C.ink }}>🧾 {l.facturasDetalle.length} facturas{l.clienteDetalle ? " · varios clientes" : ""} — ver desglose</summary>
+                              <summary style={{ cursor: "pointer", fontWeight: 700, color: C.ink }}>🧾 {l.facturasDetalle.length} documentos{l.clienteDetalle ? " · varios clientes" : ""} — ver desglose</summary>
                               <div style={{ overflowX: "auto", marginTop: 6 }}>
                                 <table style={{ borderCollapse: "collapse", fontSize: 12 }}>
                                   <thead>
-                                    <tr>{["Factura", "Fecha", "Cliente", "Unidades", "Precio U.", "Valor"].map((h, i) => <th key={h} style={{ ...celdaF, textAlign: i < 3 ? "left" : "right", color: C.slate, fontWeight: 700 }}>{h}</th>)}</tr>
+                                    <tr>{["Documento", "Pedido", "Fecha", "Cliente", "Unidades", "Precio U.", "Valor"].map((h, i) => <th key={h} style={{ ...celdaF, textAlign: i < 4 ? "left" : "right", color: C.slate, fontWeight: 700 }}>{h}</th>)}</tr>
                                   </thead>
                                   <tbody>
                                     {l.facturasDetalle.map((x, i) => (
                                       <tr key={`${x.nfact}-${i}`}>
-                                        <td style={{ ...celdaF, textAlign: "left", fontWeight: 700 }}>{x.nfact}</td>
+                                        <td style={{ ...celdaF, textAlign: "left", fontWeight: 700 }}>{({ FAC: "Factura", TCO: "Traslado consignación", TEX: "Traslado externo", DTC: "Devolución traslado", DTE: "Devolución traslado" })[x.tipo] || "Factura"} {x.nfact}</td>
+                                        <td style={{ ...celdaF, textAlign: "left" }}>{x.pedido || "—"}{x.adicional ? " (adicional)" : ""}</td>
                                         <td style={{ ...celdaF, textAlign: "left" }}>{x.fecha || "—"}</td>
                                         <td style={{ ...celdaF, textAlign: "left" }}>{x.cliente || "(sin cliente)"}</td>
                                         <td style={celdaF}>{Number(x.unidades).toLocaleString("es-CO")}</td>
@@ -3705,7 +3741,7 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases, puedeSincroni
                                       </tr>
                                     ))}
                                     <tr>
-                                      <td style={{ ...celdaF, textAlign: "left", fontWeight: 800 }} colSpan={3}>Total (precio promedio {fmtPesos(totU ? totM / totU : 0)})</td>
+                                      <td style={{ ...celdaF, textAlign: "left", fontWeight: 800 }} colSpan={4}>Total (precio promedio {fmtPesos(totU ? totM / totU : 0)})</td>
                                       <td style={{ ...celdaF, fontWeight: 800 }}>{totU.toLocaleString("es-CO")}</td>
                                       <td style={celdaF}></td>
                                       <td style={{ ...celdaF, fontWeight: 800 }}>{fmtPesos(totM)}</td>
@@ -3716,6 +3752,30 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases, puedeSincroni
                             </details>
                           );
                         })()}
+                        {!sinFactura && (
+                          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginTop: 6, fontSize: 11 }}>
+                            <span title="Si parte de este lote se facturó o trasladó a OTRO cliente en un pedido aparte (misma referencia), escribe aquí ese número de pedido: sus unidades y su valor se suman al lote." style={{ fontWeight: 700, color: C.slate }}>➕ Pedido adicional (otro cliente):</span>
+                            {(Array.isArray(l.pedidosAdicionales) ? l.pedidosAdicionales : []).map((n) => (
+                              <span key={n} style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 8px", borderRadius: 999, background: C.canvas, border: `1px solid ${C.border}`, fontWeight: 700, color: C.ink }}>
+                                {n}
+                                <button type="button" title="Quitar este pedido adicional" disabled={guardandoAdicional === l.id} onClick={() => quitarPedidoAdicional(l, String(n))} style={{ border: "none", background: "transparent", cursor: "pointer", color: C.red, fontWeight: 800, padding: 0 }}>✕</button>
+                              </span>
+                            ))}
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              placeholder="Ej: 1840"
+                              value={pedidoAdicionalTxt[l.id] || ""}
+                              onChange={(e) => setPedidoAdicionalTxt((p) => ({ ...p, [l.id]: e.target.value }))}
+                              onKeyDown={(e) => { if (e.key === "Enter") agregarPedidoAdicional(l); }}
+                              style={{ width: 90, padding: "2px 6px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit" }}
+                            />
+                            <Btn small variant="ghost" onClick={() => agregarPedidoAdicional(l)} disabled={guardandoAdicional === l.id || !String(pedidoAdicionalTxt[l.id] || "").trim()}>{guardandoAdicional === l.id ? "Guardando..." : "Agregar"}</Btn>
+                          </div>
+                        )}
+                        {l.avisoPedidoAdicional && (
+                          <div style={{ fontSize: 11, fontWeight: 700, marginTop: 4, color: C.amber }}>⚠ {l.avisoPedidoAdicional}</div>
+                        )}
                         {sinFactura && (
                           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 4 }}>
                             <span style={{ fontSize: 11, fontWeight: 700, color: C.red }}>🚫 Sin factura de Busint (no se encontró el número de lote en ningún comentario)</span>
@@ -3753,6 +3813,9 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases, puedeSincroni
                               />
                               {l.cantDespachadaManual && <span title="Corregido a mano">✍️</span>}
                             </>
+                          )}
+                          {Number(l.cantDespachadaAdicional) > 0 && (
+                            <span title="Unidades de este lote que salieron a otro cliente en un pedido adicional (ver el desglose)." style={{ fontSize: 10, color: C.green, fontWeight: 700 }}>+ {fmtNum(l.cantDespachadaAdicional)} pedido adicional = {fmtNum(despachadaMostrada)}</span>
                           )}
                         </span>
                         <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
