@@ -11202,11 +11202,25 @@ exports.getMovimientosProveedorTNS = onCallAuth(
         }
       }
       filas.sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)));
+      // Plan B de diagnóstico: si el Libro Auxiliar no dio filas, se prueba la consulta de movimientos por tercero
+      // (/v2/tablas/Tercero/ObtenerMovimientos, la misma que usan los clientes) para ver si TNS la responde para proveedores.
+      let respaldoTercero = "";
+      if (!filas.length) {
+        for (const sucursal of sucursales.slice(0, 2)) {
+          try {
+            const r = await llamarTNS(`/v2/tablas/Tercero/ObtenerMovimientos?codcliente=${encodeURIComponent(nit)}&codigosucursal=${encodeURIComponent(sucursal)}`, { method: "GET", empresa });
+            respaldoTercero += `\nTercero/ObtenerMovimientos (sucursal ${sucursal}) respondió: ${JSON.stringify(r).slice(0, 1200)}`;
+          } catch (errT) {
+            respaldoTercero += `\nTercero/ObtenerMovimientos (sucursal ${sucursal}) → ${String(errT?.message || errT).slice(0, 300)}`;
+          }
+        }
+      }
       logger.info("getMovimientosProveedorTNS OK", { empresa, nit, filas: filas.length, esquema });
       const diagnostico = filas.length ? null : [
         intentosFallidos.length ? `TNS devolvió error en ${intentosFallidos.length} intento(s):\n${intentosFallidos.slice(0, 4).map((x) => `- ${x.cuenta} con ${JSON.stringify(x.enviado)} → ${x.error}`).join("\n")}` : "",
         muestraCruda ? (typeof muestraCruda === "string" ? muestraCruda : JSON.stringify(muestraCruda)) : "",
-      ].filter(Boolean).join("\n").slice(0, 3000);
+        respaldoTercero,
+      ].filter(Boolean).join("\n").slice(0, 4500);
       return { ok: true, empresa, nit, corte: fechaFinal, desde: fechaInicial, sucursales, filas: filas.slice(0, 600), totalFilas: filas.length, esquema, enviado: ultimoBody, muestraCruda: diagnostico };
     } catch (err) {
       logger.error("getMovimientosProveedorTNS falló", { mensaje: err?.message, stack: err?.stack, empresa, nit });
