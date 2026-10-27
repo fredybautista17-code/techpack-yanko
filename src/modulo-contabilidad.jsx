@@ -4829,6 +4829,16 @@ function CuadreCxpView({ proveedoresBusint, corteActivo, detalleFacturas, factur
   const [historial, setHistorial] = useState([]);
   const [abierto, setAbierto] = useState(null); // clave de la fila con el detalle abierto
   const [movs, setMovs] = useState({}); // clave -> { cargando, error, data }
+  // Plazo de pago (dias desde la emision) para calcular "vence segun emision + N dias", como lo hace TNS (30 dias).
+  const [plazo, setPlazo] = useState(() => {
+    try { const v = Number(window.localStorage.getItem("cxp_plazo_dias")); return v > 0 ? v : 30; } catch (e) { return 30; }
+  });
+  const [soloCreditos, setSoloCreditos] = useState(true);
+  function cambiarPlazo(v) {
+    const n = Math.max(0, Math.min(365, Math.round(Number(v) || 0)));
+    setPlazo(n);
+    try { window.localStorage.setItem("cxp_plazo_dias", String(n)); } catch (e) { /* sin almacenamiento */ }
+  }
   useEffect(() => {
     const u1 = onSnapshot(doc(db, "contabilidad_cxp_enlaces", "main"), (snap) => setEnlaces(snap.exists() ? snap.data()?.enlaces || {} : {}), () => {});
     const u2 = onSnapshot(collection(db, "contabilidad_cxp_cuadres"), (snap) => setHistorial(snap.docs.map((d) => ({ id: d.id, ...d.data() }))), () => {});
@@ -4969,12 +4979,39 @@ function CuadreCxpView({ proveedoresBusint, corteActivo, detalleFacturas, factur
     const guardadas = g && g.corteId === corteActivo?.id ? g.facturas : null;
     const lista = guardadas || (detalleFacturas || {})[fila.nombreBusint] || null;
     const m = movs[fila.clave];
+    const hoyISO = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Bogota" }).format(new Date());
+    const diasEntre = (aISO, bISO) => Math.round((new Date(`${bISO}T00:00:00Z`) - new Date(`${aISO}T00:00:00Z`)) / 86400000);
+    const venceTns = (f) => (f.fechaEmisionISO ? sumarDiasISOCxp(f.fechaEmisionISO, plazo) : null);
+    const chipDias = (dias) => (dias > 0
+      ? chip(`${dias} d vencida`, dias > 60 ? C.red : C.amber, dias > 60 ? C.redBg : C.amberBg)
+      : <span style={{ color: C.slate, fontSize: 11 }}>{dias === 0 ? "vence hoy" : `en ${Math.abs(dias)} d`}</span>);
+    let resumenF = null;
+    if (lista && lista.length) {
+      const sum = (f) => lista.reduce((t, x) => t + (Number(f(x)) || 0), 0);
+      resumenF = {
+        valor: sum((x) => x.facTotal),
+        desc: sum((x) => x.descuento),
+        saldo: sum((x) => x.saldo),
+        vencBusint: lista.filter((x) => x.diasVencido > 0).reduce((t, x) => t + (Number(x.saldo) || 0), 0),
+        vencPlazo: lista.filter((x) => venceTns(x) && venceTns(x) < hoyISO).reduce((t, x) => t + (Number(x.saldo) || 0), 0),
+        hayEmision: lista.some((x) => x.fechaEmisionISO),
+        hayValor: lista.some((x) => x.facTotal !== undefined),
+      };
+    }
+    // Para marcar, entre los movimientos de TNS, cuáles son facturas que Busint tiene abiertas (se cruzan por los dígitos del número).
+    const digitos = (v) => String(v || "").replace(/\D/g, "");
+    const abiertasBusint = (lista || []).map((x) => digitos(x.nfact)).filter((x) => x.length >= 6);
+    const enBusint = (f) => {
+      const dd = digitos(`${f.documento} ${f.detalle || ""}`);
+      return abiertasBusint.some((b) => dd.includes(b));
+    };
+    const filasMov = (m?.data?.filas || []).filter((f) => !soloCreditos || f.credito);
     return (
       <tr>
         <td colSpan={6} style={{ padding: "0 10px 14px", background: C.canvas, borderBottom: `1px solid ${C.border}` }}>
-          <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: 14, display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(300px,1fr))", gap: 16 }}>
+          <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: 14, display: "grid", gridTemplateColumns: "1fr", gap: 16 }}>
             <div>
-              <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, marginBottom: 6 }}>Facturas abiertas en Busint, con vencimiento</div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, marginBottom: 6 }}>Facturas abiertas en Busint, con emisión y vencimiento</div>
               {!fila.enBusint ? (
                 <div style={{ fontSize: 12, color: C.slate }}>Este proveedor no está en el corte de Busint.</div>
               ) : !lista ? (
@@ -4982,35 +5019,65 @@ function CuadreCxpView({ proveedoresBusint, corteActivo, detalleFacturas, factur
               ) : lista.length === 0 ? (
                 <div style={{ fontSize: 12, color: C.slate }}>Sin facturas abiertas.</div>
               ) : (
-                <div style={{ overflowX: "auto", maxHeight: 280, overflowY: "auto" }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                    <thead>
-                      <tr>
-                        <th style={{ ...th, textAlign: "left" }}>Factura</th>
-                        <th style={th}>Vence</th>
-                        <th style={th}>Días</th>
-                        <th style={th}>Saldo</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {[...lista].sort((a, b) => (b.diasVencido || 0) - (a.diasVencido || 0)).map((f, i) => (
-                        <tr key={i}>
-                          <td style={{ ...td, textAlign: "left" }}>{f.nfact}</td>
-                          <td style={td}>{f.fechaVctoISO || "—"}</td>
-                          <td style={td}>
-                            {f.diasVencido > 0 ? chip(`${f.diasVencido} d vencida`, f.diasVencido > 60 ? C.red : C.amber, f.diasVencido > 60 ? C.redBg : C.amberBg) : <span style={{ color: C.slate }}>{f.fechaVctoISO ? `en ${Math.abs(f.diasVencido || 0)} d` : "—"}</span>}
-                          </td>
-                          <td style={{ ...td, fontWeight: 700 }}>{fmtCOP(f.saldo)}</td>
+                <>
+                  {resumenF && (
+                    <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 12, color: C.slate, marginBottom: 8 }}>
+                      {resumenF.hayValor && <span>Valor de las facturas <b style={{ color: C.ink }}>{fmtCOP(resumenF.valor)}</b></span>}
+                      {resumenF.hayValor && <span>Descuentos (pronto pago y otros) <b style={{ color: C.green }}>{fmtCOP(resumenF.desc)}</b></span>}
+                      <span>Saldo <b style={{ color: C.ink }}>{fmtCOP(resumenF.saldo)}</b></span>
+                      <span>Vencido según Busint <b style={{ color: C.red }}>{fmtCOP(resumenF.vencBusint)}</b></span>
+                      {resumenF.hayEmision && <span>Vencido según emisión + {plazo} d <b style={{ color: C.red }}>{fmtCOP(resumenF.vencPlazo)}</b></span>}
+                    </div>
+                  )}
+                  <div style={{ overflowX: "auto", maxHeight: 300, overflowY: "auto" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 700 }}>
+                      <thead>
+                        <tr>
+                          <th style={{ ...th, textAlign: "left" }}>Factura</th>
+                          <th style={th}>Emitida</th>
+                          <th style={th}>Vence (Busint)</th>
+                          <th style={th}>{`Vence (emisión + ${plazo} d)`}</th>
+                          <th style={th}>Valor</th>
+                          <th style={th}>Descuento</th>
+                          <th style={th}>Saldo</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                      </thead>
+                      <tbody>
+                        {[...lista].sort((a, b) => (b.diasVencido || 0) - (a.diasVencido || 0)).map((f, i) => {
+                          const vt = venceTns(f);
+                          return (
+                            <tr key={i}>
+                              <td style={{ ...td, textAlign: "left" }}>{f.nfact}</td>
+                              <td style={td}>{f.fechaEmisionISO || "—"}</td>
+                              <td style={td}>
+                                <div>{f.fechaVctoISO || "—"}</div>
+                                {f.fechaVctoISO && chipDias(f.diasVencido || 0)}
+                              </td>
+                              <td style={td}>
+                                <div>{vt || "—"}</div>
+                                {vt && chipDias(diasEntre(vt, hoyISO))}
+                              </td>
+                              <td style={td}>{f.facTotal !== undefined ? fmtCOP(f.facTotal) : "—"}</td>
+                              <td style={{ ...td, color: f.descuento > 0 ? C.green : C.slate }}>{f.descuento > 0 ? fmtCOP(f.descuento) : "—"}</td>
+                              <td style={{ ...td, fontWeight: 700 }}>{fmtCOP(f.saldo)}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  {!resumenF.hayEmision && <div style={{ fontSize: 11, color: C.slate, marginTop: 6 }}>Las fechas de emisión llegan con el próximo "Actualizar ambos".</div>}
+                </>
               )}
             </div>
             <div>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, flex: 1 }}>Movimientos en TNS (este año)</div>
+                {m?.data && (m.data.filas || []).length > 0 && (
+                  <label style={{ fontSize: 12, color: C.slate }}>
+                    <input type="checkbox" checked={soloCreditos} onChange={(e) => setSoloCreditos(e.target.checked)} /> Solo facturas (créditos)
+                  </label>
+                )}
                 {fila.enTns && baseNitCxp(fila.nit) && (
                   <Btn small variant="secondary" onClick={() => traerMovimientos(fila)} disabled={!!m?.cargando}>
                     {m?.cargando ? "Consultando..." : m?.data ? "Actualizar" : "Traer movimientos"}
@@ -5020,27 +5087,34 @@ function CuadreCxpView({ proveedoresBusint, corteActivo, detalleFacturas, factur
               {!fila.enTns && <div style={{ fontSize: 12, color: C.slate }}>Este proveedor no tiene saldo en TNS.</div>}
               {m?.error && <div style={{ fontSize: 12, color: C.red, fontWeight: 600 }}>⚠ {m.error}</div>}
               {m?.data && (m.data.filas || []).length > 0 && (
-                <div style={{ overflowX: "auto", maxHeight: 280, overflowY: "auto" }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <div style={{ overflowX: "auto", maxHeight: 300, overflowY: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 620 }}>
                     <thead>
                       <tr>
                         <th style={{ ...th, textAlign: "left" }}>Fecha</th>
                         <th style={{ ...th, textAlign: "left" }}>Documento</th>
+                        <th style={{ ...th, textAlign: "left" }}>Detalle</th>
                         <th style={th}>Débito</th>
                         <th style={th}>Crédito</th>
+                        <th style={{ ...th, textAlign: "center" }} title="Si es una factura que Busint tiene abierta">En Busint</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {m.data.filas.map((f, i) => (
-                        <tr key={i} title={`${f.cuenta} ${f.detalle || ""}`}>
+                      {filasMov.map((f, i) => (
+                        <tr key={i} title={f.cuenta}>
                           <td style={{ ...td, textAlign: "left" }}>{f.fecha}</td>
                           <td style={{ ...td, textAlign: "left" }}>{f.documento}</td>
+                          <td style={{ ...td, textAlign: "left", maxWidth: 260, whiteSpace: "normal", color: C.slate }}>{f.detalle}</td>
                           <td style={td}>{f.debito ? fmtCOP(f.debito) : ""}</td>
                           <td style={td}>{f.credito ? fmtCOP(f.credito) : ""}</td>
+                          <td style={{ ...td, textAlign: "center" }}>{f.credito ? (enBusint(f) ? <span style={{ color: C.green, fontWeight: 700 }}>✓ abierta</span> : <span style={{ color: C.slate }}>—</span>) : ""}</td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
+                  <div style={{ fontSize: 11, color: C.slate, marginTop: 6 }}>
+                    Una factura de TNS con "—" puede estar ya pagada en los dos sistemas, o pagada en uno y abierta en el otro: mira si tiene un pago (débito) por el mismo valor.
+                  </div>
                 </div>
               )}
               {m?.data && (m.data.filas || []).length === 0 && (
@@ -5074,11 +5148,17 @@ function CuadreCxpView({ proveedoresBusint, corteActivo, detalleFacturas, factur
         <span style={{ fontSize: 12, color: C.slate }}>
           Busint {fechaBusint || "sin corte"}{d ? ` · TNS ${d.corte} (sucursales ${(d.sucursales || []).join(", ")})` : ""}
         </span>
+        <span style={{ fontSize: 12, color: C.slate, display: "inline-flex", alignItems: "center", gap: 4 }} title="Para calcular el vencimiento como lo hace TNS: fecha de emisión + estos días">
+          Plazo de pago
+          <input type="number" min="0" max="365" value={plazo} onChange={(e) => cambiarPlazo(e.target.value)} style={{ ...selStyle, width: 58, padding: "4px 6px" }} />
+          días
+        </span>
       </div>
       <div style={{ fontSize: 12, color: conNit ? C.slate : C.red, marginBottom: 12 }}>
         {conNit
           ? `${conNit} de ${(proveedoresBusint || []).length} proveedores del corte de Busint traen NIT${corteActivo?.campoNit ? ` (columna ${corteActivo.campoNit})` : ""}; los demás se cruzan por nombre o se asocian a mano.`
           : "Este corte de Busint no trae NIT de proveedores (se cruza solo por nombre). Pulsa \"Actualizar ambos\" para actualizarlo."}
+        {corteActivo?.campoEmision ? ` Fecha de emisión tomada de la columna ${corteActivo.campoEmision} de Busint.` : ""}
       </div>
       {error && <div style={{ padding: "10px 14px", background: C.redBg, color: C.red, borderRadius: 8, fontSize: 13, fontWeight: 600, marginBottom: 12 }}>⚠ {error}</div>}
       {mensaje && <div style={{ color: C.green, fontSize: 13, fontWeight: 600, marginBottom: 10 }}>✓ {mensaje}</div>}
@@ -5314,7 +5394,7 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
             nombre: p.nombre,
             corteId,
             fechaCorte: resp.data.fechaCorte,
-            facturas: (p.facturas || []).map((f) => ({ nfact: f.nfact, saldo: Math.round(f.saldo || 0), fechaVctoISO: f.fechaVctoISO || null, diasVencido: f.diasVencido || 0 })),
+            facturas: (p.facturas || []).map((f) => ({ nfact: f.nfact, facTotal: Math.round(f.facTotal || 0), pagado: Math.round(f.pagado || 0), descuento: Math.round(f.descuento || 0), devolucion: Math.round(f.devolucion || 0), saldo: Math.round(f.saldo || 0), fechaEmisionISO: f.fechaEmisionISO || null, fechaVctoISO: f.fechaVctoISO || null, diasVencido: f.diasVencido || 0 })),
           });
         });
         await lote.commit();
@@ -5325,6 +5405,7 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
         id: corteId,
         fechaCorte: resp.data.fechaCorte,
         campoNit: resp.data.campoNit || "",
+        campoEmision: resp.data.campoEmision || "",
         proveedores: proveedoresSinDetalle,
         creadoEn: new Date().toISOString(),
       });
@@ -5731,7 +5812,7 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
                                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
                                   <thead>
                                     <tr style={{ background: C.canvas }}>
-                                      {["N° Factura", "Concepto", "Vence", "Días vencido", "Fac. Total", "Pagado", "Descuento", "Devolución", "Saldo"].map((h) => (
+                                      {["N° Factura", "Concepto", "Emitida", "Vence", "Días vencido", "Fac. Total", "Pagado", "Descuento", "Devolución", "Saldo"].map((h) => (
                                         <th key={h} style={{ padding: "6px 10px", color: C.slate, textAlign: h === "N° Factura" || h === "Concepto" ? "left" : "right", fontWeight: 700, fontSize: 9.5, textTransform: "uppercase", whiteSpace: "nowrap" }}>{h}</th>
                                       ))}
                                     </tr>
@@ -5756,6 +5837,7 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
                                             "—"
                                           )}
                                         </td>
+                                        <td style={{ padding: "6px 10px", textAlign: "right", color: C.slate }}>{fac.fechaEmisionISO || "—"}</td>
                                         <td style={{ padding: "6px 10px", textAlign: "right", color: C.slate }}>{fac.fechaVctoISO || "—"}</td>
                                         <td style={{ padding: "6px 10px", textAlign: "right", color: fac.diasVencido > 90 ? C.red : C.slate }}>{fac.diasVencido}</td>
                                         <td style={{ padding: "6px 10px", textAlign: "right", color: C.slate }}>{fmtCOP(fac.facTotal)}</td>
@@ -5766,7 +5848,7 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
                                       </tr>
                                     ))}
                                     {!facturasDetalle.length && (
-                                      <tr><td colSpan={9} style={{ padding: "8px 10px", color: C.slate, fontStyle: "italic" }}>Sin facturas con saldo pendiente para este proveedor.</td></tr>
+                                      <tr><td colSpan={10} style={{ padding: "8px 10px", color: C.slate, fontStyle: "italic" }}>Sin facturas con saldo pendiente para este proveedor.</td></tr>
                                     )}
                                   </tbody>
                                 </table>

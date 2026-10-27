@@ -4639,6 +4639,18 @@ exports.getCuentasPorPagarBusintGen = onCallAuth(
     // restándolo de más y dejando saldos falsos (de más o de menos) en vez
     // del saldo real -- esto explicaba el total inflado de Cheviotto.
     const facturasPorLlave = new Map(); // llave -> { llave, codigo, nfactOriginal, facTotal, fechaVcto, facTotalMax }
+    // (2026-10-27, a pedido de Fredy) Fecha de EMISION de la factura: no se sabe con seguridad en que columna de "cartera
+    // cxp-fact" viene (la de vencimiento es Fechafin), asi que se detecta: Fechaini, o una que diga "emis", o "Fecha".
+    // Se devuelve cual se uso (campoEmision) y una muestra para poder verificarla contra una factura real.
+    const clavesFecha = new Set();
+    facturas.slice(0, 500).forEach((f) => Object.keys(f || {}).forEach((k) => { if (/^fecha/i.test(k) && !/fin$|vcto|venc/i.test(k)) clavesFecha.add(k); }));
+    const listaFechas = [...clavesFecha];
+    const campoEmision = ["fechaini"].map((x) => listaFechas.find((k) => k.toLowerCase() === x)).find(Boolean)
+      || listaFechas.find((k) => /emis/i.test(k))
+      || listaFechas.find((k) => k.toLowerCase() === "fecha")
+      || listaFechas.find((k) => /fechafac/i.test(k))
+      || listaFechas[0]
+      || null;
     facturas.forEach((f) => {
       const codigo = normalizarCodigoCxp(f?.CODIGO);
       const nfactOriginal = String(f?.NFACT ?? "").trim();
@@ -4647,8 +4659,9 @@ exports.getCuentasPorPagarBusintGen = onCallAuth(
       const llave = `${codigo}|${nfact}`;
       const facTotalFila = Number(f?.FACTOTAL) || 0;
       const fechaVctoFila = fechaBusintBDaDateSoloDia(f?.Fechafin);
+      const fechaEmisionFila = campoEmision ? fechaBusintBDaDateSoloDia(f?.[campoEmision]) : null;
       if (!facturasPorLlave.has(llave)) {
-        facturasPorLlave.set(llave, { llave, codigo, nfactOriginal, facTotal: 0, fechaVcto: null, facTotalMax: -Infinity, concepto: null });
+        facturasPorLlave.set(llave, { llave, codigo, nfactOriginal, facTotal: 0, fechaVcto: null, fechaEmision: null, facTotalMax: -Infinity, concepto: null });
       }
       const grupo = facturasPorLlave.get(llave);
       grupo.facTotal += facTotalFila;
@@ -4657,6 +4670,7 @@ exports.getCuentasPorPagarBusintGen = onCallAuth(
       if (facTotalFila > grupo.facTotalMax) {
         grupo.facTotalMax = facTotalFila;
         grupo.fechaVcto = fechaVctoFila;
+        grupo.fechaEmision = fechaEmisionFila;
         // (2026-09-27, a pedido de Fredy) Concepto de obligacion crudo de
         // Busint (ej. "SCONF" = Servicio de Confeccion, visto en el reporte
         // "Gestion de Obligaciones Financieras Nacionales") -- vive en el
@@ -4672,7 +4686,7 @@ exports.getCuentasPorPagarBusintGen = onCallAuth(
 
     const inicioSemanaActualISO = lunesDeSemanaISO(hoy);
     const porProveedor = new Map();
-    facturasPorLlave.forEach(({ llave, codigo, nfactOriginal, facTotal, fechaVcto, concepto }) => {
+    facturasPorLlave.forEach(({ llave, codigo, nfactOriginal, facTotal, fechaVcto, fechaEmision, concepto }) => {
       const pagado = pagadoPorFactura.get(llave) || 0;
       const descuento = descuentoPorFactura.get(llave) || 0;
       const devolucion = devolucionPorFactura.get(llave) || 0;
@@ -4740,6 +4754,7 @@ exports.getCuentasPorPagarBusintGen = onCallAuth(
         devolucion,
         saldo,
         fechaVctoISO: fechaVcto ? fechaVcto.toISOString().slice(0, 10) : null,
+        fechaEmisionISO: fechaEmision ? fechaEmision.toISOString().slice(0, 10) : null,
         diasVencido,
         concepto,
       });
@@ -4787,6 +4802,8 @@ exports.getCuentasPorPagarBusintGen = onCallAuth(
       fechaCorte: hoyISO,
       proveedores: proveedoresResultado,
       campoNit,
+      campoEmision,
+      camposFecha: listaFechas,
       proveedoresConNit: proveedoresResultado.filter((p) => p.nit).length,
       totalProveedores: proveedoresResultado.length,
       totalGeneral: proveedoresResultado.reduce((s, p) => s + p.total, 0),
