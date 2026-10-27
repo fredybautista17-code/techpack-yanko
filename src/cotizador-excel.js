@@ -180,7 +180,9 @@ export async function generarLibroCotizaciones(ExcelJS, plantilla, lista, opcion
     hojas.push({ cot, ver, nombre });
     // (2026-10-21) Libro DEFINITIVO: si la versión tiene "costos reales", va una hoja extra con esos costos,
     // el precio aprobado FIJO (el que se vendió) y la utilidad/margen real que quedó.
-    if (esDef && opciones.costosReales && ver.real && ver.real.v) {
+    // (2026-10-27, a pedido de Fredy) También sale en el libro de Diseño cuando los costos reales se cargaron desde
+    // Busint (ver.real.busint), con la referencia, el lote, la fecha del cumplido y la de la carga.
+    if (ver.real && ver.real.v && ((esDef && opciones.costosReales) || (opciones.incluirRealesBusint && ver.real.busint))) {
       const fijo = Number(ver.precio) || (cot.precioAplicado && cot.precioAplicado.version === ver.numero ? Number(cot.precioAplicado.valor) : 0) || 0;
       const nombreReal = nombreHojaUnico(`V${ver.numero} COSTOS REALES`, usados);
       const wr = wb.addWorksheet(nombreReal);
@@ -193,7 +195,20 @@ export async function generarLibroCotizaciones(ExcelJS, plantilla, lista, opcion
       const txtPct = pct == null ? "" : ` (${pct >= 0 ? "+" : ""}${pct.toFixed(1).replace(".", ",")}%)`;
       const money = (n) => `$${Math.round(n).toLocaleString("es-CO")}`;
       const c = wr.getCell("D1");
-      c.value = `COSTOS REALES · V${ver.numero} · Precio aprobado FIJO ${fijo > 0 ? money(fijo) : "—"}${nuevo > 0 ? ` · Con costos reales daría ${money(nuevo)}${txtPct}` : ""} · Dado por cumplido ${fechaColombia(opciones.costosReales.fecha)}${opciones.costosReales.lote ? ` · LOTE ${opciones.costosReales.lote}` : ""}`;
+      const bz = ver.real.busint || null;
+      const cr = esDef ? opciones.costosReales : null;
+      const partes = [
+        `COSTOS REALES · Ref ${String(cot.referencia || "").trim() || "—"} · V${ver.numero}`,
+        `Precio aprobado FIJO ${fijo > 0 ? money(fijo) : "—"}${nuevo > 0 ? ` · Con costos reales daría ${money(nuevo)}${txtPct}` : ""}`,
+      ];
+      if (cr) partes.push(`Dado por cumplido ${fechaColombia(cr.fecha)}${cr.lote ? ` · LOTE ${cr.lote}` : ""}`);
+      if (bz) {
+        const mismoLote = cr && String(cr.lote) === String(bz.lote);
+        partes.push(`${mismoLote ? "Costos de Busint" : `Lote ${bz.lote} (Busint)`}${bz.fechaCumplido ? ` · cumplido ${fechaColombia(bz.fechaCumplido)}` : ""}`);
+        partes.push(`Cargado ${fechaColombia(bz.fecha)}${bz.por ? ` por ${bz.por}` : ""}`);
+        if (bz.realPorPrenda > 0) partes.push(`Real por prenda ${money(bz.realPorPrenda)}${bz.cantCortada > 0 ? ` (${bz.cantCortada} prendas)` : ""}`);
+      }
+      c.value = partes.join(" · ");
       c.font = { bold: true, size: 12, color: { argb: "FF7C2D12" } };
       c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFDE7C8" } };
       c.alignment = { vertical: "middle", horizontal: "left" };
@@ -259,7 +274,7 @@ async function construirExcelCotizaciones(lista, imagenDataUrl, opcionesLibro = 
 // lista = cotizaciones (con .versiones). opciones.imagen = data URL de la foto
 // del prototipo / referencia vinculada (solo para lista de una sola cotización).
 export async function descargarCotizacionesExcel(lista, nombreArchivo, opciones = {}) {
-  const { buf, avisos } = await construirExcelCotizaciones(lista, opciones.imagen);
+  const { buf, avisos } = await construirExcelCotizaciones(lista, opciones.imagen, { incluirRealesBusint: true });
   const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -309,6 +324,7 @@ export async function excelLibroBase64(cot, imagenDataUrl, opcionesDef) {
     soloAprobadas: true,
     definitivaNumero: opcionesDef ? opcionesDef.numero : null,
     costosReales: opcionesDef ? { fecha: opcionesDef.fecha, lote: opcionesDef.lote } : null,
+    incluirRealesBusint: true,
     leyenda: (c, ver) => leyendaCotizacion(ver, opcionesDef),
   });
   const dataUrl = await new Promise((resolve, reject) => {

@@ -460,6 +460,11 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
     await onGuardar(a);
     setSucio(false);
     notify?.(envioAuto ? "Cotización guardada y enviada a aprobación" : "Cotización guardada");
+    // (2026-10-27, a pedido de Fredy) Costos reales cargados desde Busint: al guardar, el libro de Dropbox se vuelve a
+    // enviar con la hoja de costos reales (referencia, lote, fecha del cumplido y fecha de carga). Si Dropbox falla,
+    // la versión ya quedó guardada y enviarDropbox avisa para reintentar.
+    const vGuardada = a.versiones?.[a.activa];
+    if (enReal && vGuardada?.estado === "aprobada" && vGuardada.real?.busint) await enviarDropbox(a);
   }
   // Al escribir un código de Busint en un insumo: si coincide con uno solo, trae su precio (y el nombre si está vacío).
   async function autollenarCodigo(i) {
