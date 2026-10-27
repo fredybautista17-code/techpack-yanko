@@ -3262,7 +3262,7 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases, puedeSincroni
       const d = resp.data || {};
       const porTraslado = (d.creadosPorTraslado || 0) + (d.actualizadosPorTraslado || 0);
       const corregidos = d.corregidosSinTraslado || 0;
-      alert(`Listo — ${d.creados || 0} lote(s) nuevo(s), ${d.actualizados || 0} actualizado(s) (de ${d.totalLotesDetectados || 0} detectados en facturas recientes)${porTraslado ? `, ${porTraslado} lote(s) más con traslado en consignación/externo` : ""}${corregidos ? `, ${corregidos} lote(s) corregido(s) (traslado quitado por ya no aplicar)` : ""}.`);
+      alert(`Listo — ${d.creados || 0} lote(s) nuevo(s), ${d.actualizados || 0} actualizado(s) (de ${d.totalLotesDetectados || 0} detectados en facturas recientes)${porTraslado ? `, ${porTraslado} lote(s) más con traslado en consignación/externo` : ""}${corregidos ? `, ${corregidos} lote(s) corregido(s) (traslado quitado por ya no aplicar)` : ""}.${d.pedidosAdicionalesPedidos ? ` Pedidos adicionales: ${d.pedidosAdicionalesAplicados || 0} de ${d.pedidosAdicionalesPedidos} lote(s) con pedido adicional aplicados.` : ""}`);
     } catch (err) {
       alert("No se pudo buscar lotes nuevos: " + (err?.message || err));
     } finally {

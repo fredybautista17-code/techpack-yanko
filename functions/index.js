@@ -947,6 +947,7 @@ async function sincronizarDadoPorCumplidoPendientes() {
   // aparte (p.ej. lote 7263: 200 a Kamila en el pedido 1395 y 4 a Grupo Dubo en el 1840), Contabilidad escribe ese
   // pedido en la tarjeta del lote (pedidosAdicionales) y aquí se suman sus traslados/facturas de la misma referencia.
   const adicionalesPorLote = new Map(); // lote (número) -> [numPed, ...]
+  const adicionalesAplicados = new Set(); // lotes cuyo pedido adicional ya se procesó en alguna de las ramas
   try {
     const pend = await db.collection("dado_por_cumplido_lotes").where("estado", "==", "pendiente").get();
     pend.docs.forEach((d) => {
@@ -1191,6 +1192,7 @@ async function sincronizarDadoPorCumplidoPendientes() {
     const referencia = refPrincipal || datosPanel?.referencia || "";
     const cliente = clienteNombre || datosPanel?.nombreCliente || "";
     const adic = resolverAdicionales(lote, referencia);
+    if (adicionalesPorLote.has(Number(lote))) adicionalesAplicados.add(Number(lote));
     const resumen = resumenFacturasLote([...facturasDetalle, ...adic.entradas]);
     const precioVentaUnitario = Math.round(((totalMonto + adic.monto) / (totalUnidades + adic.unidades || 1)) * 100) / 100;
     const observacionesFactura = numerosFactura.size ? `Facturado -- Factura(s): ${[...numerosFactura].join(", ")}` : "";
@@ -1329,6 +1331,7 @@ async function sincronizarDadoPorCumplidoPendientes() {
         ? Number(datosPrevios?.cantDespachada) || 0
         : traslado.unidades;
       const adic = resolverAdicionales(lote, referenciaPanel);
+      if (adicionalesPorLote.has(Number(lote))) adicionalesAplicados.add(Number(lote));
       const entradasPrincipal = [...traslado.docs.values()].map((d) => ({
         nfact: d.doc,
         tipo: d.tipo,
@@ -1394,6 +1397,59 @@ async function sincronizarDadoPorCumplidoPendientes() {
     }
   }
 
+  // (2026-10-27) Lotes con pedido adicional que NINGUNA de las ramas de arriba procesó: típico cuando el lote ya salió
+  // completo (p.ej. 200 a Kamila + 4 a Dubo) y Busint lo retiró del panel de flujo operacional, así que la rama de
+  // traslados ya no lo ve. Se recalcula desde lo guardado (el traslado principal o el desglose previo).
+  let adicionalesSinAplicar = 0;
+  for (const [lote] of adicionalesPorLote) {
+    if (adicionalesAplicados.has(lote)) continue;
+    const ref = coleccion.doc(`lote_${lote}`);
+    const snap = await ref.get();
+    if (!snap.exists || snap.data().estado === "aprobado") continue;
+    const d = snap.data();
+    const referencia = String(d.referencia || "").trim();
+    let unidadesP = null;
+    let montoP = 0;
+    let entradasP = [];
+    const tr = trasladosPorPedidoRef.get(`${d.numPedido}__${referencia}`);
+    if (tr && tr.unidades > 0 && String(d.observacionesFactura || "").startsWith("Traslado")) {
+      unidadesP = tr.unidades;
+      montoP = tr.monto;
+      entradasP = [...tr.docs.values()].map((x) => ({
+        nfact: x.doc, tipo: x.tipo, pedido: String(d.numPedido || ""), fecha: x.fecha, cliente: String(d.cliente || "").trim(),
+        unidades: x.unidades, precio: x.unidades ? Math.round((x.monto / x.unidades) * 100) / 100 : 0, monto: Math.round(x.monto * 100) / 100,
+      }));
+    } else {
+      const previas = Array.isArray(d.facturasDetalle) ? d.facturasDetalle.filter((x) => !x.adicional) : [];
+      if (previas.length) {
+        unidadesP = previas.reduce((a, x) => a + (Number(x.unidades) || 0), 0);
+        montoP = previas.reduce((a, x) => a + (Number(x.monto) || 0), 0);
+        entradasP = previas;
+      } else if (!(Number(d.cantDespachadaAdicional) > 0) && Number(d.cantDespachada) > 0 && Number(d.precioVentaUnitario) > 0) {
+        unidadesP = Number(d.cantDespachada);
+        montoP = unidadesP * Number(d.precioVentaUnitario);
+      }
+    }
+    if (unidadesP === null) {
+      await ref.set({ avisoPedidoAdicional: "No se pudo recalcular este lote con el pedido adicional: no hay un documento principal reciente en Busint ni un desglose guardado.", actualizadoEn: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+      adicionalesSinAplicar++;
+      continue;
+    }
+    const adic = resolverAdicionales(lote, referencia);
+    const resumen = resumenFacturasLote([...entradasP, ...adic.entradas]);
+    const campos = {
+      precioVentaUnitario: Math.round(((montoP + adic.monto) / (unidadesP + adic.unidades || 1)) * 100) / 100,
+      facturasDetalle: resumen.facturasDetalle,
+      clienteDetalle: resumen.clienteDetalle,
+      cantDespachadaAdicional: adic.unidades,
+      avisoPedidoAdicional: adic.avisos.join(" "),
+      actualizadoEn: admin.firestore.FieldValue.serverTimestamp(),
+    };
+    if (!d.cantDespachadaManual) campos.cantDespachada = unidadesP;
+    await ref.set(campos, { merge: true });
+    adicionalesAplicados.add(lote);
+  }
+
   let creadosPorBpt = 0;
   for (const p of panelFlujo) {
     const lote = Number(p?.numLote);
@@ -1423,8 +1479,8 @@ async function sincronizarDadoPorCumplidoPendientes() {
     creadosPorBpt++;
   }
 
-  logger.info("sincronizarDadoPorCumplidoPendientes completado", { creados, actualizados, creadosPorBpt, creadosPorTraslado, actualizadosPorTraslado, corregidosSinTraslado, totalLotesDetectados: facturasPorLote.size });
-  return { creados, actualizados, creadosPorBpt, creadosPorTraslado, actualizadosPorTraslado, corregidosSinTraslado, totalLotesDetectados: facturasPorLote.size };
+  logger.info("sincronizarDadoPorCumplidoPendientes completado", { creados, actualizados, creadosPorBpt, creadosPorTraslado, actualizadosPorTraslado, corregidosSinTraslado, totalLotesDetectados: facturasPorLote.size, pedidosAdicionalesAplicados: adicionalesAplicados.size, adicionalesSinAplicar });
+  return { creados, actualizados, creadosPorBpt, creadosPorTraslado, actualizadosPorTraslado, corregidosSinTraslado, totalLotesDetectados: facturasPorLote.size, pedidosAdicionalesPedidos: adicionalesPorLote.size, pedidosAdicionalesAplicados: adicionalesAplicados.size, adicionalesSinAplicar };
 }
 
 // Botón "Buscar lotes nuevos" en Contabilidad -> Dado por Cumplido -- admin
