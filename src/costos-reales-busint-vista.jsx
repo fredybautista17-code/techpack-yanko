@@ -14,6 +14,22 @@ const pesos = (n) => "$" + Math.round(Number(n) || 0).toLocaleString("es-CO");
 const pesosConSigno = (n) => `${n >= 0 ? "+" : "−"}${pesos(Math.abs(n))}`;
 const dec = (n) => (Number(n) || 0).toLocaleString("es-CO", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 const btn = (bg, color, border) => ({ padding: "8px 14px", background: bg, color, border: `1.5px solid ${border || bg}`, borderRadius: 10, fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" });
+const pctTxt = (x) => `${x >= 0 ? "+" : "−"}${Math.abs(x * 100).toLocaleString("es-CO", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} %`;
+const VERDE = { bg: "#EBF7F2", fg: "#1F7A52" };
+const ROJO = { bg: "#FDF0EE", fg: "#B8402F" };
+// Etiqueta de diferencia: verde = costó menos de lo aprobado, rojo = costó más, gris = igual.
+function Pildora({ dif, base, C, grande }) {
+  if (dif == null) return <span style={{ color: C.slate }}>—</span>;
+  const igual = Math.abs(dif) < 0.5;
+  const col = igual ? { bg: C.canvas, fg: C.slate } : dif > 0 ? ROJO : VERDE;
+  const flecha = igual ? "＝" : dif > 0 ? "▲" : "▼";
+  const txt = igual ? "Igual" : `${pesosConSigno(dif)}${base > 0 ? ` · ${pctTxt(dif / base)}` : ""}`;
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: grande ? "4px 12px" : "2px 9px", borderRadius: 999, background: col.bg, color: col.fg, fontWeight: 700, fontSize: grande ? 14 : 12.5, whiteSpace: "nowrap" }}>
+      <span style={{ fontSize: grande ? 11 : 9 }}>{flecha}</span>{txt}{!igual && base === 0 ? " · nuevo" : ""}
+    </span>
+  );
+}
 const ETIQUETA_ORIGEN = { tela: "Tela", insumo: "Insumo", proceso: "Proceso" };
 const soloAlfanum = (s) => String(s ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 
@@ -112,7 +128,6 @@ export default function TraerRealesBusintModal({ referencia, v, vAprobado, preci
   ];
   const th = { textAlign: "left", padding: "6px 8px", fontSize: 11, color: C.slate, letterSpacing: 0.4, borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" };
   const td = { padding: "6px 8px", fontSize: 13, borderBottom: `1px solid ${C.border}`, verticalAlign: "middle" };
-  const colorDif = (d) => (d > 0.5 ? C.red : d < -0.5 ? C.green : C.slate);
 
   // Filas de la tabla: aprobado / real por prenda de cada concepto.
   const filasTabla = lote ? lote.filas.map((c, i) => {
@@ -194,15 +209,16 @@ export default function TraerRealesBusintModal({ referencia, v, vAprobado, preci
                     <tr>
                       <th style={th}>TIPO</th><th style={th}>CONCEPTO EN BUSINT</th><th style={th}>VA EN LA COTIZACIÓN</th>
                       <th style={{ ...th, textAlign: "right" }}>APROBADO POR PRENDA</th><th style={{ ...th, textAlign: "right" }}>REAL POR PRENDA</th>
-                      <th style={{ ...th, textAlign: "right" }}>DIFERENCIA $</th><th style={{ ...th, textAlign: "right" }}>%</th>
+                      <th style={{ ...th, textAlign: "right" }}>DIFERENCIA</th>
                     </tr>
                   </thead>
                   <tbody>
                     {filasTabla.map(({ c, a, i, existente, real, aprobado }) => {
                       const dif = real != null && aprobado != null ? real - aprobado : null;
                       const pct = dif != null && aprobado > 0 ? dif / aprobado : null;
+                      const sube = pct != null ? pct >= 0.05 : dif != null && aprobado === 0 && dif > 0.5;
                       return (
-                        <tr key={`${c.origen}|${c.concepto}`} style={{ opacity: a.tipo === "ignorar" ? 0.55 : 1 }}>
+                        <tr key={`${c.origen}|${c.concepto}`} style={{ opacity: a.tipo === "ignorar" ? 0.55 : 1, background: sube ? ROJO.bg : "transparent" }}>
                           <td style={{ ...td, fontSize: 11, color: C.slate }}>{ETIQUETA_ORIGEN[c.origen] || ""}</td>
                           <td style={td}><b>{c.concepto}</b>{c.cantidad ? <span style={{ color: C.slate, fontSize: 11 }}> · {dec(c.cantidad)}{c.origen === "tela" ? " kg" : ""}</span> : null}</td>
                           <td style={td}>
@@ -212,8 +228,7 @@ export default function TraerRealesBusintModal({ referencia, v, vAprobado, preci
                           </td>
                           <td style={{ ...td, textAlign: "right" }}>{aprobado == null ? "—" : pesos(aprobado)}</td>
                           <td style={{ ...td, textAlign: "right", fontWeight: 700 }}>{real == null ? "—" : dec(real)}</td>
-                          <td style={{ ...td, textAlign: "right", color: dif == null ? C.slate : colorDif(dif) }}>{dif == null ? "—" : pesosConSigno(dif)}</td>
-                          <td style={{ ...td, textAlign: "right", color: pct == null ? C.slate : colorDif(dif) }}>{pct == null ? (dif != null && aprobado === 0 ? "nuevo" : "—") : `${pct >= 0 ? "+" : "−"}${Math.abs(pct * 100).toFixed(1)}%`}</td>
+                          <td style={{ ...td, textAlign: "right" }}><Pildora dif={dif} base={aprobado} C={C} /></td>
                         </tr>
                       );
                     })}
@@ -221,37 +236,59 @@ export default function TraerRealesBusintModal({ referencia, v, vAprobado, preci
                       <td style={{ ...td, fontWeight: 800 }} colSpan={3}>TOTAL de los conceptos usados (sin daños, impuestos ni fijos)</td>
                       <td style={{ ...td, textAlign: "right", fontWeight: 800 }}>{pesos(sumaAprobado)}</td>
                       <td style={{ ...td, textAlign: "right", fontWeight: 800 }}>{cant > 0 ? pesos(sumaReal) : "—"}</td>
-                      <td style={{ ...td, textAlign: "right", fontWeight: 800, color: colorDif(sumaReal - sumaAprobado) }}>{cant > 0 ? pesosConSigno(sumaReal - sumaAprobado) : "—"}</td>
-                      <td style={td} />
+                      <td style={{ ...td, textAlign: "right" }}>{cant > 0 ? <Pildora dif={sumaReal - sumaAprobado} base={sumaAprobado} C={C} grande /> : "—"}</td>
                     </tr>
                   </tbody>
                 </table>
+              </div>
+              <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 12, color: C.slate, margin: "8px 0 0" }}>
+                <span><b style={{ color: VERDE.fg }}>▼ Verde</b>: costó menos de lo aprobado</span>
+                <span><b style={{ color: ROJO.fg }}>▲ Rojo</b>: costó más (la fila se tiñe si pasa del 5 %)</span>
+                <span><b>＝ Gris</b>: igual</span>
               </div>
               <div style={{ display: "flex", gap: 18, flexWrap: "wrap", margin: "12px 0", fontSize: 13 }}>
                 <label style={{ display: "flex", gap: 6, alignItems: "center" }}><input type="checkbox" checked={quitarImprevistos} onChange={(e) => setQuitarImprevistos(e.target.checked)} />Quitar el 10 % de imprevistos (lo real de Busint ya trae lo que se gastó)</label>
                 <label style={{ display: "flex", gap: 6, alignItems: "center" }}><input type="checkbox" checked={ponerEnCero} onChange={(e) => setPonerEnCero(e.target.checked)} />Poner en $0 las líneas de la cotización que Busint no trae en este lote</label>
               </div>
-              {resultado && (
-                <div style={{ background: C.blueBg, border: "1.5px solid #C9D9EA", borderRadius: 12, padding: "10px 14px", fontSize: 13, lineHeight: 1.7 }}>
-                  <div>
-                    Costo definitivo por prenda — aprobado: <b>{costoAprobado != null ? pesos(costoAprobado) : "—"}</b> · con lo real de Busint: <b>{pesos(resultado.costoDefinitivo)}</b>
-                    {costoAprobado > 0 && <b style={{ color: colorDif(resultado.costoDefinitivo - costoAprobado) }}> ({pesosConSigno(resultado.costoDefinitivo - costoAprobado)} · {((resultado.costoDefinitivo - costoAprobado) / costoAprobado * 100).toFixed(1)} %)</b>}
-                  </div>
-                  {precioAprobado > 0 && precioConReales > 0 && (
-                    <div>
-                      Precio de venta (con IVA) — aprobado, que queda fijo: <b>{pesos(precioAprobado)}</b> · con los costos reales daría: <b>{pesos(precioConReales)}</b>
-                      <b style={{ color: colorDif(precioConReales - precioAprobado) }}> ({pesosConSigno(precioConReales - precioAprobado)} · {((precioConReales - precioAprobado) / precioAprobado * 100).toFixed(1)} %)</b>
+              {resultado && (() => {
+                const difCosto = costoAprobado != null ? resultado.costoDefinitivo - costoAprobado : null;
+                const difPrecio = precioAprobado > 0 && precioConReales > 0 ? precioConReales - precioAprobado : null;
+                const tarjeta = { flex: "1 1 280px", background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 16px" };
+                const etiq = { fontSize: 12, color: C.slate, marginBottom: 6 };
+                const fila = { display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" };
+                const descuadre = Math.abs(resultado.costoDefinitivo - resultado.realPorPrenda) > 1;
+                return (
+                  <>
+                    <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                      <div style={tarjeta}>
+                        <div style={etiq}>Costo definitivo por prenda</div>
+                        <div style={fila}><span style={{ fontSize: 13, color: C.slate }}>Aprobado {costoAprobado != null ? pesos(costoAprobado) : "—"}</span><span style={{ color: C.slate }}>→</span><span style={{ fontSize: 24, fontWeight: 800 }}>{pesos(resultado.costoDefinitivo)}</span></div>
+                        <div style={{ marginTop: 8 }}><Pildora dif={difCosto} base={costoAprobado} C={C} grande /></div>
+                        <div style={{ fontSize: 12, color: C.slate, marginTop: 6 }}>{difCosto == null || Math.abs(difCosto) < 0.5 ? "Igual a lo aprobado." : difCosto < 0 ? "Costó menos de lo aprobado." : "Costó más de lo aprobado."}</div>
+                      </div>
+                      {difPrecio != null && (
+                        <div style={tarjeta}>
+                          <div style={etiq}>Precio de venta con IVA</div>
+                          <div style={fila}><span style={{ fontSize: 13, color: C.slate }}>Aprobado, fijo {pesos(precioAprobado)}</span><span style={{ color: C.slate }}>→</span><span style={{ fontSize: 24, fontWeight: 800 }}>{pesos(precioConReales)}</span></div>
+                          <div style={{ marginTop: 8 }}><Pildora dif={difPrecio} base={precioAprobado} C={C} grande /></div>
+                          <div style={{ fontSize: 12, color: C.slate, marginTop: 6 }}>{Math.abs(difPrecio) < 0.5 ? "Con los costos reales el precio no cambia." : difPrecio < 0 ? "Con los costos reales el margen mejora; el precio aprobado no cambia." : "Con los costos reales el precio aprobado queda corto; el precio aprobado no cambia."}</div>
+                        </div>
+                      )}
                     </div>
-                  )}
-                  <div style={{ color: C.slate }}>Real de Busint por prenda (suma de los conceptos): {pesos(resultado.realPorPrenda)}</div>
-                  {Math.abs(resultado.costoDefinitivo - resultado.realPorPrenda) > 1 && <div style={{ color: C.red, fontWeight: 700 }}>⚠ El costo definitivo que quedaría no coincide con el real de Busint (revisa las líneas marcadas en naranja o las opciones de arriba).</div>}
-                  {resultado.sinDatoBusint.length > 0 && (
-                    <div style={{ color: C.slate }}>
-                      Líneas de la cotización que Busint no trae en este lote: {resultado.sinDatoBusint.join(" · ")}{ponerEnCero ? " — quedarán en $0." : " — se dejan como estaban (marca la casilla de arriba si quieres ponerlas en $0)."}
-                    </div>
-                  )}
-                </div>
-              )}
+                    <div style={{ fontSize: 12, color: C.slate, marginTop: 8 }}>Real de Busint por prenda (suma de los conceptos): {pesos(resultado.realPorPrenda)}</div>
+                    {resultado.sinDatoBusint.length > 0 && (
+                      <div style={{ background: C.amberBg, color: "#8A5A12", borderRadius: 10, padding: "10px 14px", fontSize: 13, marginTop: 10, lineHeight: 1.5 }}>
+                        <b>Busint no trajo {resultado.sinDatoBusint.length} {resultado.sinDatoBusint.length === 1 ? "línea" : "líneas"} de la cotización:</b> {resultado.sinDatoBusint.join(" · ")}. {ponerEnCero ? "Quedarán en $0." : "Se dejan como estaban; el costo definitivo las suma (marca la casilla de arriba si quieres ponerlas en $0)."}
+                      </div>
+                    )}
+                    {descuadre && resultado.sinDatoBusint.length === 0 && (
+                      <div style={{ background: C.amberBg, color: "#8A5A12", borderRadius: 10, padding: "10px 14px", fontSize: 13, marginTop: 10 }}>
+                        El costo definitivo que quedaría ({pesos(resultado.costoDefinitivo)}) no coincide con el real de Busint ({pesos(resultado.realPorPrenda)}). Revisa las líneas marcadas en naranja o las opciones de arriba.
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
             </>
           )}
         </div>
