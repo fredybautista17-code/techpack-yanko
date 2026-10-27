@@ -3306,6 +3306,56 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases, puedeSincroni
     await cambiarPedidosAdicionales(l, actuales.filter((x) => x !== n));
   }
 
+  // (2026-10-27, a pedido de Fredy) Sacar de un lote un documento de traslado que es de OTRO lote (ej. lote 7356 traía el
+  // traslado 4267, de 285 u., que es del lote hermano). Se guarda en documentosExcluidos (la sincronización lo respeta) y
+  // se recalcula de una vez el desglose, Cant. Despachada y Precio Venta U. con los documentos que quedan.
+  const [quitandoDocumento, setQuitandoDocumento] = useState(null);
+  function recalcularDesgloseLote(l, restantes) {
+    const unidadesPorCliente = new Map();
+    restantes.forEach((x) => { const c = x.cliente || "(sin cliente)"; unidadesPorCliente.set(c, (unidadesPorCliente.get(c) || 0) + (Number(x.unidades) || 0)); });
+    const totU = restantes.reduce((s, x) => s + (Number(x.unidades) || 0), 0);
+    const totM = restantes.reduce((s, x) => s + (Number(x.monto) || 0), 0);
+    const principalU = restantes.filter((x) => !x.adicional).reduce((s, x) => s + (Number(x.unidades) || 0), 0);
+    const datos = {
+      facturasDetalle: restantes,
+      clienteDetalle: unidadesPorCliente.size > 1 ? [...unidadesPorCliente].map(([c, u]) => `${c} (${u})`).join(" / ") : "",
+    };
+    if (!l.precioVentaUnitarioManual && totU) datos.precioVentaUnitario = Math.round((totM / totU) * 100) / 100;
+    if (!l.cantDespachadaManual) datos.cantDespachada = principalU;
+    return datos;
+  }
+  async function quitarDocumentoDeLote(l, x) {
+    const clave = `${String(x.tipo || "").toUpperCase()}|${String(x.nfact ?? "").trim()}`;
+    if (!window.confirm(`¿Quitar ${x.tipo} ${x.nfact} (${Number(x.unidades).toLocaleString("es-CO")} u.) de este lote? Queda guardado y la revisión automática no lo vuelve a poner. Podrás restaurarlo.`)) return;
+    setQuitandoDocumento(l.id);
+    try {
+      const excluidos = Array.isArray(l.documentosExcluidos) ? l.documentosExcluidos.map(String) : [];
+      const restantes = (l.facturasDetalle || []).filter((f) => `${String(f.tipo || "").toUpperCase()}|${String(f.nfact ?? "").trim()}` !== clave || f.adicional);
+      await fsSave("dado_por_cumplido_lotes", l.id, {
+        documentosExcluidos: [...new Set([...excluidos, clave])],
+        avisoDocumentosTraslado: "",
+        ...recalcularDesgloseLote(l, restantes),
+      });
+    } catch (err) {
+      alert("No se pudo quitar el documento: " + (err?.message || err));
+    } finally {
+      setQuitandoDocumento(null);
+    }
+  }
+  async function restaurarDocumentoDeLote(l, clave) {
+    setQuitandoDocumento(l.id);
+    try {
+      const excluidos = (Array.isArray(l.documentosExcluidos) ? l.documentosExcluidos.map(String) : []).filter((c) => c !== clave);
+      await fsSave("dado_por_cumplido_lotes", l.id, { documentosExcluidos: excluidos });
+      if (puedeUsarSincronizar) await sincronizarAhora();
+      else alert("Restaurado. El documento volverá en la próxima revisión automática (cada 2 horas).");
+    } catch (err) {
+      alert("No se pudo restaurar el documento: " + (err?.message || err));
+    } finally {
+      setQuitandoDocumento(null);
+    }
+  }
+
   // Corrección manual de Cant. Cortada -- para lotes que Busint ya sacó de su
   // panel de flujo operacional (facturados hace tiempo) y donde por eso no
   // llega solo. Una vez se marca como manual, la sincronización automática
@@ -3726,7 +3776,7 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases, puedeSincroni
                               <div style={{ overflowX: "auto", marginTop: 6 }}>
                                 <table style={{ borderCollapse: "collapse", fontSize: 12 }}>
                                   <thead>
-                                    <tr>{["Documento", "Pedido", "Fecha", "Cliente", "Unidades", "Precio U.", "Valor"].map((h, i) => <th key={h} style={{ ...celdaF, textAlign: i < 4 ? "left" : "right", color: C.slate, fontWeight: 700 }}>{h}</th>)}</tr>
+                                    <tr>{["Documento", "Pedido", "Fecha", "Cliente", "Unidades", "Precio U.", "Valor", ""].map((h, i) => <th key={h + i} style={{ ...celdaF, textAlign: i < 4 ? "left" : "right", color: C.slate, fontWeight: 700 }}>{h}</th>)}</tr>
                                   </thead>
                                   <tbody>
                                     {l.facturasDetalle.map((x, i) => (
@@ -3738,6 +3788,11 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases, puedeSincroni
                                         <td style={celdaF}>{Number(x.unidades).toLocaleString("es-CO")}</td>
                                         <td style={celdaF}>{fmtPesos(x.precio)}</td>
                                         <td style={celdaF}>{fmtPesos(x.monto)}</td>
+                                        <td style={celdaF}>
+                                          {["TCO", "TEX"].includes(String(x.tipo || "").toUpperCase()) && !x.adicional && x.nfact && l.estado !== "aprobado" && l.facturasDetalle.length > 1 && (
+                                            <button type="button" title="Este documento no es de este lote: quitarlo" disabled={quitandoDocumento === l.id} onClick={() => quitarDocumentoDeLote(l, x)} style={{ border: "none", background: "transparent", cursor: "pointer", color: C.red, fontWeight: 800, padding: 0 }}>✕</button>
+                                          )}
+                                        </td>
                                       </tr>
                                     ))}
                                     <tr>
@@ -3745,6 +3800,7 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases, puedeSincroni
                                       <td style={{ ...celdaF, fontWeight: 800 }}>{totU.toLocaleString("es-CO")}</td>
                                       <td style={celdaF}></td>
                                       <td style={{ ...celdaF, fontWeight: 800 }}>{fmtPesos(totM)}</td>
+                                      <td style={celdaF}></td>
                                     </tr>
                                   </tbody>
                                 </table>
@@ -3775,6 +3831,20 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases, puedeSincroni
                         )}
                         {l.avisoPedidoAdicional && (
                           <div style={{ fontSize: 11, fontWeight: 700, marginTop: 4, color: C.amber }}>⚠ {l.avisoPedidoAdicional}</div>
+                        )}
+                        {l.avisoDocumentosTraslado && (
+                          <div style={{ fontSize: 11, fontWeight: 700, marginTop: 4, color: C.amber }}>⚠ {l.avisoDocumentosTraslado}</div>
+                        )}
+                        {Array.isArray(l.documentosExcluidos) && l.documentosExcluidos.length > 0 && (
+                          <div style={{ fontSize: 11, marginTop: 4, color: C.slate }}>
+                            Documentos quitados de este lote:{" "}
+                            {l.documentosExcluidos.map((c) => (
+                              <span key={c} style={{ marginRight: 8, fontWeight: 700 }}>
+                                {String(c).replace("|", " ")}{" "}
+                                <button type="button" title="Volver a incluirlo en este lote" disabled={quitandoDocumento === l.id} onClick={() => restaurarDocumentoDeLote(l, c)} style={{ border: "none", background: "transparent", cursor: "pointer", color: C.violet, fontWeight: 700, padding: 0 }}>↩ restaurar</button>
+                              </span>
+                            ))}
+                          </div>
                         )}
                         {sinFactura && (
                           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 4 }}>

@@ -930,6 +930,58 @@ function despachadaEfectivaLote(datos) {
   return base + (Number(datos?.cantDespachadaAdicional) || 0);
 }
 
+// (2026-10-27, a pedido de Fredy) Lote 7356: el pedido 1617 de Kamila (564 u.) tiene DOS traslados (4267 de 285 u. y 4274 de
+// 279 u.), cada uno de un lote distinto, pero el traslado se agrupa por pedido+referencia y al único lote que quedó en
+// bodega se le pegaban los dos (573 u., precio y ganancia inflados). Antes de aplicar el traslado a un lote se le quitan:
+//   1) los documentos que Contabilidad sacó a mano de este lote (documentosExcluidos),
+//   2) los documentos que ya están en el desglose de OTRO lote ya aprobado,
+//   3) si aun sobran y Bodega registró cuántas despachó (Despachos Generales), se deja la UNICA combinación de
+//      documentos que suma justo esa cantidad (si no hay una sola, no se adivina: se deja todo y se avisa).
+function filtrarTrasladoDeLote(traslado, { lote, excluidos, reclamados, despachadaBodega, cantCortada }) {
+  const clave = (d) => `${d.tipo}|${d.doc}`;
+  const avisos = [];
+  let docs = [...traslado.docs.values()];
+  const nManual = docs.filter((d) => d.doc && excluidos.has(clave(d))).length;
+  docs = docs.filter((d) => !(d.doc && excluidos.has(clave(d))));
+  const previos = docs.length;
+  docs = docs.filter((d) => {
+    if (!d.doc) return true;
+    const dueno = reclamados.get(clave(d));
+    return dueno === undefined || dueno === Number(lote);
+  });
+  const nOtroLote = previos - docs.length;
+  if (nOtroLote) avisos.push(`Se dejaron por fuera ${nOtroLote} documento(s) de traslado que ya pertenecen a otro lote aprobado.`);
+  const suma = (arr) => arr.reduce((t, d) => t + d.unidades, 0);
+  const bodega = Number(despachadaBodega);
+  if (Number.isFinite(bodega) && bodega > 0 && docs.length > 1 && suma(docs) !== bodega) {
+    let elegido = null;
+    if (docs.length <= 14 && docs.every((d) => d.unidades > 0) && suma(docs) > bodega) {
+      const exactas = [];
+      for (let m = 1; m < 1 << docs.length; m++) {
+        const sub = docs.filter((_, i) => m & (1 << i));
+        if (suma(sub) === bodega) exactas.push(sub);
+        if (exactas.length > 1) break;
+      }
+      if (exactas.length === 1) elegido = exactas[0];
+    }
+    if (elegido) {
+      const quitados = docs.filter((d) => !elegido.includes(d));
+      avisos.push(`Bodega despachó ${bodega}: se dejó la combinación de documentos que suma esa cantidad y se apartó ${quitados.map((d) => `${d.tipo} ${d.doc || "s/n"} (${d.unidades})`).join(", ")}. Si no es así, quita el documento que no sea de este lote con la ✕ del desglose.`);
+      docs = elegido;
+    } else {
+      avisos.push(`Los documentos de traslado suman ${suma(docs)} y Bodega despachó ${bodega}: revisa el desglose y quita con la ✕ el documento que no sea de este lote.`);
+    }
+  }
+  const cortada = Number(cantCortada);
+  if (!(Number.isFinite(bodega) && bodega > 0) && Number.isFinite(cortada) && cortada > 0 && docs.length > 1 && suma(docs) > cortada * 1.05) {
+    avisos.push(`Los documentos de traslado suman ${suma(docs)} y el lote se cortó ${cortada}: revisa el desglose y quita con la ✕ el documento que no sea de este lote.`);
+  }
+  const mapa = new Map(docs.map((d) => [clave(d) + "|" + (d.fecha || ""), d]));
+  let fecha = null;
+  docs.forEach((d) => { if (d.fecha && (!fecha || d.fecha > fecha)) fecha = d.fecha; });
+  return { unidades: suma(docs), monto: docs.reduce((t, d) => t + d.monto, 0), fecha, docs: mapa, avisos, nManual };
+}
+
 // Ordena el desglose de documentos de un lote y arma el texto "EMPRESA A (280) / EMPRESA B (4)" cuando hay más de un cliente.
 function resumenFacturasLote(entradas) {
   const facturasDetalle = [...entradas].sort((a, b) => String(a.fecha || "").localeCompare(String(b.fecha || "")) || (a.adicional ? 1 : 0) - (b.adicional ? 1 : 0) || String(a.nfact).localeCompare(String(b.nfact), "es", { numeric: true }));
@@ -957,6 +1009,21 @@ async function sincronizarDadoPorCumplidoPendientes() {
     });
   } catch (err) {
     logger.error("sincronizarDadoPorCumplidoPendientes: no se pudieron leer los pedidos adicionales", { error: String(err) });
+  }
+  // Documentos de traslado (TCO/TEX/DTC/DTE) que ya están en el desglose de un lote APROBADO: no se le asignan a otro lote.
+  const reclamadosTraslado = new Map(); // `${tipo}|${doc}` -> numLote
+  try {
+    const aprobados = await db.collection("dado_por_cumplido_lotes").where("estado", "==", "aprobado").select("numLote", "facturasDetalle").get();
+    aprobados.docs.forEach((d) => {
+      const x = d.data();
+      (Array.isArray(x.facturasDetalle) ? x.facturasDetalle : []).forEach((f) => {
+        const tipo = String(f?.tipo || "").toUpperCase();
+        const doc = String(f?.nfact ?? "").trim();
+        if (["TCO", "TEX", "DTC", "DTE"].includes(tipo) && doc && doc !== "0" && !f.adicional) reclamadosTraslado.set(`${tipo}|${doc}`, Number(x.numLote));
+      });
+    });
+  } catch (err) {
+    logger.error("sincronizarDadoPorCumplidoPendientes: no se pudieron leer los documentos de lotes aprobados", { error: String(err) });
   }
 
   let facturas, detalles, panelFlujo, filasFacturado;
@@ -1309,14 +1376,30 @@ async function sincronizarDadoPorCumplidoPendientes() {
     const loteBptLote = loteEnBpt(datosPanel);
     const clave = numPedidoPanel && referenciaPanel ? `${numPedidoPanel}__${referenciaPanel}` : null;
     const candidatos = clave ? candidatosPorClave.get(clave) || [] : [];
-    const traslado = clave ? trasladosPorPedidoRef.get(clave) : null;
+    const trasladoBruto = clave ? trasladosPorPedidoRef.get(clave) : null;
     const esCandidatoUnico = loteBptLote && candidatos.length === 1 && candidatos[0] === lote;
-    const aplicaTraslado = esCandidatoUnico && traslado && traslado.unidades > 0;
 
     const id = `lote_${lote}`;
     const ref = coleccion.doc(id);
     const snap = await ref.get();
     if (snap.exists && snap.data().estado === "aprobado") continue; // ya aprobado -- no se vuelve a tocar
+
+    // Solo los documentos que de verdad son de ESTE lote (ver filtrarTrasladoDeLote).
+    let traslado = trasladoBruto;
+    let avisoDocumentosTraslado = "";
+    if (esCandidatoUnico && trasladoBruto && trasladoBruto.docs.size) {
+      const previoLote = snap.exists ? snap.data() : {};
+      const excluidos = new Set(Array.isArray(previoLote.documentosExcluidos) ? previoLote.documentosExcluidos.map(String) : []);
+      traslado = filtrarTrasladoDeLote(trasladoBruto, {
+        lote,
+        excluidos,
+        reclamados: reclamadosTraslado,
+        despachadaBodega: previoLote.cantidadDespachadaBodega,
+        cantCortada: Number(datosPanel?.cantCortada) || Number(previoLote.cantCortada) || 0,
+      });
+      avisoDocumentosTraslado = traslado.avisos.join(" ");
+    }
+    const aplicaTraslado = esCandidatoUnico && traslado && traslado.unidades > 0;
 
     if (aplicaTraslado) {
       const datosPrevios = snap.exists ? snap.data() : null;
@@ -1360,6 +1443,7 @@ async function sincronizarDadoPorCumplidoPendientes() {
         clienteDetalle: resumen.clienteDetalle,
         cantDespachadaAdicional: adic.unidades,
         avisoPedidoAdicional: adic.avisos.join(" "),
+        avisoDocumentosTraslado,
         enBpt: true, // traslado confirmado -- quedo cumplido sin importar la etapa actual en Busint
         actualizadoEn: admin.firestore.FieldValue.serverTimestamp(),
       };
@@ -1411,7 +1495,16 @@ async function sincronizarDadoPorCumplidoPendientes() {
     let unidadesP = null;
     let montoP = 0;
     let entradasP = [];
-    const tr = trasladosPorPedidoRef.get(`${d.numPedido}__${referencia}`);
+    const trBruto = trasladosPorPedidoRef.get(`${d.numPedido}__${referencia}`);
+    const tr = trBruto && trBruto.docs.size
+      ? filtrarTrasladoDeLote(trBruto, {
+          lote,
+          excluidos: new Set(Array.isArray(d.documentosExcluidos) ? d.documentosExcluidos.map(String) : []),
+          reclamados: reclamadosTraslado,
+          despachadaBodega: d.cantidadDespachadaBodega,
+          cantCortada: Number(d.cantCortada) || 0,
+        })
+      : null;
     if (tr && tr.unidades > 0 && String(d.observacionesFactura || "").startsWith("Traslado")) {
       unidadesP = tr.unidades;
       montoP = tr.monto;
