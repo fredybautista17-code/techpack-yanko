@@ -3505,7 +3505,7 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases, puedeSincroni
     const ultimaDecision = (c) => (c.versiones || []).filter((v) => v.estado === "aprobada").map((v) => String(v.decision?.fecha || v.fecha || "")).sort().pop() || "";
     const candidatas = snap.docs
       .map((d) => ({ ...d.data(), id: d.id }))
-      .filter((c) => (c.versiones || []).some((v) => v.estado === "aprobada") &&
+      .filter((c) => !c.eliminado && (c.versiones || []).some((v) => v.estado === "aprobada") &&
         [c.referencia, c.vinculo?.reference].map(normalizarRefComparacion).filter(Boolean).includes(refN))
       .sort((a, b) => ultimaDecision(b).localeCompare(ultimaDecision(a)));
     const cot = candidatas[0];

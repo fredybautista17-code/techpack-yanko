@@ -1656,6 +1656,7 @@ async function cargarConfeccionCotizada() {
   const mapa = new Map();
   snap.docs.forEach((d) => {
     const c = d.data() || {};
+    if (c.eliminado) return; // en la Papelera del Cotizador
     const k = normalizarRef(c.referencia);
     if (!k) return;
     const aprobadas = (c.versiones || []).filter((v) => v?.estado === "aprobada");

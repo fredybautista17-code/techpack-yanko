@@ -18738,7 +18738,7 @@ function AppInner() {
   useEffect(() => {
     if (!canAprobarCotizacion) { setCotPorAprobar(0); return undefined; }
     return onSnapshot(collection(db, "cotizaciones"), (snap) => {
-      setCotPorAprobar(snap.docs.filter((d) => { const vs = d.data().versiones || []; return vs[vs.length - 1]?.estado === "aprobacion"; }).length);
+      setCotPorAprobar(snap.docs.filter((d) => { if (d.data().eliminado) return false; const vs = d.data().versiones || []; return vs[vs.length - 1]?.estado === "aprobacion"; }).length);
     }, () => {});
   }, [canAprobarCotizacion]);
   const canAccessBitacora = moduloVisible(userRoleData, "bitacora", currentUser?.isAdmin) && moduloVisibleParaCliente(currentUser, "bitacora");

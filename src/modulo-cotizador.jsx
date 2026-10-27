@@ -2307,6 +2307,32 @@ function HistorialCotizaciones({ cotizaciones, protos, capsulas, parametros, car
   );
 }
 
+// (2026-10-27, a pedido de Fredy) Papelera de cotizaciones: lo borrado queda aquí, completo, hasta que se restaure o el
+// administrador lo elimine definitivamente.
+function PapeleraCotizaciones({ eliminadas, vivas, esAdmin, onRestaurar, onPurgar }) {
+  const hayVivaConMismaRef = (c) => !!normRef(c.referencia) && vivas.some((v) => normRef(v.referencia) === normRef(c.referencia));
+  return (
+    <div>
+      <div style={{ fontSize: 13, color: C.slate, marginBottom: 14 }}>Las cotizaciones que borras quedan aquí con todas sus versiones, costos reales e historial. Restáuralas cuando las necesites{esAdmin ? "; solo tú, como administrador, puedes eliminarlas definitivamente." : "; solo el administrador puede eliminarlas definitivamente."}</div>
+      {eliminadas.length === 0 && <div style={{ textAlign: "center", padding: 32, color: C.slate, fontSize: 13 }}>La Papelera está vacía.</div>}
+      {eliminadas.map((c) => (
+        <div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", padding: "12px 14px", background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, marginBottom: 8 }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontWeight: 800, fontSize: 14 }}>{c.referencia || "Sin referencia"}{c.nombre ? ` · ${c.nombre}` : ""}</div>
+            <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>
+              {c.cliente || "General"} · {c.versiones?.length || 0} versión(es) · Eliminada {c.eliminadoEn ? new Date(c.eliminadoEn).toLocaleString("es-CO") : "—"}{c.eliminadoPor ? ` por ${c.eliminadoPor}` : ""}
+            </div>
+            {hayVivaConMismaRef(c) && <div style={{ fontSize: 12, color: C.amber, marginTop: 2 }}>Ya existe otra cotización activa con esta referencia; al restaurarla quedarán dos.</div>}
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => onRestaurar(c)} style={btn(C.green, C.white)}>↩ Restaurar</button>
+            {esAdmin && <button onClick={() => onPurgar(c)} style={btn(C.white, C.red, C.red)}>Eliminar definitivamente</button>}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
 function HistorialVinilo({ minis, cotizaciones, cargado, onAbrir, onBorrar, puedeBorrar, notify }) {
   const [q, setQ] = useState("");
   const [mes, setMes] = useState("");
@@ -2384,8 +2410,8 @@ function HistorialVinilo({ minis, cotizaciones, cargado, onAbrir, onBorrar, pued
   );
 }
 
-const ITEMS_MENU = [["inicio", "◉", "Inicio"], ["cotizaciones", "▤", "Cotizaciones"], ["historial", "☰", "Historial de cotizaciones"], ["aprobar", "✓", "Por aprobar"], ["facturar", "🧾", "Por facturar"], ["vinilo", "◈", "Vinilo / DTF"], ["historialVinilo", "☷", "Historial de Vinilo / DTF"], ["bases", "▦", "Bases Vinilo y DTF"], ["parametros", "⚙", "Parámetros por cliente"]];
-function MenuCotizaciones({ activo, onIr, onVolver, onLogout, currentUser, nAprobar, nFacturar = 0, verFacturar = false, puedeAprobar, soloConsulta, soloCliente }) {
+const ITEMS_MENU = [["inicio", "◉", "Inicio"], ["cotizaciones", "▤", "Cotizaciones"], ["historial", "☰", "Historial de cotizaciones"], ["aprobar", "✓", "Por aprobar"], ["facturar", "🧾", "Por facturar"], ["vinilo", "◈", "Vinilo / DTF"], ["historialVinilo", "☷", "Historial de Vinilo / DTF"], ["bases", "▦", "Bases Vinilo y DTF"], ["parametros", "⚙", "Parámetros por cliente"], ["papelera", "🗑", "Papelera"]];
+function MenuCotizaciones({ activo, onIr, onVolver, onLogout, currentUser, nAprobar, nFacturar = 0, nPapelera = 0, verPapelera = false, verFacturar = false, puedeAprobar, soloConsulta, soloCliente }) {
   const inicial = String(currentUser?.name || "?").trim().charAt(0).toUpperCase();
   return (
     <div className="cotz-side" style={{ width: 268, flexShrink: 0, background: C.navy, color: "#C9C8DE", padding: "18px 14px", display: "flex", flexDirection: "column", position: "sticky", top: 0, height: "100vh", alignSelf: "flex-start", boxSizing: "border-box" }}>
@@ -2402,12 +2428,13 @@ function MenuCotizaciones({ activo, onIr, onVolver, onLogout, currentUser, nApro
         </div>
       </div>
       <div className="cotz-items">
-        {ITEMS_MENU.filter(([id]) => (!soloCliente || id === "cotizaciones" || id === "historial") && (id !== "facturar" || verFacturar)).map(([id, icono, texto]) => {
+        {ITEMS_MENU.filter(([id]) => (!soloCliente || id === "cotizaciones" || id === "historial") && (id !== "facturar" || verFacturar) && (id !== "papelera" || verPapelera)).map(([id, icono, texto]) => {
           const on = activo === id;
           return (
             <button key={id} onClick={() => onIr(id)} style={{ display: "flex", alignItems: "center", gap: 12, width: "100%", padding: "11px 12px", border: "none", borderRadius: 10, marginBottom: 3, fontSize: 14, fontFamily: "inherit", cursor: "pointer", textAlign: "left", background: on ? C.seam : "transparent", color: on ? C.ink : "#C9C8DE", fontWeight: on ? 800 : 500 }}>
               <span style={{ width: 18, textAlign: "center", fontSize: 15, color: on ? C.ink : "#8B8AAE" }}>{icono}</span>{id === "aprobar" && !puedeAprobar ? "En aprobación" : texto}
               {id === "aprobar" && nAprobar > 0 && <span style={{ marginLeft: "auto", background: C.amber, color: "#fff", borderRadius: 10, minWidth: 22, height: 20, padding: "0 6px", display: "grid", placeItems: "center", fontSize: 11, fontWeight: 800 }}>{nAprobar}</span>}
+              {id === "papelera" && nPapelera > 0 && <span style={{ marginLeft: "auto", background: "#8B8AAE", color: "#fff", borderRadius: 10, minWidth: 22, height: 20, padding: "0 6px", display: "grid", placeItems: "center", fontSize: 11, fontWeight: 800 }}>{nPapelera}</span>}
               {id === "facturar" && nFacturar > 0 && <span style={{ marginLeft: "auto", background: C.violet, color: "#fff", borderRadius: 10, minWidth: 22, height: 20, padding: "0 6px", display: "grid", placeItems: "center", fontSize: 11, fontWeight: 800 }}>{nFacturar}</span>}
             </button>
           );
@@ -2429,13 +2456,16 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
   const [minis, setMinis] = useState([]); // minicotizaciones de vinilo guardadas (solo para el conteo del inicio)
   const [filtroEstado, setFiltroEstado] = useState(null); // "sinAplicar" | "sinVincular" | "viejas"
   const [cotizacionesTodas, setCotizaciones] = useState([]);
+  // (2026-10-27, a pedido de Fredy) Papelera: borrar una cotización solo la marca (eliminado: true); aquí se separan las vivas de las eliminadas.
   const cotizaciones = useMemo(() => {
-    if (!esCliente) return cotizacionesTodas;
+    const vivas = cotizacionesTodas.filter((c) => !c.eliminado);
+    if (!esCliente) return vivas;
     const ok = new Set(clientesPermitidos.map(normTxt));
-    return cotizacionesTodas
+    return vivas
       .filter((c) => ok.has(normTxt(c.cliente || "General")) && (c.versiones || []).some((v) => v.estado === "aprobada"))
       .map((c) => { const vs = c.versiones.filter((v) => v.estado === "aprobada"); return { ...c, versiones: vs, activa: vs.length - 1 }; });
   }, [cotizacionesTodas, esCliente, clientesPermitidos]); // eslint-disable-line
+  const cotizacionesEliminadas = useMemo(() => cotizacionesTodas.filter((c) => c.eliminado).sort((a, b) => String(b.eliminadoEn || "").localeCompare(String(a.eliminadoEn || ""))), [cotizacionesTodas]);
   const [parametros, setParametros] = useState([]);
   const [cargado, setCargado] = useState(false);
   const [edit, setEdit] = useState(null); // cotización en edición
@@ -2546,11 +2576,28 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
     notify?.(`${ok} cotizaciones actualizadas${fallo ? ` · ${fallo} no se pudieron guardar` : ""}.`);
   }
 
+  // Va a la Papelera: se conserva todo el documento (versiones, costos reales, historial) y se puede restaurar.
   async function eliminar(cot) {
-    await fsDel("cotizaciones", cot.id);
+    const { existe, ...datos } = cot; // eslint-disable-line no-unused-vars
+    await fsSet("cotizaciones", cot.id, { ...datos, eliminado: true, eliminadoEn: new Date().toISOString(), eliminadoPor: currentUser?.name || "" });
     setEdit(null);
     setEdSucio(false);
-    notify?.("Cotización eliminada");
+    notify?.("Cotización enviada a la Papelera. Puedes restaurarla desde ahí.");
+  }
+  async function restaurarCotizacion(cot) {
+    if (!puedeBorrar) { notify?.("Tu rol no tiene permiso para restaurar cotizaciones"); return; }
+    const { eliminado, eliminadoEn, eliminadoPor, existe, ...datos } = cot; // eslint-disable-line no-unused-vars
+    try {
+      await fsSet("cotizaciones", cot.id, { ...datos, restauradaPor: currentUser?.name || "", restauradaEn: new Date().toISOString() });
+      notify?.(`Cotización ${cot.referencia || ""} restaurada`);
+    } catch (e) { notify?.("No se pudo restaurar: " + (e.message || e)); }
+  }
+  async function purgarCotizacion(cot) {
+    if (!currentUser?.isAdmin) { notify?.("Solo el administrador puede eliminar definitivamente"); return; }
+    const nombre = `${cot.referencia || "sin referencia"}${cot.nombre ? " · " + cot.nombre : ""}`;
+    if (!window.confirm(`¿Eliminar DEFINITIVAMENTE la cotización ${nombre}?\n\nSe pierden sus ${cot.versiones?.length || 0} versión(es), los costos reales y el historial. Esta vez no se puede deshacer.`)) return;
+    try { await fsDel("cotizaciones", cot.id); notify?.("Cotización eliminada definitivamente"); }
+    catch (e) { notify?.("No se pudo eliminar: " + (e.message || e)); }
   }
   // Borrar pide confirmación con el nombre, las versiones que se pierden y si ya tenía precio aplicado.
   async function pedirBorrar(cot) {
@@ -2558,7 +2605,7 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
     const n = cot.versiones?.length || 0;
     const nombre = `${cot.referencia || "sin referencia"}${cot.nombre ? " · " + cot.nombre : ""}`;
     const aviso = cot.precioAplicado ? `\n\nOjo: ya tenía un precio aplicado (${fmtCOP(cot.precioAplicado.valor)} a ${cot.precioAplicado.destino}). Ese precio NO cambia en el prototipo; solo se pierde el historial de la cotización.` : "";
-    if (!window.confirm(`¿Borrar la cotización ${nombre}?\n\nSe pierden sus ${n} versión(es). No se puede deshacer.${aviso}`)) return;
+    if (!window.confirm(`¿Enviar a la Papelera la cotización ${nombre}?\n\nSale de los listados con sus ${n} versión(es), pero queda en la Papelera y se puede restaurar.${aviso}`)) return;
     await eliminar(cot);
   }
   // Minicotizador de Vinilo / DTF -> cotización de la referencia (versión nueva).
@@ -2660,10 +2707,10 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
   }
   const verFacturar = (puedeEnviarFacturar || puedeFacturar) && !esCliente;
   const nFacturar = cotizaciones.filter((c) => facturacionDe(c)?.estado === "por_facturar").length;
-  const TITULOS = { facturar: "Por facturar", inicio: "Inicio", cotizaciones: "Cotizaciones", vinilo: "Vinilo / DTF", bases: "Bases Vinilo y DTF", historial: "Historial de cotizaciones", historialVinilo: "Historial de Vinilo / DTF", parametros: "Parámetros por cliente", aprobar: puedeAprobar ? "Por aprobar" : "En aprobación" };
+  const TITULOS = { facturar: "Por facturar", inicio: "Inicio", cotizaciones: "Cotizaciones", vinilo: "Vinilo / DTF", bases: "Bases Vinilo y DTF", historial: "Historial de cotizaciones", historialVinilo: "Historial de Vinilo / DTF", parametros: "Parámetros por cliente", papelera: "Papelera", aprobar: puedeAprobar ? "Por aprobar" : "En aprobación" };
   return (
     <div className="cotz-root" style={{ display: "flex", minHeight: "100vh", background: C.canvas, fontFamily: FUENTE, color: C.ink }}>
-      <MenuCotizaciones activo={edit ? "cotizaciones" : tab} onIr={irA} onVolver={onVolver} onLogout={onLogout} currentUser={currentUser} nAprobar={cotizaciones.filter((c) => estadoUltima(c) === "aprobacion").length} nFacturar={nFacturar} verFacturar={verFacturar} puedeAprobar={puedeAprobar} soloConsulta={!puedeEditar} soloCliente={esCliente} />
+      <MenuCotizaciones activo={edit ? "cotizaciones" : tab} onIr={irA} onVolver={onVolver} onLogout={onLogout} currentUser={currentUser} nAprobar={cotizaciones.filter((c) => estadoUltima(c) === "aprobacion").length} nFacturar={nFacturar} nPapelera={cotizacionesEliminadas.length} verPapelera={!!puedeBorrar && !esCliente} verFacturar={verFacturar} puedeAprobar={puedeAprobar} soloConsulta={!puedeEditar} soloCliente={esCliente} />
       <div style={{ flex: 1, minWidth: 0, padding: "24px 34px", boxSizing: "border-box" }}>
       {edit ? (
         <CotizacionEditor key={edit.id} inicial={edit} minis={minis} parametros={parametros} clientes={clientesApp} protos={protos} capsulas={capsulas} cotizaciones={cotizaciones}
@@ -2687,6 +2734,7 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
       {tab === "vinilo" && <MiniVinilo key={miniAbrir?.n || 0} inicialId={miniAbrir?.id} currentUser={currentUser} notify={notify} onPasar={pasarAlCotizador} puedeBorrar={puedeBorrar} soloLectura={!puedeEditar} />}
       {tab === "historial" && <HistorialCotizaciones cotizaciones={cotizaciones} protos={protos} capsulas={capsulas} parametros={parametros} cargado={cargado} onAbrir={(c) => setEdit({ ...limpio(c), existe: true })} onBorrar={pedirBorrar} puedeBorrar={puedeBorrar} notify={notify} />}
       {tab === "historialVinilo" && <HistorialVinilo minis={minis} cotizaciones={cotizaciones} cargado={cargado} onAbrir={(m) => { setMiniAbrir({ id: m.id, n: Date.now() }); setTab("vinilo"); }} onBorrar={borrarMini} puedeBorrar={puedeBorrar} notify={notify} />}
+      {tab === "papelera" && puedeBorrar && !esCliente && <PapeleraCotizaciones eliminadas={cotizacionesEliminadas} vivas={cotizaciones} esAdmin={!!currentUser?.isAdmin} onRestaurar={restaurarCotizacion} onPurgar={purgarCotizacion} />}
       {tab === "bases" && <BasesVinilo currentUser={currentUser} puedeEditar={puedeAprobar} notify={notify} />}
 
       {(tab === "cotizaciones" || tab === "aprobar" || tab === "facturar") && (
