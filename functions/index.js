@@ -4352,6 +4352,27 @@ function fechaBusintBDaDateSoloDia(campo) {
 function normalizarCodigoCxp(v) {
   return String(v ?? "").trim().toUpperCase();
 }
+// (2026-10-27, a pedido de Fredy) Para cruzar Cuentas por Pagar de Busint con
+// TNS por NIT (y no por nombre, que se escribe distinto en cada sistema) se
+// necesita el NIT del proveedor. No se conoce con seguridad como se llama la
+// columna en "maestro de proveedores", asi que se detecta sola: la primera
+// columna cuyo nombre contenga "nit" (sin digito de verificacion) o, si no
+// hay, "identific"/"cedula"/"documento", que tenga valores numericos.
+function detectarCampoNitProveedor(filas) {
+  const claves = new Set();
+  (filas || []).slice(0, 300).forEach((f) => Object.keys(f || {}).forEach((k) => claves.add(k)));
+  const candidatas = [...claves].filter((k) => !/(^|_)(dv|digito|dig|verif)/i.test(k) && !/digito|verifica/i.test(k));
+  const conValor = (k) => (filas || []).some((f) => /\d{5,}/.test(String(f?.[k] ?? "")));
+  const prioridades = [/^nit$/i, /^nitc$/i, /^nit/i, /nit/i, /identific/i, /cedula/i, /documento/i];
+  for (const re of prioridades) {
+    const k = candidatas.find((c) => re.test(c) && conValor(c));
+    if (k) return k;
+  }
+  return null;
+}
+function nitBaseProveedor(v) {
+  return String(v ?? "").split("-")[0].replace(/\D/g, "");
+}
 exports.getCuentasPorPagarBusintGen = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
@@ -4500,10 +4521,16 @@ exports.getCuentasPorPagarBusintGen = onCallAuth(
       ajusteCxpPorFactura.set(llave, (ajusteCxpPorFactura.get(llave) || 0) + valor);
     });
     const nombrePorCodigo = new Map();
+    const campoNit = detectarCampoNitProveedor(proveedores);
+    const nitPorCodigo = new Map();
     proveedores.forEach((p) => {
       const codigo = normalizarCodigoCxp(p?.Codigo);
       if (!codigo) return;
       nombrePorCodigo.set(codigo, String(p.Nombre || "").trim() || `Proveedor ${codigo}`);
+      if (campoNit) {
+        const nit = nitBaseProveedor(p[campoNit]);
+        if (nit) nitPorCodigo.set(codigo, nit);
+      }
     });
     const UMBRAL_SALDO_CXP = 1; // ignora diferencias de centavos de redondeo
     const hoy = new Date();
@@ -4586,6 +4613,7 @@ exports.getCuentasPorPagarBusintGen = onCallAuth(
           dias61a90: 0,
           dias91mas: 0,
           total: 0,
+          nit: nitPorCodigo.get(codigo) || "",
           facturas: [],
           porConcepto: {},
           vencimientosPorSemana: {},
@@ -4665,6 +4693,8 @@ exports.getCuentasPorPagarBusintGen = onCallAuth(
     return {
       fechaCorte: hoyISO,
       proveedores: proveedoresResultado,
+      campoNit,
+      proveedoresConNit: proveedoresResultado.filter((p) => p.nit).length,
       totalProveedores: proveedoresResultado.length,
       totalGeneral: proveedoresResultado.reduce((s, p) => s + p.total, 0),
     };

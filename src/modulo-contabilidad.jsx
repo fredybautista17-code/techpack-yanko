@@ -4679,18 +4679,18 @@ function CategorizarProveedorCXPModal({ nombre, categoriaActual, categoriaAutoma
     </Modal>
   );
 }
-// (2026-10-27, a pedido de Fredy) Paso 1 de "Cuentas por pagar: Busint vs TNS".
-// Trae de TNS el saldo por proveedor de las cuentas 2205 (proveedores
-// nacionales), 2335 (costos y gastos por pagar) y 1330 (anticipos a
-// proveedores) y lo compara contra el corte de Busint que esta en pantalla,
-// para decidir CUAL cuenta (o combinacion) es la que cuadra. Solo lee, no
-// guarda nada.
-const FORMULAS_TNS_CXP = [
-  { id: "2205", label: "Solo 2205 (proveedores nacionales)", f: (p) => p.c2205 },
-  { id: "2335", label: "Solo 2335 (costos y gastos por pagar)", f: (p) => p.c2335 },
-  { id: "2205+2335", label: "2205 + 2335", f: (p) => p.c2205 + p.c2335 },
-  { id: "2205+2335-1330", label: "2205 + 2335 − anticipos 1330", f: (p) => p.c2205 + p.c2335 - p.a1330 },
-];
+// (2026-10-27, a pedido de Fredy) "Cuentas por pagar: Busint vs TNS".
+// Trae de TNS el saldo por proveedor y lo cruza con el corte de Busint que
+// esta en pantalla. Lo que se debe segun TNS = cuenta 2205 (proveedores
+// nacionales) + 2335 (costos y gastos por pagar) - 1330 (anticipos a
+// proveedores): esa fue la combinacion que mas se acerco a Busint (en Yanko la
+// 2335 esta en cero). El cruce es por NIT; si un proveedor no trae NIT
+// (ej. "Proveedor 16", que no existe en el maestro de Busint) se cruza por
+// nombre, o se asocia a mano una sola vez (queda guardado en
+// contabilidad_cxp_enlaces). Los totales de cada comparacion se pueden guardar
+// (contabilidad_cxp_cuadres) para ver si el descuadre sube o baja.
+const baseNitCxp = (v) => String(v || "").split("-")[0].replace(/\D/g, "");
+const netoTnsCxp = (p) => (p.c2205 || 0) + (p.c2335 || 0) - (p.a1330 || 0);
 function claveNombreCxpTns(nombre) {
   return normalizarTexto(nombre)
     .replace(/[^a-z0-9 ]/g, " ")
@@ -4698,18 +4698,30 @@ function claveNombreCxpTns(nombre) {
     .filter((w) => w && !["sas", "s", "a", "sa", "ltda", "y", "cia", "e", "de", "la", "el"].includes(w))
     .join(" ");
 }
-function ComparacionTnsCxp({ proveedoresBusint }) {
+function ComparacionTnsCxp({ proveedoresBusint, fechaCorteBusint, campoNit }) {
   const [abierto, setAbierto] = useState(false);
   const [empresa, setEmpresa] = useState("yanko");
   const [datos, setDatos] = useState({});
   const [cargando, setCargando] = useState("");
   const [error, setError] = useState("");
-  const [formulaId, setFormulaId] = useState("2205+2335");
+  const [mensaje, setMensaje] = useState("");
   const [soloDif, setSoloDif] = useState(true);
   const [busqueda, setBusqueda] = useState("");
+  const [enlaces, setEnlaces] = useState({});
+  const [historial, setHistorial] = useState([]);
+  useEffect(() => {
+    const u1 = onSnapshot(doc(db, "contabilidad_cxp_enlaces", "main"), (snap) => setEnlaces(snap.exists() ? snap.data()?.enlaces || {} : {}), () => {});
+    const u2 = onSnapshot(collection(db, "contabilidad_cxp_cuadres"), (snap) => setHistorial(snap.docs.map((d) => ({ id: d.id, ...d.data() }))), () => {});
+    return () => {
+      u1();
+      u2();
+    };
+  }, []);
+  const claveEnl = (n) => String(n || "").replace(/[./\s]/g, "_");
   async function traer(emp) {
     setCargando(emp);
     setError("");
+    setMensaje("");
     try {
       const resp = await httpsCallable(functionsClient, "getCuentasPorPagarTNS", { timeout: 300000 })({ empresa: emp });
       setDatos((d) => ({ ...d, [emp]: resp.data }));
@@ -4720,116 +4732,152 @@ function ComparacionTnsCxp({ proveedoresBusint }) {
       setCargando("");
     }
   }
+  async function asociar(nombreBusint, nit) {
+    await fsSave("contabilidad_cxp_enlaces", "main", { enlaces: { [claveEnl(nombreBusint)]: nit || "" } });
+  }
   const d = datos[empresa];
-  const formula = FORMULAS_TNS_CXP.find((x) => x.id === formulaId) || FORMULAS_TNS_CXP[2];
-  const totalBusint = (proveedoresBusint || []).reduce((s, p) => s + (Number(p.total) || 0), 0);
+  // ---- cruce ----
   let filas = [];
-  let totalTns = 0;
+  let resumen = null;
+  const conNit = (proveedoresBusint || []).filter((p) => baseNitCxp(p.nit)).length;
   if (d) {
     const mapa = new Map();
+    const porNit = new Map();
+    const porNombre = new Map();
     (proveedoresBusint || []).forEach((p) => {
-      const k = claveNombreCxpTns(p.nombre);
-      if (!mapa.has(k)) mapa.set(k, { nombre: p.nombre, tns: 0, busint: 0, enTns: false });
-      mapa.get(k).busint += Number(p.total) || 0;
+      const nitProp = baseNitCxp(p.nit);
+      const nitEnl = baseNitCxp(enlaces[claveEnl(p.nombre)]);
+      const nit = nitProp || nitEnl;
+      const nk = claveNombreCxpTns(p.nombre);
+      const key = nit ? `n:${nit}` : `m:${nk}`;
+      if (!mapa.has(key)) mapa.set(key, { nombre: p.nombre, nombreBusint: p.nombre, nombreTns: "", nit, busint: 0, tns: 0, enBusint: true, enTns: false, porEnlace: !nitProp && !!nitEnl });
+      mapa.get(key).busint += Number(p.total) || 0;
+      if (nit) porNit.set(nit, key);
+      if (nk && !porNombre.has(nk)) porNombre.set(nk, key);
     });
     (d.proveedores || []).forEach((p) => {
-      const k = claveNombreCxpTns(p.nombre) || p.nit;
-      const v = formula.f(p);
-      totalTns += v;
-      if (!mapa.has(k)) mapa.set(k, { nombre: p.nombre, tns: 0, busint: 0, enTns: true });
-      const x = mapa.get(k);
-      x.tns += v;
-      x.enTns = true;
-      x.nit = p.nit;
+      const nit = baseNitCxp(p.nit);
+      const nk = claveNombreCxpTns(p.nombre);
+      const key = (nit && porNit.get(nit)) || porNombre.get(nk) || (nit ? `n:${nit}` : `m:${nk}`);
+      if (!mapa.has(key)) mapa.set(key, { nombre: p.nombre, nombreBusint: "", nombreTns: p.nombre, nit, busint: 0, tns: 0, enBusint: false, enTns: false });
+      const r = mapa.get(key);
+      r.tns += netoTnsCxp(p);
+      r.enTns = true;
+      r.nombreTns = p.nombre;
+      if (!r.nit) r.nit = nit;
     });
-    filas = [...mapa.values()].map((x) => ({ ...x, dif: x.tns - x.busint }));
+    const todas = [...mapa.values()].map((r) => ({ ...r, dif: r.tns - r.busint }));
+    const suma = (arr, f) => arr.reduce((s, x) => s + f(x), 0);
+    const soloTns = todas.filter((r) => r.enTns && !r.enBusint);
+    const soloBusint = todas.filter((r) => r.enBusint && !r.enTns);
+    const ambos = todas.filter((r) => r.enBusint && r.enTns);
+    resumen = {
+      totalTns: suma(todas, (r) => r.tns),
+      totalBusint: suma(todas, (r) => r.busint),
+      soloTns: suma(soloTns, (r) => r.tns),
+      soloBusint: suma(soloBusint, (r) => r.busint),
+      ambosDif: suma(ambos, (r) => r.dif),
+      nSoloTns: soloTns.length,
+      nSoloBusint: soloBusint.length,
+      nConDif: todas.filter((r) => Math.abs(r.dif) >= 1000).length,
+      nTotal: todas.length,
+      soloTnsLista: soloTns.filter((r) => r.nit && Math.abs(r.tns) >= 1000).sort((a, b) => b.tns - a.tns),
+    };
+    resumen.dif = resumen.totalTns - resumen.totalBusint;
+    filas = todas;
     if (soloDif) filas = filas.filter((x) => Math.abs(x.dif) >= 1000);
     if (busqueda.trim()) {
       const q = normalizarTexto(busqueda);
-      filas = filas.filter((x) => normalizarTexto(x.nombre).includes(q));
+      filas = filas.filter((x) => normalizarTexto(x.nombre).includes(q) || normalizarTexto(x.nombreTns).includes(q));
     }
     filas.sort((a, b) => Math.abs(b.dif) - Math.abs(a.dif));
   }
+  async function guardarCuadre() {
+    if (!d || !resumen) return;
+    const ahora = new Date();
+    await fsSave("contabilidad_cxp_cuadres", `${empresa}_${ahora.getTime()}`, {
+      empresa,
+      traidoEn: ahora.toISOString(),
+      corteTns: d.corte,
+      corteBusint: fechaCorteBusint || "",
+      totalTns: Math.round(resumen.totalTns),
+      totalBusint: Math.round(resumen.totalBusint),
+      diferencia: Math.round(resumen.dif),
+      soloTns: Math.round(resumen.soloTns),
+      soloBusint: Math.round(resumen.soloBusint),
+      ambosDif: Math.round(resumen.ambosDif),
+      proveedoresConDiferencia: resumen.nConDif,
+    });
+    setMensaje("Cuadre guardado en el historial.");
+  }
+  const hist = historial.filter((h) => h.empresa === empresa).sort((a, b) => String(b.traidoEn).localeCompare(String(a.traidoEn))).slice(0, 6);
   const th = { textAlign: "right", padding: "6px 10px", fontSize: 12, color: C.slate, borderBottom: `1px solid ${C.border}` };
   const td = { textAlign: "right", padding: "6px 10px", fontSize: 13, borderBottom: `1px solid ${C.border}`, fontVariantNumeric: "tabular-nums" };
+  const selStyle = { padding: "6px 10px", borderRadius: 8, border: `1px solid ${C.border}` };
   return (
     <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, padding: 14, marginBottom: 16 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-        <div style={{ fontWeight: 700, fontSize: 14, flex: 1 }}>🔎 Comparar con TNS (diagnóstico)</div>
+        <div style={{ fontWeight: 700, fontSize: 14, flex: 1 }}>🔎 Cuadre Busint vs TNS</div>
         <Btn small variant="secondary" onClick={() => setAbierto(!abierto)}>{abierto ? "Ocultar" : "Abrir"}</Btn>
       </div>
       {abierto && (
         <div style={{ marginTop: 12 }}>
-          <div style={{ fontSize: 12, color: C.slate, marginBottom: 10 }}>
-            Trae de TNS el saldo por proveedor de las cuentas 2205, 2335 y 1330 y lo compara con el corte de Busint que tienes seleccionado
-            ({fmtCOP(totalBusint)}). Sirve para ver cuál cuenta cuadra. No guarda nada.
+          <div style={{ fontSize: 12, color: C.slate, marginBottom: 6 }}>
+            Compara el corte de Busint seleccionado{fechaCorteBusint ? ` (${fechaCorteBusint})` : ""} con lo que debe TNS: cuenta 2205 + 2335 − anticipos 1330. No cambia ningún dato del corte.
+          </div>
+          <div style={{ fontSize: 12, color: conNit ? C.slate : C.red, marginBottom: 10 }}>
+            {conNit
+              ? `${conNit} de ${(proveedoresBusint || []).length} proveedores del corte traen NIT${campoNit ? ` (columna ${campoNit})` : ""}; los demás se cruzan por nombre.`
+              : "Este corte no trae NIT de proveedores (se cruza solo por nombre). Pulsa \"🔄 Traer desde Busint\" para actualizarlo."}
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
             <Btn onClick={() => traer("yanko")} disabled={!!cargando}>{cargando === "yanko" ? "Consultando TNS..." : "Traer Yanko"}</Btn>
             <Btn variant="secondary" onClick={() => traer("indutex")} disabled={!!cargando}>{cargando === "indutex" ? "Consultando TNS..." : "Traer Indutex"}</Btn>
             {Object.keys(datos).length > 1 && (
-              <select value={empresa} onChange={(e) => setEmpresa(e.target.value)} style={{ padding: "6px 10px", borderRadius: 8, border: `1px solid ${C.border}` }}>
+              <select value={empresa} onChange={(e) => setEmpresa(e.target.value)} style={selStyle}>
                 {Object.keys(datos).map((k) => <option key={k} value={k}>{k === "yanko" ? "Yanko" : "Indutex"}</option>)}
               </select>
             )}
           </div>
           {error && <div style={{ color: C.red, fontSize: 13, fontWeight: 600, marginBottom: 10 }}>⚠ {error}</div>}
-          {d && (
+          {mensaje && <div style={{ color: C.green, fontSize: 13, fontWeight: 600, marginBottom: 10 }}>✓ {mensaje}</div>}
+          {d && resumen && (
             <>
               <div style={{ fontSize: 12, color: C.slate, marginBottom: 6 }}>
-                {empresa === "yanko" ? "Yanko" : "Indutex"} · corte TNS {d.corte} · sucursales {(d.sucursales || []).join(", ")} · {(d.proveedores || []).length} proveedores con saldo
+                {empresa === "yanko" ? "Yanko" : "Indutex"} · corte TNS {d.corte} · sucursales {(d.sucursales || []).join(", ")} · TNS: 2205 {fmtCOP(d.totales.c2205)} + 2335 {fmtCOP(d.totales.c2335)} − anticipos 1330 {fmtCOP(d.totales.a1330)}
               </div>
               <div style={{ overflowX: "auto", marginBottom: 12 }}>
                 <table style={{ borderCollapse: "collapse", minWidth: 480 }}>
-                  <thead>
-                    <tr>
-                      <th style={{ ...th, textAlign: "left" }}>Cuenta TNS</th>
-                      <th style={th}>Total</th>
-                      <th style={th}>Diferencia vs Busint</th>
-                    </tr>
-                  </thead>
                   <tbody>
-                    {[
-                      ["2205 proveedores nacionales", d.totales.c2205],
-                      ["2335 costos y gastos por pagar", d.totales.c2335],
-                      ["2205 + 2335", d.totales.c2205 + d.totales.c2335],
-                      ["2205 + 2335 − anticipos 1330", d.totales.c2205 + d.totales.c2335 - d.totales.a1330],
-                      ["1330 anticipos a proveedores (a favor)", d.totales.a1330],
-                    ].map(([label, v]) => (
-                      <tr key={label}>
-                        <td style={{ ...td, textAlign: "left" }}>{label}</td>
-                        <td style={td}>{fmtCOP(v)}</td>
-                        <td style={{ ...td, color: Math.abs(v - totalBusint) < 1000 ? C.green : undefined, fontWeight: Math.abs(v - totalBusint) < 1000 ? 700 : 400 }}>
-                          {label.startsWith("1330") ? "—" : fmtCOP(v - totalBusint)}
-                        </td>
-                      </tr>
-                    ))}
+                    <tr><td style={{ ...td, textAlign: "left" }}>Debe según TNS</td><td style={td}>{fmtCOP(resumen.totalTns)}</td></tr>
+                    <tr><td style={{ ...td, textAlign: "left" }}>Debe según Busint (corte)</td><td style={td}>{fmtCOP(resumen.totalBusint)}</td></tr>
                     <tr>
-                      <td style={{ ...td, textAlign: "left", fontWeight: 700 }}>Corte Busint en pantalla</td>
-                      <td style={{ ...td, fontWeight: 700 }}>{fmtCOP(totalBusint)}</td>
-                      <td style={td}></td>
+                      <td style={{ ...td, textAlign: "left", fontWeight: 700 }}>Diferencia (TNS − Busint)</td>
+                      <td style={{ ...td, fontWeight: 700, color: Math.abs(resumen.dif) < 1000 ? C.green : C.red }}>{fmtCOP(resumen.dif)}</td>
                     </tr>
+                    <tr><td style={{ ...td, textAlign: "left", color: C.slate }}>↳ proveedores solo en TNS ({resumen.nSoloTns})</td><td style={td}>{fmtCOP(resumen.soloTns)}</td></tr>
+                    <tr><td style={{ ...td, textAlign: "left", color: C.slate }}>↳ proveedores solo en Busint ({resumen.nSoloBusint})</td><td style={td}>{fmtCOP(-resumen.soloBusint)}</td></tr>
+                    <tr><td style={{ ...td, textAlign: "left", color: C.slate }}>↳ proveedores en ambos con valor distinto</td><td style={td}>{fmtCOP(resumen.ambosDif)}</td></tr>
                   </tbody>
                 </table>
               </div>
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
-                <select value={formulaId} onChange={(e) => setFormulaId(e.target.value)} style={{ padding: "6px 10px", borderRadius: 8, border: `1px solid ${C.border}` }}>
-                  {FORMULAS_TNS_CXP.map((f) => <option key={f.id} value={f.id}>{f.label}</option>)}
-                </select>
-                <input value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder="Buscar proveedor" style={{ padding: "6px 10px", borderRadius: 8, border: `1px solid ${C.border}` }} />
+                <input value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder="Buscar proveedor" style={selStyle} />
                 <label style={{ fontSize: 13 }}>
                   <input type="checkbox" checked={soloDif} onChange={(e) => setSoloDif(e.target.checked)} /> Solo con diferencia
                 </label>
-                <span style={{ fontSize: 12, color: C.slate }}>{filas.length} proveedores · TNS {fmtCOP(totalTns)}</span>
+                <span style={{ fontSize: 12, color: C.slate }}>{filas.length} de {resumen.nTotal} proveedores</span>
+                <Btn small variant="secondary" onClick={guardarCuadre}>💾 Guardar este cuadre</Btn>
               </div>
-              <div style={{ overflowX: "auto", maxHeight: 420, overflowY: "auto" }}>
-                <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 520 }}>
+              <div style={{ overflowX: "auto", maxHeight: 440, overflowY: "auto" }}>
+                <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 640 }}>
                   <thead>
                     <tr>
                       <th style={{ ...th, textAlign: "left" }}>Proveedor</th>
                       <th style={th}>TNS</th>
                       <th style={th}>Busint</th>
                       <th style={th}>Diferencia</th>
+                      <th style={{ ...th, textAlign: "left" }}>Cruce</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -4837,12 +4885,33 @@ function ComparacionTnsCxp({ proveedoresBusint }) {
                       <tr key={i}>
                         <td style={{ ...td, textAlign: "left" }}>
                           {x.nombre}
-                          {x.busint === 0 && x.tns !== 0 ? <span style={{ color: C.slate, fontSize: 11 }}> · solo en TNS</span> : null}
-                          {x.tns === 0 && x.busint !== 0 ? <span style={{ color: C.slate, fontSize: 11 }}> · solo en Busint</span> : null}
+                          {x.nombreTns && x.nombreBusint && claveNombreCxpTns(x.nombreTns) !== claveNombreCxpTns(x.nombreBusint) ? <span style={{ color: C.slate, fontSize: 11 }}> · en TNS: {x.nombreTns}</span> : null}
                         </td>
                         <td style={td}>{fmtCOP(x.tns)}</td>
                         <td style={td}>{fmtCOP(x.busint)}</td>
                         <td style={{ ...td, color: Math.abs(x.dif) >= 1000 ? C.red : C.slate }}>{fmtCOP(x.dif)}</td>
+                        <td style={{ ...td, textAlign: "left", fontSize: 12, color: C.slate }}>
+                          {x.enTns && !x.enBusint && "Solo en TNS"}
+                          {x.enBusint && !x.enTns && Math.abs(x.busint) >= 1000 && (
+                            <select
+                              value=""
+                              onChange={(e) => e.target.value && asociar(x.nombreBusint, e.target.value)}
+                              style={{ ...selStyle, padding: "3px 6px", fontSize: 12, maxWidth: 220 }}
+                              title="Solo está en Busint: asócialo al proveedor de TNS que es el mismo"
+                            >
+                              <option value="">Solo en Busint · asociar a…</option>
+                              {resumen.soloTnsLista.map((t) => (
+                                <option key={t.nit} value={t.nit}>{t.nombre} · {fmtCOP(t.tns)}</option>
+                              ))}
+                            </select>
+                          )}
+                          {x.enBusint && x.enTns && (x.porEnlace ? (
+                            <span>
+                              Asociado a mano{" "}
+                              <button type="button" onClick={() => asociar(x.nombreBusint, "")} style={{ border: "none", background: "none", cursor: "pointer", color: C.red }} title="Quitar la asociación">✕</button>
+                            </span>
+                          ) : baseNitCxp(x.nit) ? "Por NIT" : "Por nombre")}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -4850,6 +4919,31 @@ function ComparacionTnsCxp({ proveedoresBusint }) {
               </div>
               {filas.length > 300 && <div style={{ fontSize: 12, color: C.slate, marginTop: 6 }}>Mostrando los 300 con mayor diferencia.</div>}
             </>
+          )}
+          {hist.length > 0 && (
+            <div style={{ marginTop: 14 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: C.slate, marginBottom: 4 }}>Historial de cuadres guardados ({empresa === "yanko" ? "Yanko" : "Indutex"})</div>
+              <table style={{ borderCollapse: "collapse" }}>
+                <thead>
+                  <tr>
+                    <th style={{ ...th, textAlign: "left" }}>Fecha</th>
+                    <th style={th}>TNS</th>
+                    <th style={th}>Busint</th>
+                    <th style={th}>Diferencia</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {hist.map((h) => (
+                    <tr key={h.id}>
+                      <td style={{ ...td, textAlign: "left" }}>{new Date(h.traidoEn).toLocaleString("es-CO", { dateStyle: "short", timeStyle: "short" })}</td>
+                      <td style={td}>{fmtCOP(h.totalTns)}</td>
+                      <td style={td}>{fmtCOP(h.totalBusint)}</td>
+                      <td style={{ ...td, color: Math.abs(h.diferencia) < 1000 ? C.green : C.red }}>{fmtCOP(h.diferencia)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </div>
       )}
@@ -4957,6 +5051,7 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
       await onImportarCorte({
         id: uid(),
         fechaCorte: resp.data.fechaCorte,
+        campoNit: resp.data.campoNit || "",
         proveedores: proveedoresSinDetalle,
         creadoEn: new Date().toISOString(),
       });
@@ -5133,7 +5228,7 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
           )}
         </div>
       </div>
-      {isAdmin && <ComparacionTnsCxp proveedoresBusint={corteActivo?.proveedores || []} />}
+      {isAdmin && <ComparacionTnsCxp proveedoresBusint={corteActivo?.proveedores || []} fechaCorteBusint={corteActivo?.fechaCorte || ""} campoNit={corteActivo?.campoNit || ""} />}
       {errorBusint && (
         <div style={{ padding: "10px 14px", background: C.redBg, color: C.red, borderRadius: 8, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
           ⚠ {errorBusint}
