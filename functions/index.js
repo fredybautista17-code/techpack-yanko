@@ -4634,18 +4634,19 @@ exports.getCostosRealesLoteBusint = onCallAuth(
     if (!numLoteBuscado && !refBuscada) throw new HttpsError("invalid-argument", "Indica el número de lote o la referencia.");
     const avisos = [];
     let todas;
-    let compDet = [], salidasComp = [], telasOP = [], ordenes = [];
+    let compDet = [], salidasComp = [], telasOP = [], ordenes = [], entradasProc = [];
     const leerOpcional = async (tabla, etiqueta) => {
       try { return await consultarTablaBusintBDCompleta(tabla); }
       catch (err) { avisos.push(`No se pudo leer "${tabla}" (${etiqueta}): ${err?.message || String(err)}. El total de este lote queda INCOMPLETO.`); return []; }
     };
     try {
-      [todas, compDet, salidasComp, telasOP, ordenes] = await Promise.all([
+      [todas, compDet, salidasComp, telasOP, ordenes, entradasProc] = await Promise.all([
         consultarTablaBusintBDCompleta("lotes cumplidos teorico vs real valor"),
         leerOpcional("estandar componentes prod", "nombres de insumos y telas"),
         leerOpcional("bmp - salida planta comp", "insumos"),
         leerOpcional("orden produccion detalles telas", "telas"),
-        numLoteBuscado ? leerOpcional("orden produccion", "referencia del lote") : Promise.resolve([]),
+        leerOpcional("orden produccion", "referencia y lotes sin cumplir"),
+        leerOpcional("bmp - entrada plantaproc ref", "procesos que ya entraron a planta"),
       ]);
     } catch (err) {
       logger.error("Error consultando Busint BD (getCostosRealesLoteBusint)", { error: String(err) });
@@ -4689,7 +4690,21 @@ exports.getCostosRealesLoteBusint = onCallAuth(
       porLote.set(numLoteBuscado, { numLote: numLoteBuscado, ref: String(fo?.Ref ?? "").trim(), fechaISO: null, nfact: null, conceptos: new Map(), cumplido: false });
     }
     let lotes = [...porLote.values()].sort((a, b) => (b.fechaISO || "").localeCompare(a.fechaISO || "") || Number(b.numLote) - Number(a.numLote));
-    if (!numLoteBuscado) lotes = lotes.slice(0, maxLotes);
+    if (!numLoteBuscado) {
+      lotes = lotes.slice(0, maxLotes);
+      // (2026-10-27) Además, hasta 3 lotes recientes de la referencia que todavía NO están cumplidos (trae tela, insumos y los procesos que ya entraron a planta).
+      const yaEstan = new Set(lotes.map((l) => l.numLote));
+      const sinCumplir = new Map();
+      ordenes.forEach((f) => {
+        if (/elimin/i.test(String(f?.Mensaje || ""))) return;
+        if (normalizarRefComparacion(f?.Ref) !== normRefBuscada) return;
+        const lote = String(f?.NumLote ?? f?.Numlote ?? "").trim();
+        if (!lote || yaEstan.has(lote) || porLote.has(lote)) return;
+        const corte = fechaBusintBDaDateSoloDia(f?.FechaCorte);
+        sinCumplir.set(lote, { numLote: lote, ref: String(f?.Ref ?? "").trim(), fechaISO: null, fechaCorte: corte ? corte.toISOString().slice(0, 10) : null, nfact: null, conceptos: new Map(), cumplido: false });
+      });
+      [...sinCumplir.values()].sort((a, b) => (b.fechaCorte || "").localeCompare(a.fechaCorte || "") || Number(b.numLote) - Number(a.numLote)).slice(0, 3).forEach((l) => { porLote.set(l.numLote, l); lotes.push(l); });
+    }
     // Nombre del componente (insumo o tela) por código.
     const nombreComp = new Map();
     compDet.forEach((f) => {
@@ -4699,6 +4714,21 @@ exports.getCostosRealesLoteBusint = onCallAuth(
       if (nom) nombreComp.set(String(cod).trim(), nom);
     });
     const buscadosSet = new Set(lotes.map((l) => l.numLote));
+    // Procesos que ya entraron a planta (Total x Costo): sirven para lotes SIN cumplir, donde "lotes cumplidos…" aún no trae la mano de obra.
+    // Corte y Confección (MDEO) no están aquí: salen al cumplirse el lote.
+    entradasProc.forEach((f) => {
+      const lote = String(f?.NumLote ?? f?.Numlote ?? "").trim();
+      if (!buscadosSet.has(lote)) return;
+      const l = porLote.get(lote);
+      if (l.cumplido) return;
+      const nombre = String(f?.Proceso ?? "").trim();
+      const real = numero(f?.Total) * numero(f?.Costo);
+      if (!nombre || !(real !== 0)) return;
+      const clave = `proceso|${nombre}`;
+      if (!l.conceptos.has(clave)) l.conceptos.set(clave, { concepto: nombre, origen: "proceso", teorico: 0, real: 0, difer: 0, filas: 0, emp: null, parcial: true });
+      const c = l.conceptos.get(clave);
+      c.real += real; c.filas += 1;
+    });
     const sumarConcepto = (l, origen, nombre, real, cantidad, codigo) => {
       const clave = `${origen}|${nombre}`;
       if (!l.conceptos.has(clave)) l.conceptos.set(clave, { concepto: nombre, origen, teorico: 0, real: 0, difer: 0, filas: 0, emp: null, cantidad: 0, codigos: [] });
@@ -4765,6 +4795,7 @@ exports.getCostosRealesLoteBusint = onCallAuth(
         fechaISO: l.fechaISO,
         nfact: l.nfact,
         cumplido: l.cumplido,
+        fechaCorte: l.fechaCorte || null,
         cantCortada,
         fuenteCantidad: cantDpc > 0 ? "dado_por_cumplido" : cantidadDetalle.has(l.numLote) ? "orden produccion detalles" : null,
         costoRealDado: d && Number(d.costoRealTotal) > 0 ? Number(d.costoRealTotal) : null,

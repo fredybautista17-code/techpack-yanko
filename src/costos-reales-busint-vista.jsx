@@ -201,7 +201,7 @@ export default function TraerRealesBusintModal({ referencia, v, vAprobado, preci
                   <select value={numLote} onChange={(e) => setNumLote(e.target.value)} style={{ padding: "6px 8px", borderRadius: 8, border: `1px solid ${C.border}`, fontFamily: "inherit" }}>
                     {(datos.lotes || []).map((l, k) => (
                       <option key={l.numLote} value={l.numLote}>
-                        {`${k === 0 && l.cumplido !== false ? "Último · " : ""}Lote ${l.numLote} · ${l.cumplido === false ? "sin cumplir" : `cumplido ${l.fechaISO || "—"}`} · ${l.cantCortada > 0 ? `${l.cantCortada} prendas` : "sin cantidad"} · real ${pesos(l.totalReal)}`}
+                        {`${k === 0 && l.cumplido !== false ? "Último · " : ""}Lote ${l.numLote} · ${l.cumplido === false ? `sin cumplir${l.fechaCorte ? `, cortado ${l.fechaCorte}` : ""}` : `cumplido ${l.fechaISO || "—"}`} · ${l.cantCortada > 0 ? `${l.cantCortada} prendas` : "sin cantidad"} · real ${pesos(l.totalReal)}`}
                       </option>
                     ))}
                   </select>
@@ -222,7 +222,7 @@ export default function TraerRealesBusintModal({ referencia, v, vAprobado, preci
               {(refDistinta || lote.cumplido === false) && (
                 <div style={{ padding: "8px 12px", marginBottom: 8, background: C.amberBg || "#FFF6E5", color: C.red, borderRadius: 8, fontSize: 12.5, fontWeight: 600 }}>
                   {refDistinta && <div>⚠ Este lote es de la referencia «{lote.ref}», no de «{referencia}». Revisa que sea el lote correcto.</div>}
-                  {lote.cumplido === false && <div>⚠ Este lote todavía no está cumplido en Busint: trae tela e insumos, pero la mano de obra y los procesos pueden estar incompletos.</div>}
+                  {lote.cumplido === false && <div>⚠ Este lote todavía no está cumplido en Busint: trae tela, insumos y solo los procesos que ya entraron a planta. Corte y Confección (y lo que falte) salen al cumplirse el lote, así que el total real está incompleto.</div>}
                 </div>
               )}
               <div style={{ fontSize: 12, color: C.slate, marginBottom: 8 }}>
