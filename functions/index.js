@@ -11171,11 +11171,26 @@ exports.getMovimientosProveedorTNS = onCallAuth(
       const filas = [];
       let muestraCruda = null;
       let ultimoBody = null;
+      const intentosFallidos = [];
       for (const sucursal of sucursales) {
         for (const cta of CUENTAS_CXP_TNS) {
-          ultimoBody = cuerpoLibroAuxiliarTNS(esquema?.campos, { fechaInicial, fechaFinal, cuentaInicial: cta.ini, cuentaFinal: cta.fin, nit });
-          const resp = await llamarTNS(`${path}?codigosucursal=${encodeURIComponent(sucursal)}`, { method: "POST", body: ultimoBody, empresa });
-          if (resp && resp.status === false) throw new Error(resp.message || "TNS rechazó la consulta del Libro Auxiliar.");
+          const datosCta = { fechaInicial, fechaFinal, cuentaInicial: cta.ini, cuentaFinal: cta.fin, nit };
+          // Intento 1: cuerpo armado con los campos del swagger (incluye el NIT si el reporte lo admite).
+          // Intento 2 (si TNS responde error): solo fechas y cuentas, igual que el Balance de Comprobación, y se filtra por NIT acá.
+          const cuerpos = [cuerpoLibroAuxiliarTNS(esquema?.campos, datosCta), { fechaInicial, fechaFinal, cuentaInicial: cta.ini, cuentaFinal: cta.fin }];
+          let resp = null;
+          for (const cuerpo of cuerpos) {
+            ultimoBody = cuerpo;
+            try {
+              resp = await llamarTNS(`${path}?codigosucursal=${encodeURIComponent(sucursal)}`, { method: "POST", body: cuerpo, empresa });
+              if (resp && resp.status === false) throw new Error(resp.message || "TNS rechazó la consulta del Libro Auxiliar.");
+              break;
+            } catch (errIntento) {
+              resp = null;
+              intentosFallidos.push({ cuenta: cta.clave, enviado: cuerpo, error: String(errIntento?.message || errIntento).slice(0, 400) });
+            }
+          }
+          if (!resp) continue;
           const crudas = extraerFilasTNS(resp);
           if (!muestraCruda) muestraCruda = crudas.length ? crudas.slice(0, 2) : resp;
           crudas.forEach((f) => {
@@ -11188,7 +11203,11 @@ exports.getMovimientosProveedorTNS = onCallAuth(
       }
       filas.sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)));
       logger.info("getMovimientosProveedorTNS OK", { empresa, nit, filas: filas.length, esquema });
-      return { ok: true, empresa, nit, corte: fechaFinal, desde: fechaInicial, sucursales, filas: filas.slice(0, 600), totalFilas: filas.length, esquema, enviado: ultimoBody, muestraCruda: filas.length ? null : (typeof muestraCruda === "string" ? muestraCruda : JSON.stringify(muestraCruda)).slice(0, 3000) };
+      const diagnostico = filas.length ? null : [
+        intentosFallidos.length ? `TNS devolvió error en ${intentosFallidos.length} intento(s):\n${intentosFallidos.slice(0, 4).map((x) => `- ${x.cuenta} con ${JSON.stringify(x.enviado)} → ${x.error}`).join("\n")}` : "",
+        muestraCruda ? (typeof muestraCruda === "string" ? muestraCruda : JSON.stringify(muestraCruda)) : "",
+      ].filter(Boolean).join("\n").slice(0, 3000);
+      return { ok: true, empresa, nit, corte: fechaFinal, desde: fechaInicial, sucursales, filas: filas.slice(0, 600), totalFilas: filas.length, esquema, enviado: ultimoBody, muestraCruda: diagnostico };
     } catch (err) {
       logger.error("getMovimientosProveedorTNS falló", { mensaje: err?.message, stack: err?.stack, empresa, nit });
       throw new HttpsError("internal", err?.message || "Error desconocido al traer los movimientos del proveedor en TNS.");
