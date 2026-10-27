@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { httpsCallable } from "firebase/functions";
-import { sugerirAsignaciones, aplicarCostosReales, costoPrendaDeLinea, normConcepto } from "./costos-reales-busint";
+import { sugerirAsignaciones, aplicarCostosReales, normConcepto } from "./costos-reales-busint";
 import { calcularCotizacion } from "./cotizador-calculo";
 
 // (2026-10-26, a pedido de Fredy) Ventana "Traer costos reales de Busint" del
@@ -107,13 +107,22 @@ export default function TraerRealesBusintModal({ referencia, v, vAprobado, preci
     } catch (e) { return null; }
   }, [lote, cant, asig, v, quitarImprevistos, ponerEnCero]);
 
+  const kAprob = useMemo(() => { try { return vAprobado ? calcularCotizacion(vAprobado) : null; } catch (e) { return null; } }, [vAprobado]);
+  const kActual = useMemo(() => { try { return calcularCotizacion(v); } catch (e) { return null; } }, [v]);
+  // Costo por prenda de una línea (telas / insumos / procesos) según el cálculo `k` de la versión `vv`.
+  const costoDeLinea = (k, vv, tipo, idx) => {
+    if (!k) return 0;
+    if (tipo === "tela") return k.telas?.[idx]?.porPrenda ?? 0;
+    if (tipo === "insumo") return k.insumos?.[idx]?.porPrenda ?? 0;
+    return Number(vv?.procesos?.[idx]?.valor) || 0;
+  };
   // Costo por prenda que tenía la línea en la versión APROBADA (se busca por nombre; si no está, no existía).
   const aprobadoDeLinea = (tipo, idx) => {
     if (!vAprobado) return null;
     const [arr, campo] = CLAVE_LINEA[tipo];
     const nombre = normConcepto(v?.[arr]?.[idx]?.[campo]);
     const j = (vAprobado[arr] || []).findIndex((x) => normConcepto(x?.[campo]) === nombre);
-    return j >= 0 ? costoPrendaDeLinea(vAprobado, tipo, j) : null;
+    return j >= 0 ? costoDeLinea(kAprob, vAprobado, tipo, j) : null;
   };
   const costoAprobado = useMemo(() => { try { return vAprobado ? calcularCotizacion(vAprobado).costoDefinitivo : null; } catch (e) { return null; } }, [vAprobado]);
   const precioConReales = useMemo(() => { try { return resultado ? calcularCotizacion(resultado.v).precioAplicar : null; } catch (e) { return null; } }, [resultado]);
@@ -139,7 +148,23 @@ export default function TraerRealesBusintModal({ referencia, v, vAprobado, preci
   }) : [];
   const usados = filasTabla.filter((f) => f.a.tipo !== "ignorar");
   const sumaReal = usados.reduce((s, f) => s + (f.real || 0), 0);
-  const sumaAprobado = usados.reduce((s, f) => s + (f.aprobado || 0), 0);
+  // Líneas de la cotización que ningún concepto de Busint tomó: salen igual en la tabla, para comparar TODO lo aprobado contra TODO lo real.
+  const lineasTomadas = new Set(asig.filter((a) => a.tipo === "tela" || a.tipo === "insumo" || a.tipo === "proceso").map((a) => `${a.tipo}:${a.idx}`));
+  const sinDatoFilas = [];
+  if (lote) {
+    [["tela", "telas"], ["insumo", "insumos"], ["proceso", "procesos"]].forEach(([tipo, arr]) => (v[arr] || []).forEach((l, idx) => {
+      if (lineasTomadas.has(`${tipo}:${idx}`)) return;
+      const actual = costoDeLinea(kActual, v, tipo, idx);
+      const aprob = aprobadoDeLinea(tipo, idx);
+      if (!(actual > 0) && !(aprob > 0)) return;
+      sinDatoFilas.push({ tipo, idx, nombre: l[CLAVE_LINEA[tipo][1]] || "(sin nombre)", actual, aprob });
+    }));
+  }
+  const realDeSinDato = (f) => (ponerEnCero ? 0 : f.actual);
+  const sumaAprobado = kAprob ? [...(kAprob.telas || []).map((x) => x.porPrenda || 0), ...(kAprob.insumos || []).map((x) => x.porPrenda || 0), ...(vAprobado.procesos || []).map((x) => Number(x.valor) || 0)].reduce((s, x) => s + x, 0) : 0;
+  const sumaRealTodo = sumaReal + sinDatoFilas.reduce((s, f) => s + realDeSinDato(f), 0);
+  const nNuevos = filasTabla.filter((f) => (f.a.tipo === "nuevo_insumo" || f.a.tipo === "nuevo_proceso") && (f.real || 0) > 0.5).length;
+  const muchosNuevos = nNuevos >= 3 || (nNuevos > 0 && sinDatoFilas.length > 0);
   const difDado = lote && lote.costoRealDado != null ? lote.totalReal - lote.costoRealDado : null;
   const cuadraDado = difDado != null && Math.abs(difDado) <= Math.max(2, lote.costoRealDado * 0.001);
   const refDistinta = lote && lote.ref && soloAlfanum(lote.ref) !== soloAlfanum(referencia);
@@ -232,11 +257,21 @@ export default function TraerRealesBusintModal({ referencia, v, vAprobado, preci
                         </tr>
                       );
                     })}
+                    {sinDatoFilas.map((f) => (
+                      <tr key={`sd|${f.tipo}|${f.idx}`} style={{ background: C.canvas }}>
+                        <td style={{ ...td, fontSize: 11, color: C.slate }}>{ETIQUETA_ORIGEN[f.tipo]}</td>
+                        <td style={{ ...td, color: C.slate }}><i>{f.nombre}</i> <span style={{ fontSize: 11 }}>· Busint no trajo</span></td>
+                        <td style={{ ...td, color: C.slate, fontSize: 12 }}>{ponerEnCero ? "Quedará en $0" : "Se deja como estaba"}</td>
+                        <td style={{ ...td, textAlign: "right" }}>{f.aprob == null ? "—" : pesos(f.aprob)}</td>
+                        <td style={{ ...td, textAlign: "right", color: C.slate }}>{ponerEnCero ? "$0" : `${pesos(f.actual)} (se deja)`}</td>
+                        <td style={{ ...td, textAlign: "right" }}>{f.aprob == null ? <span style={{ color: C.slate }}>—</span> : <Pildora dif={realDeSinDato(f) - f.aprob} base={f.aprob} C={C} />}</td>
+                      </tr>
+                    ))}
                     <tr>
-                      <td style={{ ...td, fontWeight: 800 }} colSpan={3}>TOTAL de los conceptos usados (sin daños, impuestos ni fijos)</td>
+                      <td style={{ ...td, fontWeight: 800 }} colSpan={3}>TOTAL de todas las líneas (sin daños, impuestos ni fijos)</td>
                       <td style={{ ...td, textAlign: "right", fontWeight: 800 }}>{pesos(sumaAprobado)}</td>
-                      <td style={{ ...td, textAlign: "right", fontWeight: 800 }}>{cant > 0 ? pesos(sumaReal) : "—"}</td>
-                      <td style={{ ...td, textAlign: "right" }}>{cant > 0 ? <Pildora dif={sumaReal - sumaAprobado} base={sumaAprobado} C={C} grande /> : "—"}</td>
+                      <td style={{ ...td, textAlign: "right", fontWeight: 800 }}>{cant > 0 ? pesos(sumaRealTodo) : "—"}</td>
+                      <td style={{ ...td, textAlign: "right" }}>{cant > 0 ? <Pildora dif={sumaRealTodo - sumaAprobado} base={sumaAprobado} C={C} grande /> : "—"}</td>
                     </tr>
                   </tbody>
                 </table>
@@ -250,6 +285,11 @@ export default function TraerRealesBusintModal({ referencia, v, vAprobado, preci
                 <label style={{ display: "flex", gap: 6, alignItems: "center" }}><input type="checkbox" checked={quitarImprevistos} onChange={(e) => setQuitarImprevistos(e.target.checked)} />Quitar el 10 % de imprevistos (lo real de Busint ya trae lo que se gastó)</label>
                 <label style={{ display: "flex", gap: 6, alignItems: "center" }}><input type="checkbox" checked={ponerEnCero} onChange={(e) => setPonerEnCero(e.target.checked)} />Poner en $0 las líneas de la cotización que Busint no trae en este lote</label>
               </div>
+              {muchosNuevos && (
+                <div style={{ background: C.redBg, color: ROJO.fg, borderRadius: 10, padding: "10px 14px", fontSize: 13, marginBottom: 10, lineHeight: 1.5 }}>
+                  <b>Revisa el emparejamiento antes de usar este lote.</b> {nNuevos} {nNuevos === 1 ? "concepto de Busint quedó" : "conceptos de Busint quedaron"} como «nuevo» y {sinDatoFilas.length} {sinDatoFilas.length === 1 ? "línea de la cotización sigue" : "líneas de la cotización siguen"} sin dato de Busint: probablemente son lo mismo con otro nombre. Elígelos en la lista «Va en la cotización»; si no, el costo definitivo suma líneas duplicadas.
+                </div>
+              )}
               {resultado && (() => {
                 const difCosto = costoAprobado != null ? resultado.costoDefinitivo - costoAprobado : null;
                 const difPrecio = precioAprobado > 0 && precioConReales > 0 ? precioConReales - precioAprobado : null;
@@ -296,7 +336,7 @@ export default function TraerRealesBusintModal({ referencia, v, vAprobado, preci
           <button onClick={onCerrar} style={btn(C.white, C.slate, C.border)}>Cerrar</button>
           <button
             disabled={!resultado}
-            onClick={() => onAplicar(resultado.v, { lote: lote.numLote, fechaCumplido: lote.fechaISO || null, cantCortada: cant, realPorPrenda: resultado.realPorPrenda, costoDefinitivo: resultado.costoDefinitivo, quitoImprevistos: quitarImprevistos })}
+            onClick={() => { if (muchosNuevos && !window.confirm("Hay conceptos de Busint como «nuevos» y líneas de la cotización sin dato: el costo definitivo puede quedar con líneas duplicadas.\n\n¿Usar este lote de todas formas?")) return; onAplicar(resultado.v, { lote: lote.numLote, fechaCumplido: lote.fechaISO || null, cantCortada: cant, realPorPrenda: resultado.realPorPrenda, costoDefinitivo: resultado.costoDefinitivo, quitoImprevistos: quitarImprevistos }); }}
             style={{ ...btn(C.green, C.white), opacity: resultado ? 1 : 0.5 }}
           >
             Usar este lote

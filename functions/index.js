@@ -4699,11 +4699,13 @@ exports.getCostosRealesLoteBusint = onCallAuth(
       if (nom) nombreComp.set(String(cod).trim(), nom);
     });
     const buscadosSet = new Set(lotes.map((l) => l.numLote));
-    const sumarConcepto = (l, origen, nombre, real, cantidad) => {
+    const sumarConcepto = (l, origen, nombre, real, cantidad, codigo) => {
       const clave = `${origen}|${nombre}`;
-      if (!l.conceptos.has(clave)) l.conceptos.set(clave, { concepto: nombre, origen, teorico: 0, real: 0, difer: 0, filas: 0, emp: null, cantidad: 0 });
+      if (!l.conceptos.has(clave)) l.conceptos.set(clave, { concepto: nombre, origen, teorico: 0, real: 0, difer: 0, filas: 0, emp: null, cantidad: 0, codigos: [] });
       const c = l.conceptos.get(clave);
       c.real += real; c.cantidad += cantidad; c.filas += 1;
+      // Códigos de Busint (Codcomp) de este concepto: la cotización guarda el código del insumo y así se empareja sin depender del nombre.
+      if (codigo && !c.codigos.includes(codigo)) c.codigos.push(codigo);
     };
     // Insumos: lo que salió de bodega a planta para el lote (Cant x Costo).
     salidasComp.forEach((f) => {
@@ -4713,7 +4715,7 @@ exports.getCostosRealesLoteBusint = onCallAuth(
       const cant = numero(valorFlexible(f, ["Cant", "cant"]));
       const costo = numero(valorFlexible(f, ["Costo", "costo"])) || numero(valorFlexible(f, ["costoprommov", "Costoprommov"]));
       const nombre = nombreComp.get(cod) || `Código ${cod}`;
-      sumarConcepto(porLote.get(lote), "insumo", nombre, cant * costo, cant);
+      sumarConcepto(porLote.get(lote), "insumo", nombre, cant * costo, cant, cod);
     });
     // Tela: kilos = Largo x Ncapas + Ajuste, valor = kilos x Costotela (por código de tela).
     telasOP.forEach((f) => {
@@ -4724,7 +4726,7 @@ exports.getCostosRealesLoteBusint = onCallAuth(
       const costoTela = numero(valorFlexible(f, ["Costotela", "costotela"]));
       if (!(kilos !== 0)) return;
       const nombre = nombreComp.get(cod) || `Tela código ${cod}`;
-      sumarConcepto(porLote.get(lote), "tela", nombre, kilos * costoTela, kilos);
+      sumarConcepto(porLote.get(lote), "tela", nombre, kilos * costoTela, kilos, cod);
     });
     // Cantidad cortada y el Costo Real Total que Contabilidad ya digitó (si el lote existe en Dado por Cumplido).
     const refsDpc = lotes.map((l) => db.collection("dado_por_cumplido_lotes").doc(`lote_${l.numLote}`));

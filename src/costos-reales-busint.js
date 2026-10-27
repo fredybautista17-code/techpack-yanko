@@ -34,6 +34,7 @@ const r4 = (x) => Math.round(x * 10000) / 10000;
 function puntaje(a, b) {
   if (!a || !b) return 0;
   if (a === b) return 100;
+  if (a.replace(/ /g, "") === b.replace(/ /g, "")) return 95; // "5 CM" = "5CM"
   const min = Math.min(a.length, b.length);
   if (min >= 5 && (a.startsWith(b + " ") || b.startsWith(a + " "))) return 85;
   const ta = new Set(a.split(" ").filter((t) => t.length > 1));
@@ -41,6 +42,13 @@ function puntaje(a, b) {
   const comunes = [...ta].filter((t) => tb.has(t)).length;
   const menor = Math.min(ta.size, tb.size);
   if (comunes >= 2 && menor > 0 && comunes / menor >= 0.6) return 60 + Math.round((comunes / menor) * 10);
+  // Sin importar el orden ni si una palabra va junta o separada ("FASTDRY POLIAMIDA 3CM" ~ "POLIAMIDA FAST DRY").
+  const contenidas = (chicas, grande) => {
+    const pegado = [...grande].join("");
+    const validas = [...chicas].filter((t) => t.length > 2 && !/^\d/.test(t));
+    return validas.length >= 2 && validas.every((t) => pegado.includes(t));
+  };
+  if (contenidas(ta, tb) || contenidas(tb, ta)) return 72;
   return 0;
 }
 
@@ -48,13 +56,23 @@ function puntaje(a, b) {
 // { tipo: "tela"|"insumo"|"proceso"|"nuevo_insumo"|"nuevo_proceso"|"ignorar", idx, puntaje }
 export function sugerirAsignaciones(conceptos, v) {
   const candidatos = [];
-  (v.telas || []).forEach((t, idx) => candidatos.push({ tipo: "tela", idx, norm: normConcepto(t.material) }));
-  (v.insumos || []).forEach((t, idx) => candidatos.push({ tipo: "insumo", idx, norm: normConcepto(t.nombre) }));
+  (v.telas || []).forEach((t, idx) => candidatos.push({ tipo: "tela", idx, norm: normConcepto(t.material), codigo: String(t.codigo ?? t.codcomp ?? "").trim() }));
+  (v.insumos || []).forEach((t, idx) => candidatos.push({ tipo: "insumo", idx, norm: normConcepto(t.nombre), codigo: String(t.codigo ?? "").trim() }));
   (v.procesos || []).forEach((t, idx) => candidatos.push({ tipo: "proceso", idx, norm: normConcepto(t.nombre) }));
   const usados = new Set();
   const orden = conceptos.map((c, i) => i).sort((a, b) => Math.abs(conceptos[b].real) - Math.abs(conceptos[a].real));
   const salida = new Array(conceptos.length);
+  // 1.º por código de Busint (Codcomp): la línea de la cotización guarda el código del insumo; es lo más seguro.
   orden.forEach((i) => {
+    const c = conceptos[i];
+    const codigos = Array.isArray(c.codigos) ? c.codigos.map((x) => String(x).trim()).filter(Boolean) : [];
+    if (!codigos.length) return;
+    const cand = candidatos.find((x) => x.codigo && codigos.includes(x.codigo) && (!c.origen || x.tipo === c.origen) && !usados.has(`${x.tipo}:${x.idx}`));
+    if (cand) { usados.add(`${cand.tipo}:${cand.idx}`); salida[i] = { tipo: cand.tipo, idx: cand.idx, puntaje: 100, porCodigo: true }; }
+  });
+  // 2.º por parecido de nombre.
+  orden.forEach((i) => {
+    if (salida[i]) return;
     const c = conceptos[i];
     const n = normConcepto(c.concepto);
     const esMdeo = /^MDEO\b/.test(n);
