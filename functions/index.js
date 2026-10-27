@@ -1617,8 +1617,51 @@ const DPC_COLUMNAS = [
 const DPC_MONEDA = new Set(["VR. TEORICO ", "VR. REAL ", "COSTO DEFINITIVO", "COSTO T", "PRECIO VENTA U.", "VENTA T.", "Venta T. - Costo T.", "Costo T. Ref.", "BASE", "TRANSPORTE", "TOTAL"]);
 const DPC_PORCENTAJE = new Set(["% Ganancia/Lote", "% Ganancia/Ref."]);
 
+// (2026-10-27, a pedido de Fredy) Comentarios (notas de celda) que explican dónde se aplican los porcentajes.
+const DPC_FMT = (n, dec = 2) => (Number(n) || 0).toLocaleString("es-CO", { minimumFractionDigits: 0, maximumFractionDigits: dec });
+function notaEncabezadosDPC(config) {
+  const pc = config?.porcentajeSobreCosto ?? DADO_POR_CUMPLIDO_PORCENTAJES_DEFAULT.porcentajeSobreCosto;
+  const pv = config?.porcentajeSobreVenta ?? DADO_POR_CUMPLIDO_PORCENTAJES_DEFAULT.porcentajeSobreVenta;
+  return {
+    "COSTO DEFINITIVO": "Costo Definitivo = VR. Real ÷ Cant. Cortada (redondeado).\nAquí NO se aplica ningún porcentaje: es el costo real por prenda.",
+    "Costo T. Ref.": `AQUÍ SE APLICAN LOS PORCENTAJES (por prenda):\nCosto T. Ref. = Costo Definitivo\n + (Costo Definitivo × % sobre costo)\n + (Precio Venta U. × % sobre venta)\n + BASE\n\nPorcentajes vigentes hoy: ${DPC_FMT(pc, 4)} % sobre costo y ${DPC_FMT(pv, 4)} % sobre venta.\nCada lote aprobado conserva los que tenía al aprobarse (ver la nota de cada celda).`,
+    "COSTO T": "Costo T. = Costo T. Ref. × Cant. Cortada.\nYa incluye los porcentajes y el BASE.",
+    "Venta T. - Costo T.": "Ganancia = Venta T. − Costo T.\nEl Costo T. ya trae los porcentajes y el BASE.",
+    "% Ganancia/Lote": "Ganancia ÷ Venta T.",
+    "% Ganancia/Ref.": "(Precio Venta U. − Costo T. Ref.) ÷ Precio Venta U.\nEl Costo T. Ref. ya trae los porcentajes y el BASE.",
+    "BASE": "Valor fijo por prenda de la categoría BASE elegida. Se suma en el Costo T. Ref.",
+    "TRANSPORTE": "Informativo: no se suma aparte al costo (se considera incluido en el BASE).",
+    "TOTAL": "TOTAL = BASE × Cant. Cortada.",
+  };
+}
+function notaCostoTRefLote(d) {
+  if (d.porcentajeSobreCostoUsado === undefined || d.porcentajeSobreCostoUsado === null) {
+    return "Lote importado del Excel anterior: se cargó tal como venía, no se recalculó con los porcentajes de ATLAS.";
+  }
+  const cd = Number(d.costoDefinitivo) || 0;
+  const pv = Number(d.precioVentaUnitario) || 0;
+  const pc = Number(d.porcentajeSobreCostoUsado) || 0;
+  const pvp = Number(d.porcentajeSobreVentaUsado) || 0;
+  const base = Number(d.baseValorUsado) || 0;
+  const sobreCosto = cd * (pc / 100);
+  const sobreVenta = pv * (pvp / 100);
+  return [
+    "Cuenta de este lote (por prenda):",
+    `Costo Definitivo: $ ${DPC_FMT(cd, 0)}`,
+    `+ ${DPC_FMT(pc, 4)} % sobre costo: $ ${DPC_FMT(cd, 0)} × ${DPC_FMT(pc, 4)} % = $ ${DPC_FMT(sobreCosto)}`,
+    `+ ${DPC_FMT(pvp, 4)} % sobre venta: $ ${DPC_FMT(pv, 0)} × ${DPC_FMT(pvp, 4)} % = $ ${DPC_FMT(sobreVenta)}`,
+    `+ BASE: $ ${DPC_FMT(base)}`,
+    `= Costo T. Ref. $ ${DPC_FMT(cd + sobreCosto + sobreVenta + base)}`,
+  ].join("\n");
+}
+
 async function generarExcelDadoPorCumplido() {
-  const snap = await db.collection("dado_por_cumplido_lotes").get();
+  const [snap, configSnap] = await Promise.all([
+    db.collection("dado_por_cumplido_lotes").get(),
+    db.collection("config").doc("dado_por_cumplido").get(),
+  ]);
+  const config = configSnap.exists ? configSnap.data() : DADO_POR_CUMPLIDO_PORCENTAJES_DEFAULT;
+  const notasEnc = notaEncabezadosDPC(config);
   const lotes = snap.docs.map((x) => x.data()).filter((d) => !d.eliminado);
   lotes.sort((a, b) => String(a.fecha || "").localeCompare(String(b.fecha || "")) || (Number(a.numLote) || 0) - (Number(b.numLote) || 0));
   const wb = new ExcelJS.Workbook();
@@ -1632,6 +1675,8 @@ async function generarExcelDadoPorCumplido() {
     c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1F4E78" } };
     c.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
     c.border = bordes;
+    const nota = notasEnc[DPC_COLUMNAS[Number(c.col) - 1]?.[0]];
+    if (nota) c.note = { texts: [{ text: nota }], editAs: "twoCells" };
   });
   lotes.forEach((d, i) => {
     const aprobado = d.estado === "aprobado";
@@ -1647,6 +1692,7 @@ async function generarExcelDadoPorCumplido() {
       else if (i % 2 === 1) c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF2F6FB" } };
       if (DPC_MONEDA.has(h)) c.numFmt = '"$" #,##0';
       if (DPC_PORCENTAJE.has(h)) c.numFmt = "0.00%";
+      if (h === "Costo T. Ref." && aprobado && fila["Costo T. Ref."] !== "") c.note = { texts: [{ text: notaCostoTRefLote(d) }], editAs: "twoCells" };
     });
   });
   ws.views = [{ state: "frozen", ySplit: 1 }];
