@@ -364,11 +364,208 @@ function EditarFechaModal({ fila, onConfirm, onClose }) {
     </Modal>
   );
 }
+// ─── TABLERO SEMANAL (programación visible, 2026-10-28, a pedido de Fredy) ────────────────────────
+// Una columna por día con sus lotes (tarjetas con prioridad), total de unidades por día y un tope opcional por día
+// (config/planta_programacion { topeDia }). A la izquierda, los lotes de Planta Yanko sin programar: se tocan uno o varios
+// y se mandan a un día con "Programar aquí" (un solo correo por acción). Un lote ya programado se mueve de día con ✎
+// (pide motivo y avisa por correo). Lo vencido sin cumplir sale en su propia columna roja.
+function sumarDiasISOPl(iso, n) {
+  const [y, m, d] = String(iso).slice(0, 10).split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
+}
+function lunesDeISOPl(iso) {
+  const [y, m, d] = String(iso).slice(0, 10).split("-").map(Number);
+  const dow = (new Date(Date.UTC(y, m - 1, d)).getUTCDay() + 6) % 7;
+  return sumarDiasISOPl(iso, -dow);
+}
+const NOMBRES_DIA_PL = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
+function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, onEditar }) {
+  const hoyISO = new Date().toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
+  const [semana, setSemana] = useState(0);
+  const [sabado, setSabado] = useState(false);
+  const [sel, setSel] = useState({});
+  const [filtro, setFiltro] = useState("todas");
+  const [tope, setTope] = useState(0);
+  const [guardando, setGuardando] = useState("");
+  const [aviso, setAviso] = useState("");
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, "config", "planta_programacion"), (snap) => setTope(Number(snap.exists() ? snap.data()?.topeDia : 0) || 0), () => {});
+    return unsub;
+  }, []);
+  const lunes = sumarDiasISOPl(lunesDeISOPl(hoyISO), semana * 7);
+  const dias = Array.from({ length: sabado ? 6 : 5 }, (_, i) => ({ iso: sumarDiasISOPl(lunes, i), nombre: NOMBRES_DIA_PL[i] }));
+  const pendientes = programacion.filter((p) => p.estado !== "cumplido");
+  // Lo vencido de semanas anteriores va en su columna roja; lo vencido de esta semana se ve en su propio día (borde rojo).
+  const vencidosVisibles = pendientes.filter((p) => p.fechaEnviado && p.fechaEnviado < hoyISO && p.fechaEnviado < dias[0].iso);
+  const lista = sinProgramar.filter((l) => filtro === "todas" || l.prioridad === filtro);
+  const elegidos = sinProgramar.filter((l) => sel[l.numLote]);
+  const unidadesElegidas = elegidos.reduce((s, l) => s + (Number(l.invPlanta) || 0), 0);
+  const delMismoPedido = (l) => sinProgramar.filter((x) => l.numPedido != null && x.numPedido === l.numPedido);
+  function alternar(l) {
+    setAviso("");
+    setSel((s) => ({ ...s, [l.numLote]: !s[l.numLote] }));
+  }
+  function elegirPedido(l) {
+    const grupo = delMismoPedido(l);
+    const todos = grupo.every((x) => sel[x.numLote]);
+    setSel((s) => { const n = { ...s }; grupo.forEach((x) => { n[x.numLote] = !todos; }); return n; });
+  }
+  async function programarAqui(iso) {
+    if (!elegidos.length) { setAviso("Primero toca uno o más lotes de la izquierda."); return; }
+    setGuardando(iso);
+    try {
+      await onProgramarVarios(elegidos, iso);
+      setSel({});
+      setAviso("");
+    } finally {
+      setGuardando("");
+    }
+  }
+  async function guardarTope(v) {
+    const n = Math.max(0, Math.round(Number(v) || 0));
+    setTope(n);
+    await setDoc(doc(db, "config", "planta_programacion"), { topeDia: n }, { merge: true });
+  }
+  const fmtCorta = (iso) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`;
+  const colorPrio = (p) => (NIVELES_PRIO[p] ? NIVELES_PRIO[p].color : C.slate);
+  function tarjetaProgramada(p) {
+    const venc = p.fechaEnviado < hoyISO && p.estado !== "cumplido";
+    return (
+      <div key={p.id} style={{ border: `1px solid ${venc ? C.red : C.border}`, borderLeft: `4px solid ${colorPrio(p.prioridad)}`, borderRadius: 6, padding: "6px 8px", background: p.estado === "cumplido" ? C.greenBg : C.white, fontSize: 12, lineHeight: 1.35 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 6 }}>
+          <span style={{ fontWeight: 800, fontSize: 13, color: C.ink }}>{p.numLote}</span>
+          <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+            {p.estado === "cumplido" && <span style={{ color: C.green, fontWeight: 800, fontSize: 11 }}>✓ cumplido</span>}
+            {venc && <span style={{ color: C.red, fontWeight: 800, fontSize: 11 }}>{fmtCorta(p.fechaEnviado)}</span>}
+            {p.estado !== "cumplido" && <span onClick={() => onEditar(p)} title="Mover a otro día (pide motivo y avisa por correo)" style={{ cursor: "pointer", color: C.blue, fontWeight: 800 }}>✎</span>}
+          </span>
+        </div>
+        <div style={{ color: C.slate }}>{p.numPedido ? `ped. ${p.numPedido} · ` : ""}{p.referencia} · {fmtNum(p.cantidad)} und</div>
+      </div>
+    );
+  }
+  const botonMini = { border: `1px solid ${C.border}`, background: C.white, borderRadius: 8, padding: "5px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer", color: C.ink, fontFamily: "inherit" };
+  return (
+    <div style={{ marginBottom: 24 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+        <button style={botonMini} onClick={() => setSemana((s) => s - 1)} title="Semana anterior">‹</button>
+        <div style={{ fontWeight: 800, fontSize: 13, color: C.ink }}>
+          Semana del {fmtCorta(dias[0].iso)} al {fmtCorta(dias[dias.length - 1].iso)}{semana === 0 ? " (esta semana)" : ""}
+        </div>
+        <button style={botonMini} onClick={() => setSemana((s) => s + 1)} title="Semana siguiente">›</button>
+        {semana !== 0 && <button style={botonMini} onClick={() => setSemana(0)}>Hoy</button>}
+        <label style={{ fontSize: 12, color: C.slate, display: "inline-flex", alignItems: "center", gap: 4 }}>
+          <input type="checkbox" checked={sabado} onChange={(e) => setSabado(e.target.checked)} /> Incluir sábado
+        </label>
+        <span style={{ flex: 1 }} />
+        <label style={{ fontSize: 12, color: C.slate, display: "inline-flex", alignItems: "center", gap: 6 }} title="Si lo llenas, un día que lo pase se pone en rojo. Déjalo en 0 para no usar tope.">
+          Tope por día (und)
+          <input
+            type="number"
+            min="0"
+            defaultValue={tope || ""}
+            key={tope}
+            placeholder="sin tope"
+            onBlur={(e) => { if (Number(e.target.value || 0) !== tope) guardarTope(e.target.value); }}
+            onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+            style={{ width: 84, padding: "5px 8px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 12, fontFamily: "inherit" }}
+          />
+        </label>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "230px minmax(0,1fr)", gap: 12, alignItems: "start" }}>
+        <div style={{ background: C.canvas, borderRadius: 12, padding: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span style={{ fontWeight: 800, fontSize: 13, color: C.ink }}>Sin programar</span>
+            <span style={{ fontWeight: 800, fontSize: 13, color: C.slate }}>{sinProgramar.length}</span>
+          </div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {[["todas", "Todas"], ["alta", "Alta"], ["media", "Media"], ["normal", "Normal"]].map(([id, txt]) => (
+              <span key={id} onClick={() => setFiltro(id)} style={{ cursor: "pointer", padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 800, background: filtro === id ? C.ink : C.white, color: filtro === id ? C.white : C.ink, border: `1px solid ${filtro === id ? C.ink : C.border}` }}>{txt}</span>
+            ))}
+          </div>
+          <div style={{ fontSize: 11.5, color: C.slate }}>Toca los lotes y luego "Programar aquí" en el día. Toca "pedido" para elegir todos sus lotes.</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 560, overflowY: "auto" }}>
+            {lista.length === 0 && <div style={{ fontSize: 12, color: C.slate, padding: 8 }}>Todo lo que está en Planta Yanko ya tiene fecha.</div>}
+            {lista.map((l) => {
+              const on = !!sel[l.numLote];
+              return (
+                <div key={l.numLote} onClick={() => alternar(l)} style={{ cursor: "pointer", border: `1px solid ${on ? C.blue : C.border}`, borderLeft: `4px solid ${colorPrio(l.prioridad)}`, borderRadius: 6, padding: "6px 8px", background: on ? C.blueBg : C.white, fontSize: 12, lineHeight: 1.35 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ fontWeight: 800, fontSize: 13, color: C.ink }}>{l.numLote}</span>
+                    <span
+                      onClick={(e) => { e.stopPropagation(); elegirPedido(l); }}
+                      title="Elegir todos los lotes de este pedido"
+                      style={{ color: C.blue, fontWeight: 700, fontSize: 11, textDecoration: "underline" }}
+                    >
+                      pedido {l.numPedido ?? "—"}{delMismoPedido(l).length > 1 ? ` (${delMismoPedido(l).length})` : ""}
+                    </span>
+                  </div>
+                  <div style={{ color: C.slate }}>{l.referencia} · {l.categoria} · {fmtNum(l.invPlanta)} und</div>
+                  <div style={{ color: C.slate, fontSize: 11 }}>{l.fechaSugerida ? `sugerida ${fmtCorta(l.fechaSugerida)} · ` : ""}{l.razonesTxt}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: `${vencidosVisibles.length ? "minmax(0,0.9fr) " : ""}repeat(${dias.length}, minmax(0,1fr))`, gap: 8, alignItems: "start" }}>
+          {vencidosVisibles.length > 0 && (
+            <div style={{ background: C.redBg, border: `1px solid ${C.red}`, borderRadius: 12, padding: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+              <div style={{ fontWeight: 800, fontSize: 13, color: C.red }}>Vencidos</div>
+              <div style={{ fontSize: 11.5, color: C.red }}>{vencidosVisibles.length} lotes sin cumplir</div>
+              {[...vencidosVisibles].sort((a, b) => a.fechaEnviado.localeCompare(b.fechaEnviado)).map(tarjetaProgramada)}
+            </div>
+          )}
+          {dias.map((d) => {
+            const delDia = programacion.filter((p) => p.fechaEnviado === d.iso);
+            const total = delDia.reduce((s, p) => s + (Number(p.cantidad) || 0), 0);
+            const pasa = tope > 0 && total > tope;
+            const esHoy = d.iso === hoyISO;
+            const pasado = d.iso < hoyISO;
+            return (
+              <div key={d.iso} style={{ background: C.white, border: esHoy ? `2px solid ${C.blue}` : `1px solid ${C.border}`, borderRadius: 12, padding: 8, display: "flex", flexDirection: "column", gap: 6, minHeight: 240, opacity: pasado ? 0.8 : 1 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                  <span style={{ fontWeight: 800, fontSize: 13, color: C.ink }}>{esHoy ? "Hoy" : d.nombre}</span>
+                  <span style={{ fontSize: 12, color: C.slate }}>{fmtCorta(d.iso)}</span>
+                </div>
+                <div style={{ fontSize: 11.5, fontWeight: 700, color: pasa ? C.red : C.slate }}>
+                  {delDia.length} {delDia.length === 1 ? "lote" : "lotes"} · {fmtNum(total)} und{tope > 0 ? ` de ${fmtNum(tope)}` : ""}
+                </div>
+                {pasa && <div style={{ fontSize: 11, color: C.red, fontWeight: 800 }}>Se pasa del tope por {fmtNum(total - tope)}</div>}
+                {delDia.map(tarjetaProgramada)}
+                {!pasado && (
+                  <button
+                    style={{ ...botonMini, marginTop: "auto", background: elegidos.length ? C.blueBg : C.white, color: elegidos.length ? C.blue : C.slate, borderColor: elegidos.length ? C.blue : C.border }}
+                    disabled={!!guardando}
+                    onClick={() => programarAqui(d.iso)}
+                  >
+                    {guardando === d.iso ? "Guardando..." : elegidos.length ? `Programar aquí (${elegidos.length})` : "Programar aquí"}
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 10, minHeight: 20 }}>
+        {elegidos.length > 0 && (
+          <>
+            <span style={{ fontWeight: 800, fontSize: 13, color: C.ink }}>{elegidos.length} {elegidos.length === 1 ? "lote elegido" : "lotes elegidos"} · {fmtNum(unidadesElegidas)} und</span>
+            <button style={botonMini} onClick={() => setSel({})}>Limpiar selección</button>
+          </>
+        )}
+        {aviso && <span style={{ fontSize: 12.5, color: C.red, fontWeight: 700 }}>{aviso}</span>}
+        <span style={{ fontSize: 12, color: C.slate }}>Cada "Programar aquí" avisa por correo, en un solo mensaje, los lotes que mandaste a ese día.</span>
+      </div>
+    </div>
+  );
+}
 // ─── PROGRAMACIÓN DIARIA ─────────────────────────────────────────────────────────
-function ProgramacionDiariaView({ cargaActiva, programacion, onProgramar, onCancelar, onEditarFecha, isAdmin }) {
+function ProgramacionDiariaView({ cargaActiva, programacion, onProgramar, onProgramarVarios, onCancelar, onEditarFecha, isAdmin }) {
   const [programando, setProgramando] = useState(null);
   const [editando, setEditando] = useState(null);
   const [subTab, setSubTab] = useState("pendientes");
+  // "tablero" = semana por días (nuevo, por defecto); "tabla" = las listas de siempre.
+  const [vista, setVista] = useState("tablero");
   // (2026-08-24) Antes se usaba "l.invPlanta > 0" directo — pero Busint no
   // deja siempre en 0 el inventario de Planta apenas el lote avanza a
   // Semiterminado/BPT (quedan unidades "fantasma" en esa columna aunque el
@@ -450,7 +647,22 @@ function ProgramacionDiariaView({ cargaActiva, programacion, onProgramar, onCanc
         <KPI icon="⚠" label="Vencidos" value={fmtNum(vencidosCount)} color={C.red} bg={C.redBg} />
         <KPI icon="✓" label="Cumplidos (histórico)" value={fmtNum(cumplidos.length)} color={C.green} bg={C.greenBg} />
       </div>
-      {sinProgramar.length > 0 && (
+      <div style={{ display: "inline-flex", border: `1.5px solid ${C.border}`, borderRadius: 8, overflow: "hidden", marginBottom: 16 }}>
+        {[["tablero", "📅 Tablero de la semana"], ["tabla", "📋 Listas"]].map(([k, txt]) => (
+          <button
+            key={k}
+            type="button"
+            onClick={() => setVista(k)}
+            style={{ padding: "8px 16px", border: "none", cursor: "pointer", fontSize: 13, fontFamily: "inherit", fontWeight: vista === k ? 800 : 500, background: vista === k ? C.ink : C.white, color: vista === k ? C.white : C.slate }}
+          >
+            {txt}
+          </button>
+        ))}
+      </div>
+      {vista === "tablero" && (
+        <TableroSemanalPlanta sinProgramar={sinProgramarPrio} programacion={programacion} onProgramarVarios={onProgramarVarios} onEditar={setEditando} />
+      )}
+      {vista === "tabla" && sinProgramar.length > 0 && (
         <div style={{ marginBottom: 28 }}>
           <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 4 }}>EN PLANTA YANKO SIN PROGRAMAR — ordenado por prioridad</div>
           <div style={{ fontSize: 12, color: C.slate, marginBottom: 10 }}>
@@ -500,6 +712,7 @@ function ProgramacionDiariaView({ cargaActiva, programacion, onProgramar, onCanc
           />
         </div>
       )}
+      {vista === "tabla" && (<>
       <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
         <div
           onClick={() => setSubTab("pendientes")}
@@ -582,6 +795,7 @@ function ProgramacionDiariaView({ cargaActiva, programacion, onProgramar, onCanc
           filas={cumplidos}
         />
       )}
+      </>)}
     </div>
   );
 }
@@ -1935,6 +2149,28 @@ export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
     await fsSave("planta_programacion", nuevo.id, nuevo);
     avisarPorCorreo("nueva", [{ numLote: nuevo.numLote, referencia: nuevo.referencia, cantidad: nuevo.cantidad, numPedido: nuevo.numPedido ?? "", prioridad: NIVELES_PRIO[nuevo.prioridad]?.txt || "", fecha: fechaEnviado }]);
   }
+  // Programa varios lotes a la vez para un mismo día (tablero semanal): un solo correo con todos.
+  async function programarLotes(lotes, fechaEnviado) {
+    const ahora = new Date().toISOString();
+    const nuevos = lotes.map((lote) => ({
+      id: uid(),
+      numLote: lote.numLote,
+      referencia: lote.referencia,
+      categoria: lote.categoria,
+      cantidad: lote.invPlanta,
+      fechaEnviado,
+      estado: "pendiente",
+      fechaCumplioISO: null,
+      creadoEn: ahora,
+      numPedido: lote.numPedido ?? null,
+      prioridad: lote.prioridad ?? null,
+      motivo: lote.razonesTxt ?? null,
+      fechaSugerida: lote.fechaSugerida ?? null,
+    }));
+    setProgramacion((ps) => [...ps, ...nuevos]);
+    await Promise.all(nuevos.map((n) => fsSave("planta_programacion", n.id, n)));
+    avisarPorCorreo("nueva", nuevos.map((n) => ({ numLote: n.numLote, referencia: n.referencia, cantidad: n.cantidad, numPedido: n.numPedido ?? "", prioridad: NIVELES_PRIO[n.prioridad]?.txt || "", fecha: fechaEnviado })));
+  }
   async function cancelarProgramacion(id) {
     const fila = programacion.find((p) => p.id === id);
     const motivo = window.prompt(`¿Por qué se cancela la programación${fila ? ` del lote ${fila.numLote}` : ""}? (el motivo va en el correo)`);
@@ -2064,6 +2300,7 @@ export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
               cargaActiva={cargaActiva}
               programacion={programacion}
               onProgramar={programarLote}
+              onProgramarVarios={programarLotes}
               onCancelar={cancelarProgramacion}
               onEditarFecha={editarFechaProgramacion}
               isAdmin={isAdmin}
