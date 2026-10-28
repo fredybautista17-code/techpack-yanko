@@ -9663,7 +9663,7 @@ async function destinatariosNocheCP() {
   return [...new Set(Object.keys(AREAS_CORREO_PROGRAMACION).flatMap((a) => limpiar(d[a])))];
 }
 // Correo único (las 3 áreas): cumplimiento de HOY + programación de MAÑANA. Con `soloProgramacion` solo lleva lo programado de `diaProgramacion` (botón manual).
-async function enviarCorreoNocheCP({ fechaHoy, diaProgramacion, soloProgramacion, destinoPrueba, programadoPor }) {
+async function enviarCorreoNocheCP({ fechaHoy, diaProgramacion, soloProgramacion, destinoPrueba, programadoPor, soloVista }) {
   const hoy = fechaHoy || fechaHoyBogota();
   const dia = diaProgramacion || sumarDiasISOCP(hoy, 1);
   const cumpl = soloProgramacion ? null : await armarCumplimientoProgramacionCP(dia);
@@ -9693,7 +9693,7 @@ async function enviarCorreoNocheCP({ fechaHoy, diaProgramacion, soloProgramacion
   if (secProg) cuerpo += `<h2 style="${H2_CP}">Programado para ${fechaLatinaCP(dia)}: ${totalProg} ${totalProg === 1 ? "lote" : "lotes"}</h2>${secProg}`;
   if (!cuerpo) return { enviado: false, motivo: "nada que informar", hoy, dia };
   const para = destinoPrueba ? [destinoPrueba] : await destinatariosNocheCP();
-  if (!para.length) return { enviado: false, motivo: "sin destinatarios", hoy, dia };
+  if (!para.length && !soloVista) return { enviado: false, motivo: "sin destinatarios", hoy, dia };
   const partes = [];
   if (totalCumpl) partes.push(`Cumplimiento ${fechaLatinaCP(hoy)} (${cumplidos} de ${totalCumpl})`);
   if (totalProg) partes.push(`Programación ${fechaLatinaCP(dia)} (${totalProg})`);
@@ -9702,6 +9702,8 @@ async function enviarCorreoNocheCP({ fechaHoy, diaProgramacion, soloProgramacion
     ? `Programación del <b>${fechaLatinaCP(dia)}</b> en Planta de confección, Control de calidad y Zona calor.${programadoPor ? ` Envía: <b>${escHtmlCP(programadoPor)}</b>.` : ""}`
     : `Resumen de la noche: lo que se cumplió hoy y lo que quedó programado para mañana. Los lotes agregados desde el último correo van resaltados como "nuevo".`;
   const html = envolverCorreoCP("ATLAS — Programación y cumplimiento", intro, cuerpo, "Mensaje automático de ATLAS.");
+  // Vista previa: devuelve el correo tal como saldría, sin enviar ni marcar nada.
+  if (soloVista) return { vista: true, hoy, dia, asunto, html, destinatarios: para, sinDestinatarios: !para.length, totalProg };
   try {
     await mandarCorreo(crearTransporte(), para, asunto, html);
   } catch (err) {
@@ -9747,7 +9749,7 @@ exports.enviarCorreoProgramacionDia = onCallAuth(
     const dia = String(request.data?.dia || "");
     if (!/^\d{4}-\d{2}-\d{2}$/.test(dia)) throw new HttpsError("invalid-argument", "Falta el día.");
     const por = String(request.data?.programadoPor || "").slice(0, 80);
-    return enviarCorreoNocheCP({ soloProgramacion: true, diaProgramacion: dia, programadoPor: por });
+    return enviarCorreoNocheCP({ soloProgramacion: true, diaProgramacion: dia, programadoPor: por, soloVista: !!request.data?.soloVista });
   }
 );
 

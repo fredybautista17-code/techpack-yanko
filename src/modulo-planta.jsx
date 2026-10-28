@@ -525,12 +525,135 @@ function ProgramarLotesModal({ pedidos, diasProg, programacion, tope, hoyISO, on
     </div>
   );
 }
-function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, onEnviarDia, onEnviarTodo, onEditar }) {
+// Ventana "Así va a salir el correo": muestra el correo (asunto, destinatarios y contenido) antes de enviarlo,
+// y deja cambiar o quitar un lote de Planta antes de mandarlo.
+function VistaPreviaCorreoModal({ dias, programacion, diasMover, hoyISO, onVista, onEnviarDia, onCancelar, onMover, onClose }) {
+  const [datos, setDatos] = useState({});
+  const [cargando, setCargando] = useState(true);
+  const [enviando, setEnviando] = useState(false);
+  const [menu, setMenu] = useState("");
+  const fmtCorta = (iso) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`;
+  const nombreDia = (iso) => `${NOMBRES_DIA_PL[(new Date(`${iso}T12:00:00`).getDay() + 6) % 7] || ""} ${fmtCorta(iso)}`;
+  const btn = { border: "1px solid #D6D2C8", background: "#fff", borderRadius: 10, padding: "8px 14px", fontWeight: 700, fontSize: 13, cursor: "pointer", color: C.ink, fontFamily: "inherit" };
+  async function cargar() {
+    setCargando(true);
+    const res = {};
+    for (const iso of dias) {
+      try { res[iso] = await onVista(iso); } catch (err) { res[iso] = { error: err?.message || "No se pudo preparar el correo." }; }
+    }
+    setDatos(res);
+    setCargando(false);
+  }
+  useEffect(() => { cargar(); }, []);
+  const enviables = dias.filter((iso) => datos[iso]?.vista && !datos[iso].sinDestinatarios);
+  async function enviar() {
+    if (!enviables.length || enviando) return;
+    setEnviando(true);
+    try {
+      for (const iso of enviables) {
+        const ok = await onEnviarDia(iso);
+        if (!ok) return;
+      }
+      onClose();
+    } finally {
+      setEnviando(false);
+    }
+  }
+  async function quitar(p) {
+    await onCancelar(p.id);
+    setMenu("");
+    await cargar();
+  }
+  async function mover(p, iso) {
+    if (iso === p.fechaEnviado) return;
+    let motivo = "";
+    if (p.avisado !== false) {
+      motivo = window.prompt(`¿Por qué se mueve el lote ${p.numLote} al ${fmtCorta(iso)}? (el motivo va en el correo)`) || "";
+      if (!motivo.trim()) return;
+    }
+    await onMover(p.id, iso, motivo.trim());
+    setMenu("");
+    await cargar();
+  }
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(16,24,40,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: "#fff", borderRadius: 18, width: "min(900px,100%)", maxHeight: "92vh", display: "flex", flexDirection: "column", boxShadow: "0 24px 70px rgba(16,24,40,0.3)", overflow: "hidden" }}>
+        <div style={{ padding: "18px 24px 12px", display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 18, color: C.ink }}>Así va a salir el correo</div>
+            <div style={{ fontSize: 13.5, color: C.slate, marginTop: 3 }}>Revísalo antes de enviar. Si hace falta, cambia o quita un lote aquí mismo; el correo se actualiza.</div>
+          </div>
+          <button style={btn} onClick={onClose} aria-label="Cerrar">✕</button>
+        </div>
+        <div style={{ overflowY: "auto", flex: 1, padding: "4px 24px 16px", borderTop: `1px solid ${C.border}` }}>
+          {cargando && <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 14 }}>Preparando el correo…</div>}
+          {!cargando && dias.map((iso) => {
+            const d = datos[iso] || {};
+            const delDia = programacion.filter((p) => p.fechaEnviado === iso && p.estado !== "cumplido");
+            return (
+              <div key={iso} style={{ marginTop: 16 }}>
+                <div style={{ fontWeight: 800, fontSize: 15, color: C.ink, marginBottom: 8 }}>{nombreDia(iso)}{d.totalProg != null ? ` · ${d.totalProg} ${d.totalProg === 1 ? "lote" : "lotes"} en el correo` : ""}</div>
+                {d.error && <div style={{ color: C.red, fontSize: 13.5 }}>{d.error}</div>}
+                {d.motivo === "nada que informar" && <div style={{ color: C.slate, fontSize: 13.5, padding: "8px 0" }}>No hay nada programado para ese día: no sale correo.</div>}
+                {d.vista && (
+                  <>
+                    <div style={{ fontSize: 13, color: C.slate, marginBottom: 6 }}><b style={{ color: C.ink }}>Asunto:</b> {d.asunto}</div>
+                    <div style={{ fontSize: 13, color: C.slate, marginBottom: 8, display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+                      <b style={{ color: C.ink }}>Para ({(d.destinatarios || []).length}):</b>
+                      {(d.destinatarios || []).slice(0, 6).map((c) => <span key={c} style={{ background: "#F2EFE8", borderRadius: 999, padding: "2px 10px", fontSize: 12, color: C.ink }}>{c}</span>)}
+                      {(d.destinatarios || []).length > 6 && <span>+{d.destinatarios.length - 6} más</span>}
+                      {d.sinDestinatarios && <span style={{ color: C.red, fontWeight: 700 }}>No hay destinatarios: agrégalos en Administración → Notificaciones.</span>}
+                    </div>
+                    <iframe title={`Correo ${iso}`} sandbox="" srcDoc={d.html} style={{ width: "100%", height: 360, border: `1px solid ${C.border}`, borderRadius: 10, background: "#fff" }} />
+                  </>
+                )}
+                {delDia.length > 0 && (
+                  <div style={{ marginTop: 10 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 800, color: C.slate, marginBottom: 4 }}>Lotes de Planta de este día</div>
+                    {delDia.map((p) => (
+                      <div key={p.id} style={{ borderTop: `1px solid ${C.border}`, padding: "7px 2px" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+                          <b style={{ color: C.ink }}>{p.numLote}</b>
+                          <span style={{ color: C.slate }}>{p.numPedido ? `Pedido ${p.numPedido} · ` : ""}{p.referencia} · {fmtNum(p.cantidad)} und</span>
+                          {p.avisado === false && <span style={{ width: 7, height: 7, borderRadius: "50%", background: C.amber }} title="Aún sin avisar" />}
+                          <span style={{ flex: 1 }} />
+                          <button style={{ ...btn, padding: "4px 12px", fontSize: 12 }} onClick={() => setMenu(menu === p.id ? "" : p.id)}>Cambiar {menu === p.id ? "▴" : "▾"}</button>
+                        </div>
+                        {menu === p.id && (
+                          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", margin: "8px 0 2px", padding: "8px 10px", background: "#FAF8F4", borderRadius: 10 }}>
+                            <span style={{ fontSize: 12, color: C.slate, fontWeight: 700 }}>Mover a:</span>
+                            {diasMover.filter((x) => x !== p.fechaEnviado).map((x) => (
+                              <button key={x} style={{ ...btn, padding: "5px 10px", fontSize: 12 }} onClick={() => mover(p, x)}>{x === hoyISO ? "Hoy" : nombreDia(x)}</button>
+                            ))}
+                            <span style={{ flex: 1 }} />
+                            <button style={{ ...btn, padding: "5px 10px", fontSize: 12, color: C.red, borderColor: C.red }} onClick={() => quitar(p)} title="Lo devuelve a Sin programar">✕ Quitar de la programación</button>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ padding: "14px 24px", background: "#F7FAFF", borderTop: "1px solid #B2CCFF", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <div style={{ flex: 1, fontSize: 13, color: C.slate }}>{enviables.length > 0 ? `Se enviará${enviables.length > 1 ? `n ${enviables.length} correos (uno por día)` : " 1 correo"} ahora, sin esperar a las 7 p. m.` : "Nada para enviar."}</div>
+          <button style={btn} onClick={onClose}>Cancelar</button>
+          <button onClick={enviar} disabled={!enviables.length || enviando || cargando} style={{ ...btn, background: C.blue, color: "#fff", borderColor: C.blue, fontSize: 15, padding: "11px 24px", opacity: enviables.length && !cargando ? 1 : 0.5 }}>
+            {enviando ? "Enviando..." : "Enviar ahora"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, onEnviarDia, onVistaDia, onCancelar, onMover, onEditar }) {
   const hoyISO = new Date().toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
   const [semana, setSemana] = useState(0);
   const [sabado, setSabado] = useState(false);
   const [tope, setTope] = useState(0);
-  const [enviando, setEnviando] = useState("");
+  const [vistaCorreo, setVistaCorreo] = useState(null); // días cuyo correo se está revisando antes de enviar
   const [panel, setPanel] = useState(false);
   const [abiertos, setAbiertos] = useState({}); // pedidos desplegados dentro de un día (clave "iso|pedido") y cumplidos ("cum|iso")
   useEffect(() => {
@@ -545,13 +668,14 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
   const vencidosVisibles = pendientes.filter((p) => p.fechaEnviado && p.fechaEnviado < hoyISO && p.fechaEnviado < dias[0].iso);
   const pedidos = agruparPedidosPlanta(sinProgramar);
   const sinAvisarTotal = pendientes.filter((p) => p.avisado === false).length;
-  async function enviarDia(iso) {
-    setEnviando(iso);
-    try { await onEnviarDia(iso); } finally { setEnviando(""); }
-  }
-  async function enviarTodo() {
-    setEnviando("todo");
-    try { await onEnviarTodo(); } finally { setEnviando(""); }
+  const diasSinAvisar = [...new Set(pendientes.filter((p) => p.avisado === false && p.fechaEnviado).map((p) => p.fechaEnviado))].sort();
+  const abrirVista = (isos) => { if (isos.length) setVistaCorreo(isos); };
+  // Días a los que se puede mover un lote desde la vista previa: los próximos días hábiles desde hoy.
+  const diasMover = [];
+  for (let i = 0; i < 21 && diasMover.length < 7; i += 1) {
+    const iso = sumarDiasISOPl(hoyISO, i);
+    const dow = new Date(`${iso}T12:00:00`).getDay();
+    if ((dow >= 1 && dow <= 5) || (sabado && dow === 6)) diasMover.push(iso);
   }
   async function guardarTope(v) {
     const n = Math.max(0, Math.round(Number(v) || 0));
@@ -587,11 +711,11 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
       <div key={clave} style={{ marginTop: 7 }}>
         <div onClick={() => setAbiertos((a) => ({ ...a, [clave]: !a[clave] }))} style={{ cursor: "pointer", position: "relative", display: "flex", alignItems: "center", gap: 8, padding: "9px 11px 9px 14px", borderRadius: 10, background: "#FAF8F4", border: venc ? `1px solid ${C.red}` : "1px solid transparent", overflow: "hidden" }}>
           <span style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 4, background: colorPrio(prio) }} />
-          <b style={{ fontSize: 13.5, color: C.ink }}>{g.pedido ? `Pedido ${g.pedido}` : "Sin pedido"}</b>
-          <span style={{ fontSize: 12, color: C.slate }}>{g.lotes.length} {g.lotes.length === 1 ? "lote" : "lotes"}</span>
+          <b style={{ fontSize: 13.5, color: C.ink, whiteSpace: "nowrap" }}>{g.pedido ? `Pedido ${g.pedido}` : "Sin pedido"}</b>
+          <span style={{ fontSize: 12, color: C.slate, whiteSpace: "nowrap" }}>{g.lotes.length} {g.lotes.length === 1 ? "lote" : "lotes"}</span>
           <span style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6 }}>
             {sinAvisar && <span title="Sin avisar: sale en el correo de las 7 p. m." style={{ width: 7, height: 7, borderRadius: "50%", background: C.amber }} />}
-            <b style={{ fontSize: 13.5 }}>{fmtNum(sumaUnd(g.lotes))}</b>
+            <b style={{ fontSize: 13.5, whiteSpace: "nowrap" }}>{fmtNum(sumaUnd(g.lotes))}</b>
           </span>
         </div>
         {abierto && g.lotes.map((p) => (
@@ -600,7 +724,8 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
             <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.referencia}</span>
             {p.fechaEnviado < hoyISO && <span style={{ color: C.red, fontWeight: 800, fontSize: 11 }}>{fmtCorta(p.fechaEnviado)}</span>}
             <span style={{ marginLeft: "auto", whiteSpace: "nowrap" }}>{fmtNum(p.cantidad)} und</span>
-            <span onClick={() => onEditar(p)} title="Mover a otro día" style={{ cursor: "pointer", color: C.blue, fontWeight: 800 }}>✎</span>
+            <span onClick={() => onEditar(p)} title="Mover a otro día" style={{ cursor: "pointer", color: C.blue, fontWeight: 800 }}>✎ Mover</span>
+            <span onClick={() => onCancelar(p.id)} title="Quitar de la programación (vuelve a Sin programar)" style={{ cursor: "pointer", color: C.red, fontWeight: 800 }}>✕ Quitar</span>
           </div>
         ))}
       </div>
@@ -625,8 +750,8 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
           ＋ Programar lotes <span style={{ opacity: 0.85, fontWeight: 600 }}>· {sinProgramar.length} sin programar</span>
         </button>
         {sinAvisarTotal > 0 && (
-          <button style={{ ...botonMini, padding: "10px 14px", fontSize: 13, background: C.amberBg, color: C.amber, borderColor: C.amber }} disabled={!!enviando} onClick={enviarTodo} title="Adelanta el correo de lo que aún no se ha avisado, sin esperar a las 7 p. m.">
-            {enviando === "todo" ? "Enviando..." : `✉ Enviar pendientes (${sinAvisarTotal})`}
+          <button style={{ ...botonMini, padding: "10px 14px", fontSize: 13, background: C.amberBg, color: C.amber, borderColor: C.amber }} onClick={() => abrirVista(diasSinAvisar)} title="Muestra el correo de lo que aún no se ha avisado para revisarlo y enviarlo, sin esperar a las 7 p. m.">
+            {`✉ Enviar pendientes (${sinAvisarTotal})`}
           </button>
         )}
         <span style={{ flex: 1 }} />
@@ -680,11 +805,11 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
                 <span style={{ fontSize: 12.5, color: C.slate, display: "inline-flex", alignItems: "center", gap: 8 }}>
                   {pendDia.length > 0 && (
                     <span
-                      onClick={() => !enviando && enviarDia(d.iso)}
-                      title="Enviar ya el correo de este día (las 3 áreas), sin esperar a las 7 p. m."
-                      style={{ cursor: enviando ? "default" : "pointer", color: sinAvisarDia ? C.amber : C.slate, fontWeight: 800 }}
+                      onClick={() => abrirVista([d.iso])}
+                      title="Ver y enviar el correo de este día (las 3 áreas), sin esperar a las 7 p. m."
+                      style={{ cursor: "pointer", color: sinAvisarDia ? C.amber : C.slate, fontWeight: 800 }}
                     >
-                      {enviando === d.iso ? "…" : "✉"}
+                      ✉
                     </span>
                   )}
                   {fmtCorta(d.iso)}
@@ -719,12 +844,13 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
       <div style={{ marginTop: 12, fontSize: 12.5, color: C.slate, lineHeight: 1.5 }}>
         Cada pedido es una sola línea: tócala para ver sus lotes y moverlos. Programar solo guarda: el correo con las 3 áreas sale solo cada día a las 7 p. m.; el ✉ de cada día o "Enviar pendientes" lo adelantan. Punto amarillo = aún sin avisar.
       </div>
+      {vistaCorreo && <VistaPreviaCorreoModal dias={vistaCorreo} programacion={programacion} diasMover={diasMover} hoyISO={hoyISO} onVista={onVistaDia} onEnviarDia={onEnviarDia} onCancelar={onCancelar} onMover={onMover} onClose={() => setVistaCorreo(null)} />}
       {panel && <ProgramarLotesModal pedidos={pedidos} diasProg={diasProg} programacion={programacion} tope={tope} hoyISO={hoyISO} onGuardar={guardarPanel} onClose={() => setPanel(false)} />}
     </div>
   );
 }
 // ─── PROGRAMACIÓN DIARIA ─────────────────────────────────────────────────────────
-function ProgramacionDiariaView({ cargaActiva, programacion, onProgramar, onProgramarVarios, onEnviarDia, onEnviarTodo, onCancelar, onEditarFecha, isAdmin }) {
+function ProgramacionDiariaView({ cargaActiva, programacion, onProgramar, onProgramarVarios, onEnviarDia, onEnviarTodo, onVistaDia, onCancelar, onEditarFecha, isAdmin }) {
   const [programando, setProgramando] = useState(null);
   const [editando, setEditando] = useState(null);
   const [subTab, setSubTab] = useState("pendientes");
@@ -824,7 +950,7 @@ function ProgramacionDiariaView({ cargaActiva, programacion, onProgramar, onProg
         ))}
       </div>
       {vista === "tablero" && (
-        <TableroSemanalPlanta sinProgramar={sinProgramarPrio} programacion={programacion} onProgramarVarios={onProgramarVarios} onEnviarDia={onEnviarDia} onEnviarTodo={onEnviarTodo} onEditar={setEditando} />
+        <TableroSemanalPlanta sinProgramar={sinProgramarPrio} programacion={programacion} onProgramarVarios={onProgramarVarios} onEnviarDia={onEnviarDia} onVistaDia={onVistaDia} onCancelar={onCancelar} onMover={onEditarFecha} onEditar={setEditando} />
       )}
       {vista === "tabla" && sinProgramar.length > 0 && (
         <div style={{ marginBottom: 28 }}>
@@ -2356,6 +2482,11 @@ export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
     await Promise.all(porMarcar.map((p) => fsSave("planta_programacion", p.id, { avisado: true, avisadoEn: ahora })));
     return true;
   }
+  // Vista previa: pide al servidor el correo del día tal como saldría, sin enviarlo ni marcar nada.
+  async function obtenerVistaCorreoDia(iso) {
+    const resp = await httpsCallable(functionsClient, "enviarCorreoProgramacionDia")({ dia: iso, soloVista: true, programadoPor: currentUser?.name || currentUser?.username || "" });
+    return resp.data;
+  }
   async function enviarCorreoTodoPendiente() {
     const dias = [...new Set(programacion.filter((p) => p.avisado === false && p.estado !== "cumplido" && p.fechaEnviado).map((p) => p.fechaEnviado))].sort();
     for (const iso of dias) {
@@ -2501,6 +2632,7 @@ export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
               onProgramarVarios={programarLotes}
               onEnviarDia={enviarCorreoDia}
               onEnviarTodo={enviarCorreoTodoPendiente}
+              onVistaDia={obtenerVistaCorreoDia}
               onCancelar={cancelarProgramacion}
               onEditarFecha={editarFechaProgramacion}
               isAdmin={isAdmin}
