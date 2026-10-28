@@ -13430,16 +13430,18 @@ function NotificacionesProgramadasPanel({ users, config, onUpdateConfig }) {
 }
 // (2026-10-27, a pedido de Fredy) Destinatarios de los correos de programación, por área. Se guardan en
 // config/correos_programacion { todas: [], planta: [], calidad: [], zonacalor: [] }. (2026-10-28) `todas` (gerencia) recibe el
-// correo COMPLETO de las 7 p. m. (cumplimiento de hoy + programación de mañana, las 3 áreas); cada lista por área recibe
+// correo COMPLETO de las 10 a. m. (programación de hoy + cumplimiento del día de trabajo anterior, las 3 áreas); cada lista por área recibe
 // ese mismo correo pero SOLO con lo de su área, más los avisos de CAMBIO o CANCELACIÓN (notificarProgramacionCorreo).
 const AREAS_CORREO_PROG = [
-  { id: "todas", nombre: "Gerencia — correo completo (todas las áreas)", detalle: "Cada día a las 7 p. m.: cumplimiento de hoy y programación de mañana de Planta, Calidad y Zona calor. Pon aquí solo a quien deba ver todo.", grande: true },
-  { id: "planta", nombre: "Planta de confección", detalle: "Correo de las 7 p. m. solo con lo de Planta + avisos de cambio o cancelación" },
-  { id: "calidad", nombre: "Control de calidad", detalle: "Correo de las 7 p. m. solo con lo de Calidad + avisos de cambio o cancelación" },
-  { id: "zonacalor", nombre: "Zona calor", detalle: "Correo de las 7 p. m. solo con lo de Zona calor + avisos de cambio o cancelación" },
+  { id: "todas", nombre: "Gerencia — correo completo (todas las áreas)", detalle: "Cada día de trabajo a las 10 a. m.: programación de hoy y cumplimiento del día anterior de Planta, Calidad y Zona calor. Pon aquí solo a quien deba ver todo.", grande: true },
+  { id: "planta", nombre: "Planta de confección", detalle: "Correo de las 10 a. m. solo con lo de Planta + avisos de cambio o cancelación" },
+  { id: "calidad", nombre: "Control de calidad", detalle: "Correo de las 10 a. m. solo con lo de Calidad + avisos de cambio o cancelación" },
+  { id: "zonacalor", nombre: "Zona calor", detalle: "Correo de las 10 a. m. solo con lo de Zona calor + avisos de cambio o cancelación" },
 ];
 function CorreosProgramacionPanel() {
   const [listas, setListas] = useState({ todas: [], planta: [], calidad: [], zonacalor: [] });
+  const [diasSin, setDiasSin] = useState([]); // días que la empresa no trabaja y no son festivo (correo no sale)
+  const [nuevoDiaSin, setNuevoDiaSin] = useState("");
   const [nuevo, setNuevo] = useState({ todas: "", planta: "", calidad: "", zonacalor: "" });
   const [msg, setMsg] = useState("");
   const [probando, setProbando] = useState(false);
@@ -13447,6 +13449,7 @@ function CorreosProgramacionPanel() {
     const unsub = onSnapshot(doc(db, "config", "correos_programacion"), (snap) => {
       const d = snap.exists() ? snap.data() : {};
       const arr = (v) => (Array.isArray(v) ? v : []);
+      setDiasSin(arr(d.diasSinTrabajar).slice().sort());
       setListas({ todas: arr(d.todas), planta: arr(d.planta), calidad: arr(d.calidad), zonacalor: arr(d.zonacalor) });
     }, () => {});
     return unsub;
@@ -13454,6 +13457,19 @@ function CorreosProgramacionPanel() {
   async function guardar(area, lista) {
     setListas((l) => ({ ...l, [area]: lista }));
     await setDoc(doc(db, "config", "correos_programacion"), { [area]: lista }, { merge: true });
+  }
+  async function agregarDiaSin() {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(nuevoDiaSin)) { setMsg("Elige la fecha del día sin trabajar."); return; }
+    setMsg("");
+    const lista = [...new Set([...diasSin, nuevoDiaSin])].sort();
+    setDiasSin(lista);
+    setNuevoDiaSin("");
+    await setDoc(doc(db, "config", "correos_programacion"), { diasSinTrabajar: lista }, { merge: true });
+  }
+  async function quitarDiaSin(f) {
+    const lista = diasSin.filter((x) => x !== f);
+    setDiasSin(lista);
+    await setDoc(doc(db, "config", "correos_programacion"), { diasSinTrabajar: lista }, { merge: true });
   }
   async function agregar(area) {
     const c = String(nuevo[area] || "").trim().toLowerCase();
@@ -13470,9 +13486,9 @@ function CorreosProgramacionPanel() {
       const resp = await httpsCallable(functionsClient, "enviarCumplimientoProgramacionAhora", { timeout: 540000 })({ paraMi: true });
       const r = resp.data || {};
       setMsg(r.enviado
-        ? `Te mandé la prueba a ${r.destino || "tu correo"}: cumplimiento de hoy (${r.totalCumpl || 0}) y programación del ${r.dia} (${r.totalProg || 0}). Si no llega en unos minutos, revisa spam.`
+        ? `Te mandé la prueba a ${r.destino || "tu correo"}: programación del ${r.dia} (${r.totalProg || 0}) y cumplimiento del ${r.diaCumplimiento || "día anterior"} (${r.totalCumpl || 0}). Si no llega en unos minutos, revisa spam.`
         : r.motivo === "nada que informar"
-          ? `No hay nada programado ni cumplimiento para hoy ni para ${r.dia}, por eso no salió correo.`
+          ? `No hay nada programado para ${r.dia} ni cumplimiento del ${r.hoy}, por eso no salió correo.`
           : `No salió el correo de prueba: ${r.motivo || "error desconocido"}.`);
     } catch (err) {
       setMsg(err?.message || "No se pudo enviar la prueba.");
@@ -13484,7 +13500,7 @@ function CorreosProgramacionPanel() {
     <div style={{ marginBottom: 28, paddingBottom: 22, borderBottom: `1px solid ${T.border}` }}>
       <div style={{ fontWeight: 700, fontSize: 15, color: T.ink }}>Correos de programación</div>
       <div style={{ fontSize: 12.5, color: T.slate, marginTop: 4, marginBottom: 14, lineHeight: 1.5 }}>
-        Cada día a las 7 p. m. sale el cumplimiento de hoy y lo programado para mañana. Cada área recibe SOLO lo suyo (según su lista); la lista de Gerencia recibe el correo completo con las tres áreas. Si una persona está en Gerencia y en un área, recibe un solo correo (el completo). Cuando alguien cambia o cancela una programación que ya se había avisado, el aviso con el motivo le llega a la lista de esa área.
+        Cada día de trabajo a las 10 a. m. sale lo programado para hoy y el cumplimiento del día de trabajo anterior (los sábados programados cuentan; los festivos de Colombia y los días de la lista de abajo no). Cada área recibe SOLO lo suyo (según su lista); la lista de Gerencia recibe el correo completo con las tres áreas. Si una persona está en Gerencia y en un área, recibe un solo correo (el completo). Cuando alguien cambia o cancela una programación que ya se había avisado, el aviso con el motivo le llega a la lista de esa área.
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(300px,1fr))", gap: 14 }}>
         {AREAS_CORREO_PROG.map((a) => (
@@ -13513,6 +13529,23 @@ function CorreosProgramacionPanel() {
             </div>
           </div>
         ))}
+      </div>
+      <div style={{ border: `1px solid ${T.border}`, borderRadius: 12, padding: 14, background: T.white, marginTop: 14 }}>
+        <div style={{ fontWeight: 800, fontSize: 13.5, color: T.ink }}>Días sin trabajar</div>
+        <div style={{ fontSize: 11.5, color: T.slate, marginBottom: 10 }}>El correo de las 10 a. m. no sale en festivos de Colombia (ya los conoce) ni en estos días, por ejemplo un puente que la empresa no trabaja. Un día con lotes programados siempre cuenta como trabajado.</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+          {diasSin.map((f) => (
+            <div key={f} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 6px 4px 10px", background: T.white, borderRadius: 20, border: `1px solid ${T.border}` }}>
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: T.ink }}>{f.slice(8, 10)}/{f.slice(5, 7)}/{f.slice(0, 4)}</span>
+              <button onClick={() => quitarDiaSin(f)} title="Quitar" style={{ width: 18, height: 18, borderRadius: "50%", border: "none", background: "transparent", color: T.coral, fontWeight: 800, fontSize: 12, cursor: "pointer" }}>✕</button>
+            </div>
+          ))}
+          {!diasSin.length && <span style={{ fontSize: 12, color: T.slate, fontStyle: "italic" }}>Ninguno agregado.</span>}
+        </div>
+        <div style={{ display: "flex", gap: 6, maxWidth: 360 }}>
+          <input type="date" value={nuevoDiaSin} onChange={(e) => setNuevoDiaSin(e.target.value)} style={{ flex: 1, minWidth: 0, padding: "7px 10px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 12.5, color: T.ink, outline: "none", fontFamily: "inherit" }} />
+          <Btn small variant="secondary" onClick={agregarDiaSin}>Agregar</Btn>
+        </div>
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
         <Btn small variant="secondary" onClick={probar} disabled={probando}>{probando ? "Enviando prueba…" : "✉ Mandarme una prueba del correo completo"}</Btn>

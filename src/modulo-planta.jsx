@@ -644,7 +644,7 @@ function VistaPreviaCorreoModal({ dias, programacion, diasMover, hoyISO, onVista
           })}
         </div>
         <div style={{ padding: "14px 24px", background: "#F7FAFF", borderTop: "1px solid #B2CCFF", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-          <div style={{ flex: 1, fontSize: 13, color: C.slate }}>{enviables.length > 0 ? `Se enviará${enviables.length > 1 ? `n ${enviables.length} correos (uno por día)` : " 1 correo"} ahora, sin esperar a las 7 p. m.` : "Nada para enviar."}</div>
+          <div style={{ flex: 1, fontSize: 13, color: C.slate }}>{enviables.length > 0 ? `Se enviará${enviables.length > 1 ? `n ${enviables.length} correos (uno por día)` : " 1 correo"} ahora, sin esperar a las 10 a. m. del día.` : "Nada para enviar."}</div>
           <button style={btn} onClick={onClose}>Cancelar</button>
           <button onClick={enviar} disabled={!enviables.length || enviando || cargando} style={{ ...btn, background: C.blue, color: "#fff", borderColor: C.blue, fontSize: 15, padding: "11px 24px", opacity: enviables.length && !cargando ? 1 : 0.5 }}>
             {enviando ? "Enviando..." : "Enviar ahora"}
@@ -793,7 +793,7 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
           <b style={{ fontSize: 13.5, color: C.ink, whiteSpace: "nowrap" }}>{g.pedido ? `Pedido ${g.pedido}` : "Sin pedido"}</b>
           <span style={{ fontSize: 12, color: C.slate, whiteSpace: "nowrap" }}>{g.lotes.length} {g.lotes.length === 1 ? "lote" : "lotes"}</span>
           <span style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6 }}>
-            {sinAvisar && <span title="Sin avisar: sale en el correo de las 7 p. m." style={{ width: 7, height: 7, borderRadius: "50%", background: C.amber }} />}
+            {sinAvisar && <span title="Sin avisar: sale en el correo de las 10 a. m. de ese día" style={{ width: 7, height: 7, borderRadius: "50%", background: C.amber }} />}
             <b style={{ fontSize: 13.5, whiteSpace: "nowrap" }}>{fmtNum(sumaUnd(g.lotes))}</b>
           </span>
         </div>
@@ -831,7 +831,7 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
         <button
           style={{ ...botonMini, padding: "10px 14px", fontSize: 13, ...(sinAvisarTotal > 0 ? { background: C.amberBg, color: C.amber, borderColor: C.amber } : { color: C.slate, opacity: 0.75 }) }}
           onClick={() => (sinAvisarTotal > 0 ? abrirVista(diasSinAvisar) : window.alert("Todo lo programado ya se avisó. Para mandar el correo de nuevo, usa el botón \"✉ Reenviar correo\" del día."))}
-          title="Muestra el correo de lo que aún no se ha avisado para revisarlo y enviarlo, sin esperar a las 7 p. m."
+          title="Muestra el correo de lo que aún no se ha avisado para revisarlo y enviarlo, sin esperar a las 10 a. m. del día"
         >
           {`✉ Enviar pendientes (${sinAvisarTotal})`}
         </button>
@@ -884,7 +884,7 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
           const horaAviso = ultimoAviso ? new Date(ultimoAviso).toLocaleTimeString("es-CO", { hour: "numeric", minute: "2-digit", timeZone: "America/Bogota" }) : "";
           let estado = pill("libre", C.slate, "#ECEAE4");
           if (delDia.length && !pendDia.length) estado = pill("todo cumplido", C.green, C.greenBg);
-          else if (sinAvisarDia) estado = pill(`${sinAvisarDia} sin avisar`, C.amber, C.amberBg, "Salen en el correo de las 7 p. m.");
+          else if (sinAvisarDia) estado = pill(`${sinAvisarDia} sin avisar`, C.amber, C.amberBg, "Salen en el correo de las 10 a. m. de ese día");
           else if (pendDia.length) estado = pill(`✓ avisado${horaAviso ? ` ${horaAviso}` : ""}`, C.green, C.greenBg);
           const claveCum = `cum|${d.iso}`;
           return (
@@ -903,7 +903,7 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
               {pendDia.length > 0 && (
                 <button
                   onClick={() => abrirVista([d.iso])}
-                  title="Ver el correo de Planta de este día y enviarlo, sin esperar a las 7 p. m."
+                  title="Ver el correo de Planta de este día y enviarlo, sin esperar a las 10 a. m."
                   style={{ ...botonMini, marginTop: 10, width: "100%", padding: "8px 10px", fontSize: 12.5, ...(sinAvisarDia ? { background: C.amberBg, color: C.amber, borderColor: C.amber } : {}) }}
                 >
                   {sinAvisarDia ? "✉ Enviar correo" : "✉ Reenviar correo"}
@@ -933,7 +933,7 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
       {verPedidos && <PanelPedidosPlanta sinProgramar={sinProgramar} programacion={programacion} hoyISO={hoyISO} desdeISO={lunes} onClose={() => setVerPedidos(false)} />}
       </div>
       <div style={{ marginTop: 12, fontSize: 12.5, color: C.slate, lineHeight: 1.5 }}>
-        Cada pedido es una sola línea: tócala para ver sus lotes y moverlos. Programar solo guarda: cada área recibe su correo solo a las 7 p. m. (gerencia recibe todas); el ✉ de cada día o "Enviar pendientes" lo adelantan. Punto amarillo = aún sin avisar.
+        Cada pedido es una sola línea: tócala para ver sus lotes y moverlos. Programar solo guarda: cada área recibe su correo a las 10 a. m. de ese día (gerencia recibe todas); el ✉ de cada día o "Enviar pendientes" lo adelantan. Punto amarillo = aún sin avisar.
       </div>
       {vistaCorreo && <VistaPreviaCorreoModal dias={vistaCorreo} programacion={programacion} diasMover={diasMover} hoyISO={hoyISO} onVista={onVistaDia} onEnviarDia={onEnviarDia} onCancelar={onCancelar} onMover={onMover} onClose={() => setVistaCorreo(null)} />}
       {panel && <ProgramarLotesModal pedidos={pedidos} diasProg={diasProg} programacion={programacion} tope={tope} hoyISO={hoyISO} onGuardar={guardarPanel} onClose={() => setPanel(false)} />}
@@ -2525,7 +2525,7 @@ export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
       prioridad: lote.prioridad ?? null,
       motivo: lote.razonesTxt ?? null,
       fechaSugerida: lote.fechaSugerida ?? null,
-      avisado: false, // sale en el correo de las 7 p. m. (o al pulsar "Enviar correo del día")
+      avisado: false, // sale en el correo de las 10 a. m. de ese día (o al pulsar "Enviar correo del día")
       avisadoEn: null,
     };
     setProgramacion((ps) => [...ps, nuevo]);
@@ -2554,7 +2554,7 @@ export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
     setProgramacion((ps) => [...ps, ...nuevos]);
     await Promise.all(nuevos.map((n) => fsSave("planta_programacion", n.id, n)));
   }
-  // (2026-10-28) El correo automático de las 7 p. m. lleva a cada lista solo lo de su área (gerencia recibe todo). Este botón
+  // (2026-10-28) El correo automático de las 10 a. m. lleva a cada lista solo lo de su área (gerencia recibe todo). Este botón
   // adelanta SOLO lo de Planta de confección de ese día (a la lista de Planta y a gerencia). Marca como avisados solo si salió.
   async function enviarCorreoDia(iso) {
     const delDia = programacion.filter((p) => p.fechaEnviado === iso && p.estado !== "cumplido");
