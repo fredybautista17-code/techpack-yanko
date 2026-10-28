@@ -447,7 +447,7 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
           <span style={{ fontWeight: 800, fontSize: 13, color: C.ink }}>{p.numLote}</span>
           <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
             {p.estado === "cumplido" && <span style={{ color: C.green, fontWeight: 800, fontSize: 11 }}>✓ cumplido</span>}
-            {p.avisado === false && p.estado !== "cumplido" && <span title="Todavía no se ha avisado por correo" style={{ color: C.amber, fontWeight: 800, fontSize: 11 }}>sin avisar</span>}
+            {p.avisado === false && p.estado !== "cumplido" && <span title="Sale en el correo de las 7 p. m." style={{ color: C.amber, fontWeight: 800, fontSize: 11 }}>sin avisar</span>}
             {venc && <span style={{ color: C.red, fontWeight: 800, fontSize: 11 }}>{fmtCorta(p.fechaEnviado)}</span>}
             {p.estado !== "cumplido" && <span onClick={() => onEditar(p)} title="Mover a otro día (pide motivo y avisa por correo)" style={{ cursor: "pointer", color: C.blue, fontWeight: 800 }}>✎</span>}
           </span>
@@ -563,7 +563,7 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
                     style={{ ...botonMini, background: sinAvisarDia ? C.amberBg : C.white, color: sinAvisarDia ? C.amber : C.slate, borderColor: sinAvisarDia ? C.amber : C.border }}
                     disabled={!!enviando}
                     onClick={() => enviarDia(d.iso)}
-                    title="Manda un solo correo con todos los lotes de este día"
+                    title="Manda ya un correo con todo lo programado ese día (las 3 áreas), sin esperar a las 7 p. m."
                   >
                     {enviando === d.iso ? "Enviando..." : sinAvisarDia ? "✉ Enviar correo del día" : "✉ Volver a enviar"}
                   </button>
@@ -590,7 +590,7 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
           </>
         )}
         {aviso && <span style={{ fontSize: 12.5, color: C.red, fontWeight: 700 }}>{aviso}</span>}
-        <span style={{ fontSize: 12, color: C.slate }}>"Programar aquí" solo guarda. Cuando termines de reunir el día, pulsa "Enviar correo del día": sale un solo correo con todos sus lotes.</span>
+        <span style={{ fontSize: 12, color: C.slate }}>"Programar aquí" solo guarda. El correo con las 3 áreas sale solo cada día a las 7 p. m. (cumplimiento de hoy y programación de mañana); "Enviar correo del día" lo adelanta.</span>
       </div>
     </div>
   );
@@ -2180,10 +2180,11 @@ export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
       prioridad: lote.prioridad ?? null,
       motivo: lote.razonesTxt ?? null,
       fechaSugerida: lote.fechaSugerida ?? null,
+      avisado: false, // sale en el correo de las 7 p. m. (o al pulsar "Enviar correo del día")
+      avisadoEn: null,
     };
     setProgramacion((ps) => [...ps, nuevo]);
     await fsSave("planta_programacion", nuevo.id, nuevo);
-    avisarPorCorreo("nueva", [{ numLote: nuevo.numLote, referencia: nuevo.referencia, cantidad: nuevo.cantidad, numPedido: nuevo.numPedido ?? "", prioridad: NIVELES_PRIO[nuevo.prioridad]?.txt || "", fecha: fechaEnviado }]);
   }
   // Programa varios lotes a la vez para un mismo día (tablero semanal): un solo correo con todos.
   async function programarLotes(lotes, fechaEnviado) {
@@ -2208,15 +2209,15 @@ export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
     setProgramacion((ps) => [...ps, ...nuevos]);
     await Promise.all(nuevos.map((n) => fsSave("planta_programacion", n.id, n)));
   }
-  // Correo con TODOS los lotes pendientes de un día (los no avisados van resaltados como "nuevo"). Marca como avisados solo si salió.
+  // (2026-10-28) El correo sale solo cada día a las 7 p. m. con las 3 áreas. Este botón lo adelanta: un correo con TODO lo
+  // programado ese día (Planta, Calidad y Zona calor). Marca como avisados solo si salió.
   async function enviarCorreoDia(iso) {
     const delDia = programacion.filter((p) => p.fechaEnviado === iso && p.estado !== "cumplido");
-    if (!delDia.length) return false;
-    const items = delDia.map((p) => ({ nuevo: p.avisado === false, numLote: p.numLote, referencia: p.referencia, cantidad: p.cantidad, numPedido: p.numPedido ?? "", prioridad: NIVELES_PRIO[p.prioridad]?.txt || "", fecha: iso }));
     try {
-      const resp = await httpsCallable(functionsClient, "notificarProgramacionCorreo")({ area: "planta", tipo: "nueva", dia: iso, items, motivo: "", programadoPor: currentUser?.name || currentUser?.username || "" });
-      if (resp.data?.sinDestinatarios) { alert("No salió el correo: Planta de confección no tiene destinatarios (Administración → Notificaciones)."); return false; }
-      if (resp.data?.ok === false) { alert("No se pudo enviar el correo. Inténtalo de nuevo."); return false; }
+      const resp = await httpsCallable(functionsClient, "enviarCorreoProgramacionDia")({ dia: iso, programadoPor: currentUser?.name || currentUser?.username || "" });
+      if (resp.data?.motivo === "sin destinatarios") { alert("No salió el correo: no hay destinatarios (Administración → Notificaciones)."); return false; }
+      if (resp.data?.motivo === "nada que informar") { alert("No hay nada programado para ese día."); return false; }
+      if (resp.data?.enviado === false) { alert("No se pudo enviar el correo. Inténtalo de nuevo."); return false; }
     } catch (err) {
       alert(`No se pudo enviar el correo: ${err?.message || err}`);
       return false;

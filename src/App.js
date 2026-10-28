@@ -13429,23 +13429,27 @@ function NotificacionesProgramadasPanel({ users, config, onUpdateConfig }) {
   );
 }
 // (2026-10-27, a pedido de Fredy) Destinatarios de los correos de programación, por área. Se guardan en
-// config/correos_programacion { planta: [], calidad: [], zonacalor: [] }; los lee notificarProgramacionCorreo
-// (al programar, cambiar o cancelar) y enviarCumplimientoProgramacionDiario (7:15 a. m., cumplimiento de ayer).
+// config/correos_programacion { todas: [], planta: [], calidad: [], zonacalor: [] }. (2026-10-28) `todas` recibe el
+// correo único de las 7 p. m. (cumplimiento de hoy + programación de mañana, las 3 áreas); las listas por área
+// solo reciben los avisos de CAMBIO o CANCELACIÓN de su área (notificarProgramacionCorreo).
 const AREAS_CORREO_PROG = [
-  { id: "planta", nombre: "Planta de confección", detalle: "Programación Diaria de Planta Yanko" },
-  { id: "calidad", nombre: "Control de calidad", detalle: "Mi lista por programar y Programador de Procesos" },
-  { id: "zonacalor", nombre: "Zona calor", detalle: "Mi lista por programar y Programador de Procesos" },
+  { id: "todas", nombre: "Correo de la noche — todas las áreas", detalle: "Cada día a las 7 p. m.: cumplimiento de hoy y programación de mañana de Planta, Calidad y Zona calor", grande: true },
+  { id: "planta", nombre: "Planta de confección", detalle: "Avisos de cambio o cancelación — Programación Diaria de Planta Yanko" },
+  { id: "calidad", nombre: "Control de calidad", detalle: "Avisos de cambio o cancelación — Programador de Procesos" },
+  { id: "zonacalor", nombre: "Zona calor", detalle: "Avisos de cambio o cancelación — Programador de Procesos" },
 ];
 function CorreosProgramacionPanel() {
-  const [listas, setListas] = useState({ planta: [], calidad: [], zonacalor: [] });
-  const [nuevo, setNuevo] = useState({ planta: "", calidad: "", zonacalor: "" });
+  const [listas, setListas] = useState({ todas: [], planta: [], calidad: [], zonacalor: [] });
+  const [nuevo, setNuevo] = useState({ todas: "", planta: "", calidad: "", zonacalor: "" });
   const [msg, setMsg] = useState("");
   const [probando, setProbando] = useState(false);
   useEffect(() => {
     const unsub = onSnapshot(doc(db, "config", "correos_programacion"), (snap) => {
       const d = snap.exists() ? snap.data() : {};
       const arr = (v) => (Array.isArray(v) ? v : []);
-      setListas({ planta: arr(d.planta), calidad: arr(d.calidad), zonacalor: arr(d.zonacalor) });
+      // Mientras nadie haya guardado la lista única, el correo de la noche usa la unión de las tres listas (igual que el servidor).
+      const union = [...new Set([...arr(d.planta), ...arr(d.calidad), ...arr(d.zonacalor)])];
+      setListas({ todas: Array.isArray(d.todas) ? d.todas : union, planta: arr(d.planta), calidad: arr(d.calidad), zonacalor: arr(d.zonacalor) });
     }, () => {});
     return unsub;
   }, []);
@@ -13466,11 +13470,12 @@ function CorreosProgramacionPanel() {
     setMsg("");
     try {
       const resp = await httpsCallable(functionsClient, "enviarCumplimientoProgramacionAhora", { timeout: 540000 })({ paraMi: true });
-      const r = resp.data?.resultado || [];
-      const enviados = r.filter((x) => x.enviado).length;
-      setMsg(enviados
-        ? `Te mandé ${enviados} correo(s) de prueba a ${resp.data?.destino || "tu correo"} con el cumplimiento de ${resp.data.ayer}. Si no llega en unos minutos, revisa spam.`
-        : `No hubo nada programado para ${resp.data?.ayer} en ninguna área, por eso no salió correo.`);
+      const r = resp.data || {};
+      setMsg(r.enviado
+        ? `Te mandé la prueba a ${r.destino || "tu correo"}: cumplimiento de hoy (${r.totalCumpl || 0}) y programación del ${r.dia} (${r.totalProg || 0}). Si no llega en unos minutos, revisa spam.`
+        : r.motivo === "nada que informar"
+          ? `No hay nada programado ni cumplimiento para hoy ni para ${r.dia}, por eso no salió correo.`
+          : `No salió el correo de prueba: ${r.motivo || "error desconocido"}.`);
     } catch (err) {
       setMsg(err?.message || "No se pudo enviar la prueba.");
     } finally {
@@ -13479,13 +13484,13 @@ function CorreosProgramacionPanel() {
   }
   return (
     <div style={{ marginBottom: 28, paddingBottom: 22, borderBottom: `1px solid ${T.border}` }}>
-      <div style={{ fontWeight: 700, fontSize: 15, color: T.ink }}>Correos de programación por área</div>
+      <div style={{ fontWeight: 700, fontSize: 15, color: T.ink }}>Correos de programación</div>
       <div style={{ fontSize: 12.5, color: T.slate, marginTop: 4, marginBottom: 14, lineHeight: 1.5 }}>
-        A estas personas les llega, de una vez, el tablerito cuando alguien programa, cambia o cancela una programación de su área, y cada mañana a las 7:15 el cumplimiento de lo programado el día anterior.
+        Cada día a las 7 p. m. sale UN solo correo con las tres áreas: el cumplimiento de hoy y lo programado para mañana. Les llega a quienes estén en la primera lista. Cuando alguien cambia o cancela una programación que ya se había avisado, el aviso con el motivo le llega a la lista de esa área.
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(300px,1fr))", gap: 14 }}>
         {AREAS_CORREO_PROG.map((a) => (
-          <div key={a.id} style={{ border: `1px solid ${T.border}`, borderRadius: 12, padding: 14, background: T.white }}>
+          <div key={a.id} style={{ border: `1px solid ${T.border}`, borderRadius: 12, padding: 14, background: T.white, ...(a.grande ? { gridColumn: "1 / -1" } : {}) }}>
             <div style={{ fontWeight: 800, fontSize: 13.5, color: T.ink }}>{a.nombre}</div>
             <div style={{ fontSize: 11.5, color: T.slate, marginBottom: 10 }}>{a.detalle}</div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
@@ -13512,7 +13517,7 @@ function CorreosProgramacionPanel() {
         ))}
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
-        <Btn small variant="secondary" onClick={probar} disabled={probando}>{probando ? "Enviando prueba…" : "✉ Mandarme una prueba del cumplimiento de ayer"}</Btn>
+        <Btn small variant="secondary" onClick={probar} disabled={probando}>{probando ? "Enviando prueba…" : "✉ Mandarme una prueba del correo de la noche"}</Btn>
         {msg && <span style={{ fontSize: 12.5, color: T.slate }}>{msg}</span>}
       </div>
     </div>

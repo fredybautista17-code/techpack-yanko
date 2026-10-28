@@ -1223,6 +1223,17 @@ function itemCorreoProgramacion(p) {
     trabajador: p.trabajadorNombre || "",
   };
 }
+// (2026-10-28) El correo único sale a las 7 p. m. con lo programado para el día siguiente. Una programación "ya se avisó"
+// si su fecha es hasta hoy (antes de las 7 p. m.) o hasta mañana (después de las 7 p. m.). Solo en ese caso un cambio o
+// cancelación necesita su propio aviso con motivo; si aún no se avisaba, nadie la conoce y se cambia sin correo.
+function programacionYaAvisada(fechaProgramada) {
+  if (!fechaProgramada) return false;
+  const hora = Number(new Intl.DateTimeFormat("en-GB", { timeZone: "America/Bogota", hour: "2-digit", hour12: false }).format(new Date())) % 24;
+  const hoy = hoyBogotaISO();
+  const [y, m, d] = hoy.split("-").map(Number);
+  const limite = hora >= 19 ? new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10) : hoy;
+  return String(fechaProgramada) <= limite;
+}
 function avisarProgramacionPorCorreo({ tipo, areaTexto, items, motivo, programadoPor }) {
   httpsCallable(functionsClient, "notificarProgramacionCorreo")({ tipo, areaTexto: areaTexto || "", items, motivo: motivo || "", programadoPor: programadoPor || "" })
     .then((resp) => {
@@ -1244,6 +1255,11 @@ function enriquecerProgramacionConLote(datos, lotes) {
   return { numPedido: l.numPedido ?? null, prioridad: prio.prioridad };
 }
 async function cancelarProgramacionConAviso(p, { areaTexto, programadoPor }) {
+  if (!programacionYaAvisada(p?.fechaProgramada)) {
+    // Aún no salió en ningún correo: se quita sin motivo ni aviso.
+    await fsDelete("planeacion_programacion_procesos", p.id);
+    return true;
+  }
   const motivo = window.prompt(`¿Por qué se cancela la programación del lote ${p?.numLote || ""}${p?.proceso ? ` (${p.proceso})` : ""}? (el motivo va en el correo)`);
   if (!motivo || !motivo.trim()) return false;
   await fsDelete("planeacion_programacion_procesos", p.id);
@@ -1260,6 +1276,7 @@ async function cambiarProgramacionProceso(p, nuevo, motivo, { areaTexto, program
     ultimoCambio: { por: programadoPor || "", motivo, en: new Date().toISOString() },
   };
   await fsSave("planeacion_programacion_procesos", p.id, parche);
+  if (!programacionYaAvisada(p.fechaProgramada)) return; // aún no se había avisado: sin correo
   avisarProgramacionPorCorreo({
     tipo: "cambio",
     areaTexto,
@@ -4044,7 +4061,6 @@ export function ProgramadorProcesosStandalone({ currentUser, onVolver, onLogout,
       liderNombre: currentUser?.name || "",
       creadoEn: new Date().toISOString(),
     });
-    avisarProgramacionPorCorreo({ tipo: "nueva", areaTexto: currentUser?.areaNomina, items: [itemCorreoProgramacion({ ...datos, ...extra })], programadoPor: currentUser?.name || currentUser?.username });
   }
   async function cancelarProgramacion(id) {
     const fila = programaciones.find((x) => x.id === id);
@@ -4257,12 +4273,6 @@ export function ListaPorProgramarBloque({ currentUser, incrustado = true }) {
         origen: "lista_por_programar",
         numPedido: modal.numPedido ?? null,
         prioridad: modal.prioridad || null,
-      });
-      avisarProgramacionPorCorreo({
-        tipo: "nueva",
-        areaTexto: areaNombre,
-        items: [itemCorreoProgramacion({ numLote: modal.numLote, referencia: modal.referencia, proceso: modal.proceso, cantidad: Number(cantidadForm), numPedido: modal.numPedido, prioridad: modal.prioridad, fechaProgramada: fechaForm, horaInicio: horaForm, trabajadorNombre: t?.name || t?.nombre || "" })],
-        programadoPor: currentUser?.name || currentUser?.username,
       });
       setModal(null);
     } finally {
@@ -7232,7 +7242,6 @@ export function AreasStandalone({ currentUser, onVolver, onLogout, puedeCentroCo
       programadoDesdeArea: areaActual?.nombre || "",
       creadoEn: new Date().toISOString(),
     });
-    avisarProgramacionPorCorreo({ tipo: "nueva", areaTexto: areaActual?.nombre, items: [itemCorreoProgramacion({ ...datos, ...extra })], programadoPor: currentUser?.name || currentUser?.username });
   }
   async function cancelarProgramacion(id) {
     const fila = programaciones.find((x) => x.id === id);

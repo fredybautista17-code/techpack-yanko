@@ -9377,8 +9377,8 @@ async function agregarSeccionNotificacion({ correos, titulo, horaOrigen, html })
 //  - Al programar (Planta de confección, Control de calidad, Zona calor) la pantalla llama a
 //    `notificarProgramacionCorreo`: sale de una vez un tablerito con lote, cantidad, pedido y
 //    prioridad a la lista de esa área. Lo mismo al CAMBIAR o CANCELAR una programación (con motivo).
-//  - Cada mañana (7:15) `enviarCumplimientoProgramacionDiario` manda, por área, el cumplimiento de lo
-//    que estaba programado AYER: Planta contra la carga de Planeación (el lote ya no está en Planta
+//  - (2026-10-28) Cada noche (7 p. m.) `enviarCumplimientoProgramacionDiario` manda UN solo correo con las 3 áreas:
+//    cumplimiento de HOY y programación de MAÑANA, a la lista `todas`. Cumplimiento: Planta contra la carga de Planeación (el lote ya no está en Planta
 //    Yanko) y Zona calor / Control de calidad contra las ENTRADAS de Busint.
 //  - Los destinatarios viven en config/correos_programacion { planta: [], calidad: [], zonacalor: [] }
 //    y se editan en Administración. Todo queda en programacion_correos_log.
@@ -9522,6 +9522,25 @@ function estadosProgramacionesCP(programaciones, entradas, hoyISO) {
   });
   return out;
 }
+// Mapas para saber de qué área es cada programación de procesos (Calidad / Zona calor).
+async function cargarMapasAreaCP() {
+  const [areasSnap, usersSnap] = await Promise.all([db.collection("nomina_areas").get(), db.collection("users").get()]);
+  const norm = (s) => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").trim().toUpperCase();
+  const areaPorProceso = new Map();
+  areasSnap.docs.forEach((dc) => {
+    const a = dc.data();
+    const clave = claveAreaCorreoProgramacion(a.nombre);
+    (a.procesosCentroCosto || []).forEach((p) => { if (clave) areaPorProceso.set(norm(p), clave); });
+  });
+  areaPorProceso.set("TERMOFIJACION", areaPorProceso.get("TERMOFIJACION") || "zonacalor");
+  areaPorProceso.set("EMPAQUE", areaPorProceso.get("EMPAQUE") || "calidad");
+  const areaPorLider = new Map(usersSnap.docs.map((u) => [u.data().username, claveAreaCorreoProgramacion(u.data().areaNomina)]));
+  return { norm, areaPorProceso, areaPorLider };
+}
+function areaDeProgramacionCP(p, m) {
+  return claveAreaCorreoProgramacion(p.programadoDesdeArea) || m.areaPorLider.get(p.liderUsername) || m.areaPorProceso.get(m.norm(p.proceso)) || "";
+}
+// Cumplimiento de lo programado el día ANTERIOR a `fechaRef` (con fechaRef = mañana evalúa HOY).
 async function armarCumplimientoProgramacionCP(fechaRef) {
   const ayer = sumarDiasISOCP(fechaRef, -1);
   const porArea = { planta: [], calidad: [], zonacalor: [] };
@@ -9551,17 +9570,7 @@ async function armarCumplimientoProgramacionCP(fechaRef) {
   const progSnap = await db.collection("planeacion_programacion_procesos").get();
   const todas = progSnap.docs.map((dc) => ({ id: dc.id, ...dc.data() }));
   if (todas.some((p) => p.fechaProgramada === ayer)) {
-    const [areasSnap, usersSnap] = await Promise.all([db.collection("nomina_areas").get(), db.collection("users").get()]);
-    const norm = (s) => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").trim().toUpperCase();
-    const areaPorProceso = new Map();
-    areasSnap.docs.forEach((dc) => {
-      const a = dc.data();
-      const clave = claveAreaCorreoProgramacion(a.nombre);
-      (a.procesosCentroCosto || []).forEach((p) => { if (clave) areaPorProceso.set(norm(p), clave); });
-    });
-    areaPorProceso.set("TERMOFIJACION", areaPorProceso.get("TERMOFIJACION") || "zonacalor");
-    areaPorProceso.set("EMPAQUE", areaPorProceso.get("EMPAQUE") || "calidad");
-    const areaPorLider = new Map(usersSnap.docs.map((u) => [u.data().username, claveAreaCorreoProgramacion(u.data().areaNomina)]));
+    const mapas = await cargarMapasAreaCP();
     const [entradasRef, fechasEntrada] = await Promise.all([
       consultarTablaBusintBDCompleta("bmp - entrada plantaproc ref"),
       fechasPorDocumentoBusintBD("bmp - entrada plantaproc", ["Entrada", "entrada"]),
@@ -9569,75 +9578,176 @@ async function armarCumplimientoProgramacionCP(fechaRef) {
     const entradas = resumenMovimientosPorLoteProceso(entradasRef, fechasEntrada, "Entrada");
     const estados = estadosProgramacionesCP(todas, entradas, fechaRef);
     estados.filter((p) => p.fechaProgramada === ayer).forEach((p) => {
-      const area = claveAreaCorreoProgramacion(p.programadoDesdeArea) || areaPorLider.get(p.liderUsername) || areaPorProceso.get(norm(p.proceso)) || "";
+      const area = areaDeProgramacionCP(p, mapas);
       if (!area || area === "planta") return;
       porArea[area].push({ numLote: String(p.numLote), referencia: p.referencia || "", proceso: p.proceso || "", trabajador: p.trabajadorNombre || "", cantidad: p.cantidad ?? null, hecho: p.hecho, numPedido: p.numPedido ?? "", prioridad: p.prioridad || "", estado: p.completo ? (p.llegoTarde ? "tarde" : "cumplido") : p.parcial ? "parcial" : "no", fechaCumplimiento: p.fechaCumplimiento });
     });
   }
   return { ayer, porArea };
 }
-async function enviarCumplimientoProgramacionCP({ fechaRef, soloArea, destinoPrueba }) {
-  const { ayer, porArea } = await armarCumplimientoProgramacionCP(fechaRef || fechaHoyBogota());
-  const resultado = [];
-  for (const area of Object.keys(AREAS_CORREO_PROGRAMACION)) {
-    if (soloArea && soloArea !== area) continue;
-    const filas = porArea[area];
-    if (!filas.length) { resultado.push({ area, filas: 0, enviado: false, motivo: "nada programado para ese día" }); continue; }
-    const para = destinoPrueba ? [destinoPrueba] : await destinatariosProgramacionCP(area);
-    if (!para.length) { resultado.push({ area, filas: filas.length, enviado: false, motivo: "sin destinatarios" }); continue; }
-    const cumplidos = filas.filter((f) => f.estado === "cumplido" || f.estado === "tarde").length;
-    const nombreArea = AREAS_CORREO_PROGRAMACION[area];
-    const hayProceso = filas.some((f) => f.proceso);
-    const chip = (f) => {
-      const mapa = { cumplido: ["Cumplido", "#067647", "#d1fadf"], tarde: ["Cumplido tarde", "#b54708", "#fef0c7"], parcial: [`Parcial ${f.hecho ?? 0} de ${f.cantidad ?? "?"}`, "#b54708", "#fef0c7"], no: ["No cumplido", "#b42318", "#fee4e2"] };
-      const [t, c, bg] = mapa[f.estado];
-      return `<span style="display:inline-block;padding:2px 10px;border-radius:999px;font-weight:700;font-size:12px;color:${c};background:${bg}">${escHtmlCP(t)}</span>${f.fechaCumplimiento && f.estado !== "no" ? `<div style="font-size:11px;color:#667085">${fechaLatinaCP(f.fechaCumplimiento)}</div>` : ""}`;
-    };
-    const columnas = [
-      { label: "Lote", html: (f) => `<b>${escHtmlCP(f.numLote)}</b>` },
-      { label: "Referencia", val: (f) => f.referencia || "—" },
-      ...(hayProceso ? [{ label: "Proceso", val: (f) => f.proceso || "—" }, { label: "Trabajador", val: (f) => f.trabajador || "—" }] : []),
-      { label: "Cantidad", align: "right", val: (f) => f.cantidad ?? "—" },
-      { label: "Pedido", val: (f) => f.numPedido || "—" },
-      { label: "Prioridad", html: (f) => chipPrioridadCP(f.prioridad) },
-      { label: "Resultado", html: chip },
-    ];
-    const orden = { no: 0, parcial: 1, tarde: 2, cumplido: 3 };
-    const ordenadas = [...filas].sort((a, b) => orden[a.estado] - orden[b.estado] || String(a.numLote).localeCompare(String(b.numLote)));
-    const asunto = `Cumplimiento programación ${nombreArea} — ${fechaLatinaCP(ayer)} (${cumplidos} de ${filas.length})`;
-    const intro = `Lo que estaba programado para el <b>${fechaLatinaCP(ayer)}</b>: <b>${cumplidos} de ${filas.length}</b> cumplidos.${area === "planta" ? " Planta se mide contra la última carga de Planeación (el lote ya no está en Planta Yanko)." : " Se mide contra las entradas registradas en Busint."}`;
-    try {
-      await mandarCorreo(crearTransporte(), para, asunto, envolverCorreoCP(`Cumplimiento — ${nombreArea}`, intro, tablaHtmlCP(columnas, ordenadas), "Mensaje automático de ATLAS."));
-      await db.collection("programacion_correos_log").add({ area, tipo: "cumplimiento", fecha: ayer, resumen: { total: filas.length, cumplidos }, destinatarios: para, enviado: true, creadoEn: new Date().toISOString() });
-      resultado.push({ area, filas: filas.length, cumplidos, enviado: true, destinatarios: para.length });
-    } catch (err) {
-      logger.error("cumplimiento programación: falló el envío", { area, error: String(err) });
-      resultado.push({ area, filas: filas.length, enviado: false, motivo: String(err).slice(0, 200) });
-    }
+// Lo programado para `dia` por área. "nuevo" = se programó después del último correo enviado.
+async function programacionDiaPorAreaCP(dia, desdeISO) {
+  const porArea = { planta: [], calidad: [], zonacalor: [] };
+  const esNuevo = (p) => !!desdeISO && String(p.creadoEn || "") > desdeISO;
+  const [plantaSnap, progSnap] = await Promise.all([
+    db.collection("planta_programacion").where("fechaEnviado", "==", dia).get(),
+    db.collection("planeacion_programacion_procesos").where("fechaProgramada", "==", dia).get(),
+  ]);
+  plantaSnap.docs.forEach((dc) => {
+    const p = dc.data();
+    if (p.estado === "cumplido") return;
+    porArea.planta.push({ id: dc.id, avisado: p.avisado, nuevo: p.avisado === false || (p.avisado === undefined && esNuevo(p)), numLote: String(p.numLote), referencia: p.referencia || "", proceso: "", trabajador: "", hora: "", cantidad: p.cantidad ?? null, numPedido: p.numPedido ?? "", prioridad: p.prioridad ? String(p.prioridad).charAt(0).toUpperCase() + String(p.prioridad).slice(1) : "" });
+  });
+  if (!progSnap.empty) {
+    const mapas = await cargarMapasAreaCP();
+    progSnap.docs.forEach((dc) => {
+      const p = dc.data();
+      const area = areaDeProgramacionCP(p, mapas);
+      if (!area || area === "planta") return;
+      porArea[area].push({ nuevo: esNuevo(p), numLote: String(p.numLote), referencia: p.referencia || "", proceso: p.proceso || "", trabajador: p.trabajadorNombre || "", hora: p.horaInicio || "", cantidad: p.cantidad ?? null, numPedido: p.numPedido ?? "", prioridad: p.prioridad || "" });
+    });
   }
-  return { ayer, resultado };
+  Object.values(porArea).forEach((lista) => lista.sort((a, b) => String(a.hora).localeCompare(String(b.hora)) || String(a.numLote).localeCompare(String(b.numLote))));
+  return porArea;
 }
+const H3_CP = "margin:20px 0 6px;font-size:15px;font-family:Arial,Helvetica,sans-serif;color:#101828";
+const H2_CP = "margin:26px 0 4px;padding-bottom:4px;border-bottom:2px solid #101828;font-size:16px;font-family:Arial,Helvetica,sans-serif;color:#101828";
+function seccionProgramacionCP(area, items) {
+  const hayProceso = items.some((i) => i.proceso);
+  const hayTrabajador = items.some((i) => i.trabajador);
+  const hayHora = items.some((i) => i.hora);
+  const nNuevos = items.filter((i) => i.nuevo).length;
+  const resaltar = nNuevos > 0 && nNuevos < items.length; // si todo es nuevo no tiene sentido resaltar
+  const filas = items.map((i) => ({ ...i, nuevo: resaltar && i.nuevo }));
+  const columnas = [
+    { label: "Lote", html: (f) => `<b>${escHtmlCP(f.numLote)}</b>${f.nuevo ? ' <span style="font-size:11px;font-weight:700;color:#b54708;background:#fef0c7;border-radius:999px;padding:1px 7px">nuevo</span>' : ""}` },
+    { label: "Referencia", val: (f) => f.referencia || "—" },
+    ...(hayProceso ? [{ label: "Proceso", val: (f) => f.proceso || "—" }] : []),
+    { label: "Cantidad", align: "right", val: (f) => f.cantidad ?? "—" },
+    { label: "Pedido", val: (f) => f.numPedido || "—" },
+    { label: "Prioridad", html: (f) => chipPrioridadCP(f.prioridad) },
+    ...(hayHora ? [{ label: "Hora", val: (f) => f.hora || "—" }] : []),
+    ...(hayTrabajador ? [{ label: "Trabajador", val: (f) => f.trabajador || "—" }] : []),
+  ];
+  const nombre = AREAS_CORREO_PROGRAMACION[area];
+  return `<h3 style="${H3_CP}">${escHtmlCP(nombre)} <span style="font-weight:400;color:#667085;font-size:13px">· ${items.length} ${items.length === 1 ? "lote" : "lotes"}${resaltar ? ` (${nNuevos} ${nNuevos === 1 ? "nuevo" : "nuevos"})` : ""}</span></h3>${tablaHtmlCP(columnas, filas)}`;
+}
+function seccionCumplimientoCP(area, filas) {
+  const cumplidos = filas.filter((f) => f.estado === "cumplido" || f.estado === "tarde").length;
+  const hayProceso = filas.some((f) => f.proceso);
+  const chip = (f) => {
+    const mapa = { cumplido: ["Cumplido", "#067647", "#d1fadf"], tarde: ["Cumplido tarde", "#b54708", "#fef0c7"], parcial: [`Parcial ${f.hecho ?? 0} de ${f.cantidad ?? "?"}`, "#b54708", "#fef0c7"], no: ["No cumplido", "#b42318", "#fee4e2"] };
+    const [t, c, bg] = mapa[f.estado];
+    return `<span style="display:inline-block;padding:2px 10px;border-radius:999px;font-weight:700;font-size:12px;color:${c};background:${bg}">${escHtmlCP(t)}</span>${f.fechaCumplimiento && f.estado !== "no" ? `<div style="font-size:11px;color:#667085">${fechaLatinaCP(f.fechaCumplimiento)}</div>` : ""}`;
+  };
+  const columnas = [
+    { label: "Lote", html: (f) => `<b>${escHtmlCP(f.numLote)}</b>` },
+    { label: "Referencia", val: (f) => f.referencia || "—" },
+    ...(hayProceso ? [{ label: "Proceso", val: (f) => f.proceso || "—" }, { label: "Trabajador", val: (f) => f.trabajador || "—" }] : []),
+    { label: "Cantidad", align: "right", val: (f) => f.cantidad ?? "—" },
+    { label: "Pedido", val: (f) => f.numPedido || "—" },
+    { label: "Prioridad", html: (f) => chipPrioridadCP(f.prioridad) },
+    { label: "Resultado", html: chip },
+  ];
+  const orden = { no: 0, parcial: 1, tarde: 2, cumplido: 3 };
+  const ordenadas = [...filas].sort((a, b) => orden[a.estado] - orden[b.estado] || String(a.numLote).localeCompare(String(b.numLote)));
+  const html = `<h3 style="${H3_CP}">${escHtmlCP(AREAS_CORREO_PROGRAMACION[area])} <span style="font-weight:400;color:#667085;font-size:13px">· ${cumplidos} de ${filas.length} cumplidos</span></h3>${tablaHtmlCP(columnas, ordenadas)}`;
+  return { html, cumplidos, total: filas.length };
+}
+// Una sola lista para el correo de la noche. Si nunca se configuró, se usa la unión de las listas por área.
+async function destinatariosNocheCP() {
+  const snap = await db.collection("config").doc("correos_programacion").get();
+  const d = snap.exists ? snap.data() || {} : {};
+  const limpiar = (lista) => (Array.isArray(lista) ? lista : String(lista || "").split(/[\s,;]+/)).map((x) => String(x).trim()).filter((x) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(x));
+  if (Array.isArray(d.todas)) return [...new Set(limpiar(d.todas))];
+  return [...new Set(Object.keys(AREAS_CORREO_PROGRAMACION).flatMap((a) => limpiar(d[a])))];
+}
+// Correo único (las 3 áreas): cumplimiento de HOY + programación de MAÑANA. Con `soloProgramacion` solo lleva lo programado de `diaProgramacion` (botón manual).
+async function enviarCorreoNocheCP({ fechaHoy, diaProgramacion, soloProgramacion, destinoPrueba, programadoPor }) {
+  const hoy = fechaHoy || fechaHoyBogota();
+  const dia = diaProgramacion || sumarDiasISOCP(hoy, 1);
+  const cumpl = soloProgramacion ? null : await armarCumplimientoProgramacionCP(dia);
+  const cfgSnap = await db.collection("config").doc("correos_programacion").get();
+  const desde = (cfgSnap.exists && cfgSnap.data()?.ultimoEnvioNoche) || "";
+  const prog = await programacionDiaPorAreaCP(dia, desde);
+  let cuerpo = "";
+  let cumplidos = 0;
+  let totalCumpl = 0;
+  let totalProg = 0;
+  if (cumpl) {
+    let sec = "";
+    for (const area of Object.keys(AREAS_CORREO_PROGRAMACION)) {
+      const filas = cumpl.porArea[area];
+      if (!filas.length) continue;
+      const s = seccionCumplimientoCP(area, filas);
+      cumplidos += s.cumplidos; totalCumpl += s.total; sec += s.html;
+    }
+    if (sec) cuerpo += `<h2 style="${H2_CP}">Cumplimiento de hoy ${fechaLatinaCP(cumpl.ayer)}: ${cumplidos} de ${totalCumpl}</h2>${sec}`;
+  }
+  let secProg = "";
+  for (const area of Object.keys(AREAS_CORREO_PROGRAMACION)) {
+    if (!prog[area].length) continue;
+    totalProg += prog[area].length;
+    secProg += seccionProgramacionCP(area, prog[area]);
+  }
+  if (secProg) cuerpo += `<h2 style="${H2_CP}">Programado para ${fechaLatinaCP(dia)}: ${totalProg} ${totalProg === 1 ? "lote" : "lotes"}</h2>${secProg}`;
+  if (!cuerpo) return { enviado: false, motivo: "nada que informar", hoy, dia };
+  const para = destinoPrueba ? [destinoPrueba] : await destinatariosNocheCP();
+  if (!para.length) return { enviado: false, motivo: "sin destinatarios", hoy, dia };
+  const partes = [];
+  if (totalCumpl) partes.push(`Cumplimiento ${fechaLatinaCP(hoy)} (${cumplidos} de ${totalCumpl})`);
+  if (totalProg) partes.push(`Programación ${fechaLatinaCP(dia)} (${totalProg})`);
+  const asunto = `${destinoPrueba ? "[PRUEBA] " : ""}${partes.join(" y ")}`;
+  const intro = soloProgramacion
+    ? `Programación del <b>${fechaLatinaCP(dia)}</b> en Planta de confección, Control de calidad y Zona calor.${programadoPor ? ` Envía: <b>${escHtmlCP(programadoPor)}</b>.` : ""}`
+    : `Resumen de la noche: lo que se cumplió hoy y lo que quedó programado para mañana. Los lotes agregados desde el último correo van resaltados como "nuevo".`;
+  const html = envolverCorreoCP("ATLAS — Programación y cumplimiento", intro, cuerpo, "Mensaje automático de ATLAS.");
+  try {
+    await mandarCorreo(crearTransporte(), para, asunto, html);
+  } catch (err) {
+    logger.error("correo de la noche: falló el envío", { error: String(err) });
+    await db.collection("programacion_correos_log").add({ tipo: "noche", asunto, destinatarios: para, enviado: false, error: String(err).slice(0, 300), creadoEn: new Date().toISOString() });
+    return { enviado: false, motivo: String(err).slice(0, 200), hoy, dia };
+  }
+  const ahora = new Date().toISOString();
+  await db.collection("programacion_correos_log").add({ tipo: "noche", asunto, destinatarios: para, enviado: true, prueba: !!destinoPrueba, resumen: { cumplidos, totalCumpl, totalProg }, dia, creadoEn: ahora });
+  if (!destinoPrueba) {
+    // Ya se avisó: los lotes de Planta dejan de estar "sin avisar" y el siguiente correo resalta solo lo nuevo.
+    await Promise.all(prog.planta.filter((p) => p.avisado === false).map((p) => db.collection("planta_programacion").doc(p.id).set({ avisado: true, avisadoEn: ahora }, { merge: true })));
+    await db.collection("config").doc("correos_programacion").set({ ultimoEnvioNoche: ahora }, { merge: true });
+  }
+  return { enviado: true, hoy, dia, destinatarios: para.length, destino: destinoPrueba || null, cumplidos, totalCumpl, totalProg };
+}
+// Todos los días a las 7 p. m. (hora Colombia): cumplimiento de hoy + programación de mañana en UN solo correo.
+// (Mismo nombre que el correo de las 7:15 a. m. de antes, para que el despliegue lo reemplace y no queden dos.)
 exports.enviarCumplimientoProgramacionDiario = onSchedule(
-  { schedule: "every day 07:15", timeZone: "America/Bogota", secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY, EMAIL_USER, EMAIL_APP_PASSWORD], timeoutSeconds: 540, memory: "1GiB" },
+  { schedule: "every day 19:00", timeZone: "America/Bogota", secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY, EMAIL_USER, EMAIL_APP_PASSWORD], timeoutSeconds: 540, memory: "1GiB" },
   async () => {
-    const r = await enviarCumplimientoProgramacionCP({});
-    logger.info("Cumplimiento de programación enviado", r);
+    const r = await enviarCorreoNocheCP({});
+    logger.info("Correo de la noche (programación y cumplimiento)", r);
   }
 );
-// Prueba manual (solo admin): manda el cumplimiento de AYER (o de la fecha dada: se evalúa el día anterior a `fecha`).
-// Con `paraMi: true` lo manda solo al correo del admin que lo pide, sin molestar a las listas.
+// Prueba manual (solo admin): arma el mismo correo de la noche. Con `paraMi: true` lo manda solo al correo real del admin que lo pide.
 exports.enviarCumplimientoProgramacionAhora = onCallAuth(
   { secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY, EMAIL_USER, EMAIL_APP_PASSWORD], timeoutSeconds: 540, memory: "1GiB" },
   async (request) => {
     const adminDoc = await verificarLlamadorEsAdmin(request);
     const fecha = /^\d{4}-\d{2}-\d{2}$/.test(String(request.data?.fecha || "")) ? request.data.fecha : null;
-    const soloArea = AREAS_CORREO_PROGRAMACION[request.data?.area] ? request.data.area : null;
     // El correo de login de ATLAS es interno (usuario@techpack-yanko.local), no sirve para recibir: se usa el correo real guardado en el usuario.
     const correoReal = String(adminDoc.data().email || "").trim();
     const destinoPrueba = request.data?.paraMi ? (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correoReal) ? correoReal : null) : null;
     if (request.data?.paraMi && !destinoPrueba) throw new HttpsError("failed-precondition", "Tu usuario no tiene un correo real guardado. Agrégalo en Administración → Usuarios (campo Email) y vuelve a probar.");
-    const r = await enviarCumplimientoProgramacionCP({ fechaRef: fecha, soloArea, destinoPrueba });
-    return { ...r, destino: destinoPrueba || null };
+    return enviarCorreoNocheCP({ fechaHoy: fecha, destinoPrueba });
+  }
+);
+// Botón "✉ Enviar correo del día" (Programación Diaria de Planta): un correo con las 3 áreas de ese día, sin esperar a las 7 p. m.
+exports.enviarCorreoProgramacionDia = onCallAuth(
+  { secrets: [EMAIL_USER, EMAIL_APP_PASSWORD], timeoutSeconds: 120, memory: "512MiB" },
+  async (request) => {
+    const dia = String(request.data?.dia || "");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dia)) throw new HttpsError("invalid-argument", "Falta el día.");
+    const por = String(request.data?.programadoPor || "").slice(0, 80);
+    return enviarCorreoNocheCP({ soloProgramacion: true, diaProgramacion: dia, programadoPor: por });
   }
 );
 
