@@ -388,8 +388,8 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
   const [filtro, setFiltro] = useState("todas");
   const [tope, setTope] = useState(0);
   const [guardando, setGuardando] = useState("");
-  const [aviso, setAviso] = useState("");
   const [enviando, setEnviando] = useState("");
+  const [abiertos, setAbiertos] = useState({}); // días con la lista de cumplidos desplegada
   useEffect(() => {
     const unsub = onSnapshot(doc(db, "config", "planta_programacion"), (snap) => setTope(Number(snap.exists() ? snap.data()?.topeDia : 0) || 0), () => {});
     return unsub;
@@ -404,7 +404,6 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
   const unidadesElegidas = elegidos.reduce((s, l) => s + (Number(l.invPlanta) || 0), 0);
   const delMismoPedido = (l) => sinProgramar.filter((x) => l.numPedido != null && x.numPedido === l.numPedido);
   function alternar(l) {
-    setAviso("");
     setSel((s) => ({ ...s, [l.numLote]: !s[l.numLote] }));
   }
   function elegirPedido(l) {
@@ -413,12 +412,11 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
     setSel((s) => { const n = { ...s }; grupo.forEach((x) => { n[x.numLote] = !todos; }); return n; });
   }
   async function programarAqui(iso) {
-    if (!elegidos.length) { setAviso("Primero toca uno o más lotes de la izquierda."); return; }
+    if (!elegidos.length) return;
     setGuardando(iso);
     try {
       await onProgramarVarios(elegidos, iso);
       setSel({});
-      setAviso("");
     } finally {
       setGuardando("");
     }
@@ -439,40 +437,73 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
   }
   const fmtCorta = (iso) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`;
   const colorPrio = (p) => (NIVELES_PRIO[p] ? NIVELES_PRIO[p].color : C.slate);
-  function tarjetaProgramada(p) {
+  // Agrupa por pedido respetando el orden de aparición.
+  function agruparPorPedido(items) {
+    const mapa = new Map();
+    items.forEach((x) => {
+      const k = x.numPedido == null || x.numPedido === "" ? "" : String(x.numPedido);
+      if (!mapa.has(k)) mapa.set(k, []);
+      mapa.get(k).push(x);
+    });
+    return [...mapa.entries()].map(([pedido, lotes]) => ({ pedido, lotes }));
+  }
+  const sumaUnd = (items, f) => items.reduce((s, x) => s + (Number(f(x)) || 0), 0);
+  const pill = (txt, fg, bg, title) => <span title={title} style={{ fontSize: 11, fontWeight: 800, padding: "2px 9px", borderRadius: 999, color: fg, background: bg, whiteSpace: "nowrap" }}>{txt}</span>;
+  const cabeceraPedido = (pedido, n, und, onClick) => (
+    <div style={{ display: "flex", justifyContent: "space-between", gap: 6, fontSize: 11, fontWeight: 700, color: C.slate, margin: "10px 0 4px" }}>
+      <span onClick={onClick} title={onClick ? "Elegir todos los lotes de este pedido" : undefined} style={onClick ? { color: C.blue, textDecoration: "underline", cursor: "pointer" } : undefined}>
+        {pedido ? `Pedido ${pedido}` : "Sin pedido"} · {n} {n === 1 ? "lote" : "lotes"}
+      </span>
+      <span>{fmtNum(und)} und</span>
+    </div>
+  );
+  // Una línea por lote: raya de prioridad, lote, referencia, unidades.
+  const filaLote = (key, { lote, ref, und, prio, on, onClick, titulo, venc, extra }) => (
+    <div key={key} onClick={onClick} title={titulo} style={{ position: "relative", display: "flex", alignItems: "center", gap: 7, padding: on ? "6px 8px 6px 11px" : "7px 9px 7px 12px", border: on ? `2px solid ${C.blue}` : `1px solid ${venc ? C.red : C.border}`, borderRadius: 9, marginBottom: 5, background: on ? C.blueBg : C.white, cursor: onClick ? "pointer" : "default", fontSize: 12.5, overflow: "hidden" }}>
+      <span style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 4, background: colorPrio(prio) }} />
+      <span style={{ fontWeight: 800, fontSize: 13, color: C.ink }}>{lote}</span>
+      <span style={{ color: C.slate, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ref}</span>
+      <span style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6, color: C.slate, whiteSpace: "nowrap" }}>
+        {extra}
+        {fmtNum(und)} und
+      </span>
+    </div>
+  );
+  function filaProgramada(p) {
     const venc = p.fechaEnviado < hoyISO && p.estado !== "cumplido";
-    return (
-      <div key={p.id} style={{ border: `1px solid ${venc ? C.red : C.border}`, borderLeft: `4px solid ${colorPrio(p.prioridad)}`, borderRadius: 6, padding: "6px 8px", background: p.estado === "cumplido" ? C.greenBg : C.white, fontSize: 12, lineHeight: 1.35 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 6 }}>
-          <span style={{ fontWeight: 800, fontSize: 13, color: C.ink }}>{p.numLote}</span>
-          <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
-            {p.estado === "cumplido" && <span style={{ color: C.green, fontWeight: 800, fontSize: 11 }}>✓ cumplido</span>}
-            {p.avisado === false && p.estado !== "cumplido" && <span title="Sale en el correo de las 7 p. m." style={{ color: C.amber, fontWeight: 800, fontSize: 11 }}>sin avisar</span>}
-            {venc && <span style={{ color: C.red, fontWeight: 800, fontSize: 11 }}>{fmtCorta(p.fechaEnviado)}</span>}
-            {p.estado !== "cumplido" && <span onClick={() => onEditar(p)} title="Mover a otro día (pide motivo y avisa por correo)" style={{ cursor: "pointer", color: C.blue, fontWeight: 800 }}>✎</span>}
-          </span>
-        </div>
-        <div style={{ color: C.slate }}>{p.numPedido ? `ped. ${p.numPedido} · ` : ""}{p.referencia} · {fmtNum(p.cantidad)} und</div>
-      </div>
-    );
+    return filaLote(p.id, {
+      lote: p.numLote, ref: p.referencia, und: p.cantidad, prio: p.prioridad, venc,
+      titulo: p.avisado === false ? "Todavía no se ha avisado: sale en el correo de las 7 p. m." : undefined,
+      extra: (
+        <>
+          {p.avisado === false && <span title="Sin avisar: sale en el correo de las 7 p. m." style={{ width: 7, height: 7, borderRadius: "50%", background: C.amber }} />}
+          {venc && <span style={{ color: C.red, fontWeight: 800, fontSize: 11 }}>{fmtCorta(p.fechaEnviado)}</span>}
+          <span onClick={(e) => { e.stopPropagation(); onEditar(p); }} title="Mover a otro día" style={{ cursor: "pointer", color: C.blue, fontWeight: 800 }}>✎</span>
+        </>
+      ),
+    });
   }
   const botonMini = { border: `1px solid ${C.border}`, background: C.white, borderRadius: 8, padding: "5px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer", color: C.ink, fontFamily: "inherit" };
+  const diasProgramables = dias.filter((d) => d.iso >= hoyISO);
+  const totalSemanaLotes = programacion.filter((p) => dias.some((d) => d.iso === p.fechaEnviado)).length;
+  const totalSemanaUnd = sumaUnd(programacion.filter((p) => dias.some((d) => d.iso === p.fechaEnviado)), (p) => p.cantidad);
   return (
     <div style={{ marginBottom: 24 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
         <button style={botonMini} onClick={() => setSemana((s) => s - 1)} title="Semana anterior">‹</button>
-        <div style={{ fontWeight: 800, fontSize: 13, color: C.ink }}>
+        <div style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>
           Semana del {fmtCorta(dias[0].iso)} al {fmtCorta(dias[dias.length - 1].iso)}{semana === 0 ? " (esta semana)" : ""}
         </div>
         <button style={botonMini} onClick={() => setSemana((s) => s + 1)} title="Semana siguiente">›</button>
         {semana !== 0 && <button style={botonMini} onClick={() => setSemana(0)}>Hoy</button>}
+        <span style={{ fontSize: 12.5, color: C.slate }}>{totalSemanaLotes} lotes · {fmtNum(totalSemanaUnd)} und en la semana</span>
         <label style={{ fontSize: 12, color: C.slate, display: "inline-flex", alignItems: "center", gap: 4 }}>
           <input type="checkbox" checked={sabado} onChange={(e) => setSabado(e.target.checked)} /> Incluir sábado
         </label>
         <span style={{ flex: 1 }} />
         {sinAvisarTotal > 0 && (
-          <button style={{ ...botonMini, background: C.amberBg, color: C.amber, borderColor: C.amber }} disabled={!!enviando} onClick={enviarTodo}>
-            {enviando === "todo" ? "Enviando..." : `✉ Enviar todo lo pendiente (${sinAvisarTotal})`}
+          <button style={{ ...botonMini, background: C.amberBg, color: C.amber, borderColor: C.amber }} disabled={!!enviando} onClick={enviarTodo} title="Adelanta el correo de lo que aún no se ha avisado, sin esperar a las 7 p. m.">
+            {enviando === "todo" ? "Enviando..." : `✉ Enviar pendientes (${sinAvisarTotal})`}
           </button>
         )}
         <label style={{ fontSize: 12, color: C.slate, display: "inline-flex", alignItems: "center", gap: 6 }} title="Si lo llenas, un día que lo pase se pone en rojo. Déjalo en 0 para no usar tope.">
@@ -489,108 +520,122 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
           />
         </label>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "230px minmax(0,1fr)", gap: 12, alignItems: "start" }}>
-        <div style={{ background: C.canvas, borderRadius: 12, padding: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+      {elegidos.length > 0 && (
+        <div style={{ position: "sticky", top: 0, zIndex: 5, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", padding: "10px 14px", borderRadius: 12, background: C.blueBg, border: `1px solid ${C.blue}`, marginBottom: 12 }}>
+          <span style={{ fontWeight: 800, fontSize: 13, color: C.blue }}>{elegidos.length} {elegidos.length === 1 ? "lote elegido" : "lotes elegidos"} · {fmtNum(unidadesElegidas)} und</span>
+          <span style={{ fontSize: 12.5, color: C.blue }}>Programar para:</span>
+          {diasProgramables.map((d) => (
+            <button key={d.iso} disabled={!!guardando} onClick={() => programarAqui(d.iso)} style={{ ...botonMini, borderColor: C.blue, color: d.iso === hoyISO ? C.white : C.blue, background: d.iso === hoyISO ? C.blue : C.white }}>
+              {guardando === d.iso ? "Guardando..." : `${d.iso === hoyISO ? "Hoy" : d.nombre} ${fmtCorta(d.iso)}`}
+            </button>
+          ))}
+          {!diasProgramables.length && <span style={{ fontSize: 12.5, color: C.slate }}>Esta semana ya pasó: ve a la semana siguiente con ›.</span>}
+          <span style={{ flex: 1 }} />
+          <button style={botonMini} onClick={() => setSel({})}>Quitar selección</button>
+        </div>
+      )}
+      <div style={{ display: "grid", gridTemplateColumns: "250px minmax(0,1fr)", gap: 12, alignItems: "start" }}>
+        <div style={{ background: C.canvas, borderRadius: 12, padding: 10 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span style={{ fontWeight: 800, fontSize: 13, color: C.ink }}>Sin programar</span>
+            <span style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>Sin programar</span>
             <span style={{ fontWeight: 800, fontSize: 13, color: C.slate }}>{sinProgramar.length}</span>
           </div>
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", margin: "8px 0 2px" }}>
             {[["todas", "Todas"], ["alta", "Alta"], ["media", "Media"], ["normal", "Normal"]].map(([id, txt]) => (
               <span key={id} onClick={() => setFiltro(id)} style={{ cursor: "pointer", padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 800, background: filtro === id ? C.ink : C.white, color: filtro === id ? C.white : C.ink, border: `1px solid ${filtro === id ? C.ink : C.border}` }}>{txt}</span>
             ))}
           </div>
-          <div style={{ fontSize: 11.5, color: C.slate }}>Toca los lotes y luego "Programar aquí" en el día. Toca "pedido" para elegir todos sus lotes.</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 560, overflowY: "auto" }}>
+          <div style={{ maxHeight: 620, overflowY: "auto", paddingRight: 2 }}>
             {lista.length === 0 && <div style={{ fontSize: 12, color: C.slate, padding: 8 }}>Todo lo que está en Planta Yanko ya tiene fecha.</div>}
-            {lista.map((l) => {
-              const on = !!sel[l.numLote];
+            {agruparPorPedido(lista).map((g) => {
+              const ref = g.lotes[0];
               return (
-                <div key={l.numLote} onClick={() => alternar(l)} style={{ cursor: "pointer", border: `1px solid ${on ? C.blue : C.border}`, borderLeft: `4px solid ${colorPrio(l.prioridad)}`, borderRadius: 6, padding: "6px 8px", background: on ? C.blueBg : C.white, fontSize: 12, lineHeight: 1.35 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between" }}>
-                    <span style={{ fontWeight: 800, fontSize: 13, color: C.ink }}>{l.numLote}</span>
-                    <span
-                      onClick={(e) => { e.stopPropagation(); elegirPedido(l); }}
-                      title="Elegir todos los lotes de este pedido"
-                      style={{ color: C.blue, fontWeight: 700, fontSize: 11, textDecoration: "underline" }}
-                    >
-                      pedido {l.numPedido ?? "—"}{delMismoPedido(l).length > 1 ? ` (${delMismoPedido(l).length})` : ""}
-                    </span>
-                  </div>
-                  <div style={{ color: C.slate }}>{l.referencia} · {l.categoria} · {fmtNum(l.invPlanta)} und</div>
-                  <div style={{ color: C.slate, fontSize: 11 }}>{l.fechaSugerida ? `sugerida ${fmtCorta(l.fechaSugerida)} · ` : ""}{l.razonesTxt}</div>
+                <div key={g.pedido || "sin"}>
+                  {cabeceraPedido(g.pedido, g.lotes.length, sumaUnd(g.lotes, (l) => l.invPlanta), g.pedido ? () => elegirPedido(ref) : null)}
+                  {g.lotes.map((l) => filaLote(l.numLote, {
+                    lote: l.numLote, ref: l.referencia, und: l.invPlanta, prio: l.prioridad, on: !!sel[l.numLote], onClick: () => alternar(l),
+                    titulo: [l.categoria, l.fechaSugerida ? `sugerida ${fmtCorta(l.fechaSugerida)}` : "", l.razonesTxt].filter(Boolean).join(" · "),
+                  }))}
                 </div>
               );
             })}
           </div>
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: `${vencidosVisibles.length ? "minmax(0,0.9fr) " : ""}repeat(${dias.length}, minmax(0,1fr))`, gap: 8, alignItems: "start" }}>
+        <div style={{ display: "grid", gridTemplateColumns: `${vencidosVisibles.length ? "minmax(0,0.9fr) " : ""}repeat(${dias.length}, minmax(0,1fr))`, gap: 10, alignItems: "start" }}>
           {vencidosVisibles.length > 0 && (
-            <div style={{ background: C.redBg, border: `1px solid ${C.red}`, borderRadius: 12, padding: 8, display: "flex", flexDirection: "column", gap: 6 }}>
-              <div style={{ fontWeight: 800, fontSize: 13, color: C.red }}>Vencidos</div>
-              <div style={{ fontSize: 11.5, color: C.red }}>{vencidosVisibles.length} lotes sin cumplir</div>
-              {[...vencidosVisibles].sort((a, b) => a.fechaEnviado.localeCompare(b.fechaEnviado)).map(tarjetaProgramada)}
+            <div style={{ background: C.redBg, border: `1px solid ${C.red}`, borderRadius: 12, padding: 10 }}>
+              <div style={{ fontWeight: 800, fontSize: 14, color: C.red }}>Vencidos</div>
+              <div style={{ fontSize: 12, color: C.red, marginBottom: 4 }}>{vencidosVisibles.length} lotes sin cumplir</div>
+              {[...vencidosVisibles].sort((a, b) => a.fechaEnviado.localeCompare(b.fechaEnviado)).map(filaProgramada)}
             </div>
           )}
           {dias.map((d) => {
             const delDia = programacion.filter((p) => p.fechaEnviado === d.iso);
-            const total = delDia.reduce((s, p) => s + (Number(p.cantidad) || 0), 0);
+            const total = sumaUnd(delDia, (p) => p.cantidad);
             const pasa = tope > 0 && total > tope;
             const esHoy = d.iso === hoyISO;
             const pasado = d.iso < hoyISO;
             const pendDia = delDia.filter((p) => p.estado !== "cumplido");
+            const cumDia = delDia.filter((p) => p.estado === "cumplido");
             const sinAvisarDia = pendDia.filter((p) => p.avisado === false).length;
             const ultimoAviso = pendDia.map((p) => p.avisadoEn).filter(Boolean).sort().pop();
             const horaAviso = ultimoAviso ? new Date(ultimoAviso).toLocaleTimeString("es-CO", { hour: "numeric", minute: "2-digit", timeZone: "America/Bogota" }) : "";
+            let estado = null;
+            if (delDia.length && !pendDia.length) estado = pill("todo cumplido", C.green, C.greenBg);
+            else if (sinAvisarDia) estado = pill(`${sinAvisarDia} sin avisar`, C.amber, C.amberBg, "Salen en el correo de las 7 p. m.");
+            else if (pendDia.length) estado = pill(`✓ avisado${horaAviso ? ` ${horaAviso}` : ""}`, C.green, C.greenBg);
             return (
-              <div key={d.iso} style={{ background: C.white, border: esHoy ? `2px solid ${C.blue}` : `1px solid ${C.border}`, borderRadius: 12, padding: 8, display: "flex", flexDirection: "column", gap: 6, minHeight: 240, opacity: pasado ? 0.8 : 1 }}>
+              <div key={d.iso} style={{ background: C.white, border: esHoy ? `2px solid ${C.blue}` : `1px solid ${C.border}`, borderRadius: 12, padding: 10, minHeight: 200, opacity: pasado && !pendDia.length ? 0.85 : 1 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                  <span style={{ fontWeight: 800, fontSize: 13, color: C.ink }}>{esHoy ? "Hoy" : d.nombre}</span>
-                  <span style={{ fontSize: 12, color: C.slate }}>{fmtCorta(d.iso)}</span>
+                  <span style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>{esHoy ? "Hoy" : d.nombre}</span>
+                  <span style={{ fontSize: 12, color: C.slate, display: "inline-flex", alignItems: "center", gap: 6 }}>
+                    {pendDia.length > 0 && (
+                      <span
+                        onClick={() => !enviando && enviarDia(d.iso)}
+                        title="Enviar ya el correo de este día (las 3 áreas), sin esperar a las 7 p. m."
+                        style={{ cursor: enviando ? "default" : "pointer", color: sinAvisarDia ? C.amber : C.slate, fontWeight: 800 }}
+                      >
+                        {enviando === d.iso ? "…" : "✉"}
+                      </span>
+                    )}
+                    {fmtCorta(d.iso)}
+                  </span>
                 </div>
-                <div style={{ fontSize: 11.5, fontWeight: 700, color: pasa ? C.red : C.slate }}>
-                  {delDia.length} {delDia.length === 1 ? "lote" : "lotes"} · {fmtNum(total)} und{tope > 0 ? ` de ${fmtNum(tope)}` : ""}
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6, marginTop: 3, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 12, color: pasa ? C.red : C.slate, fontWeight: pasa ? 800 : 500 }}>
+                    {delDia.length} {delDia.length === 1 ? "lote" : "lotes"} · {fmtNum(total)} und{tope > 0 ? ` de ${fmtNum(tope)}` : ""}
+                  </span>
+                  {estado}
                 </div>
-                {pasa && <div style={{ fontSize: 11, color: C.red, fontWeight: 800 }}>Se pasa del tope por {fmtNum(total - tope)}</div>}
-                {pendDia.length > 0 && (
-                  <div style={{ fontSize: 11, fontWeight: 800, color: sinAvisarDia ? C.amber : C.green }}>
-                    {sinAvisarDia ? `${sinAvisarDia} sin avisar` : `✓ avisado${horaAviso ? ` ${horaAviso}` : ""}`}
+                {pasa && <div style={{ fontSize: 11, color: C.red, fontWeight: 800, marginTop: 2 }}>Se pasa del tope por {fmtNum(total - tope)}</div>}
+                {agruparPorPedido(pendDia).map((g) => (
+                  <div key={g.pedido || "sin"}>
+                    {cabeceraPedido(g.pedido, g.lotes.length, sumaUnd(g.lotes, (p) => p.cantidad))}
+                    {g.lotes.map(filaProgramada)}
+                  </div>
+                ))}
+                {cumDia.length > 0 && (
+                  <div style={{ marginTop: 8 }}>
+                    <span onClick={() => setAbiertos((a) => ({ ...a, [d.iso]: !a[d.iso] }))} style={{ cursor: "pointer", color: C.green, fontWeight: 800, fontSize: 12 }}>
+                      ✓ {cumDia.length} {cumDia.length === 1 ? "cumplido" : "cumplidos"} {abiertos[d.iso] ? "▴" : "▾"}
+                    </span>
+                    {abiertos[d.iso] && cumDia.map((p) => (
+                      <div key={p.id} style={{ fontSize: 12, color: C.slate, padding: "3px 0" }}>{p.numLote} · {p.referencia} · {fmtNum(p.cantidad)} und</div>
+                    ))}
                   </div>
                 )}
-                {delDia.map(tarjetaProgramada)}
-                {pendDia.length > 0 && (
-                  <button
-                    style={{ ...botonMini, background: sinAvisarDia ? C.amberBg : C.white, color: sinAvisarDia ? C.amber : C.slate, borderColor: sinAvisarDia ? C.amber : C.border }}
-                    disabled={!!enviando}
-                    onClick={() => enviarDia(d.iso)}
-                    title="Manda ya un correo con todo lo programado ese día (las 3 áreas), sin esperar a las 7 p. m."
-                  >
-                    {enviando === d.iso ? "Enviando..." : sinAvisarDia ? "✉ Enviar correo del día" : "✉ Volver a enviar"}
-                  </button>
-                )}
-                {!pasado && (
-                  <button
-                    style={{ ...botonMini, marginTop: "auto", background: elegidos.length ? C.blueBg : C.white, color: elegidos.length ? C.blue : C.slate, borderColor: elegidos.length ? C.blue : C.border }}
-                    disabled={!!guardando}
-                    onClick={() => programarAqui(d.iso)}
-                  >
-                    {guardando === d.iso ? "Guardando..." : elegidos.length ? `Programar aquí (${elegidos.length})` : "Programar aquí"}
-                  </button>
+                {!delDia.length && (
+                  <div style={{ border: `2px dashed ${C.border}`, borderRadius: 10, padding: "30px 8px", textAlign: "center", color: C.slate, fontSize: 12.5, marginTop: 10 }}>
+                    {pasado ? "Sin lotes" : "Aquí cae lo que programes"}
+                  </div>
                 )}
               </div>
             );
           })}
         </div>
       </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 10, minHeight: 20 }}>
-        {elegidos.length > 0 && (
-          <>
-            <span style={{ fontWeight: 800, fontSize: 13, color: C.ink }}>{elegidos.length} {elegidos.length === 1 ? "lote elegido" : "lotes elegidos"} · {fmtNum(unidadesElegidas)} und</span>
-            <button style={botonMini} onClick={() => setSel({})}>Limpiar selección</button>
-          </>
-        )}
-        {aviso && <span style={{ fontSize: 12.5, color: C.red, fontWeight: 700 }}>{aviso}</span>}
-        <span style={{ fontSize: 12, color: C.slate }}>"Programar aquí" solo guarda. El correo con las 3 áreas sale solo cada día a las 7 p. m. (cumplimiento de hoy y programación de mañana); "Enviar correo del día" lo adelanta.</span>
+      <div style={{ marginTop: 10, fontSize: 12, color: C.slate, lineHeight: 1.5 }}>
+        Toca lotes (o el nombre del pedido para elegirlos todos) y escoge el día en la barra azul. Programar solo guarda: el correo con las 3 áreas sale solo cada día a las 7 p. m.; el ✉ de cada día o "Enviar pendientes" lo adelantan. Raya de color = prioridad; el punto amarillo marca lo que aún no se ha avisado.
       </div>
     </div>
   );
