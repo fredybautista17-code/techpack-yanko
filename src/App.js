@@ -7052,7 +7052,7 @@ function ProduccionView({ currentUser, pedidosCliente, preordenesCliente, todosP
 // Preórdenes a propósito en vez de compartirlas -- son casi 150 líneas que
 // ya funcionan ahí todos los días, y tocar ese archivo para "compartirlas"
 // es un riesgo que no vale la pena solo para no repetir código.
-function OrdenesView({ preordenes, pedidos, capsulas, config, currentUser, onVincularPedido, onActualizarItemPreorden }) {
+function OrdenesView({ preordenes, pedidos, capsulas, config, currentUser, onVincularPedido, onActualizarItemPreorden, puedeVincularPedido }) {
   const [vinculando, setVinculando] = useState(null);
   const [buscaPedido, setBuscaPedido] = useState("");
   const [numeroPedidoManual, setNumeroPedidoManual] = useState("");
@@ -7418,7 +7418,7 @@ function OrdenesView({ preordenes, pedidos, capsulas, config, currentUser, onVin
                                 />
                               </td>
                               <td style={{ padding: "6px 10px" }}>
-                                {bloqueada ? (
+                                {bloqueada && !puedeVincularPedido ? (
                                   <span style={{ color: T.slate, fontSize: 11, fontStyle: "italic" }}>🔒 Bloqueada</span>
                                 ) : (
                                   <button onClick={() => setVinculando({ preordenId: p.id, itemId: it.itemId })} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>Vincular</button>
@@ -7480,7 +7480,7 @@ function OrdenesView({ preordenes, pedidos, capsulas, config, currentUser, onVin
     </div>
   );
 }
-function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, canAccessBodega, canAccessContabilidad, canAccessDiseno, entregasTela, onAddCapsula, onAddRef, onCrearPreorden, onAgregarAPreordenExistente, onVincularPedido, onAprobarPreorden, onDesaprobarPreorden, onActualizarPreorden, onEliminarPreorden, onActualizarItemPreorden, onActualizarItemsPreorden, onCrearEntregaTela, onAsignarEntregaTela, prefillDesdeCapsula, onConsumirPrefillDesdeCapsula, onMarcarRefEnviadaAPreorden, historialNuevaOrden, onRegistrarHistorialNuevaOrden }) {
+function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, canAccessBodega, canAccessContabilidad, canAccessDiseno, entregasTela, onAddCapsula, onAddRef, onCrearPreorden, onAgregarAPreordenExistente, onVincularPedido, onAprobarPreorden, onDesaprobarPreorden, onActualizarPreorden, onEliminarPreorden, onActualizarItemPreorden, onActualizarItemsPreorden, puedeVincularPedido, onCrearEntregaTela, onAsignarEntregaTela, prefillDesdeCapsula, onConsumirPrefillDesdeCapsula, onMarcarRefEnviadaAPreorden, historialNuevaOrden, onRegistrarHistorialNuevaOrden }) {
   const [modo, setModo] = useState("lista");
   // (2026-09-30, a pedido de Fredy) "Pasar a Preorden"/"Pasar Cápsula a
   // Preorden" llegan acá con prefillDesdeCapsula (arreglo de {cap, ref}) ya
@@ -8671,7 +8671,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                                       style={{ color: T.jade, fontWeight: 700, cursor: pedidoDetalle ? "pointer" : "default", textDecoration: pedidoDetalle ? "underline" : "none" }}
                                     >✓ {it.pedidoVinculado?.numero ? `#${it.pedidoVinculado.numero}` : "En pedido"}</span>
                                   );
-                                })() : bloqueada ? (
+                                })() : bloqueada && !puedeVincularPedido ? (
                                   <span style={{ color: T.slate, fontSize: 11, fontStyle: "italic" }}>🔒 Bloqueada</span>
                                 ) : estadoActual !== "aprobada" ? (
                                   <span style={{ color: T.slate, fontSize: 11 }}>Sin pedido</span>
@@ -13678,6 +13678,8 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     { area: "💰 Contabilidad", items: [["contabilidad", "Contabilidad"], ["contabilidad_bases_dado_por_cumplido", "Puede crear y configurar Bases (Dado por Cumplido)"], ["contabilidad_sincronizar_dado_por_cumplido", "Puede sincronizar con Busint (Buscar lotes nuevos)"], ["contabilidad_editar_dado_por_cumplido", "✎ Puede editar lotes ya aprobados (Dado por Cumplido)"], ["contabilidad_ordenes_compra", "🛒 Puede ver Órdenes de compra"]] },
     // (2026-10-16, a pedido de Fredy) El acceso al módulo sigue en la lista de Diseño ("cotizador"); estos dos son permisos extra por rol.
     { area: "🧮 Cotizaciones", items: [["cotizador_editar", "Puede crear y editar cotizaciones (sin esto, solo consulta)"], ["cotizador_borrar", "Puede borrar cotizaciones"], ["cotizador_aprobar", "Puede aprobar cotizaciones (y aplicar el precio)"], ["cotizador_deshabilitar", "Puede deshabilitar cotizaciones aprobadas"], ["cotizador_costos_reales", "Puede ajustar costos reales de cotizaciones aprobadas (sin cambiar el precio aprobado)"], ["cotizador_enviar_facturar", "Puede enviar cotizaciones aprobadas a facturar"], ["cotizador_facturar", "Facturación: ve Por facturar y registra el documento y su número"]] },
+    // (2026-10-28, a pedido de Fredy) Vincular referencias a pedidos en Preórdenes/Órdenes estaba solo para el administrador.
+    { area: "🧾 Preórdenes y Órdenes", items: [["preordenes_vincular_pedido", "Puede vincular referencias a pedidos (aunque la preorden esté aprobada)"]] },
     { area: "📋 Planeación", items: [["planeacion", "Planeación"]] },
     { area: "🏭 Planta", items: [["planta", "Planta"]] },
     { area: "📦 Bodega", items: [["bodega", "Bodega"]] },
@@ -19070,6 +19072,9 @@ function AppInner() {
   // patrón que nomina_editar_horas_extra -- pensado para administrador,
   // Yuleisi Virginia y María Fernanda Páez.
   const canEditarBonificacion = moduloVisible(userRoleData, "nomina_editar_bonificacion", currentUser?.isAdmin);
+  // (2026-10-28, a pedido de Fredy) "preordenes_vincular_pedido": puede usar "Vincular" (referencia -> pedido) en Preórdenes
+  // aprobadas y en Órdenes, que antes eran solo del administrador. Admin siempre.
+  const canVincularPedidoPreorden = moduloVisible(userRoleData, "preordenes_vincular_pedido", currentUser?.isAdmin);
   // (2026-10-28, a pedido de Fredy) "nomina_autorizar_permisos": puede generar los códigos de
   // autorización de permisos (el permiso #4 del mes en adelante) y cambiar el tope. Admin siempre.
   const canAutorizarPermisos = moduloVisible(userRoleData, "nomina_autorizar_permisos", currentUser?.isAdmin);
@@ -19623,6 +19628,7 @@ function AppInner() {
                 onEliminarPreorden={deleteBitacoraPreorden}
                 onActualizarItemPreorden={actualizarItemPreorden}
                 onActualizarItemsPreorden={actualizarItemsPreorden}
+                puedeVincularPedido={canVincularPedidoPreorden}
                 prefillDesdeCapsula={prefillPreordenDesde}
                 onConsumirPrefillDesdeCapsula={() => setPrefillPreordenDesde(null)}
                 onMarcarRefEnviadaAPreorden={(capId, refId) => updateRef(capId, refId, { enviadoAPreorden: { en: nowISO(), por: currentUser?.name || "" } })}
@@ -19637,6 +19643,7 @@ function AppInner() {
                 currentUser={currentUser}
                 onVincularPedido={vincularPreordenAPedido}
                 onActualizarItemPreorden={actualizarItemPreorden}
+                puedeVincularPedido={canVincularPedidoPreorden}
               />
             )}
             {view === "devoluciones" && canAccessDevoluciones && (
