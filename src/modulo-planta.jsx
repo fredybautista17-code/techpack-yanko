@@ -593,6 +593,11 @@ function VistaPreviaCorreoModal({ dias, programacion, diasMover, hoyISO, onVista
             return (
               <div key={iso} style={{ marginTop: 16 }}>
                 <div style={{ fontWeight: 800, fontSize: 15, color: C.ink, marginBottom: 8 }}>{nombreDia(iso)}{d.totalProg != null ? ` · ${d.totalProg} ${d.totalProg === 1 ? "lote" : "lotes"} en el correo` : ""}</div>
+                {delDia.length > 0 && delDia.every((p) => p.avisado !== false) && (() => {
+                  const ult = delDia.map((p) => p.avisadoEn).filter(Boolean).sort().pop();
+                  const hora = ult ? new Date(ult).toLocaleTimeString("es-CO", { hour: "numeric", minute: "2-digit", timeZone: "America/Bogota" }) : "";
+                  return <div style={{ background: C.amberBg, color: C.amber, fontSize: 13, fontWeight: 700, borderRadius: 10, padding: "8px 12px", marginBottom: 8 }}>Este día ya se avisó{hora ? ` a las ${hora}` : ""}; se enviará de nuevo.</div>;
+                })()}
                 {d.error && <div style={{ color: C.red, fontSize: 13.5 }}>{d.error}</div>}
                 {d.motivo === "nada que informar" && <div style={{ color: C.slate, fontSize: 13.5, padding: "8px 0" }}>No hay nada programado para ese día: no sale correo.</div>}
                 {d.vista && (
@@ -749,11 +754,13 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
         <button onClick={() => setPanel(true)} style={{ border: `1px solid ${C.blue}`, background: C.blue, color: "#fff", borderRadius: 12, padding: "13px 22px", fontSize: 15.5, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>
           ＋ Programar lotes <span style={{ opacity: 0.85, fontWeight: 600 }}>· {sinProgramar.length} sin programar</span>
         </button>
-        {sinAvisarTotal > 0 && (
-          <button style={{ ...botonMini, padding: "10px 14px", fontSize: 13, background: C.amberBg, color: C.amber, borderColor: C.amber }} onClick={() => abrirVista(diasSinAvisar)} title="Muestra el correo de lo que aún no se ha avisado para revisarlo y enviarlo, sin esperar a las 7 p. m.">
-            {`✉ Enviar pendientes (${sinAvisarTotal})`}
-          </button>
-        )}
+        <button
+          style={{ ...botonMini, padding: "10px 14px", fontSize: 13, ...(sinAvisarTotal > 0 ? { background: C.amberBg, color: C.amber, borderColor: C.amber } : { color: C.slate, opacity: 0.75 }) }}
+          onClick={() => (sinAvisarTotal > 0 ? abrirVista(diasSinAvisar) : window.alert("Todo lo programado ya se avisó. Para mandar el correo de nuevo, usa el botón \"✉ Reenviar correo\" del día."))}
+          title="Muestra el correo de lo que aún no se ha avisado para revisarlo y enviarlo, sin esperar a las 7 p. m."
+        >
+          {`✉ Enviar pendientes (${sinAvisarTotal})`}
+        </button>
         <span style={{ flex: 1 }} />
         <span style={{ fontSize: 13.5, color: C.slate }}>Semana: <b style={{ color: C.ink }}>{totalSemana.length} lotes · {fmtNum(sumaUnd(totalSemana))} und</b></span>
         <label style={{ fontSize: 12.5, color: C.slate, display: "inline-flex", alignItems: "center", gap: 6 }} title="Si lo llenas, un día que lo pase se pone en rojo. Déjalo en 0 para no usar tope.">
@@ -803,15 +810,6 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
                 <b style={{ fontSize: 16, color: C.ink }}>{esHoy ? "Hoy" : d.nombre}</b>
                 <span style={{ fontSize: 12.5, color: C.slate, display: "inline-flex", alignItems: "center", gap: 8 }}>
-                  {pendDia.length > 0 && (
-                    <span
-                      onClick={() => abrirVista([d.iso])}
-                      title="Ver y enviar el correo de Planta de este día, sin esperar a las 7 p. m."
-                      style={{ cursor: "pointer", color: sinAvisarDia ? C.amber : C.slate, fontWeight: 800 }}
-                    >
-                      ✉
-                    </span>
-                  )}
                   {fmtCorta(d.iso)}
                 </span>
               </div>
@@ -820,6 +818,15 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
                 {delDia.length === 1 ? "lote" : "lotes"} · {fmtNum(total)} und{tope > 0 ? ` de ${fmtNum(tope)}` : ""}
               </div>
               <div style={{ marginTop: 8 }}>{estado}</div>
+              {pendDia.length > 0 && (
+                <button
+                  onClick={() => abrirVista([d.iso])}
+                  title="Ver el correo de Planta de este día y enviarlo, sin esperar a las 7 p. m."
+                  style={{ ...botonMini, marginTop: 10, width: "100%", padding: "8px 10px", fontSize: 12.5, ...(sinAvisarDia ? { background: C.amberBg, color: C.amber, borderColor: C.amber } : {}) }}
+                >
+                  {sinAvisarDia ? "✉ Enviar correo" : "✉ Reenviar correo"}
+                </button>
+              )}
               {pasa && <div style={{ fontSize: 11.5, color: C.red, fontWeight: 800, marginTop: 4 }}>Se pasa del tope por {fmtNum(total - tope)}</div>}
               {agrupar(pendDia).map((g) => lineaPedido(d.iso, g, false))}
               {cumDia.length > 0 && (
