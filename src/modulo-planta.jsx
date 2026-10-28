@@ -747,6 +747,7 @@ function TraerDeBusintModal({ onClose }) {
   const [error, setError] = useState("");
   const [comparacion, setComparacion] = useState(null);
   const [resumen, setResumen] = useState(null);
+  const [avanzado, setAvanzado] = useState(false);
   async function llamar(modo, porAnio = false) {
     setCargando(porAnio ? `${modo}-anio` : modo);
     setError("");
@@ -768,8 +769,22 @@ function TraerDeBusintModal({ onClose }) {
   return (
     <Modal title="Traer Entradas de Planta desde Busint" onClose={onClose} width={760}>
       <div style={{ padding: "12px 14px", background: C.blueBg, borderRadius: 8, marginBottom: 16, fontSize: 13, color: C.blue, lineHeight: 1.5 }}>
-        Busint arma las mismas columnas del Excel (entradas, devoluciones, taller, fechas comprometidas, precio teórico, pedido, categoría). Lo que ya está cargado se conserva; lo que trae Busint se suma o se actualiza, y se guarda por año. Esto también corre solo todos los días a las 6:00am (últimos 45 días).
+        Trae las entradas de Busint de los últimos {dias} días y las guarda. Lo que ya está cargado se conserva. También se actualiza solo todos los días a las 6:00 a. m.
       </div>
+      <div style={{ marginBottom: 16 }}>
+        <Btn onClick={() => llamar("guardar")} disabled={!!cargando}>
+          {cargando === "guardar" ? "Actualizando..." : "🔄 Actualizar"}
+        </Btn>
+      </div>
+      <div style={{ marginBottom: 16 }}>
+        <button
+          type="button"
+          onClick={() => setAvanzado((v) => !v)}
+          style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: 12.5, fontWeight: 700, color: C.slate, fontFamily: "inherit" }}
+        >
+          {avanzado ? "▼" : "▶"} Opciones avanzadas (otro rango de días, comparar con mi Excel, año completo)
+        </button>
+        {avanzado && <div style={{ marginTop: 12 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
         <label style={{ fontSize: 13, color: C.slate }}>Traer los últimos</label>
         <select
@@ -790,7 +805,7 @@ function TraerDeBusintModal({ onClose }) {
         <Btn variant="secondary" onClick={() => llamar("preview")} disabled={!!cargando}>
           {cargando === "preview" ? "Calculando..." : "👁 Ver qué traería"}
         </Btn>
-        <Btn onClick={() => llamar("guardar")} disabled={!!cargando}>
+        <Btn variant="secondary" onClick={() => llamar("guardar")} disabled={!!cargando}>
           {cargando === "guardar" ? "Guardando..." : "⬇ Traer y guardar"}
         </Btn>
       </div>
@@ -814,6 +829,8 @@ function TraerDeBusintModal({ onClose }) {
         <div style={{ flexBasis: "100%", fontSize: 12, color: C.slate, lineHeight: 1.5 }}>
           Cada año se guarda aparte y queda guardado: lo traes una sola vez. El año en curso se actualiza solo todos los días.
         </div>
+      </div>
+        </div>}
       </div>
       {cargando && <div style={{ fontSize: 13, color: C.slate, marginBottom: 12 }}>Consultando Busint... puede tardar uno o dos minutos.</div>}
       {error && (
