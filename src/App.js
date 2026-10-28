@@ -7052,6 +7052,16 @@ function ProduccionView({ currentUser, pedidosCliente, preordenesCliente, todosP
 // Preórdenes a propósito en vez de compartirlas -- son casi 150 líneas que
 // ya funcionan ahí todos los días, y tocar ese archivo para "compartirlas"
 // es un riesgo que no vale la pena solo para no repetir código.
+// (2026-10-28, a pedido de Fredy) "Pasar a Orden": una referencia con tela confirmada aparece en Órdenes solo cuando
+// alguien pulsa el botón (pasadaAOrden: true). Las que ya tenían la tela confirmada antes de este cambio (confirmadas
+// antes del 2026-10-29) se consideran ya pasadas para que no desaparezcan de Órdenes de golpe.
+const CORTE_PASAR_A_ORDEN = "2026-10-29";
+function itemPasadoAOrden(it) {
+  if (!it || !it.telaComprada) return false;
+  if (it.pasadaAOrden === true) return true;
+  if (it.pasadaAOrden == null) return String(it.telaCompradaEn || "") < CORTE_PASAR_A_ORDEN;
+  return false;
+}
 function OrdenesView({ preordenes, pedidos, capsulas, config, currentUser, onVincularPedido, onActualizarItemPreorden, puedeVincularPedido }) {
   const [vinculando, setVinculando] = useState(null);
   const [buscaPedido, setBuscaPedido] = useState("");
@@ -7201,7 +7211,7 @@ function OrdenesView({ preordenes, pedidos, capsulas, config, currentUser, onVin
   }
   const tarjetas = (preordenes || [])
     .filter((p) => (p.estado || "montada") === "aprobada")
-    .map((p) => ({ preorden: p, items: (p.items || []).filter((it) => it.telaComprada && !itemGraduado(it, p.cliente, p.fechaCreado)) }))
+    .map((p) => ({ preorden: p, items: (p.items || []).filter((it) => it.telaComprada && itemPasadoAOrden(it) && !itemGraduado(it, p.cliente, p.fechaCreado)) }))
     .filter((t) => t.items.length > 0)
     .sort((a, b) => (b.preorden.fechaCreado || "").localeCompare(a.preorden.fechaCreado || ""));
   const bq = buscaPedido.trim().toLowerCase();
@@ -7311,7 +7321,7 @@ function OrdenesView({ preordenes, pedidos, capsulas, config, currentUser, onVin
         </Modal>
       )}
       {!tarjetas.length ? (
-        <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>Todavía no hay ninguna referencia en Órdenes -- aparecen acá apenas se les confirme la tela en una preorden aprobada.</div>
+        <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>Todavía no hay ninguna referencia en Órdenes -- aparecen acá cuando, con la tela ya confirmada, se pulsa «Pasar a Orden» en la preorden aprobada.</div>
       ) : !tarjetasBuscadas.length ? (
         <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>Ninguna orden coincide con esa búsqueda.</div>
       ) : (
@@ -7327,7 +7337,7 @@ function OrdenesView({ preordenes, pedidos, capsulas, config, currentUser, onVin
           const bloqueada = !currentUser?.isAdmin;
           function devolverTelaPendiente(it) {
             if (window.confirm(`¿Devolver la referencia "${it.referencia}" a pendiente de confirmación?`)) {
-              onActualizarItemPreorden(p.id, it.itemId, { telaComprada: false, telaCompradaEn: null, telaCompradaPor: null });
+              onActualizarItemPreorden(p.id, it.itemId, { telaComprada: false, telaCompradaEn: null, telaCompradaPor: null, pasadaAOrden: null, pasadaAOrdenEn: null, pasadaAOrdenPor: null });
             }
           }
           // (2026-10-03, a pedido de Fredy) Versión simplificada de la celda
@@ -7340,6 +7350,9 @@ function OrdenesView({ preordenes, pedidos, capsulas, config, currentUser, onVin
             return (
               <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                 <span title={infoTela} style={{ padding: "3px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.jadeBg, color: T.jade, whiteSpace: "nowrap" }}>✅ Confirmada por Diseño</span>
+                {currentUser?.isAdmin && (
+                  <button onClick={() => { if (window.confirm(`¿Sacar la referencia "${it.referencia}" de Órdenes? Vuelve a Preórdenes y se puede pasar de nuevo con «Pasar a Orden».`)) onActualizarItemPreorden(p.id, it.itemId, { pasadaAOrden: false, pasadaAOrdenEn: null, pasadaAOrdenPor: null }); }} title="Sacar de Órdenes (vuelve a Preórdenes)" style={{ padding: "2px 6px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.slate, fontWeight: 700, fontSize: 10, cursor: "pointer", whiteSpace: "nowrap" }}>⤺ Sacar de Orden</button>
+                )}
                 {currentUser?.isAdmin && (
                   <button onClick={() => devolverTelaPendiente(it)} title="Devolver a pendiente de confirmación" style={{ padding: "2px 6px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.coral, fontWeight: 700, fontSize: 10, cursor: "pointer", whiteSpace: "nowrap" }}>↩️ Devolver</button>
                 )}
@@ -7480,7 +7493,7 @@ function OrdenesView({ preordenes, pedidos, capsulas, config, currentUser, onVin
     </div>
   );
 }
-function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, canAccessBodega, canAccessContabilidad, canAccessDiseno, entregasTela, onAddCapsula, onAddRef, onCrearPreorden, onAgregarAPreordenExistente, onVincularPedido, onAprobarPreorden, onDesaprobarPreorden, onActualizarPreorden, onEliminarPreorden, onActualizarItemPreorden, onActualizarItemsPreorden, puedeVincularPedido, onCrearEntregaTela, onAsignarEntregaTela, prefillDesdeCapsula, onConsumirPrefillDesdeCapsula, onMarcarRefEnviadaAPreorden, historialNuevaOrden, onRegistrarHistorialNuevaOrden }) {
+function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, canAccessBodega, canAccessContabilidad, canAccessDiseno, entregasTela, onAddCapsula, onAddRef, onCrearPreorden, onAgregarAPreordenExistente, onVincularPedido, onAprobarPreorden, onDesaprobarPreorden, onActualizarPreorden, onEliminarPreorden, onActualizarItemPreorden, onActualizarItemsPreorden, puedeVincularPedido, puedePasarAOrden, onCrearEntregaTela, onAsignarEntregaTela, prefillDesdeCapsula, onConsumirPrefillDesdeCapsula, onMarcarRefEnviadaAPreorden, historialNuevaOrden, onRegistrarHistorialNuevaOrden }) {
   const [modo, setModo] = useState("lista");
   // (2026-09-30, a pedido de Fredy) "Pasar a Preorden"/"Pasar Cápsula a
   // Preorden" llegan acá con prefillDesdeCapsula (arreglo de {cap, ref}) ya
@@ -8398,14 +8411,23 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
         // itemGraduado ya la cuenta como Pedido y deja de aparecer acá. No es
         // un estado guardado aparte, es la misma "tela confirmada" de siempre,
         // solo que ahora también se muestra en la pestaña "🧵 Órdenes".
-        const itemsEnOrdenes = itemsConTela.filter((it) => !itemGraduado(it, p.cliente, p.fechaCreado));
+        const itemsEnOrdenes = itemsConTela.filter((it) => itemPasadoAOrden(it) && !itemGraduado(it, p.cliente, p.fechaCreado));
+        const itemsPorPasarAOrden = itemsConTela.filter((it) => !itemPasadoAOrden(it) && !itemGraduado(it, p.cliente, p.fechaCreado));
         // (2026-09-17, a pedido de Fredy) Solo el administrador puede
         // deshacer una confirmación ya hecha -- vuelve la referencia al
         // bloque de "pendientes de tela".
         function devolverTelaPendiente(it) {
           if (window.confirm(`¿Devolver la referencia "${it.referencia}" a pendiente de confirmación?`)) {
-            onActualizarItemPreorden(p.id, it.itemId, { telaComprada: false, telaCompradaEn: null, telaCompradaPor: null });
+            onActualizarItemPreorden(p.id, it.itemId, { telaComprada: false, telaCompradaEn: null, telaCompradaPor: null, pasadaAOrden: null, pasadaAOrdenEn: null, pasadaAOrdenPor: null });
           }
+        }
+        // (2026-10-28, a pedido de Fredy) "Pasar a Orden": deja las referencias elegidas en Órdenes, todas en un solo guardado.
+        function pasarAOrden(lista) {
+          const porPasar = (lista || []).filter((x) => x.telaComprada && !itemPasadoAOrden(x));
+          if (!porPasar.length) return;
+          const marca = { pasadaAOrden: true, pasadaAOrdenEn: nowISO(), pasadaAOrdenPor: currentUser?.name || "" };
+          if (porPasar.length === 1 || !onActualizarItemsPreorden) porPasar.forEach((x) => onActualizarItemPreorden(p.id, x.itemId, marca));
+          else onActualizarItemsPreorden(p.id, porPasar.map((x) => ({ itemId: x.itemId, patch: marca })));
         }
         // (2026-09-23, a pedido de Fredy) Esta celda ya no tiene botones de
         // ingresar/confirmar -- eso ahora se hace desde el panel "🧵 Ingreso
@@ -8421,6 +8443,13 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                 <span title={infoTela} style={{ padding: "3px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.jadeBg, color: T.jade, whiteSpace: "nowrap" }}>✅ Confirmada por Diseño</span>
                 {currentUser?.isAdmin && (
                   <button onClick={() => devolverTelaPendiente(it)} title="Devolver a pendiente de confirmación" style={{ padding: "2px 6px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.coral, fontWeight: 700, fontSize: 10, cursor: "pointer", whiteSpace: "nowrap" }}>↩️ Devolver</button>
+                )}
+                {itemPasadoAOrden(it) ? (
+                  <span title="Esta referencia ya aparece en Órdenes" style={{ padding: "3px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.denimBg, color: T.denim, whiteSpace: "nowrap" }}>➜ En Órdenes</span>
+                ) : puedePasarAOrden ? (
+                  <button onClick={() => pasarAOrden([it])} title="La tela ya quedó vinculada: pasar esta referencia a Órdenes" style={{ padding: "3px 9px", borderRadius: 6, border: "none", background: T.denim, color: T.white, fontWeight: 700, fontSize: 10, cursor: "pointer", whiteSpace: "nowrap" }}>➜ Pasar a Orden</button>
+                ) : (
+                  <span style={{ padding: "3px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.amberBg, color: T.amber, whiteSpace: "nowrap" }}>Falta pasar a Orden</span>
                 )}
               </div>
             );
@@ -8466,7 +8495,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                       >✓ Aprobar</button>
                     )}
                     {estadoActual === "aprobada" && (p.items || []).length > 0 && !esCliente && (
-                      <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.coralBg, color: T.coral }}>🧵 {itemsEnOrdenes.length} en Órdenes</span>
+                      <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.coralBg, color: T.coral }}>🧵 {itemsEnOrdenes.length} en Órdenes{itemsPorPasarAOrden.length ? ` · ${itemsPorPasarAOrden.length} por pasar` : ""}</span>
                     )}
                   </div>
                   <div style={{ fontSize: 12, color: T.slate }}>{(p.items || []).length} ref · {fmtNum(totalUnidades)} unid.{valorTotalPreorden > 0 ? ` · ${fmtCOP(valorTotalPreorden)}` : ""} · Creada {p.fechaCreado}</div>
@@ -8716,7 +8745,12 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                               <tr><td colSpan={columnasPreorden.length} style={{ padding: "6px 10px", color: T.slate, fontStyle: "italic" }}>Ninguna referencia pendiente de confirmación.</td></tr>
                             )}
                             <tr>
-                              <td colSpan={columnasPreorden.length} style={{ padding: "16px 10px 6px", fontWeight: 800, fontSize: 12, color: T.jade, background: T.white, borderTop: `2px solid ${T.border}` }}>🧵 Aprobadas con tela confirmada ({itemsConTela.length})</td>
+                              <td colSpan={columnasPreorden.length} style={{ padding: "16px 10px 6px", fontWeight: 800, fontSize: 12, color: T.jade, background: T.white, borderTop: `2px solid ${T.border}` }}>
+                                🧵 Aprobadas con tela confirmada ({itemsConTela.length})
+                                {puedePasarAOrden && itemsPorPasarAOrden.length > 0 && (
+                                  <button onClick={() => pasarAOrden(itemsPorPasarAOrden)} title="Pasa a Órdenes todas las referencias con tela confirmada que aún no se han pasado" style={{ marginLeft: 12, padding: "4px 12px", borderRadius: 6, border: "none", background: T.denim, color: T.white, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>➜ Pasar todas a Orden ({itemsPorPasarAOrden.length})</button>
+                                )}
+                              </td>
                             </tr>
                             {itemsConTela.length ? itemsConTela.map((it, i) => filaItem(it, i)) : (
                               <tr><td colSpan={columnasPreorden.length} style={{ padding: "6px 10px", color: T.slate, fontStyle: "italic" }}>Todavía no hay referencias con tela confirmada.</td></tr>
@@ -13679,7 +13713,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     // (2026-10-16, a pedido de Fredy) El acceso al módulo sigue en la lista de Diseño ("cotizador"); estos dos son permisos extra por rol.
     { area: "🧮 Cotizaciones", items: [["cotizador_editar", "Puede crear y editar cotizaciones (sin esto, solo consulta)"], ["cotizador_borrar", "Puede borrar cotizaciones"], ["cotizador_aprobar", "Puede aprobar cotizaciones (y aplicar el precio)"], ["cotizador_deshabilitar", "Puede deshabilitar cotizaciones aprobadas"], ["cotizador_costos_reales", "Puede ajustar costos reales de cotizaciones aprobadas (sin cambiar el precio aprobado)"], ["cotizador_enviar_facturar", "Puede enviar cotizaciones aprobadas a facturar"], ["cotizador_facturar", "Facturación: ve Por facturar y registra el documento y su número"]] },
     // (2026-10-28, a pedido de Fredy) Vincular referencias a pedidos en Preórdenes/Órdenes estaba solo para el administrador.
-    { area: "🧾 Preórdenes y Órdenes", items: [["preordenes_vincular_pedido", "Puede vincular referencias a pedidos (aunque la preorden esté aprobada)"]] },
+    { area: "🧾 Preórdenes y Órdenes", items: [["preordenes_vincular_pedido", "Puede vincular referencias a pedidos (aunque la preorden esté aprobada)"], ["preordenes_pasar_a_orden", "Puede pasar referencias con tela confirmada a Órdenes (botón «Pasar a Orden»)"]] },
     { area: "📋 Planeación", items: [["planeacion", "Planeación"]] },
     { area: "🏭 Planta", items: [["planta", "Planta"]] },
     { area: "📦 Bodega", items: [["bodega", "Bodega"]] },
@@ -19074,6 +19108,8 @@ function AppInner() {
   const canEditarBonificacion = moduloVisible(userRoleData, "nomina_editar_bonificacion", currentUser?.isAdmin);
   // (2026-10-28, a pedido de Fredy) "preordenes_vincular_pedido": puede usar "Vincular" (referencia -> pedido) en Preórdenes
   // aprobadas y en Órdenes, que antes eran solo del administrador. Admin siempre.
+  // (2026-10-28, a pedido de Fredy) "preordenes_pasar_a_orden": puede pulsar "Pasar a Orden" cuando la tela ya quedó vinculada.
+  const canPasarAOrden = moduloVisible(userRoleData, "preordenes_pasar_a_orden", currentUser?.isAdmin);
   const canVincularPedidoPreorden = moduloVisible(userRoleData, "preordenes_vincular_pedido", currentUser?.isAdmin);
   // (2026-10-28, a pedido de Fredy) "nomina_autorizar_permisos": puede generar los códigos de
   // autorización de permisos (el permiso #4 del mes en adelante) y cambiar el tope. Admin siempre.
@@ -19629,6 +19665,7 @@ function AppInner() {
                 onActualizarItemPreorden={actualizarItemPreorden}
                 onActualizarItemsPreorden={actualizarItemsPreorden}
                 puedeVincularPedido={canVincularPedidoPreorden}
+                puedePasarAOrden={canPasarAOrden}
                 prefillDesdeCapsula={prefillPreordenDesde}
                 onConsumirPrefillDesdeCapsula={() => setPrefillPreordenDesde(null)}
                 onMarcarRefEnviadaAPreorden={(capId, refId) => updateRef(capId, refId, { enviadoAPreorden: { en: nowISO(), por: currentUser?.name || "" } })}
