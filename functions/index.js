@@ -9509,8 +9509,8 @@ async function agregarSeccionNotificacion({ correos, titulo, horaOrigen, html })
 //  - Al programar (Planta de confección, Control de calidad, Zona calor) la pantalla llama a
 //    `notificarProgramacionCorreo`: sale de una vez un tablerito con lote, cantidad, pedido y
 //    prioridad a la lista de esa área. Lo mismo al CAMBIAR o CANCELAR una programación (con motivo).
-//  - (2026-10-28) Cada mañana (10 a. m., solo en días de trabajo) `enviarCumplimientoProgramacionDiario` manda el correo:
-//    programación de HOY y cumplimiento del día de trabajo ANTERIOR; cada lista recibe solo su área y `todas` (gerencia) recibe todo. Cumplimiento: Planta contra la carga de Planeación (el lote ya no está en Planta
+//  - (2026-10-28) Dos correos al día, solo en días de trabajo: 7 p. m. `enviarProgramacionNocheDiario` (metas cumplidas HOY + programación del
+//    SIGUIENTE día de trabajo) y 10 a. m. `enviarCumplimientoProgramacionDiario` (cumplimiento del día de trabajo ANTERIOR + programación de HOY, ratificada); cada lista recibe solo su área y `todas` (gerencia) recibe todo. Cumplimiento: Planta contra la carga de Planeación (el lote ya no está en Planta
 //    Yanko) y Zona calor / Control de calidad contra las ENTRADAS de Busint.
 //  - Los destinatarios viven en config/correos_programacion { planta: [], calidad: [], zonacalor: [] }
 //    y se editan en Administración. Todo queda en programacion_correos_log.
@@ -9845,6 +9845,14 @@ async function esDiaDeTrabajoCP(iso, sinTrabajar) {
   if (base) return true;
   return hayProgramacionEnDiaCP(iso);
 }
+// El siguiente día de trabajo después de `iso` (hasta 10 días adelante; si no encuentra, mañana).
+async function proximoDiaTrabajoCP(iso, sinTrabajar) {
+  for (let i = 1; i <= 10; i += 1) {
+    const d = sumarDiasISOCP(iso, i);
+    if (await esDiaDeTrabajoCP(d, sinTrabajar)) return d;
+  }
+  return sumarDiasISOCP(iso, 1);
+}
 // El día de trabajo anterior más cercano a `iso` (hasta 10 días atrás; si no encuentra, ayer).
 async function diaTrabajoAnteriorCP(iso, sinTrabajar) {
   for (let i = 1; i <= 10; i += 1) {
@@ -9902,7 +9910,7 @@ async function enviarCorreoNocheCP({ fechaHoy, diaProgramacion, soloProgramacion
         const sc = seccionCumplimientoCP(a, filas);
         cumplidos += sc.cumplidos; totalCumpl += sc.total; sec += sc.html;
       }
-      if (sec) cuerpo += `<h2 style="${H2_CP}">${momento === "manana" ? "Cumplimiento del día anterior" : "Cumplimiento de hoy"} ${fechaLatinaCP(cumpl.ayer)}: ${cumplidos} de ${totalCumpl}</h2>${sec}`;
+      if (sec) cuerpo += `<h2 style="${H2_CP}">${momento === "manana" ? "Cumplimiento del día anterior" : "Metas cumplidas hoy"} ${fechaLatinaCP(cumpl.ayer)}: ${cumplidos} de ${totalCumpl}</h2>${sec}`;
     }
     let secProg = "";
     for (const a of areas) {
@@ -9910,7 +9918,7 @@ async function enviarCorreoNocheCP({ fechaHoy, diaProgramacion, soloProgramacion
       totalProg += prog[a].length;
       secProg += seccionProgramacionCP(a, prog[a]);
     }
-    if (secProg) cuerpo += `<h2 style="${H2_CP}">Programado para ${fechaLatinaCP(dia)}: ${totalProg} ${totalProg === 1 ? "lote" : "lotes"}</h2>${secProg}`;
+    if (secProg) cuerpo += `<h2 style="${H2_CP}">${momento === "manana" ? "Programación de hoy, ratificada" : "Programado para"} ${fechaLatinaCP(dia)}: ${totalProg} ${totalProg === 1 ? "lote" : "lotes"}</h2>${secProg}`;
     if (!cuerpo) return null;
     const partes = [];
     if (totalCumpl) partes.push(`Cumplimiento ${fechaLatinaCP(hoy)} (${cumplidos} de ${totalCumpl})`);
@@ -9921,8 +9929,8 @@ async function enviarCorreoNocheCP({ fechaHoy, diaProgramacion, soloProgramacion
     const intro = soloProgramacion
       ? `Programación del <b>${fechaLatinaCP(dia)}</b> en ${escHtmlCP(listaAreas)}.${programadoPor ? ` Envía: <b>${escHtmlCP(programadoPor)}</b>.` : ""}`
       : momento === "manana"
-        ? `Resumen de la mañana para ${escHtmlCP(listaAreas)}: lo programado para hoy y lo que se cumplió el día de trabajo anterior. Los lotes agregados desde el último correo van resaltados como "nuevo".`
-        : `Resumen de la noche para ${escHtmlCP(listaAreas)}: lo que se cumplió hoy y lo que quedó programado para mañana. Los lotes agregados desde el último correo van resaltados como "nuevo".`;
+        ? `Resumen de la mañana para ${escHtmlCP(listaAreas)}: lo que se cumplió el día de trabajo anterior y la programación de hoy, ratificada. Los lotes agregados o cambiados desde el correo de las 7 p. m. van resaltados como "nuevo".`
+        : `Resumen de la noche para ${escHtmlCP(listaAreas)}: las metas que se cumplieron hoy y la programación del ${fechaLatinaCP(dia)}. Los lotes agregados desde el último correo van resaltados como "nuevo".`;
     const html = envolverCorreoCP("ATLAS — Programación y cumplimiento", intro, cuerpo, "Mensaje automático de ATLAS.");
     return { areas, asunto, html, cumplidos, totalCumpl, totalProg };
   };
@@ -9967,7 +9975,22 @@ async function enviarCorreoNocheCP({ fechaHoy, diaProgramacion, soloProgramacion
   const completo = armarCorreo(areasPermitidas) || { cumplidos: 0, totalCumpl: 0, totalProg: 0 };
   return { enviado: true, hoy, dia, diaCumplimiento: hoy, correos: enviados, destinatarios, destino: destinoPrueba || null, cumplidos: completo.cumplidos, totalCumpl: completo.totalCumpl, totalProg: completo.totalProg };
 }
-// Todos los días a las 10 a. m. (hora Colombia), solo si es día de trabajo: programación de HOY + cumplimiento del día de trabajo anterior
+// Todos los días a las 7 p. m. (hora Colombia), solo si hoy fue día de trabajo: metas cumplidas HOY + programación del SIGUIENTE día de trabajo.
+exports.enviarProgramacionNocheDiario = onSchedule(
+  { schedule: "every day 19:00", timeZone: "America/Bogota", secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY, EMAIL_USER, EMAIL_APP_PASSWORD], timeoutSeconds: 540, memory: "1GiB" },
+  async () => {
+    const hoy = fechaHoyBogota();
+    const sinTrabajar = await diasSinTrabajarCP();
+    if (!(await esDiaDeTrabajoCP(hoy, sinTrabajar))) {
+      logger.info("Correo de la noche (metas y programación): hoy no fue día de trabajo, no se manda", { hoy });
+      return;
+    }
+    const siguiente = await proximoDiaTrabajoCP(hoy, sinTrabajar);
+    const r = await enviarCorreoNocheCP({ fechaHoy: hoy, diaProgramacion: siguiente, momento: "noche" });
+    logger.info("Correo de la noche (metas y programación)", r);
+  }
+);
+// Todos los días a las 10 a. m. (hora Colombia), solo si es día de trabajo: programación de HOY (ratificada) + cumplimiento del día de trabajo anterior
 // (los sábados programados cuentan; los festivos y "Días sin trabajar" no). Cada lista recibe solo su área y gerencia ('todas') recibe todo.
 // (Mismo nombre que el correo de las 7:15 a. m. de antes, para que el despliegue lo reemplace y no queden dos.)
 exports.enviarCumplimientoProgramacionDiario = onSchedule(

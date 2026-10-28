@@ -13430,13 +13430,13 @@ function NotificacionesProgramadasPanel({ users, config, onUpdateConfig }) {
 }
 // (2026-10-27, a pedido de Fredy) Destinatarios de los correos de programación, por área. Se guardan en
 // config/correos_programacion { todas: [], planta: [], calidad: [], zonacalor: [] }. (2026-10-28) `todas` (gerencia) recibe el
-// correo COMPLETO de las 10 a. m. (programación de hoy + cumplimiento del día de trabajo anterior, las 3 áreas); cada lista por área recibe
+// correo COMPLETO (7 p. m.: metas de hoy + programación del siguiente día de trabajo; 10 a. m.: cumplimiento del día anterior + programación de hoy ratificada, las 3 áreas); cada lista por área recibe
 // ese mismo correo pero SOLO con lo de su área, más los avisos de CAMBIO o CANCELACIÓN (notificarProgramacionCorreo).
 const AREAS_CORREO_PROG = [
-  { id: "todas", nombre: "Gerencia — correo completo (todas las áreas)", detalle: "Cada día de trabajo a las 10 a. m.: programación de hoy y cumplimiento del día anterior de Planta, Calidad y Zona calor. Pon aquí solo a quien deba ver todo.", grande: true },
-  { id: "planta", nombre: "Planta de confección", detalle: "Correo de las 10 a. m. solo con lo de Planta + avisos de cambio o cancelación" },
-  { id: "calidad", nombre: "Control de calidad", detalle: "Correo de las 10 a. m. solo con lo de Calidad + avisos de cambio o cancelación" },
-  { id: "zonacalor", nombre: "Zona calor", detalle: "Correo de las 10 a. m. solo con lo de Zona calor + avisos de cambio o cancelación" },
+  { id: "todas", nombre: "Gerencia — correo completo (todas las áreas)", detalle: "Cada día de trabajo, 7 p. m.: metas de hoy y programación del siguiente día; 10 a. m.: cumplimiento del día anterior y programación de hoy — de Planta, Calidad y Zona calor. Pon aquí solo a quien deba ver todo.", grande: true },
+  { id: "planta", nombre: "Planta de confección", detalle: "Correos de las 7 p. m. y 10 a. m. solo con lo de Planta + avisos de cambio o cancelación" },
+  { id: "calidad", nombre: "Control de calidad", detalle: "Correos de las 7 p. m. y 10 a. m. solo con lo de Calidad + avisos de cambio o cancelación" },
+  { id: "zonacalor", nombre: "Zona calor", detalle: "Correos de las 7 p. m. y 10 a. m. solo con lo de Zona calor + avisos de cambio o cancelación" },
 ];
 function CorreosProgramacionPanel() {
   const [listas, setListas] = useState({ todas: [], planta: [], calidad: [], zonacalor: [] });
@@ -13500,7 +13500,7 @@ function CorreosProgramacionPanel() {
     <div style={{ marginBottom: 28, paddingBottom: 22, borderBottom: `1px solid ${T.border}` }}>
       <div style={{ fontWeight: 700, fontSize: 15, color: T.ink }}>Correos de programación</div>
       <div style={{ fontSize: 12.5, color: T.slate, marginTop: 4, marginBottom: 14, lineHeight: 1.5 }}>
-        Cada día de trabajo a las 10 a. m. sale lo programado para hoy y el cumplimiento del día de trabajo anterior (los sábados programados cuentan; los festivos de Colombia y los días de la lista de abajo no). Cada área recibe SOLO lo suyo (según su lista); la lista de Gerencia recibe el correo completo con las tres áreas. Si una persona está en Gerencia y en un área, recibe un solo correo (el completo). Cuando alguien cambia o cancela una programación que ya se había avisado, el aviso con el motivo le llega a la lista de esa área.
+        Cada día de trabajo salen dos correos: a las 7 p. m. las metas cumplidas de hoy y la programación del siguiente día de trabajo; a las 10 a. m. del día siguiente, lo que se cumplió el día anterior y la programación de hoy ratificada (los sábados programados cuentan; los festivos de Colombia y los días de la lista de abajo no). Cada área recibe SOLO lo suyo (según su lista); la lista de Gerencia recibe el correo completo con las tres áreas. Si una persona está en Gerencia y en un área, recibe un solo correo (el completo). Cuando alguien cambia o cancela una programación que ya se había avisado, el aviso con el motivo le llega a la lista de esa área.
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(300px,1fr))", gap: 14 }}>
         {AREAS_CORREO_PROG.map((a) => (
@@ -13532,7 +13532,7 @@ function CorreosProgramacionPanel() {
       </div>
       <div style={{ border: `1px solid ${T.border}`, borderRadius: 12, padding: 14, background: T.white, marginTop: 14 }}>
         <div style={{ fontWeight: 800, fontSize: 13.5, color: T.ink }}>Días sin trabajar</div>
-        <div style={{ fontSize: 11.5, color: T.slate, marginBottom: 10 }}>El correo de las 10 a. m. no sale en festivos de Colombia (ya los conoce) ni en estos días, por ejemplo un puente que la empresa no trabaja. Un día con lotes programados siempre cuenta como trabajado.</div>
+        <div style={{ fontSize: 11.5, color: T.slate, marginBottom: 10 }}>Los correos de las 7 p. m. y 10 a. m. no salen en festivos de Colombia (ya los conoce) ni en estos días, por ejemplo un puente que la empresa no trabaja. Un día con lotes programados siempre cuenta como trabajado.</div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
           {diasSin.map((f) => (
             <div key={f} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 6px 4px 10px", background: T.white, borderRadius: 20, border: `1px solid ${T.border}` }}>

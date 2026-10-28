@@ -1224,15 +1224,23 @@ function itemCorreoProgramacion(p) {
     trabajador: p.trabajadorNombre || "",
   };
 }
-// (2026-10-28) El correo sale a las 10 a. m. con lo programado para ESE día. Una programación "ya se avisó"
-// si su fecha es hasta hoy (desde las 10 a. m.) o hasta ayer (antes de las 10 a. m.). Solo en ese caso un cambio o
+// (2026-10-28) Dos correos al día: a las 7 p. m. sale la programación del SIGUIENTE día de trabajo y a las 10 a. m. se ratifica la de hoy.
+// Una programación "ya se avisó" si su fecha es hasta hoy, o (desde las 7 p. m.) hasta el siguiente día de lunes a viernes
+// (los festivos no se conocen aquí). Solo en ese caso un cambio o
 // cancelación necesita su propio aviso con motivo; si aún no se avisaba, nadie la conoce y se cambia sin correo.
 function programacionYaAvisada(fechaProgramada) {
   if (!fechaProgramada) return false;
   const hora = Number(new Intl.DateTimeFormat("en-GB", { timeZone: "America/Bogota", hour: "2-digit", hour12: false }).format(new Date())) % 24;
   const hoy = hoyBogotaISO();
   const [y, m, d] = hoy.split("-").map(Number);
-  const limite = hora >= 10 ? hoy : new Date(Date.UTC(y, m - 1, d - 1)).toISOString().slice(0, 10);
+  let limite = hoy;
+  if (hora >= 19) {
+    // Siguiente día de lunes a viernes después de hoy (el viernes por la noche ya salió el del lunes).
+    let k = 1;
+    let sig = new Date(Date.UTC(y, m - 1, d + k));
+    while (sig.getUTCDay() === 0 || sig.getUTCDay() === 6) { k += 1; sig = new Date(Date.UTC(y, m - 1, d + k)); }
+    limite = sig.toISOString().slice(0, 10);
+  }
   return String(fechaProgramada) <= limite;
 }
 function avisarProgramacionPorCorreo({ tipo, areaTexto, items, motivo, programadoPor }) {
