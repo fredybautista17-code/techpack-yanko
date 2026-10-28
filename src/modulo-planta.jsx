@@ -331,7 +331,8 @@ function EditarFechaModal({ fila, onConfirm, onClose }) {
   const [fecha, setFecha] = useState(fila.fechaEnviado || today());
   const [motivo, setMotivo] = useState("");
   const cambia = fecha !== fila.fechaEnviado;
-  const puede = !!fecha && (!cambia || motivo.trim().length >= 3);
+  const sinAvisar = fila.avisado === false; // todavía no se mandó correo de este lote: se mueve sin motivo
+  const puede = !!fecha && (!cambia || sinAvisar || motivo.trim().length >= 3);
   function confirmar() {
     if (!puede) return;
     onConfirm(fila.id, fecha, motivo.trim());
@@ -352,14 +353,14 @@ function EditarFechaModal({ fila, onConfirm, onClose }) {
       <Field label="Nueva fecha comprometida de entrega">
         <FInput type="date" value={fecha} onChange={setFecha} />
       </Field>
-      {cambia && (
+      {cambia && !sinAvisar && (
         <Field label="Motivo del cambio (va en el correo)">
           <FInput value={motivo} onChange={setMotivo} placeholder="Ej. falta de insumo, cambio de prioridad…" />
         </Field>
       )}
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
-        <Btn variant="danger" onClick={confirmar} disabled={!puede}>Guardar y avisar</Btn>
+        <Btn variant="danger" onClick={confirmar} disabled={!puede}>{sinAvisar ? "Guardar" : "Guardar y avisar"}</Btn>
       </div>
     </Modal>
   );
@@ -379,7 +380,7 @@ function lunesDeISOPl(iso) {
   return sumarDiasISOPl(iso, -dow);
 }
 const NOMBRES_DIA_PL = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
-function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, onEditar }) {
+function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, onEnviarDia, onEnviarTodo, onEditar }) {
   const hoyISO = new Date().toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
   const [semana, setSemana] = useState(0);
   const [sabado, setSabado] = useState(false);
@@ -388,6 +389,7 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
   const [tope, setTope] = useState(0);
   const [guardando, setGuardando] = useState("");
   const [aviso, setAviso] = useState("");
+  const [enviando, setEnviando] = useState("");
   useEffect(() => {
     const unsub = onSnapshot(doc(db, "config", "planta_programacion"), (snap) => setTope(Number(snap.exists() ? snap.data()?.topeDia : 0) || 0), () => {});
     return unsub;
@@ -421,6 +423,15 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
       setGuardando("");
     }
   }
+  const sinAvisarTotal = programacion.filter((p) => p.avisado === false && p.estado !== "cumplido").length;
+  async function enviarDia(iso) {
+    setEnviando(iso);
+    try { await onEnviarDia(iso); } finally { setEnviando(""); }
+  }
+  async function enviarTodo() {
+    setEnviando("todo");
+    try { await onEnviarTodo(); } finally { setEnviando(""); }
+  }
   async function guardarTope(v) {
     const n = Math.max(0, Math.round(Number(v) || 0));
     setTope(n);
@@ -436,6 +447,7 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
           <span style={{ fontWeight: 800, fontSize: 13, color: C.ink }}>{p.numLote}</span>
           <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
             {p.estado === "cumplido" && <span style={{ color: C.green, fontWeight: 800, fontSize: 11 }}>✓ cumplido</span>}
+            {p.avisado === false && p.estado !== "cumplido" && <span title="Todavía no se ha avisado por correo" style={{ color: C.amber, fontWeight: 800, fontSize: 11 }}>sin avisar</span>}
             {venc && <span style={{ color: C.red, fontWeight: 800, fontSize: 11 }}>{fmtCorta(p.fechaEnviado)}</span>}
             {p.estado !== "cumplido" && <span onClick={() => onEditar(p)} title="Mover a otro día (pide motivo y avisa por correo)" style={{ cursor: "pointer", color: C.blue, fontWeight: 800 }}>✎</span>}
           </span>
@@ -458,6 +470,11 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
           <input type="checkbox" checked={sabado} onChange={(e) => setSabado(e.target.checked)} /> Incluir sábado
         </label>
         <span style={{ flex: 1 }} />
+        {sinAvisarTotal > 0 && (
+          <button style={{ ...botonMini, background: C.amberBg, color: C.amber, borderColor: C.amber }} disabled={!!enviando} onClick={enviarTodo}>
+            {enviando === "todo" ? "Enviando..." : `✉ Enviar todo lo pendiente (${sinAvisarTotal})`}
+          </button>
+        )}
         <label style={{ fontSize: 12, color: C.slate, display: "inline-flex", alignItems: "center", gap: 6 }} title="Si lo llenas, un día que lo pase se pone en rojo. Déjalo en 0 para no usar tope.">
           Tope por día (und)
           <input
@@ -521,6 +538,10 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
             const pasa = tope > 0 && total > tope;
             const esHoy = d.iso === hoyISO;
             const pasado = d.iso < hoyISO;
+            const pendDia = delDia.filter((p) => p.estado !== "cumplido");
+            const sinAvisarDia = pendDia.filter((p) => p.avisado === false).length;
+            const ultimoAviso = pendDia.map((p) => p.avisadoEn).filter(Boolean).sort().pop();
+            const horaAviso = ultimoAviso ? new Date(ultimoAviso).toLocaleTimeString("es-CO", { hour: "numeric", minute: "2-digit", timeZone: "America/Bogota" }) : "";
             return (
               <div key={d.iso} style={{ background: C.white, border: esHoy ? `2px solid ${C.blue}` : `1px solid ${C.border}`, borderRadius: 12, padding: 8, display: "flex", flexDirection: "column", gap: 6, minHeight: 240, opacity: pasado ? 0.8 : 1 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
@@ -531,7 +552,22 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
                   {delDia.length} {delDia.length === 1 ? "lote" : "lotes"} · {fmtNum(total)} und{tope > 0 ? ` de ${fmtNum(tope)}` : ""}
                 </div>
                 {pasa && <div style={{ fontSize: 11, color: C.red, fontWeight: 800 }}>Se pasa del tope por {fmtNum(total - tope)}</div>}
+                {pendDia.length > 0 && (
+                  <div style={{ fontSize: 11, fontWeight: 800, color: sinAvisarDia ? C.amber : C.green }}>
+                    {sinAvisarDia ? `${sinAvisarDia} sin avisar` : `✓ avisado${horaAviso ? ` ${horaAviso}` : ""}`}
+                  </div>
+                )}
                 {delDia.map(tarjetaProgramada)}
+                {pendDia.length > 0 && (
+                  <button
+                    style={{ ...botonMini, background: sinAvisarDia ? C.amberBg : C.white, color: sinAvisarDia ? C.amber : C.slate, borderColor: sinAvisarDia ? C.amber : C.border }}
+                    disabled={!!enviando}
+                    onClick={() => enviarDia(d.iso)}
+                    title="Manda un solo correo con todos los lotes de este día"
+                  >
+                    {enviando === d.iso ? "Enviando..." : sinAvisarDia ? "✉ Enviar correo del día" : "✉ Volver a enviar"}
+                  </button>
+                )}
                 {!pasado && (
                   <button
                     style={{ ...botonMini, marginTop: "auto", background: elegidos.length ? C.blueBg : C.white, color: elegidos.length ? C.blue : C.slate, borderColor: elegidos.length ? C.blue : C.border }}
@@ -554,13 +590,13 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
           </>
         )}
         {aviso && <span style={{ fontSize: 12.5, color: C.red, fontWeight: 700 }}>{aviso}</span>}
-        <span style={{ fontSize: 12, color: C.slate }}>Cada "Programar aquí" avisa por correo, en un solo mensaje, los lotes que mandaste a ese día.</span>
+        <span style={{ fontSize: 12, color: C.slate }}>"Programar aquí" solo guarda. Cuando termines de reunir el día, pulsa "Enviar correo del día": sale un solo correo con todos sus lotes.</span>
       </div>
     </div>
   );
 }
 // ─── PROGRAMACIÓN DIARIA ─────────────────────────────────────────────────────────
-function ProgramacionDiariaView({ cargaActiva, programacion, onProgramar, onProgramarVarios, onCancelar, onEditarFecha, isAdmin }) {
+function ProgramacionDiariaView({ cargaActiva, programacion, onProgramar, onProgramarVarios, onEnviarDia, onEnviarTodo, onCancelar, onEditarFecha, isAdmin }) {
   const [programando, setProgramando] = useState(null);
   const [editando, setEditando] = useState(null);
   const [subTab, setSubTab] = useState("pendientes");
@@ -660,7 +696,7 @@ function ProgramacionDiariaView({ cargaActiva, programacion, onProgramar, onProg
         ))}
       </div>
       {vista === "tablero" && (
-        <TableroSemanalPlanta sinProgramar={sinProgramarPrio} programacion={programacion} onProgramarVarios={onProgramarVarios} onEditar={setEditando} />
+        <TableroSemanalPlanta sinProgramar={sinProgramarPrio} programacion={programacion} onProgramarVarios={onProgramarVarios} onEnviarDia={onEnviarDia} onEnviarTodo={onEnviarTodo} onEditar={setEditando} />
       )}
       {vista === "tabla" && sinProgramar.length > 0 && (
         <div style={{ marginBottom: 28 }}>
@@ -2166,13 +2202,46 @@ export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
       prioridad: lote.prioridad ?? null,
       motivo: lote.razonesTxt ?? null,
       fechaSugerida: lote.fechaSugerida ?? null,
+      avisado: false, // el correo sale cuando se pulsa "Enviar correo del día"
+      avisadoEn: null,
     }));
     setProgramacion((ps) => [...ps, ...nuevos]);
     await Promise.all(nuevos.map((n) => fsSave("planta_programacion", n.id, n)));
-    avisarPorCorreo("nueva", nuevos.map((n) => ({ numLote: n.numLote, referencia: n.referencia, cantidad: n.cantidad, numPedido: n.numPedido ?? "", prioridad: NIVELES_PRIO[n.prioridad]?.txt || "", fecha: fechaEnviado })));
+  }
+  // Correo con TODOS los lotes pendientes de un día (los no avisados van resaltados como "nuevo"). Marca como avisados solo si salió.
+  async function enviarCorreoDia(iso) {
+    const delDia = programacion.filter((p) => p.fechaEnviado === iso && p.estado !== "cumplido");
+    if (!delDia.length) return false;
+    const items = delDia.map((p) => ({ nuevo: p.avisado === false, numLote: p.numLote, referencia: p.referencia, cantidad: p.cantidad, numPedido: p.numPedido ?? "", prioridad: NIVELES_PRIO[p.prioridad]?.txt || "", fecha: iso }));
+    try {
+      const resp = await httpsCallable(functionsClient, "notificarProgramacionCorreo")({ area: "planta", tipo: "nueva", dia: iso, items, motivo: "", programadoPor: currentUser?.name || currentUser?.username || "" });
+      if (resp.data?.sinDestinatarios) { alert("No salió el correo: Planta de confección no tiene destinatarios (Administración → Notificaciones)."); return false; }
+      if (resp.data?.ok === false) { alert("No se pudo enviar el correo. Inténtalo de nuevo."); return false; }
+    } catch (err) {
+      alert(`No se pudo enviar el correo: ${err?.message || err}`);
+      return false;
+    }
+    const ahora = new Date().toISOString();
+    const porMarcar = delDia.filter((p) => p.avisado === false);
+    setProgramacion((ps) => ps.map((p) => (porMarcar.some((x) => x.id === p.id) ? { ...p, avisado: true, avisadoEn: ahora } : p)));
+    await Promise.all(porMarcar.map((p) => fsSave("planta_programacion", p.id, { avisado: true, avisadoEn: ahora })));
+    return true;
+  }
+  async function enviarCorreoTodoPendiente() {
+    const dias = [...new Set(programacion.filter((p) => p.avisado === false && p.estado !== "cumplido" && p.fechaEnviado).map((p) => p.fechaEnviado))].sort();
+    for (const iso of dias) {
+      const ok = await enviarCorreoDia(iso);
+      if (!ok) break;
+    }
   }
   async function cancelarProgramacion(id) {
     const fila = programacion.find((p) => p.id === id);
+    if (fila && fila.avisado === false) {
+      // Nunca se avisó por correo: se quita sin motivo ni correo.
+      setProgramacion((ps) => ps.filter((p) => p.id !== id));
+      await fsDelete("planta_programacion", id);
+      return;
+    }
     const motivo = window.prompt(`¿Por qué se cancela la programación${fila ? ` del lote ${fila.numLote}` : ""}? (el motivo va en el correo)`);
     if (!motivo || !motivo.trim()) return;
     setProgramacion((ps) => ps.filter((p) => p.id !== id));
@@ -2183,7 +2252,7 @@ export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
     const fila = programacion.find((p) => p.id === id);
     setProgramacion((ps) => ps.map((p) => (p.id === id ? { ...p, fechaEnviado: nuevaFecha } : p)));
     await fsSave("planta_programacion", id, { fechaEnviado: nuevaFecha });
-    if (fila && fila.fechaEnviado !== nuevaFecha) {
+    if (fila && fila.avisado !== false && fila.fechaEnviado !== nuevaFecha) {
       avisarPorCorreo("cambio", [{ numLote: fila.numLote, referencia: fila.referencia, cantidad: fila.cantidad, numPedido: fila.numPedido ?? "", prioridad: NIVELES_PRIO[fila.prioridad]?.txt || "", fecha: nuevaFecha, antes: { fecha: fila.fechaEnviado } }], motivo);
     }
   }
@@ -2301,6 +2370,8 @@ export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
               programacion={programacion}
               onProgramar={programarLote}
               onProgramarVarios={programarLotes}
+              onEnviarDia={enviarCorreoDia}
+              onEnviarTodo={enviarCorreoTodoPendiente}
               onCancelar={cancelarProgramacion}
               onEditarFecha={editarFechaProgramacion}
               isAdmin={isAdmin}

@@ -9416,7 +9416,7 @@ function chipPrioridadCP(prio) {
 }
 function tablaHtmlCP(columnas, filas) {
   const th = (c) => `<th style="text-align:${c.align || "left"};padding:8px 10px;background:#101828;color:#fff;font-size:12px;white-space:nowrap">${escHtmlCP(c.label)}</th>`;
-  const td = (c, f) => `<td style="text-align:${c.align || "left"};padding:8px 10px;border-bottom:1px solid #eaecf0;font-size:13px">${c.html ? c.html(f) : escHtmlCP(c.val(f))}</td>`;
+  const td = (c, f) => `<td style="text-align:${c.align || "left"};padding:8px 10px;border-bottom:1px solid #eaecf0;font-size:13px${f && f.nuevo ? ";background:#fffaeb" : ""}">${c.html ? c.html(f) : escHtmlCP(c.val(f))}</td>`;
   return `<table style="border-collapse:collapse;width:100%;max-width:760px;font-family:Arial,Helvetica,sans-serif"><thead><tr>${columnas.map(th).join("")}</tr></thead><tbody>${filas.map((f) => `<tr>${columnas.map((c) => td(c, f)).join("")}</tr>`).join("")}</tbody></table>`;
 }
 function envolverCorreoCP(titulo, intro, cuerpoHtml, pie) {
@@ -9425,7 +9425,7 @@ function envolverCorreoCP(titulo, intro, cuerpoHtml, pie) {
 function limpiarItemProgramacionCP(it) {
   const s = (v, n = 80) => String(v ?? "").slice(0, n);
   const antes = it?.antes && typeof it.antes === "object" ? { fecha: s(it.antes.fecha, 10), hora: s(it.antes.hora, 5), cantidad: it.antes.cantidad ?? null, trabajador: s(it.antes.trabajador) } : null;
-  return { numLote: s(it?.numLote, 20), referencia: s(it?.referencia, 40), proceso: s(it?.proceso, 60), cantidad: it?.cantidad ?? null, numPedido: s(it?.numPedido, 20), prioridad: s(it?.prioridad, 12), fecha: s(it?.fecha, 10), hora: s(it?.hora, 5), trabajador: s(it?.trabajador), antes };
+  return { nuevo: !!it?.nuevo, numLote: s(it?.numLote, 20), referencia: s(it?.referencia, 40), proceso: s(it?.proceso, 60), cantidad: it?.cantidad ?? null, numPedido: s(it?.numPedido, 20), prioridad: s(it?.prioridad, 12), fecha: s(it?.fecha, 10), hora: s(it?.hora, 5), trabajador: s(it?.trabajador), antes };
 }
 exports.notificarProgramacionCorreo = onCallAuth(
   { secrets: [EMAIL_USER, EMAIL_APP_PASSWORD], timeoutSeconds: 60, memory: "256MiB" },
@@ -9441,15 +9441,17 @@ exports.notificarProgramacionCorreo = onCallAuth(
     const por = String(d.programadoPor || "").slice(0, 80) || "—";
     const nombreArea = AREAS_CORREO_PROGRAMACION[area];
     const hoyLatino = fechaLatinaCP(fechaHoyBogota());
+    // `dia` (YYYY-MM-DD): correo de un día completo del tablero semanal (los lotes "nuevo" van resaltados).
+    const dia = /^\d{4}-\d{2}-\d{2}$/.test(String(d.dia || "")) ? String(d.dia) : "";
     const lotesTxt = items.length === 1 ? ` — lote ${items[0].numLote}` : ` — ${items.length} lotes`;
     const prefijo = tipo === "cambio" ? "CAMBIO — " : tipo === "cancelada" ? "CANCELADO — " : "";
-    const asunto = `${prefijo}Programación ${nombreArea}${lotesTxt} — ${hoyLatino}`;
+    const asunto = `${prefijo}Programación ${nombreArea}${lotesTxt} — ${dia ? `para el ${fechaLatinaCP(dia)}` : hoyLatino}`;
     const hayProceso = items.some((i) => i.proceso);
     const hayTrabajador = items.some((i) => i.trabajador);
     const hayHora = items.some((i) => i.hora);
     const cambio = (a, b) => (a !== undefined && a !== null && String(a) !== "" && String(a) !== String(b) ? `<span style="color:#98a2b3;text-decoration:line-through">${escHtmlCP(a)}</span> → <b>${escHtmlCP(b)}</b>` : escHtmlCP(b));
     const columnas = [
-      { label: "Lote", html: (f) => `<b>${escHtmlCP(f.numLote)}</b>` },
+      { label: "Lote", html: (f) => `<b>${escHtmlCP(f.numLote)}</b>${f.nuevo ? ' <span style="font-size:11px;font-weight:700;color:#b54708;background:#fef0c7;border-radius:999px;padding:1px 7px">nuevo</span>' : ""}` },
       { label: "Referencia", val: (f) => f.referencia || "—" },
       ...(hayProceso ? [{ label: "Proceso", val: (f) => f.proceso || "—" }] : []),
       { label: "Cantidad", align: "right", html: (f) => (tipo === "cambio" && f.antes ? cambio(f.antes.cantidad, f.cantidad ?? "—") : escHtmlCP(f.cantidad ?? "—")) },
@@ -9465,7 +9467,10 @@ exports.notificarProgramacionCorreo = onCallAuth(
       ...(hayTrabajador ? [{ label: "Trabajador", html: (f) => (tipo === "cambio" && f.antes ? cambio(f.antes.trabajador, f.trabajador || "—") : escHtmlCP(f.trabajador || "—")) }] : []),
     ];
     const titulo = tipo === "cambio" ? `Cambio en la programación — ${nombreArea}` : tipo === "cancelada" ? `Programación cancelada — ${nombreArea}` : `Programación — ${nombreArea}`;
-    const intro = `${tipo === "nueva" ? "Programó" : tipo === "cambio" ? "Cambió" : "Canceló"}: <b>${escHtmlCP(por)}</b> · ${hoyLatino}.${motivo ? `<br><b>Motivo:</b> ${escHtmlCP(motivo)}` : ""}`;
+    const nNuevos = items.filter((i) => i.nuevo).length;
+    const intro = dia
+      ? `Programación del <b>${fechaLatinaCP(dia)}</b>: <b>${items.length}</b> ${items.length === 1 ? "lote" : "lotes"}${nNuevos && nNuevos < items.length ? ` (${nNuevos} nuevos, resaltados)` : ""}. Envía: <b>${escHtmlCP(por)}</b> · ${hoyLatino}.`
+      : `${tipo === "nueva" ? "Programó" : tipo === "cambio" ? "Cambió" : "Canceló"}: <b>${escHtmlCP(por)}</b> · ${hoyLatino}.${motivo ? `<br><b>Motivo:</b> ${escHtmlCP(motivo)}` : ""}`;
     const html = envolverCorreoCP(titulo, intro, tablaHtmlCP(columnas, items), "Mensaje automático de ATLAS.");
     const para = await destinatariosProgramacionCP(area);
     const registro = { area, tipo, items, motivo, programadoPor: por, uid: request.auth?.uid || "", asunto, destinatarios: para, creadoEn: new Date().toISOString() };
