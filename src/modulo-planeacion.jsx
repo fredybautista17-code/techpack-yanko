@@ -14,6 +14,7 @@ import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "fire
 import CentroCostoCorteEnAreas, { CentroCostoCierreCorte } from "./modulo-corte-areas";
 import CentroCostoAnioPanel from "./centro-costo-historico";
 import { cargaEntradasActivaDe } from "./entradas-planta-util";
+import { SelectorMotivo, pedirMotivoIncumplimiento, registrarIncumplimiento, claveAreaMotivo, NOMBRE_AREA_MOTIVO } from "./motivos-incumplimiento";
 import ProyeccionAreasView from "./proyeccion-areas";
 import TableroCostosView from "./tablero-costos";
 import { num as numCotizador } from "./cotizador-calculo";
@@ -1260,9 +1261,11 @@ async function cancelarProgramacionConAviso(p, { areaTexto, programadoPor }) {
     await fsDelete("planeacion_programacion_procesos", p.id);
     return true;
   }
-  const motivo = window.prompt(`¿Por qué se cancela la programación del lote ${p?.numLote || ""}${p?.proceso ? ` (${p.proceso})` : ""}? (el motivo va en el correo)`);
+  const claveArea = claveAreaMotivo(areaTexto || p?.programadoDesdeArea || p?.proceso);
+  const motivo = await pedirMotivoIncumplimiento({ area: claveArea, titulo: `¿Por qué se quita el lote ${p?.numLote || ""}${p?.proceso ? ` (${p.proceso})` : ""} de la programación?`, detalle: `${p?.referencia || ""}${p?.numPedido ? ` · Pedido ${p.numPedido}` : ""}` });
   if (!motivo || !motivo.trim()) return false;
   await fsDelete("planeacion_programacion_procesos", p.id);
+  registrarIncumplimiento({ area: claveArea, areaNombre: NOMBRE_AREA_MOTIVO[claveArea], areaTexto: areaTexto || "", accion: "quitado", motivo: motivo.trim(), numLote: p?.numLote ?? null, numPedido: p?.numPedido ?? null, referencia: p?.referencia || "", proceso: p?.proceso || "", cantidad: p?.cantidad ?? null, fechaAntes: p?.fechaProgramada || "", fechaNueva: "", por: programadoPor || "" });
   avisarProgramacionPorCorreo({ tipo: "cancelada", areaTexto, items: [itemCorreoProgramacion(p)], motivo: motivo.trim(), programadoPor });
   return true;
 }
@@ -1277,6 +1280,8 @@ async function cambiarProgramacionProceso(p, nuevo, motivo, { areaTexto, program
   };
   await fsSave("planeacion_programacion_procesos", p.id, parche);
   if (!programacionYaAvisada(p.fechaProgramada)) return; // aún no se había avisado: sin correo
+  const claveArea = claveAreaMotivo(areaTexto || p?.programadoDesdeArea || p?.proceso);
+  registrarIncumplimiento({ area: claveArea, areaNombre: NOMBRE_AREA_MOTIVO[claveArea], areaTexto: areaTexto || "", accion: "cambiado", motivo: motivo || "", numLote: p.numLote ?? null, numPedido: p.numPedido ?? null, referencia: p.referencia || "", proceso: p.proceso || "", cantidad: p.cantidad ?? null, fechaAntes: p.fechaProgramada || "", fechaNueva: nuevo.fechaProgramada || "", por: programadoPor || "" });
   avisarProgramacionPorCorreo({
     tipo: "cambio",
     areaTexto,
@@ -1286,7 +1291,7 @@ async function cambiarProgramacionProceso(p, nuevo, motivo, { areaTexto, program
   });
 }
 // Modal "Cambiar programación": fecha, hora, trabajador y cantidad nuevos + motivo obligatorio; al guardar avisa por correo.
-function CambiarProgramacionModal({ p, equipo, onGuardar, onClose }) {
+function CambiarProgramacionModal({ p, equipo, areaTexto, onGuardar, onClose }) {
   const [fecha, setFecha] = useState(p.fechaProgramada || hoyBogotaISO());
   const [hora, setHora] = useState(p.horaInicio || "06:00");
   const [trabajadorId, setTrabajadorId] = useState(p.trabajadorId || "");
@@ -1336,7 +1341,7 @@ function CambiarProgramacionModal({ p, equipo, onGuardar, onClose }) {
       </div>
       <div style={{ marginBottom: 16 }}>
         <label style={etiqueta}>Motivo del cambio (va en el correo)</label>
-        <input value={motivo} onChange={(e) => setMotivo(e.target.value)} placeholder="Ej. falta de insumo, la máquina estará ocupada…" style={campo} />
+        <SelectorMotivo area={claveAreaMotivo(areaTexto || p.programadoDesdeArea || p.proceso)} onChange={setMotivo} />
       </div>
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
@@ -3805,7 +3810,7 @@ function ProgramadorProcesosView({
   return (
     <div>
       {cambiandoProg && onCambiarProgramacion && (
-        <CambiarProgramacionModal p={cambiandoProg} equipo={trabajadoresEquipo} onGuardar={onCambiarProgramacion} onClose={() => setCambiandoProg(null)} />
+        <CambiarProgramacionModal p={cambiandoProg} equipo={trabajadoresEquipo} areaTexto={area?.nombre || area} onGuardar={onCambiarProgramacion} onClose={() => setCambiandoProg(null)} />
       )}
       {modalProgramar && (
         <Modal title={`Programar Lote ${modalProgramar.numLote} — ${modalProgramar.proceso}`} onClose={() => setModalProgramar(null)} width={480}>
@@ -4339,7 +4344,7 @@ export function ListaPorProgramarBloque({ currentUser, incrustado = true }) {
   }
   return (
     <div style={incrustado ? { marginBottom: 28 } : {}}>
-      {cambiando && <CambiarProgramacionModal p={cambiando} equipo={equipo} onGuardar={cambiarProgramacion} onClose={() => setCambiando(null)} />}
+      {cambiando && <CambiarProgramacionModal p={cambiando} equipo={equipo} areaTexto={areaNombre} onGuardar={cambiarProgramacion} onClose={() => setCambiando(null)} />}
       {modal && (
         <Modal title={`Programar Lote ${modal.numLote} — ${modal.proceso}`} onClose={() => setModal(null)} width={480}>
           <div style={{ fontSize: 13, color: C.slate, marginBottom: 14 }}>

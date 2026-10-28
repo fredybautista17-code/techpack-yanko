@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from "react";
 import { initializeApp, getApps } from "firebase/app";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { cargaEntradasActivaDe } from "./entradas-planta-util";
+import { SelectorMotivo, pedirMotivoIncumplimiento, registrarIncumplimiento } from "./motivos-incumplimiento";
 import {
   getFirestore,
   collection,
@@ -355,7 +356,7 @@ function EditarFechaModal({ fila, onConfirm, onClose }) {
       </Field>
       {cambia && !sinAvisar && (
         <Field label="Motivo del cambio (va en el correo)">
-          <FInput value={motivo} onChange={setMotivo} placeholder="Ej. falta de insumo, cambio de prioridad…" />
+          <SelectorMotivo area="planta" onChange={setMotivo} />
         </Field>
       )}
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
@@ -568,7 +569,7 @@ function VistaPreviaCorreoModal({ dias, programacion, diasMover, hoyISO, onVista
     if (iso === p.fechaEnviado) return;
     let motivo = "";
     if (p.avisado !== false) {
-      motivo = window.prompt(`¿Por qué se mueve el lote ${p.numLote} al ${fmtCorta(iso)}? (el motivo va en el correo)`) || "";
+      motivo = (await pedirMotivoIncumplimiento({ area: "planta", titulo: `¿Por qué se mueve el lote ${p.numLote} al ${fmtCorta(iso)}?`, detalle: `${p.referencia || ""}${p.numPedido ? ` · Pedido ${p.numPedido}` : ""}` })) || "";
       if (!motivo.trim()) return;
     }
     await onMover(p.id, iso, motivo.trim());
@@ -2592,10 +2593,11 @@ export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
       await fsDelete("planta_programacion", id);
       return;
     }
-    const motivo = window.prompt(`¿Por qué se cancela la programación${fila ? ` del lote ${fila.numLote}` : ""}? (el motivo va en el correo)`);
+    const motivo = await pedirMotivoIncumplimiento({ area: "planta", titulo: `¿Por qué se quita${fila ? ` el lote ${fila.numLote}` : " el lote"} de la programación?`, detalle: fila ? `${fila.referencia || ""}${fila.numPedido ? ` · Pedido ${fila.numPedido}` : ""}` : "" });
     if (!motivo || !motivo.trim()) return;
     setProgramacion((ps) => ps.filter((p) => p.id !== id));
     await fsDelete("planta_programacion", id);
+    if (fila) registrarIncumplimiento({ area: "planta", areaNombre: "Planta de confección", accion: "quitado", motivo: motivo.trim(), numLote: fila.numLote, numPedido: fila.numPedido ?? null, referencia: fila.referencia || "", cantidad: fila.cantidad ?? null, fechaAntes: fila.fechaEnviado || "", fechaNueva: "", por: currentUser?.name || currentUser?.username || "" });
     if (fila) avisarPorCorreo("cancelada", [{ numLote: fila.numLote, referencia: fila.referencia, cantidad: fila.cantidad, numPedido: fila.numPedido ?? "", prioridad: NIVELES_PRIO[fila.prioridad]?.txt || "", fecha: fila.fechaEnviado }], motivo.trim());
   }
   async function editarFechaProgramacion(id, nuevaFecha, motivo) {
@@ -2603,6 +2605,7 @@ export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
     setProgramacion((ps) => ps.map((p) => (p.id === id ? { ...p, fechaEnviado: nuevaFecha } : p)));
     await fsSave("planta_programacion", id, { fechaEnviado: nuevaFecha });
     if (fila && fila.avisado !== false && fila.fechaEnviado !== nuevaFecha) {
+      if (motivo) registrarIncumplimiento({ area: "planta", areaNombre: "Planta de confección", accion: "cambiado", motivo, numLote: fila.numLote, numPedido: fila.numPedido ?? null, referencia: fila.referencia || "", cantidad: fila.cantidad ?? null, fechaAntes: fila.fechaEnviado || "", fechaNueva: nuevaFecha, por: currentUser?.name || currentUser?.username || "" });
       avisarPorCorreo("cambio", [{ numLote: fila.numLote, referencia: fila.referencia, cantidad: fila.cantidad, numPedido: fila.numPedido ?? "", prioridad: NIVELES_PRIO[fila.prioridad]?.txt || "", fecha: nuevaFecha, antes: { fecha: fila.fechaEnviado } }], motivo);
     }
   }
