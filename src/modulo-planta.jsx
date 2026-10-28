@@ -653,6 +653,78 @@ function VistaPreviaCorreoModal({ dias, programacion, diasMover, hoyISO, onVista
     </div>
   );
 }
+// Panel "Pedidos" (al lado del tablero): por cada pedido, sus lotes con referencia y cantidad, y si ya están programados (con el día),
+// cumplidos o sin programar. Solo entran pedidos con algo pendiente/sin programar o cumplido esta semana.
+function PanelPedidosPlanta({ sinProgramar, programacion, hoyISO, desdeISO, onClose }) {
+  const [abiertos, setAbiertos] = useState({});
+  const fmtDia = (iso) => `${NOMBRES_DIA_PL[(new Date(`${iso}T12:00:00`).getDay() + 6) % 7] || ""} ${iso.slice(8, 10)}/${iso.slice(5, 7)}`;
+  const pedidos = useMemo(() => {
+    const mapa = new Map();
+    const tomar = (k) => { const clave = k == null || k === "" ? "" : String(k); if (!mapa.has(clave)) mapa.set(clave, { pedido: clave, lotes: [], prio: null }); return mapa.get(clave); };
+    const prioMejor = (a, b) => (NIVELES_PRIO[b] && (!a || NIVELES_PRIO[b].orden < NIVELES_PRIO[a].orden) ? b : a);
+    programacion.forEach((p) => {
+      const cumplido = p.estado === "cumplido";
+      if (cumplido && (p.fechaEnviado || "") < desdeISO) return;
+      const g = tomar(p.numPedido);
+      g.prio = prioMejor(g.prio, p.prioridad);
+      g.lotes.push({ numLote: p.numLote, referencia: p.referencia, cantidad: p.cantidad, estado: cumplido ? "cumplido" : "programado", dia: p.fechaEnviado, vencido: !cumplido && (p.fechaEnviado || "") < hoyISO });
+    });
+    sinProgramar.forEach((l) => {
+      const g = tomar(l.numPedido);
+      g.prio = prioMejor(g.prio, l.prioridad);
+      g.lotes.push({ numLote: l.numLote, referencia: l.referencia, cantidad: l.invPlanta, estado: "sin", dia: "" });
+    });
+    const orden = { sin: 0, programado: 1, cumplido: 2 };
+    return [...mapa.values()]
+      .map((g) => ({ ...g, lotes: g.lotes.sort((a, b) => orden[a.estado] - orden[b.estado] || (a.dia || "").localeCompare(b.dia || "") || Number(a.numLote) - Number(b.numLote)) }))
+      .map((g) => ({ ...g, nSin: g.lotes.filter((l) => l.estado === "sin").length, und: g.lotes.reduce((t, l) => t + (Number(l.cantidad) || 0), 0) }))
+      .sort((a, b) => (b.nSin > 0) - (a.nSin > 0) || (NIVELES_PRIO[a.prio]?.orden ?? 9) - (NIVELES_PRIO[b.prio]?.orden ?? 9) || String(a.pedido).localeCompare(String(b.pedido), undefined, { numeric: true }));
+  }, [sinProgramar, programacion, hoyISO, desdeISO]);
+  const chip = (l) => {
+    const m = l.estado === "sin" ? ["Sin programar", C.red, C.redBg] : l.estado === "cumplido" ? [`Cumplido · ${fmtDia(l.dia)}`, C.green, C.greenBg] : [`${l.vencido ? "Vencido · " : "Programado · "}${l.dia === hoyISO ? "Hoy " + l.dia.slice(8, 10) + "/" + l.dia.slice(5, 7) : fmtDia(l.dia)}`, l.vencido ? C.red : C.blue, l.vencido ? C.redBg : C.blueBg];
+    return <span style={{ fontSize: 11, fontWeight: 800, padding: "2px 9px", borderRadius: 999, whiteSpace: "nowrap", color: m[1], background: m[2] }}>{m[0]}</span>;
+  };
+  const LIMITE = 5;
+  return (
+    <div style={{ width: 400, flexShrink: 0, background: C.white, border: `1px solid ${C.border}`, borderRadius: 16, padding: 14, maxHeight: "78vh", overflowY: "auto" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <b style={{ fontSize: 15, color: C.ink }}>Pedidos</b>
+        <span onClick={onClose} style={{ cursor: "pointer", color: C.slate, fontWeight: 800 }} title="Cerrar">✕</span>
+      </div>
+      <div style={{ fontSize: 12, color: C.slate, margin: "2px 0 10px" }}>Cada lote con su referencia y si ya está programado</div>
+      {!pedidos.length && <div style={{ fontSize: 13, color: C.slate, padding: "20px 0", textAlign: "center" }}>No hay pedidos con lotes pendientes.</div>}
+      {pedidos.map((g) => {
+        const clave = g.pedido || "sin";
+        const todos = !!abiertos[clave];
+        const visibles = todos ? g.lotes : g.lotes.slice(0, LIMITE);
+        return (
+          <div key={clave} style={{ border: `1px solid ${C.border}`, borderLeft: `4px solid ${NIVELES_PRIO[g.prio] ? NIVELES_PRIO[g.prio].color : "#98A2B3"}`, borderRadius: 12, padding: "10px 12px", marginBottom: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
+              <b style={{ fontSize: 14.5, color: C.ink }}>{g.pedido ? `Pedido ${g.pedido}` : "Sin pedido"}</b>
+              <span style={{ fontSize: 12, color: C.slate, whiteSpace: "nowrap" }}>{g.lotes.length} {g.lotes.length === 1 ? "lote" : "lotes"} · {fmtNum(g.und)} und</span>
+            </div>
+            <div style={{ fontSize: 11.5, fontWeight: 700, margin: "4px 0 6px", color: g.nSin ? C.red : C.green }}>
+              {g.nSin ? `⚠ Falta programar ${g.nSin} ${g.nSin === 1 ? "lote" : "lotes"}` : "✓ Todo programado"}
+            </div>
+            {visibles.map((l) => (
+              <div key={`${l.numLote}|${l.estado}`} style={{ display: "flex", alignItems: "center", gap: 8, borderTop: `1px solid ${C.border}`, padding: "5px 2px", fontSize: 12.5 }}>
+                <b style={{ width: 44, color: C.ink }}>{l.numLote}</b>
+                <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: C.slate }}>{l.referencia}</span>
+                <span style={{ color: C.ink, minWidth: 34, textAlign: "right" }}>{fmtNum(l.cantidad)}</span>
+                {chip(l)}
+              </div>
+            ))}
+            {g.lotes.length > LIMITE && (
+              <div onClick={() => setAbiertos((a) => ({ ...a, [clave]: !a[clave] }))} style={{ cursor: "pointer", color: C.blue, fontWeight: 700, fontSize: 12, paddingTop: 6 }}>
+                {todos ? "Ver menos ▴" : `+ ${g.lotes.length - LIMITE} lotes más ▾`}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, onEnviarDia, onVistaDia, onCancelar, onMover, onEditar }) {
   const hoyISO = new Date().toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
   const [semana, setSemana] = useState(0);
@@ -660,6 +732,7 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
   const [tope, setTope] = useState(0);
   const [vistaCorreo, setVistaCorreo] = useState(null); // días cuyo correo se está revisando antes de enviar
   const [panel, setPanel] = useState(false);
+  const [verPedidos, setVerPedidos] = useState(false); // panel "Pedidos" al lado del tablero
   const [abiertos, setAbiertos] = useState({}); // pedidos desplegados dentro de un día (clave "iso|pedido") y cumplidos ("cum|iso")
   useEffect(() => {
     const unsub = onSnapshot(doc(db, "config", "planta_programacion"), (snap) => setTope(Number(snap.exists() ? snap.data()?.topeDia : 0) || 0), () => {});
@@ -761,6 +834,13 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
         >
           {`✉ Enviar pendientes (${sinAvisarTotal})`}
         </button>
+        <button
+          style={{ ...botonMini, padding: "10px 14px", fontSize: 13, ...(verPedidos ? { background: C.blueBg, color: C.blue, borderColor: C.blue } : {}) }}
+          onClick={() => setVerPedidos((v) => !v)}
+          title="Cada pedido con sus lotes y referencias, y si ya están programados"
+        >
+          {`📦 Pedidos (${new Set([...pendientes.map((p) => String(p.numPedido ?? "")), ...sinProgramar.map((l) => String(l.numPedido ?? ""))]).size}) ${verPedidos ? "◂" : "▸"}`}
+        </button>
         <span style={{ flex: 1 }} />
         <span style={{ fontSize: 13.5, color: C.slate }}>Semana: <b style={{ color: C.ink }}>{totalSemana.length} lotes · {fmtNum(sumaUnd(totalSemana))} und</b></span>
         <label style={{ fontSize: 12.5, color: C.slate, display: "inline-flex", alignItems: "center", gap: 6 }} title="Si lo llenas, un día que lo pase se pone en rojo. Déjalo en 0 para no usar tope.">
@@ -788,7 +868,8 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
           </div>
         </div>
       )}
-      <div style={{ display: "grid", gridTemplateColumns: `repeat(${dias.length}, minmax(0,1fr))`, gap: 14, alignItems: "start" }}>
+      <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
+      <div style={{ flex: 1, minWidth: 0, display: "grid", gridTemplateColumns: `repeat(${dias.length}, minmax(0,1fr))`, gap: 14, alignItems: "start" }}>
         {dias.map((d) => {
           const delDia = programacion.filter((p) => p.fechaEnviado === d.iso);
           const total = sumaUnd(delDia);
@@ -847,6 +928,8 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
             </div>
           );
         })}
+      </div>
+      {verPedidos && <PanelPedidosPlanta sinProgramar={sinProgramar} programacion={programacion} hoyISO={hoyISO} desdeISO={lunes} onClose={() => setVerPedidos(false)} />}
       </div>
       <div style={{ marginTop: 12, fontSize: 12.5, color: C.slate, lineHeight: 1.5 }}>
         Cada pedido es una sola línea: tócala para ver sus lotes y moverlos. Programar solo guarda: cada área recibe su correo solo a las 7 p. m. (gerencia recibe todas); el ✉ de cada día o "Enviar pendientes" lo adelantan. Punto amarillo = aún sin avisar.
