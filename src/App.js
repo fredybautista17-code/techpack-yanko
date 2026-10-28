@@ -13469,7 +13469,7 @@ function CorreosProgramacionPanel() {
       const r = resp.data?.resultado || [];
       const enviados = r.filter((x) => x.enviado).length;
       setMsg(enviados
-        ? `Te mandé ${enviados} correo(s) de prueba con el cumplimiento de ${resp.data.ayer}.`
+        ? `Te mandé ${enviados} correo(s) de prueba a ${resp.data?.destino || "tu correo"} con el cumplimiento de ${resp.data.ayer}. Si no llega en unos minutos, revisa spam.`
         : `No hubo nada programado para ${resp.data?.ayer} en ninguna área, por eso no salió correo.`);
     } catch (err) {
       setMsg(err?.message || "No se pudo enviar la prueba.");

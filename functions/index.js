@@ -9629,12 +9629,15 @@ exports.enviarCumplimientoProgramacionDiario = onSchedule(
 exports.enviarCumplimientoProgramacionAhora = onCallAuth(
   { secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY, EMAIL_USER, EMAIL_APP_PASSWORD], timeoutSeconds: 540, memory: "1GiB" },
   async (request) => {
-    await verificarLlamadorEsAdmin(request);
+    const adminDoc = await verificarLlamadorEsAdmin(request);
     const fecha = /^\d{4}-\d{2}-\d{2}$/.test(String(request.data?.fecha || "")) ? request.data.fecha : null;
     const soloArea = AREAS_CORREO_PROGRAMACION[request.data?.area] ? request.data.area : null;
-    const destinoPrueba = request.data?.paraMi ? request.auth?.token?.email || null : null;
-    if (request.data?.paraMi && !destinoPrueba) throw new HttpsError("failed-precondition", "Tu usuario no tiene correo para la prueba.");
-    return enviarCumplimientoProgramacionCP({ fechaRef: fecha, soloArea, destinoPrueba });
+    // El correo de login de ATLAS es interno (usuario@techpack-yanko.local), no sirve para recibir: se usa el correo real guardado en el usuario.
+    const correoReal = String(adminDoc.data().email || "").trim();
+    const destinoPrueba = request.data?.paraMi ? (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correoReal) ? correoReal : null) : null;
+    if (request.data?.paraMi && !destinoPrueba) throw new HttpsError("failed-precondition", "Tu usuario no tiene un correo real guardado. Agrégalo en Administración → Usuarios (campo Email) y vuelve a probar.");
+    const r = await enviarCumplimientoProgramacionCP({ fechaRef: fecha, soloArea, destinoPrueba });
+    return { ...r, destino: destinoPrueba || null };
   }
 );
 
