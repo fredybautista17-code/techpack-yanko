@@ -59,10 +59,16 @@ service cloud.firestore {
       allow delete: if esAdmin();
     }
 
+    // Códigos de autorización de permisos (2026-10-28): SOLO el servidor (Admin SDK) los lee y escribe,
+    // para que nadie los vea desde el navegador. Generar/validar/anular va por funciones.
+    match /nomina_codigos_permiso/{id} {
+      allow read, write: if false;
+    }
+
     // Todo lo demás: cualquier cuenta con sesión, salvo lo sensible para el rol Cliente.
     match /{col}/{rest=**} {
       allow read, write: if signedIn()
-        && col != 'users' && col != 'cotizaciones' && col != 'devoluciones_cliente'
+        && col != 'users' && col != 'cotizaciones' && col != 'devoluciones_cliente' && col != 'nomina_codigos_permiso'
         // El asistente solo escribe/lee estas dos con el servidor (Admin SDK): ningún usuario las toca directo.
         && col != 'asistente_log' && col != 'asistente_recordatorios'
         && (!esCliente() || !sensible(col));

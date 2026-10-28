@@ -8912,6 +8912,138 @@ async function verificarLlamadorPuedeSincronizarDadoPorCumplido(request) {
   return snap.docs[0];
 }
 
+// ─── CÓDIGOS DE AUTORIZACIÓN DE PERMISOS (Nómina) ───────────────────────
+// (2026-10-28, a pedido de Fredy) Cada trabajador puede tener hasta N permisos
+// al mes (por defecto 3, configurable en config/nomina_permisos). Desde el
+// siguiente, quien registra necesita un código que da gerencia. Los códigos
+// viven en "nomina_codigos_permiso", una colección que SOLO toca este
+// servidor (las reglas de Firestore la cierran al cliente): así nadie los lee
+// desde el navegador. Cada código es de un solo uso y va atado a UN trabajador
+// y a UN mes.
+const CODIGOS_PERMISO_COL = "nomina_codigos_permiso";
+function normalizarNombreCodigo(n) {
+  return String(n || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().replace(/\s+/g, " ").trim();
+}
+function claveTrabajadorCodigo(d) {
+  const id = String(d?.trabajadorId || "").trim();
+  if (id) return `t:${id}`;
+  const nl = normalizarNombreCodigo(d?.nombreLibre || d?.nombre);
+  return nl ? `n:${nl}` : "";
+}
+async function verificarLlamadorPuedeAutorizarPermisos(request) {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+  }
+  const snap = await db.collection("users").where("authUid", "==", request.auth.uid).limit(1).get();
+  if (snap.empty) {
+    throw new HttpsError("permission-denied", "No tienes permiso para hacer esto.");
+  }
+  const userData = snap.docs[0].data();
+  if (userData.isAdmin) return snap.docs[0];
+  const configSnap = await db.collection("config").doc("main").get();
+  const roles = configSnap.exists ? configSnap.data().roles || [] : [];
+  const roleData = roles.find((r) => r.name === userData.role);
+  const modulos = Array.isArray(roleData?.modulos) ? roleData.modulos : [];
+  if (!modulos.includes("nomina_autorizar_permisos")) {
+    throw new HttpsError("permission-denied", "No tienes permiso para generar códigos de permiso.");
+  }
+  return snap.docs[0];
+}
+function nombreDeUsuarioDoc(userDoc) {
+  const u = userDoc.data() || {};
+  return String(u.name || u.username || "").trim();
+}
+exports.nominaPermisoCodigoGenerar = onCallAuth(
+  { timeoutSeconds: 30, memory: "256MiB" },
+  async (request) => {
+    const userDoc = await verificarLlamadorPuedeAutorizarPermisos(request);
+    const d = request.data || {};
+    const clave = claveTrabajadorCodigo(d);
+    const mes = String(d.mes || "").trim();
+    if (!clave) throw new HttpsError("invalid-argument", "Falta el trabajador.");
+    if (!/^\d{4}-\d{2}$/.test(mes)) throw new HttpsError("invalid-argument", "Mes inválido (formato AAAA-MM).");
+    const crypto = require("crypto");
+    // Sin 0/O/1/I para que no se confundan al dictarlo por teléfono.
+    const ALFABETO = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    for (let intento = 0; intento < 8; intento++) {
+      let cuerpo = "";
+      const bytes = crypto.randomBytes(6);
+      for (let i = 0; i < 6; i++) cuerpo += ALFABETO[bytes[i] % ALFABETO.length];
+      const codigo = `PX-${cuerpo}`;
+      const ref = db.collection(CODIGOS_PERMISO_COL).doc(codigo);
+      try {
+        await ref.create({
+          codigo,
+          clave,
+          trabajadorId: String(d.trabajadorId || ""),
+          nombreLibre: d.trabajadorId ? "" : String(d.nombreLibre || d.nombre || "").trim(),
+          nombre: String(d.nombre || d.nombreLibre || "").trim(),
+          mes,
+          estado: "pendiente",
+          creadoPor: nombreDeUsuarioDoc(userDoc),
+          creadoEn: new Date().toISOString(),
+        });
+        return { ok: true, codigo, mes };
+      } catch (err) {
+        if (err && (err.code === 6 || /already exists/i.test(String(err.message)))) continue;
+        throw err;
+      }
+    }
+    throw new HttpsError("internal", "No se pudo generar el código, intenta de nuevo.");
+  }
+);
+exports.nominaPermisoCodigoListar = onCallAuth(
+  { timeoutSeconds: 30, memory: "256MiB" },
+  async (request) => {
+    await verificarLlamadorPuedeAutorizarPermisos(request);
+    const snap = await db.collection(CODIGOS_PERMISO_COL).orderBy("creadoEn", "desc").limit(200).get();
+    return { codigos: snap.docs.map((x) => x.data()) };
+  }
+);
+exports.nominaPermisoCodigoAnular = onCallAuth(
+  { timeoutSeconds: 30, memory: "256MiB" },
+  async (request) => {
+    const userDoc = await verificarLlamadorPuedeAutorizarPermisos(request);
+    const codigo = String(request.data?.codigo || "").trim().toUpperCase();
+    if (!codigo) throw new HttpsError("invalid-argument", "Falta el código.");
+    const ref = db.collection(CODIGOS_PERMISO_COL).doc(codigo);
+    await db.runTransaction(async (tx) => {
+      const s = await tx.get(ref);
+      if (!s.exists) throw new HttpsError("not-found", "Ese código no existe.");
+      if (s.data().estado !== "pendiente") throw new HttpsError("failed-precondition", "Solo se anulan códigos pendientes.");
+      tx.update(ref, { estado: "anulado", anuladoPor: nombreDeUsuarioDoc(userDoc), anuladoEn: new Date().toISOString() });
+    });
+    return { ok: true };
+  }
+);
+// Lo llama el líder/usuario que registra el permiso: valida el código y lo
+// consume en el mismo paso (transacción), así un código no sirve dos veces.
+exports.nominaPermisoCodigoUsar = onCallAuth(
+  { timeoutSeconds: 30, memory: "256MiB" },
+  async (request) => {
+    const d = request.data || {};
+    const codigo = String(d.codigo || "").trim().toUpperCase();
+    const clave = claveTrabajadorCodigo(d);
+    const mes = String(d.mes || "").trim();
+    if (!codigo || !clave || !mes) throw new HttpsError("invalid-argument", "Faltan datos para validar el código.");
+    const snapU = await db.collection("users").where("authUid", "==", request.auth.uid).limit(1).get();
+    const quien = snapU.empty ? "" : nombreDeUsuarioDoc(snapU.docs[0]);
+    const ref = db.collection(CODIGOS_PERMISO_COL).doc(codigo);
+    const info = await db.runTransaction(async (tx) => {
+      const s = await tx.get(ref);
+      if (!s.exists) throw new HttpsError("not-found", "El código no es válido.");
+      const c = s.data();
+      if (c.estado === "usado") throw new HttpsError("failed-precondition", "Ese código ya fue usado.");
+      if (c.estado === "anulado") throw new HttpsError("failed-precondition", "Ese código fue anulado.");
+      if (c.clave !== clave) throw new HttpsError("permission-denied", "Ese código es de otro trabajador.");
+      if (c.mes !== mes) throw new HttpsError("permission-denied", `Ese código es para el mes ${c.mes}.`);
+      tx.update(ref, { estado: "usado", usadoPor: quien, usadoEn: new Date().toISOString(), ausenciaId: String(d.ausenciaId || "") });
+      return { autorizadoPor: c.creadoPor || "" };
+    });
+    return { ok: true, codigo, autorizadoPor: info.autorizadoPor };
+  }
+);
+
 exports.adminCrearUsuario = onCallAuth(
   { timeoutSeconds: 60, memory: "256MiB" },
   async (request) => {

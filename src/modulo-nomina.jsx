@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, createContext, useContext } from "react";
 import { initializeApp, getApps } from "firebase/app";
 import {
   getFirestore,
@@ -4248,6 +4248,11 @@ function esMotivoPermiso(motivo) {
   return !!motivo && !MOTIVOS_EXCLUIDOS_DE_PERMISO.includes(motivo);
 }
 const TOPE_PERMISOS_POR_MES = 3;
+// (2026-10-28, a pedido de Fredy) Del permiso #(tope+1) del mes en adelante
+// ya no se bloquea: se pide un código de autorización que da gerencia (ver
+// AusenciaModal y CodigosPermisoView). El tope se guarda en
+// config/nomina_permisos { tope } y lo carga ModuloNomina.
+const PermisosCfgCtx = createContext({ tope: TOPE_PERMISOS_POR_MES });
 function contarPermisosDelMes(ausencias, { trabajadorId, nombreLibre, mes, idAExcluir }) {
   return (ausencias || []).filter((a) =>
     esMotivoPermiso(a.motivo) &&
@@ -4281,10 +4286,44 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
   const permisosEsteMes = esMotivoPermiso(form.motivo)
     ? contarPermisosDelMes(ausencias, { trabajadorId: form.trabajadorId || null, nombreLibre: form.nombreLibre.trim(), mes: (form.fechaInicio || "").slice(0, 7), idAExcluir: ausencia?.id })
     : 0;
-  const bloqueadoPorTope = permisosEsteMes >= TOPE_PERMISOS_POR_MES;
-  function guardar() {
+  const { tope: topePermisos } = useContext(PermisosCfgCtx);
+  const mesForm = (form.fechaInicio || "").slice(0, 7);
+  // Editar un permiso que ya estaba guardado (misma persona y mismo mes) no
+  // vuelve a pedir código: ya estaba contado cuando se registró.
+  const esEdicionSinCambio = !!ausencia && esMotivoPermiso(ausencia.motivo)
+    && (ausencia.trabajadorId || "") === (form.trabajadorId || "")
+    && (form.trabajadorId || (ausencia.nombreLibre || "") === form.nombreLibre.trim())
+    && (ausencia.fechaInicio || "").slice(0, 7) === mesForm;
+  const necesitaCodigo = esMotivoPermiso(form.motivo) && !!(form.trabajadorId || form.nombreLibre.trim())
+    && permisosEsteMes >= topePermisos && !esEdicionSinCambio;
+  const [codigo, setCodigo] = useState("");
+  const [validando, setValidando] = useState(false);
+  const [errorCodigo, setErrorCodigo] = useState("");
+  async function guardar() {
     if (!form.motivo || (!form.trabajadorId && !form.nombreLibre.trim())) return;
-    if (bloqueadoPorTope) return;
+    if (necesitaCodigo && !codigo.trim()) return;
+    let extra = {};
+    if (necesitaCodigo) {
+      setValidando(true);
+      setErrorCodigo("");
+      try {
+        const llamar = httpsCallable(functionsClient, "nominaPermisoCodigoUsar");
+        const resp = await llamar({
+          codigo: codigo.trim(),
+          trabajadorId: form.trabajadorId || "",
+          nombreLibre: form.trabajadorId ? "" : form.nombreLibre.trim(),
+          nombre: form.trabajadorId ? trabajadorSeleccionado?.nombre : form.nombreLibre.trim(),
+          mes: mesForm,
+          ausenciaId: ausencia?.id || "",
+        });
+        extra = { codigoAutorizacion: resp.data?.codigo || codigo.trim().toUpperCase(), autorizadoPor: resp.data?.autorizadoPor || "" };
+      } catch (err) {
+        setErrorCodigo(err?.message || "No se pudo validar el código.");
+        setValidando(false);
+        return;
+      }
+      setValidando(false);
+    }
     onSave({
       trabajadorId: form.trabajadorId || null,
       nombreLibre: form.trabajadorId ? "" : form.nombreLibre.trim(),
@@ -4296,6 +4335,7 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
       horaFin: form.horaFin || "",
       observaciones: form.observaciones.trim(),
       ...(mostrarContarComoTrabajado ? { contarComoTrabajado: !!form.contarComoTrabajado } : {}),
+      ...extra,
     });
     onClose();
   }
@@ -4313,11 +4353,23 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
         <FSel value={form.motivo} onChange={set("motivo")} options={motivosDisponibles} placeholder="Selecciona..." />
       </Field>
       {esMotivoPermiso(form.motivo) && (form.trabajadorId || form.nombreLibre.trim()) && (
-        <div style={{ fontSize: 11.5, fontWeight: 700, color: bloqueadoPorTope ? C.red : C.slate, margin: "-6px 0 10px" }}>
-          {bloqueadoPorTope
-            ? `🚫 Ya tiene ${permisosEsteMes} permisos este mes -- no se puede registrar otro (tope de ${TOPE_PERMISOS_POR_MES}). Vacaciones, Incapacidad, Licencias, Luto y Suspensión no cuentan para este tope.`
-            : `Permisos usados este mes: ${permisosEsteMes}/${TOPE_PERMISOS_POR_MES}.`}
-        </div>
+        necesitaCodigo ? (
+          <div style={{ background: C.amberBg, border: `1px solid ${C.amber}`, borderRadius: 10, padding: "10px 12px", margin: "-6px 0 12px" }}>
+            <div style={{ fontSize: 12, fontWeight: 800, color: C.amber, marginBottom: 4 }}>
+              🔐 Este sería el permiso #{permisosEsteMes + 1} del mes (el tope normal es {topePermisos})
+            </div>
+            <div style={{ fontSize: 11.5, color: C.ink, marginBottom: 8 }}>
+              Para guardarlo necesitas el código de autorización que da gerencia. Vacaciones, Incapacidad, Licencias, Luto y Suspensión no cuentan para este tope.
+            </div>
+            <FInput value={codigo} onChange={(v) => { setCodigo(String(v).toUpperCase()); setErrorCodigo(""); }} placeholder="Código de autorización (ej. PX-7K4M2Q)" />
+            {errorCodigo && <div style={{ fontSize: 11.5, fontWeight: 700, color: C.red, marginTop: 6 }}>🚫 {errorCodigo}</div>}
+          </div>
+        ) : (
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: C.slate, margin: "-6px 0 10px" }}>
+            {`Permisos usados este mes: ${permisosEsteMes}/${topePermisos}.`}
+            {ausencia?.codigoAutorizacion ? ` · 🔐 Autorizado por ${ausencia.autorizadoPor || "gerencia"} (${ausencia.codigoAutorizacion})` : ""}
+          </div>
+        )
       )}
       <Field label="Fecha Inicio"><FInput type="date" value={form.fechaInicio} onChange={set("fechaInicio")} /></Field>
       <Field label="Fecha Fin"><FInput type="date" value={form.fechaFin} onChange={set("fechaFin")} /></Field>
@@ -4342,9 +4394,137 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
           </div>
         )}
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
-        <Btn onClick={guardar} disabled={!form.motivo || (!form.trabajadorId && !form.nombreLibre.trim()) || bloqueadoPorTope}>Guardar</Btn>
+        <Btn onClick={guardar} disabled={!form.motivo || (!form.trabajadorId && !form.nombreLibre.trim()) || validando || (necesitaCodigo && !codigo.trim())}>{validando ? "Validando..." : "Guardar"}</Btn>
       </div>
     </Modal>
+  );
+}
+// ─── CÓDIGOS DE PERMISO (gerencia) ───────────────────────────────────────
+// (2026-10-28, a pedido de Fredy) Gerencia genera aquí el código de un solo
+// uso para autorizar un permiso por encima del tope mensual. Los códigos
+// los guarda/valida el servidor (nominaPermiso* en functions/index.js).
+function CodigosPermisoView({ trabajadores, ausencias, tope }) {
+  const [trabId, setTrabId] = useState("");
+  const [mes, setMes] = useState(today().slice(0, 7));
+  const [generando, setGenerando] = useState(false);
+  const [recien, setRecien] = useState(null); // { codigo, nombre, mes }
+  const [lista, setLista] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState("");
+  const [copiado, setCopiado] = useState(false);
+  const [topeEdit, setTopeEdit] = useState(String(tope));
+  const [topeMsg, setTopeMsg] = useState("");
+  useEffect(() => { setTopeEdit(String(tope)); }, [tope]);
+  async function cargar() {
+    setCargando(true);
+    try {
+      const resp = await httpsCallable(functionsClient, "nominaPermisoCodigoListar")({});
+      setLista(resp.data?.codigos || []);
+      setError("");
+    } catch (err) {
+      setError(err?.message || String(err));
+    } finally {
+      setCargando(false);
+    }
+  }
+  useEffect(() => { cargar(); }, []);
+  const trabajador = trabajadores.find((t) => t.id === trabId);
+  const usados = trabajador ? contarPermisosDelMes(ausencias, { trabajadorId: trabajador.id, nombreLibre: "", mes }) : 0;
+  async function generar() {
+    if (!trabajador || !/^\d{4}-\d{2}$/.test(mes)) return;
+    setGenerando(true);
+    setError("");
+    try {
+      const resp = await httpsCallable(functionsClient, "nominaPermisoCodigoGenerar")({ trabajadorId: trabajador.id, nombre: trabajador.nombre, mes });
+      setRecien({ codigo: resp.data.codigo, nombre: trabajador.nombre, mes });
+      setCopiado(false);
+      cargar();
+    } catch (err) {
+      setError(err?.message || String(err));
+    } finally {
+      setGenerando(false);
+    }
+  }
+  async function anular(codigo) {
+    try {
+      await httpsCallable(functionsClient, "nominaPermisoCodigoAnular")({ codigo });
+      cargar();
+    } catch (err) {
+      setError(err?.message || String(err));
+    }
+  }
+  async function copiar(texto) {
+    try { await navigator.clipboard.writeText(texto); setCopiado(true); } catch (e) { setCopiado(false); }
+  }
+  async function guardarTope() {
+    const n = Math.floor(Number(topeEdit));
+    if (!(n >= 0 && n <= 31)) { setTopeMsg("Escribe un número entre 0 y 31."); return; }
+    try {
+      await fsSave("config", "nomina_permisos", { tope: n });
+      setTopeMsg("✅ Guardado.");
+    } catch (err) {
+      setTopeMsg(err?.message || "No se pudo guardar.");
+    }
+  }
+  const colorEstado = { pendiente: C.amber, usado: C.green, anulado: C.slate };
+  return (
+    <div style={{ maxWidth: 900 }}>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 760 }}>
+        Cada trabajador puede tener {tope} permisos al mes sin autorización. Desde el siguiente, quien lo registra debe escribir un código que se genera acá. El código es de <strong>un solo uso</strong> y sirve solo para <strong>ese trabajador</strong> y <strong>ese mes</strong>.
+      </div>
+      <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 16 }}>
+        <div style={{ fontWeight: 800, color: C.ink, marginBottom: 10 }}>Generar un código</div>
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <div style={{ flex: "1 1 260px" }}>
+            <Field label="Trabajador">
+              <FSel value={trabId} onChange={setTrabId} options={trabajadores.map((t) => ({ value: t.id, label: t.nombre }))} placeholder="Selecciona..." />
+            </Field>
+          </div>
+          <div style={{ flex: "0 0 160px" }}>
+            <Field label="Mes del permiso"><FInput type="month" value={mes} onChange={setMes} /></Field>
+          </div>
+          <div style={{ marginBottom: 14 }}>
+            <Btn onClick={generar} disabled={!trabajador || generando}>{generando ? "Generando..." : "Generar código"}</Btn>
+          </div>
+        </div>
+        {trabajador && (
+          <div style={{ fontSize: 12, fontWeight: 700, color: usados >= tope ? C.amber : C.slate }}>
+            {trabajador.nombre} lleva {usados} de {tope} permisos en {mes}.
+          </div>
+        )}
+        {recien && (
+          <div style={{ marginTop: 14, background: C.amberBg, border: `1px solid ${C.amber}`, borderRadius: 12, padding: 14 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", letterSpacing: "0.06em" }}>Código para {recien.nombre} · {recien.mes}</div>
+            <div style={{ fontSize: 30, fontWeight: 900, letterSpacing: "0.08em", color: C.ink, margin: "6px 0" }}>{recien.codigo}</div>
+            <Btn small variant="secondary" onClick={() => copiar(`Código de autorización de permiso para ${recien.nombre} (${recien.mes}): ${recien.codigo}`)}>{copiado ? "✅ Copiado" : "Copiar mensaje"}</Btn>
+          </div>
+        )}
+      </div>
+      <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 16, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+        <div style={{ fontWeight: 800, color: C.ink }}>Permisos sin código por mes:</div>
+        <div style={{ width: 90 }}><FInput type="number" value={topeEdit} onChange={setTopeEdit} /></div>
+        <Btn small onClick={guardarTope}>Guardar</Btn>
+        {topeMsg && <span style={{ fontSize: 12, color: C.slate }}>{topeMsg}</span>}
+      </div>
+      {error && <div style={{ fontSize: 12.5, fontWeight: 700, color: C.red, marginBottom: 12 }}>🚫 {error}</div>}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+        <div style={{ fontWeight: 800, color: C.ink }}>Códigos generados</div>
+        <Btn small variant="secondary" onClick={cargar}>{cargando ? "Cargando..." : "↻ Actualizar"}</Btn>
+      </div>
+      <Tabla
+        vacio={cargando ? "Cargando..." : "Todavía no se ha generado ningún código."}
+        columnas={[
+          { key: "codigo", label: "Código", render: (c) => <span style={{ fontWeight: 800, letterSpacing: "0.05em" }}>{c.codigo}</span> },
+          { key: "nombre", label: "Trabajador" },
+          { key: "mes", label: "Mes" },
+          { key: "estado", label: "Estado", render: (c) => <span style={{ fontWeight: 700, color: colorEstado[c.estado] || C.slate }}>{c.estado}</span> },
+          { key: "creadoPor", label: "Lo generó", render: (c) => c.creadoPor || "—" },
+          { key: "uso", label: "Uso", render: (c) => c.estado === "usado" ? `${c.usadoPor || "—"} · ${fmtFechaISO((c.usadoEn || "").slice(0, 10))}` : "—" },
+          { key: "acc", label: "", align: "right", render: (c) => c.estado === "pendiente" ? <span onClick={() => anular(c.codigo)} style={{ cursor: "pointer", color: C.red, fontWeight: 700 }}>Anular</span> : null },
+        ]}
+        filas={lista}
+      />
+    </div>
   );
 }
 function AusenciasView({ ausencias, trabajadores, currentUser, motivosDisponibles, onSave, onDelete }) {
@@ -4400,6 +4580,7 @@ function AusenciasView({ ausencias, trabajadores, currentUser, motivosDisponible
           { key: "fechaFin", label: "Hasta", render: (f) => fmtFechaISO(f.fechaFin) },
           { key: "hora", label: "Hora", render: (f) => (f.horaInicio && f.horaFin) ? `${f.horaInicio}–${f.horaFin}` : "—" },
           { key: "observaciones", label: "Observaciones", render: (f) => f.observaciones || "—" },
+          { key: "autorizacion", label: "Autorización", render: (f) => f.codigoAutorizacion ? <span title={`Código ${f.codigoAutorizacion}`} style={{ fontWeight: 700, color: C.amber }}>🔐 {f.autorizadoPor || "Gerencia"}</span> : "—" },
           {
             key: "acciones", label: "", align: "right",
             render: (f) => (
@@ -4598,7 +4779,7 @@ function PermisosCalendarioView({ trabajadores, produccion, horas, ausencias, cu
                 >
                   <span style={{ fontSize: 18 }}>{a ? (motivoIcono[a.motivo] || "❔") : (vino ? "✅" : "◻️")}</span>
                   <span style={{ flex: 1, fontSize: 13, fontWeight: 600, color: C.ink }}>{t.nombre}</span>
-                  <span style={{ fontSize: 11, color: C.slate }}>{a ? `${a.motivo}${fmtHoraRango(a)}` : (vino ? "Vino" : "Sin registro")}</span>
+                  <span style={{ fontSize: 11, color: C.slate }}>{a ? `${a.motivo}${fmtHoraRango(a)}${a.codigoAutorizacion ? " 🔐" : ""}` : (vino ? "Vino" : "Sin registro")}</span>
                 </div>
               );
             })}
@@ -6223,6 +6404,7 @@ async function exportarPersonasAreaExcel(personas, area, etiquetaPeriodo) {
   XLSX.writeFile(wb, `${area.replace(/\s+/g, "_")}_${etiquetaPeriodo}.xlsx`);
 }
 function EstadisticasPermisosView({ areasNomina, trabajadores, ausencias, faltas, retardos, turnos }) {
+  const { tope: topePermisos } = useContext(PermisosCfgCtx);
   const [mes, setMes] = useState(today().slice(0, 7));
   const [areaDetalle, setAreaDetalle] = useState(null); // nombre del área cuya fila se hizo clic, o null
   const [periodoDetalle, setPeriodoDetalle] = useState("mes"); // "mes" | "anio" -- dentro del detalle
@@ -6275,7 +6457,7 @@ function EstadisticasPermisosView({ areasNomina, trabajadores, ausencias, faltas
     const existente = personasPermisosMes.get(key);
     personasPermisosMes.set(key, { nombre, cedula, count: (existente?.count || 0) + 1 });
   });
-  const alertasPersona = [...personasPermisosMes.values()].filter((p) => p.count === TOPE_PERMISOS_POR_MES - 1);
+  const alertasPersona = [...personasPermisosMes.values()].filter((p) => p.count === topePermisos - 1);
   const hayAlertas = alertasArea.length > 0 || alertasPersona.length > 0;
 
   const statsDetalle = periodoDetalle === "anio" ? statsAnio : statsMes;
@@ -6303,7 +6485,7 @@ function EstadisticasPermisosView({ areasNomina, trabajadores, ausencias, faltas
           ))}
           {alertasPersona.map((p) => (
             <div key={`persona_${p.nombre}_${p.cedula || ""}`} style={{ background: C.amberBg, borderLeft: `4px solid ${C.amber}`, borderRadius: 8, padding: "10px 14px", fontSize: 12.5, color: C.ink }}>
-              ⚠️ <strong>{p.nombre}</strong> ya tiene {p.count} de {TOPE_PERMISOS_POR_MES} permisos este mes -- le queda 1 antes del tope.
+              ⚠️ <strong>{p.nombre}</strong> ya tiene {p.count} de {topePermisos} permisos este mes -- le queda 1 antes de que se pida código de gerencia.
             </div>
           ))}
         </div>
@@ -14233,7 +14415,7 @@ function DiagnosticoDuplicadosView({ diasTrabajados, faltas, anomalias, retardos
     </div>
   );
 }
-export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNovedades, puedeEditarCatalogos, puedeVerAnomaliasHuellero, puedeVerDuplicadosHuellero, puedeCerrarQuincena, puedeAgregarCobrosManual, puedeAjustarDestajo, puedeEditarHorasExtra, puedeEditarBonificacion }) {
+export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNovedades, puedeEditarCatalogos, puedeVerAnomaliasHuellero, puedeVerDuplicadosHuellero, puedeCerrarQuincena, puedeAgregarCobrosManual, puedeAjustarDestajo, puedeEditarHorasExtra, puedeEditarBonificacion, puedeAutorizarPermisos }) {
   // Líder de área (hoy: Anny Beltrán y Sarai Méndez, cada una con su Área
   // Interna real -- ver Administrativo → Área Interna): entra con un panel
   // reducido, ya filtrado a su propia gente, en vez del panel completo de
@@ -14280,6 +14462,8 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   const [cierres, setCierres] = useState([]);
   const [costosTeoricoProceso, setCostosTeoricoProceso] = useState([]);
   const [ausencias, setAusencias] = useState([]);
+  // (2026-10-28) Tope de permisos al mes sin código de gerencia (config/nomina_permisos).
+  const [topePermisos, setTopePermisos] = useState(TOPE_PERMISOS_POR_MES);
   const [faltasSinJustificar, setFaltasSinJustificar] = useState([]);
   const [diasTrabajadosHuellero, setDiasTrabajadosHuellero] = useState([]);
   const [anomaliasHuellero, setAnomaliasHuellero] = useState([]);
@@ -14350,6 +14534,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
       onSnapshot(collection(db, "nomina_cierres"), (snap) => setCierres(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_costos_teorico_proceso"), (snap) => setCostosTeoricoProceso(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_ausencias"), (snap) => setAusencias(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(doc(db, "config", "nomina_permisos"), (snap) => { const t = Number(snap.data()?.tope); setTopePermisos(snap.exists() && t >= 0 ? t : TOPE_PERMISOS_POR_MES); }),
       onSnapshot(collection(db, "nomina_faltas_sin_justificar"), (snap) => setFaltasSinJustificar(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_dias_trabajados"), (snap) => setDiasTrabajadosHuellero(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_anomalias_huellero"), (snap) => setAnomaliasHuellero(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
@@ -14439,6 +14624,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   // (Registrar Produccion/Horas/Resumen/Permisos, y cualquier otro
   // modulo) sigue usando el isAdmin real, sin cambios.
   const isAdminCatalogos = isAdmin || !!puedeEditarCatalogos;
+  const puedeCodigosPermiso = isAdmin || !!puedeAutorizarPermisos;
   // Menú del admin reacomodado en grupos desplegables (25/08/2026, a pedido
   // del usuario) — pensado para que más adelante, cuando se manejen roles,
   // sea fácil darle a alguien acceso a un grupo completo en vez de ítem por
@@ -14459,6 +14645,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
     ? [
         { id: "ausencias", icon: "📅", label: "Motivos de Ausencia" },
         { id: "permisos", icon: "🗓️", label: "Permisos (Calendario)" },
+        ...(puedeCodigosPermiso ? [{ id: "codigos_permiso", icon: "🔐", label: "Códigos de Permiso" }] : []),
         { id: "tabulador_asistencia", icon: "📋", label: "Tabulador de Asistencia" },
         ...(puedeVerAnomaliasHuellero ? [{ id: "anomalias_huellero", icon: "⚠️", label: "Anomalías Huellero" }] : []),
         { id: "historial_asistencia_area", icon: "🗓️", label: "Historial de Asistencia" },
@@ -14492,6 +14679,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
         { group: "Novedades", icon: "📣", items: [
             { id: "ausencias", icon: "📅", label: "Motivos de Ausencia" },
             { id: "permisos", icon: "🗓️", label: "Permisos (Calendario)" },
+            ...(puedeCodigosPermiso ? [{ id: "codigos_permiso", icon: "🔐", label: "Códigos de Permiso" }] : []),
             { id: "tabulador_asistencia", icon: "📋", label: "Tabulador de Asistencia" },
             ...(puedeVerAnomaliasHuellero ? [{ id: "anomalias_huellero", icon: "⚠️", label: "Anomalías Huellero" }] : []),
             { id: "historial_asistencia_area", icon: "🗓️", label: "Historial de Asistencia" },
@@ -15020,6 +15208,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
     );
   }
   return (
+    <PermisosCfgCtx.Provider value={{ tope: topePermisos }}>
     <div style={{ minHeight: "100vh", background: C.canvas, fontFamily: "'Inter',-apple-system,sans-serif", display: "flex" }}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;}`}</style>
       <div style={{ width: 220, background: C.ink, padding: "24px 14px", display: "flex", flexDirection: "column", flexShrink: 0 }}>
@@ -15159,6 +15348,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "prestamos" && !areaLider && !soloNovedades && <PrestamosView trabajadores={trabajadores} prestamos={prestamos} onGuardar={guardarPrestamo} onBorrar={borrarPrestamo} currentUser={currentUser} />}
           {subView === "ausencias" && !areaLider && <AusenciasView ausencias={ausencias} trabajadores={trabajadores} currentUser={currentUser} motivosDisponibles={nombresMotivosDisponibles} onSave={guardarAusencia} onDelete={borrarAusencia} />}
           {subView === "asistencia" && !areaLider && <ReporteAsistenciaView ausencias={ausencias} trabajadores={trabajadores} turnos={turnos} areasNomina={areasNomina} anomaliasHuellero={anomaliasHuellero} onGuardarTrabajador={guardarTrabajador} />}
+          {subView === "codigos_permiso" && puedeCodigosPermiso && !areaLider && <CodigosPermisoView trabajadores={trabajadores} ausencias={ausencias} tope={topePermisos} />}
           {subView === "permisos" && <PermisosCalendarioView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} ausencias={ausenciasVisibles} currentUser={currentUser} isAdmin={isAdmin} motivosDisponibles={nombresMotivosDisponibles} motivoIcono={iconoPorMotivo} onSave={guardarAusencia} onDelete={borrarAusencia} />}
           {subView === "anomalias_huellero" && puedeVerAnomaliasHuellero && <AnomaliasHuelleroView anomalias={anomaliasVisibles} retardos={retardosVisibles} onAjustar={ajustarAnomaliaHuellero} />}
           {subView === "historial_asistencia_area" && <HistorialAsistenciaAreaView areasNomina={areasNomina} trabajadores={trabajadoresVisibles} areaLider={areaLider} diasTrabajados={diasTrabajadosHuellero} faltas={faltasSinJustificar} ausencias={ausenciasVisibles} anomalias={anomaliasVisibles} retardos={retardosVisibles} turnos={turnos} />}
@@ -15181,5 +15371,6 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
         </div>
       </div>
     </div>
+    </PermisosCfgCtx.Provider>
   );
 }
