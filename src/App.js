@@ -13429,14 +13429,14 @@ function NotificacionesProgramadasPanel({ users, config, onUpdateConfig }) {
   );
 }
 // (2026-10-27, a pedido de Fredy) Destinatarios de los correos de programación, por área. Se guardan en
-// config/correos_programacion { todas: [], planta: [], calidad: [], zonacalor: [] }. (2026-10-28) `todas` recibe el
-// correo único de las 7 p. m. (cumplimiento de hoy + programación de mañana, las 3 áreas); las listas por área
-// solo reciben los avisos de CAMBIO o CANCELACIÓN de su área (notificarProgramacionCorreo).
+// config/correos_programacion { todas: [], planta: [], calidad: [], zonacalor: [] }. (2026-10-28) `todas` (gerencia) recibe el
+// correo COMPLETO de las 7 p. m. (cumplimiento de hoy + programación de mañana, las 3 áreas); cada lista por área recibe
+// ese mismo correo pero SOLO con lo de su área, más los avisos de CAMBIO o CANCELACIÓN (notificarProgramacionCorreo).
 const AREAS_CORREO_PROG = [
-  { id: "todas", nombre: "Correo de la noche — todas las áreas", detalle: "Cada día a las 7 p. m.: cumplimiento de hoy y programación de mañana de Planta, Calidad y Zona calor", grande: true },
-  { id: "planta", nombre: "Planta de confección", detalle: "Avisos de cambio o cancelación — Programación Diaria de Planta Yanko" },
-  { id: "calidad", nombre: "Control de calidad", detalle: "Avisos de cambio o cancelación — Programador de Procesos" },
-  { id: "zonacalor", nombre: "Zona calor", detalle: "Avisos de cambio o cancelación — Programador de Procesos" },
+  { id: "todas", nombre: "Gerencia — correo completo (todas las áreas)", detalle: "Cada día a las 7 p. m.: cumplimiento de hoy y programación de mañana de Planta, Calidad y Zona calor. Pon aquí solo a quien deba ver todo.", grande: true },
+  { id: "planta", nombre: "Planta de confección", detalle: "Correo de las 7 p. m. solo con lo de Planta + avisos de cambio o cancelación" },
+  { id: "calidad", nombre: "Control de calidad", detalle: "Correo de las 7 p. m. solo con lo de Calidad + avisos de cambio o cancelación" },
+  { id: "zonacalor", nombre: "Zona calor", detalle: "Correo de las 7 p. m. solo con lo de Zona calor + avisos de cambio o cancelación" },
 ];
 function CorreosProgramacionPanel() {
   const [listas, setListas] = useState({ todas: [], planta: [], calidad: [], zonacalor: [] });
@@ -13447,9 +13447,7 @@ function CorreosProgramacionPanel() {
     const unsub = onSnapshot(doc(db, "config", "correos_programacion"), (snap) => {
       const d = snap.exists() ? snap.data() : {};
       const arr = (v) => (Array.isArray(v) ? v : []);
-      // Mientras nadie haya guardado la lista única, el correo de la noche usa la unión de las tres listas (igual que el servidor).
-      const union = [...new Set([...arr(d.planta), ...arr(d.calidad), ...arr(d.zonacalor)])];
-      setListas({ todas: Array.isArray(d.todas) ? d.todas : union, planta: arr(d.planta), calidad: arr(d.calidad), zonacalor: arr(d.zonacalor) });
+      setListas({ todas: arr(d.todas), planta: arr(d.planta), calidad: arr(d.calidad), zonacalor: arr(d.zonacalor) });
     }, () => {});
     return unsub;
   }, []);
@@ -13486,7 +13484,7 @@ function CorreosProgramacionPanel() {
     <div style={{ marginBottom: 28, paddingBottom: 22, borderBottom: `1px solid ${T.border}` }}>
       <div style={{ fontWeight: 700, fontSize: 15, color: T.ink }}>Correos de programación</div>
       <div style={{ fontSize: 12.5, color: T.slate, marginTop: 4, marginBottom: 14, lineHeight: 1.5 }}>
-        Cada día a las 7 p. m. sale UN solo correo con las tres áreas: el cumplimiento de hoy y lo programado para mañana. Les llega a quienes estén en la primera lista. Cuando alguien cambia o cancela una programación que ya se había avisado, el aviso con el motivo le llega a la lista de esa área.
+        Cada día a las 7 p. m. sale el cumplimiento de hoy y lo programado para mañana. Cada área recibe SOLO lo suyo (según su lista); la lista de Gerencia recibe el correo completo con las tres áreas. Si una persona está en Gerencia y en un área, recibe un solo correo (el completo). Cuando alguien cambia o cancela una programación que ya se había avisado, el aviso con el motivo le llega a la lista de esa área.
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(300px,1fr))", gap: 14 }}>
         {AREAS_CORREO_PROG.map((a) => (
@@ -13517,7 +13515,7 @@ function CorreosProgramacionPanel() {
         ))}
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
-        <Btn small variant="secondary" onClick={probar} disabled={probando}>{probando ? "Enviando prueba…" : "✉ Mandarme una prueba del correo de la noche"}</Btn>
+        <Btn small variant="secondary" onClick={probar} disabled={probando}>{probando ? "Enviando prueba…" : "✉ Mandarme una prueba del correo completo"}</Btn>
         {msg && <span style={{ fontSize: 12.5, color: T.slate }}>{msg}</span>}
       </div>
     </div>

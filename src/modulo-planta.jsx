@@ -806,7 +806,7 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
                   {pendDia.length > 0 && (
                     <span
                       onClick={() => abrirVista([d.iso])}
-                      title="Ver y enviar el correo de este día (las 3 áreas), sin esperar a las 7 p. m."
+                      title="Ver y enviar el correo de Planta de este día, sin esperar a las 7 p. m."
                       style={{ cursor: "pointer", color: sinAvisarDia ? C.amber : C.slate, fontWeight: 800 }}
                     >
                       ✉
@@ -842,7 +842,7 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
         })}
       </div>
       <div style={{ marginTop: 12, fontSize: 12.5, color: C.slate, lineHeight: 1.5 }}>
-        Cada pedido es una sola línea: tócala para ver sus lotes y moverlos. Programar solo guarda: el correo con las 3 áreas sale solo cada día a las 7 p. m.; el ✉ de cada día o "Enviar pendientes" lo adelantan. Punto amarillo = aún sin avisar.
+        Cada pedido es una sola línea: tócala para ver sus lotes y moverlos. Programar solo guarda: cada área recibe su correo solo a las 7 p. m. (gerencia recibe todas); el ✉ de cada día o "Enviar pendientes" lo adelantan. Punto amarillo = aún sin avisar.
       </div>
       {vistaCorreo && <VistaPreviaCorreoModal dias={vistaCorreo} programacion={programacion} diasMover={diasMover} hoyISO={hoyISO} onVista={onVistaDia} onEnviarDia={onEnviarDia} onCancelar={onCancelar} onMover={onMover} onClose={() => setVistaCorreo(null)} />}
       {panel && <ProgramarLotesModal pedidos={pedidos} diasProg={diasProg} programacion={programacion} tope={tope} hoyISO={hoyISO} onGuardar={guardarPanel} onClose={() => setPanel(false)} />}
@@ -2463,12 +2463,12 @@ export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
     setProgramacion((ps) => [...ps, ...nuevos]);
     await Promise.all(nuevos.map((n) => fsSave("planta_programacion", n.id, n)));
   }
-  // (2026-10-28) El correo sale solo cada día a las 7 p. m. con las 3 áreas. Este botón lo adelanta: un correo con TODO lo
-  // programado ese día (Planta, Calidad y Zona calor). Marca como avisados solo si salió.
+  // (2026-10-28) El correo automático de las 7 p. m. lleva a cada lista solo lo de su área (gerencia recibe todo). Este botón
+  // adelanta SOLO lo de Planta de confección de ese día (a la lista de Planta y a gerencia). Marca como avisados solo si salió.
   async function enviarCorreoDia(iso) {
     const delDia = programacion.filter((p) => p.fechaEnviado === iso && p.estado !== "cumplido");
     try {
-      const resp = await httpsCallable(functionsClient, "enviarCorreoProgramacionDia")({ dia: iso, programadoPor: currentUser?.name || currentUser?.username || "" });
+      const resp = await httpsCallable(functionsClient, "enviarCorreoProgramacionDia")({ dia: iso, area: "planta", programadoPor: currentUser?.name || currentUser?.username || "" });
       if (resp.data?.motivo === "sin destinatarios") { alert("No salió el correo: no hay destinatarios (Administración → Notificaciones)."); return false; }
       if (resp.data?.motivo === "nada que informar") { alert("No hay nada programado para ese día."); return false; }
       if (resp.data?.enviado === false) { alert("No se pudo enviar el correo. Inténtalo de nuevo."); return false; }
@@ -2484,7 +2484,7 @@ export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
   }
   // Vista previa: pide al servidor el correo del día tal como saldría, sin enviarlo ni marcar nada.
   async function obtenerVistaCorreoDia(iso) {
-    const resp = await httpsCallable(functionsClient, "enviarCorreoProgramacionDia")({ dia: iso, soloVista: true, programadoPor: currentUser?.name || currentUser?.username || "" });
+    const resp = await httpsCallable(functionsClient, "enviarCorreoProgramacionDia")({ dia: iso, area: "planta", soloVista: true, programadoPor: currentUser?.name || currentUser?.username || "" });
     return resp.data;
   }
   async function enviarCorreoTodoPendiente() {
