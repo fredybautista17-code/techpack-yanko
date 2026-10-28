@@ -6231,8 +6231,27 @@ function TelaProgramadaModal({ referencia, onClose, onGuardar }) {
     </Modal>
   );
 }
-function IngresoTelasPreordenModal({ preorden, entregas, currentUser, puedeConfirmarTela, onClose, onActualizarItemPreorden }) {
+function IngresoTelasPreordenModal({ preorden, entregas, currentUser, puedeConfirmarTela, onClose, onActualizarItemPreorden, onActualizarItemsPreorden }) {
   const entregasDeEsta = entregas.filter((e) => e.preordenId === preorden.id).sort((a, b) => (b.creadoEn || "").localeCompare(a.creadoEn || ""));
+  // (2026-10-28, a pedido de Fredy) Reparación: una referencia que aparece en una entrega ya asignada a esta orden
+  // pero quedó SIN la marca de tela (error de guardado de antes: solo una de varias quedaba marcada) se corrige sola
+  // al abrir el panel, y se le quita la marca de "tela programada" que ya no aplica.
+  const faltantesMarca = [];
+  entregasDeEsta.forEach((e) => (e.items || []).forEach((ei) => {
+    const it = (preorden.items || []).find((x) => x.itemId === ei.itemId);
+    if (it && !it.telaComprada && !faltantesMarca.some((f) => f.itemId === it.itemId)) {
+      faltantesMarca.push({ itemId: it.itemId, patch: {
+        telaInfo: { cliente: e.cliente || "", rollos: e.rollos || "", proveedor: e.proveedor || "", lote: e.lote || "", ancho: e.ancho || "", rendimiento: e.rendimiento || "", composicion: e.composicion || "", fechaRecepcion: e.fechaRecepcion || "", observaciones: e.observaciones || "" },
+        telaComprada: true, telaCompradaEn: e.creadoEn || nowISO(), telaCompradaPor: e.creadoPor || currentUser?.name || "", entregaTelaId: e.id,
+        telaProgramada: false,
+      } });
+    }
+  }));
+  const claveReparar = faltantesMarca.map((f) => f.itemId).join("|");
+  useEffect(() => {
+    if (!claveReparar || !onActualizarItemsPreorden) return;
+    onActualizarItemsPreorden(preorden.id, faltantesMarca, { silencioso: true });
+  }, [claveReparar, preorden.id]); // eslint-disable-line
   // (2026-10-01, a pedido de Fredy) "Tela Programada" -- ya se le pidió al
   // proveedor pero todavía no llegó. Se guarda directo en el item (igual
   // que telaComprada), así que estas referencias ya NO cuentan como
@@ -7461,7 +7480,7 @@ function OrdenesView({ preordenes, pedidos, capsulas, config, currentUser, onVin
     </div>
   );
 }
-function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, canAccessBodega, canAccessContabilidad, canAccessDiseno, entregasTela, onAddCapsula, onAddRef, onCrearPreorden, onAgregarAPreordenExistente, onVincularPedido, onAprobarPreorden, onDesaprobarPreorden, onActualizarPreorden, onEliminarPreorden, onActualizarItemPreorden, onCrearEntregaTela, onAsignarEntregaTela, prefillDesdeCapsula, onConsumirPrefillDesdeCapsula, onMarcarRefEnviadaAPreorden, historialNuevaOrden, onRegistrarHistorialNuevaOrden }) {
+function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, canAccessBodega, canAccessContabilidad, canAccessDiseno, entregasTela, onAddCapsula, onAddRef, onCrearPreorden, onAgregarAPreordenExistente, onVincularPedido, onAprobarPreorden, onDesaprobarPreorden, onActualizarPreorden, onEliminarPreorden, onActualizarItemPreorden, onActualizarItemsPreorden, onCrearEntregaTela, onAsignarEntregaTela, prefillDesdeCapsula, onConsumirPrefillDesdeCapsula, onMarcarRefEnviadaAPreorden, historialNuevaOrden, onRegistrarHistorialNuevaOrden }) {
   const [modo, setModo] = useState("lista");
   // (2026-09-30, a pedido de Fredy) "Pasar a Preorden"/"Pasar Cápsula a
   // Preorden" llegan acá con prefillDesdeCapsula (arreglo de {cap, ref}) ya
@@ -8164,6 +8183,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
             puedeConfirmarTela={puedeConfirmarTela}
             onClose={() => setViendoIngresoTelas(null)}
             onActualizarItemPreorden={onActualizarItemPreorden}
+            onActualizarItemsPreorden={onActualizarItemsPreorden}
           />
         );
       })()}
@@ -18375,6 +18395,27 @@ function AppInner() {
       alert('El cambio no se pudo guardar: la preorden quedo demasiado pesada (seguramente por la cantidad de fotos que tiene). Sube las imagenes en tandas mas pequenas o quita alguna foto antes de volver a intentar. Nada se guardo -- vuelve a intentarlo.');
     }
   }
+  // (2026-10-28, a pedido de Fredy) Cambia VARIAS referencias de una preorden en UN solo guardado. Antes, al asignar
+  // una entrega con varias referencias se llamaba a actualizarItemPreorden una vez por referencia y al mismo tiempo:
+  // cada llamada partía de la misma copia vieja de la preorden y la última pisaba a las demás, así que solo una
+  // referencia quedaba con tela confirmada. cambios = [{ itemId, patch }].
+  async function actualizarItemsPreorden(preordenId, cambios, opciones = {}) {
+    if (!cambios || !cambios.length) return;
+    const anterior = bitacoraPreordenes;
+    const porItem = new Map(cambios.map((c) => [c.itemId, c.patch]));
+    const updated = bitacoraPreordenes.map((p) =>
+      p.id !== preordenId ? p : { ...p, items: p.items.map((it) => (porItem.has(it.itemId) ? { ...it, ...porItem.get(it.itemId) } : it)) }
+    );
+    setBitacoraPreordenes(updated);
+    const item = updated.find((p) => p.id === preordenId);
+    try {
+      await fsSave("bitacora_preordenes", preordenId, item);
+    } catch (err) {
+      console.error("No se pudo guardar la preorden (actualizarItemsPreorden):", err);
+      setBitacoraPreordenes(anterior);
+      if (!opciones.silencioso) alert('El cambio no se pudo guardar: la preorden quedo demasiado pesada (seguramente por la cantidad de fotos que tiene). Sube las imagenes en tandas mas pequenas o quita alguna foto antes de volver a intentar. Nada se guardo -- vuelve a intentarlo.');
+    }
+  }
   // items: filas ya armadas en NuevaReprogramacionView (cada una ya trae
   // capsulaId + refId de la referencia real en esa cápsula, más los datos
   // propios de este pedido puntual). No se marca nada como "enviado" (a
@@ -18486,9 +18527,9 @@ function AppInner() {
         rendimiento: datos.rendimiento || "", composicion: datos.composicion || "",
         fechaRecepcion: datos.fechaRecepcion || "", observaciones: datos.observaciones || "",
       };
-      await Promise.all(items.map((it) => actualizarItemPreorden(preordenId, it.itemId, {
+      await actualizarItemsPreorden(preordenId, items.map((it) => ({ itemId: it.itemId, patch: {
         telaInfo, telaComprada: true, telaCompradaEn: nowISO(), telaCompradaPor: currentUser?.name || "", entregaTelaId: entrega.id,
-      })));
+      } })));
     }
     notify({
       id: uid(), icon: "🧵",
@@ -18517,9 +18558,9 @@ function AppInner() {
     // (2026-09-23, a pedido de Fredy) Es Diseño quien está haciendo este
     // match tela<->orden, así que este paso ya deja la referencia confirmada
     // de una vez (telaComprada), sin un paso de "confirmar recepción" aparte.
-    await Promise.all(items.map((it) => actualizarItemPreorden(preordenId, it.itemId, {
+    await actualizarItemsPreorden(preordenId, items.map((it) => ({ itemId: it.itemId, patch: {
       telaInfo, telaComprada: true, telaCompradaEn: nowISO(), telaCompradaPor: currentUser?.name || "", entregaTelaId: entregaId,
-    })));
+    } })));
     notify({ id: uid(), icon: "🧵", title: "Tela agregada y confirmada para la orden", msg: `${items.length} referencia${items.length !== 1 ? "s" : ""}` });
   }
   async function vincularPreordenAPedido(preordenId, itemId, pedido) {
@@ -19581,6 +19622,7 @@ function AppInner() {
                 onActualizarPreorden={actualizarPreorden}
                 onEliminarPreorden={deleteBitacoraPreorden}
                 onActualizarItemPreorden={actualizarItemPreorden}
+                onActualizarItemsPreorden={actualizarItemsPreorden}
                 prefillDesdeCapsula={prefillPreordenDesde}
                 onConsumirPrefillDesdeCapsula={() => setPrefillPreordenDesde(null)}
                 onMarcarRefEnviadaAPreorden={(capId, refId) => updateRef(capId, refId, { enviadoAPreorden: { en: nowISO(), por: currentUser?.name || "" } })}
