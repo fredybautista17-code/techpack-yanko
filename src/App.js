@@ -7614,9 +7614,23 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
   function itemGraduado(it, cliente, fechaPreorden) {
     return !!it.pedidoVinculado || usedInPedidoPreorden(it.referencia, pedidosCandidatosConversion(cliente, fechaPreorden));
   }
+  // (2026-10-29, a pedido de Fredy) Etapa de cada referencia: En Pedido (ya vinculada a un pedido) / En Órdenes (tela confirmada
+  // y pasada con "Pasar a Orden", sin pedido) / En Preórdenes (el resto sin pedido). Las tres suman las referencias de la orden.
+  function etapasDePreorden(p) {
+    const et = { pre: 0, ord: 0, ped: 0, preU: 0, ordU: 0, pedU: 0 };
+    const aprobada = (p.estado || "montada") === "aprobada";
+    (p.items || []).forEach((it) => {
+      const u = (Number(it.colombiaCantidad) || 0) + (Number(it.venezuelaCantidad) || 0);
+      if (itemGraduado(it, p.cliente, p.fechaCreado)) { et.ped += 1; et.pedU += u; }
+      else if (aprobada && it.telaComprada && itemPasadoAOrden(it)) { et.ord += 1; et.ordU += u; }
+      else { et.pre += 1; et.preU += u; }
+    });
+    return et;
+  }
   const preordenesConEstado = (preordenes || []).map((p) => ({
     ...p,
     pendientes: (p.items || []).filter((it) => !itemGraduado(it, p.cliente, p.fechaCreado)).length,
+    etapas: etapasDePreorden(p),
   })).sort((a, b) => (b.fechaCreado || "").localeCompare(a.fechaCreado || ""));
   const porSubTab = subTab === "pendientes" ? preordenesConEstado.filter((p) => p.pendientes > 0) : preordenesConEstado;
   const visiblesPorEstado = estadoFiltro === "todas" ? porSubTab : porSubTab.filter((p) => (p.estado || "montada") === estadoFiltro);
@@ -8345,6 +8359,29 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
           style={{ padding: "7px 12px", border: `1.5px solid ${buscarLista ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, minWidth: 280, outline: "none", fontFamily: "inherit" }}
         />
       </div>
+      {visiblesBuscadas.length > 0 && (() => {
+        const tot = visiblesBuscadas.reduce((a, p) => {
+          const e = p.etapas || {};
+          return { pre: a.pre + e.pre, ord: a.ord + e.ord, ped: a.ped + e.ped, preU: a.preU + e.preU, ordU: a.ordU + e.ordU, pedU: a.pedU + e.pedU };
+        }, { pre: 0, ord: 0, ped: 0, preU: 0, ordU: 0, pedU: 0 });
+        const ver = !esCliente;
+        const cajas = [
+          { l: "En Preórdenes", n: ver ? tot.pre : tot.pre + tot.ord, u: ver ? tot.preU : tot.preU + tot.ordU, c: T.amber, bg: T.amberBg, i: "📋" },
+          ...(ver ? [{ l: "En Órdenes", n: tot.ord, u: tot.ordU, c: T.coral, bg: T.coralBg, i: "🧵" }] : []),
+          { l: "En Pedido", n: tot.ped, u: tot.pedU, c: T.jade, bg: T.jadeBg, i: "📦" },
+        ];
+        return (
+          <div style={{ display: "grid", gridTemplateColumns: `repeat(${cajas.length},1fr)`, gap: 10, marginBottom: 16 }}>
+            {cajas.map((k) => (
+              <div key={k.l} style={{ background: k.bg, borderRadius: 12, padding: "12px 16px", border: `1px solid ${k.c}33` }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: T.slate }}>{k.i} {k.l}</div>
+                <div style={{ fontSize: 24, fontWeight: 900, color: k.c, lineHeight: 1.1, marginTop: 2 }}>{fmtNum(k.n)} <span style={{ fontSize: 12, fontWeight: 700 }}>ref</span></div>
+                <div style={{ fontSize: 11, color: T.slate, marginTop: 2 }}>{fmtNum(k.u)} unid.</div>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
       {!visiblesBuscadas.length && (
         <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>
           {bqLista ? "Ninguna preorden coincide con esa búsqueda." : (subTab === "pendientes" ? "No hay preórdenes pendientes de convertirse en pedido. 🎉" : "Todavía no hay preórdenes registradas.")}
@@ -8494,19 +8531,26 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                         style={{ padding: "3px 10px", borderRadius: 20, border: "none", background: faltaCartaColores ? T.border : T.jade, color: faltaCartaColores ? T.slate : T.white, fontWeight: 700, fontSize: 10, cursor: faltaCartaColores ? "not-allowed" : "pointer" }}
                       >✓ Aprobar</button>
                     )}
-                    {estadoActual === "aprobada" && (p.items || []).length > 0 && !esCliente && (
-                      <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.coralBg, color: T.coral }}>🧵 {itemsEnOrdenes.length} en Órdenes{itemsPorPasarAOrden.length ? ` · ${itemsPorPasarAOrden.length} por pasar` : ""}</span>
+                    {estadoActual === "aprobada" && (p.items || []).length > 0 && !esCliente && itemsPorPasarAOrden.length > 0 && (
+                      <span title="Tienen la tela confirmada; falta pulsar «Pasar a Orden»" style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.coralBg, color: T.coral }}>{itemsPorPasarAOrden.length} por pasar a Orden</span>
                     )}
                   </div>
                   <div style={{ fontSize: 12, color: T.slate }}>{(p.items || []).length} ref · {fmtNum(totalUnidades)} unid.{valorTotalPreorden > 0 ? ` · ${fmtCOP(valorTotalPreorden)}` : ""} · Creada {p.fechaCreado}</div>
                 </div>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                {p.pendientes > 0 ? (
-                  <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: T.amberBg, color: T.amber }}>⏳ {p.pendientes} sin convertir a pedido</span>
-                ) : (
-                  <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: T.jadeBg, color: T.jade }}>✓ Todo convertido a pedido</span>
-                )}
+                {(() => {
+                  const e = p.etapas || { pre: 0, ord: 0, ped: 0, preU: 0, ordU: 0, pedU: 0 };
+                  const chip = (txt, n, u, c, bg) => <span title={`${fmtNum(u)} unidades`} style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: bg, color: c, whiteSpace: "nowrap" }}>{txt} {n}</span>;
+                  if (p.pendientes === 0) return <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: T.jadeBg, color: T.jade }}>✓ Todo convertido a pedido ({e.ped})</span>;
+                  return (
+                    <>
+                      {chip("📋 Preórdenes", esCliente ? e.pre + e.ord : e.pre, esCliente ? e.preU + e.ordU : e.preU, T.amber, T.amberBg)}
+                      {!esCliente && chip("🧵 Órdenes", e.ord, e.ordU, T.coral, T.coralBg)}
+                      {chip("📦 Pedido", e.ped, e.pedU, T.jade, T.jadeBg)}
+                    </>
+                  );
+                })()}
                 {/* (2026-10-03, a pedido de Fredy) No calcula nada solo con
                     abrir la orden -- el consolidado de metros de tela se
                     pide a propósito con este botón, que abre una pantalla
