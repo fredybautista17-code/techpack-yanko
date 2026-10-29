@@ -18293,6 +18293,115 @@ function TraerPedidosArchivoModal({ pedidos, onClose }) {
 //  - Salió (cumplido o facturado completo) y sin lotes en producción -> Cerrado.
 //  - No salió -> Activo (esté o no en planta).
 //  - Contradicciones -> "Por revisar": no se tocan solas, tú decides con una casilla.
+// (2026-10-29, a pedido de Fredy) Diagnóstico de pedido (solo lectura): compara por referencia lo que llega de Busint con los lotes y baja el detalle crudo en Excel.
+function DiagnosticoPedidoModal({ numeroInicial, onClose }) {
+  const [numero, setNumero] = useState(numeroInicial ? String(numeroInicial) : "");
+  const [cargando, setCargando] = useState(false);
+  const [error, setError] = useState("");
+  const [datos, setDatos] = useState(null);
+  const [verColor, setVerColor] = useState(false);
+  async function consultar(n) {
+    const num = String(n ?? numero).trim();
+    if (!num) return;
+    setCargando(true); setError(""); setDatos(null);
+    try {
+      const r = await httpsCallable(functionsClient, "depurarPedidoBusint", { timeout: 540000 })({ numero: num });
+      setDatos(r.data);
+    } catch (err) { setError(err?.message || String(err)); }
+    setCargando(false);
+  }
+  useEffect(() => { if (numeroInicial) consultar(numeroInicial); }, []);
+  async function descargar() {
+    if (!datos) return;
+    const XLSX = await import("xlsx");
+    const wb = XLSX.utils.book_new();
+    const hoja = (filas, nombre) => XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(filas && filas.length ? filas : [{ Nota: "Sin filas" }]), nombre);
+    hoja(datos.porRef.map((r) => ({ Referencia: r.ref, "Pedido (API Busint)": r.pedidoApi, Facturado: r.facturado, "Facturado por tipo": JSON.stringify(r.facturadoPorTipo), "Cortado (lotes)": r.cortado, Lotes: r.lotes.join(" · ") })), "Por referencia");
+    hoja(datos.porColor.map((c) => ({ Referencia: c.ref, Pinta: c.pinta, Color: c.color, "Pedido (API Busint)": c.pedidoApi, Facturado: c.facturado })), "Por color");
+    hoja(datos.lotes, "Lotes");
+    hoja(datos.crudo.ordenes, "Ordenes API (crudo)");
+    hoja(datos.crudo.detalleBD, "Pedidos detalles BD (crudo)");
+    hoja(datos.crudo.cumplidosBD, "Cumplidos BD (crudo)");
+    hoja(datos.crudo.facturado, "Facturado API (crudo)");
+    XLSX.writeFile(wb, `Diagnostico_pedido_${datos.numero}.xlsx`);
+  }
+  const th = (arr) => (
+    <thead><tr style={{ background: T.ink, position: "sticky", top: 0 }}>
+      {arr.map((h, i) => <th key={h} style={{ padding: "7px 10px", color: T.seam, textAlign: i === 0 ? "left" : "center", fontWeight: 700, fontSize: 11 }}>{h}</th>)}
+    </tr></thead>
+  );
+  const td = { padding: "6px 10px", borderTop: `1px solid ${T.border}` };
+  return (
+    <Modal title="Diagnóstico de pedido (Busint)" onClose={onClose} width={940}>
+      <p style={{ margin: "0 0 12px", fontSize: 13, color: T.slate }}>Solo lectura. Escribe un número de pedido y compara, por referencia, lo que trae la consulta de pedidos de Busint, lo facturado y los lotes cortados con el reporte «Prioridades de despacho» de Busint.</p>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 14 }}>
+        <input value={numero} onChange={(e) => setNumero(e.target.value.replace(/\D/g, ""))} onKeyDown={(e) => e.key === "Enter" && consultar()} placeholder="N° de pedido, ej. 1456" style={{ padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, width: 200, fontFamily: "inherit" }} />
+        <Btn onClick={() => consultar()} disabled={cargando || !numero}>{cargando ? "Consultando Busint… (puede tardar un par de minutos)" : "Consultar"}</Btn>
+        {datos && <Btn variant="secondary" onClick={descargar}>⬇ Descargar detalle crudo (Excel)</Btn>}
+      </div>
+      {error && <div style={{ marginBottom: 12, padding: "10px 14px", background: T.coralBg, borderRadius: 8, color: T.coral, fontSize: 13, fontWeight: 600 }}>⚠ {error}</div>}
+      {datos && (
+        <div>
+          {datos.avisos.length > 0 && <div style={{ marginBottom: 10, padding: "8px 12px", background: T.amberBg, borderRadius: 8, color: T.amber, fontSize: 12, fontWeight: 600 }}>⚠ {datos.avisos.join(" · ")}</div>}
+          <div style={{ fontSize: 13, color: T.ink, marginBottom: 10 }}><b>Pedido #{datos.numero}</b> {datos.cliente ? `· ${datos.cliente}` : ""} <span style={{ color: T.slate, fontSize: 11 }}>· rango consultado {datos.fechaInicio} a {datos.fechaFin}</span></div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 12 }}>
+            {[
+              { l: "Pedido según la consulta de Busint", v: datos.totales.pedidoApi, c: T.denim, bg: T.denimBg },
+              { l: "Facturado (FAC + traslados, netos)", v: datos.totales.facturado, c: T.jade, bg: T.jadeBg },
+              { l: "Cortado según lotes de Planeación", v: datos.totales.cortado, c: T.amber, bg: T.amberBg },
+              { l: "Filas: pedido / facturado / detalle BD / lotes", v: `${datos.totales.filasOrdenes} / ${datos.totales.filasFacturado} / ${datos.totales.filasDetalleBD} / ${datos.totales.lotes}`, c: T.slate, bg: T.canvas },
+            ].map((k) => (
+              <div key={k.l} style={{ background: k.bg, borderRadius: 10, padding: "10px 12px", border: `1px solid ${T.border}` }}>
+                <div style={{ fontSize: typeof k.v === "number" ? 22 : 15, fontWeight: 900, color: k.c, lineHeight: 1.2 }}>{typeof k.v === "number" ? fmtNum(k.v) : k.v}</div>
+                <div style={{ fontSize: 11, color: T.slate, marginTop: 4, fontWeight: 600 }}>{k.l}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ maxHeight: 320, overflowY: "auto", border: `1px solid ${T.border}`, borderRadius: 10 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              {th(["Referencia", "Pedido (consulta)", "Facturado", "Cortado (lotes)", "Lotes (cortado, etapa)", "Facturado por tipo"])}
+              <tbody>
+                {datos.porRef.map((r, i) => (
+                  <tr key={r.ref} style={{ background: i % 2 ? T.canvas : T.white }}>
+                    <td style={{ ...td, fontWeight: 800, color: T.denim }}>{r.ref}</td>
+                    <td style={{ ...td, textAlign: "center", fontWeight: 700 }}>{fmtNum(r.pedidoApi)}</td>
+                    <td style={{ ...td, textAlign: "center" }}>{fmtNum(r.facturado)}</td>
+                    <td style={{ ...td, textAlign: "center", color: T.amber, fontWeight: 700 }}>{fmtNum(r.cortado)}</td>
+                    <td style={{ ...td, color: T.slate }}>{r.lotes.join(" · ") || "—"}</td>
+                    <td style={{ ...td, color: T.slate }}>{Object.entries(r.facturadoPorTipo).map(([k, v]) => `${k}: ${fmtNum(v)}`).join(" · ") || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ marginTop: 10 }}>
+            <button type="button" onClick={() => setVerColor((v) => !v)} style={{ background: "none", border: "none", color: T.denim, cursor: "pointer", fontSize: 12, fontWeight: 700, padding: 0, fontFamily: "inherit" }}>{verColor ? "▲ Ocultar" : "▼ Ver"} detalle por color ({datos.porColor.length})</button>
+            {verColor && (
+              <div style={{ maxHeight: 260, overflowY: "auto", border: `1px solid ${T.border}`, borderRadius: 10, marginTop: 6 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                  {th(["Referencia", "Pinta", "Color", "Pedido (consulta)", "Facturado"])}
+                  <tbody>
+                    {datos.porColor.map((c, i) => (
+                      <tr key={`${c.ref}-${c.pinta}-${c.color}-${i}`} style={{ background: i % 2 ? T.canvas : T.white }}>
+                        <td style={{ ...td, fontWeight: 700 }}>{c.ref}</td>
+                        <td style={{ ...td, textAlign: "center" }}>{c.pinta || "—"}</td>
+                        <td style={{ ...td, textAlign: "center" }}>{c.color || "—"}</td>
+                        <td style={{ ...td, textAlign: "center", fontWeight: 700 }}>{fmtNum(c.pedidoApi)}</td>
+                        <td style={{ ...td, textAlign: "center" }}>{fmtNum(c.facturado)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+          <div style={{ fontSize: 11, color: T.slate, marginTop: 10 }}>Comparación con Busint: «Pedido» debe coincidir con la columna Pedido del reporte «Prioridades de despacho». Si una referencia o un color no aparece aquí, la consulta de pedidos no lo está devolviendo; el Excel crudo trae todas las filas y columnas tal como llegan.</div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 function SincronizarPedidosModal({ onClose }) {
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState("");
@@ -18303,6 +18412,7 @@ function SincronizarPedidosModal({ onClose }) {
   const [abierta, setAbierta] = useState("revisar");
   const [aplicando, setAplicando] = useState(false);
   const [resultado, setResultado] = useState(null);
+  const [diagNum, setDiagNum] = useState(null);
   const llamar = (payload) => httpsCallable(functionsClient, "sincronizarPedidosBusint", { timeout: 540000 })(payload).then((r) => r.data);
   async function calcular() {
     setCargando(true); setError(""); setResultado(null); setMarcados({});
@@ -18380,6 +18490,7 @@ function SincronizarPedidosModal({ onClose }) {
   );
   return (
     <Modal title="Sincronizar con Busint" onClose={onClose} width={940}>
+      {diagNum && <DiagnosticoPedidoModal numeroInicial={diagNum} onClose={() => setDiagNum(null)} />}
       <p style={{ margin: "0 0 12px", fontSize: 13, color: T.slate }}>
         ATLAS cruza <b>Busint</b> (cumplido / facturado) con la <b>planta de confección</b> (carga más reciente de Planeación). <b>Salió</b> y sin lotes en producción → <b>Cerrado</b>. Lo que no ha salido → <b>Activo</b>. Lo contradictorio queda <b>por revisar</b> y no se toca solo. Solo cambia el estado: cortes, seguimiento y precios no se tocan.
       </p>
@@ -18432,7 +18543,7 @@ function SincronizarPedidosModal({ onClose }) {
               <tbody>
                 {revisar.map((r, i) => (
                   <tr key={r.numero} style={{ background: i % 2 ? T.canvas : T.white }}>
-                    <td style={{ ...tdBase, fontWeight: 800, color: T.denim }}>#{r.numero}</td>
+                    <td style={{ ...tdBase, fontWeight: 800, color: T.denim }}>#{r.numero} <button type="button" title="Ver detalle por referencia en Busint" onClick={() => setDiagNum(r.numero)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, padding: 0 }}>🔎</button></td>
                     <td style={tdBase}>{r.cliente}</td>
                     <td style={{ ...tdBase, textAlign: "center" }}>{r.estadoAtlas}</td>
                     <td style={{ ...tdBase, color: T.slate }}>{r.detalle}</td>
@@ -18454,7 +18565,7 @@ function SincronizarPedidosModal({ onClose }) {
               <tbody>
                 {cruce.cerrar.map((c, i) => (
                   <tr key={c.numero} style={{ background: i % 2 ? T.canvas : T.white }}>
-                    <td style={{ ...tdBase, fontWeight: 800, color: T.denim }}>#{c.numero}</td>
+                    <td style={{ ...tdBase, fontWeight: 800, color: T.denim }}>#{c.numero} <button type="button" title="Ver detalle por referencia en Busint" onClick={() => setDiagNum(c.numero)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, padding: 0 }}>🔎</button></td>
                     <td style={tdBase}>{c.cliente}</td>
                     <td style={{ ...tdBase, textAlign: "center" }}>{fmtNum(c.unidades)}</td>
                     <td style={{ ...tdBase, textAlign: "center" }}>{fmtNum(c.facturado)}</td>
@@ -18515,6 +18626,7 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
   const [editPedido, setEditPedido] = useState(null);
   const [traerArchivo, setTraerArchivo] = useState(false);
   const [sincronizar, setSincronizar] = useState(false);
+  const [diagPedido, setDiagPedido] = useState(false);
   const [syncUltimo, setSyncUltimo] = useState(null);
   const [syncRefresco, setSyncRefresco] = useState(0);
   // (2026-10-29) Resultado de la última sincronización con Busint (la del botón o la automática de las 5 a.m.), solo admin.
@@ -18562,12 +18674,14 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
     <div>
       {editPedido && <EditPedidoModal pedido={editPedido} onSave={(p) => { onUpdatePedido(p); setEditPedido(null); }} onClose={() => setEditPedido(null)} />}
       {traerArchivo && <TraerPedidosArchivoModal pedidos={pedidos} onClose={() => setTraerArchivo(false)} />}
+      {diagPedido && <DiagnosticoPedidoModal onClose={() => setDiagPedido(false)} />}
       {sincronizar && <SincronizarPedidosModal onClose={() => { setSincronizar(false); setSyncRefresco((n) => n + 1); }} />}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
         <div><h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Pedidos</h2><p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Base de pedidos — se mantiene al día con "🔄 Sincronizar con Busint"</p></div>
         {!soloLectura && (
           <div style={{ display: "flex", gap: 8 }}>
             {isAdmin && <Btn onClick={() => setSincronizar(true)}>🔄 Sincronizar con Busint{syncUltimo?.resumen?.revisar > 0 ? ` (${syncUltimo.resumen.revisar} por revisar)` : ""}</Btn>}
+            {isAdmin && <Btn variant="secondary" onClick={() => setDiagPedido(true)}>🔎 Diagnóstico de pedido</Btn>}
             {isAdmin && <Btn variant="secondary" onClick={() => setTraerArchivo(true)}>📥 Traer por Excel (respaldo)</Btn>}
             <Btn variant="secondary" onClick={onNewPedido}>+ Pedido manual</Btn>
           </div>

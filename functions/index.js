@@ -2685,6 +2685,82 @@ exports.sincronizarPedidosBusintDiario = onSchedule(
   }
 );
 
+// (2026-10-29, a pedido de Fredy) DIAGNÓSTICO DE PEDIDO (solo lectura): para un número de pedido muestra, por referencia y por color,
+// lo que llega de Busint (consulta de pedidos, tabla "pedidos detalles clientes", facturado) y los lotes de la carga de Planeación,
+// más las filas CRUDAS de cada fuente. Sirve para encontrar por qué las unidades de un pedido en ATLAS no coinciden con el reporte
+// "Prioridades de despacho x pedido con corte" de Busint (caso #1456: 2.671 en ATLAS contra 3.218 en Busint).
+exports.depurarPedidoBusint = onCallAuth(
+  { secrets: SYNC_PEDIDOS_SECRETS, timeoutSeconds: 540, memory: "2GiB" },
+  async (request) => {
+    await verificarLlamadorEsAdmin(request);
+    const numero = String(request.data?.numero ?? "").trim();
+    if (!/^\d{1,8}$/.test(numero)) throw new HttpsError("invalid-argument", "Escribe el número de pedido (solo dígitos).");
+    const hoy = fechaHoyBogota();
+    const fechaInicio = `${Number(hoy.slice(0, 4)) - 1}-01-01`;
+    const fin = new Date(new Date(`${hoy}T00:00:00Z`).getTime() + 180 * 86400000).toISOString().slice(0, 10);
+    const avisos = [];
+    const seguro = (p, nombre) => p.catch((e) => { avisos.push(`${nombre}: ${e?.message || String(e)}`); return []; });
+    let filasOrd, filasFac, detBD, cumplBD;
+    try {
+      [filasOrd, filasFac, detBD, cumplBD] = await Promise.all([
+        consultarOrdenesBusint(fechaInicio, fin),
+        seguro(consultarFacturadoBusint(fechaInicio, hoy), "Facturado"),
+        seguro(consultarTablaBusintBDCompleta("pedidos detalles clientes"), "Tabla 'pedidos detalles clientes'"),
+        seguro(consultarTablaBusintBDCompleta("pedidos detalles clientes - cumplidos"), "Tabla 'pedidos detalles clientes - cumplidos'"),
+      ]);
+    } catch (err) {
+      logger.error("Error en depurarPedidoBusint", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar Busint: ${err?.message || String(err)}`);
+    }
+    const numPedBD = (r) => {
+      const k = Object.keys(r || {}).find((x) => x.toLowerCase() === "numped");
+      return k ? String(r[k] ?? "").trim() : "";
+    };
+    const ord = filasOrd.filter((f) => String(f.numPed ?? "").trim() === numero);
+    const fac = filasFac.filter((f) => String(f.numped ?? "").trim() === numero);
+    const bd = detBD.filter((r) => numPedBD(r) === numero);
+    const cumpl = cumplBD.filter((r) => numPedBD(r) === numero);
+    const carga = await leerCargaPlaneacionMasReciente();
+    const lotes = (carga?.lotes || []).filter((l) => String(l.numPedido ?? "").trim() === numero).map((l) => ({
+      numLote: l.numLote, referencia: l.referencia, cantCortada: Number(l.cantCortada) || 0, ubicacionActual: l.ubicacionActual || "", cliente: l.nombreCliente || "",
+    }));
+
+    const porRef = new Map();
+    const refDe = (ref) => {
+      const k = refSinGuion(ref);
+      if (!porRef.has(k)) porRef.set(k, { ref: String(ref || "").trim(), pedidoApi: 0, facturado: 0, facturadoPorTipo: {}, cortado: 0, lotes: [] });
+      return porRef.get(k);
+    };
+    const porColor = new Map();
+    const colorDe = (f) => {
+      const clave = [refSinGuion(f.ref), f.pinta || "", f.color || ""].join("|");
+      if (!porColor.has(clave)) porColor.set(clave, { ref: String(f.ref || "").trim(), pinta: f.pinta || "", color: f.color || "", pedidoApi: 0, facturado: 0 });
+      return porColor.get(clave);
+    };
+    ord.forEach((f) => { const c = Math.round(Number(f.cantPed) || 0); refDe(f.ref).pedidoApi += c; colorDe(f).pedidoApi += c; });
+    fac.forEach((f) => {
+      const c = Number(f.cant) || 0;
+      const r = refDe(f.ref);
+      r.facturado += c;
+      const tipo = String(f.tipo || f.doc || "?").trim();
+      r.facturadoPorTipo[tipo] = (r.facturadoPorTipo[tipo] || 0) + c;
+      colorDe(f).facturado += c;
+    });
+    lotes.forEach((l) => { const r = refDe(l.referencia); r.cortado += l.cantCortada; r.lotes.push(`${l.numLote} (${l.cantCortada}, ${l.ubicacionActual || "—"})`); });
+    const cap = (arr, n) => arr.slice(0, n);
+    return {
+      numero, fechaInicio, fechaFin: fin, avisos,
+      cliente: (ord[0]?.cliente || lotes[0]?.cliente || "").trim(),
+      totales: { pedidoApi: ord.reduce((s, f) => s + Math.round(Number(f.cantPed) || 0), 0), facturado: fac.reduce((s, f) => s + (Number(f.cant) || 0), 0), cortado: lotes.reduce((s, l) => s + l.cantCortada, 0), filasOrdenes: ord.length, filasFacturado: fac.length, filasDetalleBD: bd.length, filasCumplidosBD: cumpl.length, lotes: lotes.length },
+      porRef: [...porRef.values()].sort((a, b) => a.ref.localeCompare(b.ref)),
+      porColor: [...porColor.values()].sort((a, b) => a.ref.localeCompare(b.ref) || a.color.localeCompare(b.color)),
+      lotes,
+      campos: { ordenes: Object.keys(ord[0] || {}), facturado: Object.keys(fac[0] || {}), detalleBD: Object.keys(bd[0] || {}), cumplidosBD: Object.keys(cumpl[0] || {}) },
+      crudo: { ordenes: cap(ord, 1500), facturado: cap(fac, 1500), detalleBD: cap(bd, 1500), cumplidosBD: cap(cumpl, 1500) },
+    };
+  }
+);
+
 // (2026-10-10, a pedido de Fredy) "Disponible para despachar": para cada
 // cliente y referencia, cuánto se pidió, cuánto ya se produjo (Entradas a
 // Planta), cuánto ya se despachó (facturado/traslados netos de devoluciones),
