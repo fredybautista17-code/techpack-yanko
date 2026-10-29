@@ -220,56 +220,88 @@ async function leerPedidosDetallesBDConCache() {
 function completarOrdenesConDetalleBD(filasApi, detBD) {
   const normT = (v) => String(v ?? "").trim().toUpperCase();
   const numerosApi = new Set();
-  const apiPorTalla = new Map();
-  const plantillaTalla = new Map();
-  const plantillaClave = new Map();
+  const apiPorClave = new Map(); // num|ref|pinta -> { total, porTalla: Map, plantilla }
   const plantillaPedido = new Map();
-  const tallasApi = new Map();
   for (const f of filasApi) {
     const num = String(f.numPed ?? "").trim();
     if (!num) continue;
     numerosApi.add(num);
     const kClave = `${num}|${normT(f.ref)}|${normT(f.pinta)}`;
+    if (!apiPorClave.has(kClave)) apiPorClave.set(kClave, { total: 0, porTalla: new Map(), plantilla: f });
+    const e = apiPorClave.get(kClave);
     const talla = String(f.talla ?? "").trim();
-    const kTalla = `${kClave}|${talla}`;
-    apiPorTalla.set(kTalla, (apiPorTalla.get(kTalla) || 0) + (Number(f.cantPed) || 0));
-    if (!plantillaTalla.has(kTalla)) plantillaTalla.set(kTalla, f);
-    if (!plantillaClave.has(kClave)) plantillaClave.set(kClave, f);
+    const c = Number(f.cantPed) || 0;
+    e.total += c;
+    e.porTalla.set(talla, (e.porTalla.get(talla) || 0) + c);
     if (!plantillaPedido.has(num)) plantillaPedido.set(num, f);
-    if (!tallasApi.has(kClave)) tallasApi.set(kClave, new Set());
-    tallasApi.get(kClave).add(talla);
   }
-  const bdPorTalla = new Map();
+  // Tallas de la consulta que corresponden a las columnas de la tabla: numéricas igual (T4 = "4"), talla única "U" = T2, y letras S/M/L/XL = T6/T8/T10/T12.
+  const LETRA_A_COLUMNA = { S: "6", M: "8", L: "10", XL: "12" };
+  const bdPorClave = new Map(); // num|ref|pinta -> { total, porEtiqueta: Map(etiquetaTabla -> n), ref, pinta, fecha }
   for (const r of detBD || []) {
     const num = String(r?.NumPed ?? "").trim();
     if (!num || !numerosApi.has(num)) continue;
     const kClave = `${num}|${normT(r.Ref)}|${normT(r.Color)}`;
-    const tallasDeApi = tallasApi.get(kClave);
+    if (!bdPorClave.has(kClave)) bdPorClave.set(kClave, { total: 0, porEtiqueta: new Map(), ref: String(r.Ref ?? "").trim(), pinta: String(r.Color ?? "").trim(), fecha: r.FechaInicial || null, num });
+    const e = bdPorClave.get(kClave);
     for (const campo of Object.keys(r)) {
       if (!/^T\d+$/.test(campo)) continue;
       const n = Number(r[campo]) || 0;
       if (n <= 0) continue;
       const etiqueta = campo.slice(1);
-      let talla = etiqueta;
-      if (tallasDeApi && !tallasDeApi.has(etiqueta) && etiqueta === "2" && tallasDeApi.has("U")) talla = "U";
-      const kTalla = `${kClave}|${talla}`;
-      if (!bdPorTalla.has(kTalla)) bdPorTalla.set(kTalla, { num, ref: String(r.Ref ?? "").trim(), pinta: String(r.Color ?? "").trim(), talla, suma: 0, fecha: r.FechaInicial || null });
-      bdPorTalla.get(kTalla).suma += n;
+      e.total += n;
+      e.porEtiqueta.set(etiqueta, (e.porEtiqueta.get(etiqueta) || 0) + n);
     }
   }
   const agregadas = [];
-  for (const [kTalla, b] of bdPorTalla) {
-    const diff = Math.round(b.suma - (apiPorTalla.get(kTalla) || 0));
-    if (diff <= 0) continue;
-    const kClave = kTalla.slice(0, kTalla.lastIndexOf("|"));
-    const base = plantillaTalla.get(kTalla) || plantillaClave.get(kClave);
-    const ped = plantillaPedido.get(b.num);
-    agregadas.push({
-      ...(base || { numPed: ped?.numPed ?? b.num, fechaPed: ped?.fechaPed ?? b.fecha, fechaDespacho: ped?.fechaDespacho ?? null, cliente: ped?.cliente ?? "", ordenCompra: null, codigoCliente: ped?.codigoCliente ?? null, ref: b.ref, pinta: b.pinta, color: "", valorPedRef: 0, descuento: 0, costoStandarUnitario: 0 }),
-      talla: b.talla,
-      cantPed: diff,
-      _completadaConBD: true,
-    });
+  const nuevaFila = (base, b, talla, cant) => ({
+    ...(base || { numPed: plantillaPedido.get(b.num)?.numPed ?? b.num, fechaPed: plantillaPedido.get(b.num)?.fechaPed ?? b.fecha, fechaDespacho: plantillaPedido.get(b.num)?.fechaDespacho ?? null, cliente: plantillaPedido.get(b.num)?.cliente ?? "", ordenCompra: null, codigoCliente: plantillaPedido.get(b.num)?.codigoCliente ?? null, ref: b.ref, pinta: b.pinta, color: "", valorPedRef: 0, descuento: 0, costoStandarUnitario: 0 }),
+    talla,
+    cantPed: cant,
+    _completadaConBD: true,
+  });
+  for (const [kClave, b] of bdPorClave) {
+    const api = apiPorClave.get(kClave);
+    const apiTotal = api ? api.total : 0;
+    const diff = Math.round(b.total - apiTotal);
+    if (diff <= 0) continue; // la consulta ya trae todo (o más): no se toca
+    if (!api) {
+      // La consulta no trae NINGUNA línea de esta referencia/pinta: se agregan las de la tabla (con las etiquetas de la tabla).
+      for (const [etiqueta, n] of b.porEtiqueta) agregadas.push(nuevaFila(null, b, etiqueta, n));
+      continue;
+    }
+    // Se emparejan las tallas de la tabla con las de la consulta. Si todas emparejan, la diferencia se reparte por talla (lo que le falta a cada una);
+    // si alguna no empareja, se agrega UNA sola fila con la diferencia TOTAL en la talla de mayor cantidad (el total siempre queda bien).
+    const pares = [];
+    let todasEmparejan = true;
+    for (const [etiqueta, n] of b.porEtiqueta) {
+      let talla = null;
+      if (api.porTalla.has(etiqueta)) talla = etiqueta;
+      else if (etiqueta === "2" && api.porTalla.has("U")) talla = "U";
+      else {
+        const letra = Object.keys(LETRA_A_COLUMNA).find((l) => LETRA_A_COLUMNA[l] === etiqueta && api.porTalla.has(l));
+        if (letra) talla = letra;
+      }
+      if (talla === null) { todasEmparejan = false; break; }
+      pares.push([talla, n]);
+    }
+    if (todasEmparejan) {
+      const bdPorTalla = new Map();
+      pares.forEach(([t, n]) => bdPorTalla.set(t, (bdPorTalla.get(t) || 0) + n));
+      const exceso = [...bdPorTalla.entries()].map(([t, n]) => [t, Math.max(0, n - (api.porTalla.get(t) || 0))]).filter(([, x]) => x > 0);
+      const sumaExceso = exceso.reduce((x, [, v]) => x + v, 0);
+      if (sumaExceso > 0) {
+        let restante = diff;
+        exceso.forEach(([t, x], i) => {
+          const cant = i === exceso.length - 1 ? restante : Math.min(restante, Math.round((x * diff) / sumaExceso));
+          restante -= cant;
+          if (cant > 0) agregadas.push(nuevaFila(api.plantilla, b, t, cant));
+        });
+        continue;
+      }
+    }
+    const tallaMayor = [...api.porTalla.entries()].sort((x, y) => y[1] - x[1])[0]?.[0] ?? "";
+    agregadas.push(nuevaFila(api.plantilla, b, tallaMayor, diff));
   }
   return { filas: agregadas.length ? filasApi.concat(agregadas) : filasApi, agregadas: agregadas.length, unidades: agregadas.reduce((x, f) => x + f.cantPed, 0), pedidos: new Set(agregadas.map((f) => String(f.numPed))).size };
 }
