@@ -6807,6 +6807,26 @@ function sumaDeducciones(deduccionesDetalle) {
 // literalmente, sin remuneracion (las otras tres son licencias pagadas
 // por ley: vacaciones, maternidad/paternidad y luto).
 const MOTIVOS_SIN_AUXILIO_TRANSPORTE = ["Vacaciones", "Licencia No Remunerada", "Licencia Maternidad/Paternidad", "Luto"];
+// (2026-10-30, a pedido de Fredy) Incapacidad y Licencia Remunerada TAMBIEN suspenden el auxilio de transporte (solo se paga por dia
+// efectivamente trabajado), pero a diferencia de los motivos de arriba se cuentan por dias de CALENDARIO (sabados, domingos y festivos
+// dentro de la ausencia incluidos): cada dia descuenta auxilio mensual / 30. El sueldo NO se toca. Si un dia queda cubierto por dos
+// ausencias (ej. Incapacidad dentro de Vacaciones) cuenta una sola vez.
+const MOTIVOS_SIN_AUXILIO_CALENDARIO = ["Incapacidad", "Licencia Remunerada"];
+function diasSinAuxilioDeAusencias(ausencias, trabajador, turno, inicio, fin) {
+  const dias = new Set();
+  (ausencias || []).forEach((a) => {
+    if (a.trabajadorId !== trabajador.id) return;
+    const habiles = MOTIVOS_SIN_AUXILIO_TRANSPORTE.includes(a.motivo);
+    const calendario = MOTIVOS_SIN_AUXILIO_CALENDARIO.includes(a.motivo);
+    if (!habiles && !calendario) return;
+    listaDeDiasISO(a.fechaInicio, a.fechaFin).forEach((fecha) => {
+      if (fecha < inicio || fecha > fin) return;
+      if (!calendario && !diaEsperado(fecha, turno)) return;
+      dias.add(fecha);
+    });
+  });
+  return dias.size;
+}
 const MOTIVOS_SIN_SUELDO = ["Licencia No Remunerada"];
 // (2026-09-12) Cuenta, dentro de [inicio, fin], los dias HABILES reales del
 // trabajador (mismo criterio de diaEsperado que usa el Reporte de
@@ -7387,7 +7407,7 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
       // quincena exacta en la que cae el retiro (ver cambio en "personas"
       // mas arriba).
       const diasRetiroTemprano = diasDespuesDeRetiro(t.fechaRetiro, inicio, fin);
-      const diasSinAuxilio = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_AUXILIO_TRANSPORTE, t, turno, inicio, fin) + diasIngresoTardio + diasRetiroTemprano;
+      const diasSinAuxilio = diasSinAuxilioDeAusencias(ausencias, t, turno, inicio, fin) + diasIngresoTardio + diasRetiroTemprano;
       const diasSinSueldo = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_SUELDO, t, turno, inicio, fin) + diasIngresoTardio + diasRetiroTemprano;
       const causacionDoc = (causacionManual || []).find((c) => c.id === `${t.id}__${periodoId}`);
       // (2026-10-20) Retirado antes de la quincena: solo se le pagan sus horas /
@@ -8050,9 +8070,10 @@ function NovedadesQuincenaView({ trabajadores, faltas, ausencias, turnos, motivo
       // quincena -- una fila por ausencia, contando solo los dias habiles
       // de ESTA quincena.
       (ausencias || []).filter((a) => a.trabajadorId === t.id && a.fechaInicio <= fin && a.fechaFin >= inicio).forEach((a) => {
-        const diasAusencia = listaDeDiasISO(a.fechaInicio, a.fechaFin).filter((f) => f >= inicio && f <= fin && diaEsperado(f, turno));
+        const esCalendario = MOTIVOS_SIN_AUXILIO_CALENDARIO.includes(a.motivo);
+        const diasAusencia = listaDeDiasISO(a.fechaInicio, a.fechaFin).filter((f) => f >= inicio && f <= fin && (esCalendario || diaEsperado(f, turno)));
         if (!diasAusencia.length) return;
-        const afectaAuxilio = MOTIVOS_SIN_AUXILIO_TRANSPORTE.includes(a.motivo);
+        const afectaAuxilio = MOTIVOS_SIN_AUXILIO_TRANSPORTE.includes(a.motivo) || esCalendario;
         const afectaSueldo = MOTIVOS_SIN_SUELDO.includes(a.motivo);
         out.push({
           trabajador: t, motivo: a.motivo, fechas: diasAusencia, dias: diasAusencia.length,
@@ -8389,7 +8410,7 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
       const turno = (turnos || []).find((tu) => tu.id === t.turnoId);
       const diasIngresoTardio = diasAntesDeIngreso(t.fechaIngreso, inicio, fin);
       const diasRetiroTemprano = diasDespuesDeRetiro(t.fechaRetiro, inicio, fin);
-      const diasSinAuxilio = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_AUXILIO_TRANSPORTE, t, turno, inicio, fin) + diasIngresoTardio + diasRetiroTemprano;
+      const diasSinAuxilio = diasSinAuxilioDeAusencias(ausencias, t, turno, inicio, fin) + diasIngresoTardio + diasRetiroTemprano;
       const diasSinSueldo = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_SUELDO, t, turno, inicio, fin) + diasIngresoTardio + diasRetiroTemprano;
       const causacionDoc = (causacionManual || []).find((c) => c.id === `${t.id}__${periodoId}`);
       // (2026-10-20) Retirado antes de la quincena: solo se le pagan sus horas /
@@ -12872,7 +12893,7 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
           // tambien cierre exacto la ultima quincena parcial de alguien que
           // se retira a mitad de periodo.
           const diasRetiroTemprano = diasDespuesDeRetiro(t.fechaRetiro, desde, hasta);
-          const diasSinAuxilio = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_AUXILIO_TRANSPORTE, t, turno, desde, hasta) + diasIngresoTardio + diasRetiroTemprano;
+          const diasSinAuxilio = diasSinAuxilioDeAusencias(ausencias, t, turno, desde, hasta) + diasIngresoTardio + diasRetiroTemprano;
           const diasSinSueldo = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_SUELDO, t, turno, desde, hasta) + diasIngresoTardio + diasRetiroTemprano;
           const tCalc = soloPagosPendientes ? { ...t, sueldo: 0, auxilioTransporte: 0 } : t;
           const base = tipo === "Fiscal"
