@@ -12158,8 +12158,19 @@ function numeroTNS(v) {
 }
 async function tercerosBalanceTNS({ empresa, sucursal, fechaInicial, fechaFinal, cuentaInicial, cuentaFinal }) {
   const body = { fechaInicial, fechaFinal, cuentaInicial, cuentaFinal };
-  const resp = await llamarTNS(`/v2/contabilidad/Reportes/BalanceComprobacion?codigosucursal=${encodeURIComponent(sucursal)}`, { method: "POST", body, empresa });
-  if (resp && resp.status === false) throw new Error(resp.message || "TNS rechazó la consulta del Balance.");
+  let resp;
+  try {
+    resp = await llamarTNS(`/v2/contabilidad/Reportes/BalanceComprobacion?codigosucursal=${encodeURIComponent(sucursal)}`, { method: "POST", body, empresa });
+  } catch (err) {
+    // (2026-10-29) TNS contesta 404 "No se encontraron registros" cuando una cuenta no tiene movimiento en esa sucursal
+    // (ej. la sucursal 00 sin anticipos 1330): eso no es un error, es "cero terceros".
+    if (/TNS respondió 404/.test(String(err?.message || "")) && /no se encontraron registros/i.test(String(err?.message || ""))) return [];
+    throw err;
+  }
+  if (resp && resp.status === false) {
+    if (/no se encontraron registros/i.test(String(resp.message || ""))) return [];
+    throw new Error(resp.message || "TNS rechazó la consulta del Balance.");
+  }
   const cuentas = Array.isArray(resp?.data) ? resp.data : [];
   const norm = (c) => String(c || "").replace(/\D/g, "");
   const codigos = cuentas.map((c) => norm(c.codigo));
