@@ -2192,6 +2192,21 @@ function cryptoRandomId() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
+// Devuelve la carga de Planeación más reciente (por creadoEn, o fecha si no la trae) leyendo solo esos dos campos de todas
+// las cargas y trayendo completo únicamente el documento ganador. Mismo criterio de orden que se usaba antes.
+async function leerCargaPlaneacionMasReciente() {
+  const meta = await db.collection("planeacion_cargas").select("creadoEn", "fecha").get();
+  let mejor = null;
+  let mejorClave = "";
+  meta.docs.forEach((d) => {
+    const x = d.data();
+    const clave = String(x.creadoEn || x.fecha || "");
+    if (!mejor || clave.localeCompare(mejorClave) > 0) { mejor = d; mejorClave = clave; }
+  });
+  if (!mejor) return null;
+  const completo = await mejor.ref.get();
+  return completo.exists ? completo.data() : null;
+}
 // Informe de Pedidos Vigentes por Cliente — consulta Busint EN VIVO (no lee
 // Firestore) para el rango { fechaInicio, fechaFin } que envía la pantalla,
 // y devuelve solo los pedidos cuya fecha de despacho es hoy o está en el
@@ -2242,10 +2257,9 @@ exports.getPedidosVigentesBusint = onCallAuth(
       avisoFacturacion = "No se pudo consultar la facturación de Busint — este informe puede estar mostrando pedidos que ya se facturaron.";
     }
 
-    const cargasPlaneacionSnap = await db.collection("planeacion_cargas").get();
-    const cargasPlaneacion = cargasPlaneacionSnap.docs.map((d) => d.data());
-    cargasPlaneacion.sort((a, b) => String(b.creadoEn || b.fecha || "").localeCompare(String(a.creadoEn || a.fecha || "")));
-    const cargaPlaneacionActiva = cargasPlaneacion[0] || null;
+    // (2026-10-29, a pedido de Fredy) Antes se leían TODAS las cargas de Planeación completas (con todos sus lotes) solo para
+    // quedarse con la más reciente; con ~500 cargas la función se quedaba sin memoria y el informe fallaba con "internal".
+    const cargaPlaneacionActiva = await leerCargaPlaneacionMasReciente();
     const lotesPorPedido = new Map();
     (cargaPlaneacionActiva?.lotes || []).forEach((l) => {
       const numPedido = String(l.numPedido ?? "").trim();
