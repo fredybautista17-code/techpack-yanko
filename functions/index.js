@@ -202,6 +202,93 @@ async function consultarOrdenesBusint(fechaInicio, fechaFin) {
   return Array.isArray(filas) ? filas : [];
 }
 
+
+// (2026-10-29, a pedido de Fredy) CORRECCIÓN DE UNIDADES. Hallazgo con el pedido #1456: la consulta de pedidos de Busint
+// (ApiGen_OrdenesDePedidoBusint) devuelve UNA sola línea por pedido + referencia + pinta + talla y pierde las líneas repetidas
+// (unidades que se agregan al pedido en otra fecha): 90-123 tenía 3 líneas (227 + 164 + 336 = 727) y la consulta solo traía 227;
+// el pedido completo suma 3.279 en la tabla "pedidos detalles clientes" contra 2.671 de la consulta (3.279 - 61 de ventas perdidas =
+// 3.218 = reporte «Prioridades de despacho»). Aquí se completa lo que trae la consulta con lo que suma esa tabla: donde la tabla
+// trae MÁS unidades por pedido+ref+pinta+talla, se agrega una fila con la diferencia. Nunca resta. La talla de la tabla (T2, T4…) se
+// empareja con la de la consulta; en refs de talla única la consulta usa "U" y la tabla la guarda en T2.
+let _cachePedidosDetallesBD = { t: 0, filas: null };
+async function leerPedidosDetallesBDConCache() {
+  if (_cachePedidosDetallesBD.filas && Date.now() - _cachePedidosDetallesBD.t < 5 * 60 * 1000) return _cachePedidosDetallesBD.filas;
+  const filas = await consultarTablaBusintBDCompleta("pedidos detalles clientes");
+  _cachePedidosDetallesBD = { t: Date.now(), filas };
+  return filas;
+}
+function completarOrdenesConDetalleBD(filasApi, detBD) {
+  const normT = (v) => String(v ?? "").trim().toUpperCase();
+  const numerosApi = new Set();
+  const apiPorTalla = new Map();
+  const plantillaTalla = new Map();
+  const plantillaClave = new Map();
+  const plantillaPedido = new Map();
+  const tallasApi = new Map();
+  for (const f of filasApi) {
+    const num = String(f.numPed ?? "").trim();
+    if (!num) continue;
+    numerosApi.add(num);
+    const kClave = `${num}|${normT(f.ref)}|${normT(f.pinta)}`;
+    const talla = String(f.talla ?? "").trim();
+    const kTalla = `${kClave}|${talla}`;
+    apiPorTalla.set(kTalla, (apiPorTalla.get(kTalla) || 0) + (Number(f.cantPed) || 0));
+    if (!plantillaTalla.has(kTalla)) plantillaTalla.set(kTalla, f);
+    if (!plantillaClave.has(kClave)) plantillaClave.set(kClave, f);
+    if (!plantillaPedido.has(num)) plantillaPedido.set(num, f);
+    if (!tallasApi.has(kClave)) tallasApi.set(kClave, new Set());
+    tallasApi.get(kClave).add(talla);
+  }
+  const bdPorTalla = new Map();
+  for (const r of detBD || []) {
+    const num = String(r?.NumPed ?? "").trim();
+    if (!num || !numerosApi.has(num)) continue;
+    const kClave = `${num}|${normT(r.Ref)}|${normT(r.Color)}`;
+    const tallasDeApi = tallasApi.get(kClave);
+    for (const campo of Object.keys(r)) {
+      if (!/^T\d+$/.test(campo)) continue;
+      const n = Number(r[campo]) || 0;
+      if (n <= 0) continue;
+      const etiqueta = campo.slice(1);
+      let talla = etiqueta;
+      if (tallasDeApi && !tallasDeApi.has(etiqueta) && etiqueta === "2" && tallasDeApi.has("U")) talla = "U";
+      const kTalla = `${kClave}|${talla}`;
+      if (!bdPorTalla.has(kTalla)) bdPorTalla.set(kTalla, { num, ref: String(r.Ref ?? "").trim(), pinta: String(r.Color ?? "").trim(), talla, suma: 0, fecha: r.FechaInicial || null });
+      bdPorTalla.get(kTalla).suma += n;
+    }
+  }
+  const agregadas = [];
+  for (const [kTalla, b] of bdPorTalla) {
+    const diff = Math.round(b.suma - (apiPorTalla.get(kTalla) || 0));
+    if (diff <= 0) continue;
+    const kClave = kTalla.slice(0, kTalla.lastIndexOf("|"));
+    const base = plantillaTalla.get(kTalla) || plantillaClave.get(kClave);
+    const ped = plantillaPedido.get(b.num);
+    agregadas.push({
+      ...(base || { numPed: ped?.numPed ?? b.num, fechaPed: ped?.fechaPed ?? b.fecha, fechaDespacho: ped?.fechaDespacho ?? null, cliente: ped?.cliente ?? "", ordenCompra: null, codigoCliente: ped?.codigoCliente ?? null, ref: b.ref, pinta: b.pinta, color: "", valorPedRef: 0, descuento: 0, costoStandarUnitario: 0 }),
+      talla: b.talla,
+      cantPed: diff,
+      _completadaConBD: true,
+    });
+  }
+  return { filas: agregadas.length ? filasApi.concat(agregadas) : filasApi, agregadas: agregadas.length, unidades: agregadas.reduce((x, f) => x + f.cantPed, 0), pedidos: new Set(agregadas.map((f) => String(f.numPed))).size };
+}
+// Igual que consultarOrdenesBusint pero ya completa. Con {estricto:true} un fallo al leer la tabla interna corta la operación (para que la
+// sincronización no calcule con unidades incompletas); si no, se devuelve lo de la consulta y se deja un aviso en el log.
+async function consultarOrdenesBusintCompleto(fechaInicio, fechaFin, { estricto = false } = {}) {
+  const filas = await consultarOrdenesBusint(fechaInicio, fechaFin);
+  try {
+    const det = await leerPedidosDetallesBDConCache();
+    const r = completarOrdenesConDetalleBD(filas, det);
+    if (r.agregadas) logger.info("Pedidos completados con 'pedidos detalles clientes'", { filasAgregadas: r.agregadas, unidades: r.unidades, pedidos: r.pedidos });
+    return r.filas;
+  } catch (err) {
+    logger.warn("No se pudo completar los pedidos con 'pedidos detalles clientes'", { error: String(err?.message || err) });
+    if (estricto) throw new Error(`No se pudo leer la tabla de detalle de pedidos de Busint para completar las unidades: ${err?.message || String(err)}`);
+    return filas;
+  }
+}
+
 // La API entrega una fila por cada combinación ref+pinta+color+talla dentro
 // de un mismo pedido (numPed). Se agrupan en un solo objeto de pedido por
 // numPed, y dentro de cada uno, una "referencia" por ref+pinta+color con sus
@@ -2214,7 +2301,7 @@ async function leerCargaPlaneacionMasReciente() {
 // `httpsCallable(functions, "getPedidosVigentesBusint")({ fechaInicio, fechaFin })`.
 exports.getPedidosVigentesBusint = onCallAuth(
   {
-    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL, BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
     // (2026-09-04) 256MiB/60s no alcanzaba con rangos de fecha largos
     // (varios meses) -- error "internal" sin nada mas en los logs, misma
     // firma de OOM que ya vimos y resolvimos en getVentasPerdidasBusintLive.
@@ -2233,7 +2320,7 @@ exports.getPedidosVigentesBusint = onCallAuth(
 
     let filas;
     try {
-      filas = await consultarOrdenesBusint(fechaInicio, fechaFin);
+      filas = await consultarOrdenesBusintCompleto(fechaInicio, fechaFin);
     } catch (err) {
       logger.error("Error consultando Busint (getPedidosVigentesBusint)", { error: String(err) });
       throw new HttpsError("unavailable", "No se pudo consultar la API de Busint. Intenta de nuevo en unos minutos.");
@@ -2348,7 +2435,7 @@ exports.getPedidosBusintParaTraer = onCallAuth(
     }
     let filas;
     try {
-      filas = await consultarOrdenesBusint(fechaInicio, fechaFin);
+      filas = await consultarOrdenesBusintCompleto(fechaInicio, fechaFin);
     } catch (err) {
       logger.error("Error consultando Busint (getPedidosBusintParaTraer)", { error: String(err) });
       throw new HttpsError("unavailable", "No se pudo consultar la API de Busint. Intenta de nuevo en unos minutos.");
@@ -2440,7 +2527,7 @@ function rangoSyncPedidosPorDefecto() {
 async function calcularCruceBusintAtlas(fechaInicio, fechaFin) {
   const hoyISO = fechaHoyBogota();
   const avisos = [];
-  const filas = await consultarOrdenesBusint(fechaInicio, fechaFin);
+  const filas = await consultarOrdenesBusintCompleto(fechaInicio, fechaFin, { estricto: true });
   const porPedido = agruparFilasBusintPorPedido(filas);
 
   const [pedidosClientes, cumplidosDetalle, filasFacturado] = await Promise.all([
@@ -2481,7 +2568,7 @@ async function calcularCruceBusintAtlas(fechaInicio, fechaFin) {
     lotesPorPedido.get(numPedido).push({ numLote: l.numLote, ubicacionActual });
   });
 
-  const atlasSnap = await db.collection("pedidos_activos").select("numero", "estado", "motivoCierre", "cliente", "fechaPedido", "fechaDespacho").get();
+  const atlasSnap = await db.collection("pedidos_activos").select("numero", "estado", "motivoCierre", "cliente", "fechaPedido", "fechaDespacho", "referencias").get();
   const atlasMap = new Map();
   atlasSnap.docs.forEach((d) => {
     const x = d.data();
@@ -2511,10 +2598,29 @@ async function calcularCruceBusintAtlas(fechaInicio, fechaFin) {
 
   const lotesTxt = (i) => (i.lotesProd.length ? `${i.lotesProd.length} lote(s) en ${[...new Set(i.lotesProd.map((l) => l.ubicacionActual))].join(", ")}` : i.lotes.length ? "solo lotes ya terminados (BPT)" : "sin lotes en planta");
   const salioTxt = (i) => (i.cumplido ? "dado por cumplido en Busint" : `facturado completo (${i.facturado} de ${i.unidades})`);
-  const nuevos = [], cerrar = [], revisar = [];
+  const nuevos = [], cerrar = [], revisar = [], unidadesDistintas = [];
   let sinCambio = 0;
+  // (2026-10-29) Pedidos que YA están en ATLAS pero con menos unidades que Busint (por la consulta que perdía líneas repetidas).
+  const sumaTotalRef = (r) => {
+    const t = Number(r?.total);
+    if (Number.isFinite(t) && t > 0) return t;
+    return Object.values(r?.tallas || {}).reduce((x, v) => x + (Number(v) || 0), 0);
+  };
+  const claveRefAtlas = (r) => `${String(r?.ref || "").trim().toUpperCase()}|${String(r?.descripcion || "").replace(/\s+/g, " ").trim().toUpperCase()}`;
   for (const [numero, i] of infoPorNumero) {
     const ex = atlasMap.get(numero);
+    if (ex) {
+      const refsAtlas = Array.isArray(ex.referencias) ? ex.referencias : [];
+      const unidadesAtlas = refsAtlas.reduce((x, r) => x + sumaTotalRef(r), 0);
+      if (i.unidades > unidadesAtlas) {
+        const atlasPorClave = new Map();
+        refsAtlas.forEach((r) => atlasPorClave.set(claveRefAtlas(r), (atlasPorClave.get(claveRefAtlas(r)) || 0) + sumaTotalRef(r)));
+        const refsDif = i.refs
+          .map((r) => ({ ref: r.ref, descripcion: r.descripcion, atlas: atlasPorClave.get(claveRefAtlas(r)) || 0, busint: r.total }))
+          .filter((r) => r.busint > r.atlas);
+        unidadesDistintas.push({ numero, cliente: i.cliente, estadoAtlas: ex.estado === "cerrado" ? `Cerrado (${ex.motivoCierre || "sin motivo"})` : "Activo", unidadesAtlas, unidadesBusint: i.unidades, diferencia: i.unidades - unidadesAtlas, refs: refsDif.slice(0, 40) });
+      }
+    }
     if (!ex) {
       if (ocultosSet.has(numero)) continue;
       if (i.situacion === "conflicto") {
@@ -2553,9 +2659,11 @@ async function calcularCruceBusintAtlas(fechaInicio, fechaFin) {
     nuevosCerrados: nuevos.filter((n) => n.destino === "cerrado").length,
     cerrar: cerrar.length,
     revisar: revisar.length,
+    unidades: unidadesDistintas.length,
     sinCambio,
   };
-  return { fechaInicio, fechaFin, hoyISO, cargaPlaneacion: String(carga.fecha || carga.creadoEn || ""), avisos, resumen, nuevos, cerrar, revisar, infoPorNumero };
+  unidadesDistintas.sort(orden);
+  return { fechaInicio, fechaFin, hoyISO, cargaPlaneacion: String(carga.fecha || carga.creadoEn || ""), avisos, resumen, nuevos, cerrar, revisar, unidades: unidadesDistintas, infoPorNumero };
 }
 
 async function aplicarCruceBusintAtlas(cruce, decisiones) {
@@ -2571,7 +2679,7 @@ async function aplicarCruceBusintAtlas(cruce, decisiones) {
     origen: "sync_busint", importadoEn: hoy, creadoEn: hoy, sincronizadoEn: ahora,
   });
   const ops = [];
-  const creados = [], cerrados = [], reabiertos = [], decididos = [];
+  const creados = [], cerrados = [], reabiertos = [], decididos = [], unidadesActualizadas = [];
   for (const n of cruce.nuevos) {
     const i = cruce.infoPorNumero.get(n.numero);
     if (!i) continue;
@@ -2581,6 +2689,37 @@ async function aplicarCruceBusintAtlas(cruce, decisiones) {
   for (const c of cruce.cerrar) {
     ops.push({ numero: c.numero, data: { estado: "cerrado", motivoCierre: c.motivo, fechaCumplido: hoy, sincronizadoEn: ahora }, merge: true });
     cerrados.push(c.numero);
+  }
+  // (2026-10-29) Actualizar unidades: solo SUBE lo que Busint tiene de más, por talla; nunca resta ni toca cortes, seguimiento o precios.
+  const normD = (v) => String(v || "").replace(/\s+/g, " ").trim().toUpperCase();
+  for (const d of decisiones || []) {
+    if (d?.decision !== "actualizar_unidades") continue;
+    const u = (cruce.unidades || []).find((x) => x.numero === String(d?.numero));
+    const i = u ? cruce.infoPorNumero.get(u.numero) : null;
+    if (!u || !i) continue;
+    const snap = await db.collection("pedidos_activos").doc(u.numero).get();
+    if (!snap.exists) continue;
+    const refs = (Array.isArray(snap.data().referencias) ? snap.data().referencias : []).map((r) => ({ ...r, tallas: { ...(r.tallas || {}) } }));
+    for (const b of i.refs) {
+      let idx = refs.findIndex((r) => normD(r.ref) === normD(b.ref) && normD(r.descripcion) === normD(b.descripcion));
+      if (idx < 0) {
+        const mismas = refs.map((r, k) => (normD(r.ref) === normD(b.ref) ? k : -1)).filter((k) => k >= 0);
+        if (mismas.length === 1) idx = mismas[0];
+      }
+      if (idx < 0) {
+        refs.push({ id: nuevoId(), ref: b.ref, descripcion: b.descripcion, tallas: { ...b.tallas }, total: b.total, precioCortePrenda: 0 });
+        continue;
+      }
+      const r = refs[idx];
+      // Solo si Busint tiene MÁS en esa referencia: se toman las tallas de Busint completas (así no se mezclan etiquetas de talla distintas).
+      const totalAtlas = Number(r.total) > 0 ? Number(r.total) : Object.values(r.tallas || {}).reduce((x, v) => x + (Number(v) || 0), 0);
+      if (b.total > totalAtlas) {
+        r.tallas = { ...b.tallas };
+        r.total = b.total;
+      }
+    }
+    ops.push({ numero: u.numero, data: { referencias: refs, unidadesCorregidasEn: ahora, sincronizadoEn: ahora }, merge: true });
+    unidadesActualizadas.push(u.numero);
   }
   for (const d of decisiones || []) {
     const r = cruce.revisar.find((x) => x.numero === String(d?.numero) && x.accion === d?.decision);
@@ -2606,7 +2745,7 @@ async function aplicarCruceBusintAtlas(cruce, decisiones) {
     });
     await batch.commit();
   }
-  return { creados, cerrados, reabiertos, decididos };
+  return { creados, cerrados, reabiertos, decididos, unidadesActualizadas };
 }
 
 async function ejecutarSyncPedidos({ fechaInicio, fechaFin, aplicar, decisiones, origen }) {
@@ -2615,22 +2754,24 @@ async function ejecutarSyncPedidos({ fechaInicio, fechaFin, aplicar, decisiones,
   if (aplicar) aplicado = await aplicarCruceBusintAtlas(cruce, decisiones);
   const decididosSet = new Set(aplicado ? aplicado.decididos : []);
   const revisarFinal = cruce.revisar.filter((r) => !decididosSet.has(r.numero));
+  const unidadesHechas = new Set(aplicado ? aplicado.unidadesActualizadas : []);
+  const unidadesFinal = cruce.unidades.filter((u) => !unidadesHechas.has(u.numero));
   const generadoEn = new Date().toISOString();
   await db.collection("sync_pedidos_estado").doc("ultimo").set({
     generadoEn, origen, aplicado: !!aplicar, fechaInicio, fechaFin, cargaPlaneacion: cruce.cargaPlaneacion,
-    resumen: { ...cruce.resumen, revisar: revisarFinal.length },
+    resumen: { ...cruce.resumen, revisar: revisarFinal.length, unidades: unidadesFinal.length },
     revisar: revisarFinal.slice(0, 300),
-    aplicadoResumen: aplicado ? { creados: aplicado.creados.length, cerrados: aplicado.cerrados.length, reabiertos: aplicado.reabiertos.length } : null,
+    aplicadoResumen: aplicado ? { creados: aplicado.creados.length, cerrados: aplicado.cerrados.length, reabiertos: aplicado.reabiertos.length, unidades: aplicado.unidadesActualizadas.length } : null,
     error: null,
   });
   if (aplicado) {
     await db.collection("sync_pedidos_log").add({
       generadoEn, origen, fechaInicio, fechaFin, resumen: cruce.resumen,
-      creados: aplicado.creados.slice(0, 800), cerrados: aplicado.cerrados.slice(0, 800), reabiertos: aplicado.reabiertos.slice(0, 200),
+      creados: aplicado.creados.slice(0, 800), cerrados: aplicado.cerrados.slice(0, 800), reabiertos: aplicado.reabiertos.slice(0, 200), unidadesActualizadas: aplicado.unidadesActualizadas.slice(0, 800),
     });
   }
   const { infoPorNumero, ...publico } = cruce;
-  return { ...publico, revisar: revisarFinal, generadoEn, origen, aplicado: aplicado ? { creados: aplicado.creados.length, cerrados: aplicado.cerrados.length, reabiertos: aplicado.reabiertos.length, decididos: aplicado.decididos.length } : null };
+  return { ...publico, revisar: revisarFinal, unidades: unidadesFinal, resumen: { ...cruce.resumen, revisar: revisarFinal.length, unidades: unidadesFinal.length }, generadoEn, origen, aplicado: aplicado ? { creados: aplicado.creados.length, cerrados: aplicado.cerrados.length, reabiertos: aplicado.reabiertos.length, decididos: aplicado.decididos.length, unidades: aplicado.unidadesActualizadas.length } : null };
 }
 
 exports.sincronizarPedidosBusint = onCallAuth(
@@ -2888,7 +3029,7 @@ exports.getDisponibleParaDespachar = onCallAuth(
     // 1) Pedidos (en vivo)
     let filasPedido;
     try {
-      filasPedido = await consultarOrdenesBusint(fechaInicio, fechaFin);
+      filasPedido = await consultarOrdenesBusintCompleto(fechaInicio, fechaFin);
     } catch (err) {
       logger.error("Error consultando Busint (getDisponibleParaDespachar)", { error: String(err) });
       throw new HttpsError("unavailable", "No se pudo consultar los pedidos en Busint. Intenta de nuevo en unos minutos.");
@@ -3426,9 +3567,9 @@ exports.getPedidosExistentesBusint = onCallAuth(
 // datos exactos?" sin adivinar — muestra tal cual lo que Busint responde.
 exports.getOrdenBusintPorNumero = onCallAuth(
   {
-    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
-    timeoutSeconds: 60,
-    memory: "256MiB",
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL, BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 300,
+    memory: "1GiB",
   },
   async (request) => {
     const { fechaInicio, fechaFin, numeroPedido } = request.data || {};
@@ -3442,7 +3583,7 @@ exports.getOrdenBusintPorNumero = onCallAuth(
     }
     let filas;
     try {
-      filas = await consultarOrdenesBusint(fechaInicio, fechaFin);
+      filas = await consultarOrdenesBusintCompleto(fechaInicio, fechaFin);
     } catch (err) {
       logger.error("Error consultando Busint (getOrdenBusintPorNumero)", { error: String(err) });
       throw new HttpsError("unavailable", "No se pudo consultar la API de Busint. Intenta de nuevo en unos minutos.");
