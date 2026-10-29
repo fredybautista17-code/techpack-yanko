@@ -17815,20 +17815,34 @@ function TraerPedidosArchivoModal({ pedidos, onClose }) {
   const [error, setError] = useState("");
   const [leyendo, setLeyendo] = useState(false);
   const [todos, setTodos] = useState([]);
-  const [conPendientes, setConPendientes] = useState(true);
-  const [conHistorico, setConHistorico] = useState(true);
+  // (2026-10-29, a pedido de Fredy) Grupos de la vista previa: por defecto solo los pendientes.
+  const [gPend, setGPend] = useState(true);
+  const [gSalieron, setGSalieron] = useState(false);
+  const [gPerdida, setGPerdida] = useState(false);
+  const [gExisten, setGExisten] = useState(false);
   const [progreso, setProgreso] = useState(0);
   const [resultado, setResultado] = useState(null);
   const [fechaIni, setFechaIni] = useState(`${new Date().getFullYear()}-01-01`);
   const [fechaFin, setFechaFin] = useState(`${new Date().getFullYear()}-12-31`);
   const [aviso, setAviso] = useState("");
   const fileRef = useRef();
-  const existentes = new Set((pedidos || []).map((p) => String(p.numero || "").trim()));
-  const nuevos = todos.filter((p) => !existentes.has(p.numero));
+  const existentesMap = new Map((pedidos || []).map((p) => [String(p.numero || "").trim(), p]));
+  const nuevos = todos.filter((p) => !existentesMap.has(p.numero));
   const nuevosPend = nuevos.filter((p) => !p.cumplido);
-  const nuevosHist = nuevos.filter((p) => p.cumplido);
-  const yaExisten = todos.length - nuevos.length;
-  const aTraer = [...(conPendientes ? nuevosPend : []), ...(conHistorico ? nuevosHist : [])].sort((a, b) => Number(a.numero) - Number(b.numero));
+  const nuevosSalieron = nuevos.filter((p) => p.cumplido && !(p.ventasPerdidas > 0));
+  const nuevosPerdida = nuevos.filter((p) => p.cumplido && p.ventasPerdidas > 0);
+  const yaExistenLista = todos.filter((p) => existentesMap.has(p.numero));
+  const aTraer = [...(gPend ? nuevosPend : []), ...(gSalieron ? nuevosSalieron : []), ...(gPerdida ? nuevosPerdida : [])].sort((a, b) => Number(a.numero) - Number(b.numero));
+  // Lo que ya se cortó en ATLAS (cortes registrados en el pedido) y lo que falta: Pedido - Cortado.
+  const cortadoAtlas = (pa) => (pa?.cortesRealizados || []).reduce((s, c) => s + (c.totalUnidades || 0), 0);
+  const filasVista = [
+    ...aTraer.map((p) => ({ numero: p.numero, cliente: p.cliente, fechaPedido: p.fechaPedido, fechaDespacho: p.fechaDespacho, refs: p.refs.length, pedido: p.unidades, cortado: 0, situacion: !p.cumplido ? "Activo" : p.ventasPerdidas > 0 ? "Venta perdida" : "Despachado", existe: false })),
+    ...(gExisten ? yaExistenLista.map((p) => {
+      const pa = existentesMap.get(p.numero);
+      const ped = (pa.referencias || []).reduce((s, r) => s + (r.total || 0), 0);
+      return { numero: p.numero, cliente: pa.cliente || p.cliente, fechaPedido: pa.fechaPedido, fechaDespacho: pa.fechaDespacho, refs: (pa.referencias || []).length, pedido: ped, cortado: cortadoAtlas(pa), situacion: pa.estado === "cerrado" ? "Ya en Histórico" : "Ya en Activos", existe: true };
+    }) : []),
+  ].sort((a, b) => Number(a.numero) - Number(b.numero));
   async function leer(e) {
     const f = e.target.files[0];
     if (!f) return;
@@ -17921,57 +17935,59 @@ function TraerPedidosArchivoModal({ pedidos, onClose }) {
       {paso === 2 && (
         <div>
           {aviso && <div style={{ marginBottom: 10, padding: "8px 12px", background: T.amberBg, borderRadius: 8, color: T.amber, fontSize: 12, fontWeight: 600 }}>⚠ {aviso}</div>}
+          <div style={{ fontSize: 13, color: T.slate, marginBottom: 10 }}><b style={{ color: T.ink }}>{fmtNum(todos.length)}</b> pedidos encontrados. Marca los grupos que quieres traer; lo que ya existe en ATLAS no se toca.</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 14 }}>
             {[
-              { l: "Pedidos encontrados", v: todos.length, c: T.ink, bg: T.canvas },
-              { l: "Ya existen en ATLAS", v: yaExisten, c: T.slate, bg: T.canvas },
-              { l: "Nuevos pendientes (Activos)", v: nuevosPend.length, c: T.denim, bg: T.denimBg },
-              { l: "Nuevos cumplidos (Histórico)", v: nuevosHist.length, c: T.jade, bg: T.jadeBg },
+              { l: "Pendientes (a Activos)", v: nuevosPend.length, c: T.denim, bg: T.denimBg, on: gPend, set: setGPend },
+              { l: "Ya salieron — despachados (a Histórico)", v: nuevosSalieron.length, c: T.jade, bg: T.jadeBg, on: gSalieron, set: setGSalieron },
+              { l: "Dados por cumplido sin despachar completo (a Histórico)", v: nuevosPerdida.length, c: T.amber, bg: T.amberBg, on: gPerdida, set: setGPerdida },
+              { l: "Ya están en ATLAS (solo consulta)", v: yaExistenLista.length, c: T.slate, bg: T.canvas, on: gExisten, set: setGExisten },
             ].map((k) => (
-              <div key={k.l} style={{ background: k.bg, borderRadius: 10, padding: "10px 12px", border: `1px solid ${T.border}` }}>
-                <div style={{ fontSize: 22, fontWeight: 900, color: k.c, lineHeight: 1 }}>{fmtNum(k.v)}</div>
+              <label key={k.l} style={{ background: k.bg, borderRadius: 10, padding: "10px 12px", border: `1.5px solid ${k.on ? k.c : T.border}`, cursor: "pointer", display: "block" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div style={{ fontSize: 22, fontWeight: 900, color: k.c, lineHeight: 1 }}>{fmtNum(k.v)}</div>
+                  <input type="checkbox" checked={k.on} onChange={(e) => k.set(e.target.checked)} />
+                </div>
                 <div style={{ fontSize: 11, color: T.slate, marginTop: 4, fontWeight: 600 }}>{k.l}</div>
-              </div>
+              </label>
             ))}
           </div>
-          <div style={{ display: "flex", gap: 18, marginBottom: 12, flexWrap: "wrap" }}>
-            <label style={{ fontSize: 13, color: T.ink, display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
-              <input type="checkbox" checked={conPendientes} onChange={(e) => setConPendientes(e.target.checked)} /> Traer los pendientes nuevos ({nuevosPend.length})
-            </label>
-            <label style={{ fontSize: 13, color: T.ink, display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
-              <input type="checkbox" checked={conHistorico} onChange={(e) => setConHistorico(e.target.checked)} /> Traer los cumplidos al Histórico ({nuevosHist.length})
-            </label>
-          </div>
-          {!aTraer.length ? (
-            <div style={{ padding: 24, textAlign: "center", color: T.slate, fontSize: 13 }}>{nuevos.length ? "Marca al menos una de las dos opciones." : "Todos los pedidos encontrados ya existen en ATLAS. No hay nada nuevo para traer."}</div>
+          {!filasVista.length ? (
+            <div style={{ padding: 24, textAlign: "center", color: T.slate, fontSize: 13 }}>{!nuevos.length && !yaExistenLista.length ? "No hay pedidos para mostrar." : "No hay pedidos en los grupos marcados. Marca otro grupo para verlos."}</div>
           ) : (
             <div style={{ maxHeight: 340, overflowY: "auto", border: `1px solid ${T.border}`, borderRadius: 10 }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                 <thead>
                   <tr style={{ background: T.ink, position: "sticky", top: 0 }}>
-                    {["N° Pedido", "Cliente", "Fecha pedido", "Despacho", "Refs", "Unidades", "Irá a"].map((h, i) => (
+                    {["N° Pedido", "Cliente", "Fecha pedido", "Despacho", "Refs", "Pedido", "Cortado", "Falta", "Situación"].map((h, i) => (
                       <th key={h} style={{ padding: "8px 10px", color: T.seam, textAlign: i < 2 ? "left" : "center", fontWeight: 700, fontSize: 11 }}>{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {aTraer.map((p, i) => (
-                    <tr key={p.numero} style={{ background: i % 2 ? T.canvas : T.white, borderTop: `1px solid ${T.border}` }}>
-                      <td style={{ padding: "6px 10px", fontWeight: 800, color: T.denim }}>#{p.numero}</td>
-                      <td style={{ padding: "6px 10px" }}>{p.cliente || "—"}</td>
-                      <td style={{ padding: "6px 10px", textAlign: "center" }}>{fmtF2(p.fechaPedido)}</td>
-                      <td style={{ padding: "6px 10px", textAlign: "center" }}>{fmtF2(p.fechaDespacho)}</td>
-                      <td style={{ padding: "6px 10px", textAlign: "center" }}>{p.refs.length}</td>
-                      <td style={{ padding: "6px 10px", textAlign: "center", fontWeight: 700 }}>{fmtNum(p.unidades)}</td>
-                      <td style={{ padding: "6px 10px", textAlign: "center" }}>
-                        <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: p.cumplido ? T.jadeBg : T.denimBg, color: p.cumplido ? T.jade : T.denim }}>{p.cumplido ? "Histórico" : "Activo"}</span>
-                      </td>
-                    </tr>
-                  ))}
+                  {filasVista.map((f, i) => {
+                    const falta = Math.max(0, f.pedido - f.cortado);
+                    return (
+                      <tr key={f.numero} style={{ background: i % 2 ? T.canvas : T.white, borderTop: `1px solid ${T.border}`, opacity: f.existe ? 0.85 : 1 }}>
+                        <td style={{ padding: "6px 10px", fontWeight: 800, color: T.denim }}>#{f.numero}</td>
+                        <td style={{ padding: "6px 10px" }}>{f.cliente || "—"}</td>
+                        <td style={{ padding: "6px 10px", textAlign: "center" }}>{f.fechaPedido || "—"}</td>
+                        <td style={{ padding: "6px 10px", textAlign: "center" }}>{f.fechaDespacho || "—"}</td>
+                        <td style={{ padding: "6px 10px", textAlign: "center" }}>{f.refs}</td>
+                        <td style={{ padding: "6px 10px", textAlign: "center", fontWeight: 700 }}>{fmtNum(f.pedido)}</td>
+                        <td style={{ padding: "6px 10px", textAlign: "center", fontWeight: 700, color: T.jade }}>{fmtNum(f.cortado)}</td>
+                        <td style={{ padding: "6px 10px", textAlign: "center", fontWeight: 800, color: falta > 0 ? T.coral : T.jade }}>{falta > 0 ? fmtNum(falta) : "✓ 0"}</td>
+                        <td style={{ padding: "6px 10px", textAlign: "center" }}>
+                          <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: f.existe ? T.canvas : f.situacion === "Activo" ? T.denimBg : f.situacion === "Venta perdida" ? T.amberBg : T.jadeBg, color: f.existe ? T.slate : f.situacion === "Activo" ? T.denim : f.situacion === "Venta perdida" ? T.amber : T.jade, border: f.existe ? `1px solid ${T.border}` : "none" }}>{f.situacion}</span>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
           )}
+          <div style={{ fontSize: 11, color: T.slate, marginTop: 8 }}>«Cortado» es lo registrado en los cortes del pedido en ATLAS; en los pedidos nuevos es 0 porque aún no se ha registrado ningún corte.</div>
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
             <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
             <Btn onClick={traer} disabled={!aTraer.length}>Traer {aTraer.length} pedido{aTraer.length !== 1 ? "s" : ""}</Btn>
@@ -18006,6 +18022,7 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
   const [filtro, setFiltro] = useState("activos");
   const [editPedido, setEditPedido] = useState(null);
   const [traerArchivo, setTraerArchivo] = useState(false);
+  const [filtroFalta, setFiltroFalta] = useState("todos"); // todos | faltante | completos
   const [busqueda, setBusqueda] = useState("");
   const activos = pedidos.filter((p) => p.estado === "activo" || p.estado === "terminado");
   // Un único estado de cierre ("cerrado"), con el motivo en motivoCierre — ya
@@ -18020,7 +18037,10 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
   const normRefBusq = (v) => String(v || "").toLowerCase().replace(/[^a-z0-9]/g, "");
   const busquedaRef = normRefBusq(busqueda);
   const refsQueCoinciden = (p) => (busquedaRef.length >= 2 ? (p.referencias || []).filter((r) => normRefBusq(r.ref).includes(busquedaRef)) : []);
-  const lista = !busquedaNorm ? listaBase : listaBase.filter((p) =>
+  // (2026-10-29, a pedido de Fredy) "Falta" = unidades del pedido - unidades cortadas (cortes registrados en el pedido).
+  const faltaDe = (p) => Math.max(0, (p.referencias || []).reduce((s, r) => s + (r.total || 0), 0) - (p.cortesRealizados || []).reduce((s, c) => s + (c.totalUnidades || 0), 0));
+  const listaFiltrada = filtro === "activos" && filtroFalta !== "todos" ? listaBase.filter((p) => (filtroFalta === "faltante" ? faltaDe(p) > 0 : faltaDe(p) === 0)) : listaBase;
+  const lista = !busquedaNorm ? listaFiltrada : listaFiltrada.filter((p) =>
     String(p.numero || "").toLowerCase().includes(busquedaNorm) ||
     (p.cliente || "").toLowerCase().includes(busquedaNorm) ||
     (p.vendedor || "").toLowerCase().includes(busquedaNorm) ||
@@ -18100,6 +18120,13 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
             style={{ padding: "7px 12px", border: `1.5px solid ${busqueda ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, minWidth: 340, outline: "none", fontFamily: "inherit", marginLeft: 8 }}
           />
         )}
+        {filtro === "activos" && (
+          <div style={{ display: "flex", gap: 4, marginLeft: 8, alignItems: "center" }}>
+            {[["todos", "Todos"], ["faltante", `Con faltante (${activos.filter((p) => faltaDe(p) > 0).length})`], ["completos", `Completos (${activos.filter((p) => faltaDe(p) === 0).length})`]].map(([v, label]) => (
+              <button key={v} onClick={() => setFiltroFalta(v)} style={{ padding: "6px 12px", borderRadius: 20, border: `1.5px solid ${filtroFalta === v ? T.denim : T.border}`, background: filtroFalta === v ? T.denimBg : T.white, color: filtroFalta === v ? T.denim : T.slate, fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>{label}</button>
+            ))}
+          </div>
+        )}
       </div>
       {filtro === "vigentes_busint" && <InformeVigentesBusintView isAdmin={isAdmin} pedidosActivos={pedidos} currentUser={currentUser} />}
       {filtro === "disponible_despachar" && <DisponibleDespacharView db={db} functionsClient={functionsClient} T={T} />}
@@ -18108,7 +18135,7 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
             <thead>
               <tr style={{ background: T.ink }}>
-                {["N° Pedido", "Cliente", "Pedido", "Cortado", "Avance", "Despacho", "Estado", ""].map((h, i) => (
+                {["N° Pedido", "Cliente", "Pedido", "Cortado", "Falta", "Avance", "Despacho", "Estado", ""].map((h, i) => (
                   <th key={h + i} style={{ padding: "10px 14px", color: T.seam, textAlign: i === 0 || i === 1 ? "left" : "center", fontWeight: 700, fontSize: 11 }}>{h}</th>
                 ))}
               </tr>
@@ -18133,6 +18160,7 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
                     </td>
                     <td onClick={() => onSelectPedido(p.id)} style={{ padding: "12px 14px", textAlign: "center", fontWeight: 700, color: T.ink }}>{fmtNum(totalP)}</td>
                     <td onClick={() => onSelectPedido(p.id)} style={{ padding: "12px 14px", textAlign: "center", fontWeight: 700, color: T.jade }}>{fmtNum(totalC)}</td>
+                    <td onClick={() => onSelectPedido(p.id)} style={{ padding: "12px 14px", textAlign: "center", fontWeight: 800, color: totalP - totalC > 0 ? T.coral : T.jade }}>{totalP - totalC > 0 ? fmtNum(totalP - totalC) : "✓ 0"}</td>
                     <td onClick={() => onSelectPedido(p.id)} style={{ padding: "12px 14px", textAlign: "center" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                         <div style={{ flex: 1, height: 6, borderRadius: 3, background: T.border, overflow: "hidden" }}><div style={{ height: "100%", width: `${pct}%`, background: pct === 100 ? T.jade : T.denim }} /></div>
@@ -18187,7 +18215,7 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
           })}
         </div>
       )}
-      {filtro !== "vigentes_busint" && filtro !== "disponible_despachar" && !lista.length && <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>{filtro === "activos" ? "No hay pedidos activos. Carga un pedido de Busint." : "Sin pedidos en el histórico."}</div>}
+      {filtro !== "vigentes_busint" && filtro !== "disponible_despachar" && !lista.length && <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>{filtro === "activos" ? (filtroFalta !== "todos" || busqueda ? "Ningún pedido activo coincide con el filtro o la búsqueda." : "No hay pedidos activos. Carga un pedido de Busint.") : "Sin pedidos en el histórico."}</div>}
     </div>
   );
 }
