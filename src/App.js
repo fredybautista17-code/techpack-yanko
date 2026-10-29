@@ -7062,8 +7062,19 @@ function itemPasadoAOrden(it) {
   if (it.pasadaAOrden == null) return String(it.telaCompradaEn || "") < CORTE_PASAR_A_ORDEN;
   return false;
 }
+// (2026-10-29, a pedido de Fredy) Detalle de una referencia en Órdenes: cuántos días lleva esperando pedido (desde que se pasó a Orden;
+// en las anteriores al botón, desde que se confirmó la tela) y de qué tela es.
+function detalleEnOrdenes(it) {
+  const desde = it.pasadaAOrdenEn || it.telaCompradaEn || "";
+  const ms = desde ? Date.now() - new Date(desde).getTime() : NaN;
+  const dias = Number.isFinite(ms) ? Math.max(0, Math.floor(ms / 86400000)) : null;
+  const ti = it.telaInfo || {};
+  const tela = [ti.proveedor, ti.lote ? `Lote ${ti.lote}` : ""].filter(Boolean).join(" · ");
+  return [dias == null ? "" : `${dias} día${dias !== 1 ? "s" : ""} sin pedido`, tela ? `Tela: ${tela}` : ""].filter(Boolean).join(" — ") || "Tela confirmada";
+}
 function OrdenesView({ preordenes, pedidos, capsulas, config, currentUser, onVincularPedido, onActualizarItemPreorden, puedeVincularPedido }) {
   const [vinculando, setVinculando] = useState(null);
+  const [verEtapa, setVerEtapa] = useState(null); // { etapa: "ord"|"ped", preordenId: id | null }
   const [buscaPedido, setBuscaPedido] = useState("");
   const [numeroPedidoManual, setNumeroPedidoManual] = useState("");
   // (2026-10-03, a pedido de Fredy) Buscador de la lista de órdenes -- mismo
@@ -7233,6 +7244,33 @@ function OrdenesView({ preordenes, pedidos, capsulas, config, currentUser, onVin
     setNumeroPedidoManual("");
   }
   const totalRefs = tarjetas.reduce((s, t) => s + t.items.length, 0);
+  // (2026-10-29, a pedido de Fredy) Conteo por etapa de las órdenes que se ven: En Órdenes (lo de la lista) y Con pedido
+  // (referencias de esas mismas órdenes que ya quedaron vinculadas a un pedido).
+  const unid = (it) => (Number(it.colombiaCantidad) || 0) + (Number(it.venezuelaCantidad) || 0);
+  const conPedidoDe = (p) => (p.items || []).filter((it) => itemGraduado(it, p.cliente, p.fechaCreado));
+  const sumaU = (arr) => arr.reduce((s, it) => s + unid(it), 0);
+  const etapasOrden = new Map(tarjetas.map(({ preorden: p, items }) => {
+    const cp = conPedidoDe(p);
+    return [p.id, { ord: items.length, ordU: sumaU(items), ped: cp.length, pedU: sumaU(cp) }];
+  }));
+  const totalEtapas = [...etapasOrden.values()].reduce((a, e) => ({ ord: a.ord + e.ord, ordU: a.ordU + e.ordU, ped: a.ped + e.ped, pedU: a.pedU + e.pedU }), { ord: 0, ordU: 0, ped: 0, pedU: 0 });
+  function filasEtapaOrdenes(etapa, preordenId) {
+    const filas = [];
+    tarjetas.forEach(({ preorden: p, items }) => {
+      if (preordenId && p.id !== preordenId) return;
+      const lista = etapa === "ord" ? items : conPedidoDe(p);
+      lista.forEach((it) => {
+        const ped = etapa === "ped" ? (it.pedidoVinculado?.numero ? { numero: it.pedidoVinculado.numero } : pedidoQueContieneRef(it.referencia, pedidosCandidatosConversion(p.cliente, p.fechaCreado))) : null;
+        filas.push({
+          preordenId: p.id, preorden: p, it, unidades: unid(it),
+          detalle: etapa === "ord" ? detalleEnOrdenes(it) : (ped?.numero ? `Pedido #${ped.numero}` : "Pedido de Busint"),
+          puedePasar: false, puedeVincular: etapa === "ord",
+          etiquetaOrden: etiquetaNumeroOrden(p) || p.nombre || p.cliente || "",
+        });
+      });
+    });
+    return filas;
+  }
   const bqOrdenes = foldTexto(buscarOrdenes);
   const bqOrdenesRef = normalizarRefComparacion(buscarOrdenes);
   const tarjetasBuscadas = !bqOrdenes ? tarjetas : tarjetas.filter(({ preorden: p, items }) =>
@@ -7251,6 +7289,38 @@ function OrdenesView({ preordenes, pedidos, capsulas, config, currentUser, onVin
         <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>🧵 Órdenes</h2>
         <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Referencias ya aprobadas con tela confirmada, en lo que llega su Pedido real{tarjetas.length > 0 ? ` -- ${totalRefs} referencia${totalRefs !== 1 ? "s" : ""} en ${tarjetas.length} orden${tarjetas.length !== 1 ? "es" : ""}` : ""}.</p>
       </div>
+      {verEtapa && (() => {
+        const filas = filasEtapaOrdenes(verEtapa.etapa, verEtapa.preordenId);
+        const una = verEtapa.preordenId ? tarjetas.find((t) => t.preorden.id === verEtapa.preordenId)?.preorden : null;
+        return (
+          <EtapaRefsModal
+            titulo={`${verEtapa.etapa === "ord" ? "En Órdenes" : "Con pedido"}${una ? ` — ${etiquetaNumeroOrden(una) || una.cliente || ""}` : " — todas las órdenes"}`}
+            filas={filas}
+            conOrden={!verEtapa.preordenId}
+            esCliente={false}
+            puedePasarAOrden={false}
+            puedeVincularPedido={currentUser?.isAdmin || puedeVincularPedido}
+            onPasar={() => {}}
+            onVincular={(f) => { setVerEtapa(null); setVinculando({ preordenId: f.preordenId, itemId: f.it.itemId }); }}
+            onClose={() => setVerEtapa(null)}
+          />
+        );
+      })()}
+      {tarjetas.length > 0 && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 10, marginBottom: 6 }}>
+          {[
+            { l: "En Órdenes (esperando pedido)", n: totalEtapas.ord, u: totalEtapas.ordU, c: T.coral, bg: T.coralBg, i: "🧵", e: "ord" },
+            { l: "Con pedido", n: totalEtapas.ped, u: totalEtapas.pedU, c: T.jade, bg: T.jadeBg, i: "📦", e: "ped" },
+          ].map((k) => (
+            <div key={k.e} onClick={() => setVerEtapa({ etapa: k.e, preordenId: null })} title="Clic para ver cuáles son" style={{ background: k.bg, borderRadius: 12, padding: "12px 16px", border: `1px solid ${k.c}33`, cursor: "pointer" }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: T.slate }}>{k.i} {k.l}</div>
+              <div style={{ fontSize: 24, fontWeight: 900, color: k.c, lineHeight: 1.1, marginTop: 2 }}>{fmtNum(k.n)} <span style={{ fontSize: 12, fontWeight: 700 }}>ref</span></div>
+              <div style={{ fontSize: 11, color: T.slate, marginTop: 2 }}>{fmtNum(k.u)} unid.</div>
+            </div>
+          ))}
+        </div>
+      )}
+      {tarjetas.length > 0 && <div style={{ fontSize: 11, color: T.slate, marginBottom: 14 }}>«Con pedido» cuenta solo las referencias de las órdenes que están en esta lista.</div>}
       {tarjetas.length > 0 && (
         <div style={{ marginBottom: 16 }}>
           <input
@@ -7372,7 +7442,14 @@ function OrdenesView({ preordenes, pedidos, capsulas, config, currentUser, onVin
                     <div style={{ fontSize: 12, color: T.slate }}>{items.length} ref · {fmtNum(totalUnidades)} unid.{valorTotalOrden > 0 ? ` · ${fmtCOP(valorTotalOrden)}` : ""} · Creada {p.fechaCreado}</div>
                   </div>
                 </div>
-                <span style={{ color: T.slate }}>{abierto ? "▲" : "▼"}</span>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  {(() => {
+                    const e = etapasOrden.get(p.id) || { ord: 0, ordU: 0, ped: 0, pedU: 0 };
+                    const chip = (txt, n, u, c, bg, etapa) => <span onClick={(ev) => { ev.stopPropagation(); setVerEtapa({ etapa, preordenId: p.id }); }} title={`${fmtNum(u)} unidades — clic para ver cuáles son`} style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: bg, color: c, whiteSpace: "nowrap", cursor: "pointer", border: `1px solid ${c}33` }}>{txt} {n}</span>;
+                    return (<>{chip("🧵 Órdenes", e.ord, e.ordU, T.coral, T.coralBg, "ord")}{chip("📦 Pedido", e.ped, e.pedU, T.jade, T.jadeBg, "ped")}</>);
+                  })()}
+                  <span style={{ color: T.slate }}>{abierto ? "▲" : "▼"}</span>
+                </div>
               </div>
               {abierto && (
                 <div style={{ padding: 20 }}>
@@ -7698,8 +7775,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
           const ped = it.pedidoVinculado?.numero ? { numero: it.pedidoVinculado.numero } : pedidoQueContieneRef(it.referencia, pedidosCandidatosConversion(p.cliente, p.fechaCreado));
           detalle = ped?.numero ? `Pedido #${ped.numero}` : "Pedido de Busint";
         } else if (e === "ord") {
-          const ti = it.telaInfo || {};
-          detalle = ["Tela confirmada", ti.proveedor, ti.lote ? `Lote ${ti.lote}` : ""].filter(Boolean).join(" · ");
+          detalle = detalleEnOrdenes(it);
           puedeVincular = true;
         } else if (!aprobada) {
           detalle = "Preorden sin aprobar";
