@@ -2556,6 +2556,8 @@ function rangoSyncPedidosPorDefecto() {
   return { fechaInicio: `${ref.getUTCFullYear()}-01-01`, fechaFin: fin.toISOString().slice(0, 10) };
 }
 
+// "Dado por cumplido" sin facturar: por debajo de este porcentaje cubierto (facturado + ventas perdidas) el pedido no se cierra ni se crea solo.
+const UMBRAL_CUMPLIDO_CUBIERTO = 0.9;
 async function calcularCruceBusintAtlas(fechaInicio, fechaFin) {
   const hoyISO = fechaHoyBogota();
   const avisos = [];
@@ -2582,10 +2584,13 @@ async function calcularCruceBusintAtlas(fechaInicio, fechaFin) {
     perdidaPorPedido.set(numped, (perdidaPorPedido.get(numped) || 0) + (Number(f?.Total) || 0));
   });
   const facturadoPorPedido = new Map();
+  const facturadoPorPedidoRef = new Map(); // `${numero}|${REF}` -> unidades facturadas (netas)
   filasFacturado.forEach((f) => {
     const numero = String(f.numped ?? "").trim();
     if (!numero) return;
     facturadoPorPedido.set(numero, (facturadoPorPedido.get(numero) || 0) + (Number(f.cant) || 0));
+    const kRef = `${numero}|${String(f.ref ?? "").trim().toUpperCase()}`;
+    facturadoPorPedidoRef.set(kRef, (facturadoPorPedidoRef.get(kRef) || 0) + (Number(f.cant) || 0));
   });
 
   const carga = await leerCargaPlaneacionMasReciente();
@@ -2621,15 +2626,28 @@ async function calcularCruceBusintAtlas(fechaInicio, fechaFin) {
     const lotesProd = lotes.filter((l) => l.ubicacionActual !== "BPT");
     const salio = cumplido || facturadoCompleto;
     const situacion = salio ? (lotesProd.length ? "conflicto" : "salio") : "pendiente";
+    // (2026-10-30, a pedido de Fredy) "Dado por cumplido" SIN facturar: si lo facturado + lo registrado como venta perdida cubre menos del 90% del pedido,
+    // no se cierra ni se crea solo: queda por revisar con el detalle por referencia de lo que falta.
+    const cubierto = facturado + ventasPerdidas;
+    const cubiertoPct = unidades > 0 ? cubierto / unidades : 1;
+    const dudoso = cumplido && !facturadoCompleto && unidades > 0 && cubiertoPct < UMBRAL_CUMPLIDO_CUBIERTO;
+    const unidadesPorRef = new Map();
+    refs.forEach((r) => { const k = String(r.ref || "").trim().toUpperCase(); unidadesPorRef.set(k, (unidadesPorRef.get(k) || 0) + (Number(r.total) || 0)); });
+    const refsFalta = [...unidadesPorRef.entries()]
+      .map(([k, ped]) => ({ ref: k, pedido: ped, facturado: facturadoPorPedidoRef.get(`${p.numero}|${k}`) || 0 }))
+      .filter((r) => r.facturado < r.pedido)
+      .sort((a, b) => (b.pedido - b.facturado) - (a.pedido - a.facturado))
+      .slice(0, 12);
     infoPorNumero.set(p.numero, {
       numero: p.numero, cliente: p.cliente || "Sin cliente", fechaPedido: p.fechaPedido || null, fechaDespacho: p.fechaDespacho || null,
-      refs, unidades, facturado, cumplido, facturadoCompleto, ventasPerdidas, lotes, lotesProd, situacion,
+      refs, unidades, facturado, cumplido, facturadoCompleto, ventasPerdidas, lotes, lotesProd, situacion, dudoso, cubiertoPct, refsFalta,
       motivo: ventasPerdidas > 0 ? "venta_perdida" : "facturado",
     });
   }
 
   const lotesTxt = (i) => (i.lotesProd.length ? `${i.lotesProd.length} lote(s) en ${[...new Set(i.lotesProd.map((l) => l.ubicacionActual))].join(", ")}` : i.lotes.length ? "solo lotes ya terminados (BPT)" : "sin lotes en planta");
   const salioTxt = (i) => (i.cumplido ? "dado por cumplido en Busint" : `facturado completo (${i.facturado} de ${i.unidades})`);
+  const cubiertoTxt = (i) => `Dado por cumplido en Busint, pero solo está cubierto el ${Math.round(i.cubiertoPct * 100)}% del pedido (facturado ${i.facturado}${i.ventasPerdidas ? ` + ${i.ventasPerdidas} de venta perdida` : ""} de ${i.unidades}).`;
   const nuevos = [], cerrar = [], revisar = [], unidadesDistintas = [];
   let sinCambio = 0;
   // (2026-10-29) Pedidos que YA están en ATLAS pero con menos unidades que Busint (por la consulta que perdía líneas repetidas).
@@ -2657,20 +2675,23 @@ async function calcularCruceBusintAtlas(fechaInicio, fechaFin) {
       if (ocultosSet.has(numero)) continue;
       if (i.situacion === "conflicto") {
         revisar.push({ numero, cliente: i.cliente, tipo: "nuevo_en_produccion", accion: "crear", estadoAtlas: "No existe", detalle: `Busint lo tiene ${salioTxt(i)}, pero tiene ${lotesTxt(i)}.` });
+      } else if (i.situacion === "salio" && i.dudoso) {
+        revisar.push({ numero, cliente: i.cliente, tipo: "cumplido_sin_facturar", accion: "crear_cerrado", estadoAtlas: "No existe", detalle: cubiertoTxt(i), refs: i.refsFalta });
       } else {
-        nuevos.push({ numero, cliente: i.cliente, fechaPedido: i.fechaPedido, fechaDespacho: i.fechaDespacho, unidades: i.unidades, facturado: i.facturado, destino: i.situacion === "salio" ? "cerrado" : "activo", motivo: i.situacion === "salio" ? i.motivo : null });
+        nuevos.push({ numero, cliente: i.cliente, fechaPedido: i.fechaPedido, fechaDespacho: i.fechaDespacho, unidades: i.unidades, facturado: i.facturado, pctFacturado: i.unidades > 0 ? Math.round((i.facturado / i.unidades) * 100) : null, destino: i.situacion === "salio" ? "cerrado" : "activo", motivo: i.situacion === "salio" ? i.motivo : null });
       }
       continue;
     }
     const cerradoAtlas = ex.estado === "cerrado";
     if (i.situacion === "salio") {
-      if (!cerradoAtlas) cerrar.push({ numero, cliente: i.cliente, unidades: i.unidades, facturado: i.facturado, motivo: i.motivo, razon: `${salioTxt(i)} y ${lotesTxt(i)}` });
+      if (!cerradoAtlas && i.dudoso) revisar.push({ numero, cliente: i.cliente, tipo: "cumplido_sin_facturar", accion: "cerrar", estadoAtlas: "Activo", detalle: cubiertoTxt(i), refs: i.refsFalta });
+      else if (!cerradoAtlas) cerrar.push({ numero, cliente: i.cliente, unidades: i.unidades, facturado: i.facturado, motivo: i.motivo, razon: `${salioTxt(i)} y ${lotesTxt(i)}` });
       else sinCambio++;
     } else if (i.situacion === "conflicto") {
       if (!cerradoAtlas) revisar.push({ numero, cliente: i.cliente, tipo: "salio_en_produccion", accion: "cerrar", estadoAtlas: "Activo", detalle: `Busint lo tiene ${salioTxt(i)}, pero aún tiene ${lotesTxt(i)}.` });
       else sinCambio++;
     } else if (cerradoAtlas) {
-      revisar.push({ numero, cliente: i.cliente, tipo: "cerrado_pero_pendiente", accion: "reabrir", estadoAtlas: `Cerrado (${ex.motivoCierre || "sin motivo"})`, detalle: `Busint lo muestra pendiente (facturado ${i.facturado} de ${i.unidades}); ${lotesTxt(i)}.` });
+      revisar.push({ numero, cliente: i.cliente, tipo: "cerrado_pero_pendiente", accion: "reabrir", estadoAtlas: `Cerrado (${ex.motivoCierre || "sin motivo"})`, detalle: `Busint lo muestra pendiente (facturado ${i.facturado} de ${i.unidades}); ${lotesTxt(i)}.`, refs: i.refsFalta });
     } else {
       sinCambio++;
     }
@@ -2765,6 +2786,9 @@ async function aplicarCruceBusintAtlas(cruce, decisiones) {
       cerrados.push(r.numero);
     } else if (r.accion === "crear" && i) {
       ops.push({ numero: r.numero, data: docNuevo(i, "activo", null), merge: false });
+      creados.push(r.numero);
+    } else if (r.accion === "crear_cerrado" && i) {
+      ops.push({ numero: r.numero, data: docNuevo(i, "cerrado", i.motivo), merge: false });
       creados.push(r.numero);
     } else continue;
     decididos.push(r.numero);

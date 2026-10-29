@@ -18620,14 +18620,15 @@ function SincronizarPedidosModal({ onClose }) {
       { Dato: "Rango consultado", Valor: `${cruce.fechaInicio} a ${cruce.fechaFin}` },
       { Dato: "Carga de Planeación usada", Valor: cruce.cargaPlaneacion || "" },
     ], "Resumen");
-    hoja((cruce.revisar || []).map((r) => ({ "Num Ped": r.numero, "Cliente": r.cliente, "Estado en ATLAS": r.estadoAtlas, "Qué pasa": r.detalle, "Acción posible": etiquetaAccion[r.accion] || r.accion })), "Por revisar");
+    hoja((cruce.revisar || []).map((r) => ({ "Num Ped": r.numero, "Cliente": r.cliente, "Estado en ATLAS": r.estadoAtlas, "Qué pasa": r.detalle, "Falta por referencia (facturado de pedido)": refsTxt(r.refs), "Acción posible": etiquetaAccion[r.accion] || r.accion })), "Por revisar");
     hoja((cruce.unidades || []).flatMap((u) => (u.refs && u.refs.length ? u.refs : [{ ref: "", descripcion: "", atlas: "", busint: "" }]).map((r) => ({ "Num Ped": u.numero, "Cliente": u.cliente, "Estado en ATLAS": u.estadoAtlas, "Unidades ATLAS (pedido)": u.unidadesAtlas, "Unidades Busint (pedido)": u.unidadesBusint, "Diferencia": u.diferencia, "Referencia": r.ref, "Color": r.descripcion, "Ref ATLAS": r.atlas, "Ref Busint": r.busint }))), "Unidades distintas");
     hoja((cruce.cerrar || []).map((c) => ({ "Num Ped": c.numero, "Cliente": c.cliente, "Unidades pedido": c.unidades, "Facturado": c.facturado, "Motivo": c.motivo === "venta_perdida" ? "Venta perdida" : "Facturado", "Por qué": c.razon })), "Se cerrarán");
-    hoja((cruce.nuevos || []).map((n) => ({ "Num Ped": n.numero, "Cliente": n.cliente, "Fecha pedido": n.fechaPedido, "Fecha despacho": n.fechaDespacho, "Unidades pedido": n.unidades, "Facturado": n.facturado, "Quedará como": etiquetaDestino(n) })), "Se crearán");
+    hoja((cruce.nuevos || []).map((n) => ({ "Num Ped": n.numero, "Cliente": n.cliente, "Fecha pedido": n.fechaPedido, "Fecha despacho": n.fechaDespacho, "Unidades pedido": n.unidades, "Facturado": n.facturado, "% facturado": n.pctFacturado ?? "", "Quedará como": etiquetaDestino(n) })), "Se crearán");
     XLSX.writeFile(wb, `Sincronizacion_Busint_${new Date().toISOString().slice(0, 10)}.xlsx`);
   }
   const marcarTodasUnidades = (v) => setMarcadosU(v ? Object.fromEntries(unidadesDist.map((u) => [u.numero, true])) : {});
-  const etiquetaAccion = { reabrir: "Reabrir (pasar a Activo)", cerrar: "Cerrar", crear: "Crear como Activo" };
+  const etiquetaAccion = { reabrir: "Reabrir (pasar a Activo)", cerrar: "Cerrar", crear: "Crear como Activo", crear_cerrado: "Crear en el Histórico (cerrado)" };
+  const refsTxt = (refs) => (refs || []).map((x) => `${x.ref}: ${fmtNum(x.facturado)} de ${fmtNum(x.pedido)}`).join(" · ");
   const etiquetaDestino = (n) => (n.destino === "activo" ? "Activo" : n.motivo === "venta_perdida" ? "Histórico · venta perdida" : "Histórico · facturado");
   const th = (arr) => (
     <thead><tr style={{ background: T.ink, position: "sticky", top: 0 }}>
@@ -18708,7 +18709,10 @@ function SincronizarPedidosModal({ onClose }) {
                     <td style={{ ...tdBase, fontWeight: 800, color: T.denim }}>#{r.numero} <button type="button" title="Ver detalle por referencia en Busint" onClick={() => setDiagNum(r.numero)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, padding: 0 }}>🔎</button></td>
                     <td style={tdBase}>{r.cliente}</td>
                     <td style={{ ...tdBase, textAlign: "center" }}>{r.estadoAtlas}</td>
-                    <td style={{ ...tdBase, color: T.slate }}>{r.detalle}</td>
+                    <td style={{ ...tdBase, color: T.slate }}>
+                      {r.detalle}
+                      {r.refs && r.refs.length > 0 && <div style={{ marginTop: 3, fontSize: 11 }}>Falta por referencia (facturado de pedido): {refsTxt(r.refs.slice(0, 6))}{r.refs.length > 6 ? ` · +${r.refs.length - 6} más` : ""}</div>}
+                    </td>
                     <td style={{ ...tdBase, textAlign: "center" }}>
                       <label style={{ cursor: "pointer", fontWeight: 700, color: marcados[r.numero] ? T.amber : T.slate }}>
                         <input type="checkbox" checked={!!marcados[r.numero]} onChange={(e) => setMarcados((m) => ({ ...m, [r.numero]: e.target.checked }))} style={{ marginRight: 6 }} />
@@ -18772,7 +18776,7 @@ function SincronizarPedidosModal({ onClose }) {
 
           {seccion("nuevos", "＋ Se crearán en ATLAS", cruce.nuevos.length, T.denim, T.denimBg, (
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-              {th(["Pedido", "Cliente", "Fecha pedido", "Despacho", "Pedido (und)", "Quedará como"])}
+              {th(["Pedido", "Cliente", "Fecha pedido", "Despacho", "Pedido (und)", "Facturado", "Quedará como"])}
               <tbody>
                 {cruce.nuevos.map((n, i) => (
                   <tr key={n.numero} style={{ background: i % 2 ? T.canvas : T.white }}>
@@ -18781,6 +18785,7 @@ function SincronizarPedidosModal({ onClose }) {
                     <td style={{ ...tdBase, textAlign: "center" }}>{n.fechaPedido || "—"}</td>
                     <td style={{ ...tdBase, textAlign: "center" }}>{n.fechaDespacho || "—"}</td>
                     <td style={{ ...tdBase, textAlign: "center" }}>{fmtNum(n.unidades)}</td>
+                    <td style={{ ...tdBase, textAlign: "center", color: n.pctFacturado != null && n.pctFacturado < 100 ? T.amber : T.slate }}>{fmtNum(n.facturado)}{n.pctFacturado != null ? ` (${n.pctFacturado}%)` : ""}</td>
                     <td style={{ ...tdBase, textAlign: "center", fontWeight: 700, color: n.destino === "activo" ? T.denim : T.jade }}>{etiquetaDestino(n)}</td>
                   </tr>
                 ))}
