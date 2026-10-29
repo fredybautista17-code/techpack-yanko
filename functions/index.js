@@ -2648,7 +2648,7 @@ async function calcularCruceBusintAtlas(fechaInicio, fechaFin) {
   const lotesTxt = (i) => (i.lotesProd.length ? `${i.lotesProd.length} lote(s) en ${[...new Set(i.lotesProd.map((l) => l.ubicacionActual))].join(", ")}` : i.lotes.length ? "solo lotes ya terminados (BPT)" : "sin lotes en planta");
   const salioTxt = (i) => (i.cumplido ? "dado por cumplido en Busint" : `facturado completo (${i.facturado} de ${i.unidades})`);
   const cubiertoTxt = (i) => `Dado por cumplido en Busint, pero solo está cubierto el ${Math.round(i.cubiertoPct * 100)}% del pedido (facturado ${i.facturado}${i.ventasPerdidas ? ` + ${i.ventasPerdidas} de venta perdida` : ""} de ${i.unidades}).`;
-  const nuevos = [], cerrar = [], revisar = [], unidadesDistintas = [];
+  const nuevos = [], cerrar = [], revisar = [], unidadesDistintas = [], datosRaros = [];
   let sinCambio = 0;
   // (2026-10-29) Pedidos que YA están en ATLAS pero con menos unidades que Busint (por la consulta que perdía líneas repetidas).
   const sumaTotalRef = (r) => {
@@ -2667,7 +2667,13 @@ async function calcularCruceBusintAtlas(fechaInicio, fechaFin) {
         refsAtlas.forEach((r) => atlasPorClave.set(claveRefAtlas(r), (atlasPorClave.get(claveRefAtlas(r)) || 0) + sumaTotalRef(r)));
         const refsDif = i.refs
           .map((r) => ({ ref: r.ref, descripcion: r.descripcion, atlas: atlasPorClave.get(claveRefAtlas(r)) || 0, busint: r.total }))
-          .filter((r) => r.busint > r.atlas);
+          .filter((r) => r.busint > 0 && r.busint > r.atlas);
+        // (2026-10-30) Si ninguna referencia tiene unidades reales en Busint (ATLAS con negativos y Busint en 0), no es una línea perdida:
+        // se muestra aparte como "datos raros", sin acción, para no proponer llevar negativos a cero.
+        if (!refsDif.length) {
+          datosRaros.push({ numero, cliente: i.cliente, estadoAtlas: ex.estado === "cerrado" ? `Cerrado (${ex.motivoCierre || "sin motivo"})` : "Activo", unidadesAtlas, unidadesBusint: i.unidades });
+          continue;
+        }
         unidadesDistintas.push({ numero, cliente: i.cliente, estadoAtlas: ex.estado === "cerrado" ? `Cerrado (${ex.motivoCierre || "sin motivo"})` : "Activo", unidadesAtlas, unidadesBusint: i.unidades, diferencia: i.unidades - unidadesAtlas, refs: refsDif.slice(0, 40) });
       }
     }
@@ -2713,10 +2719,12 @@ async function calcularCruceBusintAtlas(fechaInicio, fechaFin) {
     cerrar: cerrar.length,
     revisar: revisar.length,
     unidades: unidadesDistintas.length,
+    datosRaros: datosRaros.length,
     sinCambio,
   };
   unidadesDistintas.sort(orden);
-  return { fechaInicio, fechaFin, hoyISO, cargaPlaneacion: String(carga.fecha || carga.creadoEn || ""), avisos, resumen, nuevos, cerrar, revisar, unidades: unidadesDistintas, infoPorNumero };
+  datosRaros.sort(orden);
+  return { fechaInicio, fechaFin, hoyISO, cargaPlaneacion: String(carga.fecha || carga.creadoEn || ""), avisos, resumen, nuevos, cerrar, revisar, unidades: unidadesDistintas, datosRaros, infoPorNumero };
 }
 
 async function aplicarCruceBusintAtlas(cruce, decisiones) {

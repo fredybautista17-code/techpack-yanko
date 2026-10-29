@@ -18756,6 +18756,23 @@ function SincronizarPedidosModal({ onClose }) {
             </span>
           ))}
 
+          {(cruce.datosRaros || []).length > 0 && seccion("raros", "❓ Datos raros (sin acción)", cruce.datosRaros.length, T.slate, T.canvas, (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              {th(["Pedido", "Cliente", "Estado en ATLAS", "Und ATLAS", "Und Busint"])}
+              <tbody>
+                {cruce.datosRaros.map((u, i) => (
+                  <tr key={u.numero} style={{ background: i % 2 ? T.canvas : T.white }}>
+                    <td style={{ ...tdBase, fontWeight: 800, color: T.denim }}>#{u.numero} <button type="button" title="Ver detalle por referencia en Busint" onClick={() => setDiagNum(u.numero)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, padding: 0 }}>🔎</button></td>
+                    <td style={tdBase}>{u.cliente}</td>
+                    <td style={{ ...tdBase, textAlign: "center" }}>{u.estadoAtlas}</td>
+                    <td style={{ ...tdBase, textAlign: "center" }}>{fmtNum(u.unidadesAtlas)}</td>
+                    <td style={{ ...tdBase, textAlign: "center" }}>{fmtNum(u.unidadesBusint)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ), "ATLAS tiene unidades negativas o en cero y Busint no tiene unidades en esas referencias: no es una línea perdida, así que no se propone ningún cambio. Se muestran solo para que puedas revisarlos.")}
+
           {seccion("cerrar", "✔ Se cerrarán porque ya salieron", cruce.cerrar.length, T.jade, T.jadeBg, (
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
               {th(["Pedido", "Cliente", "Pedido (und)", "Facturado", "Motivo", "Por qué"])}
