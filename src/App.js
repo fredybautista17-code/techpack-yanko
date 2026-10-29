@@ -18314,7 +18314,6 @@ function SincronizarPedidosModal({ onClose }) {
     } catch (err) { setError(err?.message || String(err)); }
     setCargando(false);
   }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { calcular(); }, []);
   const revisar = cruce?.revisar || [];
   const decisiones = revisar.filter((r) => marcados[r.numero]).map((r) => ({ numero: r.numero, decision: r.accion }));
