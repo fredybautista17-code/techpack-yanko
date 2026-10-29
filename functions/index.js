@@ -2916,6 +2916,11 @@ exports.buscarAnticiposProveedorBusint = onCallAuth(
       "cxp-pagos", "cxp-pagos detallesesp", "cartera cxp-ajustes", "cartera cxp-cruce", "contabilidad - cxp", "cierre cxp",
       "ia_carteracxp_data", "ia_carteracxp_inf", "pagos", "pagos detalles", "notascontableotras", "notascontableotras detalles",
     ];
+    // (2026-10-30) Revisión por proveedor: devuelve TODAS las filas de la cuenta 1330 del proveedor en "cxp-pagos detallesesp" (con la fecha del pago)
+    // y las demás filas de esos mismos pagos, para ver dónde queda registrada la aplicación del anticipo contra las facturas.
+    const detalleProveedor = request.data?.detalleProveedor === true;
+    const maxCoinc = Math.max(8, Math.min(60, Number(request.data?.max) || 8));
+    const cacheTablas = {};
     const reCodigo = /^(cod|codigo|codigop|codprov\w*|codigoprov\w*|proveedor|prov|idprov\w*|cod_?prov\w*)$/i;
     const reNumero = /^(npago|numero|nentrada|ndoc|n|nrecibo|consecutivo|ncomp|nnota|nent\w*)$/i;
     const evaluar = async (tabla) => {
@@ -2925,6 +2930,7 @@ exports.buscarAnticiposProveedorBusint = onCallAuth(
       } catch (err) {
         return { tabla, error: err?.message || String(err) };
       }
+      cacheTablas[tabla] = filas;
       const coinc = [];
       let total = 0;
       for (const r of filas) {
@@ -2940,7 +2946,7 @@ exports.buscarAnticiposProveedorBusint = onCallAuth(
         }
         if (motivos.length) {
           total++;
-          if (coinc.length < 8) coinc.push({ motivos: motivos.slice(0, 4), fila: r });
+          if (coinc.length < maxCoinc) coinc.push({ motivos: motivos.slice(0, 4), fila: r });
         }
       }
       return { tabla, filas: filas.length, columnas: Object.keys(filas[0] || {}).slice(0, 70), coincidencias: total, muestra: coinc };
@@ -2949,7 +2955,26 @@ exports.buscarAnticiposProveedorBusint = onCallAuth(
     for (let i = 0; i < tablas.length; i += 4) {
       resultados.push(...(await Promise.all(tablas.slice(i, i + 4).map(evaluar))));
     }
-    return { version: "buscar-anticipos-v1", codigo, valores, numeros, resultados };
+    let porProveedor1330 = null;
+    if (detalleProveedor) {
+      const esp = cacheTablas["cxp-pagos detallesesp"] || [];
+      const cab = cacheTablas["cxp-pagos"] || [];
+      const fechaPorNpago = new Map();
+      cab.forEach((r) => { const f = fechaBusintBDaDateSoloDia(r?.Fechaini); if (f) fechaPorNpago.set(String(r?.Npago ?? "").trim(), f.toISOString().slice(0, 10)); });
+      const conFecha = (r) => ({ ...r, _fechaPago: fechaPorNpago.get(String(r?.Npago ?? "").trim()) || null });
+      const del1330 = esp.filter((r) => /^1330/.test(String(r?.Ctapuc ?? "").trim()) && normalizarCodigoCxp(r?.Nit) === codigo);
+      const netoPorNpago = new Map();
+      del1330.forEach((r) => { const k = String(r?.Npago ?? "").trim(); netoPorNpago.set(k, (netoPorNpago.get(k) || 0) + (Number(r?.Debito) || 0) - (Number(r?.Credito) || 0)); });
+      const setNum = new Set(numeros);
+      porProveedor1330 = {
+        filas1330: del1330.slice(-250).map(conFecha),
+        totalFilas1330: del1330.length,
+        netoTotal1330: Math.round([...netoPorNpago.values()].reduce((x, v) => x + v, 0)),
+        netoPorPago: [...netoPorNpago.entries()].map(([npago, neto]) => ({ npago, fecha: fechaPorNpago.get(npago) || null, neto: Math.round(neto) })).sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || ""))).slice(0, 80),
+        otrasFilasDeEsosPagos: esp.filter((r) => setNum.has(String(r?.Npago ?? "").trim()) && !/^1330/.test(String(r?.Ctapuc ?? "").trim())).slice(0, 80).map(conFecha),
+      };
+    }
+    return { version: "buscar-anticipos-v2", codigo, valores, numeros, resultados, porProveedor1330 };
   }
 );
 
@@ -5462,6 +5487,7 @@ exports.getCuentasPorPagarBusintGen = onCallAuth(
         porProveedor.set(nombre, { nombre, porVencer: 0, dias0a30: 0, dias31a60: 0, dias61a90: 0, dias91mas: 0, total: 0, nit: nitPorCodigo.get(codigo) || "", facturas: [], porConcepto: {}, vencimientosPorSemana: {}, soloAnticipos: true });
       }
       const prov = porProveedor.get(nombre);
+      prov.codigoAnticipo = codigo; // (2026-10-30) para "🔎 Revisar anticipos" de este proveedor
       prov.anticiposTotal = (prov.anticiposTotal || 0) + Math.round(neto);
       prov.anticiposBruto = (prov.anticiposBruto || 0) + Math.round(bruto);
       prov.anticiposCruzado = (prov.anticiposCruzado || 0) + Math.round(cruzado);

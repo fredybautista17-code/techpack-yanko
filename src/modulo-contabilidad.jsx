@@ -4957,6 +4957,25 @@ function CuadreCxpView({ proveedoresBusint, corteActivo, detalleFacturas, factur
   const [abierto, setAbierto] = useState(null); // clave de la fila con el detalle abierto
   const [movs, setMovs] = useState({}); // clave -> { cargando, error, data }
   const [soloCreditos, setSoloCreditos] = useState(true);
+  // (2026-10-30) Revisión de anticipos de un proveedor (admin): clave de la fila -> { cargando, error, data }.
+  const [revAnt, setRevAnt] = useState({});
+  async function revisarAnticipos(fila) {
+    const k = fila.clave;
+    const lista = (fila.anticiposDe || []).flatMap((a) => a.lista || []);
+    const codigo = (fila.anticiposDe || []).map((a) => a.codigo).find(Boolean);
+    if (!codigo) { setRevAnt((m) => ({ ...m, [k]: { cargando: false, error: "Este corte no trae el código del proveedor: pulsa «Actualizar ambos» y vuelve a intentar.", data: null } })); return; }
+    setRevAnt((m) => ({ ...m, [k]: { cargando: true, error: "", data: null } }));
+    try {
+      const r = await httpsCallable(functionsClient, "buscarAnticiposProveedorBusint", { timeout: 540000 })({
+        codigo, detalleProveedor: true, max: 25,
+        numeros: lista.map((a) => String(a.numero || "")).filter(Boolean),
+        valores: lista.map((a) => Math.abs(Number(a.valor) || 0)).filter((v) => v > 0),
+      });
+      setRevAnt((m) => ({ ...m, [k]: { cargando: false, error: "", data: r.data } }));
+    } catch (err) {
+      setRevAnt((m) => ({ ...m, [k]: { cargando: false, error: err?.message || "No se pudo revisar.", data: null } }));
+    }
+  }
   useEffect(() => {
     const u1 = onSnapshot(doc(db, "contabilidad_cxp_enlaces", "main"), (snap) => { setEnlaces(snap.exists() ? snap.data()?.enlaces || {} : {}); setSinTns(snap.exists() ? snap.data()?.sinTns || {} : {}); }, () => {});
     const u2 = onSnapshot(collection(db, "contabilidad_cxp_cuadres"), (snap) => setHistorial(snap.docs.map((d) => ({ id: d.id, ...d.data() }))), () => {});
@@ -5022,8 +5041,11 @@ function CuadreCxpView({ proveedoresBusint, corteActivo, detalleFacturas, factur
       const nit = nitProp || nitEnl;
       const nk = claveNombreCxpTns(p.nombre);
       const key = nit ? `n:${nit}` : `m:${nk}`;
-      if (!mapa.has(key)) mapa.set(key, { clave: key, nombre: p.nombreMostrado || p.nombre, nombreBusint: p.nombre, nombreTns: "", nit, busint: 0, vencido: 0, tns: 0, enBusint: true, enTns: false, porEnlace: !nitProp && !!nitEnl, sinTns: false });
+      if (!mapa.has(key)) mapa.set(key, { clave: key, nombre: p.nombreMostrado || p.nombre, nombreBusint: p.nombre, nombreTns: "", nit, busint: 0, vencido: 0, tns: 0, enBusint: true, enTns: false, porEnlace: !nitProp && !!nitEnl, sinTns: false, facturasBusint: 0, anticipoBusint: 0, anticipoTns: 0, anticiposDe: [] });
       const r = mapa.get(key);
+      r.facturasBusint += Number(p.total) || 0;
+      r.anticipoBusint += Number(p.anticiposTotal) || 0;
+      if ((Number(p.anticiposTotal) || 0) > 0) r.anticiposDe.push({ codigo: p.codigoAnticipo || "", lista: p.anticipos || [] });
       if (sinTns[claveDocCxp(p.nombre)]) r.sinTns = true;
       r.busint += (Number(p.total) || 0) - (Number(p.anticiposTotal) || 0); // (2026-10-29) neto de anticipos a proveedores, como el "Gran TOTAL" de Busint
       r.vencido += (Number(p.dias0a30) || 0) + (Number(p.dias31a60) || 0) + (Number(p.dias61a90) || 0) + (Number(p.dias91mas) || 0);
@@ -5034,9 +5056,12 @@ function CuadreCxpView({ proveedoresBusint, corteActivo, detalleFacturas, factur
       const nit = baseNitCxp(p.nit);
       const nk = claveNombreCxpTns(p.nombre);
       const key = (nit && porNit.get(nit)) || porNombre.get(nk) || (nit ? `n:${nit}` : `m:${nk}`);
-      if (!mapa.has(key)) mapa.set(key, { clave: key, nombre: p.nombre, nombreBusint: "", nombreTns: p.nombre, nit, busint: 0, vencido: 0, tns: 0, enBusint: false, enTns: false });
+      if (!mapa.has(key)) mapa.set(key, { clave: key, nombre: p.nombre, nombreBusint: "", nombreTns: p.nombre, nit, busint: 0, vencido: 0, tns: 0, enBusint: false, enTns: false, facturasBusint: 0, anticipoBusint: 0, anticipoTns: 0, anticiposDe: [] });
       const r = mapa.get(key);
       r.tns += netoTnsCxp(p);
+      r.c2205Tns = (r.c2205Tns || 0) + (p.c2205 || 0);
+      r.c2335Tns = (r.c2335Tns || 0) + (p.c2335 || 0);
+      r.anticipoTns += p.a1330 || 0;
       r.enTns = true;
       r.nombreTns = p.nombre;
       if (!r.nit) r.nit = nit;
@@ -5155,10 +5180,51 @@ function CuadreCxpView({ proveedoresBusint, corteActivo, detalleFacturas, factur
       return true;
     }).map((f) => ({ ...f, iso: isoTns(f.fecha) }));
     const valorPendientesTns = pendientesTns.reduce((t, f) => t + f.credito, 0);
+    const ra = revAnt[fila.clave];
+    const hayAnticipos = (fila.anticipoBusint || 0) > 0 || (fila.anticipoTns || 0) > 0;
+    const pp = ra?.data?.porProveedor1330;
     return (
       <tr>
         <td colSpan={6} style={{ padding: "0 10px 14px", background: C.canvas, borderBottom: `1px solid ${C.border}` }}>
           <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: 14, display: "grid", gridTemplateColumns: "1fr", gap: 16 }}>
+            {hayAnticipos && (
+              <div style={{ border: `1px solid ${Math.abs((fila.anticipoBusint || 0) - (fila.anticipoTns || 0)) < 1000 ? C.green : C.red}55`, borderRadius: 10, padding: 10, background: C.canvas }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, marginBottom: 4 }}>💸 Anticipos a proveedor (cuenta 1330)</div>
+                <div style={{ display: "flex", gap: 18, flexWrap: "wrap", fontSize: 12, color: C.slate }}>
+                  <span>Anticipos según Busint <b style={{ color: C.ink }}>{fmtCOP(fila.anticipoBusint || 0)}</b></span>
+                  <span>Anticipos según TNS (1330) <b style={{ color: C.ink }}>{fmtCOP(fila.anticipoTns || 0)}</b></span>
+                  <span>Diferencia <b style={{ color: Math.abs((fila.anticipoBusint || 0) - (fila.anticipoTns || 0)) < 1000 ? C.green : C.red }}>{fmtCOP((fila.anticipoBusint || 0) - (fila.anticipoTns || 0))}</b></span>
+                </div>
+                <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>
+                  Busint: facturas {fmtCOP(fila.facturasBusint || 0)} − anticipos {fmtCOP(fila.anticipoBusint || 0)} · TNS: 2205 {fmtCOP(fila.c2205Tns || 0)} + 2335 {fmtCOP(fila.c2335Tns || 0)} − 1330 {fmtCOP(fila.anticipoTns || 0)}
+                </div>
+                {(fila.anticipoBusint || 0) > 0 && (
+                  <div style={{ marginTop: 6, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                    <button type="button" disabled={ra?.cargando} onClick={() => revisarAnticipos(fila)} style={{ padding: "5px 11px", borderRadius: 8, border: `1.5px solid ${C.blue}`, background: C.blueBg, color: C.blue, fontWeight: 700, fontSize: 11, cursor: ra?.cargando ? "wait" : "pointer", fontFamily: "inherit" }}>
+                      {ra?.cargando ? "Revisando en Busint… (puede tardar un par de minutos)" : "🔎 Revisar anticipos de este proveedor"}
+                    </button>
+                    {ra?.data && (
+                      <button type="button" onClick={() => { try { navigator.clipboard.writeText(JSON.stringify(ra.data, null, 1)); } catch (e) { /* sin portapapeles */ } }} style={{ background: "none", border: "none", color: C.blue, cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "inherit" }}>Copiar resultado</button>
+                    )}
+                  </div>
+                )}
+                {ra?.error && <div style={{ marginTop: 6, fontSize: 12, color: C.red, fontWeight: 600 }}>⚠ {ra.error}</div>}
+                {ra?.data && (
+                  <div style={{ marginTop: 8 }}>
+                    {pp && (
+                      <div style={{ fontSize: 12, color: C.slate, marginBottom: 6 }}>
+                        En Busint, la cuenta 1330 de este proveedor tiene {fmtNum(pp.totalFilas1330)} fila(s) y su saldo neto (débito − crédito) es <b style={{ color: C.ink }}>{fmtCOP(pp.netoTotal1330)}</b>.
+                        Pagos con saldo en 1330: {(pp.netoPorPago || []).slice(0, 12).map((x) => `${x.npago} · ${x.fecha || "s/f"} · ${fmtCOP(x.neto)}`).join("  |  ") || "ninguno"}.
+                      </div>
+                    )}
+                    <div style={{ fontSize: 12, color: C.slate, marginBottom: 6 }}>
+                      Tablas con coincidencias: {(ra.data.resultados || []).filter((t) => t.coincidencias > 0).map((t) => `${t.tabla} (${t.coincidencias})`).join(" · ") || "ninguna"}
+                    </div>
+                    <pre style={{ maxHeight: 280, overflow: "auto", background: C.white, border: `1px solid ${C.border}`, borderRadius: 8, padding: 10, fontSize: 10 }}>{JSON.stringify(ra.data, null, 1)}</pre>
+                  </div>
+                )}
+              </div>
+            )}
             <div>
               <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 6 }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color: C.ink }}>Facturas abiertas en Busint, con emisión y vencimiento</div>
