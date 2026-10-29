@@ -7493,6 +7493,57 @@ function OrdenesView({ preordenes, pedidos, capsulas, config, currentUser, onVin
     </div>
   );
 }
+// (2026-10-29, a pedido de Fredy) Ventana con las referencias de una etapa (Preórdenes / Órdenes / Pedido) al hacer clic en los
+// chips de una tarjeta o en las cajas de arriba de la lista de Preórdenes.
+function EtapaRefsModal({ titulo, filas, conOrden, esCliente, puedePasarAOrden, puedeVincularPedido, onPasar, onVincular, onClose }) {
+  const [buscar, setBuscar] = useState("");
+  const bq = foldTexto(buscar);
+  const bqRef = normalizarRefComparacion(buscar);
+  const visibles = !bq ? filas : filas.filter((f) => foldTexto(f.it.referencia).includes(bq) || foldTexto(f.it.nombre).includes(bq) || (bqRef && normalizarRefComparacion(f.it.referencia).includes(bqRef)) || foldTexto(f.etiquetaOrden).includes(bq));
+  const unidades = visibles.reduce((s, f) => s + f.unidades, 0);
+  const porPasar = visibles.filter((f) => f.puedePasar);
+  return (
+    <Modal title={titulo} onClose={onClose} width={860}>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
+        <input value={buscar} onChange={(e) => setBuscar(e.target.value)} placeholder="🔍 Buscar referencia o nombre..." style={{ padding: "7px 12px", border: `1.5px solid ${buscar ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, minWidth: 260, outline: "none", fontFamily: "inherit" }} />
+        <span style={{ fontSize: 12, color: T.slate }}>{visibles.length} ref · {fmtNum(unidades)} unid.</span>
+        {puedePasarAOrden && porPasar.length > 0 && (
+          <button onClick={() => onPasar(porPasar)} style={{ marginLeft: "auto", padding: "6px 12px", borderRadius: 6, border: "none", background: T.denim, color: T.white, fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>➜ Pasar todas a Orden ({porPasar.length})</button>
+        )}
+      </div>
+      {!visibles.length ? (
+        <div style={{ padding: 32, textAlign: "center", color: T.slate, fontSize: 13 }}>{filas.length ? "Ninguna referencia coincide con la búsqueda." : "No hay referencias en esta etapa."}</div>
+      ) : (
+        <div style={{ maxHeight: 420, overflowY: "auto", border: `1px solid ${T.border}`, borderRadius: 10 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+            <thead>
+              <tr style={{ background: T.ink, position: "sticky", top: 0 }}>
+                {[...(conOrden ? ["Orden"] : []), "Referencia", "Nombre", "Unidades", "Detalle", ""].map((h, i) => (
+                  <th key={h + i} style={{ padding: "8px 10px", color: T.seam, textAlign: h === "Unidades" ? "center" : "left", fontWeight: 700, fontSize: 11 }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {visibles.map((f, i) => (
+                <tr key={f.preordenId + f.it.itemId} style={{ background: i % 2 ? T.canvas : T.white, borderTop: `1px solid ${T.border}` }}>
+                  {conOrden && <td style={{ padding: "6px 10px", fontWeight: 700, color: T.seamDark, whiteSpace: "nowrap" }}>{f.etiquetaOrden}</td>}
+                  <td style={{ padding: "6px 10px", fontWeight: 800, color: T.denim, whiteSpace: "nowrap" }}>{f.it.referencia}</td>
+                  <td style={{ padding: "6px 10px", color: T.ink }}>{f.it.nombre || "—"}</td>
+                  <td style={{ padding: "6px 10px", textAlign: "center", fontWeight: 700 }}>{fmtNum(f.unidades)}</td>
+                  <td style={{ padding: "6px 10px", color: T.slate }}>{f.detalle}</td>
+                  <td style={{ padding: "6px 10px", textAlign: "right", whiteSpace: "nowrap" }}>
+                    {f.puedePasar && puedePasarAOrden && <button onClick={() => onPasar([f])} style={{ padding: "3px 9px", borderRadius: 6, border: "none", background: T.denim, color: T.white, fontWeight: 700, fontSize: 10, cursor: "pointer" }}>➜ Pasar a Orden</button>}
+                    {f.puedeVincular && puedeVincularPedido && !esCliente && <button onClick={() => onVincular(f)} style={{ padding: "3px 9px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.denim, fontWeight: 700, fontSize: 10, cursor: "pointer" }}>Vincular</button>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Modal>
+  );
+}
 function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, canAccessBodega, canAccessContabilidad, canAccessDiseno, entregasTela, onAddCapsula, onAddRef, onCrearPreorden, onAgregarAPreordenExistente, onVincularPedido, onAprobarPreorden, onDesaprobarPreorden, onActualizarPreorden, onEliminarPreorden, onActualizarItemPreorden, onActualizarItemsPreorden, puedeVincularPedido, puedePasarAOrden, onCrearEntregaTela, onAsignarEntregaTela, prefillDesdeCapsula, onConsumirPrefillDesdeCapsula, onMarcarRefEnviadaAPreorden, historialNuevaOrden, onRegistrarHistorialNuevaOrden }) {
   const [modo, setModo] = useState("lista");
   // (2026-09-30, a pedido de Fredy) "Pasar a Preorden"/"Pasar Cápsula a
@@ -7516,6 +7567,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
   const [numeroPedidoManual, setNumeroPedidoManual] = useState("");
   const [detallePedido, setDetallePedido] = useState(null);
   const [expandido, setExpandido] = useState(null);
+  const [verEtapa, setVerEtapa] = useState(null); // { etapa: "pre"|"ord"|"ped", preordenId: id | null (todas las visibles) }
   const [refrescando, setRefrescando] = useState(null);
   // (2026-09-30, a pedido de Fredy) Progreso de "Actualizar pendientes de
   // Busint" (botón masivo, ver actualizarDatosPendientesBusint) -- { preordenId, actual, total } mientras corre, null cuando no hay ninguno en curso.
@@ -7616,16 +7668,60 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
   }
   // (2026-10-29, a pedido de Fredy) Etapa de cada referencia: En Pedido (ya vinculada a un pedido) / En Órdenes (tela confirmada
   // y pasada con "Pasar a Orden", sin pedido) / En Preórdenes (el resto sin pedido). Las tres suman las referencias de la orden.
+  function etapaDeItem(p, it) {
+    if (itemGraduado(it, p.cliente, p.fechaCreado)) return "ped";
+    if ((p.estado || "montada") === "aprobada" && it.telaComprada && itemPasadoAOrden(it)) return "ord";
+    return "pre";
+  }
   function etapasDePreorden(p) {
     const et = { pre: 0, ord: 0, ped: 0, preU: 0, ordU: 0, pedU: 0 };
-    const aprobada = (p.estado || "montada") === "aprobada";
     (p.items || []).forEach((it) => {
       const u = (Number(it.colombiaCantidad) || 0) + (Number(it.venezuelaCantidad) || 0);
-      if (itemGraduado(it, p.cliente, p.fechaCreado)) { et.ped += 1; et.pedU += u; }
-      else if (aprobada && it.telaComprada && itemPasadoAOrden(it)) { et.ord += 1; et.ordU += u; }
-      else { et.pre += 1; et.preU += u; }
+      const e = etapaDeItem(p, it);
+      et[e] += 1; et[e + "U"] += u;
     });
     return et;
+  }
+  // Filas de la ventana de una etapa. En Preórdenes para un usuario Cliente se incluyen también las de Órdenes (él no ve esa etapa).
+  function filasDeEtapa(lista, etapa) {
+    const filas = [];
+    lista.forEach((p) => {
+      (p.items || []).forEach((it) => {
+        const e = etapaDeItem(p, it);
+        if (!(e === etapa || (esCliente && etapa === "pre" && e === "ord"))) return;
+        const u = (Number(it.colombiaCantidad) || 0) + (Number(it.venezuelaCantidad) || 0);
+        const aprobada = (p.estado || "montada") === "aprobada";
+        let detalle = "";
+        let puedePasar = false;
+        let puedeVincular = false;
+        if (e === "ped") {
+          const ped = it.pedidoVinculado?.numero ? { numero: it.pedidoVinculado.numero } : pedidoQueContieneRef(it.referencia, pedidosCandidatosConversion(p.cliente, p.fechaCreado));
+          detalle = ped?.numero ? `Pedido #${ped.numero}` : "Pedido de Busint";
+        } else if (e === "ord") {
+          const ti = it.telaInfo || {};
+          detalle = ["Tela confirmada", ti.proveedor, ti.lote ? `Lote ${ti.lote}` : ""].filter(Boolean).join(" · ");
+          puedeVincular = true;
+        } else if (!aprobada) {
+          detalle = "Preorden sin aprobar";
+        } else if (it.telaComprada) {
+          detalle = "Tela confirmada — falta pasar a Orden";
+          puedePasar = true;
+        } else {
+          detalle = it.telaProgramada ? `Tela programada${it.telaProgramadaInfo?.fechaEsperada ? ` (llega ${it.telaProgramadaInfo.fechaEsperada})` : ""}` : "Sin tela confirmada";
+        }
+        filas.push({ preordenId: p.id, preorden: p, it, unidades: u, detalle, puedePasar, puedeVincular, etiquetaOrden: etiquetaNumeroOrden(p) || p.nombre || p.cliente || "" });
+      });
+    });
+    return filas;
+  }
+  function pasarFilasAOrden(filas) {
+    const porOrden = new Map();
+    filas.forEach((f) => { if (!porOrden.has(f.preordenId)) porOrden.set(f.preordenId, []); porOrden.get(f.preordenId).push(f.it); });
+    const marca = { pasadaAOrden: true, pasadaAOrdenEn: nowISO(), pasadaAOrdenPor: currentUser?.name || "" };
+    porOrden.forEach((items, preordenId) => {
+      if (items.length === 1 || !onActualizarItemsPreorden) items.forEach((x) => onActualizarItemPreorden(preordenId, x.itemId, marca));
+      else onActualizarItemsPreorden(preordenId, items.map((x) => ({ itemId: x.itemId, patch: marca })));
+    });
   }
   const preordenesConEstado = (preordenes || []).map((p) => ({
     ...p,
@@ -8359,6 +8455,25 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
           style={{ padding: "7px 12px", border: `1.5px solid ${buscarLista ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, minWidth: 280, outline: "none", fontFamily: "inherit" }}
         />
       </div>
+      {verEtapa && (() => {
+        const lista = verEtapa.preordenId ? preordenesConEstado.filter((x) => x.id === verEtapa.preordenId) : visiblesBuscadas;
+        const filas = filasDeEtapa(lista, verEtapa.etapa);
+        const nombres = { pre: "En Preórdenes", ord: "En Órdenes", ped: "En Pedido" };
+        const una = verEtapa.preordenId ? lista[0] : null;
+        return (
+          <EtapaRefsModal
+            titulo={`${nombres[verEtapa.etapa]}${una ? ` — ${etiquetaNumeroOrden(una) || una.cliente || ""}` : " — todas las preórdenes"}`}
+            filas={filas}
+            conOrden={!verEtapa.preordenId}
+            esCliente={esCliente}
+            puedePasarAOrden={puedePasarAOrden}
+            puedeVincularPedido={puedeVincularPedido}
+            onPasar={pasarFilasAOrden}
+            onVincular={(f) => { setVerEtapa(null); setVinculando({ preordenId: f.preordenId, itemId: f.it.itemId }); }}
+            onClose={() => setVerEtapa(null)}
+          />
+        );
+      })()}
       {visiblesBuscadas.length > 0 && (() => {
         const tot = visiblesBuscadas.reduce((a, p) => {
           const e = p.etapas || {};
@@ -8366,14 +8481,14 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
         }, { pre: 0, ord: 0, ped: 0, preU: 0, ordU: 0, pedU: 0 });
         const ver = !esCliente;
         const cajas = [
-          { l: "En Preórdenes", n: ver ? tot.pre : tot.pre + tot.ord, u: ver ? tot.preU : tot.preU + tot.ordU, c: T.amber, bg: T.amberBg, i: "📋" },
-          ...(ver ? [{ l: "En Órdenes", n: tot.ord, u: tot.ordU, c: T.coral, bg: T.coralBg, i: "🧵" }] : []),
-          { l: "En Pedido", n: tot.ped, u: tot.pedU, c: T.jade, bg: T.jadeBg, i: "📦" },
+          { l: "En Preórdenes", n: ver ? tot.pre : tot.pre + tot.ord, u: ver ? tot.preU : tot.preU + tot.ordU, c: T.amber, bg: T.amberBg, i: "📋", e: "pre" },
+          ...(ver ? [{ l: "En Órdenes", n: tot.ord, u: tot.ordU, c: T.coral, bg: T.coralBg, i: "🧵", e: "ord" }] : []),
+          { l: "En Pedido", n: tot.ped, u: tot.pedU, c: T.jade, bg: T.jadeBg, i: "📦", e: "ped" },
         ];
         return (
           <div style={{ display: "grid", gridTemplateColumns: `repeat(${cajas.length},1fr)`, gap: 10, marginBottom: 16 }}>
             {cajas.map((k) => (
-              <div key={k.l} style={{ background: k.bg, borderRadius: 12, padding: "12px 16px", border: `1px solid ${k.c}33` }}>
+              <div key={k.l} onClick={() => setVerEtapa({ etapa: k.e, preordenId: null })} title="Clic para ver cuáles son" style={{ background: k.bg, borderRadius: 12, padding: "12px 16px", border: `1px solid ${k.c}33`, cursor: "pointer" }}>
                 <div style={{ fontSize: 11, fontWeight: 700, color: T.slate }}>{k.i} {k.l}</div>
                 <div style={{ fontSize: 24, fontWeight: 900, color: k.c, lineHeight: 1.1, marginTop: 2 }}>{fmtNum(k.n)} <span style={{ fontSize: 12, fontWeight: 700 }}>ref</span></div>
                 <div style={{ fontSize: 11, color: T.slate, marginTop: 2 }}>{fmtNum(k.u)} unid.</div>
@@ -8541,13 +8656,13 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 {(() => {
                   const e = p.etapas || { pre: 0, ord: 0, ped: 0, preU: 0, ordU: 0, pedU: 0 };
-                  const chip = (txt, n, u, c, bg) => <span title={`${fmtNum(u)} unidades`} style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: bg, color: c, whiteSpace: "nowrap" }}>{txt} {n}</span>;
-                  if (p.pendientes === 0) return <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: T.jadeBg, color: T.jade }}>✓ Todo convertido a pedido ({e.ped})</span>;
+                  const chip = (txt, n, u, c, bg, etapa) => <span onClick={(ev) => { ev.stopPropagation(); setVerEtapa({ etapa, preordenId: p.id }); }} title={`${fmtNum(u)} unidades — clic para ver cuáles son`} style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: bg, color: c, whiteSpace: "nowrap", cursor: "pointer", border: `1px solid ${c}33` }}>{txt} {n}</span>;
+                  if (p.pendientes === 0) return <span onClick={(ev) => { ev.stopPropagation(); setVerEtapa({ etapa: "ped", preordenId: p.id }); }} title="Clic para ver cuáles son" style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: T.jadeBg, color: T.jade, cursor: "pointer" }}>✓ Todo convertido a pedido ({e.ped})</span>;
                   return (
                     <>
-                      {chip("📋 Preórdenes", esCliente ? e.pre + e.ord : e.pre, esCliente ? e.preU + e.ordU : e.preU, T.amber, T.amberBg)}
-                      {!esCliente && chip("🧵 Órdenes", e.ord, e.ordU, T.coral, T.coralBg)}
-                      {chip("📦 Pedido", e.ped, e.pedU, T.jade, T.jadeBg)}
+                      {chip("📋 Preórdenes", esCliente ? e.pre + e.ord : e.pre, esCliente ? e.preU + e.ordU : e.preU, T.amber, T.amberBg, "pre")}
+                      {!esCliente && chip("🧵 Órdenes", e.ord, e.ordU, T.coral, T.coralBg, "ord")}
+                      {chip("📦 Pedido", e.ped, e.pedU, T.jade, T.jadeBg, "ped")}
                     </>
                   );
                 })()}
