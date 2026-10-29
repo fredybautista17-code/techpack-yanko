@@ -2329,14 +2329,15 @@ exports.getPedidosVigentesBusint = onCallAuth(
 // TODOS los pedidos (cumplidos o no) con la misma forma que arma el archivo en el navegador:
 //   - Pedido/referencias/tallas/fechas: ApiGen_OrdenesDePedidoBusint (la misma consulta de Vigentes por Cliente).
 //   - Cumplido: tabla "pedidos clientes" (campo Dadoporcumplido), igual que getVentasPerdidasBusintLive.
-//   - Facturado: ApiGen_FacturadoBusint; si un pedido cumplido quedó con menos facturado que pedido, se marca como
-//     venta perdida (ventasPerdidas = lo que faltó), si no, como facturado.
+//   - Venta perdida: tabla "pedidos detalles clientes - cumplidos", NConcepto = 12 (la misma fuente validada contra la
+//     columna "Cant Ventas Perdidas" del reporte de Ventas). Antes se calculaba como pedido - facturado, pero eso confundía
+//     las devoluciones por consignación con ventas perdidas (ej. pedido 1016: facturado 1618 y devuelto 1618).
 // No escribe nada: la pantalla muestra una vista previa y es ella la que guarda lo que el usuario confirme.
 exports.getPedidosBusintParaTraer = onCallAuth(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL, BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
-    timeoutSeconds: 300,
-    memory: "1GiB",
+    timeoutSeconds: 540,
+    memory: "2GiB",
   },
   async (request) => {
     await verificarLlamadorEsAdmin(request);
@@ -2354,11 +2355,14 @@ exports.getPedidosBusintParaTraer = onCallAuth(
     }
     const porPedido = agruparFilasBusintPorPedido(filas);
 
-    let pedidosClientes;
+    let pedidosClientes, cumplidosDetalle;
     try {
-      pedidosClientes = await consultarTablaBusintBDCompleta("pedidos clientes");
+      [pedidosClientes, cumplidosDetalle] = await Promise.all([
+        consultarTablaBusintBDCompleta("pedidos clientes"),
+        consultarTablaBusintBDCompleta("pedidos detalles clientes - cumplidos"),
+      ]);
     } catch (err) {
-      logger.error("Error consultando 'pedidos clientes' (getPedidosBusintParaTraer)", { error: String(err) });
+      logger.error("Error consultando tablas de Busint BD (getPedidosBusintParaTraer)", { error: String(err) });
       throw new HttpsError("unavailable", `No se pudo consultar Busint para saber cuáles pedidos están cumplidos: ${err?.message || String(err)}`);
     }
     const cumplidoPorPedido = new Map();
@@ -2368,28 +2372,19 @@ exports.getPedidosBusintParaTraer = onCallAuth(
       const raw = primerCampoDefinido(p, ["Dadoporcumplido", "DadoPorCumplido", "dadoporcumplido", "DadoCumplido"]);
       cumplidoPorPedido.set(numped, String(raw ?? "").trim().toUpperCase() === "S");
     });
-
-    const facturadoPorPedido = new Map();
-    let avisoFacturacion = null;
-    try {
-      const hoyISO = new Date().toISOString().slice(0, 10);
-      const filasFacturado = await consultarFacturadoBusint(fechaInicio, hoyISO > fechaFin ? hoyISO : fechaFin);
-      filasFacturado.forEach((f) => {
-        const numero = String(f.numped ?? "").trim();
-        if (!numero) return;
-        facturadoPorPedido.set(numero, (facturadoPorPedido.get(numero) || 0) + (Number(f.cant) || 0));
-      });
-    } catch (err) {
-      logger.error("Error consultando ApiGen_FacturadoBusint (getPedidosBusintParaTraer)", { error: String(err) });
-      avisoFacturacion = "No se pudo consultar la facturación: los pedidos cumplidos se marcarán como «Facturado».";
-    }
+    const perdidaPorPedido = new Map();
+    cumplidosDetalle.forEach((f) => {
+      if (Number(f?.NConcepto) !== 12) return;
+      const numped = String(f?.NumPed ?? "").trim();
+      if (!numped || !porPedido.has(numped)) return;
+      perdidaPorPedido.set(numped, (perdidaPorPedido.get(numped) || 0) + (Number(f?.Total) || 0));
+    });
 
     const pedidos = [];
     for (const [, p] of porPedido) {
       const referencias = [...p.refsPorClave.values()].map((r) => ({ ref: r.ref, descripcion: r.descripcion, tallas: r.tallas, total: r.total }));
       const unidades = referencias.reduce((s, r) => s + r.total, 0);
       const cumplido = cumplidoPorPedido.get(p.numero) === true;
-      const facturada = facturadoPorPedido.get(p.numero) || 0;
       pedidos.push({
         numero: p.numero,
         cliente: p.cliente,
@@ -2398,8 +2393,7 @@ exports.getPedidosBusintParaTraer = onCallAuth(
         cumplido,
         refs: referencias,
         unidades,
-        facturada,
-        ventasPerdidas: cumplido && !avisoFacturacion ? Math.max(0, unidades - facturada) : 0,
+        ventasPerdidas: cumplido ? Math.abs(perdidaPorPedido.get(p.numero) || 0) : 0,
         sinMarcaCumplido: !cumplidoPorPedido.has(p.numero),
       });
     }
@@ -2410,7 +2404,7 @@ exports.getPedidosBusintParaTraer = onCallAuth(
       generadoEn: new Date().toISOString(),
       totalPedidos: pedidos.length,
       totalCumplidos: pedidos.filter((p) => p.cumplido).length,
-      avisoFacturacion,
+      avisoFacturacion: null,
       pedidos,
     };
   }

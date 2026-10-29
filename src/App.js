@@ -17856,6 +17856,31 @@ function TraerPedidosArchivoModal({ pedidos, onClose }) {
     } catch (err) { setError(err?.message || String(err)); }
     setLeyendo(false);
   }
+  // Descarga TODOS los pedidos encontrados (no solo los marcados) con su situación, para compararlos con otros archivos.
+  async function descargarLista() {
+    const XLSX = await import("xlsx");
+    const filas = [...todos].sort((a, b) => Number(a.numero) - Number(b.numero)).map((p) => {
+      const pa = existentesMap.get(p.numero);
+      const cortado = pa ? cortadoAtlas(pa) : 0;
+      return {
+        "Num Ped": p.numero,
+        "Cliente": p.cliente,
+        "Fecha Ped": p.fechaPedido,
+        "Fecha Desp": p.fechaDespacho,
+        "Refs": p.refs.length,
+        "Unidades pedidas": p.unidades,
+        "Cumplido (Busint)": p.cumplido ? "S" : "N",
+        "Venta perdida (Busint)": p.ventasPerdidas || 0,
+        "Situación": !p.cumplido ? "Pendiente" : p.ventasPerdidas > 0 ? "Venta perdida" : "Despachado",
+        "En ATLAS": pa ? (pa.estado === "cerrado" ? "Sí — Histórico" : "Sí — Activo") : "No",
+        "Cortado en ATLAS": cortado,
+        "Falta (pedido - cortado)": pa ? Math.max(0, (pa.referencias || []).reduce((s, r) => s + (r.total || 0), 0) - cortado) : p.unidades,
+      };
+    });
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(filas), "Pedidos Busint");
+    XLSX.writeFile(wb, `Pedidos_Busint_${today()}.xlsx`);
+  }
   // Directo de Busint: consulta en vivo (función en la nube) y arma la misma vista previa que el archivo.
   async function leerDirecto() {
     setError("");
@@ -17876,13 +17901,13 @@ function TraerPedidosArchivoModal({ pedidos, onClose }) {
     if (!aTraer.length) return;
     setPaso(3);
     setProgreso(0);
-    let ok = 0, fallo = 0;
+    let ok = 0, fallo = 0, omitidos = 0;
     const lote = 15;
     for (let i = 0; i < aTraer.length; i += lote) {
       const tanda = aTraer.slice(i, i + lote);
       await Promise.all(tanda.map(async (p) => {
         const cerrado = p.cumplido;
-        const doc = {
+        const docPedido = {
           id: p.numero,
           numero: p.numero,
           cliente: p.cliente,
@@ -17900,11 +17925,17 @@ function TraerPedidosArchivoModal({ pedidos, onClose }) {
           importadoEn: today(),
           creadoEn: today(),
         };
-        try { await fsSave("pedidos_activos", p.numero, doc); ok++; } catch (err) { fallo++; }
+        try {
+          // Protección: si el pedido ya existe en la base de datos (aunque la pantalla aún no lo hubiera cargado), no se toca.
+          const ya = await getDoc(doc(db, "pedidos_activos", p.numero));
+          if (ya.exists()) { omitidos++; return; }
+          await fsSave("pedidos_activos", p.numero, docPedido);
+          ok++;
+        } catch (err) { fallo++; }
       }));
       setProgreso(Math.min(aTraer.length, i + lote));
     }
-    setResultado({ ok, fallo });
+    setResultado({ ok, fallo, omitidos });
   }
   const fmtF2 = (iso) => (iso ? iso : "—");
   return (
@@ -17940,7 +17971,7 @@ function TraerPedidosArchivoModal({ pedidos, onClose }) {
             {[
               { l: "Pendientes (a Activos)", v: nuevosPend.length, c: T.denim, bg: T.denimBg, on: gPend, set: setGPend },
               { l: "Ya salieron — despachados (a Histórico)", v: nuevosSalieron.length, c: T.jade, bg: T.jadeBg, on: gSalieron, set: setGSalieron },
-              { l: "Dados por cumplido sin despachar completo (a Histórico)", v: nuevosPerdida.length, c: T.amber, bg: T.amberBg, on: gPerdida, set: setGPerdida },
+              { l: "Dados por cumplido con venta perdida (a Histórico)", v: nuevosPerdida.length, c: T.amber, bg: T.amberBg, on: gPerdida, set: setGPerdida },
               { l: "Ya están en ATLAS (solo consulta)", v: yaExistenLista.length, c: T.slate, bg: T.canvas, on: gExisten, set: setGExisten },
             ].map((k) => (
               <label key={k.l} style={{ background: k.bg, borderRadius: 10, padding: "10px 12px", border: `1.5px solid ${k.on ? k.c : T.border}`, cursor: "pointer", display: "block" }}>
@@ -17987,6 +18018,9 @@ function TraerPedidosArchivoModal({ pedidos, onClose }) {
               </table>
             </div>
           )}
+          <div style={{ marginTop: 8 }}>
+            <button onClick={descargarLista} style={{ padding: "5px 12px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.denim, fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>⬇ Descargar esta lista en Excel (todos los {fmtNum(todos.length)})</button>
+          </div>
           <div style={{ fontSize: 11, color: T.slate, marginTop: 8 }}>«Cortado» es lo registrado en los cortes del pedido en ATLAS; en los pedidos nuevos es 0 porque aún no se ha registrado ningún corte.</div>
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
             <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
@@ -18008,6 +18042,7 @@ function TraerPedidosArchivoModal({ pedidos, onClose }) {
             <>
               <div style={{ fontSize: 32, marginBottom: 8 }}>{resultado.fallo ? "⚠️" : "✅"}</div>
               <div style={{ fontWeight: 800, color: T.ink, fontSize: 16 }}>{resultado.ok} pedido{resultado.ok !== 1 ? "s" : ""} traído{resultado.ok !== 1 ? "s" : ""}</div>
+              {resultado.omitidos > 0 && <div style={{ color: T.slate, fontSize: 13, marginTop: 6 }}>{resultado.omitidos} ya existían en ATLAS y no se tocaron.</div>}
               {resultado.fallo > 0 && <div style={{ color: T.coral, fontSize: 13, marginTop: 6 }}>{resultado.fallo} no se pudieron guardar. Vuelve a subir el archivo: solo intentará los que faltan.</div>}
               <div style={{ marginTop: 16 }}><Btn onClick={onClose}>Cerrar</Btn></div>
             </>
