@@ -18626,6 +18626,12 @@ function SincronizarPedidosModal({ onClose }) {
     hoja((cruce.nuevos || []).map((n) => ({ "Num Ped": n.numero, "Cliente": n.cliente, "Fecha pedido": n.fechaPedido, "Fecha despacho": n.fechaDespacho, "Unidades pedido": n.unidades, "Facturado": n.facturado, "% facturado": n.pctFacturado ?? "", "Quedará como": etiquetaDestino(n) })), "Se crearán");
     XLSX.writeFile(wb, `Sincronizacion_Busint_${new Date().toISOString().slice(0, 10)}.xlsx`);
   }
+  // Marca (o desmarca) solo las filas de Por revisar cuya acción es "Crear en el Histórico (cerrado)"; Reabrir/Cerrar/Crear activo no se tocan.
+  const marcarTodasCrearCerrado = (v) => setMarcados((m) => {
+    const sig = { ...m };
+    revisar.filter((r) => r.accion === "crear_cerrado").forEach((r) => { if (v) sig[r.numero] = true; else delete sig[r.numero]; });
+    return sig;
+  });
   const marcarTodasUnidades = (v) => setMarcadosU(v ? Object.fromEntries(unidadesDist.map((u) => [u.numero, true])) : {});
   const etiquetaAccion = { reabrir: "Reabrir (pasar a Activo)", cerrar: "Cerrar", crear: "Crear como Activo", crear_cerrado: "Crear en el Histórico (cerrado)" };
   const refsTxt = (refs) => (refs || []).map((x) => `${x.ref}: ${fmtNum(x.facturado)} de ${fmtNum(x.pedido)}`).join(" · ");
@@ -18723,7 +18729,19 @@ function SincronizarPedidosModal({ onClose }) {
                 ))}
               </tbody>
             </table>
-          ), "Contradicciones entre Busint, la planta y ATLAS. Si no marcas nada, se quedan como están.")}
+          ), (
+            <span>
+              Contradicciones entre Busint, la planta y ATLAS. Si no marcas nada, se quedan como están.
+              {revisar.some((r) => r.accion === "crear_cerrado") && (
+                <>
+                  {" "}
+                  <button type="button" onClick={() => marcarTodasCrearCerrado(true)} style={{ border: "none", background: "none", color: T.denim, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", padding: 0 }}>Marcar todos los «Crear en el Histórico» ({revisar.filter((r) => r.accion === "crear_cerrado").length})</button>
+                  {" · "}
+                  <button type="button" onClick={() => marcarTodasCrearCerrado(false)} style={{ border: "none", background: "none", color: T.denim, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", padding: 0 }}>Ninguno</button>
+                </>
+              )}
+            </span>
+          ))}
 
           {seccion("unidades", "🔢 Unidades distintas (ATLAS tiene menos que Busint)", unidadesDist.length, T.coral, T.coralBg, (
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
