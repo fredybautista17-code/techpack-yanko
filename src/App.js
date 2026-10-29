@@ -18288,10 +18288,222 @@ function TraerPedidosArchivoModal({ pedidos, onClose }) {
   );
 }
 
+// (2026-10-29, a pedido de Fredy) "Sincronizar con Busint": cruce automático Busint × planta de confección × ATLAS.
+// Regla (la calcula el servidor, igual en este botón y en el proceso automático de las 5 a.m.):
+//  - Salió (cumplido o facturado completo) y sin lotes en producción -> Cerrado.
+//  - No salió -> Activo (esté o no en planta).
+//  - Contradicciones -> "Por revisar": no se tocan solas, tú decides con una casilla.
+function SincronizarPedidosModal({ onClose }) {
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState("");
+  const [cruce, setCruce] = useState(null);
+  const [modoAuto, setModoAuto] = useState("avisar");
+  const [guardandoModo, setGuardandoModo] = useState(false);
+  const [marcados, setMarcados] = useState({});
+  const [abierta, setAbierta] = useState("revisar");
+  const [aplicando, setAplicando] = useState(false);
+  const [resultado, setResultado] = useState(null);
+  const llamar = (payload) => httpsCallable(functionsClient, "sincronizarPedidosBusint", { timeout: 540000 })(payload).then((r) => r.data);
+  async function calcular() {
+    setCargando(true); setError(""); setResultado(null); setMarcados({});
+    try {
+      const d = await llamar({ modo: "calcular" });
+      setCruce(d);
+      if (d.modoAuto) setModoAuto(d.modoAuto);
+      setAbierta(d.revisar && d.revisar.length ? "revisar" : d.cerrar && d.cerrar.length ? "cerrar" : "nuevos");
+    } catch (err) { setError(err?.message || String(err)); }
+    setCargando(false);
+  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { calcular(); }, []);
+  const revisar = cruce?.revisar || [];
+  const decisiones = revisar.filter((r) => marcados[r.numero]).map((r) => ({ numero: r.numero, decision: r.accion }));
+  const seguros = (cruce?.nuevos?.length || 0) + (cruce?.cerrar?.length || 0);
+  async function aplicar() {
+    setAplicando(true); setError("");
+    try {
+      const d = await llamar({ modo: "aplicar", decisiones });
+      setResultado(d);
+      setCruce(d);
+      setMarcados({});
+    } catch (err) { setError(err?.message || String(err)); }
+    setAplicando(false);
+  }
+  async function cambiarModo(m) {
+    setGuardandoModo(true);
+    try { await llamar({ modo: "config", modoAuto: m }); setModoAuto(m); }
+    catch (err) { setError(err?.message || String(err)); }
+    setGuardandoModo(false);
+  }
+  const etiquetaAccion = { reabrir: "Reabrir (pasar a Activo)", cerrar: "Cerrar", crear: "Crear como Activo" };
+  const etiquetaDestino = (n) => (n.destino === "activo" ? "Activo" : n.motivo === "venta_perdida" ? "Histórico · venta perdida" : "Histórico · facturado");
+  const th = (arr) => (
+    <thead><tr style={{ background: T.ink, position: "sticky", top: 0 }}>
+      {arr.map((h, i) => <th key={h} style={{ padding: "7px 10px", color: T.seam, textAlign: i < 2 ? "left" : "center", fontWeight: 700, fontSize: 11 }}>{h}</th>)}
+    </tr></thead>
+  );
+  const tdBase = { padding: "6px 10px", borderTop: `1px solid ${T.border}` };
+  const seccion = (clave, titulo, cantidad, color, bg, contenido, nota) => (
+    <div style={{ border: `1.5px solid ${abierta === clave ? color : T.border}`, borderRadius: 10, marginBottom: 10, overflow: "hidden" }}>
+      <button onClick={() => setAbierta(abierta === clave ? "" : clave)} style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", background: bg, border: "none", cursor: "pointer", fontFamily: "inherit" }}>
+        <span style={{ fontWeight: 800, color, fontSize: 13 }}>{titulo} · {fmtNum(cantidad)}</span>
+        <span style={{ color, fontSize: 12 }}>{abierta === clave ? "▲" : "▼"}</span>
+      </button>
+      {abierta === clave && (
+        <div style={{ background: T.white }}>
+          {nota && <div style={{ padding: "8px 14px", fontSize: 12, color: T.slate }}>{nota}</div>}
+          {cantidad === 0 ? <div style={{ padding: 16, textAlign: "center", fontSize: 12, color: T.slate }}>Nada por aquí.</div> : <div style={{ maxHeight: 280, overflowY: "auto" }}>{contenido}</div>}
+        </div>
+      )}
+    </div>
+  );
+  return (
+    <Modal title="Sincronizar con Busint" onClose={onClose} width={940}>
+      <p style={{ margin: "0 0 12px", fontSize: 13, color: T.slate }}>
+        ATLAS cruza <b>Busint</b> (cumplido / facturado) con la <b>planta de confección</b> (carga más reciente de Planeación). <b>Salió</b> y sin lotes en producción → <b>Cerrado</b>. Lo que no ha salido → <b>Activo</b>. Lo contradictorio queda <b>por revisar</b> y no se toca solo. Solo cambia el estado: cortes, seguimiento y precios no se tocan.
+      </p>
+      {cargando && (
+        <div style={{ textAlign: "center", padding: 36 }}>
+          <div style={{ fontSize: 30, marginBottom: 8 }}>⏳</div>
+          <div style={{ fontWeight: 700, color: T.ink }}>Cruzando Busint con la planta y con ATLAS…</div>
+          <div style={{ fontSize: 12, color: T.slate, marginTop: 4 }}>Puede tardar hasta un par de minutos.</div>
+        </div>
+      )}
+      {error && <div style={{ marginBottom: 12, padding: "10px 14px", background: T.coralBg, borderRadius: 8, color: T.coral, fontSize: 13, fontWeight: 600 }}>⚠ {error}</div>}
+      {!cargando && resultado?.aplicado && (
+        <div style={{ textAlign: "center", padding: "10px 0 18px" }}>
+          <div style={{ fontSize: 30, marginBottom: 6 }}>✅</div>
+          <div style={{ fontWeight: 800, color: T.ink, fontSize: 16 }}>Sincronización aplicada</div>
+          <div style={{ fontSize: 13, color: T.slate, marginTop: 6 }}>
+            {fmtNum(resultado.aplicado.creados)} creado{resultado.aplicado.creados !== 1 ? "s" : ""} · {fmtNum(resultado.aplicado.cerrados)} cerrado{resultado.aplicado.cerrados !== 1 ? "s" : ""} · {fmtNum(resultado.aplicado.reabiertos)} reabierto{resultado.aplicado.reabiertos !== 1 ? "s" : ""}
+          </div>
+          <div style={{ fontSize: 12, color: T.slate, marginTop: 6 }}>Quedan {fmtNum(revisar.length)} por revisar.</div>
+          <div style={{ display: "flex", justifyContent: "center", gap: 8, marginTop: 14 }}>
+            <Btn variant="secondary" onClick={calcular}>Volver a calcular</Btn>
+            <Btn onClick={onClose}>Cerrar</Btn>
+          </div>
+        </div>
+      )}
+      {!cargando && cruce && !resultado?.aplicado && (
+        <div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 10, marginBottom: 14 }}>
+            {[
+              { l: "Pedidos en Busint", v: cruce.resumen.busint, c: T.ink, bg: T.canvas },
+              { l: "Se crearán", v: cruce.resumen.nuevos, c: T.denim, bg: T.denimBg },
+              { l: "Se cerrarán (salieron)", v: cruce.resumen.cerrar, c: T.jade, bg: T.jadeBg },
+              { l: "Por revisar", v: cruce.resumen.revisar, c: T.amber, bg: T.amberBg },
+              { l: "Sin cambio", v: cruce.resumen.sinCambio, c: T.slate, bg: T.canvas },
+            ].map((k) => (
+              <div key={k.l} style={{ background: k.bg, borderRadius: 10, padding: "10px 12px", border: `1px solid ${T.border}` }}>
+                <div style={{ fontSize: 22, fontWeight: 900, color: k.c, lineHeight: 1 }}>{fmtNum(k.v)}</div>
+                <div style={{ fontSize: 11, color: T.slate, marginTop: 4, fontWeight: 600 }}>{k.l}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ fontSize: 11, color: T.slate, marginBottom: 12 }}>
+            Rango consultado: {cruce.fechaInicio} a {cruce.fechaFin} · Carga de Planeación usada: {cruce.cargaPlaneacion || "—"}
+            {cruce.resumen.nuevos > 0 ? ` · De los que se crearán, ${fmtNum(cruce.resumen.nuevosActivos)} quedan Activos y ${fmtNum(cruce.resumen.nuevosCerrados)} van al Histórico.` : ""}
+          </div>
+
+          {seccion("revisar", "⚠ Por revisar", revisar.length, T.amber, T.amberBg, (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              {th(["Pedido", "Cliente", "Estado en ATLAS", "Qué pasa", "Acción (marca para aplicar)"])}
+              <tbody>
+                {revisar.map((r, i) => (
+                  <tr key={r.numero} style={{ background: i % 2 ? T.canvas : T.white }}>
+                    <td style={{ ...tdBase, fontWeight: 800, color: T.denim }}>#{r.numero}</td>
+                    <td style={tdBase}>{r.cliente}</td>
+                    <td style={{ ...tdBase, textAlign: "center" }}>{r.estadoAtlas}</td>
+                    <td style={{ ...tdBase, color: T.slate }}>{r.detalle}</td>
+                    <td style={{ ...tdBase, textAlign: "center" }}>
+                      <label style={{ cursor: "pointer", fontWeight: 700, color: marcados[r.numero] ? T.amber : T.slate }}>
+                        <input type="checkbox" checked={!!marcados[r.numero]} onChange={(e) => setMarcados((m) => ({ ...m, [r.numero]: e.target.checked }))} style={{ marginRight: 6 }} />
+                        {etiquetaAccion[r.accion]}
+                      </label>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ), "Contradicciones entre Busint, la planta y ATLAS. Si no marcas nada, se quedan como están.")}
+
+          {seccion("cerrar", "✔ Se cerrarán porque ya salieron", cruce.cerrar.length, T.jade, T.jadeBg, (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              {th(["Pedido", "Cliente", "Pedido (und)", "Facturado", "Motivo", "Por qué"])}
+              <tbody>
+                {cruce.cerrar.map((c, i) => (
+                  <tr key={c.numero} style={{ background: i % 2 ? T.canvas : T.white }}>
+                    <td style={{ ...tdBase, fontWeight: 800, color: T.denim }}>#{c.numero}</td>
+                    <td style={tdBase}>{c.cliente}</td>
+                    <td style={{ ...tdBase, textAlign: "center" }}>{fmtNum(c.unidades)}</td>
+                    <td style={{ ...tdBase, textAlign: "center" }}>{fmtNum(c.facturado)}</td>
+                    <td style={{ ...tdBase, textAlign: "center" }}>{c.motivo === "venta_perdida" ? "Venta perdida" : "Facturado"}</td>
+                    <td style={{ ...tdBase, color: T.slate }}>{c.razon}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ))}
+
+          {seccion("nuevos", "＋ Se crearán en ATLAS", cruce.nuevos.length, T.denim, T.denimBg, (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              {th(["Pedido", "Cliente", "Fecha pedido", "Despacho", "Pedido (und)", "Quedará como"])}
+              <tbody>
+                {cruce.nuevos.map((n, i) => (
+                  <tr key={n.numero} style={{ background: i % 2 ? T.canvas : T.white }}>
+                    <td style={{ ...tdBase, fontWeight: 800, color: T.denim }}>#{n.numero}</td>
+                    <td style={tdBase}>{n.cliente}</td>
+                    <td style={{ ...tdBase, textAlign: "center" }}>{n.fechaPedido || "—"}</td>
+                    <td style={{ ...tdBase, textAlign: "center" }}>{n.fechaDespacho || "—"}</td>
+                    <td style={{ ...tdBase, textAlign: "center" }}>{fmtNum(n.unidades)}</td>
+                    <td style={{ ...tdBase, textAlign: "center", fontWeight: 700, color: n.destino === "activo" ? T.denim : T.jade }}>{etiquetaDestino(n)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ))}
+
+          <div style={{ marginTop: 14, padding: "12px 14px", background: T.canvas, border: `1px solid ${T.border}`, borderRadius: 10 }}>
+            <div style={{ fontWeight: 800, color: T.ink, fontSize: 13, marginBottom: 4 }}>🤖 Proceso automático (todos los días, 5 a.m.)</div>
+            <div style={{ fontSize: 12, color: T.slate, marginBottom: 8 }}>
+              En <b>«Solo avisar»</b> hace este mismo cálculo cada madrugada y deja el resultado a la vista en Pedidos, sin cambiar nada. En <b>«Aplicar»</b> además crea y cierra lo seguro; lo contradictorio siempre queda por revisar.
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              {[["avisar", "Solo avisar"], ["aplicar", "Aplicar lo seguro"]].map(([m, l]) => (
+                <button key={m} disabled={guardandoModo} onClick={() => modoAuto !== m && cambiarModo(m)} style={{ padding: "6px 14px", borderRadius: 8, border: `1.5px solid ${modoAuto === m ? T.denim : T.border}`, background: modoAuto === m ? T.denimBg : T.white, color: modoAuto === m ? T.denim : T.slate, fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>{modoAuto === m ? "● " : "○ "}{l}</button>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
+            <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+            <Btn variant="secondary" onClick={calcular} disabled={aplicando}>↻ Volver a calcular</Btn>
+            <Btn onClick={aplicar} disabled={aplicando || (seguros + decisiones.length === 0)}>
+              {aplicando ? "Aplicando… (recalcula con Busint)" : `Aplicar ${fmtNum(seguros)} cambio${seguros !== 1 ? "s" : ""}${decisiones.length ? ` + ${decisiones.length} decisión${decisiones.length !== 1 ? "es" : ""}` : ""}`}
+            </Btn>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, pedidoConfig, onSavePedidoConfig, isAdmin, currentUser, soloLectura }) {
   const [filtro, setFiltro] = useState("activos");
   const [editPedido, setEditPedido] = useState(null);
   const [traerArchivo, setTraerArchivo] = useState(false);
+  const [sincronizar, setSincronizar] = useState(false);
+  const [syncUltimo, setSyncUltimo] = useState(null);
+  const [syncRefresco, setSyncRefresco] = useState(0);
+  // (2026-10-29) Resultado de la última sincronización con Busint (la del botón o la automática de las 5 a.m.), solo admin.
+  useEffect(() => {
+    if (!isAdmin) return;
+    let vivo = true;
+    httpsCallable(functionsClient, "sincronizarPedidosBusint")({ modo: "ultimo" })
+      .then((r) => { if (vivo) setSyncUltimo(r.data?.ultimo || null); })
+      .catch(() => {});
+    return () => { vivo = false; };
+  }, [isAdmin, syncRefresco]);
   const [filtroFalta, setFiltroFalta] = useState("todos"); // todos | faltante | completos
   const [busqueda, setBusqueda] = useState("");
   const activos = pedidos.filter((p) => p.estado === "activo" || p.estado === "terminado");
@@ -18328,11 +18540,13 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
     <div>
       {editPedido && <EditPedidoModal pedido={editPedido} onSave={(p) => { onUpdatePedido(p); setEditPedido(null); }} onClose={() => setEditPedido(null)} />}
       {traerArchivo && <TraerPedidosArchivoModal pedidos={pedidos} onClose={() => setTraerArchivo(false)} />}
+      {sincronizar && <SincronizarPedidosModal onClose={() => { setSincronizar(false); setSyncRefresco((n) => n + 1); }} />}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-        <div><h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Pedidos</h2><p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Base de pedidos vigentes — se actualiza desde "📡 Vigentes por Cliente (Busint)"</p></div>
+        <div><h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Pedidos</h2><p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Base de pedidos — se mantiene al día con "🔄 Sincronizar con Busint"</p></div>
         {!soloLectura && (
           <div style={{ display: "flex", gap: 8 }}>
-            {isAdmin && <Btn variant="secondary" onClick={() => setTraerArchivo(true)}>📥 Traer pedidos (Busint / archivo)</Btn>}
+            {isAdmin && <Btn onClick={() => setSincronizar(true)}>🔄 Sincronizar con Busint{syncUltimo?.resumen?.revisar > 0 ? ` (${syncUltimo.resumen.revisar} por revisar)` : ""}</Btn>}
+            {isAdmin && <Btn variant="secondary" onClick={() => setTraerArchivo(true)}>📥 Traer por Excel (respaldo)</Btn>}
             <Btn variant="secondary" onClick={onNewPedido}>+ Pedido manual</Btn>
           </div>
         )}

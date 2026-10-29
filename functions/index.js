@@ -2410,6 +2410,281 @@ exports.getPedidosBusintParaTraer = onCallAuth(
   }
 );
 
+// ─────────────────────────────────────────────────────────────────────────
+// (2026-10-29, a pedido de Fredy) SINCRONIZACIÓN AUTOMÁTICA DE PEDIDOS: Busint × Planta × ATLAS.
+// Antes el cruce lo hacíamos a mano con dos botones que decidían con señales distintas ("Traer pedidos" solo miraba Busint
+// y "Congelar" solo miraba la lista de vigentes). Ahora una sola regla, igual en el botón y en el proceso automático:
+//   · SALIÓ  = Busint lo da por cumplido (Dadoporcumplido) o ya está facturado completo (facturado >= pedido).
+//   · EN PRODUCCIÓN = tiene lotes en la carga más reciente de Planeación en Corte, BMP, Planta o Semiterminado
+//     (BPT = ya terminado y esperando despacho, y "Sin inventario" = el lote ya no tiene nada, NO cuentan como producción).
+//   · Salió y NO está en producción  -> Cerrado (motivo "facturado", o "venta_perdida" si Busint dio unidades de baja).
+//   · NO salió (con o sin lotes)     -> Activo.
+//   · Contradicciones (salió pero hay lotes en producción; ATLAS cerrado pero Busint pendiente; activo en ATLAS que ya no
+//     aparece en Busint) NO se tocan solas: quedan en "Por revisar" y el usuario decide con un clic.
+// Solo cambia el ESTADO: cortes, seguimiento, precios e ids de referencia de los pedidos que ya existen no se tocan.
+// Colecciones nuevas (solo las escribe/lee esta función, con permisos de servidor): sync_pedidos_estado/ultimo y sync_pedidos_log.
+const SYNC_PEDIDOS_SECRETS = [BUSINT_TOKEN, BUSINT_BASE_URL, BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY];
+
+function fechaHoyBogota() {
+  return new Date().toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
+}
+// Por defecto: desde el 1 de enero del año de hace 60 días (así en enero/febrero todavía se ven los pedidos del año pasado)
+// hasta 120 días en el futuro.
+function rangoSyncPedidosPorDefecto() {
+  const hoy = new Date(`${fechaHoyBogota()}T00:00:00Z`);
+  const ref = new Date(hoy.getTime() - 60 * 86400000);
+  const fin = new Date(hoy.getTime() + 120 * 86400000);
+  return { fechaInicio: `${ref.getUTCFullYear()}-01-01`, fechaFin: fin.toISOString().slice(0, 10) };
+}
+
+async function calcularCruceBusintAtlas(fechaInicio, fechaFin) {
+  const hoyISO = fechaHoyBogota();
+  const avisos = [];
+  const filas = await consultarOrdenesBusint(fechaInicio, fechaFin);
+  const porPedido = agruparFilasBusintPorPedido(filas);
+
+  const [pedidosClientes, cumplidosDetalle, filasFacturado] = await Promise.all([
+    consultarTablaBusintBDCompleta("pedidos clientes"),
+    consultarTablaBusintBDCompleta("pedidos detalles clientes - cumplidos"),
+    consultarFacturadoBusint(fechaInicio, hoyISO),
+  ]);
+  const cumplidoPorPedido = new Map();
+  pedidosClientes.forEach((p) => {
+    const numped = String(p?.NumPed ?? "").trim();
+    if (!numped) return;
+    const raw = primerCampoDefinido(p, ["Dadoporcumplido", "DadoPorCumplido", "dadoporcumplido", "DadoCumplido"]);
+    cumplidoPorPedido.set(numped, String(raw ?? "").trim().toUpperCase() === "S");
+  });
+  const perdidaPorPedido = new Map();
+  cumplidosDetalle.forEach((f) => {
+    if (Number(f?.NConcepto) !== 12) return;
+    const numped = String(f?.NumPed ?? "").trim();
+    if (!numped || !porPedido.has(numped)) return;
+    perdidaPorPedido.set(numped, (perdidaPorPedido.get(numped) || 0) + (Number(f?.Total) || 0));
+  });
+  const facturadoPorPedido = new Map();
+  filasFacturado.forEach((f) => {
+    const numero = String(f.numped ?? "").trim();
+    if (!numero) return;
+    facturadoPorPedido.set(numero, (facturadoPorPedido.get(numero) || 0) + (Number(f.cant) || 0));
+  });
+
+  const carga = await leerCargaPlaneacionMasReciente();
+  if (!carga) throw new Error("No hay ninguna carga de Planeación guardada, así que no se puede saber qué está en producción.");
+  const lotesPorPedido = new Map();
+  (carga.lotes || []).forEach((l) => {
+    const numPedido = String(l.numPedido ?? "").trim();
+    if (!numPedido) return;
+    const ubicacionActual = String(l.ubicacionActual || "En proceso");
+    if (ubicacionActual === "Sin inventario") return;
+    if (!lotesPorPedido.has(numPedido)) lotesPorPedido.set(numPedido, []);
+    lotesPorPedido.get(numPedido).push({ numLote: l.numLote, ubicacionActual });
+  });
+
+  const atlasSnap = await db.collection("pedidos_activos").select("numero", "estado", "motivoCierre", "cliente", "fechaPedido", "fechaDespacho").get();
+  const atlasMap = new Map();
+  atlasSnap.docs.forEach((d) => {
+    const x = d.data();
+    atlasMap.set(String(x.numero || d.id).trim(), { ...x });
+  });
+  const ocultosSnap = await db.collection("pedidos_ocultos_busint").get();
+  const ocultosSet = new Set(ocultosSnap.docs.map((d) => String(d.data().numero || d.id).trim()));
+
+  const infoPorNumero = new Map();
+  for (const [, p] of porPedido) {
+    const refs = [...p.refsPorClave.values()].map((r) => ({ ref: r.ref, descripcion: r.descripcion, tallas: r.tallas, total: r.total }));
+    const unidades = refs.reduce((s, r) => s + (Number(r.total) || 0), 0);
+    const facturado = facturadoPorPedido.get(p.numero) || 0;
+    const cumplido = cumplidoPorPedido.get(p.numero) === true;
+    const facturadoCompleto = unidades > 0 && facturado >= unidades;
+    const ventasPerdidas = cumplido ? Math.abs(perdidaPorPedido.get(p.numero) || 0) : 0;
+    const lotes = lotesPorPedido.get(p.numero) || [];
+    const lotesProd = lotes.filter((l) => l.ubicacionActual !== "BPT");
+    const salio = cumplido || facturadoCompleto;
+    const situacion = salio ? (lotesProd.length ? "conflicto" : "salio") : "pendiente";
+    infoPorNumero.set(p.numero, {
+      numero: p.numero, cliente: p.cliente || "Sin cliente", fechaPedido: p.fechaPedido || null, fechaDespacho: p.fechaDespacho || null,
+      refs, unidades, facturado, cumplido, facturadoCompleto, ventasPerdidas, lotes, lotesProd, situacion,
+      motivo: ventasPerdidas > 0 ? "venta_perdida" : "facturado",
+    });
+  }
+
+  const lotesTxt = (i) => (i.lotesProd.length ? `${i.lotesProd.length} lote(s) en ${[...new Set(i.lotesProd.map((l) => l.ubicacionActual))].join(", ")}` : i.lotes.length ? "solo lotes ya terminados (BPT)" : "sin lotes en planta");
+  const salioTxt = (i) => (i.cumplido ? "dado por cumplido en Busint" : `facturado completo (${i.facturado} de ${i.unidades})`);
+  const nuevos = [], cerrar = [], revisar = [];
+  let sinCambio = 0;
+  for (const [numero, i] of infoPorNumero) {
+    const ex = atlasMap.get(numero);
+    if (!ex) {
+      if (ocultosSet.has(numero)) continue;
+      if (i.situacion === "conflicto") {
+        revisar.push({ numero, cliente: i.cliente, tipo: "nuevo_en_produccion", accion: "crear", estadoAtlas: "No existe", detalle: `Busint lo tiene ${salioTxt(i)}, pero tiene ${lotesTxt(i)}.` });
+      } else {
+        nuevos.push({ numero, cliente: i.cliente, fechaPedido: i.fechaPedido, fechaDespacho: i.fechaDespacho, unidades: i.unidades, facturado: i.facturado, destino: i.situacion === "salio" ? "cerrado" : "activo", motivo: i.situacion === "salio" ? i.motivo : null });
+      }
+      continue;
+    }
+    const cerradoAtlas = ex.estado === "cerrado";
+    if (i.situacion === "salio") {
+      if (!cerradoAtlas) cerrar.push({ numero, cliente: i.cliente, unidades: i.unidades, facturado: i.facturado, motivo: i.motivo, razon: `${salioTxt(i)} y ${lotesTxt(i)}` });
+      else sinCambio++;
+    } else if (i.situacion === "conflicto") {
+      if (!cerradoAtlas) revisar.push({ numero, cliente: i.cliente, tipo: "salio_en_produccion", accion: "cerrar", estadoAtlas: "Activo", detalle: `Busint lo tiene ${salioTxt(i)}, pero aún tiene ${lotesTxt(i)}.` });
+      else sinCambio++;
+    } else if (cerradoAtlas) {
+      revisar.push({ numero, cliente: i.cliente, tipo: "cerrado_pero_pendiente", accion: "reabrir", estadoAtlas: `Cerrado (${ex.motivoCierre || "sin motivo"})`, detalle: `Busint lo muestra pendiente (facturado ${i.facturado} de ${i.unidades}); ${lotesTxt(i)}.` });
+    } else {
+      sinCambio++;
+    }
+  }
+  // Activos en ATLAS que ya no aparecen en Busint (solo si sus fechas caen dentro del rango consultado, para no confundir "fuera de rango" con "ya no existe").
+  const enRango = (f) => !f || (String(f).slice(0, 10) >= fechaInicio && String(f).slice(0, 10) <= fechaFin);
+  for (const [numero, ex] of atlasMap) {
+    if (ex.estado === "cerrado" || infoPorNumero.has(numero)) continue;
+    if (!ex.fechaPedido || !enRango(ex.fechaPedido) || !enRango(ex.fechaDespacho)) continue;
+    revisar.push({ numero, cliente: ex.cliente || "—", tipo: "no_en_busint", accion: "cerrar", estadoAtlas: "Activo", detalle: "Ya no aparece en los pedidos de Busint de este rango." });
+  }
+  const orden = (a, b) => Number(a.numero) - Number(b.numero);
+  nuevos.sort(orden); cerrar.sort(orden); revisar.sort(orden);
+  const resumen = {
+    busint: infoPorNumero.size,
+    nuevos: nuevos.length,
+    nuevosActivos: nuevos.filter((n) => n.destino === "activo").length,
+    nuevosCerrados: nuevos.filter((n) => n.destino === "cerrado").length,
+    cerrar: cerrar.length,
+    revisar: revisar.length,
+    sinCambio,
+  };
+  return { fechaInicio, fechaFin, hoyISO, cargaPlaneacion: String(carga.fecha || carga.creadoEn || ""), avisos, resumen, nuevos, cerrar, revisar, infoPorNumero };
+}
+
+async function aplicarCruceBusintAtlas(cruce, decisiones) {
+  const crypto = require("crypto");
+  const hoy = fechaHoyBogota();
+  const ahora = new Date().toISOString();
+  const nuevoId = () => crypto.randomBytes(5).toString("hex").slice(0, 7);
+  const docNuevo = (i, estado, motivo) => ({
+    id: i.numero, numero: i.numero, cliente: i.cliente, fechaPedido: i.fechaPedido, fechaDespacho: i.fechaDespacho, vendedor: "", ciudad: "",
+    referencias: i.refs.map((r) => ({ id: nuevoId(), ref: r.ref, descripcion: r.descripcion, tallas: { ...r.tallas }, total: r.total, precioCortePrenda: 0 })),
+    cortesRealizados: [], seguimiento: {},
+    estado, motivoCierre: motivo || null, fechaCumplido: estado === "cerrado" ? hoy : null,
+    origen: "sync_busint", importadoEn: hoy, creadoEn: hoy, sincronizadoEn: ahora,
+  });
+  const ops = [];
+  const creados = [], cerrados = [], reabiertos = [], decididos = [];
+  for (const n of cruce.nuevos) {
+    const i = cruce.infoPorNumero.get(n.numero);
+    if (!i) continue;
+    ops.push({ numero: n.numero, data: docNuevo(i, n.destino, n.motivo), merge: false });
+    creados.push(n.numero);
+  }
+  for (const c of cruce.cerrar) {
+    ops.push({ numero: c.numero, data: { estado: "cerrado", motivoCierre: c.motivo, fechaCumplido: hoy, sincronizadoEn: ahora }, merge: true });
+    cerrados.push(c.numero);
+  }
+  for (const d of decisiones || []) {
+    const r = cruce.revisar.find((x) => x.numero === String(d?.numero) && x.accion === d?.decision);
+    if (!r) continue;
+    const i = cruce.infoPorNumero.get(r.numero);
+    if (r.accion === "reabrir") {
+      ops.push({ numero: r.numero, data: { estado: "activo", motivoCierre: null, fechaCumplido: null, sincronizadoEn: ahora }, merge: true });
+      reabiertos.push(r.numero);
+    } else if (r.accion === "cerrar") {
+      ops.push({ numero: r.numero, data: { estado: "cerrado", motivoCierre: i ? i.motivo : "ya_no_vigente", fechaCumplido: hoy, sincronizadoEn: ahora }, merge: true });
+      cerrados.push(r.numero);
+    } else if (r.accion === "crear" && i) {
+      ops.push({ numero: r.numero, data: docNuevo(i, "activo", null), merge: false });
+      creados.push(r.numero);
+    } else continue;
+    decididos.push(r.numero);
+  }
+  for (let k = 0; k < ops.length; k += 100) {
+    const batch = db.batch();
+    ops.slice(k, k + 100).forEach((o) => {
+      const ref = db.collection("pedidos_activos").doc(o.numero);
+      if (o.merge) batch.set(ref, o.data, { merge: true }); else batch.set(ref, o.data);
+    });
+    await batch.commit();
+  }
+  return { creados, cerrados, reabiertos, decididos };
+}
+
+async function ejecutarSyncPedidos({ fechaInicio, fechaFin, aplicar, decisiones, origen }) {
+  const cruce = await calcularCruceBusintAtlas(fechaInicio, fechaFin);
+  let aplicado = null;
+  if (aplicar) aplicado = await aplicarCruceBusintAtlas(cruce, decisiones);
+  const decididosSet = new Set(aplicado ? aplicado.decididos : []);
+  const revisarFinal = cruce.revisar.filter((r) => !decididosSet.has(r.numero));
+  const generadoEn = new Date().toISOString();
+  await db.collection("sync_pedidos_estado").doc("ultimo").set({
+    generadoEn, origen, aplicado: !!aplicar, fechaInicio, fechaFin, cargaPlaneacion: cruce.cargaPlaneacion,
+    resumen: { ...cruce.resumen, revisar: revisarFinal.length },
+    revisar: revisarFinal.slice(0, 300),
+    aplicadoResumen: aplicado ? { creados: aplicado.creados.length, cerrados: aplicado.cerrados.length, reabiertos: aplicado.reabiertos.length } : null,
+    error: null,
+  });
+  if (aplicado) {
+    await db.collection("sync_pedidos_log").add({
+      generadoEn, origen, fechaInicio, fechaFin, resumen: cruce.resumen,
+      creados: aplicado.creados.slice(0, 800), cerrados: aplicado.cerrados.slice(0, 800), reabiertos: aplicado.reabiertos.slice(0, 200),
+    });
+  }
+  const { infoPorNumero, ...publico } = cruce;
+  return { ...publico, revisar: revisarFinal, generadoEn, origen, aplicado: aplicado ? { creados: aplicado.creados.length, cerrados: aplicado.cerrados.length, reabiertos: aplicado.reabiertos.length, decididos: aplicado.decididos.length } : null };
+}
+
+exports.sincronizarPedidosBusint = onCallAuth(
+  { secrets: SYNC_PEDIDOS_SECRETS, timeoutSeconds: 540, memory: "2GiB" },
+  async (request) => {
+    await verificarLlamadorEsAdmin(request);
+    const data = request.data || {};
+    const modo = data.modo || "calcular";
+    const cfgRef = db.collection("config").doc("sync_pedidos");
+    const leerModoAuto = async () => {
+      const s = await cfgRef.get();
+      return s.exists && s.data()?.modo === "aplicar" ? "aplicar" : "avisar";
+    };
+    if (modo === "ultimo") {
+      const s = await db.collection("sync_pedidos_estado").doc("ultimo").get();
+      return { ultimo: s.exists ? s.data() : null, modoAuto: await leerModoAuto() };
+    }
+    if (modo === "config") {
+      if (data.modoAuto !== "avisar" && data.modoAuto !== "aplicar") throw new HttpsError("invalid-argument", "modoAuto debe ser 'avisar' o 'aplicar'.");
+      await cfgRef.set({ modo: data.modoAuto, actualizadoEn: new Date().toISOString(), actualizadoPor: request.auth?.uid || null }, { merge: true });
+      return { ok: true, modoAuto: data.modoAuto };
+    }
+    const fechaValida = (v) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
+    const def = rangoSyncPedidosPorDefecto();
+    const fechaInicio = fechaValida(data.fechaInicio) ? data.fechaInicio : def.fechaInicio;
+    const fechaFin = fechaValida(data.fechaFin) ? data.fechaFin : def.fechaFin;
+    try {
+      const r = await ejecutarSyncPedidos({ fechaInicio, fechaFin, aplicar: modo === "aplicar", decisiones: Array.isArray(data.decisiones) ? data.decisiones : [], origen: "manual" });
+      return { ...r, modoAuto: await leerModoAuto() };
+    } catch (err) {
+      logger.error("Error en sincronizarPedidosBusint", { error: String(err), stack: err?.stack });
+      throw new HttpsError("unavailable", `No se pudo hacer el cruce con Busint: ${err?.message || String(err)}`);
+    }
+  }
+);
+
+// Proceso automático (5 a.m. hora Colombia). Modo en config/sync_pedidos: "avisar" (por defecto: calcula y guarda el resultado
+// para que lo veas en Pedidos, sin cambiar nada) o "aplicar" (además crea y cierra lo seguro; lo contradictorio siempre queda por revisar).
+exports.sincronizarPedidosBusintDiario = onSchedule(
+  { schedule: "0 5 * * *", timeZone: "America/Bogota", secrets: SYNC_PEDIDOS_SECRETS, timeoutSeconds: 540, memory: "2GiB" },
+  async () => {
+    const cfg = await db.collection("config").doc("sync_pedidos").get();
+    const modoAuto = cfg.exists && cfg.data()?.modo === "aplicar" ? "aplicar" : "avisar";
+    const { fechaInicio, fechaFin } = rangoSyncPedidosPorDefecto();
+    try {
+      const r = await ejecutarSyncPedidos({ fechaInicio, fechaFin, aplicar: modoAuto === "aplicar", decisiones: [], origen: "automatico" });
+      logger.info("sincronizarPedidosBusintDiario completado", { modoAuto, resumen: r.resumen, aplicado: r.aplicado });
+    } catch (err) {
+      logger.error("sincronizarPedidosBusintDiario falló", { error: String(err) });
+      await db.collection("sync_pedidos_estado").doc("ultimo").set({ generadoEn: new Date().toISOString(), origen: "automatico", error: String(err?.message || err) }, { merge: true });
+    }
+  }
+);
+
 // (2026-10-10, a pedido de Fredy) "Disponible para despachar": para cada
 // cliente y referencia, cuánto se pidió, cuánto ya se produjo (Entradas a
 // Planta), cuánto ya se despachó (facturado/traslados netos de devoluciones),
