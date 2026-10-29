@@ -5259,6 +5259,10 @@ exports.getCuentasPorPagarBusintGen = onCallAuth(
     // normalizarCodigoCxp arriba -- antes se cruzaba con el valor crudo de
     // Busint, sin normalizar tipo/mayúsculas).
     const pagadoPorFactura = new Map();
+    // (2026-10-30) APLICACIÓN DE ANTICIPOS (confirmado con MANUFACTURAS ELIOT, código 2209): cuando un documento de pago aplica un anticipo,
+    // "cxp-pagos detalles" trae una fila con Cbi = cuenta 1330 (ej. "13300501"), `entrada` = NÚMERO DEL PAGO que originó el anticipo
+    // (ej. documento 1353, entrada 1290), Nfact "0" y Cheque/Totalp NEGATIVO por el valor aplicado. Se acumula por `${codigo}|${entrada}`.
+    const aplicadoPorEntradaAnticipo = new Map();
     // (2026-10-29, a pedido de Fredy) ANTICIPOS A PROVEEDORES: en Busint son pagos SIN factura (en el reporte "Cuentas por
     // Pagar" salen como "4054 Ant", N°Doc 0, y dejan al proveedor con "Por pagar" negativo). Antes estas filas se descartaban
     // (no hay factura con que cruzarlas), por eso ATLAS no mostraba, p. ej., los -$165M de MUNDO HBC SAS. Se juntan aquí por
@@ -5318,6 +5322,14 @@ exports.getCuentasPorPagarBusintGen = onCallAuth(
       const montoPagado = p?.Cheque != null
         ? (Number(p.Cheque) || 0) + (Number(p?.Desc) || 0)
         : (Number(p?.Totalp) || 0);
+      if (/^1330/.test(String(p?.Cbi ?? "").trim()) && montoPagado < 0) {
+        const entradaAnt = normalizarCodigoCxp(p?.entrada);
+        if (entradaAnt) {
+          const llaveAnt = `${codigo}|${entradaAnt}`;
+          aplicadoPorEntradaAnticipo.set(llaveAnt, (aplicadoPorEntradaAnticipo.get(llaveAnt) || 0) - montoPagado);
+        }
+        return; // no es el pago de una factura: no debe sumarse a la llave "codigo|0"
+      }
       pagadoPorFactura.set(llave, (pagadoPorFactura.get(llave) || 0) + montoPagado);
     });
     // (2026-09-25) Descuentos por pronto pago (nota crédito, 30/60 días según
@@ -5600,10 +5612,11 @@ exports.getCuentasPorPagarBusintGen = onCallAuth(
         if (!(a.valor > 0)) return;
         const porPagos = pagadoPorFactura.get(`${codigo}|${normalizarCodigoCxp(a.numero)}`) || 0;
         const porEsp = aplicadoEspPorAnticipo.get(`${codigo}|${normalizarCodigoCxp(a.numero)}`) || 0;
-        const aplicado = Math.min(a.valor, Math.max(porPagos, porEsp));
+        const porEntrada = aplicadoPorEntradaAnticipo.get(`${codigo}|${normalizarCodigoCxp(a.numero)}`) || 0;
+        const aplicado = Math.min(a.valor, Math.max(porEntrada, porPagos, porEsp));
         if (aplicado > 1) {
           a.aplicado = Math.round(aplicado);
-          a.aplicadoPor = porPagos >= porEsp ? "cxp-pagos detalles (Nfact = n° del anticipo)" : "cxp-pagos detallesesp (1330 con Nfact = n° del anticipo)";
+          a.aplicadoPor = porEntrada >= Math.max(porPagos, porEsp) ? "cxp-pagos detalles (Cbi 1330, entrada = n° del anticipo, valor negativo)" : porPagos >= porEsp ? "cxp-pagos detalles (Nfact = n° del anticipo)" : "cxp-pagos detallesesp (1330 con Nfact = n° del anticipo)";
           aplicacionesDetectadas.push({ codigo, anticipo: a.numero, valor: a.valor, aplicado: a.aplicado, fuente: a.aplicadoPor });
         }
       });
@@ -5641,7 +5654,7 @@ exports.getCuentasPorPagarBusintGen = onCallAuth(
       tablasCandidatas = [`(no se pudo leer el swagger: ${e?.message || e})`];
     }
     const diagnosticoAnticipos = {
-      version: "anticipos-v4",
+      version: "anticipos-v5",
       aplicacionesDetectadas: aplicacionesDetectadas.slice(0, 60),
       codigosBuscados: codigosMundoHbc,
       filasMundoHbcEnPagos: pagos.filter((x) => codigosMundoHbc.includes(normalizarCodigoCxp(x?.CodigoP))).length,
