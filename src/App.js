@@ -7072,6 +7072,158 @@ function detalleEnOrdenes(it) {
   const tela = [ti.proveedor, ti.lote ? `Lote ${ti.lote}` : ""].filter(Boolean).join(" · ");
   return [dias == null ? "" : `${dias} día${dias !== 1 ? "s" : ""} sin pedido`, tela ? `Tela: ${tela}` : ""].filter(Boolean).join(" — ") || "Tela confirmada";
 }
+// (2026-10-29, a pedido de Fredy) Historial de Órdenes: las referencias de Órdenes y de Preórdenes que YA pasaron a pedido (las que
+// desaparecen de esas listas). Todo sale de lo ya guardado: item.pedidoVinculado (vinculado a mano) o la referencia encontrada en un pedido
+// del mismo cliente creado después de la preorden (mismo criterio que usan Órdenes y Preórdenes).
+function diasEntre(desdeISO, hastaISO) {
+  const a = Date.parse(String(desdeISO || "").slice(0, 10));
+  const b = Date.parse(String(hastaISO || "").slice(0, 10));
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+  return Math.max(0, Math.round((b - a) / 86400000));
+}
+function HistorialOrdenesView({ preordenes, pedidos }) {
+  const [lista, setLista] = useState("ordenes"); // "ordenes" | "preordenes"
+  const [busca, setBusca] = useState("");
+  const [mes, setMes] = useState("todos");
+  const filas = useMemo(() => {
+    const out = [];
+    (preordenes || []).forEach((p) => {
+      const clienteNorm = foldTexto(p.cliente || "");
+      const fechaRef = p.fechaCreado || "";
+      const candidatos = (pedidos || []).filter((pp) => foldTexto(pp.cliente || "") === clienteNorm && (pp.creadoEn || pp.fechaPedido || "") >= fechaRef);
+      (p.items || []).forEach((it) => {
+        const manual = !!it.pedidoVinculado;
+        const pedidoDetectado = manual ? null : pedidoQueContieneRef(it.referencia, candidatos);
+        if (!manual && !pedidoDetectado) return;
+        const pedidoReal = manual ? (pedidos || []).find((pp) => String(pp.numero) === String(it.pedidoVinculado.numero)) : pedidoDetectado;
+        const unidades = (Number(it.colombiaCantidad) || 0) + (Number(it.venezuelaCantidad) || 0);
+        const fueOrden = !!(it.telaComprada && itemPasadoAOrden(it));
+        const fechaOrden = fueOrden ? String(it.pasadaAOrdenEn || it.telaCompradaEn || "") : "";
+        const fechaPedido = String((manual && it.pedidoVinculado.vinculadoEn) || pedidoReal?.fechaPedido || pedidoReal?.creadoEn || "");
+        out.push({
+          clave: `${p.id}__${it.itemId}`,
+          etiqueta: etiquetaNumeroOrden(p) || p.nombre || p.cliente || "",
+          cliente: p.cliente || "",
+          referencia: it.referencia || "",
+          nombre: it.nombre || "",
+          foto: it.foto || "",
+          unidades,
+          valor: (Number(it.precio) || 0) * unidades,
+          pedidoNumero: manual ? it.pedidoVinculado.numero : pedidoDetectado?.numero,
+          fueOrden,
+          fechaPreorden: String(p.fechaCreado || ""),
+          fechaOrden,
+          fechaPedido,
+          diasPreAOrden: fueOrden ? diasEntre(p.fechaCreado, fechaOrden) : null,
+          diasOrdenAPedido: fueOrden ? diasEntre(fechaOrden, fechaPedido) : diasEntre(p.fechaCreado, fechaPedido),
+          vinculo: manual ? `${it.pedidoVinculado.vinculadoPor || "—"}${it.pedidoVinculado.vinculadoEn ? ` · ${String(it.pedidoVinculado.vinculadoEn).slice(0, 10)}` : ""}` : "Automático (pedido de Busint)",
+        });
+      });
+    });
+    return out.sort((a, b) => (b.fechaPedido || "").localeCompare(a.fechaPedido || ""));
+  }, [preordenes, pedidos]);
+  const deLista = useMemo(() => (lista === "ordenes" ? filas.filter((f) => f.fueOrden) : filas), [filas, lista]);
+  const meses = useMemo(() => [...new Set(deLista.map((f) => String(f.fechaPedido || "").slice(0, 7)).filter(Boolean))].sort().reverse(), [deLista]);
+  const visibles = useMemo(() => {
+    const bq = foldTexto(busca);
+    const bqRef = normalizarRefComparacion(busca);
+    return deLista.filter((f) => {
+      if (mes !== "todos" && String(f.fechaPedido || "").slice(0, 7) !== mes) return false;
+      if (!bq) return true;
+      return foldTexto(f.cliente).includes(bq) || foldTexto(f.etiqueta).includes(bq) || foldTexto(f.nombre).includes(bq) || foldTexto(String(f.pedidoNumero || "")).includes(bq) || foldTexto(f.referencia).includes(bq) || (bqRef && normalizarRefComparacion(f.referencia).includes(bqRef));
+    });
+  }, [deLista, busca, mes]);
+  const totalU = visibles.reduce((s, f) => s + f.unidades, 0);
+  const totalV = visibles.reduce((s, f) => s + f.valor, 0);
+  const conDias = visibles.filter((f) => f.diasOrdenAPedido != null);
+  const promedioDias = conDias.length ? Math.round((conDias.reduce((s, f) => s + f.diasOrdenAPedido, 0) / conDias.length) * 10) / 10 : null;
+  const nOrdenes = filas.filter((f) => f.fueOrden).length;
+  async function descargarExcel() {
+    const XLSX = await import("xlsx");
+    const aoa = [
+      ["Orden", "Cliente", "Referencia", "Nombre", "Unidades", "Valor", "Pedido", "Pasó por Órdenes", "Creada", "Pasó a Orden", "Llegó el pedido", "Días preorden→orden", "Días hasta el pedido", "Vinculado por"],
+      ...visibles.map((f) => [f.etiqueta, f.cliente, f.referencia, f.nombre, f.unidades, f.valor, f.pedidoNumero ? `#${f.pedidoNumero}` : "", f.fueOrden ? "Sí" : "No", f.fechaPreorden.slice(0, 10), f.fechaOrden.slice(0, 10), f.fechaPedido.slice(0, 10), f.diasPreAOrden ?? "", f.diasOrdenAPedido ?? "", f.vinculo]),
+    ];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), lista === "ordenes" ? "Historial Órdenes" : "Historial Preórdenes");
+    XLSX.writeFile(wb, `Historial_${lista === "ordenes" ? "Ordenes" : "Preordenes"}_${today()}.xlsx`);
+  }
+  const tab = (id, texto, n) => (
+    <button onClick={() => { setLista(id); setMes("todos"); }} style={{ padding: "8px 16px", borderRadius: 10, border: `1.5px solid ${lista === id ? T.seamDark : T.border}`, background: lista === id ? T.seam : T.white, color: T.ink, fontWeight: lista === id ? 800 : 600, fontSize: 13, cursor: "pointer" }}>
+      {texto} <span style={{ opacity: 0.7 }}>({n})</span>
+    </button>
+  );
+  const kpi = (l, v) => (
+    <div style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 12, padding: "10px 16px", minWidth: 140 }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: T.slate, letterSpacing: "0.06em", textTransform: "uppercase" }}>{l}</div>
+      <div style={{ fontSize: 20, fontWeight: 900, color: T.ink, marginTop: 2 }}>{v}</div>
+    </div>
+  );
+  const th = { padding: "8px 10px", fontSize: 11, color: T.slate, textAlign: "left", fontWeight: 700, whiteSpace: "nowrap" };
+  const td = { padding: "8px 10px", fontSize: 12, color: T.ink, verticalAlign: "middle" };
+  const f10 = (s) => (s ? String(s).slice(0, 10) : "—");
+  const dd = (n) => (n == null ? "" : ` (${n} d)`);
+  return (
+    <div>
+      <div style={{ marginBottom: 16 }}>
+        <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>📜 Historial de Órdenes</h2>
+        <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Lo que ya pasó a pedido: las referencias que salieron de Órdenes y de Preórdenes, con el pedido al que llegaron y lo que tardó cada paso.</p>
+      </div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+        {tab("ordenes", "🧵 Órdenes que ya pasaron a pedido", nOrdenes)}
+        {tab("preordenes", "🧾 Preórdenes que ya pasaron a pedido", filas.length)}
+      </div>
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
+        {kpi("Referencias", fmtNum(visibles.length))}
+        {kpi("Unidades", fmtNum(totalU))}
+        {kpi("Valor", totalV > 0 ? fmtCOP(totalV) : "—")}
+        {kpi(lista === "ordenes" ? "Días orden → pedido (prom.)" : "Días hasta el pedido (prom.)", promedioDias == null ? "—" : promedioDias)}
+      </div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 14 }}>
+        <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="🔍 Buscar por cliente, N° de pedido, orden o ref" style={{ flex: "1 1 280px", maxWidth: 420, padding: "10px 14px", borderRadius: 10, border: `1px solid ${T.border}`, fontSize: 13, background: T.white }} />
+        <select value={mes} onChange={(e) => setMes(e.target.value)} style={{ padding: "10px 12px", borderRadius: 10, border: `1px solid ${T.border}`, fontSize: 13, background: T.white }}>
+          <option value="todos">Todos los meses</option>
+          {meses.map((m) => (<option key={m} value={m}>{m}</option>))}
+        </select>
+        <button onClick={descargarExcel} disabled={!visibles.length} style={{ padding: "10px 16px", borderRadius: 10, border: "none", background: T.denim, color: T.white, fontWeight: 700, fontSize: 13, cursor: visibles.length ? "pointer" : "default", opacity: visibles.length ? 1 : 0.5 }}>📥 Descargar Excel</button>
+      </div>
+      {visibles.length === 0 ? (
+        <div style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, padding: 28, textAlign: "center", color: T.slate, fontSize: 13 }}>No hay referencias en el historial con ese filtro.</div>
+      ) : (
+        <div style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: T.canvas }}>
+                <th style={th}>Orden</th><th style={th}>Referencia</th><th style={{ ...th, textAlign: "right" }}>Unid.</th><th style={{ ...th, textAlign: "right" }}>Valor</th><th style={th}>Pedido</th><th style={th}>Creada</th>{lista === "ordenes" && <th style={th}>Pasó a Orden</th>}<th style={th}>Llegó el pedido</th><th style={th}>Vinculado por</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibles.map((f) => (
+                <tr key={f.clave} style={{ borderTop: `1px solid ${T.border}` }}>
+                  <td style={td}><div style={{ fontWeight: 800 }}>{f.etiqueta || "—"}</div><div style={{ color: T.slate, fontSize: 11 }}>{f.cliente}</div></td>
+                  <td style={td}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      {f.foto ? <img src={f.foto} alt="" style={{ width: 34, height: 34, objectFit: "cover", borderRadius: 6 }} /> : null}
+                      <div><div style={{ fontWeight: 700 }}>{f.referencia}</div><div style={{ color: T.slate, fontSize: 11 }}>{f.nombre}</div></div>
+                    </div>
+                  </td>
+                  <td style={{ ...td, textAlign: "right" }}>{fmtNum(f.unidades)}</td>
+                  <td style={{ ...td, textAlign: "right" }}>{f.valor > 0 ? fmtCOP(f.valor) : "—"}</td>
+                  <td style={td}><span style={{ background: T.jadeBg, color: T.jade, fontWeight: 800, padding: "2px 9px", borderRadius: 20, whiteSpace: "nowrap" }}>{f.pedidoNumero ? `#${f.pedidoNumero}` : "Pedido de Busint"}</span></td>
+                  <td style={td}>{f10(f.fechaPreorden)}</td>
+                  {lista === "ordenes" && <td style={td}>{f10(f.fechaOrden)}{dd(f.diasPreAOrden)}</td>}
+                  <td style={td}>{f10(f.fechaPedido)}{dd(f.diasOrdenAPedido)}</td>
+                  <td style={{ ...td, color: T.slate }}>{f.vinculo}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <div style={{ fontSize: 11, color: T.slate, marginTop: 10 }}>Los días entre paréntesis son los que pasaron desde el paso anterior. Si el pedido se detectó solo, la fecha es la del pedido en Busint; si se vinculó a mano, es cuando se vinculó.</div>
+    </div>
+  );
+}
 function OrdenesView({ preordenes, pedidos, capsulas, config, currentUser, onVincularPedido, onActualizarItemPreorden, puedeVincularPedido }) {
   const [vinculando, setVinculando] = useState(null);
   const [verEtapa, setVerEtapa] = useState(null); // { etapa: "ord"|"ped", preordenId: id | null }
@@ -20115,6 +20267,7 @@ function AppInner() {
             ...(canAccessExplosionMateriales ? [{ id: "explosion_materiales", icon: "🧮", label: "Explosión de materiales" }] : []),
             ...(canAccessLotesPorIntegrar ? [{ id: "lotes_por_integrar", icon: "📦", label: "Lotes por integrar" }] : []),
             ...(canAccessOrdenes ? [{ id: "ordenes", icon: "🧵", label: "Órdenes" }] : []),
+            ...(canAccessOrdenes ? [{ id: "historial_ordenes", icon: "📜", label: "Historial de Órdenes" }] : []),
             ...(canAccessProduccion ? [{ id: "produccion", icon: "🏭", label: "Producción" }] : []),
             ...(canAccessDevoluciones ? [{ id: "devoluciones", icon: "↩️", label: "Devoluciones" }] : []),
             ...(canAccessCorte ? [{ id: "__corte__", icon: "✂", label: "Corte" }] : []),
@@ -20179,6 +20332,7 @@ function AppInner() {
     if (itemId === "preordenes") return view === "preordenes";
     if (itemId === "explosion_materiales") return view === "explosion_materiales";
     if (itemId === "lotes_por_integrar") return view === "lotes_por_integrar";
+    if (itemId === "historial_ordenes") return view === "historial_ordenes";
     if (itemId === "produccion") return view === "produccion";
     if (itemId === "devoluciones") return view === "devoluciones";
     if (itemId === "__corte__") return moduloActivo === "corte";
@@ -20598,6 +20752,9 @@ function AppInner() {
                 onActualizarItemPreorden={actualizarItemPreorden}
                 puedeVincularPedido={canVincularPedidoPreorden}
               />
+            )}
+            {view === "historial_ordenes" && canAccessOrdenes && (
+              <HistorialOrdenesView preordenes={preordenesVisibles} pedidos={pedidosVisibles} />
             )}
             {view === "devoluciones" && canAccessDevoluciones && (
               <DevolucionesClienteView db={db} functionsClient={functionsClient} T={T} currentUser={currentUser} />
