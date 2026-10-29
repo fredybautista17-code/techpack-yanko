@@ -5571,8 +5571,13 @@ exports.getCuentasPorPagarBusintGen = onCallAuth(
     });
     const espPorCodigoNpago = new Map(); // `${codigo}|${npago}` -> valor neto en 1330
     let filasEsp1330 = 0;
+    const filasEspPagoACausar = [];
     (pagosEsp || []).forEach((r) => {
       if (!/^1330/.test(String(r?.Ctapuc ?? "").trim())) return;
+      // (2026-10-30) En "cxp-pagos detallesesp" las filas de anticipo ("N Ant" en el extracto de Busint) traen TipoP = 3 (Eliot 1290/1298/1354, Pash 28/53).
+      // Una fila de la 1330 con TipoP = 1 es un pago "a causar" (Pash 30, $112.500.000: en el extracto es una compra y un pago por el mismo valor,
+      // neto $0), no un anticipo: no se cuenta.
+      if (Number(r?.TipoP) === 1 && (Number(r?.Debito) || 0) > 0) { filasEspPagoACausar.push({ npago: String(r?.Npago ?? "").trim(), nit: r?.Nit, valor: Number(r?.Debito) || 0 }); return; }
       const nitCrudo = normalizarCodigoCxp(r?.Nit);
       if (!nitCrudo) return;
       const codigo = nombrePorCodigo.has(nitCrudo) ? nitCrudo : codigoPorNitCxp.get(nitCrudo) || nitCrudo;
@@ -5618,39 +5623,6 @@ exports.getCuentasPorPagarBusintGen = onCallAuth(
       aplicadoEspPorAnticipo.set(llaveA, (aplicadoEspPorAnticipo.get(llaveA) || 0) + cred);
     });
     const aplicacionesDetectadas = [];
-    // (2026-10-30) "PAGO A CAUSAR": en el extracto de Busint de PASH SAS, el anticipo 30 ($112.500.000, 2022-05-20) aparece como una COMPRA
-    // ("ANTICIPO A PROVEEDOR") por el mismo valor y con la misma fecha, que el mismo pago cancela: la entrada queda en $0 y el proveedor en $0.
-    // Si el proveedor tiene en "cartera cxp-fact" una factura con el MISMO valor (±$1) y la MISMA fecha de emisión que el anticipo, se toma el
-    // anticipo como ya consumido por esa compra y no se cuenta como saldo a favor.
-    const gruposFacturaPorCodigo = new Map();
-    facturasPorLlave.forEach((g) => {
-      if (!gruposFacturaPorCodigo.has(g.codigo)) gruposFacturaPorCodigo.set(g.codigo, []);
-      gruposFacturaPorCodigo.get(g.codigo).push(g);
-    });
-    const facturasPorCodigoFila = new Map(); // codigo -> [{ nfact, valor, fecha }] (filas crudas de cartera cxp-fact)
-    facturas.forEach((f) => {
-      const codigo = normalizarCodigoCxp(f?.CODIGO);
-      const f0 = campoEmision ? fechaBusintBDaDateSoloDia(f?.[campoEmision]) : null;
-      const valor = Number(f?.FACTOTAL) || 0;
-      if (!codigo || !f0 || !(valor > 0)) return;
-      if (!facturasPorCodigoFila.has(codigo)) facturasPorCodigoFila.set(codigo, []);
-      facturasPorCodigoFila.get(codigo).push({ nfact: String(f?.NFACT ?? "").trim(), valor, fecha: f0.toISOString().slice(0, 10) });
-    });
-    anticiposPorCodigo.forEach((lista, codigo) => {
-      lista.forEach((a) => {
-        if (!(a.valor > 0) || a.aplicado || !a.fecha) return;
-        // (v7) Se busca FILA POR FILA en "cartera cxp-fact": las compras "Pago a causar" de un proveedor comparten el N° de documento "0", así que al
-        // agruparlas por factura (facturasPorLlave) se suman entre sí y ya no igualan el valor del anticipo (caso Pash 30 = $112.500.000).
-        const compraFila = (facturasPorCodigoFila.get(codigo) || []).find((g) => Math.abs(g.valor - a.valor) <= 1 && g.fecha === a.fecha);
-        const compraGrupo = !compraFila && (gruposFacturaPorCodigo.get(codigo) || []).find((g) => Math.abs((Number(g.facTotal) || 0) - a.valor) <= 1 && g.fechaEmision && g.fechaEmision.toISOString().slice(0, 10) === a.fecha);
-        const compra = compraFila || compraGrupo;
-        if (compra) {
-          a.aplicado = a.valor;
-          a.aplicadoPor = `compra "Pago a causar" de igual valor y fecha en cartera cxp-fact (factura ${compra.nfactOriginal ?? compra.nfact})`;
-          aplicacionesDetectadas.push({ codigo, anticipo: a.numero, valor: a.valor, aplicado: a.aplicado, fuente: a.aplicadoPor });
-        }
-      });
-    });
     anticiposPorCodigo.forEach((lista, codigo) => {
       lista.forEach((a) => {
         if (!(a.valor > 0) || a.aplicado) return;
@@ -5698,7 +5670,8 @@ exports.getCuentasPorPagarBusintGen = onCallAuth(
       tablasCandidatas = [`(no se pudo leer el swagger: ${e?.message || e})`];
     }
     const diagnosticoAnticipos = {
-      version: "anticipos-v7",
+      version: "anticipos-v8",
+      excluidasPagoACausar: filasEspPagoACausar.slice(0, 30),
       aplicacionesDetectadas: aplicacionesDetectadas.slice(0, 60),
       codigosBuscados: codigosMundoHbc,
       filasMundoHbcEnPagos: pagos.filter((x) => codigosMundoHbc.includes(normalizarCodigoCxp(x?.CodigoP))).length,
