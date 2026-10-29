@@ -4976,9 +4976,9 @@ exports.getCuentasPorPagarBusintGen = onCallAuth(
   },
   async (request) => {
     await verificarLlamadorEsAdmin(request);
-    let facturas, pagos, pagosOtros, proveedores, notasDescuento, devoluciones, notasContables;
+    let facturas, pagos, pagosOtros, proveedores, notasDescuento, devoluciones, notasContables, pagosEsp, pagosCab;
     try {
-      [facturas, pagos, pagosOtros, proveedores, notasDescuento, devoluciones, notasContables] = await Promise.all([
+      [facturas, pagos, pagosOtros, proveedores, notasDescuento, devoluciones, notasContables, pagosEsp, pagosCab] = await Promise.all([
         consultarTablaBusintBDCompleta("cartera cxp-fact"),
         consultarTablaBusintBDCompleta("cxp-pagos detalles"),
         consultarTablaBusintBDCompleta("cxp-pagosotros detalles"),
@@ -4986,6 +4986,9 @@ exports.getCuentasPorPagarBusintGen = onCallAuth(
         consultarTablaBusintBDCompleta("notas detalles-d"),
         consultarTablaBusintBDCompleta("cartera cxp-dev"),
         consultarTablaBusintBDCompleta("notascontable detalles"),
+        // (2026-10-29) Anticipos a proveedores: viven en "cxp-pagos detallesesp" (asiento del pago "especial") y la fecha en la cabecera "cxp-pagos".
+        consultarTablaBusintBDCompleta("cxp-pagos detallesesp").catch((e) => { logger.error("CXP anticipos: no se pudo leer cxp-pagos detallesesp", { error: String(e) }); return []; }),
+        consultarTablaBusintBDCompleta("cxp-pagos").catch(() => []),
       ]);
     } catch (err) {
       logger.error("Error consultando Busint BD (getCuentasPorPagarBusintGen)", { error: String(err) });
@@ -5046,19 +5049,8 @@ exports.getCuentasPorPagarBusintGen = onCallAuth(
       const codigo = normalizarCodigoCxp(p?.CodigoP);
       const nfact = normalizarCodigoCxp(p?.Nfact);
       if (codigo && (nfact === "" || nfact === "0" || /^ANT/.test(nfact))) {
-        const valorAnt = p?.Cheque != null ? (Number(p.Cheque) || 0) + (Number(p?.Desc) || 0) : (Number(p?.Totalp) || 0);
         totalFilasSinFactura++;
-        if (Math.abs(valorAnt) > 1) {
-          const kFecha = Object.keys(p || {}).find((k) => /^fecha/i.test(k) && p[k]);
-          const fAnt = kFecha ? fechaBusintBDaDateSoloDia(p[kFecha]) : null;
-          if (!anticiposPorCodigo.has(codigo)) anticiposPorCodigo.set(codigo, []);
-          anticiposPorCodigo.get(codigo).push({
-            numero: String(p?.Npago ?? p?.NPago ?? p?.Numero ?? "").trim(),
-            fecha: fAnt ? fAnt.toISOString().slice(0, 10) : null,
-            valor: Math.round(valorAnt),
-            tabla: tablaPago,
-          });
-        }
+        // (v3) Ya no se crean anticipos desde aquí: las filas sin factura de estas tablas no son los anticipos (ver cxp-pagos detallesesp abajo).
       }
       if (!codigo || !nfact) return;
       const llave = `${codigo}|${nfact}`;
@@ -5282,6 +5274,36 @@ exports.getCuentasPorPagarBusintGen = onCallAuth(
         concepto,
       });
     });
+    // (2026-10-29, a pedido de Fredy) ANTICIPOS REALES: "cxp-pagos detallesesp" guarda el asiento de los pagos especiales (Npago, Nit = código del
+    // proveedor, Ctapuc, Debito, Credito). Un anticipo a proveedor es un DÉBITO a la cuenta 1330xxxx (Anticipos a proveedores; el crédito va a
+    // bancos/caja). Si luego se aplica contra una factura, Busint ACREDITA la 1330, así que el saldo a favor = suma(Débito - Crédito) de la 1330
+    // por proveedor. Validado con MUNDO HBC SAS (2448): pagos 4054 ($135M), 4061 ($20M) y 4089 ($10M) = $165M del reporte de Busint.
+    const codigoPorNitCxp = new Map();
+    nitPorCodigo.forEach((nit, cod) => { if (nit) codigoPorNitCxp.set(String(nit), cod); });
+    const fechaPorNpagoCxp = new Map();
+    (pagosCab || []).forEach((r) => {
+      const f = fechaBusintBDaDateSoloDia(r?.Fechaini);
+      if (f) fechaPorNpagoCxp.set(String(r?.Npago ?? "").trim(), f.toISOString().slice(0, 10));
+    });
+    const espPorCodigoNpago = new Map(); // `${codigo}|${npago}` -> valor neto en 1330
+    let filasEsp1330 = 0;
+    (pagosEsp || []).forEach((r) => {
+      if (!/^1330/.test(String(r?.Ctapuc ?? "").trim())) return;
+      const nitCrudo = normalizarCodigoCxp(r?.Nit);
+      if (!nitCrudo) return;
+      const codigo = nombrePorCodigo.has(nitCrudo) ? nitCrudo : codigoPorNitCxp.get(nitCrudo) || nitCrudo;
+      const valor = (Number(r?.Debito) || 0) - (Number(r?.Credito) || 0);
+      const npago = String(r?.Npago ?? "").trim();
+      const llaveEsp = `${codigo}|${npago}`;
+      espPorCodigoNpago.set(llaveEsp, (espPorCodigoNpago.get(llaveEsp) || 0) + valor);
+      filasEsp1330++;
+    });
+    espPorCodigoNpago.forEach((valor, llaveEsp) => {
+      if (Math.abs(valor) <= 1) return;
+      const [codigo, npago] = llaveEsp.split("|");
+      if (!anticiposPorCodigo.has(codigo)) anticiposPorCodigo.set(codigo, []);
+      anticiposPorCodigo.get(codigo).push({ numero: npago, fecha: fechaPorNpagoCxp.get(npago) || null, valor: Math.round(valor), tabla: "cxp-pagos detallesesp" });
+    });
     // Anticipos a proveedores (ver anticiposPorCodigo arriba): neto = pagos sin factura - lo ya cruzado contra facturas
     // (notas contables a 22050101). Un proveedor que solo tiene anticipos (sin facturas abiertas) también aparece.
     const cruzadoPorCodigo = new Map();
@@ -5319,7 +5341,7 @@ exports.getCuentasPorPagarBusintGen = onCallAuth(
       tablasCandidatas = [`(no se pudo leer el swagger: ${e?.message || e})`];
     }
     const diagnosticoAnticipos = {
-      version: "anticipos-v2",
+      version: "anticipos-v3",
       codigosBuscados: codigosMundoHbc,
       filasMundoHbcEnPagos: pagos.filter((x) => codigosMundoHbc.includes(normalizarCodigoCxp(x?.CodigoP))).length,
       filasMundoHbcEnPagosOtros: pagosOtros.filter((x) => codigosMundoHbc.includes(normalizarCodigoCxp(x?.CodigoP))).length,
@@ -5328,6 +5350,7 @@ exports.getCuentasPorPagarBusintGen = onCallAuth(
       notasDescuentoMundoHbc: delProv(notasDescuento, "Cod"),
       devolucionesMundoHbc: delProv(devoluciones, "codigo"),
       tablasCandidatas,
+      filasEspCuenta1330: filasEsp1330,
       filasSinFactura: totalFilasSinFactura,
       proveedoresConAnticipos: [...porProveedor.values()].filter((p) => p.anticiposTotal > 0).length,
       totalAnticiposNetos: [...porProveedor.values()].reduce((t, p) => t + (p.anticiposTotal || 0), 0),
