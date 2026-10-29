@@ -5627,13 +5627,26 @@ exports.getCuentasPorPagarBusintGen = onCallAuth(
       if (!gruposFacturaPorCodigo.has(g.codigo)) gruposFacturaPorCodigo.set(g.codigo, []);
       gruposFacturaPorCodigo.get(g.codigo).push(g);
     });
+    const facturasPorCodigoFila = new Map(); // codigo -> [{ nfact, valor, fecha }] (filas crudas de cartera cxp-fact)
+    facturas.forEach((f) => {
+      const codigo = normalizarCodigoCxp(f?.CODIGO);
+      const f0 = campoEmision ? fechaBusintBDaDateSoloDia(f?.[campoEmision]) : null;
+      const valor = Number(f?.FACTOTAL) || 0;
+      if (!codigo || !f0 || !(valor > 0)) return;
+      if (!facturasPorCodigoFila.has(codigo)) facturasPorCodigoFila.set(codigo, []);
+      facturasPorCodigoFila.get(codigo).push({ nfact: String(f?.NFACT ?? "").trim(), valor, fecha: f0.toISOString().slice(0, 10) });
+    });
     anticiposPorCodigo.forEach((lista, codigo) => {
       lista.forEach((a) => {
         if (!(a.valor > 0) || a.aplicado || !a.fecha) return;
-        const compra = (gruposFacturaPorCodigo.get(codigo) || []).find((g) => Math.abs((Number(g.facTotal) || 0) - a.valor) <= 1 && g.fechaEmision && g.fechaEmision.toISOString().slice(0, 10) === a.fecha);
+        // (v7) Se busca FILA POR FILA en "cartera cxp-fact": las compras "Pago a causar" de un proveedor comparten el N° de documento "0", así que al
+        // agruparlas por factura (facturasPorLlave) se suman entre sí y ya no igualan el valor del anticipo (caso Pash 30 = $112.500.000).
+        const compraFila = (facturasPorCodigoFila.get(codigo) || []).find((g) => Math.abs(g.valor - a.valor) <= 1 && g.fecha === a.fecha);
+        const compraGrupo = !compraFila && (gruposFacturaPorCodigo.get(codigo) || []).find((g) => Math.abs((Number(g.facTotal) || 0) - a.valor) <= 1 && g.fechaEmision && g.fechaEmision.toISOString().slice(0, 10) === a.fecha);
+        const compra = compraFila || compraGrupo;
         if (compra) {
           a.aplicado = a.valor;
-          a.aplicadoPor = `compra "Pago a causar" de igual valor y fecha en cartera cxp-fact (factura ${compra.nfactOriginal})`;
+          a.aplicadoPor = `compra "Pago a causar" de igual valor y fecha en cartera cxp-fact (factura ${compra.nfactOriginal ?? compra.nfact})`;
           aplicacionesDetectadas.push({ codigo, anticipo: a.numero, valor: a.valor, aplicado: a.aplicado, fuente: a.aplicadoPor });
         }
       });
@@ -5685,7 +5698,7 @@ exports.getCuentasPorPagarBusintGen = onCallAuth(
       tablasCandidatas = [`(no se pudo leer el swagger: ${e?.message || e})`];
     }
     const diagnosticoAnticipos = {
-      version: "anticipos-v6",
+      version: "anticipos-v7",
       aplicacionesDetectadas: aplicacionesDetectadas.slice(0, 60),
       codigosBuscados: codigosMundoHbc,
       filasMundoHbcEnPagos: pagos.filter((x) => codigosMundoHbc.includes(normalizarCodigoCxp(x?.CodigoP))).length,
