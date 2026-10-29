@@ -17819,6 +17819,9 @@ function TraerPedidosArchivoModal({ pedidos, onClose }) {
   const [conHistorico, setConHistorico] = useState(true);
   const [progreso, setProgreso] = useState(0);
   const [resultado, setResultado] = useState(null);
+  const [fechaIni, setFechaIni] = useState(`${new Date().getFullYear()}-01-01`);
+  const [fechaFin, setFechaFin] = useState(`${new Date().getFullYear()}-12-31`);
+  const [aviso, setAviso] = useState("");
   const fileRef = useRef();
   const existentes = new Set((pedidos || []).map((p) => String(p.numero || "").trim()));
   const nuevos = todos.filter((p) => !existentes.has(p.numero));
@@ -17834,6 +17837,22 @@ function TraerPedidosArchivoModal({ pedidos, onClose }) {
     try {
       const lista = await parseVentasParaPedidos(f);
       if (!lista.length) throw new Error("No se encontraron pedidos en el archivo.");
+      setTodos(lista);
+      setPaso(2);
+    } catch (err) { setError(err?.message || String(err)); }
+    setLeyendo(false);
+  }
+  // Directo de Busint: consulta en vivo (función en la nube) y arma la misma vista previa que el archivo.
+  async function leerDirecto() {
+    setError("");
+    setAviso("");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(fechaIni) || !/^\d{4}-\d{2}-\d{2}$/.test(fechaFin) || fechaIni > fechaFin) { setError("Elige un rango de fechas válido."); return; }
+    setLeyendo(true);
+    try {
+      const r = await httpsCallable(functionsClient, "getPedidosBusintParaTraer", { timeout: 300000 })({ fechaInicio: fechaIni, fechaFin });
+      const lista = r.data?.pedidos || [];
+      if (!lista.length) throw new Error("Busint no devolvió pedidos en ese rango de fechas.");
+      setAviso(r.data?.avisoFacturacion || "");
       setTodos(lista);
       setPaso(2);
     } catch (err) { setError(err?.message || String(err)); }
@@ -17855,8 +17874,8 @@ function TraerPedidosArchivoModal({ pedidos, onClose }) {
           cliente: p.cliente,
           fechaPedido: p.fechaPedido,
           fechaDespacho: p.fechaDespacho,
-          vendedor: p.vendedor,
-          ciudad: p.ciudad,
+          vendedor: p.vendedor || "",
+          ciudad: p.ciudad || "",
           referencias: p.refs.map((r) => ({ id: uid(), ref: r.ref, descripcion: r.descripcion, tallas: { ...r.tallas }, total: r.total, precioCortePrenda: 0 })),
           cortesRealizados: [],
           seguimiento: {},
@@ -17875,10 +17894,21 @@ function TraerPedidosArchivoModal({ pedidos, onClose }) {
   }
   const fmtF2 = (iso) => (iso ? iso : "—");
   return (
-    <Modal title="Traer pedidos desde archivo" onClose={onClose} width={860}>
+    <Modal title="Traer pedidos" onClose={onClose} width={860}>
       {paso === 1 && (
         <div>
-          <p style={{ margin: "0 0 14px", fontSize: 13, color: T.slate }}>Sube el reporte de <b>Ventas</b> de Busint (el mismo Excel de Ventas Perdidas). ATLAS crea los pedidos que todavía no tiene: los pendientes como <b>Activos</b> y los cumplidos en el <b>Histórico</b>. Los pedidos que ya existen no se tocan.</p>
+          <p style={{ margin: "0 0 14px", fontSize: 13, color: T.slate }}>ATLAS crea los pedidos que todavía no tiene: los pendientes como <b>Activos</b> y los cumplidos en el <b>Histórico</b>. Los pedidos que ya existen no se tocan. Trae los datos directo de Busint o, como respaldo, desde el Excel de Ventas.</p>
+          <div style={{ border: `2px solid ${T.denim}`, borderRadius: 12, padding: 18, background: T.white, marginBottom: 14 }}>
+            <div style={{ fontWeight: 800, color: T.denim, marginBottom: 4 }}>🔌 Traer directo de Busint</div>
+            <div style={{ fontSize: 12, color: T.slate, marginBottom: 10 }}>Rango de fechas de los pedidos (por defecto, todo este año). Ves una vista previa antes de guardar.</div>
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <input type="date" value={fechaIni} onChange={(e) => setFechaIni(e.target.value)} style={{ padding: "7px 10px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit" }} />
+              <span style={{ color: T.slate, fontSize: 12 }}>a</span>
+              <input type="date" value={fechaFin} onChange={(e) => setFechaFin(e.target.value)} style={{ padding: "7px 10px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit" }} />
+              <Btn onClick={leerDirecto} disabled={leyendo}>{leyendo ? "Consultando Busint… (puede tardar hasta un par de minutos)" : "Consultar Busint"}</Btn>
+            </div>
+          </div>
+          <div style={{ fontSize: 12, color: T.slate, margin: "0 0 8px", textAlign: "center" }}>— o, como respaldo —</div>
           <div onClick={() => !leyendo && fileRef.current.click()} style={{ border: `2px dashed ${T.denim}`, borderRadius: 12, padding: 32, textAlign: "center", cursor: leyendo ? "wait" : "pointer", background: T.denimBg }}>
             <div style={{ fontSize: 32, marginBottom: 8 }}>{leyendo ? "⏳" : "📂"}</div>
             <div style={{ fontWeight: 700, color: T.denim }}>{leyendo ? "Leyendo el archivo… (puede tardar unos segundos)" : "Subir Excel de Ventas"}</div>
@@ -17890,9 +17920,10 @@ function TraerPedidosArchivoModal({ pedidos, onClose }) {
       )}
       {paso === 2 && (
         <div>
+          {aviso && <div style={{ marginBottom: 10, padding: "8px 12px", background: T.amberBg, borderRadius: 8, color: T.amber, fontSize: 12, fontWeight: 600 }}>⚠ {aviso}</div>}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 14 }}>
             {[
-              { l: "Pedidos en el archivo", v: todos.length, c: T.ink, bg: T.canvas },
+              { l: "Pedidos encontrados", v: todos.length, c: T.ink, bg: T.canvas },
               { l: "Ya existen en ATLAS", v: yaExisten, c: T.slate, bg: T.canvas },
               { l: "Nuevos pendientes (Activos)", v: nuevosPend.length, c: T.denim, bg: T.denimBg },
               { l: "Nuevos cumplidos (Histórico)", v: nuevosHist.length, c: T.jade, bg: T.jadeBg },
@@ -17912,7 +17943,7 @@ function TraerPedidosArchivoModal({ pedidos, onClose }) {
             </label>
           </div>
           {!aTraer.length ? (
-            <div style={{ padding: 24, textAlign: "center", color: T.slate, fontSize: 13 }}>{nuevos.length ? "Marca al menos una de las dos opciones." : "Todos los pedidos del archivo ya existen en ATLAS. No hay nada nuevo para traer."}</div>
+            <div style={{ padding: 24, textAlign: "center", color: T.slate, fontSize: 13 }}>{nuevos.length ? "Marca al menos una de las dos opciones." : "Todos los pedidos encontrados ya existen en ATLAS. No hay nada nuevo para traer."}</div>
           ) : (
             <div style={{ maxHeight: 340, overflowY: "auto", border: `1px solid ${T.border}`, borderRadius: 10 }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
@@ -18011,7 +18042,7 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
         <div><h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Pedidos</h2><p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Base de pedidos vigentes — se actualiza desde "📡 Vigentes por Cliente (Busint)"</p></div>
         {!soloLectura && (
           <div style={{ display: "flex", gap: 8 }}>
-            {isAdmin && <Btn variant="secondary" onClick={() => setTraerArchivo(true)}>📥 Traer pedidos desde archivo</Btn>}
+            {isAdmin && <Btn variant="secondary" onClick={() => setTraerArchivo(true)}>📥 Traer pedidos (Busint / archivo)</Btn>}
             <Btn variant="secondary" onClick={onNewPedido}>+ Pedido manual</Btn>
           </div>
         )}

@@ -2310,6 +2310,98 @@ exports.getPedidosVigentesBusint = onCallAuth(
   }
 );
 
+// (2026-10-29, a pedido de Fredy) "Traer pedidos directo de Busint": reemplaza el Excel de Ventas para crear en ATLAS
+// los pedidos que todavía no existen (pendientes -> Activos, cumplidos -> Histórico). Devuelve, para el rango pedido,
+// TODOS los pedidos (cumplidos o no) con la misma forma que arma el archivo en el navegador:
+//   - Pedido/referencias/tallas/fechas: ApiGen_OrdenesDePedidoBusint (la misma consulta de Vigentes por Cliente).
+//   - Cumplido: tabla "pedidos clientes" (campo Dadoporcumplido), igual que getVentasPerdidasBusintLive.
+//   - Facturado: ApiGen_FacturadoBusint; si un pedido cumplido quedó con menos facturado que pedido, se marca como
+//     venta perdida (ventasPerdidas = lo que faltó), si no, como facturado.
+// No escribe nada: la pantalla muestra una vista previa y es ella la que guarda lo que el usuario confirme.
+exports.getPedidosBusintParaTraer = onCallAuth(
+  {
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL, BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 300,
+    memory: "1GiB",
+  },
+  async (request) => {
+    await verificarLlamadorEsAdmin(request);
+    const { fechaInicio, fechaFin } = request.data || {};
+    const fechaValida = (v) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
+    if (!fechaValida(fechaInicio) || !fechaValida(fechaFin)) {
+      throw new HttpsError("invalid-argument", "fechaInicio y fechaFin son obligatorias, en formato AAAA-MM-DD.");
+    }
+    let filas;
+    try {
+      filas = await consultarOrdenesBusint(fechaInicio, fechaFin);
+    } catch (err) {
+      logger.error("Error consultando Busint (getPedidosBusintParaTraer)", { error: String(err) });
+      throw new HttpsError("unavailable", "No se pudo consultar la API de Busint. Intenta de nuevo en unos minutos.");
+    }
+    const porPedido = agruparFilasBusintPorPedido(filas);
+
+    let pedidosClientes;
+    try {
+      pedidosClientes = await consultarTablaBusintBDCompleta("pedidos clientes");
+    } catch (err) {
+      logger.error("Error consultando 'pedidos clientes' (getPedidosBusintParaTraer)", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar Busint para saber cuáles pedidos están cumplidos: ${err?.message || String(err)}`);
+    }
+    const cumplidoPorPedido = new Map();
+    pedidosClientes.forEach((p) => {
+      const numped = String(p?.NumPed ?? "").trim();
+      if (!numped) return;
+      const raw = primerCampoDefinido(p, ["Dadoporcumplido", "DadoPorCumplido", "dadoporcumplido", "DadoCumplido"]);
+      cumplidoPorPedido.set(numped, String(raw ?? "").trim().toUpperCase() === "S");
+    });
+
+    const facturadoPorPedido = new Map();
+    let avisoFacturacion = null;
+    try {
+      const hoyISO = new Date().toISOString().slice(0, 10);
+      const filasFacturado = await consultarFacturadoBusint(fechaInicio, hoyISO > fechaFin ? hoyISO : fechaFin);
+      filasFacturado.forEach((f) => {
+        const numero = String(f.numped ?? "").trim();
+        if (!numero) return;
+        facturadoPorPedido.set(numero, (facturadoPorPedido.get(numero) || 0) + (Number(f.cant) || 0));
+      });
+    } catch (err) {
+      logger.error("Error consultando ApiGen_FacturadoBusint (getPedidosBusintParaTraer)", { error: String(err) });
+      avisoFacturacion = "No se pudo consultar la facturación: los pedidos cumplidos se marcarán como «Facturado».";
+    }
+
+    const pedidos = [];
+    for (const [, p] of porPedido) {
+      const referencias = [...p.refsPorClave.values()].map((r) => ({ ref: r.ref, descripcion: r.descripcion, tallas: r.tallas, total: r.total }));
+      const unidades = referencias.reduce((s, r) => s + r.total, 0);
+      const cumplido = cumplidoPorPedido.get(p.numero) === true;
+      const facturada = facturadoPorPedido.get(p.numero) || 0;
+      pedidos.push({
+        numero: p.numero,
+        cliente: p.cliente,
+        fechaPedido: p.fechaPedido,
+        fechaDespacho: p.fechaDespacho,
+        cumplido,
+        refs: referencias,
+        unidades,
+        facturada,
+        ventasPerdidas: cumplido && !avisoFacturacion ? Math.max(0, unidades - facturada) : 0,
+        sinMarcaCumplido: !cumplidoPorPedido.has(p.numero),
+      });
+    }
+    pedidos.sort((a, b) => Number(a.numero) - Number(b.numero));
+    return {
+      fechaInicio,
+      fechaFin,
+      generadoEn: new Date().toISOString(),
+      totalPedidos: pedidos.length,
+      totalCumplidos: pedidos.filter((p) => p.cumplido).length,
+      avisoFacturacion,
+      pedidos,
+    };
+  }
+);
+
 // (2026-10-10, a pedido de Fredy) "Disponible para despachar": para cada
 // cliente y referencia, cuánto se pidió, cuánto ya se produjo (Entradas a
 // Planta), cuánto ya se despachó (facturado/traslados netos de devoluciones),
