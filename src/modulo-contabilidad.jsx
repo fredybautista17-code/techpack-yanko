@@ -5503,7 +5503,22 @@ function CuadreCxpView({ proveedoresBusint, corteActivo, detalleFacturas, factur
 function ChequeoAnticiposCxp({ chequeo }) {
   const [abierto, setAbierto] = useState(true);
   const [copiado, setCopiado] = useState(false);
+  const [buscando, setBuscando] = useState(false);
+  const [busqueda, setBusqueda] = useState(null);
+  const [errorBusqueda, setErrorBusqueda] = useState("");
+  const [copiadoBusq, setCopiadoBusq] = useState(false);
   const diag = chequeo?.diag || null;
+  async function buscarOtrasTablas() {
+    setBuscando(true); setErrorBusqueda(""); setBusqueda(null);
+    try {
+      const r = await httpsCallable(functionsClient, "buscarAnticiposProveedorBusint", { timeout: 540000 })({ codigo: "2448" });
+      setBusqueda(r.data);
+    } catch (err) { setErrorBusqueda(err?.message || "No se pudo hacer la búsqueda."); }
+    setBuscando(false);
+  }
+  async function copiarBusqueda() {
+    try { await navigator.clipboard.writeText(JSON.stringify(busqueda, null, 1)); setCopiadoBusq(true); setTimeout(() => setCopiadoBusq(false), 2500); } catch (e) { /* sin portapapeles */ }
+  }
   let estado = "Pulsa «🔄 Traer desde Busint» para ejecutar el chequeo de anticipos.";
   let color = C.slate;
   if (chequeo?.recibida && !diag) { estado = "El servidor respondió con la versión ANTERIOR (sin anticipos): falta publicar la función getCuentasPorPagarBusintGen (firebase deploy --only functions:getCuentasPorPagarBusintGen)."; color = C.red; }
@@ -5523,6 +5538,19 @@ function ChequeoAnticiposCxp({ chequeo }) {
         )}
       </div>
       {diag && abierto && <pre style={{ marginTop: 8, maxHeight: 260, overflow: "auto", background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 8, padding: 10, fontSize: 10 }}>{JSON.stringify(diag, null, 1)}</pre>}
+      <div style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <button type="button" disabled={buscando} onClick={buscarOtrasTablas} style={{ padding: "6px 12px", borderRadius: 8, border: `1.5px solid ${C.blue}`, background: C.blueBg, color: C.blue, fontWeight: 700, fontSize: 12, cursor: buscando ? "wait" : "pointer", fontFamily: "inherit" }}>{buscando ? "Buscando en las tablas de Busint… (puede tardar un par de minutos)" : "🔎 Buscar anticipos de Mundo HBC en otras tablas"}</button>
+        {busqueda && <button type="button" onClick={copiarBusqueda} style={{ background: "none", border: "none", color: C.blue, cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "inherit" }}>{copiadoBusq ? "✓ Copiado" : "Copiar resultado"}</button>}
+      </div>
+      {errorBusqueda && <div style={{ marginTop: 8, fontSize: 12, color: C.red, fontWeight: 600 }}>⚠ {errorBusqueda}</div>}
+      {busqueda && (
+        <div style={{ marginTop: 8 }}>
+          <div style={{ fontSize: 12, color: C.slate, marginBottom: 6 }}>
+            {busqueda.resultados.filter((t) => t.coincidencias > 0).length} de {busqueda.resultados.length} tablas con coincidencias: {busqueda.resultados.map((t) => `${t.tabla} (${t.error ? "error" : t.coincidencias})`).join(" · ")}
+          </div>
+          <pre style={{ maxHeight: 320, overflow: "auto", background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 8, padding: 10, fontSize: 10 }}>{JSON.stringify(busqueda, null, 1)}</pre>
+        </div>
+      )}
     </div>
   );
 }

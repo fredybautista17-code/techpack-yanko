@@ -2761,6 +2761,57 @@ exports.depurarPedidoBusint = onCallAuth(
   }
 );
 
+// (2026-10-29, a pedido de Fredy) Búsqueda (solo lectura) de los ANTICIPOS de un proveedor en las tablas de Busint BD donde pueden vivir
+// (no están en cxp-pagos detalles / pagosotros / facturas / notas, ya comprobado para MUNDO HBC SAS, código 2448). Devuelve, por tabla, las columnas y
+// las filas que coinciden por código de proveedor, por número de pago/entrada o por valor exacto.
+exports.buscarAnticiposProveedorBusint = onCallAuth(
+  { secrets: SYNC_PEDIDOS_SECRETS, timeoutSeconds: 540, memory: "2GiB" },
+  async (request) => {
+    await verificarLlamadorEsAdmin(request);
+    const codigo = normalizarCodigoCxp(request.data?.codigo || "2448");
+    const valores = (Array.isArray(request.data?.valores) && request.data.valores.length ? request.data.valores : [135000000, 20000000, 10000000]).map((v) => Math.abs(Number(v))).filter((v) => v > 0);
+    const numeros = (Array.isArray(request.data?.numeros) && request.data.numeros.length ? request.data.numeros : ["4054", "4061", "4089"]).map((v) => String(v).trim());
+    const tablas = Array.isArray(request.data?.tablas) && request.data.tablas.length ? request.data.tablas.map(String) : [
+      "cxp-pagos", "cxp-pagos detallesesp", "cartera cxp-ajustes", "cartera cxp-cruce", "contabilidad - cxp", "cierre cxp",
+      "ia_carteracxp_data", "ia_carteracxp_inf", "pagos", "pagos detalles", "notascontableotras", "notascontableotras detalles",
+    ];
+    const reCodigo = /^(cod|codigo|codigop|codprov\w*|codigoprov\w*|proveedor|prov|idprov\w*|cod_?prov\w*)$/i;
+    const reNumero = /^(npago|numero|nentrada|ndoc|n|nrecibo|consecutivo|ncomp|nnota|nent\w*)$/i;
+    const evaluar = async (tabla) => {
+      let filas;
+      try {
+        filas = await consultarTablaBusintBDCompleta(tabla);
+      } catch (err) {
+        return { tabla, error: err?.message || String(err) };
+      }
+      const coinc = [];
+      let total = 0;
+      for (const r of filas) {
+        const motivos = [];
+        for (const [k, v] of Object.entries(r || {})) {
+          if (v === null || v === undefined || v === "") continue;
+          if (reCodigo.test(k) && normalizarCodigoCxp(v) === codigo) motivos.push(`código (${k})`);
+          else if (reNumero.test(k) && numeros.includes(String(v).trim())) motivos.push(`número (${k}=${v})`);
+          else if (typeof v === "number" || /^-?\d+(\.\d+)?$/.test(String(v).trim())) {
+            const n = Math.abs(Number(v));
+            if (n > 0 && valores.some((x) => Math.abs(n - x) <= 1)) motivos.push(`valor (${k}=${v})`);
+          }
+        }
+        if (motivos.length) {
+          total++;
+          if (coinc.length < 8) coinc.push({ motivos: motivos.slice(0, 4), fila: r });
+        }
+      }
+      return { tabla, filas: filas.length, columnas: Object.keys(filas[0] || {}).slice(0, 70), coincidencias: total, muestra: coinc };
+    };
+    const resultados = [];
+    for (let i = 0; i < tablas.length; i += 4) {
+      resultados.push(...(await Promise.all(tablas.slice(i, i + 4).map(evaluar))));
+    }
+    return { version: "buscar-anticipos-v1", codigo, valores, numeros, resultados };
+  }
+);
+
 // (2026-10-10, a pedido de Fredy) "Disponible para despachar": para cada
 // cliente y referencia, cuánto se pidió, cuánto ya se produjo (Entradas a
 // Planta), cuánto ya se despachó (facturado/traslados netos de devoluciones),
