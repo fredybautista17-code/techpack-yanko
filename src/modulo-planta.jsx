@@ -2430,17 +2430,308 @@ function EstadisticasPlantaView({ cargaActiva }) {
     </div>
   );
 }
+// ─── CARGA POR MÓDULOS (2026-10-29, a pedido de Fredy) ─────────────────────────────
+// Los lotes que llegan a Planta Yanko se "matriculan" a un módulo de confección (el líder toma las unidades que va a coser; un lote se
+// puede repartir entre varios módulos). El tablero muestra cuánto tiene cada módulo, cuánto ha entregado y cuánto espacio le queda.
+// Datos: config/planta_modulos { modulos: [{id, nombre, lider, capacidadDia}], horizonteDias } y colección planta_modulos_asignacion.
+const MODULOS_EJEMPLO = [1, 2, 3, 4].map((n) => ({ id: `m${n}`, nombre: `Módulo ${n}`, lider: "", capacidadDia: 0 }));
+function minimoNombre(s) {
+  return String(s || "").trim().toLowerCase();
+}
+function FilaMatricular({ lote, modulos, onMatricular }) {
+  const [abierto, setAbierto] = useState(false);
+  const [modulo, setModulo] = useState(modulos[0]?.id || "");
+  const [und, setUnd] = useState(String(lote.falta));
+  const [guardando, setGuardando] = useState(false);
+  async function guardar() {
+    const n = Math.floor(Number(und));
+    if (!modulo) return alert("Elige el módulo.");
+    if (!(n > 0)) return alert("Pon cuántas unidades va a coser el módulo.");
+    if (n > lote.falta) return alert(`Solo quedan ${fmtNum(lote.falta)} unidades por matricular en este lote.`);
+    setGuardando(true);
+    try {
+      await onMatricular(lote, modulo, n);
+      setAbierto(false);
+      setUnd(String(Math.max(0, lote.falta - n)));
+    } finally {
+      setGuardando(false);
+    }
+  }
+  return (
+    <tr style={{ borderTop: `1px solid ${C.border}` }}>
+      <td style={{ padding: "8px 10px", fontWeight: 800, color: C.ink }}>{lote.numLote}</td>
+      <td style={{ padding: "8px 10px", color: C.ink }}>{lote.referencia || "—"}</td>
+      <td style={{ padding: "8px 10px", color: C.slate }}>{lote.numPedido ? `#${lote.numPedido}` : "—"}</td>
+      <td style={{ padding: "8px 10px", textAlign: "right", color: C.slate }}>{fmtNum(lote.cantidad)}</td>
+      <td style={{ padding: "8px 10px", textAlign: "right", color: C.slate }}>{fmtNum(lote.matriculado)}</td>
+      <td style={{ padding: "8px 10px", textAlign: "right", fontWeight: 800, color: C.amber }}>{fmtNum(lote.falta)}</td>
+      <td style={{ padding: "8px 10px", textAlign: "right" }}>
+        {!abierto ? (
+          <button onClick={() => setAbierto(true)} style={{ border: "none", background: C.amber, color: C.white, fontWeight: 800, fontSize: 12, padding: "6px 12px", borderRadius: 8, cursor: "pointer" }}>
+            Matricular
+          </button>
+        ) : (
+          <span style={{ display: "inline-flex", gap: 6, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+            <select value={modulo} onChange={(e) => setModulo(e.target.value)} style={{ padding: "6px 8px", borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 12 }}>
+              {modulos.map((m) => (
+                <option key={m.id} value={m.id}>{m.nombre}{m.lider ? ` · ${m.lider}` : ""}</option>
+              ))}
+            </select>
+            <input value={und} onChange={(e) => setUnd(e.target.value.replace(/[^0-9]/g, ""))} inputMode="numeric" style={{ width: 70, padding: "6px 8px", borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 12, textAlign: "right" }} />
+            <button disabled={guardando} onClick={guardar} style={{ border: "none", background: C.green, color: C.white, fontWeight: 800, fontSize: 12, padding: "6px 12px", borderRadius: 8, cursor: "pointer" }}>
+              {guardando ? "…" : "Guardar"}
+            </button>
+            <button onClick={() => setAbierto(false)} style={{ border: `1px solid ${C.border}`, background: C.white, color: C.slate, fontSize: 12, padding: "6px 10px", borderRadius: 8, cursor: "pointer" }}>
+              ✕
+            </button>
+          </span>
+        )}
+      </td>
+    </tr>
+  );
+}
+function ConfigModulosPanel({ modulos, horizonteDias, asignaciones, onGuardar, onCerrar }) {
+  const [borrador, setBorrador] = useState(modulos.map((m) => ({ ...m })));
+  const [horizonte, setHorizonte] = useState(String(horizonteDias));
+  function cambiar(id, campo, valor) {
+    setBorrador((bs) => bs.map((b) => (b.id === id ? { ...b, [campo]: valor } : b)));
+  }
+  function quitar(id) {
+    if (asignaciones.some((a) => a.modulo === id && a.estado !== "liberada")) return alert("Ese módulo todavía tiene lotes matriculados. Quítalos o espera a que salgan de Planta.");
+    setBorrador((bs) => bs.filter((b) => b.id !== id));
+  }
+  async function guardar() {
+    const limpios = borrador.map((b) => ({ id: b.id, nombre: String(b.nombre || "").trim(), lider: String(b.lider || "").trim(), capacidadDia: Math.max(0, Math.floor(Number(b.capacidadDia) || 0)) }));
+    if (limpios.some((b) => !b.nombre)) return alert("Todos los módulos necesitan un nombre.");
+    await onGuardar(limpios, Math.max(1, Math.floor(Number(horizonte) || 5)));
+    onCerrar();
+  }
+  const inp = { padding: "7px 9px", borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 13, width: "100%" };
+  return (
+    <div style={{ background: C.white, border: `1.5px solid ${C.seam}`, borderRadius: 14, padding: 18, marginBottom: 20 }}>
+      <div style={{ fontWeight: 800, fontSize: 15, color: C.ink, marginBottom: 4 }}>⚙ Módulos de Planta Yanko</div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 14 }}>
+        Pon el nombre, el líder (escríbelo igual que su nombre de usuario en ATLAS para que le marque «Tuyo») y cuántas unidades por día cose el módulo. Con la capacidad, el tablero calcula los días de carga.
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1.2fr 0.8fr auto", gap: 8, alignItems: "center", marginBottom: 8 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: C.slate }}>MÓDULO</div>
+        <div style={{ fontSize: 11, fontWeight: 700, color: C.slate }}>LÍDER</div>
+        <div style={{ fontSize: 11, fontWeight: 700, color: C.slate }}>UND / DÍA</div>
+        <div />
+        {borrador.map((b) => (
+          <FragmentoFila key={b.id}>
+            <input value={b.nombre} onChange={(e) => cambiar(b.id, "nombre", e.target.value)} style={inp} />
+            <input value={b.lider} onChange={(e) => cambiar(b.id, "lider", e.target.value)} style={inp} placeholder="Nombre del líder" />
+            <input value={b.capacidadDia || ""} onChange={(e) => cambiar(b.id, "capacidadDia", e.target.value.replace(/[^0-9]/g, ""))} inputMode="numeric" style={{ ...inp, textAlign: "right" }} placeholder="0" />
+            <button onClick={() => quitar(b.id)} style={{ border: "none", background: "transparent", color: C.red, cursor: "pointer", fontSize: 14 }} title="Quitar módulo">🗑</button>
+          </FragmentoFila>
+        ))}
+      </div>
+      <button onClick={() => setBorrador((bs) => [...bs, { id: `m${uid()}`, nombre: `Módulo ${bs.length + 1}`, lider: "", capacidadDia: 0 }])} style={{ border: `1px dashed ${C.seam}`, background: "transparent", color: C.ink, fontWeight: 700, fontSize: 12, padding: "7px 14px", borderRadius: 8, cursor: "pointer", marginBottom: 14 }}>
+        + Agregar módulo
+      </button>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16, fontSize: 12, color: C.slate }}>
+        Días de carga que se consideran «llenos»:
+        <input value={horizonte} onChange={(e) => setHorizonte(e.target.value.replace(/[^0-9]/g, ""))} inputMode="numeric" style={{ ...inp, width: 60, textAlign: "right" }} />
+        <span>(la barra se llena al llegar a ese número de días de trabajo)</span>
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button onClick={guardar} style={{ border: "none", background: C.green, color: C.white, fontWeight: 800, fontSize: 13, padding: "9px 18px", borderRadius: 8, cursor: "pointer" }}>Guardar módulos</button>
+        <button onClick={onCerrar} style={{ border: `1px solid ${C.border}`, background: C.white, color: C.slate, fontSize: 13, padding: "9px 18px", borderRadius: 8, cursor: "pointer" }}>Cancelar</button>
+      </div>
+    </div>
+  );
+}
+function FragmentoFila({ children }) {
+  return <>{children}</>;
+}
+function CargaModulosView({ cargaActiva, asignaciones, configModulos, currentUser, isAdmin, onMatricular, onQuitar, onGuardarConfig }) {
+  const [editando, setEditando] = useState(false);
+  const esEjemplo = !configModulos;
+  const modulos = configModulos?.modulos?.length ? configModulos.modulos : MODULOS_EJEMPLO;
+  const horizonteDias = Number(configModulos?.horizonteDias) || 5;
+  const yo = minimoNombre(currentUser?.name);
+  const yoUser = minimoNombre(currentUser?.username);
+  const lotesEnPlanta = useMemo(
+    () => (cargaActiva?.lotes || []).filter((l) => l.nombrePlanta === PLANTA_YANKO && (l.ubicacionActual ? l.ubicacionActual === "Planta" : l.invPlanta > 0)),
+    [cargaActiva]
+  );
+  const analisis = useMemo(() => {
+    const porNum = new Map(lotesEnPlanta.map((l) => [String(l.numLote), l]));
+    const activas = asignaciones.filter((a) => a.estado !== "liberada" && porNum.has(String(a.numLote)));
+    const sumaPorLote = new Map();
+    activas.forEach((a) => sumaPorLote.set(String(a.numLote), (sumaPorLote.get(String(a.numLote)) || 0) + (Number(a.unidades) || 0)));
+    // Si Planta ya tiene menos unidades de las matriculadas (salió una parte), se ajusta en proporción para no inflar la carga.
+    const efectivas = activas.map((a) => {
+      const lote = porNum.get(String(a.numLote));
+      const enPlanta = Number(lote.invPlanta) || 0;
+      const total = sumaPorLote.get(String(a.numLote)) || 0;
+      const factor = total > enPlanta && total > 0 ? enPlanta / total : 1;
+      return { ...a, efectivas: Math.round((Number(a.unidades) || 0) * factor), ajustada: factor < 1 };
+    });
+    const porMod = new Map(modulos.map((m) => [m.id, { pendiente: 0, lotes: [], entregado7: 0 }]));
+    efectivas.forEach((a) => {
+      const m = porMod.get(a.modulo);
+      if (!m) return;
+      m.pendiente += a.efectivas;
+      m.lotes.push(a);
+    });
+    const hace7 = Date.now() - 7 * 86400000;
+    asignaciones.forEach((a) => {
+      if (a.estado !== "liberada") return;
+      const t = Date.parse(a.liberadaEn || "");
+      const m = porMod.get(a.modulo);
+      if (m && t >= hace7) m.entregado7 += Number(a.unidades) || 0;
+    });
+    const sinMatricular = lotesEnPlanta
+      .map((l) => {
+        const cantidad = Number(l.invPlanta) || 0;
+        const matriculado = Math.min(cantidad, sumaPorLote.get(String(l.numLote)) || 0);
+        return { numLote: l.numLote, referencia: l.referencia, numPedido: l.numPedido, categoria: l.categoria, cantidad, matriculado, falta: Math.max(0, cantidad - matriculado) };
+      })
+      .filter((l) => l.falta > 0)
+      .sort((a, b) => b.falta - a.falta);
+    const sinModuloExistente = efectivas.filter((a) => !porMod.has(a.modulo));
+    return { porMod, sinMatricular, sinModuloExistente };
+  }, [lotesEnPlanta, asignaciones, modulos]);
+  const totalPendiente = [...analisis.porMod.values()].reduce((s, m) => s + m.pendiente, 0);
+  const unidadesSinMatricular = analisis.sinMatricular.reduce((s, l) => s + l.falta, 0);
+  const totalEnPlanta = lotesEnPlanta.reduce((s, l) => s + (Number(l.invPlanta) || 0), 0);
+  const kpi = (label, valor, color) => (
+    <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 16px", minWidth: 150 }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, letterSpacing: "0.06em", textTransform: "uppercase" }}>{label}</div>
+      <div style={{ fontSize: 22, fontWeight: 900, color: color || C.ink, marginTop: 2 }}>{valor}</div>
+    </div>
+  );
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: 18, flexWrap: "wrap" }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 22, fontWeight: 900, color: C.ink }}>🧵 Carga por Módulos</h2>
+          <p style={{ margin: "6px 0 0", fontSize: 14, color: C.slate }}>Planta Yanko — cada líder matricula los lotes que va a coser y aquí se ve qué tan cargado está cada módulo.</p>
+        </div>
+        {isAdmin && !editando && (
+          <button onClick={() => setEditando(true)} style={{ border: `1px solid ${C.border}`, background: C.white, color: C.ink, fontWeight: 700, fontSize: 12, padding: "8px 14px", borderRadius: 8, cursor: "pointer" }}>
+            ⚙ Configurar módulos
+          </button>
+        )}
+      </div>
+      {esEjemplo && (
+        <div style={{ background: C.amberBg, border: `1px solid ${C.amber}`, color: C.amber, borderRadius: 10, padding: "10px 14px", fontSize: 12, fontWeight: 600, marginBottom: 16 }}>
+          Estos son módulos de ejemplo.{isAdmin ? " Entra a «Configurar módulos» para poner los nombres, los líderes y la capacidad reales." : " Un administrador debe configurar los nombres, líderes y capacidad reales."}
+        </div>
+      )}
+      {editando && <ConfigModulosPanel modulos={modulos} horizonteDias={horizonteDias} asignaciones={asignaciones} onGuardar={onGuardarConfig} onCerrar={() => setEditando(false)} />}
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 20 }}>
+        {kpi("En Planta Yanko", `${fmtNum(totalEnPlanta)} und`)}
+        {kpi("Matriculado en módulos", `${fmtNum(totalPendiente)} und`, C.green)}
+        {kpi("Sin matricular", `${fmtNum(unidadesSinMatricular)} und`, unidadesSinMatricular > 0 ? C.amber : C.green)}
+        {kpi("Lotes sin matricular", fmtNum(analisis.sinMatricular.length), analisis.sinMatricular.length > 0 ? C.amber : C.green)}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(300px,1fr))", gap: 14, marginBottom: 26 }}>
+        {modulos.map((m) => {
+          const d = analisis.porMod.get(m.id) || { pendiente: 0, lotes: [], entregado7: 0 };
+          const cap = Number(m.capacidadDia) || 0;
+          const dias = cap > 0 ? d.pendiente / cap : null;
+          const pct = dias == null ? 0 : Math.min(100, Math.round((dias / horizonteDias) * 100));
+          const color = dias == null ? C.slate : dias <= horizonteDias * 0.7 ? C.green : dias <= horizonteDias ? C.amber : C.red;
+          const esMio = m.lider && (minimoNombre(m.lider) === yo || minimoNombre(m.lider) === yoUser);
+          return (
+            <div key={m.id} style={{ background: C.white, border: `1.5px solid ${esMio ? C.amber : C.border}`, borderRadius: 14, padding: 16 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
+                <div style={{ fontWeight: 900, fontSize: 15, color: C.ink }}>{m.nombre}{esMio && <span style={{ marginLeft: 8, fontSize: 10, background: C.amberBg, color: C.amber, padding: "2px 8px", borderRadius: 20, fontWeight: 800 }}>Tuyo</span>}</div>
+                <div style={{ fontSize: 11, color: C.slate }}>{m.lider || "Sin líder"}</div>
+              </div>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginTop: 10 }}>
+                <span style={{ fontSize: 26, fontWeight: 900, color }}>{fmtNum(d.pendiente)}</span>
+                <span style={{ fontSize: 12, color: C.slate }}>und por coser</span>
+              </div>
+              {cap > 0 ? (
+                <>
+                  <div style={{ height: 8, background: "#EDEDF2", borderRadius: 6, overflow: "hidden", margin: "8px 0 4px" }}>
+                    <div style={{ width: `${pct}%`, height: "100%", background: color }} />
+                  </div>
+                  <div style={{ fontSize: 11, color: C.slate }}>
+                    {dias.toFixed(1)} días de carga · capacidad {fmtNum(cap)} und/día
+                    {dias <= horizonteDias ? ` · cabe más: ~${fmtNum(Math.max(0, Math.round((horizonteDias - dias) * cap)))} und` : ` · pasado por ~${(dias - horizonteDias).toFixed(1)} días`}
+                  </div>
+                </>
+              ) : (
+                <div style={{ fontSize: 11, color: C.slate, margin: "8px 0 4px" }}>Sin capacidad definida{isAdmin ? " (se pone en ⚙ Configurar módulos)" : ""}</div>
+              )}
+              <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>Entregado en los últimos 7 días: <b style={{ color: C.ink }}>{fmtNum(d.entregado7)} und</b></div>
+              <div style={{ marginTop: 10, borderTop: `1px solid ${C.border}`, paddingTop: 8 }}>
+                {d.lotes.length === 0 ? (
+                  <div style={{ fontSize: 12, color: C.slate }}>Sin lotes matriculados.</div>
+                ) : (
+                  d.lotes.map((a) => (
+                    <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, padding: "4px 0" }}>
+                      <span style={{ fontWeight: 800, color: C.ink, minWidth: 48 }}>{a.numLote}</span>
+                      <span style={{ flex: 1, color: C.slate, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.referencia || ""}{a.numPedido ? ` · #${a.numPedido}` : ""}</span>
+                      <span style={{ fontWeight: 700, color: C.ink }} title={a.ajustada ? "Planta ya tiene menos unidades que las matriculadas; se ajustó en proporción" : ""}>{fmtNum(a.efectivas)}{a.ajustada ? "*" : ""}</span>
+                      <button
+                        onClick={() => { if (window.confirm(`¿Quitar el lote ${a.numLote} (${fmtNum(a.unidades)} und) de ${m.nombre}? Volverá a la lista de lotes por matricular.`)) onQuitar(a); }}
+                        style={{ border: "none", background: "transparent", color: C.red, cursor: "pointer", fontSize: 12 }}
+                        title="Quitar de este módulo"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {analisis.sinModuloExistente.length > 0 && (
+        <div style={{ background: C.redBg, border: `1px solid ${C.red}`, color: C.red, borderRadius: 10, padding: "10px 14px", fontSize: 12, marginBottom: 16 }}>
+          Hay {analisis.sinModuloExistente.length} matrícula(s) de un módulo que ya no existe en la configuración (lotes {analisis.sinModuloExistente.map((a) => a.numLote).join(", ")}). Quítalas y vuelve a matricular.
+        </div>
+      )}
+      <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16 }}>
+        <div style={{ fontWeight: 800, fontSize: 15, color: C.ink, marginBottom: 2 }}>Lotes por matricular ({analisis.sinMatricular.length})</div>
+        <div style={{ fontSize: 12, color: C.slate, marginBottom: 10 }}>Lotes que ya llegaron a Planta Yanko y tienen unidades sin módulo. Matricula todo el lote o solo una parte.</div>
+        {analisis.sinMatricular.length === 0 ? (
+          <div style={{ fontSize: 13, color: C.green, fontWeight: 700 }}>✓ Todo lo que hay en Planta Yanko ya está matriculado en un módulo.</div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr style={{ color: C.slate, fontSize: 11, textAlign: "left" }}>
+                  <th style={{ padding: "6px 10px" }}>LOTE</th>
+                  <th style={{ padding: "6px 10px" }}>REFERENCIA</th>
+                  <th style={{ padding: "6px 10px" }}>PEDIDO</th>
+                  <th style={{ padding: "6px 10px", textAlign: "right" }}>EN PLANTA</th>
+                  <th style={{ padding: "6px 10px", textAlign: "right" }}>MATRICULADO</th>
+                  <th style={{ padding: "6px 10px", textAlign: "right" }}>FALTA</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {analisis.sinMatricular.map((l) => (
+                  <FilaMatricular key={`${l.numLote}-${l.falta}`} lote={l} modulos={modulos} onMatricular={onMatricular} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 // ─── HOME PLANTA ────────────────────────────────────────────────────────────────
 function HomePlanta({ onGoModulo }) {
   const MODULOS = [
     { id: "programacion_diaria", icon: "📅", label: "Programación Diaria", desc: "Programa lo que Planta Yanko va a entregar y revisa cumplimiento", color: C.amber, bg: C.amberBg, activo: true },
+    { id: "carga_modulos", icon: "🧵", label: "Carga por Módulos", desc: "Matricula los lotes que llegan a cada módulo y mira qué tan cargado está cada uno", color: C.green, bg: C.greenBg, activo: true },
     { id: "dashboard_entregas", icon: "📊", label: "Dashboard de Entregas", desc: "Cumplimiento, cantidades por categoría y facturación por planta", color: C.blue, bg: C.blueBg, activo: true },
     { id: "nomina", icon: "🧾", label: "Nómina", desc: "Nómina de la planta propia", color: C.violet, bg: C.violetBg, activo: false },
   ];
   return (
     <div>
       <div style={{ marginBottom: 28 }}>
-        <h2 style={{ margin: 0, fontSize: 22, fontWeight: 900, color: C.ink }}>🏭 Planta</h2>
+        <h2 style={{ margin: 0, fontSize: 22, fontWeight: 900, color: C.ink }}>🏭 Planta Yanko</h2>
         <p style={{ margin: "6px 0 0", fontSize: 14, color: C.slate }}>Industrias Yanko — Planta propia</p>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(240px,1fr))", gap: 16 }}>
@@ -2472,6 +2763,8 @@ export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
   const [cargasPlaneacion, setCargasPlaneacion] = useState([]);
   const [programacion, setProgramacion] = useState([]);
   const [cargasEntradas, setCargasEntradas] = useState([]);
+  const [asignaciones, setAsignaciones] = useState([]);
+  const [configModulos, setConfigModulos] = useState(null);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
     // Planta lee (solo lectura) las cargas de Hoja1 que se suben desde
@@ -2487,10 +2780,18 @@ export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
     const unsubEntradas = onSnapshot(collection(db, "planta_entradas_cargas"), (snap) => {
       setCargasEntradas(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
     });
+    const unsubAsignaciones = onSnapshot(collection(db, "planta_modulos_asignacion"), (snap) => {
+      setAsignaciones(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    }, () => {});
+    const unsubConfigModulos = onSnapshot(doc(db, "config", "planta_modulos"), (snap) => {
+      setConfigModulos(snap.exists() ? snap.data() : null);
+    }, () => {});
     return () => {
       unsubCargas();
       unsubProgramacion();
       unsubEntradas();
+      unsubAsignaciones();
+      unsubConfigModulos();
     };
   }, []);
   const cargaActiva = useMemo(() => {
@@ -2648,10 +2949,56 @@ export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
       await fsSave("planta_programacion", p.id, patch);
     });
   }, [cargaActiva, programacion]);
+  // (2026-10-29) Carga por módulos: cuando un lote matriculado ya no está en Planta Yanko en la carga más reciente, se marca "liberada"
+  // (sus unidades pasan a «entregado» del módulo y dejan de contar como carga).
+  useEffect(() => {
+    if (!cargaActiva) return;
+    const enPlantaSet = new Set(
+      (cargaActiva.lotes || []).filter((l) => l.nombrePlanta === PLANTA_YANKO && (l.ubicacionActual ? l.ubicacionActual === "Planta" : l.invPlanta > 0)).map((l) => String(l.numLote))
+    );
+    const aLiberar = asignaciones.filter((a) => a.estado !== "liberada" && !enPlantaSet.has(String(a.numLote)));
+    if (!aLiberar.length) return;
+    const ahora = new Date().toISOString();
+    aLiberar.forEach(async (a) => {
+      const patch = { estado: "liberada", liberadaEn: ahora };
+      setAsignaciones((as) => as.map((x) => (x.id === a.id ? { ...x, ...patch } : x)));
+      await fsSave("planta_modulos_asignacion", a.id, patch);
+    });
+  }, [cargaActiva, asignaciones]);
+  async function matricularLote(lote, moduloId, unidades) {
+    const id = `${String(lote.numLote).replace(/[^\w-]/g, "_")}__${moduloId}`;
+    const previa = asignaciones.find((a) => a.id === id && a.estado !== "liberada");
+    const nueva = {
+      id,
+      numLote: lote.numLote,
+      referencia: lote.referencia || "",
+      categoria: lote.categoria || "",
+      numPedido: lote.numPedido ?? null,
+      modulo: moduloId,
+      unidades: (previa ? Number(previa.unidades) || 0 : 0) + unidades,
+      estado: "activa",
+      matriculadoPor: currentUser?.name || currentUser?.username || "",
+      creadoEn: previa?.creadoEn || new Date().toISOString(),
+      actualizadoEn: new Date().toISOString(),
+      liberadaEn: null,
+    };
+    setAsignaciones((as) => [...as.filter((a) => a.id !== id), nueva]);
+    await setDoc(doc(db, "planta_modulos_asignacion", id), nueva);
+  }
+  async function quitarMatricula(asig) {
+    setAsignaciones((as) => as.filter((a) => a.id !== asig.id));
+    await fsDelete("planta_modulos_asignacion", asig.id);
+  }
+  async function guardarConfigModulos(modulos, horizonteDias) {
+    const nuevo = { modulos, horizonteDias, actualizadoPor: currentUser?.name || currentUser?.username || "", actualizadoEn: new Date().toISOString() };
+    setConfigModulos(nuevo);
+    await setDoc(doc(db, "config", "planta_modulos"), nuevo);
+  }
   const isAdmin = currentUser?.isAdmin;
   const NAV = [
     { id: "home", icon: "◉", label: "Inicio" },
     { id: "programacion_diaria", icon: "📅", label: "Programación Diaria" },
+    { id: "carga_modulos", icon: "🧵", label: "Carga por Módulos" },
     { id: "dashboard_entregas", icon: "📊", label: "Dashboard de Entregas" },
     { id: "estadisticas_planta", icon: "📈", label: "Estadísticas de Planta" },
   ];
@@ -2660,7 +3007,7 @@ export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
       <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: C.canvas }}>
         <div style={{ textAlign: "center" }}>
           <div style={{ fontSize: 36, marginBottom: 12 }}>🏭</div>
-          <div style={{ color: C.slate }}>Cargando Planta...</div>
+          <div style={{ color: C.slate }}>Cargando Planta Yanko...</div>
         </div>
       </div>
     );
@@ -2670,7 +3017,7 @@ export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;}`}</style>
       <div style={{ width: 220, background: C.ink, padding: "24px 14px", display: "flex", flexDirection: "column", flexShrink: 0 }}>
         <div style={{ marginBottom: 20 }}>
-          <div style={{ fontSize: 15, fontWeight: 900, color: C.white }}>🏭 Planta</div>
+          <div style={{ fontSize: 15, fontWeight: 900, color: C.white }}>🏭 Planta Yanko</div>
           <div style={{ fontSize: 10, color: C.seam, marginTop: 2, letterSpacing: "0.1em", textTransform: "uppercase" }}>Industrias Yanko</div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", background: "#2A2A45", borderRadius: 10, marginBottom: 16 }}>
@@ -2729,6 +3076,18 @@ export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
               onCancelar={cancelarProgramacion}
               onEditarFecha={editarFechaProgramacion}
               isAdmin={isAdmin}
+            />
+          )}
+          {subView === "carga_modulos" && (
+            <CargaModulosView
+              cargaActiva={cargaActiva}
+              asignaciones={asignaciones}
+              configModulos={configModulos}
+              currentUser={currentUser}
+              isAdmin={isAdmin}
+              onMatricular={matricularLote}
+              onQuitar={quitarMatricula}
+              onGuardarConfig={guardarConfigModulos}
             />
           )}
           {subView === "dashboard_entregas" && (

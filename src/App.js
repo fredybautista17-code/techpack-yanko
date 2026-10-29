@@ -11100,7 +11100,7 @@ function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, c
       permiso: canAccessPlaneacion,
     },
     {
-      id: "planta_area", icon: "🏭", label: "Planta", desc: "Programación diaria y cumplimiento de Planta Industrias Yanko", color: T.amber, bg: T.amberBg,
+      id: "planta_area", icon: "🏭", label: "Planta Yanko", desc: "Programación diaria, carga por módulos y cumplimiento de Planta Industrias Yanko", color: T.amber, bg: T.amberBg,
       stats: [],
       permiso: canAccessPlanta,
     },
@@ -13950,7 +13950,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     // (2026-10-28, a pedido de Fredy) Vincular referencias a pedidos en Preórdenes/Órdenes estaba solo para el administrador.
     { area: "🧾 Preórdenes y Órdenes", items: [["preordenes_vincular_pedido", "Puede vincular referencias a pedidos (aunque la preorden esté aprobada)"], ["preordenes_pasar_a_orden", "Puede pasar referencias con tela confirmada a Órdenes (botón «Pasar a Orden»)"]] },
     { area: "📋 Planeación", items: [["planeacion", "Planeación"]] },
-    { area: "🏭 Planta", items: [["planta", "Planta"]] },
+    { area: "🏭 Planta Yanko", items: [["planta", "Planta Yanko"]] },
     { area: "📦 Bodega", items: [["bodega", "Bodega"]] },
     { area: "👷 Nómina", items: [["nomina", "Completa (todo el módulo)"], ["nomina_novedades", "Solo Novedades"], ["nomina_editar_catalogos", "Puede editar catálogos (Trabajadores, Turnos, etc.) sin admin total"], ["nomina_ver_anomalias_huellero", "Puede ver Anomalías Huellero"], ["nomina_ver_duplicados_huellero", "Puede ver Diagnóstico de Duplicados"], ["nomina_cerrar_quincena", "Puede cerrar Quincena (General y por Área)"], ["nomina_agregar_cobros_manual", "Puede agregar cobros/deducciones manuales"], ["nomina_ajustar_destajo", "Puede agregar Ajustes de Nómina en Destajo"], ["nomina_editar_horas_extra", "Puede editar/borrar Horas Extras"], ["nomina_editar_bonificacion", "Puede editar/borrar Bonificaciones"], ["nomina_autorizar_permisos", "Puede generar códigos de autorización de permisos (4.º permiso del mes en adelante)"]] },
     { area: "🎯 KPIs", items: [["kpis", "KPIs"]] },
@@ -20137,7 +20137,7 @@ function AppInner() {
       ? [{ id: "planeacion_area", icon: "📋", label: "Planeación", items: [{ id: "planeacion_area", icon: "📋", label: "Módulo Planeación" }] }]
       : []),
     ...(canAccessPlanta
-      ? [{ id: "planta_area", icon: "🏭", label: "Planta", items: [{ id: "planta_area", icon: "🏭", label: "Módulo Planta" }] }]
+      ? [{ id: "planta_area", icon: "🏭", label: "Planta Yanko", items: [{ id: "planta_area", icon: "🏭", label: "Módulo Planta Yanko" }] }]
       : []),
     ...(canAccessBodega
       ? [{ id: "bodega_area", icon: "📦", label: "Bodega", items: [{ id: "bodega_area", icon: "📦", label: "Módulo Bodega" }] }]
