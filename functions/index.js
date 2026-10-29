@@ -3030,7 +3030,38 @@ exports.buscarAnticiposProveedorBusint = onCallAuth(
         otrasFilasDeEsosPagos: esp.filter((r) => setNum.has(String(r?.Npago ?? "").trim()) && !/^1330/.test(String(r?.Ctapuc ?? "").trim())).slice(0, 80).map(conFecha),
       };
     }
-    return { version: "buscar-anticipos-v2", codigo, valores, numeros, resultados, porProveedor1330 };
+    // (2026-10-30) v3: documentos de pago que APLICAN los anticipos (en el extracto de Busint: el 1353 aplicó los anticipos 1290/1298/1310/1311
+    // de Eliot y el 1404 el 1354). Se buscan en las tablas de pagos las filas del proveedor que mencionan el número de cada anticipo
+    // (Nfact) o que pertenecen a los pagos indicados en "documentos", y se devuelven con sus columnas para ver dónde queda el vínculo.
+    let documentosRelacionados = null;
+    if (detalleProveedor) {
+      const cargar = async (t) => {
+        if (cacheTablas[t]) return cacheTablas[t];
+        try { cacheTablas[t] = await consultarTablaBusintBDCompleta(t); } catch (err) { cacheTablas[t] = []; cacheTablas[`${t}__error`] = err?.message || String(err); }
+        return cacheTablas[t];
+      };
+      const nombresTablas = ["cxp-pagos detalles", "cxp-pagosotros detalles", "cxp-pagos detallesesp", "cxp-pagos"];
+      await Promise.all(nombresTablas.map(cargar));
+      const esp = cacheTablas["cxp-pagos detallesesp"] || [];
+      const anticipoNums = new Set(numeros);
+      (porProveedor1330?.netoPorPago || []).forEach((x) => anticipoNums.add(String(x.npago)));
+      const docsExtra = (Array.isArray(request.data?.documentos) ? request.data.documentos : []).map((v) => String(v).trim()).filter(Boolean);
+      // 2209 = MANUFACTURAS ELIOT SAS: sus anticipos los aplicaron los documentos 1353 y 1404 (según el extracto de Busint), se miran siempre.
+      const docs = new Set([...docsExtra, ...(codigo === "2209" ? ["1353", "1404"] : [])]);
+      const vincula = (r) => Object.entries(r || {}).some(([k, v]) => /^(nfact|nfactcxp|nfactura|ndoc|nanticipo|nant|referencia)$/i.test(k) && anticipoNums.has(String(v ?? "").trim()));
+      const delProv = (r) => ["CodigoP", "Cod", "Codigo", "Nit", "CedulaoNit"].some((k) => r?.[k] != null && normalizarCodigoCxp(r[k]) === codigo);
+      const out = {};
+      for (const t of nombresTablas) {
+        const filas = cacheTablas[t] || [];
+        const hit = filas.filter((r) => (delProv(r) && vincula(r)) || docs.has(String(r?.Npago ?? "").trim()));
+        out[t] = { filas: filas.length, columnas: Object.keys(filas[0] || {}).slice(0, 70), error: cacheTablas[`${t}__error`] || undefined, coincidencias: hit.length, muestra: hit.slice(0, 40) };
+      }
+      // Si el proveedor tiene pagos con una fecha cercana a la de los anticipos pero sin vínculo explícito, se listan los últimos pagos suyos de cada tabla.
+      out.ultimosPagosDelProveedor = ["cxp-pagos detalles", "cxp-pagosotros detalles"].map((t) => ({ tabla: t, filas: (cacheTablas[t] || []).filter(delProv).slice(-15) }));
+      out.filasEspNoUnoTresTres0 = esp.filter((r) => delProv(r) && !/^1330/.test(String(r?.Ctapuc ?? "").trim())).slice(-25);
+      documentosRelacionados = out;
+    }
+    return { version: "buscar-anticipos-v3", codigo, valores, numeros, resultados, porProveedor1330, documentosRelacionados };
   }
 );
 
@@ -5533,10 +5564,47 @@ exports.getCuentasPorPagarBusintGen = onCallAuth(
       const codigo = llave.split("|")[0];
       if (valor > 0) cruzadoPorCodigo.set(codigo, (cruzadoPorCodigo.get(codigo) || 0) + valor);
     });
+    // (2026-10-30, a pedido de Fredy) APLICACIÓN POR DOCUMENTO DE PAGO: en el extracto de Busint (Cuentas por Pagar) un anticipo
+    // ("1290 Ant") queda en 0 cuando otro documento de pago lo aplica (ej. el documento 1353 aplicó los anticipos 1290, 1298, 1310 y 1311 de
+    // MANUFACTURAS ELIOT SAS; el 1404 aplicó el 1354). Esa aplicación llega de dos formas, y ambas se restan:
+    //   (a) filas de "cxp-pagos detalles"/"cxp-pagosotros detalles" del mismo proveedor cuyo Nfact es el NÚMERO del anticipo
+    //       (ya acumuladas en pagadoPorFactura con la llave `${codigo}|${nfact}`);
+    //   (b) filas de "cxp-pagos detallesesp" en la 1330 con Nfact = número del anticipo (crédito a la 1330 en OTRO pago).
+    // Lo aplicado a un anticipo nunca supera su valor, para que un número de factura que coincida por casualidad no lo deje negativo.
+    const aplicadoEspPorAnticipo = new Map(); // `${codigo}|${npagoAnticipo}` -> crédito 1330 que apunta a ese anticipo (Nfact)
+    (pagosEsp || []).forEach((r) => {
+      if (!/^1330/.test(String(r?.Ctapuc ?? "").trim())) return;
+      const cred = (Number(r?.Credito) || 0) - (Number(r?.Debito) || 0);
+      if (cred <= 0) return;
+      const nf = normalizarCodigoCxp(r?.Nfact);
+      if (!nf || nf === "0") return;
+      const nitCrudo = normalizarCodigoCxp(r?.Nit);
+      if (!nitCrudo) return;
+      const cod = nombrePorCodigo.has(nitCrudo) ? nitCrudo : codigoPorNitCxp.get(nitCrudo) || nitCrudo;
+      // Si el pago que acredita ya figura como entrada negativa de la lista, su crédito ya está restado en el bruto: no se cuenta dos veces.
+      if ((espPorCodigoNpago.get(`${cod}|${String(r?.Npago ?? "").trim()}`) || 0) < -1) return;
+      const llaveA = `${cod}|${nf}`;
+      aplicadoEspPorAnticipo.set(llaveA, (aplicadoEspPorAnticipo.get(llaveA) || 0) + cred);
+    });
+    const aplicacionesDetectadas = [];
+    anticiposPorCodigo.forEach((lista, codigo) => {
+      lista.forEach((a) => {
+        if (!(a.valor > 0)) return;
+        const porPagos = pagadoPorFactura.get(`${codigo}|${normalizarCodigoCxp(a.numero)}`) || 0;
+        const porEsp = aplicadoEspPorAnticipo.get(`${codigo}|${normalizarCodigoCxp(a.numero)}`) || 0;
+        const aplicado = Math.min(a.valor, Math.max(porPagos, porEsp));
+        if (aplicado > 1) {
+          a.aplicado = Math.round(aplicado);
+          a.aplicadoPor = porPagos >= porEsp ? "cxp-pagos detalles (Nfact = n° del anticipo)" : "cxp-pagos detallesesp (1330 con Nfact = n° del anticipo)";
+          aplicacionesDetectadas.push({ codigo, anticipo: a.numero, valor: a.valor, aplicado: a.aplicado, fuente: a.aplicadoPor });
+        }
+      });
+    });
     anticiposPorCodigo.forEach((lista, codigo) => {
       const bruto = lista.reduce((t, a) => t + a.valor, 0);
       const cruzado = cruzadoPorCodigo.get(codigo) || 0;
-      const neto = bruto - cruzado;
+      const aplicadoDocs = lista.reduce((t, a) => t + (a.aplicado || 0), 0);
+      const neto = bruto - cruzado - aplicadoDocs;
       if (neto <= UMBRAL_SALDO_CXP) return;
       const nombre = nombrePorCodigo.get(codigo) || `Proveedor ${codigo}`;
       if (!porProveedor.has(nombre)) {
@@ -5547,6 +5615,7 @@ exports.getCuentasPorPagarBusintGen = onCallAuth(
       prov.anticiposTotal = (prov.anticiposTotal || 0) + Math.round(neto);
       prov.anticiposBruto = (prov.anticiposBruto || 0) + Math.round(bruto);
       prov.anticiposCruzado = (prov.anticiposCruzado || 0) + Math.round(cruzado);
+      prov.anticiposAplicadoDocs = (prov.anticiposAplicadoDocs || 0) + Math.round(aplicadoDocs);
       prov.anticipos = [...(prov.anticipos || []), ...[...lista].sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || ""))).slice(0, 15)];
     });
     // Chequeo para validar contra el reporte de Busint (ej. MUNDO HBC SAS debe dar $165.000.000 en anticipos).
@@ -5564,7 +5633,8 @@ exports.getCuentasPorPagarBusintGen = onCallAuth(
       tablasCandidatas = [`(no se pudo leer el swagger: ${e?.message || e})`];
     }
     const diagnosticoAnticipos = {
-      version: "anticipos-v3",
+      version: "anticipos-v4",
+      aplicacionesDetectadas: aplicacionesDetectadas.slice(0, 60),
       codigosBuscados: codigosMundoHbc,
       filasMundoHbcEnPagos: pagos.filter((x) => codigosMundoHbc.includes(normalizarCodigoCxp(x?.CodigoP))).length,
       filasMundoHbcEnPagosOtros: pagosOtros.filter((x) => codigosMundoHbc.includes(normalizarCodigoCxp(x?.CodigoP))).length,

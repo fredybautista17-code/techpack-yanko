@@ -5220,6 +5220,11 @@ function CuadreCxpView({ proveedoresBusint, corteActivo, detalleFacturas, factur
                     <div style={{ fontSize: 12, color: C.slate, marginBottom: 6 }}>
                       Tablas con coincidencias: {(ra.data.resultados || []).filter((t) => t.coincidencias > 0).map((t) => `${t.tabla} (${t.coincidencias})`).join(" · ") || "ninguna"}
                     </div>
+                    {ra.data.documentosRelacionados && (
+                      <div style={{ fontSize: 12, color: C.slate, marginBottom: 6 }}>
+                        Documentos de pago que mencionan estos anticipos: {["cxp-pagos detalles", "cxp-pagosotros detalles", "cxp-pagos detallesesp", "cxp-pagos"].map((t) => `${t} (${ra.data.documentosRelacionados[t]?.coincidencias ?? 0})`).join(" · ")}
+                      </div>
+                    )}
                     <pre style={{ maxHeight: 280, overflow: "auto", background: C.white, border: `1px solid ${C.border}`, borderRadius: 8, padding: 10, fontSize: 10 }}>{JSON.stringify(ra.data, null, 1)}</pre>
                   </div>
                 )}
