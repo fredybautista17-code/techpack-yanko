@@ -3066,10 +3066,21 @@ exports.buscarAnticiposProveedorBusint = onCallAuth(
       }
       // Si el proveedor tiene pagos con una fecha cercana a la de los anticipos pero sin vínculo explícito, se listan los últimos pagos suyos de cada tabla.
       out.ultimosPagosDelProveedor = ["cxp-pagos detalles", "cxp-pagosotros detalles"].map((t) => ({ tabla: t, filas: (cacheTablas[t] || []).filter(delProv).slice(-15) }));
+      // (2026-10-30) Compras del proveedor en "cartera cxp-fact" con el mismo valor que algún anticipo (caso "Pago a causar" de Pash).
+      await cargar("cartera cxp-fact");
+      const fact = cacheTablas["cartera cxp-fact"] || [];
+      const delCodigoFact = fact.filter((r) => normalizarCodigoCxp(r?.CODIGO) === codigo);
+      out.carteraFact = {
+        filas: fact.length,
+        columnas: Object.keys(fact[0] || {}).slice(0, 60),
+        delProveedor: delCodigoFact.length,
+        conMismoValorQueUnAnticipo: delCodigoFact.filter((r) => valores.some((x) => Math.abs((Number(r?.FACTOTAL) || 0) - x) <= 1)).slice(0, 20),
+        conNumeroDeAnticipo: delCodigoFact.filter((r) => anticipoNums.has(String(r?.NFACT ?? "").trim())).slice(0, 20),
+      };
       out.filasEspNoUnoTresTres0 = esp.filter((r) => delProv(r) && !/^1330/.test(String(r?.Ctapuc ?? "").trim())).slice(-25);
       documentosRelacionados = out;
     }
-    return { version: "buscar-anticipos-v3", codigo, valores, numeros, resultados, porProveedor1330, documentosRelacionados };
+    return { version: "buscar-anticipos-v4", codigo, valores, numeros, resultados, porProveedor1330, documentosRelacionados };
   }
 );
 
