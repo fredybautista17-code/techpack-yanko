@@ -17737,9 +17737,244 @@ function motivoCierreInfo(motivo) {
   }
 }
 
+// (2026-10-29, a pedido de Fredy) "Traer pedidos desde archivo": crea en ATLAS los pedidos que están cargados en Busint
+// y todavía no existen aquí, leyendo el reporte de Ventas (el mismo Excel de "Ventas Perdidas": una fila por
+// pedido/referencia/color/talla). Los pendientes (Cumplido = N) entran como Activos; los cumplidos (Cumplido = S) entran al
+// Histórico ya cerrados. Los pedidos que ya existen en ATLAS NO se tocan (conservan cortes y seguimiento).
+function fechaExcelAISO(v) {
+  if (v === "" || v == null) return "";
+  if (typeof v === "number") return new Date(Math.round((v - 25569) * 86400 * 1000)).toISOString().slice(0, 10);
+  const m = String(v).trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[1]}-${m[2]}-${m[3]}` : String(v).trim();
+}
+// Excel convierte tallas como "2-4", "6-8" o "10-12" en fechas (2 de abril, 6 de agosto, 10 de diciembre). Se devuelven a
+// su forma original día-mes.
+function tallaDesdeExcel(v) {
+  if (typeof v === "number") {
+    if (v > 30000) {
+      const d = new Date(Math.round((v - 25569) * 86400 * 1000));
+      return `${d.getUTCDate()}-${d.getUTCMonth() + 1}`;
+    }
+    return String(v);
+  }
+  const s = String(v ?? "").trim();
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return `${Number(m[3])}-${Number(m[2])}`;
+  return s || "Sin talla";
+}
+async function parseVentasParaPedidos(file) {
+  const XLSX = await import("xlsx");
+  const buffer = await file.arrayBuffer();
+  const wb = XLSX.read(buffer, { type: "array" });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
+  if (!rows.length || !("Num Ped" in rows[0]) || !("Cant Pedida" in rows[0]) || !("Cumplido" in rows[0])) {
+    throw new Error('El archivo no parece el reporte de Ventas de Busint (faltan las columnas "Num Ped", "Cumplido" o "Cant Pedida").');
+  }
+  const porPedido = new Map();
+  rows.forEach((r) => {
+    const numero = String(r["Num Ped"] ?? "").trim();
+    if (!numero) return;
+    if (!porPedido.has(numero)) {
+      porPedido.set(numero, {
+        numero,
+        cliente: String(r["Nombre Comercial"] || r["Razon Social"] || "").trim(),
+        cumplido: String(r["Cumplido"] ?? "").trim().toUpperCase() === "S",
+        fechaPedido: fechaExcelAISO(r["Fecha Ped"]),
+        fechaDespacho: "",
+        vendedor: String(r["Vendedor"] || "").trim(),
+        ciudad: String(r["Ciudad"] || "").trim(),
+        refs: new Map(),
+        ventasPerdidas: 0,
+        facturada: 0,
+      });
+    }
+    const p = porPedido.get(numero);
+    const fd = fechaExcelAISO(r["Fecha Final Desp"]);
+    if (fd && (!p.fechaDespacho || fd < p.fechaDespacho)) p.fechaDespacho = fd;
+    const fp = fechaExcelAISO(r["Fecha Ped"]);
+    if (fp && (!p.fechaPedido || fp < p.fechaPedido)) p.fechaPedido = fp;
+    p.ventasPerdidas += Math.abs(Number(r["Cant Ventas Perdidas"]) || 0);
+    p.facturada += Number(r["Cant Facturada"]) || 0;
+    const ref = String(r["Ref Externa"] || r["Referencia"] || "").trim();
+    if (!ref) return;
+    const pinta = String(r["Pinta"] ?? "").trim();
+    const color = String(r["Color"] ?? "").trim();
+    const clave = `${ref}|${pinta}`;
+    if (!p.refs.has(clave)) p.refs.set(clave, { ref, descripcion: [pinta, color].filter(Boolean).join(" · "), tallas: {}, total: 0 });
+    const o = p.refs.get(clave);
+    const talla = tallaDesdeExcel(r["Talla"]);
+    const cant = Math.round(Number(r["Cant Pedida"]) || 0);
+    o.tallas[talla] = (o.tallas[talla] || 0) + cant;
+    o.total += cant;
+  });
+  return [...porPedido.values()].map((p) => ({ ...p, refs: [...p.refs.values()], unidades: [...p.refs.values()].reduce((s, r) => s + r.total, 0) }));
+}
+function TraerPedidosArchivoModal({ pedidos, onClose }) {
+  const [paso, setPaso] = useState(1);
+  const [error, setError] = useState("");
+  const [leyendo, setLeyendo] = useState(false);
+  const [todos, setTodos] = useState([]);
+  const [conPendientes, setConPendientes] = useState(true);
+  const [conHistorico, setConHistorico] = useState(true);
+  const [progreso, setProgreso] = useState(0);
+  const [resultado, setResultado] = useState(null);
+  const fileRef = useRef();
+  const existentes = new Set((pedidos || []).map((p) => String(p.numero || "").trim()));
+  const nuevos = todos.filter((p) => !existentes.has(p.numero));
+  const nuevosPend = nuevos.filter((p) => !p.cumplido);
+  const nuevosHist = nuevos.filter((p) => p.cumplido);
+  const yaExisten = todos.length - nuevos.length;
+  const aTraer = [...(conPendientes ? nuevosPend : []), ...(conHistorico ? nuevosHist : [])].sort((a, b) => Number(a.numero) - Number(b.numero));
+  async function leer(e) {
+    const f = e.target.files[0];
+    if (!f) return;
+    setError("");
+    setLeyendo(true);
+    try {
+      const lista = await parseVentasParaPedidos(f);
+      if (!lista.length) throw new Error("No se encontraron pedidos en el archivo.");
+      setTodos(lista);
+      setPaso(2);
+    } catch (err) { setError(err?.message || String(err)); }
+    setLeyendo(false);
+  }
+  async function traer() {
+    if (!aTraer.length) return;
+    setPaso(3);
+    setProgreso(0);
+    let ok = 0, fallo = 0;
+    const lote = 15;
+    for (let i = 0; i < aTraer.length; i += lote) {
+      const tanda = aTraer.slice(i, i + lote);
+      await Promise.all(tanda.map(async (p) => {
+        const cerrado = p.cumplido;
+        const doc = {
+          id: p.numero,
+          numero: p.numero,
+          cliente: p.cliente,
+          fechaPedido: p.fechaPedido,
+          fechaDespacho: p.fechaDespacho,
+          vendedor: p.vendedor,
+          ciudad: p.ciudad,
+          referencias: p.refs.map((r) => ({ id: uid(), ref: r.ref, descripcion: r.descripcion, tallas: { ...r.tallas }, total: r.total, precioCortePrenda: 0 })),
+          cortesRealizados: [],
+          seguimiento: {},
+          estado: cerrado ? "cerrado" : "activo",
+          motivoCierre: cerrado ? (p.ventasPerdidas > 0 ? "venta_perdida" : "facturado") : null,
+          fechaCumplido: cerrado ? today() : null,
+          origen: "archivo_ventas",
+          importadoEn: today(),
+          creadoEn: today(),
+        };
+        try { await fsSave("pedidos_activos", p.numero, doc); ok++; } catch (err) { fallo++; }
+      }));
+      setProgreso(Math.min(aTraer.length, i + lote));
+    }
+    setResultado({ ok, fallo });
+  }
+  const fmtF2 = (iso) => (iso ? iso : "—");
+  return (
+    <Modal title="Traer pedidos desde archivo" onClose={onClose} width={860}>
+      {paso === 1 && (
+        <div>
+          <p style={{ margin: "0 0 14px", fontSize: 13, color: T.slate }}>Sube el reporte de <b>Ventas</b> de Busint (el mismo Excel de Ventas Perdidas). ATLAS crea los pedidos que todavía no tiene: los pendientes como <b>Activos</b> y los cumplidos en el <b>Histórico</b>. Los pedidos que ya existen no se tocan.</p>
+          <div onClick={() => !leyendo && fileRef.current.click()} style={{ border: `2px dashed ${T.denim}`, borderRadius: 12, padding: 32, textAlign: "center", cursor: leyendo ? "wait" : "pointer", background: T.denimBg }}>
+            <div style={{ fontSize: 32, marginBottom: 8 }}>{leyendo ? "⏳" : "📂"}</div>
+            <div style={{ fontWeight: 700, color: T.denim }}>{leyendo ? "Leyendo el archivo… (puede tardar unos segundos)" : "Subir Excel de Ventas"}</div>
+            <div style={{ fontSize: 12, color: T.slate, marginTop: 4 }}>Acepta .xlsx, .xls</div>
+            <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }} onChange={leer} />
+          </div>
+          {error && <div style={{ marginTop: 12, padding: "10px 14px", background: T.coralBg, borderRadius: 8, color: T.coral, fontSize: 13, fontWeight: 600 }}>⚠ {error}</div>}
+        </div>
+      )}
+      {paso === 2 && (
+        <div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 14 }}>
+            {[
+              { l: "Pedidos en el archivo", v: todos.length, c: T.ink, bg: T.canvas },
+              { l: "Ya existen en ATLAS", v: yaExisten, c: T.slate, bg: T.canvas },
+              { l: "Nuevos pendientes (Activos)", v: nuevosPend.length, c: T.denim, bg: T.denimBg },
+              { l: "Nuevos cumplidos (Histórico)", v: nuevosHist.length, c: T.jade, bg: T.jadeBg },
+            ].map((k) => (
+              <div key={k.l} style={{ background: k.bg, borderRadius: 10, padding: "10px 12px", border: `1px solid ${T.border}` }}>
+                <div style={{ fontSize: 22, fontWeight: 900, color: k.c, lineHeight: 1 }}>{fmtNum(k.v)}</div>
+                <div style={{ fontSize: 11, color: T.slate, marginTop: 4, fontWeight: 600 }}>{k.l}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 18, marginBottom: 12, flexWrap: "wrap" }}>
+            <label style={{ fontSize: 13, color: T.ink, display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+              <input type="checkbox" checked={conPendientes} onChange={(e) => setConPendientes(e.target.checked)} /> Traer los pendientes nuevos ({nuevosPend.length})
+            </label>
+            <label style={{ fontSize: 13, color: T.ink, display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+              <input type="checkbox" checked={conHistorico} onChange={(e) => setConHistorico(e.target.checked)} /> Traer los cumplidos al Histórico ({nuevosHist.length})
+            </label>
+          </div>
+          {!aTraer.length ? (
+            <div style={{ padding: 24, textAlign: "center", color: T.slate, fontSize: 13 }}>{nuevos.length ? "Marca al menos una de las dos opciones." : "Todos los pedidos del archivo ya existen en ATLAS. No hay nada nuevo para traer."}</div>
+          ) : (
+            <div style={{ maxHeight: 340, overflowY: "auto", border: `1px solid ${T.border}`, borderRadius: 10 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                <thead>
+                  <tr style={{ background: T.ink, position: "sticky", top: 0 }}>
+                    {["N° Pedido", "Cliente", "Fecha pedido", "Despacho", "Refs", "Unidades", "Irá a"].map((h, i) => (
+                      <th key={h} style={{ padding: "8px 10px", color: T.seam, textAlign: i < 2 ? "left" : "center", fontWeight: 700, fontSize: 11 }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {aTraer.map((p, i) => (
+                    <tr key={p.numero} style={{ background: i % 2 ? T.canvas : T.white, borderTop: `1px solid ${T.border}` }}>
+                      <td style={{ padding: "6px 10px", fontWeight: 800, color: T.denim }}>#{p.numero}</td>
+                      <td style={{ padding: "6px 10px" }}>{p.cliente || "—"}</td>
+                      <td style={{ padding: "6px 10px", textAlign: "center" }}>{fmtF2(p.fechaPedido)}</td>
+                      <td style={{ padding: "6px 10px", textAlign: "center" }}>{fmtF2(p.fechaDespacho)}</td>
+                      <td style={{ padding: "6px 10px", textAlign: "center" }}>{p.refs.length}</td>
+                      <td style={{ padding: "6px 10px", textAlign: "center", fontWeight: 700 }}>{fmtNum(p.unidades)}</td>
+                      <td style={{ padding: "6px 10px", textAlign: "center" }}>
+                        <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: p.cumplido ? T.jadeBg : T.denimBg, color: p.cumplido ? T.jade : T.denim }}>{p.cumplido ? "Histórico" : "Activo"}</span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
+            <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+            <Btn onClick={traer} disabled={!aTraer.length}>Traer {aTraer.length} pedido{aTraer.length !== 1 ? "s" : ""}</Btn>
+          </div>
+        </div>
+      )}
+      {paso === 3 && (
+        <div style={{ textAlign: "center", padding: 24 }}>
+          {!resultado ? (
+            <>
+              <div style={{ fontSize: 32, marginBottom: 8 }}>⏳</div>
+              <div style={{ fontWeight: 700, color: T.ink }}>Guardando pedidos… {progreso} de {aTraer.length}</div>
+              <div style={{ height: 8, background: T.border, borderRadius: 6, margin: "14px auto 0", maxWidth: 360, overflow: "hidden" }}>
+                <div style={{ width: `${Math.round((progreso / aTraer.length) * 100)}%`, height: "100%", background: T.denim }} />
+              </div>
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize: 32, marginBottom: 8 }}>{resultado.fallo ? "⚠️" : "✅"}</div>
+              <div style={{ fontWeight: 800, color: T.ink, fontSize: 16 }}>{resultado.ok} pedido{resultado.ok !== 1 ? "s" : ""} traído{resultado.ok !== 1 ? "s" : ""}</div>
+              {resultado.fallo > 0 && <div style={{ color: T.coral, fontSize: 13, marginTop: 6 }}>{resultado.fallo} no se pudieron guardar. Vuelve a subir el archivo: solo intentará los que faltan.</div>}
+              <div style={{ marginTop: 16 }}><Btn onClick={onClose}>Cerrar</Btn></div>
+            </>
+          )}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, pedidoConfig, onSavePedidoConfig, isAdmin, currentUser, soloLectura }) {
   const [filtro, setFiltro] = useState("activos");
   const [editPedido, setEditPedido] = useState(null);
+  const [traerArchivo, setTraerArchivo] = useState(false);
   const [busqueda, setBusqueda] = useState("");
   const activos = pedidos.filter((p) => p.estado === "activo" || p.estado === "terminado");
   // Un único estado de cierre ("cerrado"), con el motivo en motivoCierre — ya
@@ -17771,10 +18006,12 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
   return (
     <div>
       {editPedido && <EditPedidoModal pedido={editPedido} onSave={(p) => { onUpdatePedido(p); setEditPedido(null); }} onClose={() => setEditPedido(null)} />}
+      {traerArchivo && <TraerPedidosArchivoModal pedidos={pedidos} onClose={() => setTraerArchivo(false)} />}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
         <div><h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Pedidos</h2><p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Base de pedidos vigentes — se actualiza desde "📡 Vigentes por Cliente (Busint)"</p></div>
         {!soloLectura && (
           <div style={{ display: "flex", gap: 8 }}>
+            {isAdmin && <Btn variant="secondary" onClick={() => setTraerArchivo(true)}>📥 Traer pedidos desde archivo</Btn>}
             <Btn variant="secondary" onClick={onNewPedido}>+ Pedido manual</Btn>
           </div>
         )}
