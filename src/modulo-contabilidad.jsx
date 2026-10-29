@@ -5498,6 +5498,34 @@ function CuadreCxpView({ proveedoresBusint, corteActivo, detalleFacturas, factur
     </div>
   );
 }
+// (2026-10-29) Chequeo de anticipos (solo admin, solo cuando NO se encontró ninguno): dice si el servidor respondió con la versión nueva y
+// muestra lo que llegó de Busint para MUNDO HBC SAS, para ubicar dónde están sus anticipos. "Copiar" deja todo en el portapapeles.
+function ChequeoAnticiposCxp({ chequeo }) {
+  const [abierto, setAbierto] = useState(true);
+  const [copiado, setCopiado] = useState(false);
+  const diag = chequeo?.diag || null;
+  let estado = "Pulsa «🔄 Traer desde Busint» para ejecutar el chequeo de anticipos.";
+  let color = C.slate;
+  if (chequeo?.recibida && !diag) { estado = "El servidor respondió con la versión ANTERIOR (sin anticipos): falta publicar la función getCuentasPorPagarBusintGen (firebase deploy --only functions:getCuentasPorPagarBusintGen)."; color = C.red; }
+  else if (diag) { estado = `No se encontró ningún anticipo. Pagos sin factura: ${diag.filasSinFactura ?? 0} · Mundo HBC (códigos ${(diag.codigosBuscados || []).join(", ")}): ${diag.filasMundoHbcEnPagos ?? 0} fila(s) en pagos y ${diag.filasMundoHbcEnPagosOtros ?? 0} en pagos-otros.`; color = C.amber; }
+  async function copiar() {
+    try { await navigator.clipboard.writeText(JSON.stringify(diag, null, 1)); setCopiado(true); setTimeout(() => setCopiado(false), 2500); } catch (e) { /* sin portapapeles */ }
+  }
+  return (
+    <div style={{ border: `1.5px solid ${color}55`, borderRadius: 12, marginBottom: 16, background: C.white, padding: "10px 14px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+        <span style={{ fontWeight: 700, fontSize: 12, color }}>💸 Chequeo de anticipos: {estado}</span>
+        {diag && (
+          <span style={{ display: "inline-flex", gap: 10, flexShrink: 0 }}>
+            <button type="button" onClick={() => setAbierto((v) => !v)} style={{ background: "none", border: "none", color: C.blue, cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "inherit" }}>{abierto ? "Ocultar" : "Ver"} datos</button>
+            <button type="button" onClick={copiar} style={{ background: "none", border: "none", color: C.blue, cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "inherit" }}>{copiado ? "✓ Copiado" : "Copiar chequeo"}</button>
+          </span>
+        )}
+      </div>
+      {diag && abierto && <pre style={{ marginTop: 8, maxHeight: 260, overflow: "auto", background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 8, padding: 10, fontSize: 10 }}>{JSON.stringify(diag, null, 1)}</pre>}
+    </div>
+  );
+}
 // (2026-10-29, a pedido de Fredy) Anticipos a proveedores: pagos hechos sin factura (Busint los muestra como "Ant" y deja al
 // proveedor con "Por pagar" negativo). Se muestran aparte de la deuda para que no se confundan con facturas.
 function AnticiposCxpPanel({ filas, total, diag }) {
@@ -5673,7 +5701,7 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
       const detalle = {};
       (resp.data.proveedores || []).forEach((p) => { detalle[p.nombre] = p.facturas || []; });
       setDetalleFacturasPorProveedor(detalle);
-      setDiagAnticipos(resp.data.diagnosticoAnticipos || null);
+      setDiagAnticipos({ recibida: true, diag: resp.data.diagnosticoAnticipos || null });
       setVerFacturasDe(null);
       const corteId = uid();
       // Las facturas abiertas de cada proveedor se guardan APARTE (un documento por proveedor, el ultimo corte) para ver
@@ -5939,7 +5967,8 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
             <KPI icon="🔴" label="91+ días (más urgente)" value={fmtCOP(total91)} color={C.red} bg={C.redBg} />
           </div>
           <FranjaVencimientosCxp proveedores={filasCorte} fechaCorte={corteActivo?.fechaCorte} nPlazo={nPlazoAplicado} nTotal={filasCorte.length} />
-          {filasAnticipos.length > 0 && <AnticiposCxpPanel filas={filasAnticipos} total={totalAnticipos} diag={isAdmin ? diagAnticipos : null} />}
+          {isAdmin && filasAnticipos.length === 0 && <ChequeoAnticiposCxp chequeo={diagAnticipos} />}
+          {filasAnticipos.length > 0 && <AnticiposCxpPanel filas={filasAnticipos} total={totalAnticipos} diag={isAdmin ? diagAnticipos?.diag || null : null} />}
           <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 14, flexWrap: "wrap" }}>
             <div style={{ width: 240 }}>
               <FInput value={busquedaProveedor} onChange={setBusquedaProveedor} placeholder="Buscar proveedor..." icon="🔍" />

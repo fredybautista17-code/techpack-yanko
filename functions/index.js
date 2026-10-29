@@ -5254,8 +5254,29 @@ exports.getCuentasPorPagarBusintGen = onCallAuth(
       prov.anticipos = [...(prov.anticipos || []), ...[...lista].sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || ""))).slice(0, 15)];
     });
     // Chequeo para validar contra el reporte de Busint (ej. MUNDO HBC SAS debe dar $165.000.000 en anticipos).
-    const codigosMundoHbc = [...nombrePorCodigo].filter(([, n]) => /MUNDO\s*HBC/i.test(n)).map(([c]) => c);
+    // (v2) También se busca por código 2448 (MUNDO HBC SAS) por si el nombre no coincide, y se traen las filas de ese proveedor de
+    // las otras tablas que ya se consultan, más la lista de tablas candidatas del swagger de Busint BD, para ubicar dónde viven sus anticipos.
+    const codigosMundoHbc = [...new Set([...[...nombrePorCodigo].filter(([, n]) => /MUNDO\s*HBC/i.test(n)).map(([c]) => c), "2448"])];
+    const delProv = (arr, campo) => (arr || []).filter((r) => codigosMundoHbc.includes(normalizarCodigoCxp(r?.[campo]))).slice(-10);
+    let tablasCandidatas = [];
+    try {
+      const swaggerResp = await fetch("https://api-yanko-bd.busint.info/swagger/v1/swagger.json");
+      const swagger = await swaggerResp.json();
+      const enumList = swagger.paths["/api/Query"].post.parameters.find((x) => x.name === "tableName").schema.enum;
+      tablasCandidatas = enumList.filter((t) => /anticip|cxp|pago|provee|cartera|nota/i.test(t));
+    } catch (e) {
+      tablasCandidatas = [`(no se pudo leer el swagger: ${e?.message || e})`];
+    }
     const diagnosticoAnticipos = {
+      version: "anticipos-v2",
+      codigosBuscados: codigosMundoHbc,
+      filasMundoHbcEnPagos: pagos.filter((x) => codigosMundoHbc.includes(normalizarCodigoCxp(x?.CodigoP))).length,
+      filasMundoHbcEnPagosOtros: pagosOtros.filter((x) => codigosMundoHbc.includes(normalizarCodigoCxp(x?.CodigoP))).length,
+      facturasMundoHbc: delProv(facturas, "CODIGO"),
+      notasContablesMundoHbc: delProv(notasContables, "Cod"),
+      notasDescuentoMundoHbc: delProv(notasDescuento, "Cod"),
+      devolucionesMundoHbc: delProv(devoluciones, "codigo"),
+      tablasCandidatas,
       filasSinFactura: totalFilasSinFactura,
       proveedoresConAnticipos: [...porProveedor.values()].filter((p) => p.anticiposTotal > 0).length,
       totalAnticiposNetos: [...porProveedor.values()].reduce((t, p) => t + (p.anticiposTotal || 0), 0),
