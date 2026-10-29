@@ -5025,7 +5025,7 @@ function CuadreCxpView({ proveedoresBusint, corteActivo, detalleFacturas, factur
       if (!mapa.has(key)) mapa.set(key, { clave: key, nombre: p.nombreMostrado || p.nombre, nombreBusint: p.nombre, nombreTns: "", nit, busint: 0, vencido: 0, tns: 0, enBusint: true, enTns: false, porEnlace: !nitProp && !!nitEnl, sinTns: false });
       const r = mapa.get(key);
       if (sinTns[claveDocCxp(p.nombre)]) r.sinTns = true;
-      r.busint += Number(p.total) || 0;
+      r.busint += (Number(p.total) || 0) - (Number(p.anticiposTotal) || 0); // (2026-10-29) neto de anticipos a proveedores, como el "Gran TOTAL" de Busint
       r.vencido += (Number(p.dias0a30) || 0) + (Number(p.dias31a60) || 0) + (Number(p.dias61a90) || 0) + (Number(p.dias91mas) || 0);
       if (nit) porNit.set(nit, key);
       if (nk && !porNombre.has(nk)) porNombre.set(nk, key);
@@ -5498,6 +5498,56 @@ function CuadreCxpView({ proveedoresBusint, corteActivo, detalleFacturas, factur
     </div>
   );
 }
+// (2026-10-29, a pedido de Fredy) Anticipos a proveedores: pagos hechos sin factura (Busint los muestra como "Ant" y deja al
+// proveedor con "Por pagar" negativo). Se muestran aparte de la deuda para que no se confundan con facturas.
+function AnticiposCxpPanel({ filas, total, diag }) {
+  const [abierto, setAbierto] = useState(false);
+  const [verCrudo, setVerCrudo] = useState(false);
+  return (
+    <div style={{ border: `1.5px solid ${C.green}55`, borderRadius: 12, marginBottom: 16, overflow: "hidden", background: C.white }}>
+      <button type="button" onClick={() => setAbierto((v) => !v)} style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", background: C.greenBg, border: "none", cursor: "pointer", fontFamily: "inherit" }}>
+        <span style={{ fontWeight: 800, fontSize: 13, color: C.green }}>💸 Anticipos a proveedores · {filas.length} proveedor{filas.length !== 1 ? "es" : ""} · −{fmtCOP(total)}</span>
+        <span style={{ color: C.green, fontSize: 12 }}>{abierto ? "▲" : "▼"}</span>
+      </button>
+      {abierto && (
+        <div style={{ padding: 14 }}>
+          <div style={{ fontSize: 12, color: C.slate, marginBottom: 10 }}>Pagos hechos al proveedor que todavía no se aplican a ninguna factura. Descuentan lo que se le debe: Neto por pagar = Total adeudado − anticipos. Los que ya se cruzaron contra una factura no se cuentan.</div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: C.ink }}>
+                  {["Proveedor", "Anticipos (n° · fecha · valor)", "Ya cruzado", "A favor", "Debe en facturas", "Neto"].map((h, i) => (
+                    <th key={h} style={{ padding: "8px 10px", color: C.seam, textAlign: i === 0 || i === 1 ? "left" : "right", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {filas.map((f, i) => (
+                  <tr key={f.nombre} style={{ background: i % 2 ? C.canvas : C.white, borderTop: `1px solid ${C.border}` }}>
+                    <td style={{ padding: "7px 10px", fontWeight: 700, color: C.ink }}>{f.nombreMostrado || f.nombre}</td>
+                    <td style={{ padding: "7px 10px", color: C.slate }}>
+                      {(f.anticipos || []).map((a, k) => <div key={k}>{a.numero || "s/n"} · {a.fecha || "sin fecha"} · {fmtCOP(a.valor)}</div>)}
+                    </td>
+                    <td style={{ padding: "7px 10px", textAlign: "right", color: C.slate }}>{fmtCOP(f.anticiposCruzado || 0)}</td>
+                    <td style={{ padding: "7px 10px", textAlign: "right", fontWeight: 800, color: C.green }}>−{fmtCOP(f.anticiposTotal)}</td>
+                    <td style={{ padding: "7px 10px", textAlign: "right", color: C.slate }}>{fmtCOP(f.total || 0)}</td>
+                    <td style={{ padding: "7px 10px", textAlign: "right", fontWeight: 800, color: (f.total || 0) - f.anticiposTotal < 0 ? C.green : C.ink }}>{(f.total || 0) - f.anticiposTotal < 0 ? "−" : ""}{fmtCOP(Math.abs((f.total || 0) - f.anticiposTotal))}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {diag && (
+            <div style={{ marginTop: 10 }}>
+              <button type="button" onClick={() => setVerCrudo((v) => !v)} style={{ background: "none", border: "none", color: C.blue, cursor: "pointer", fontSize: 11, fontWeight: 700, padding: 0, fontFamily: "inherit" }}>{verCrudo ? "Ocultar" : "Ver"} chequeo técnico (admin)</button>
+              {verCrudo && <pre style={{ marginTop: 6, maxHeight: 220, overflow: "auto", background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 8, padding: 10, fontSize: 10 }}>{JSON.stringify(diag, null, 1)}</pre>}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, nombresProveedor, categoriasCxp, categoriasLista, categoriasPorConcepto, onImportarCorte, onDeleteCorte, onAddManual, onDeleteManual, onDeleteProveedorCorte, onGuardarNombreConcepto, onGuardarNombreProveedor, onGuardarCategoria, isAdmin }) {
   const [showImport, setShowImport] = useState(false);
   const [showManual, setShowManual] = useState(false);
@@ -5553,6 +5603,8 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
   // de saldo (ej. Cheviotto) sin tener que exportar nada a mano.
   const [detalleFacturasPorProveedor, setDetalleFacturasPorProveedor] = useState({});
   const [verFacturasDe, setVerFacturasDe] = useState(null);
+  // (2026-10-29) Chequeo de anticipos de la ultima llamada a Busint (solo en memoria).
+  const [diagAnticipos, setDiagAnticipos] = useState(null);
   // (2026-09-27, a pedido de Fredy) Modal para ponerle nombre legible a un
   // codigo de "Concepto de Obligacion" crudo de Busint (ej. "SCONF").
   const [renombrandoConcepto, setRenombrandoConcepto] = useState(null);
@@ -5621,6 +5673,7 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
       const detalle = {};
       (resp.data.proveedores || []).forEach((p) => { detalle[p.nombre] = p.facturas || []; });
       setDetalleFacturasPorProveedor(detalle);
+      setDiagAnticipos(resp.data.diagnosticoAnticipos || null);
       setVerFacturasDe(null);
       const corteId = uid();
       // Las facturas abiertas de cada proveedor se guardan APARTE (un documento por proveedor, el ultimo corte) para ver
@@ -5693,6 +5746,10 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
   if (origenFiltro) {
     filas = filas.filter((f) => f.origen === origenFiltro);
   }
+  // (2026-10-29) Los proveedores que solo tienen anticipos (sin facturas abiertas) no van en esta tabla: salen en el panel de anticipos.
+  filas = filas.filter((f) => !f.soloAnticipos);
+  const filasAnticipos = filasCorte.filter((f) => (f.anticiposTotal || 0) > 0).sort((a, b) => (b.anticiposTotal || 0) - (a.anticiposTotal || 0));
+  const totalAnticipos = filasAnticipos.reduce((t, f) => t + (f.anticiposTotal || 0), 0);
   filas = [...filas].sort((a, b) => {
     if (orden === "total") return b.total - a.total;
     if (orden === "0-30") return b.dias0a30 - a.dias0a30;
@@ -5870,16 +5927,19 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "repeat(3,1fr)",
+              gridTemplateColumns: `repeat(${totalAnticipos > 0 ? 5 : 3},1fr)`,
               gap: 14,
               marginBottom: 20,
             }}
           >
             <KPI icon="🧾" label="Total adeudado" value={fmtCOP(totalAdeudado)} color={C.violet} bg={C.violetBg} />
+            {totalAnticipos > 0 && <KPI icon="💸" label="Anticipos a proveedores (a favor)" value={`−${fmtCOP(totalAnticipos)}`} color={C.green} bg={C.greenBg} />}
+            {totalAnticipos > 0 && <KPI icon="⚖" label="Neto por pagar" value={fmtCOP(totalAdeudado - totalAnticipos)} color={C.blue} bg={C.blueBg} />}
             <KPI icon="⚠" label="Total vencido" value={fmtCOP(totalVencido)} color={C.amber} bg={C.amberBg} />
             <KPI icon="🔴" label="91+ días (más urgente)" value={fmtCOP(total91)} color={C.red} bg={C.redBg} />
           </div>
           <FranjaVencimientosCxp proveedores={filasCorte} fechaCorte={corteActivo?.fechaCorte} nPlazo={nPlazoAplicado} nTotal={filasCorte.length} />
+          {filasAnticipos.length > 0 && <AnticiposCxpPanel filas={filasAnticipos} total={totalAnticipos} diag={isAdmin ? diagAnticipos : null} />}
           <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 14, flexWrap: "wrap" }}>
             <div style={{ width: 240 }}>
               <FInput value={busquedaProveedor} onChange={setBusquedaProveedor} placeholder="Buscar proveedor..." icon="🔍" />
@@ -6001,6 +6061,7 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
                               </button>
                             </span>{" "}
                             {f.origen === "manual" && <span style={{ fontSize: 10, color: C.slate, fontWeight: 400 }}>(manual)</span>}
+                            {(f.anticiposTotal || 0) > 0 && <span title="Anticipo a favor ya pagado a este proveedor y sin cruzar con facturas" style={{ marginLeft: 6, fontSize: 10, color: C.green, fontWeight: 700 }}>anticipo −{fmtCOP(f.anticiposTotal)}</span>}
                           </td>
                           <td style={{ padding: "8px 12px", textAlign: "right", color: C.slate }}>{fmtCOP(f.porVencer)}</td>
                           <td style={{ padding: "8px 12px", textAlign: "right", color: C.slate }}>{fmtCOP(f.dias0a30)}</td>

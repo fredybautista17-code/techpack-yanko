@@ -4868,6 +4868,12 @@ exports.getCuentasPorPagarBusintGen = onCallAuth(
     // normalizarCodigoCxp arriba -- antes se cruzaba con el valor crudo de
     // Busint, sin normalizar tipo/mayúsculas).
     const pagadoPorFactura = new Map();
+    // (2026-10-29, a pedido de Fredy) ANTICIPOS A PROVEEDORES: en Busint son pagos SIN factura (en el reporte "Cuentas por
+    // Pagar" salen como "4054 Ant", N°Doc 0, y dejan al proveedor con "Por pagar" negativo). Antes estas filas se descartaban
+    // (no hay factura con que cruzarlas), por eso ATLAS no mostraba, p. ej., los -$165M de MUNDO HBC SAS. Se juntan aquí por
+    // proveedor; los que ya se cruzaron contra una factura (nota contable 22050101) se descuentan más abajo.
+    const anticiposPorCodigo = new Map();
+    let totalFilasSinFactura = 0;
     // (2026-09-27, a pedido de Fredy) "cxp-pagos detalles" y "cxp-pagosotros
     // detalles" son dos tablas HERMANAS con exactamente los mismos campos
     // (CodigoP, Nfact, Totalp, Cheque) -- Busint las usa para distintas
@@ -4909,9 +4915,24 @@ exports.getCuentasPorPagarBusintGen = onCallAuth(
     // todavia por falta de evidencia; si aparece un nuevo "saldo fantasma",
     // revisar con depurarFacturaCxp si alguno de esos trae valor antes de
     // asumir que es el mismo patron.
-    [...pagos, ...pagosOtros].forEach((p) => {
+    [...pagos.map((x) => ({ x, t: "cxp-pagos detalles" })), ...pagosOtros.map((x) => ({ x, t: "cxp-pagosotros detalles" }))].forEach(({ x: p, t: tablaPago }) => {
       const codigo = normalizarCodigoCxp(p?.CodigoP);
       const nfact = normalizarCodigoCxp(p?.Nfact);
+      if (codigo && (nfact === "" || nfact === "0" || /^ANT/.test(nfact))) {
+        const valorAnt = p?.Cheque != null ? (Number(p.Cheque) || 0) + (Number(p?.Desc) || 0) : (Number(p?.Totalp) || 0);
+        totalFilasSinFactura++;
+        if (Math.abs(valorAnt) > 1) {
+          const kFecha = Object.keys(p || {}).find((k) => /^fecha/i.test(k) && p[k]);
+          const fAnt = kFecha ? fechaBusintBDaDateSoloDia(p[kFecha]) : null;
+          if (!anticiposPorCodigo.has(codigo)) anticiposPorCodigo.set(codigo, []);
+          anticiposPorCodigo.get(codigo).push({
+            numero: String(p?.Npago ?? p?.NPago ?? p?.Numero ?? "").trim(),
+            fecha: fAnt ? fAnt.toISOString().slice(0, 10) : null,
+            valor: Math.round(valorAnt),
+            tabla: tablaPago,
+          });
+        }
+      }
       if (!codigo || !nfact) return;
       const llave = `${codigo}|${nfact}`;
       const montoPagado = p?.Cheque != null
@@ -5134,6 +5155,37 @@ exports.getCuentasPorPagarBusintGen = onCallAuth(
         concepto,
       });
     });
+    // Anticipos a proveedores (ver anticiposPorCodigo arriba): neto = pagos sin factura - lo ya cruzado contra facturas
+    // (notas contables a 22050101). Un proveedor que solo tiene anticipos (sin facturas abiertas) también aparece.
+    const cruzadoPorCodigo = new Map();
+    ajusteCxpPorFactura.forEach((valor, llave) => {
+      const codigo = llave.split("|")[0];
+      if (valor > 0) cruzadoPorCodigo.set(codigo, (cruzadoPorCodigo.get(codigo) || 0) + valor);
+    });
+    anticiposPorCodigo.forEach((lista, codigo) => {
+      const bruto = lista.reduce((t, a) => t + a.valor, 0);
+      const cruzado = cruzadoPorCodigo.get(codigo) || 0;
+      const neto = bruto - cruzado;
+      if (neto <= UMBRAL_SALDO_CXP) return;
+      const nombre = nombrePorCodigo.get(codigo) || `Proveedor ${codigo}`;
+      if (!porProveedor.has(nombre)) {
+        porProveedor.set(nombre, { nombre, porVencer: 0, dias0a30: 0, dias31a60: 0, dias61a90: 0, dias91mas: 0, total: 0, nit: nitPorCodigo.get(codigo) || "", facturas: [], porConcepto: {}, vencimientosPorSemana: {}, soloAnticipos: true });
+      }
+      const prov = porProveedor.get(nombre);
+      prov.anticiposTotal = (prov.anticiposTotal || 0) + Math.round(neto);
+      prov.anticiposBruto = (prov.anticiposBruto || 0) + Math.round(bruto);
+      prov.anticiposCruzado = (prov.anticiposCruzado || 0) + Math.round(cruzado);
+      prov.anticipos = [...(prov.anticipos || []), ...[...lista].sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || ""))).slice(0, 15)];
+    });
+    // Chequeo para validar contra el reporte de Busint (ej. MUNDO HBC SAS debe dar $165.000.000 en anticipos).
+    const codigosMundoHbc = [...nombrePorCodigo].filter(([, n]) => /MUNDO\s*HBC/i.test(n)).map(([c]) => c);
+    const diagnosticoAnticipos = {
+      filasSinFactura: totalFilasSinFactura,
+      proveedoresConAnticipos: [...porProveedor.values()].filter((p) => p.anticiposTotal > 0).length,
+      totalAnticiposNetos: [...porProveedor.values()].reduce((t, p) => t + (p.anticiposTotal || 0), 0),
+      mundoHbc: codigosMundoHbc.map((c) => ({ codigo: c, anticipos: anticiposPorCodigo.get(c) || [], cruzado: cruzadoPorCodigo.get(c) || 0 })),
+      pagosCrudosMundoHbc: [...pagos, ...pagosOtros].filter((x) => codigosMundoHbc.includes(normalizarCodigoCxp(x?.CodigoP))).slice(-12),
+    };
     const proveedoresResultado = [...porProveedor.values()]
       .map((p) => {
         // Concepto dominante: el que acumula más saldo para este proveedor.
@@ -5182,6 +5234,8 @@ exports.getCuentasPorPagarBusintGen = onCallAuth(
       proveedoresConNit: proveedoresResultado.filter((p) => p.nit).length,
       totalProveedores: proveedoresResultado.length,
       totalGeneral: proveedoresResultado.reduce((s, p) => s + p.total, 0),
+      totalAnticipos: proveedoresResultado.reduce((s, p) => s + (p.anticiposTotal || 0), 0),
+      diagnosticoAnticipos,
     };
   }
 );
