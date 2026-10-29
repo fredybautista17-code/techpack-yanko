@@ -18334,6 +18334,28 @@ function SincronizarPedidosModal({ onClose }) {
     catch (err) { setError(err?.message || String(err)); }
     setGuardandoModo(false);
   }
+  // Descarga las tres listas (y el resumen) en un Excel para revisarlas con calma antes de aplicar nada.
+  async function descargarExcel() {
+    if (!cruce) return;
+    const XLSX = await import("xlsx");
+    const wb = XLSX.utils.book_new();
+    const hoja = (filas, nombre) => XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(filas.length ? filas : [{ Nota: "Nada en esta lista" }]), nombre);
+    hoja([
+      { Dato: "Pedidos en Busint (rango)", Valor: cruce.resumen.busint },
+      { Dato: "Se crearán", Valor: cruce.resumen.nuevos },
+      { Dato: "  de ellos, quedan Activos", Valor: cruce.resumen.nuevosActivos },
+      { Dato: "  de ellos, van al Histórico", Valor: cruce.resumen.nuevosCerrados },
+      { Dato: "Se cerrarán (salieron)", Valor: cruce.resumen.cerrar },
+      { Dato: "Por revisar", Valor: cruce.resumen.revisar },
+      { Dato: "Sin cambio", Valor: cruce.resumen.sinCambio },
+      { Dato: "Rango consultado", Valor: `${cruce.fechaInicio} a ${cruce.fechaFin}` },
+      { Dato: "Carga de Planeación usada", Valor: cruce.cargaPlaneacion || "" },
+    ], "Resumen");
+    hoja((cruce.revisar || []).map((r) => ({ "Num Ped": r.numero, "Cliente": r.cliente, "Estado en ATLAS": r.estadoAtlas, "Qué pasa": r.detalle, "Acción posible": etiquetaAccion[r.accion] || r.accion })), "Por revisar");
+    hoja((cruce.cerrar || []).map((c) => ({ "Num Ped": c.numero, "Cliente": c.cliente, "Unidades pedido": c.unidades, "Facturado": c.facturado, "Motivo": c.motivo === "venta_perdida" ? "Venta perdida" : "Facturado", "Por qué": c.razon })), "Se cerrarán");
+    hoja((cruce.nuevos || []).map((n) => ({ "Num Ped": n.numero, "Cliente": n.cliente, "Fecha pedido": n.fechaPedido, "Fecha despacho": n.fechaDespacho, "Unidades pedido": n.unidades, "Facturado": n.facturado, "Quedará como": etiquetaDestino(n) })), "Se crearán");
+    XLSX.writeFile(wb, `Sincronizacion_Busint_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  }
   const etiquetaAccion = { reabrir: "Reabrir (pasar a Activo)", cerrar: "Cerrar", crear: "Crear como Activo" };
   const etiquetaDestino = (n) => (n.destino === "activo" ? "Activo" : n.motivo === "venta_perdida" ? "Histórico · venta perdida" : "Histórico · facturado");
   const th = (arr) => (
@@ -18475,6 +18497,7 @@ function SincronizarPedidosModal({ onClose }) {
           </div>
 
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
+            <Btn variant="secondary" onClick={descargarExcel} disabled={aplicando}>⬇ Descargar para revisar (Excel)</Btn>
             <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
             <Btn variant="secondary" onClick={calcular} disabled={aplicando}>↻ Volver a calcular</Btn>
             <Btn onClick={aplicar} disabled={aplicando || (seguros + decisiones.length === 0)}>
