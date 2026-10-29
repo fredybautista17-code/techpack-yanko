@@ -5607,9 +5607,29 @@ exports.getCuentasPorPagarBusintGen = onCallAuth(
       aplicadoEspPorAnticipo.set(llaveA, (aplicadoEspPorAnticipo.get(llaveA) || 0) + cred);
     });
     const aplicacionesDetectadas = [];
+    // (2026-10-30) "PAGO A CAUSAR": en el extracto de Busint de PASH SAS, el anticipo 30 ($112.500.000, 2022-05-20) aparece como una COMPRA
+    // ("ANTICIPO A PROVEEDOR") por el mismo valor y con la misma fecha, que el mismo pago cancela: la entrada queda en $0 y el proveedor en $0.
+    // Si el proveedor tiene en "cartera cxp-fact" una factura con el MISMO valor (±$1) y la MISMA fecha de emisión que el anticipo, se toma el
+    // anticipo como ya consumido por esa compra y no se cuenta como saldo a favor.
+    const gruposFacturaPorCodigo = new Map();
+    facturasPorLlave.forEach((g) => {
+      if (!gruposFacturaPorCodigo.has(g.codigo)) gruposFacturaPorCodigo.set(g.codigo, []);
+      gruposFacturaPorCodigo.get(g.codigo).push(g);
+    });
     anticiposPorCodigo.forEach((lista, codigo) => {
       lista.forEach((a) => {
-        if (!(a.valor > 0)) return;
+        if (!(a.valor > 0) || a.aplicado || !a.fecha) return;
+        const compra = (gruposFacturaPorCodigo.get(codigo) || []).find((g) => Math.abs((Number(g.facTotal) || 0) - a.valor) <= 1 && g.fechaEmision && g.fechaEmision.toISOString().slice(0, 10) === a.fecha);
+        if (compra) {
+          a.aplicado = a.valor;
+          a.aplicadoPor = `compra "Pago a causar" de igual valor y fecha en cartera cxp-fact (factura ${compra.nfactOriginal})`;
+          aplicacionesDetectadas.push({ codigo, anticipo: a.numero, valor: a.valor, aplicado: a.aplicado, fuente: a.aplicadoPor });
+        }
+      });
+    });
+    anticiposPorCodigo.forEach((lista, codigo) => {
+      lista.forEach((a) => {
+        if (!(a.valor > 0) || a.aplicado) return;
         const porPagos = pagadoPorFactura.get(`${codigo}|${normalizarCodigoCxp(a.numero)}`) || 0;
         const porEsp = aplicadoEspPorAnticipo.get(`${codigo}|${normalizarCodigoCxp(a.numero)}`) || 0;
         const porEntrada = aplicadoPorEntradaAnticipo.get(`${codigo}|${normalizarCodigoCxp(a.numero)}`) || 0;
@@ -5654,7 +5674,7 @@ exports.getCuentasPorPagarBusintGen = onCallAuth(
       tablasCandidatas = [`(no se pudo leer el swagger: ${e?.message || e})`];
     }
     const diagnosticoAnticipos = {
-      version: "anticipos-v5",
+      version: "anticipos-v6",
       aplicacionesDetectadas: aplicacionesDetectadas.slice(0, 60),
       codigosBuscados: codigosMundoHbc,
       filasMundoHbcEnPagos: pagos.filter((x) => codigosMundoHbc.includes(normalizarCodigoCxp(x?.CodigoP))).length,
