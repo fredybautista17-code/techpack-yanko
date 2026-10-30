@@ -2594,6 +2594,45 @@ function rangoSyncPedidosPorDefecto() {
 
 // "Dado por cumplido" sin facturar: por debajo de este porcentaje cubierto (facturado + ventas perdidas) el pedido no se cierra ni se crea solo.
 const UMBRAL_CUMPLIDO_CUBIERTO = 0.9;
+// (2026-10-30, a pedido de Fredy) "ATLAS tiene más que Busint": cuando se BAJA o se quita algo de un pedido en Busint, la copia de ATLAS
+// (pedidos_activos) queda con las cantidades viejas. Compara por referencia + color; devuelve los grupos donde Busint tiene MENOS que ATLAS
+// (un color/referencia que ya no está en Busint cuenta como 0). No escribe nada.
+function compararRefsAtlasVsBusint(refsAtlas, refsBusint) {
+  const norm = (v) => String(v || "").replace(/\s+/g, " ").trim().toUpperCase();
+  const clave = (r) => `${norm(r?.ref)}|${norm(r?.descripcion)}`;
+  const tot = (r) => {
+    const t = Number(r?.total);
+    if (Number.isFinite(t) && t > 0) return t;
+    return Object.values(r?.tallas || {}).reduce((x, v) => x + (Number(v) || 0), 0);
+  };
+  const busPorClave = new Map();
+  (refsBusint || []).forEach((b) => busPorClave.set(clave(b), b));
+  const busPorRef = new Map();
+  (refsBusint || []).forEach((b) => { const k = norm(b.ref); busPorRef.set(k, (busPorRef.get(k) || []).concat(b)); });
+  const grupos = new Map(); // clave -> { ref, descripcion, idxs[], atlas }
+  (refsAtlas || []).forEach((r, idx) => {
+    const a = tot(r);
+    if (!(a > 0)) return; // negativos/ceros de ATLAS (devoluciones de consignación) no se tocan
+    const k = clave(r);
+    if (!grupos.has(k)) grupos.set(k, { ref: r.ref, descripcion: r.descripcion, idxs: [], atlas: 0 });
+    const g = grupos.get(k);
+    g.idxs.push(idx); g.atlas += a;
+  });
+  const atlasPorRef = new Map();
+  [...grupos.entries()].forEach(([k, g]) => { const kr = norm(g.ref); atlasPorRef.set(kr, (atlasPorRef.get(kr) || 0) + 1); });
+  const out = [];
+  for (const [k, g] of grupos) {
+    let b = busPorClave.get(k);
+    if (!b) {
+      const mismas = busPorRef.get(norm(g.ref)) || [];
+      if (mismas.length === 1 && atlasPorRef.get(norm(g.ref)) === 1) b = mismas[0];
+    }
+    const busint = b ? tot(b) : 0;
+    if (busint < g.atlas) out.push({ ref: g.ref, descripcion: g.descripcion, atlas: g.atlas, busint, idxs: g.idxs, tallasBusint: b ? { ...(b.tallas || {}) } : null });
+  }
+  return out;
+}
+
 async function calcularCruceBusintAtlas(fechaInicio, fechaFin) {
   const hoyISO = fechaHoyBogota();
   const avisos = [];
@@ -2677,7 +2716,7 @@ async function calcularCruceBusintAtlas(fechaInicio, fechaFin) {
   const lotesTxt = (i) => (i.lotesProd.length ? `${i.lotesProd.length} lote(s) en ${[...new Set(i.lotesProd.map((l) => l.ubicacionActual))].join(", ")}` : i.lotes.length ? "solo lotes ya terminados (BPT)" : "sin lotes en planta");
   const salioTxt = (i) => (i.cumplido ? "dado por cumplido en Busint" : `facturado completo (${i.facturado} de ${i.unidades})`);
   const cubiertoTxt = (i) => `Dado por cumplido en Busint, pero solo está cubierto el ${Math.round(i.cubiertoPct * 100)}% del pedido (facturado ${i.facturado}${i.ventasPerdidas ? ` + ${i.ventasPerdidas} de venta perdida` : ""} de ${i.unidades}).`;
-  const nuevos = [], cerrar = [], revisar = [], unidadesDistintas = [], datosRaros = [];
+  const nuevos = [], cerrar = [], revisar = [], unidadesDistintas = [], unidadesMenos = [], datosRaros = [];
   let sinCambio = 0;
   // (2026-10-29) Pedidos que YA están en ATLAS pero con menos unidades que Busint (por la consulta que perdía líneas repetidas).
   const sumaTotalRef = (r) => {
@@ -2704,6 +2743,20 @@ async function calcularCruceBusintAtlas(fechaInicio, fechaFin) {
           continue;
         }
         unidadesDistintas.push({ numero, cliente: i.cliente, estadoAtlas: ex.estado === "cerrado" ? `Cerrado (${ex.motivoCierre || "sin motivo"})` : "Activo", unidadesAtlas, unidadesBusint: i.unidades, diferencia: i.unidades - unidadesAtlas, refs: refsDif.slice(0, 40) });
+      }
+    }
+    // (2026-10-30) Busint tiene MENOS que ATLAS en un pedido activo (se bajó o se quitó algo en Busint): se propone bajarlo, nunca solo.
+    if (ex && ex.estado !== "cerrado" && i.unidades > 0) {
+      const refsAtlasX = Array.isArray(ex.referencias) ? ex.referencias : [];
+      const unidadesAtlasX = refsAtlasX.reduce((x, r) => x + sumaTotalRef(r), 0);
+      if (i.unidades < unidadesAtlasX) {
+        const refsMenos = compararRefsAtlasVsBusint(refsAtlasX, i.refs);
+        if (refsMenos.length) {
+          unidadesMenos.push({
+            numero, cliente: i.cliente, estadoAtlas: "Activo", unidadesAtlas: unidadesAtlasX, unidadesBusint: i.unidades, diferencia: i.unidades - unidadesAtlasX,
+            refs: refsMenos.map((r) => ({ ref: r.ref, descripcion: r.descripcion, atlas: r.atlas, busint: r.busint })).slice(0, 60),
+          });
+        }
       }
     }
     if (!ex) {
@@ -2748,12 +2801,14 @@ async function calcularCruceBusintAtlas(fechaInicio, fechaFin) {
     cerrar: cerrar.length,
     revisar: revisar.length,
     unidades: unidadesDistintas.length,
+    unidadesMenos: unidadesMenos.length,
     datosRaros: datosRaros.length,
     sinCambio,
   };
   unidadesDistintas.sort(orden);
+  unidadesMenos.sort(orden);
   datosRaros.sort(orden);
-  return { fechaInicio, fechaFin, hoyISO, cargaPlaneacion: String(carga.fecha || carga.creadoEn || ""), avisos, resumen, nuevos, cerrar, revisar, unidades: unidadesDistintas, datosRaros, infoPorNumero };
+  return { fechaInicio, fechaFin, hoyISO, cargaPlaneacion: String(carga.fecha || carga.creadoEn || ""), avisos, resumen, nuevos, cerrar, revisar, unidades: unidadesDistintas, unidadesMenos, datosRaros, infoPorNumero };
 }
 
 async function aplicarCruceBusintAtlas(cruce, decisiones) {
@@ -2769,7 +2824,7 @@ async function aplicarCruceBusintAtlas(cruce, decisiones) {
     origen: "sync_busint", importadoEn: hoy, creadoEn: hoy, sincronizadoEn: ahora,
   });
   const ops = [];
-  const creados = [], cerrados = [], reabiertos = [], decididos = [], unidadesActualizadas = [];
+  const creados = [], cerrados = [], reabiertos = [], decididos = [], unidadesActualizadas = [], unidadesBajadas = [];
   for (const n of cruce.nuevos) {
     const i = cruce.infoPorNumero.get(n.numero);
     if (!i) continue;
@@ -2811,6 +2866,30 @@ async function aplicarCruceBusintAtlas(cruce, decisiones) {
     ops.push({ numero: u.numero, data: { referencias: refs, unidadesCorregidasEn: ahora, sincronizadoEn: ahora }, merge: true });
     unidadesActualizadas.push(u.numero);
   }
+  // (2026-10-30) Bajar unidades: Busint tiene MENOS (se bajó o quitó algo del pedido). Se toman las tallas/total de Busint por referencia + color;
+  // lo que Busint ya no trae queda en 0 (no se borra la línea). No toca cortes, seguimiento ni precios. Guarda lo anterior en `unidadesAnteriores`.
+  for (const d of decisiones || []) {
+    if (d?.decision !== "bajar_unidades") continue;
+    const u = (cruce.unidadesMenos || []).find((x) => x.numero === String(d?.numero));
+    const i = u ? cruce.infoPorNumero.get(u.numero) : null;
+    if (!u || !i) continue;
+    const snap = await db.collection("pedidos_activos").doc(u.numero).get();
+    if (!snap.exists) continue;
+    const refsActuales = Array.isArray(snap.data().referencias) ? snap.data().referencias : [];
+    const refs = refsActuales.map((r) => ({ ...r, tallas: { ...(r.tallas || {}) } }));
+    const antes = refsActuales.map((r) => ({ id: r.id || null, ref: r.ref || "", descripcion: r.descripcion || "", total: Number(r.total) || 0, tallas: { ...(r.tallas || {}) } }));
+    const difs = compararRefsAtlasVsBusint(refsActuales, i.refs);
+    if (!difs.length) continue;
+    for (const g of difs) {
+      g.idxs.forEach((idx, k) => {
+        const r = refs[idx];
+        if (k === 0 && g.tallasBusint) { r.tallas = { ...g.tallasBusint }; r.total = g.busint; }
+        else { r.tallas = Object.fromEntries(Object.keys(r.tallas || {}).map((t) => [t, 0])); r.total = 0; }
+      });
+    }
+    ops.push({ numero: u.numero, data: { referencias: refs, unidadesAnteriores: { fecha: ahora, refs: antes }, unidadesCorregidasEn: ahora, sincronizadoEn: ahora }, merge: true });
+    unidadesBajadas.push(u.numero);
+  }
   for (const d of decisiones || []) {
     const r = cruce.revisar.find((x) => x.numero === String(d?.numero) && x.accion === d?.decision);
     if (!r) continue;
@@ -2838,7 +2917,7 @@ async function aplicarCruceBusintAtlas(cruce, decisiones) {
     });
     await batch.commit();
   }
-  return { creados, cerrados, reabiertos, decididos, unidadesActualizadas };
+  return { creados, cerrados, reabiertos, decididos, unidadesActualizadas, unidadesBajadas };
 }
 
 async function ejecutarSyncPedidos({ fechaInicio, fechaFin, aplicar, decisiones, origen }) {
@@ -2849,22 +2928,24 @@ async function ejecutarSyncPedidos({ fechaInicio, fechaFin, aplicar, decisiones,
   const revisarFinal = cruce.revisar.filter((r) => !decididosSet.has(r.numero));
   const unidadesHechas = new Set(aplicado ? aplicado.unidadesActualizadas : []);
   const unidadesFinal = cruce.unidades.filter((u) => !unidadesHechas.has(u.numero));
+  const bajadasHechas = new Set(aplicado ? aplicado.unidadesBajadas : []);
+  const unidadesMenosFinal = (cruce.unidadesMenos || []).filter((u) => !bajadasHechas.has(u.numero));
   const generadoEn = new Date().toISOString();
   await db.collection("sync_pedidos_estado").doc("ultimo").set({
     generadoEn, origen, aplicado: !!aplicar, fechaInicio, fechaFin, cargaPlaneacion: cruce.cargaPlaneacion,
-    resumen: { ...cruce.resumen, revisar: revisarFinal.length, unidades: unidadesFinal.length },
+    resumen: { ...cruce.resumen, revisar: revisarFinal.length, unidades: unidadesFinal.length, unidadesMenos: unidadesMenosFinal.length },
     revisar: revisarFinal.slice(0, 300),
-    aplicadoResumen: aplicado ? { creados: aplicado.creados.length, cerrados: aplicado.cerrados.length, reabiertos: aplicado.reabiertos.length, unidades: aplicado.unidadesActualizadas.length } : null,
+    aplicadoResumen: aplicado ? { creados: aplicado.creados.length, cerrados: aplicado.cerrados.length, reabiertos: aplicado.reabiertos.length, unidades: aplicado.unidadesActualizadas.length, unidadesBajadas: aplicado.unidadesBajadas.length } : null,
     error: null,
   });
   if (aplicado) {
     await db.collection("sync_pedidos_log").add({
       generadoEn, origen, fechaInicio, fechaFin, resumen: cruce.resumen,
-      creados: aplicado.creados.slice(0, 800), cerrados: aplicado.cerrados.slice(0, 800), reabiertos: aplicado.reabiertos.slice(0, 200), unidadesActualizadas: aplicado.unidadesActualizadas.slice(0, 800),
+      creados: aplicado.creados.slice(0, 800), cerrados: aplicado.cerrados.slice(0, 800), reabiertos: aplicado.reabiertos.slice(0, 200), unidadesActualizadas: aplicado.unidadesActualizadas.slice(0, 800), unidadesBajadas: aplicado.unidadesBajadas.slice(0, 800),
     });
   }
   const { infoPorNumero, ...publico } = cruce;
-  return { ...publico, revisar: revisarFinal, unidades: unidadesFinal, resumen: { ...cruce.resumen, revisar: revisarFinal.length, unidades: unidadesFinal.length }, generadoEn, origen, aplicado: aplicado ? { creados: aplicado.creados.length, cerrados: aplicado.cerrados.length, reabiertos: aplicado.reabiertos.length, decididos: aplicado.decididos.length, unidades: aplicado.unidadesActualizadas.length } : null };
+  return { ...publico, revisar: revisarFinal, unidades: unidadesFinal, unidadesMenos: unidadesMenosFinal, resumen: { ...cruce.resumen, revisar: revisarFinal.length, unidades: unidadesFinal.length, unidadesMenos: unidadesMenosFinal.length }, generadoEn, origen, aplicado: aplicado ? { creados: aplicado.creados.length, cerrados: aplicado.cerrados.length, reabiertos: aplicado.reabiertos.length, decididos: aplicado.decididos.length, unidades: aplicado.unidadesActualizadas.length, bajadas: aplicado.unidadesBajadas.length } : null };
 }
 
 exports.sincronizarPedidosBusint = onCallAuth(

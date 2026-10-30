@@ -18682,27 +18682,30 @@ function SincronizarPedidosModal({ onClose }) {
   const [guardandoModo, setGuardandoModo] = useState(false);
   const [marcados, setMarcados] = useState({});
   const [marcadosU, setMarcadosU] = useState({});
+  const [marcadosM, setMarcadosM] = useState({}); // (2026-10-30) "ATLAS tiene más que Busint": pedidos a bajar
   const [abierta, setAbierta] = useState("revisar");
   const [aplicando, setAplicando] = useState(false);
   const [resultado, setResultado] = useState(null);
   const [diagNum, setDiagNum] = useState(null);
   const llamar = (payload) => httpsCallable(functionsClient, "sincronizarPedidosBusint", { timeout: 540000 })(payload).then((r) => r.data);
   async function calcular() {
-    setCargando(true); setError(""); setResultado(null); setMarcados({}); setMarcadosU({});
+    setCargando(true); setError(""); setResultado(null); setMarcados({}); setMarcadosU({}); setMarcadosM({});
     try {
       const d = await llamar({ modo: "calcular" });
       setCruce(d);
       if (d.modoAuto) setModoAuto(d.modoAuto);
-      setAbierta(d.revisar && d.revisar.length ? "revisar" : d.unidades && d.unidades.length ? "unidades" : d.cerrar && d.cerrar.length ? "cerrar" : "nuevos");
+      setAbierta(d.revisar && d.revisar.length ? "revisar" : d.unidades && d.unidades.length ? "unidades" : d.unidadesMenos && d.unidadesMenos.length ? "menos" : d.cerrar && d.cerrar.length ? "cerrar" : "nuevos");
     } catch (err) { setError(err?.message || String(err)); }
     setCargando(false);
   }
   useEffect(() => { calcular(); }, []);
   const revisar = cruce?.revisar || [];
   const unidadesDist = cruce?.unidades || [];
+  const unidadesMenosL = cruce?.unidadesMenos || [];
   const decisiones = [
     ...revisar.filter((r) => marcados[r.numero]).map((r) => ({ numero: r.numero, decision: r.accion })),
     ...unidadesDist.filter((u) => marcadosU[u.numero]).map((u) => ({ numero: u.numero, decision: "actualizar_unidades" })),
+    ...unidadesMenosL.filter((u) => marcadosM[u.numero]).map((u) => ({ numero: u.numero, decision: "bajar_unidades" })),
   ];
   const seguros = (cruce?.nuevos?.length || 0) + (cruce?.cerrar?.length || 0);
   async function aplicar() {
@@ -18713,6 +18716,7 @@ function SincronizarPedidosModal({ onClose }) {
       setCruce(d);
       setMarcados({});
       setMarcadosU({});
+      setMarcadosM({});
     } catch (err) { setError(err?.message || String(err)); }
     setAplicando(false);
   }
@@ -18736,12 +18740,14 @@ function SincronizarPedidosModal({ onClose }) {
       { Dato: "Se cerrarán (salieron)", Valor: cruce.resumen.cerrar },
       { Dato: "Por revisar", Valor: cruce.resumen.revisar },
       { Dato: "Unidades distintas (ATLAS tiene menos que Busint)", Valor: (cruce.unidades || []).length },
+      { Dato: "ATLAS tiene más que Busint (se bajó o quitó algo en Busint)", Valor: (cruce.unidadesMenos || []).length },
       { Dato: "Sin cambio", Valor: cruce.resumen.sinCambio },
       { Dato: "Rango consultado", Valor: `${cruce.fechaInicio} a ${cruce.fechaFin}` },
       { Dato: "Carga de Planeación usada", Valor: cruce.cargaPlaneacion || "" },
     ], "Resumen");
     hoja((cruce.revisar || []).map((r) => ({ "Num Ped": r.numero, "Cliente": r.cliente, "Estado en ATLAS": r.estadoAtlas, "Qué pasa": r.detalle, "Falta por referencia (facturado de pedido)": refsTxt(r.refs), "Acción posible": etiquetaAccion[r.accion] || r.accion })), "Por revisar");
     hoja((cruce.unidades || []).flatMap((u) => (u.refs && u.refs.length ? u.refs : [{ ref: "", descripcion: "", atlas: "", busint: "" }]).map((r) => ({ "Num Ped": u.numero, "Cliente": u.cliente, "Estado en ATLAS": u.estadoAtlas, "Unidades ATLAS (pedido)": u.unidadesAtlas, "Unidades Busint (pedido)": u.unidadesBusint, "Diferencia": u.diferencia, "Referencia": r.ref, "Color": r.descripcion, "Ref ATLAS": r.atlas, "Ref Busint": r.busint }))), "Unidades distintas");
+    hoja((cruce.unidadesMenos || []).flatMap((u) => (u.refs && u.refs.length ? u.refs : [{ ref: "", descripcion: "", atlas: "", busint: "" }]).map((r) => ({ "Num Ped": u.numero, "Cliente": u.cliente, "Unidades ATLAS (pedido)": u.unidadesAtlas, "Unidades Busint (pedido)": u.unidadesBusint, "Diferencia": u.diferencia, "Referencia": r.ref, "Color": r.descripcion, "Ref ATLAS": r.atlas, "Ref Busint": r.busint }))), "ATLAS tiene más");
     hoja((cruce.cerrar || []).map((c) => ({ "Num Ped": c.numero, "Cliente": c.cliente, "Unidades pedido": c.unidades, "Facturado": c.facturado, "Motivo": c.motivo === "venta_perdida" ? "Venta perdida" : "Facturado", "Por qué": c.razon })), "Se cerrarán");
     hoja((cruce.nuevos || []).map((n) => ({ "Num Ped": n.numero, "Cliente": n.cliente, "Fecha pedido": n.fechaPedido, "Fecha despacho": n.fechaDespacho, "Unidades pedido": n.unidades, "Facturado": n.facturado, "% facturado": n.pctFacturado ?? "", "Quedará como": etiquetaDestino(n) })), "Se crearán");
     XLSX.writeFile(wb, `Sincronizacion_Busint_${new Date().toISOString().slice(0, 10)}.xlsx`);
@@ -18753,6 +18759,7 @@ function SincronizarPedidosModal({ onClose }) {
     return sig;
   });
   const marcarTodasUnidades = (v) => setMarcadosU(v ? Object.fromEntries(unidadesDist.map((u) => [u.numero, true])) : {});
+  const marcarTodasMenos = (v) => setMarcadosM(v ? Object.fromEntries(unidadesMenosL.map((u) => [u.numero, true])) : {});
   const etiquetaAccion = { reabrir: "Reabrir (pasar a Activo)", cerrar: "Cerrar", crear: "Crear como Activo", crear_cerrado: "Crear en el Histórico (cerrado)" };
   const refsTxt = (refs) => (refs || []).map((x) => `${x.ref}: ${fmtNum(x.facturado)} de ${fmtNum(x.pedido)}`).join(" · ");
   const etiquetaDestino = (n) => (n.destino === "activo" ? "Activo" : n.motivo === "venta_perdida" ? "Histórico · venta perdida" : "Histórico · facturado");
@@ -18795,7 +18802,7 @@ function SincronizarPedidosModal({ onClose }) {
           <div style={{ fontSize: 30, marginBottom: 6 }}>✅</div>
           <div style={{ fontWeight: 800, color: T.ink, fontSize: 16 }}>Sincronización aplicada</div>
           <div style={{ fontSize: 13, color: T.slate, marginTop: 6 }}>
-            {fmtNum(resultado.aplicado.creados)} creado{resultado.aplicado.creados !== 1 ? "s" : ""} · {fmtNum(resultado.aplicado.cerrados)} cerrado{resultado.aplicado.cerrados !== 1 ? "s" : ""} · {fmtNum(resultado.aplicado.reabiertos)} reabierto{resultado.aplicado.reabiertos !== 1 ? "s" : ""}{resultado.aplicado.unidades ? ` · ${fmtNum(resultado.aplicado.unidades)} con unidades actualizadas` : ""}
+            {fmtNum(resultado.aplicado.creados)} creado{resultado.aplicado.creados !== 1 ? "s" : ""} · {fmtNum(resultado.aplicado.cerrados)} cerrado{resultado.aplicado.cerrados !== 1 ? "s" : ""} · {fmtNum(resultado.aplicado.reabiertos)} reabierto{resultado.aplicado.reabiertos !== 1 ? "s" : ""}{resultado.aplicado.unidades ? ` · ${fmtNum(resultado.aplicado.unidades)} con unidades actualizadas` : ""}{resultado.aplicado.bajadas ? ` · ${fmtNum(resultado.aplicado.bajadas)} con unidades bajadas` : ""}
           </div>
           <div style={{ fontSize: 12, color: T.slate, marginTop: 6 }}>Quedan {fmtNum(revisar.length)} por revisar.</div>
           <div style={{ display: "flex", justifyContent: "center", gap: 8, marginTop: 14 }}>
@@ -18806,13 +18813,14 @@ function SincronizarPedidosModal({ onClose }) {
       )}
       {!cargando && cruce && !resultado?.aplicado && (
         <div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 10, marginBottom: 14 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 10, marginBottom: 14 }}>
             {[
               { l: "Pedidos en Busint", v: cruce.resumen.busint, c: T.ink, bg: T.canvas },
               { l: "Se crearán", v: cruce.resumen.nuevos, c: T.denim, bg: T.denimBg },
               { l: "Se cerrarán (salieron)", v: cruce.resumen.cerrar, c: T.jade, bg: T.jadeBg },
               { l: "Por revisar", v: cruce.resumen.revisar, c: T.amber, bg: T.amberBg },
               { l: "Unidades distintas", v: unidadesDist.length, c: T.coral, bg: T.coralBg },
+              { l: "ATLAS tiene más", v: unidadesMenosL.length, c: T.denim, bg: T.denimBg },
               { l: "Sin cambio", v: cruce.resumen.sinCambio, c: T.slate, bg: T.canvas },
             ].map((k) => (
               <div key={k.l} style={{ background: k.bg, borderRadius: 10, padding: "10px 12px", border: `1px solid ${T.border}` }}>
@@ -18891,6 +18899,37 @@ function SincronizarPedidosModal({ onClose }) {
               <button type="button" onClick={() => marcarTodasUnidades(true)} style={{ border: "none", background: "none", color: T.denim, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", padding: 0 }}>Marcar todos</button>
               {" · "}
               <button type="button" onClick={() => marcarTodasUnidades(false)} style={{ border: "none", background: "none", color: T.denim, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", padding: 0 }}>Ninguno</button>
+            </span>
+          ))}
+
+          {seccion("menos", "🔻 ATLAS tiene más que Busint (se bajó o quitó algo en Busint)", unidadesMenosL.length, T.denim, T.denimBg, (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              {th(["Pedido", "Cliente", "Estado en ATLAS", "Und ATLAS", "Und Busint", "Referencias con diferencia", "Acción (marca para aplicar)"])}
+              <tbody>
+                {unidadesMenosL.map((u, i) => (
+                  <tr key={u.numero} style={{ background: i % 2 ? T.canvas : T.white }}>
+                    <td style={{ ...tdBase, fontWeight: 800, color: T.denim }}>#{u.numero} <button type="button" title="Ver detalle por referencia en Busint" onClick={() => setDiagNum(u.numero)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, padding: 0 }}>🔎</button></td>
+                    <td style={tdBase}>{u.cliente}</td>
+                    <td style={{ ...tdBase, textAlign: "center" }}>{u.estadoAtlas}</td>
+                    <td style={{ ...tdBase, textAlign: "center" }}>{fmtNum(u.unidadesAtlas)}</td>
+                    <td style={{ ...tdBase, textAlign: "center", fontWeight: 800 }}>{fmtNum(u.unidadesBusint)} <span style={{ color: T.coral }}>({fmtNum(u.diferencia)})</span></td>
+                    <td style={{ ...tdBase, color: T.slate }}>{(u.refs || []).slice(0, 4).map((r) => `${r.ref}${r.descripcion ? ` ${r.descripcion}` : ""}: ${fmtNum(r.atlas)} → ${fmtNum(r.busint)}`).join(" · ")}{(u.refs || []).length > 4 ? ` · +${u.refs.length - 4} más` : ""}</td>
+                    <td style={{ ...tdBase, textAlign: "center" }}>
+                      <label style={{ cursor: "pointer", fontWeight: 700, color: marcadosM[u.numero] ? T.denim : T.slate }}>
+                        <input type="checkbox" checked={!!marcadosM[u.numero]} onChange={(e) => setMarcadosM((m) => ({ ...m, [u.numero]: e.target.checked }))} style={{ marginRight: 6 }} />
+                        Bajar unidades
+                      </label>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ), (
+            <span>
+              Pedidos activos cuyas cantidades en Busint son <b>menores</b> que las de ATLAS (por ejemplo, porque bajaste o quitaste una referencia o color en Busint). Al aplicar, esas referencias toman las cantidades de Busint; lo que Busint ya no trae queda en 0 (la línea no se borra). No se tocan cortes, seguimiento ni precios, y las cantidades anteriores quedan guardadas en el pedido. Nada se baja solo: tú marcas cuáles.{" "}
+              <button type="button" onClick={() => marcarTodasMenos(true)} style={{ border: "none", background: "none", color: T.denim, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", padding: 0 }}>Marcar todos</button>
+              {" · "}
+              <button type="button" onClick={() => marcarTodasMenos(false)} style={{ border: "none", background: "none", color: T.denim, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", padding: 0 }}>Ninguno</button>
             </span>
           ))}
 
