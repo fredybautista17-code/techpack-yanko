@@ -16932,6 +16932,11 @@ function PedidoDetailView({ pedido, onBack, onUpdatePedido, soloLectura }) {
         {!soloLectura && pedido.estado === "cerrado" && <Btn variant="secondary" small onClick={() => onUpdatePedido({ ...pedido, estado: "activo", motivoCierre: null, fechaCumplido: null })}>↩ Reactivar</Btn>}
         {!soloLectura && pedido.estado !== "cerrado" && <Btn variant="success" onClick={() => setShowConfirmCumplido(true)}>✓ Cumplido</Btn>}
       </div>
+      {!avanceDet && (
+        <div style={{ padding: "8px 14px", marginBottom: 12, background: T.amberBg, border: `1px solid ${T.amber}44`, borderRadius: 10, fontSize: 12, fontWeight: 600, color: T.amber }}>
+          ⏳ Calculando el avance real desde Planeación y Busint… Mientras tanto solo se ven los cortes registrados en ATLAS (el cortado y lo pendiente pueden salir menores de lo real).
+        </div>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 20 }}>
         {[
           { icon: "📦", label: "Total Pedido", value: fmtNum(totalPedido), color: T.denim, bg: T.denimBg },
