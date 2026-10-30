@@ -7305,12 +7305,20 @@ function calcularLiquidacionFiscal(trabajador, diasInasistencia, diasSinAuxilio 
   const descuentoAuxilio = (auxilioMensual / 30) * (diasInasistencia + diasSinAuxilio);
   const sueldoQuincena = Math.max(0, sueldo / 2 - descuentoSueldo);
   const auxilioQuincena = Math.max(0, auxilioMensual / 2 - descuentoAuxilio);
-  const epsTrabajador = sueldoQuincena * TASA_EPS_TRABAJADOR;
-  const pensionTrabajador = sueldoQuincena * TASA_PENSION_TRABAJADOR;
-  const pensionEmpleador = sueldoQuincena * TASA_PENSION_EMPLEADOR;
+  // (2026-10-30, a pedido de Fredy; igual a como lo liquida TNS) Con incapacidad en la quincena: salud y pension (trabajador y pension del
+  // empleador) se calculan sobre sueldo TRABAJADO + devengado de la incapacidad (empresa + EPS/ARL); caja de compensacion y ARL solo sobre el
+  // sueldo trabajado (sin incapacidad). Estos aportes se redondean hacia arriba a la centena (como TNS). Sin incapacidad todo queda como siempre.
+  const incapDiasN = incap?.dias || 0;
+  const sueldoTrabajadoSinIncap = Math.max(0, sueldoQuincena - (sueldo / 30) * incapDiasN);
+  const baseSegSocial = incapDiasN > 0 ? sueldoTrabajadoSinIncap + (incap?.devengado || 0) : sueldoQuincena;
+  const baseCajaArl = incapDiasN > 0 ? sueldoTrabajadoSinIncap : sueldoQuincena;
+  const aCentena = (v) => (incapDiasN > 0 ? Math.ceil(v / 100 - 1e-9) * 100 : v);
+  const epsTrabajador = aCentena(baseSegSocial * TASA_EPS_TRABAJADOR);
+  const pensionTrabajador = aCentena(baseSegSocial * TASA_PENSION_TRABAJADOR);
+  const pensionEmpleador = aCentena(baseSegSocial * TASA_PENSION_EMPLEADOR);
   const tasaARL = TASA_ARL_POR_CLASE[trabajador.claseRiesgoARL] || 0;
-  const arlEmpleador = sueldoQuincena * tasaARL;
-  const cajaCompensacionEmpleador = sueldoQuincena * TASA_CAJA_COMPENSACION_EMPLEADOR;
+  const arlEmpleador = aCentena(baseCajaArl * tasaARL);
+  const cajaCompensacionEmpleador = aCentena(baseCajaArl * TASA_CAJA_COMPENSACION_EMPLEADOR);
   const epsEmpleador = 0;
   const saldoCesantiasInicio = Number(trabajador.cesantiasAcumuladas) || 0;
   const baseConAuxilio = sueldoQuincena + auxilioQuincena;
