@@ -16818,6 +16818,41 @@ function SubirPedidoModal2({ onSave, onClose, pedidoConfig, pedidos, clientes })
 
 // (2026-10-30) Clave de referencia sin guiones ni mayúsculas (igual que refSinGuion de las funciones) para cruzar pedido, planta y Busint.
 function normRefKeyPedido(v) { return String(v ?? "").toUpperCase().replace(/[^A-Z0-9]/g, ""); }
+// (2026-10-30, a pedido de Fredy) Avance de UN pedido, referencia por referencia (lo usan el tablero de Pedidos y el detalle del pedido, para que coincidan):
+// cortado = lo MAYOR entre lo registrado en ATLAS, los lotes de Planeación y las órdenes de producción de Busint; "falta" no se compensa entre referencias
+// (el sobrecorte de una no tapa lo que falta en otra). Facturado = neto de Busint (null si el avance aún no carga). porRef: clave de referencia -> { total, atl, comb }.
+function calcularAvancePedido(p, avance) {
+  const porRef = new Map();
+  (p.referencias || []).forEach((r) => {
+    const k = normRefKeyPedido(r.ref);
+    const o = porRef.get(k) || { total: 0, atl: 0, comb: 0 };
+    o.total += Number(r.total) || 0;
+    porRef.set(k, o);
+  });
+  (p.cortesRealizados || []).forEach((c) => (c.refs || []).forEach((cr) => {
+    const o = porRef.get(normRefKeyPedido(cr.ref));
+    if (!o) return;
+    const suma = Object.values(cr.tallas || {}).reduce((x, v) => x + (Number(v) || 0), 0);
+    o.atl += suma > 0 ? suma : (Number(cr.total) || 0);
+  }));
+  const av = avance?.porPedido?.[String(p.numero)] || null;
+  let total = 0, cortado = 0, falta = 0, sobrecorte = 0;
+  porRef.forEach((o, k) => {
+    o.comb = Math.max(o.atl, av?.cortadoPorRef?.[k] || 0);
+    total += o.total; cortado += Math.min(o.comb, o.total); falta += Math.max(0, o.total - o.comb); sobrecorte += Math.max(0, o.comb - o.total);
+  });
+  return { total, cortado, falta, sobrecorte, porRef, facturado: avance ? (av ? av.facturado : 0) : null };
+}
+// El avance se pide una sola vez cada 2 minutos y lo comparten el tablero y el detalle.
+let _avanceCache = { t: 0, promesa: null };
+function cargarAvancePedidos(forzar) {
+  const ahora = Date.now();
+  if (!forzar && _avanceCache.promesa && ahora - _avanceCache.t < 120000) return _avanceCache.promesa;
+  const prom = httpsCallable(functionsClient, "getAvancePedidosActivos")({}).then((r) => r.data || null);
+  _avanceCache = { t: ahora, promesa: prom };
+  prom.catch(() => { if (_avanceCache.promesa === prom) _avanceCache = { t: 0, promesa: null }; });
+  return prom;
+}
 // (2026-10-30) Orden de columnas de tallas en "Referencias y Excedentes": numéricas primero (por su número), luego las de letras (XS<S<M<L<XL<2XL...), luego el resto.
 const ORDEN_TALLAS_LETRAS = ["XXS", "XS", "S", "S/M", "M", "M/L", "L", "L/XL", "XL", "1XL", "XXL", "2XL", "3XL", "XXXL", "4XL", "5XL", "UNICA", "UNICO", "U"];
 function compararTallas(a, b) {
@@ -16836,9 +16871,16 @@ function compararTallas(a, b) {
 function PedidoDetailView({ pedido, onBack, onUpdatePedido, soloLectura }) {
   const [showConfirmCumplido, setShowConfirmCumplido] = useState(false);
   const [refsAbiertas, setRefsAbiertas] = useState({}); // referencia -> abierta (muestra sus colores)
+  const [avanceDet, setAvanceDet] = useState(null);
+  useEffect(() => {
+    let vivo = true;
+    cargarAvancePedidos(false).then((d) => { if (vivo) setAvanceDet(d); }).catch(() => {});
+    return () => { vivo = false; };
+  }, []);
+  const avDet = calcularAvancePedido(pedido, avanceDet);
   const [showEdit, setShowEdit] = useState(false);
   const totalPedido = pedido.referencias.reduce((s, r) => s + r.total, 0);
-  const totalCortado = (pedido.cortesRealizados || []).reduce((s, c) => s + (c.totalUnidades || 0), 0);
+  const totalCortado = avDet.cortado; // lo mayor entre ATLAS, Planeación y Busint (por referencia)
   const pct = totalPedido > 0 ? Math.round((totalCortado / totalPedido) * 100) : 0;
   const sem = semaforo2(pedido.fechaDespacho);
   const etapasHechas = Object.values(pedido.seguimiento || {}).filter(Boolean).length;
@@ -16927,6 +16969,13 @@ function PedidoDetailView({ pedido, onBack, onUpdatePedido, soloLectura }) {
             g.colores.push(c); g.total += c.total; g.cortado += c.cortado;
             tallasCols.forEach((t) => { g.tallas[t] = (g.tallas[t] || 0) + (Number(c.r.tallas?.[t]) || 0); });
           });
+          // Cortado/falta por REFERENCIA con las tres fuentes; por color solo se conoce lo registrado en ATLAS.
+          grupos.forEach((g) => {
+            const o = avDet.porRef.get(normRefKeyPedido(g.ref));
+            g.cortadoAtl = g.cortado;
+            if (o) { g.cortado = Math.min(o.comb, g.total); g.falta = Math.max(0, g.total - o.comb); g.soloRef = o.comb > g.cortadoAtl; }
+            else { g.falta = g.total - g.cortado; g.soloRef = false; }
+          });
           const th = { padding: "8px 10px", color: T.seam, fontWeight: 700, fontSize: 11 };
           const celdaTalla = (v, k) => <td key={k} style={{ padding: "8px 4px", textAlign: "center", color: v > 0 ? T.ink : T.border }}>{v || "—"}</td>;
           const celdaExc = (falta) => <td style={{ padding: "8px 10px", textAlign: "center", fontWeight: 700, color: falta > 0 ? T.amber : T.jade }}>{falta > 0 ? falta : "✓"}</td>;
@@ -16961,7 +17010,7 @@ function PedidoDetailView({ pedido, onBack, onUpdatePedido, soloLectura }) {
                             {tallasCols.map((t) => celdaTalla(g.tallas[t] || 0, t))}
                             <td style={{ padding: "8px 10px", textAlign: "center", fontWeight: 800, color: T.denim }}>{g.total}</td>
                             <td style={{ padding: "8px 10px", textAlign: "center", fontWeight: 700, color: T.jade }}>{g.cortado}</td>
-                            {celdaExc(g.total - g.cortado)}
+                            {celdaExc(g.falta)}
                           </tr>
                           {abierta && g.colores.map((c) => (
                             <tr key={c.r.id} style={{ background: T.white, borderBottom: `1px solid ${T.border}` }}>
@@ -16969,8 +17018,8 @@ function PedidoDetailView({ pedido, onBack, onUpdatePedido, soloLectura }) {
                               <td style={{ padding: "7px 10px", color: T.ink }}>{c.r.descripcion}</td>
                               {tallasCols.map((t) => celdaTalla(Number(c.r.tallas?.[t]) || 0, t))}
                               <td style={{ padding: "7px 10px", textAlign: "center", fontWeight: 700, color: T.denim }}>{c.total}</td>
-                              <td style={{ padding: "7px 10px", textAlign: "center", fontWeight: 600, color: T.jade }}>{c.cortado}</td>
-                              {celdaExc(c.falta)}
+                              <td title={g.soloRef ? "El cortado de Planeación y de Busint viene por referencia, no por color" : undefined} style={{ padding: "7px 10px", textAlign: "center", fontWeight: 600, color: g.soloRef ? T.slate : T.jade }}>{g.soloRef ? "—" : c.cortado}</td>
+                              {g.soloRef ? <td style={{ padding: "7px 10px", textAlign: "center", color: T.slate }}>—</td> : celdaExc(c.falta)}
                             </tr>
                           ))}
                         </React.Fragment>
@@ -18933,8 +18982,8 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
   const [avance, setAvance] = useState(null);
   useEffect(() => {
     let vivo = true;
-    httpsCallable(functionsClient, "getAvancePedidosActivos")({})
-      .then((r) => { if (vivo) setAvance(r.data || null); })
+    cargarAvancePedidos(syncRefresco > 0)
+      .then((d) => { if (vivo) setAvance(d); })
       .catch(() => {});
     return () => { vivo = false; };
   }, [syncRefresco]);
@@ -18956,23 +19005,7 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
   const refsQueCoinciden = (p) => (busquedaRef.length >= 2 ? (p.referencias || []).filter((r) => normRefBusq(r.ref).includes(busquedaRef)) : []);
   // (2026-10-30, a pedido de Fredy) Avance por pedido, referencia por referencia: cortado = lo MAYOR entre lo registrado en ATLAS, los lotes de Planeación y las órdenes de producción de Busint;
   // "falta" no se compensa entre referencias (el sobrecorte de una no tapa lo que falta en otra). Facturado = neto de Busint (null si aún no carga).
-  const avanceDe = (p) => {
-    const pedRef = new Map();
-    (p.referencias || []).forEach((r) => { const k = normRefKeyPedido(r.ref); pedRef.set(k, (pedRef.get(k) || 0) + (Number(r.total) || 0)); });
-    const atl = {};
-    (p.cortesRealizados || []).forEach((c) => (c.refs || []).forEach((cr) => {
-      const k = normRefKeyPedido(cr.ref);
-      const suma = Object.values(cr.tallas || {}).reduce((x, v) => x + (Number(v) || 0), 0);
-      atl[k] = (atl[k] || 0) + (suma > 0 ? suma : (Number(cr.total) || 0));
-    }));
-    const av = avance?.porPedido?.[String(p.numero)] || null;
-    let total = 0, cortado = 0, falta = 0, sobrecorte = 0;
-    pedRef.forEach((tot, k) => {
-      const c = Math.max(atl[k] || 0, av?.cortadoPorRef?.[k] || 0);
-      total += tot; cortado += Math.min(c, tot); falta += Math.max(0, tot - c); sobrecorte += Math.max(0, c - tot);
-    });
-    return { total, cortado, falta, sobrecorte, facturado: avance ? (av ? av.facturado : 0) : null };
-  };
+  const avanceDe = (p) => calcularAvancePedido(p, avance);
   const faltaDe = (p) => avanceDe(p).falta;
   const listaFiltrada = filtro === "activos" && filtroFalta !== "todos" ? listaBase.filter((p) => (filtroFalta === "faltante" ? faltaDe(p) > 0 : faltaDe(p) === 0)) : listaBase;
   const lista = !busquedaNorm ? listaFiltrada : listaFiltrada.filter((p) =>

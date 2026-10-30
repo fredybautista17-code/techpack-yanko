@@ -3243,12 +3243,15 @@ exports.getAvancePedidosActivos = onCallAuth(
         if (mejor > (prendasPorLote.get(lote) || 0)) prendasPorLote.set(lote, mejor);
       });
       const busint = new Map(); // `${ped}|${refNorm}` -> prendas cortadas
+      let cortesSinPedido = 0;
       lotePed.forEach((v, lote) => {
         const u = prendasPorLote.get(lote) || 0;
-        if (!(u > 0) || !v.ped || !v.refNorm) return;
+        if (!(u > 0)) return;
+        if (!v.ped || !v.refNorm) { cortesSinPedido += 1; return; }
         const k = `${v.ped}|${v.refNorm}`;
         busint.set(k, (busint.get(k) || 0) + u);
       });
+      if (cortesSinPedido > 0) avisos.push(`${cortesSinPedido} cortes en Busint no tienen número de pedido: no se pueden sumar al cortado de ningún pedido.`);
       busint.forEach((u, k) => {
         const i = k.indexOf("|");
         const g = de(k.slice(0, i));
