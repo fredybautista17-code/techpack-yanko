@@ -4083,6 +4083,273 @@ const CONCEPTOS_TNS_CONOCIDOS = [
   { codigo: "1110", descripcion: "Devengados Adicionales", tiponov: "4" },
   { codigo: "1115", descripcion: "Comisión por Ventas FP", tiponov: "3" },
 ];
+// ============================================================================
+// COMPARAR NÓMINA ATLAS vs TNS (2026-10-30, a pedido de Fredy)
+// Trae el Balance de Comprobación de TNS (cuentas 510500-510599 del mes, con
+// el detalle por tercero) y lo pone al lado de lo que liquidó ATLAS ese mes
+// (Q1 + Q2), trabajador por trabajador y concepto por concepto. Solo LEE:
+// no escribe nada en TNS ni en ATLAS. TNS contabiliza la nómina al cierre del
+// mes, así que solo se pueden comparar meses ya cerrados en TNS.
+// ============================================================================
+const CONCEPTOS_COMPARAR_TNS = [
+  { key: "sal", label: "Salarios", cuenta: "510506.01" },
+  { key: "inc", label: "Incapacidades", cuenta: "510506.06" },
+  { key: "aux", label: "Auxilio transp.", cuenta: "510527.01" },
+  { key: "ces", label: "Cesantías", cuenta: "510530.01" },
+  { key: "int", label: "Int. cesantías", cuenta: "510533.01" },
+  { key: "pri", label: "Prima", cuenta: "510536.01" },
+  { key: "vac", label: "Vacaciones", cuenta: "510539.01" },
+  { key: "bon", label: "Bonificaciones", cuenta: "510548.01" },
+];
+const APORTES_COMPARAR_TNS = [
+  { key: "pen", label: "Pensión empleador", cuenta: "510570.01", campo: "pensionEmpleador" },
+  { key: "arl", label: "ARL", cuenta: "510568.01", campo: "arlEmpleador" },
+  { key: "caj", label: "Caja de compensación", cuenta: "510572.01", campo: "cajaCompensacionEmpleador" },
+];
+const nitBaseCmp = (v) => String(v || "").split("-")[0].replace(/\D/g, "");
+const claveNombreCmp = (v) =>
+  String(v || "").toUpperCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^A-Z0-9 ]/g, " ").split(/\s+/).filter(Boolean).sort().join(" ");
+function CompararNominaTNSView({ trabajadores, liquidacionesF, liquidacionesFD, liquidacionesD }) {
+  const hoy = new Date();
+  const mesAnt = new Date(hoy.getFullYear(), hoy.getMonth() - 1, 1);
+  const [empresa, setEmpresa] = useState("yanko");
+  const [mes, setMes] = useState(`${mesAnt.getFullYear()}-${String(mesAnt.getMonth() + 1).padStart(2, "0")}`);
+  const [sucursal, setSucursal] = useState("00");
+  const [tolerancia, setTolerancia] = useState("200");
+  const [soloDif, setSoloDif] = useState(true);
+  const [buscar, setBuscar] = useState("");
+  const [estado, setEstado] = useState(null); // null | "cargando" | { error } | { cuentas, enviado }
+  const [detalle, setDetalle] = useState(null);
+
+  useEffect(() => {
+    let guardada = "";
+    try { guardada = window.localStorage.getItem(`tns_sucursal_${empresa}`) || ""; } catch (e) { /* sin almacenamiento */ }
+    setSucursal(guardada || (empresa === "indutex" ? "02" : "00"));
+    setEstado(null);
+  }, [empresa]);
+
+
+  async function consultar() {
+    if (!/^\d{4}-\d{2}$/.test(mes)) { setEstado({ error: "Escribe el mes con formato AAAA-MM." }); return; }
+    if (!sucursal.trim()) { setEstado({ error: "Escribe el código de sucursal de TNS." }); return; }
+    try { window.localStorage.setItem(`tns_sucursal_${empresa}`, sucursal.trim()); } catch (e) { /* sin almacenamiento */ }
+    const [a, m] = mes.split("-").map(Number);
+    const ultimo = new Date(a, m, 0).getDate();
+    setEstado("cargando");
+    try {
+      const llamar = httpsCallable(functionsClient, "probarBalanceTNS", { timeout: 120000 });
+      const resp = await llamar({ empresa, fechaInicial: `${mes}-01`, fechaFinal: `${mes}-${String(ultimo).padStart(2, "0")}`, cuentaInicial: "510500", cuentaFinal: "510599", codigosucursal: sucursal.trim() });
+      const d = resp.data;
+      if (!d || d.ok === false) { setEstado({ error: d?.error || d?.mensaje || "TNS no devolvió el Balance de ese mes. Revisa la sucursal y que el mes esté cerrado en TNS." }); return; }
+      const cuentas = Array.isArray(d.data?.data) ? d.data.data : [];
+      setEstado({ cuentas, enviado: d.enviado || {} });
+    } catch (err) {
+      setEstado({ error: err?.message || "No se pudo consultar el Balance de TNS." });
+    }
+  }
+
+  const resultado = useMemo(() => {
+    if (!estado || typeof estado !== "object" || estado.error) return null;
+    const cuentas = estado.cuentas || [];
+    const valorCuenta = (c) => Math.round((numTNS(c.totalDebito) - numTNS(c.totalCredito)) * 100) / 100;
+    const cuentaPorCodigo = new Map(cuentas.map((c) => [String(c.codigo || "").trim(), c]));
+    // --- Lado TNS: por tercero ---
+    const porTercero = new Map();
+    for (const conc of CONCEPTOS_COMPARAR_TNS) {
+      const c = cuentaPorCodigo.get(conc.cuenta);
+      if (!c) continue;
+      for (const t of Array.isArray(c.terceros) ? c.terceros : []) {
+        const k = nitBaseCmp(t.nit) || claveNombreCmp(t.nombre);
+        if (!porTercero.has(k)) porTercero.set(k, { nit: nitBaseCmp(t.nit), nombre: t.nombre || "", tns: {} });
+        const fila = porTercero.get(k);
+        const v = Math.round((numTNS(t.totalDebito) - numTNS(t.totalCredito)) * 100) / 100;
+        fila.tns[conc.key] = (fila.tns[conc.key] || 0) + v;
+      }
+    }
+    // --- Lado ATLAS: por trabajador ---
+    const enMes = (l) => String(l.periodoId || "").startsWith(`${mes}-Q`);
+    const trabPorId = new Map(trabajadores.map((t) => [t.id, t]));
+    const porTrab = new Map();
+    const sumar = (l, tipo) => {
+      const t = trabPorId.get(l.trabajadorId);
+      if (!t) return;
+      const emp = String(t.empleador || "").toUpperCase();
+      if (empresa === "yanko" && emp === "INDUTEX") return;
+      if (empresa === "indutex" && emp !== "INDUTEX") return;
+      if (!porTrab.has(t.id)) porTrab.set(t.id, { t, atlas: {}, aportes: {}, tipos: new Set() });
+      const f = porTrab.get(t.id);
+      f.tipos.add(tipo);
+      const n = (x) => Number(x) || 0;
+      const sueldo = n(l.sueldoQuincena) || n(l.sueldoFijoQuincena);
+      const auxilio = n(l.auxilioQuincena) || n(l.auxilioFijoQuincena);
+      const add = (k, v) => { f.atlas[k] = (f.atlas[k] || 0) + v; };
+      add("sal", sueldo - n(l.descuentoIncap));
+      add("inc", n(l.incapDevengado));
+      add("aux", auxilio);
+      add("ces", n(l.cesantiasPeriodo));
+      add("int", n(l.interesesPeriodo));
+      add("pri", n(l.primaPeriodo));
+      add("vac", n(l.vacacionesPeriodo));
+      add("bon", n(l.bonificacionPuntual));
+      for (const ap of APORTES_COMPARAR_TNS) f.aportes[ap.key] = (f.aportes[ap.key] || 0) + n(l[ap.campo]);
+    };
+    liquidacionesF.filter(enMes).forEach((l) => sumar(l, "Fiscal"));
+    liquidacionesFD.filter(enMes).forEach((l) => sumar(l, "Fiscal Destajo"));
+    liquidacionesD.filter(enMes).forEach((l) => sumar(l, "Destajo"));
+    // --- Cruce: cédula, y si no, nombre ---
+    const tercerosLista = [...porTercero.values()];
+    const usados = new Set();
+    const filas = [];
+    for (const { t, atlas, aportes, tipos } of porTrab.values()) {
+      const ced = nitBaseCmp(t.cedula) || nitBaseCmp(t.tnsCodigo);
+      let ter = tercerosLista.find((x) => !usados.has(x) && x.nit && (x.nit === nitBaseCmp(t.cedula) || x.nit === nitBaseCmp(t.tnsCodigo)));
+      if (!ter) ter = tercerosLista.find((x) => !usados.has(x) && claveNombreCmp(x.nombre) === claveNombreCmp(t.nombre));
+      if (ter) usados.add(ter);
+      filas.push({ id: t.id, nombre: t.nombre, cedula: ced, tipos: [...tipos].join(" + "), atlas, aportes, tns: ter ? ter.tns : null, nombreTns: ter?.nombre || "" });
+    }
+    for (const ter of tercerosLista) {
+      if (usados.has(ter)) continue;
+      filas.push({ id: `tns_${ter.nit || ter.nombre}`, nombre: ter.nombre, cedula: ter.nit, tipos: "", atlas: null, aportes: null, tns: ter.tns, nombreTns: ter.nombre, soloTns: true });
+    }
+    const conc = CONCEPTOS_COMPARAR_TNS.map((c) => c.key);
+    const filasCalc = filas.map((f) => {
+      const difs = {};
+      let difTotal = 0, totAtlas = 0, totTns = 0;
+      for (const k of conc) {
+        const a = f.atlas ? Math.round(f.atlas[k] || 0) : 0;
+        const t = f.tns ? Math.round(f.tns[k] || 0) : 0;
+        difs[k] = { a, t, d: a - t };
+        difTotal += a - t; totAtlas += a; totTns += t;
+      }
+      return { ...f, difs, difTotal, totAtlas, totTns, soloAtlas: !f.tns && !f.soloTns };
+    });
+    const totalesAportes = APORTES_COMPARAR_TNS.map((ap) => {
+      const c = cuentaPorCodigo.get(ap.cuenta);
+      const tns = c ? valorCuenta(c) : null;
+      const atlas = filasCalc.reduce((s, f) => s + (f.aportes?.[ap.key] || 0), 0);
+      return { ...ap, tns, atlas: Math.round(atlas), dif: tns === null ? null : Math.round(atlas - tns) };
+    });
+    return { filas: filasCalc, totalesAportes, nCuentas: cuentas.length };
+  }, [estado, mes, empresa, trabajadores, liquidacionesF, liquidacionesFD, liquidacionesD]);
+
+  const tol = Number(tolerancia) || 0;
+  const hayDif = (f) => f.soloTns || f.soloAtlas || CONCEPTOS_COMPARAR_TNS.some((c) => Math.abs(f.difs[c.key].d) > tol);
+  const filasVista = (resultado?.filas || [])
+    .filter((f) => !soloDif || hayDif(f))
+    .filter((f) => !buscar.trim() || f.nombre.toLowerCase().includes(buscar.trim().toLowerCase()) || String(f.cedula).includes(buscar.trim()))
+    .sort((x, y) => (hayDif(y) ? 1 : 0) - (hayDif(x) ? 1 : 0) || Math.abs(y.difTotal) - Math.abs(x.difTotal) || x.nombre.localeCompare(y.nombre, "es"));
+  const nCoinciden = (resultado?.filas || []).filter((f) => !hayDif(f)).length;
+  const nDifieren = (resultado?.filas || []).filter((f) => hayDif(f)).length;
+  const totAtlasTodos = (resultado?.filas || []).reduce((s, f) => s + f.totAtlas, 0);
+  const totTnsTodos = (resultado?.filas || []).reduce((s, f) => s + f.totTns, 0);
+  const colorDif = (d) => (Math.abs(d) <= tol ? C.green : C.red);
+
+  return (
+    <div>
+      <div style={{ fontSize: 18, fontWeight: 800, color: C.ink, marginBottom: 4 }}>⚖️ Comparar nómina ATLAS vs TNS</div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 14, maxWidth: 760 }}>
+        Trae de TNS lo que contabilizó de nómina en el mes (Balance de Comprobación, cuentas 5105) y lo pone al lado de lo que liquidó ATLAS (Q1 + Q2),
+        trabajador por trabajador. Solo consulta: no cambia nada en TNS ni en ATLAS. TNS contabiliza la nómina al cierre del mes, así que solo se comparan meses ya cerrados.
+      </div>
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 14 }}>
+        <div style={{ width: 170 }}><SelectorEmpresaTNS empresa={empresa} onChange={setEmpresa} /></div>
+        <div style={{ width: 150 }}><Field label="Mes (AAAA-MM)"><FInput value={mes} onChange={setMes} placeholder="2026-09" /></Field></div>
+        <div style={{ width: 120 }}><Field label="Sucursal TNS"><FInput value={sucursal} onChange={setSucursal} placeholder="00" /></Field></div>
+        <div style={{ width: 130 }}><Field label="Tolerancia ($)"><FInput type="number" value={tolerancia} onChange={setTolerancia} placeholder="200" /></Field></div>
+        <Btn onClick={consultar} disabled={estado === "cargando"}>{estado === "cargando" ? "Consultando TNS..." : "🔍 Comparar con TNS"}</Btn>
+      </div>
+
+      {estado && typeof estado === "object" && estado.error && (
+        <div style={{ background: C.redBg, color: C.red, border: `1px solid ${C.red}`, borderRadius: 10, padding: 12, fontSize: 12, marginBottom: 12 }}>❌ {estado.error}</div>
+      )}
+      {estado === "cargando" && <div style={{ padding: 24, color: C.slate, fontSize: 13 }}>Consultando el Balance de TNS… puede tardar hasta un minuto.</div>}
+
+      {resultado && (
+        <div>
+          {resultado.nCuentas === 0 && (
+            <div style={{ background: C.amberBg, color: C.amber, border: `1px solid ${C.amber}`, borderRadius: 10, padding: 12, fontSize: 12, marginBottom: 12 }}>
+              TNS no devolvió cuentas de nómina para ese mes. Casi siempre es porque el mes aún no está contabilizado en TNS (la nómina se contabiliza al cierre del mes) o la sucursal es otra.
+            </div>
+          )}
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
+            <KPI icon="✅" label="Coinciden" value={nCoinciden} color={C.green} bg={C.greenBg} />
+            <KPI icon="⚠️" label="Con diferencia" value={nDifieren} color={C.red} bg={C.redBg} />
+            <KPI icon="🧮" label="Total ATLAS (conceptos)" value={fmtMoney(totAtlasTodos)} color={C.blue} bg={C.blueBg} />
+            <KPI icon="🔌" label="Total TNS (conceptos)" value={fmtMoney(totTnsTodos)} color={C.violet} bg={C.violetBg} sub={`Dif. ${fmtMoney(totAtlasTodos - totTnsTodos)}`} />
+          </div>
+
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
+            <div style={{ width: 240 }}><FInput value={buscar} onChange={setBuscar} placeholder="Buscar trabajador o cédula…" icon="🔍" /></div>
+            <label style={{ fontSize: 12, color: C.ink, display: "flex", gap: 6, alignItems: "center", cursor: "pointer" }}>
+              <input type="checkbox" checked={soloDif} onChange={(e) => setSoloDif(e.target.checked)} /> Solo con diferencias
+            </label>
+          </div>
+
+          <Tabla
+            vacio={soloDif ? "No hay diferencias mayores a la tolerancia. 🎉" : "Sin trabajadores para comparar."}
+            onRowClick={(f) => setDetalle(f)}
+            columnas={[
+              { key: "nombre", label: "Trabajador", render: (f) => <span style={{ fontWeight: 600 }}>{f.nombre}{f.soloTns ? " · solo en TNS" : f.soloAtlas ? " · solo en ATLAS" : ""}</span> },
+              { key: "cedula", label: "Cédula" },
+              { key: "tipos", label: "Nómina ATLAS" },
+              ...CONCEPTOS_COMPARAR_TNS.map((c) => ({
+                key: c.key, label: c.label, align: "right",
+                render: (f) => {
+                  const x = f.difs[c.key];
+                  if (!x.a && !x.t) return <span style={{ color: C.seam }}>—</span>;
+                  return <span style={{ fontWeight: Math.abs(x.d) > tol ? 700 : 400, color: colorDif(x.d) }}>{Math.abs(x.d) > tol ? fmtMoney(x.d) : "✓"}</span>;
+                },
+              })),
+              { key: "totAtlas", label: "Total ATLAS", align: "right", render: (f) => fmtMoney(f.totAtlas) },
+              { key: "totTns", label: "Total TNS", align: "right", render: (f) => fmtMoney(f.totTns) },
+              { key: "difTotal", label: "Diferencia", align: "right", render: (f) => <b style={{ color: colorDif(f.difTotal) }}>{fmtMoney(f.difTotal)}</b> },
+            ]}
+            filas={filasVista}
+          />
+          <div style={{ fontSize: 11, color: C.slate, margin: "6px 0 16px" }}>
+            En cada concepto se muestra ✓ si coincide (dentro de la tolerancia) o la diferencia ATLAS − TNS. Haz clic en una fila para ver ATLAS | TNS | Diferencia de cada concepto.
+            Las provisiones (cesantías, intereses, prima y vacaciones) pueden diferir unos pesos: TNS usa fracciones exactas (1/12, 15/360) y ATLAS porcentajes redondeados.
+          </div>
+
+          <div style={{ fontSize: 13, fontWeight: 800, color: C.ink, marginBottom: 6 }}>Aportes del empleador (solo total del mes)</div>
+          <div style={{ fontSize: 11, color: C.slate, marginBottom: 6 }}>TNS contabiliza estos por entidad, no por trabajador, por eso se comparan en total.</div>
+          <Tabla
+            vacio="Sin datos."
+            columnas={[
+              { key: "label", label: "Aporte" },
+              { key: "cuenta", label: "Cuenta TNS" },
+              { key: "atlas", label: "ATLAS", align: "right", render: (f) => fmtMoney(f.atlas) },
+              { key: "tns", label: "TNS", align: "right", render: (f) => (f.tns === null ? "—" : fmtMoney(f.tns)) },
+              { key: "dif", label: "Diferencia", align: "right", render: (f) => (f.dif === null ? "—" : <b style={{ color: Math.abs(f.dif) <= tol ? C.green : C.red }}>{fmtMoney(f.dif)}</b>) },
+            ]}
+            filas={resultado.totalesAportes.map((x) => ({ ...x, id: x.key }))}
+          />
+        </div>
+      )}
+
+      {detalle && (
+        <Modal title={`${detalle.nombre} — ${mes}`} onClose={() => setDetalle(null)} width={620}>
+          <div style={{ fontSize: 12, color: C.slate, marginBottom: 10 }}>
+            Cédula {detalle.cedula || "—"}{detalle.tipos ? ` · Nómina ATLAS: ${detalle.tipos}` : ""}{detalle.nombreTns && detalle.nombreTns !== detalle.nombre ? ` · En TNS: ${detalle.nombreTns}` : ""}
+          </div>
+          <Tabla
+            vacio="Sin datos."
+            columnas={[
+              { key: "label", label: "Concepto" },
+              { key: "cuenta", label: "Cuenta TNS" },
+              { key: "a", label: "ATLAS", align: "right", render: (f) => fmtMoney(f.a) },
+              { key: "t", label: "TNS", align: "right", render: (f) => fmtMoney(f.t) },
+              { key: "d", label: "Diferencia", align: "right", render: (f) => <b style={{ color: colorDif(f.d) }}>{fmtMoney(f.d)}</b> },
+            ]}
+            filas={CONCEPTOS_COMPARAR_TNS.map((c) => ({ id: c.key, label: c.label, cuenta: c.cuenta, ...detalle.difs[c.key] }))}
+          />
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}><Btn variant="secondary" onClick={() => setDetalle(null)}>Cerrar</Btn></div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 // Solo se puede mandar una novedad a TNS para un trabajador que YA tenga
 // contrato allá (campo "Código TNS" en Trabajadores) — sin eso no hay
 // "codcontrato" que mandarle a TNS. Por seguridad (esto escribe en la
@@ -14805,6 +15072,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
             { id: "costo_referencia", icon: "💲", label: "Costo x Referencia" },
             { id: "tns", icon: "🔌", label: "Conexión TNS" },
             { id: "novedades_tns", icon: "🧾", label: "Novedades TNS" },
+            { id: "comparar_tns", icon: "⚖️", label: "Comparar con TNS" },
             { id: "precios", icon: "⚙️", label: "Procesos" },
             { id: "grupos_trabajo", icon: "🧩", label: "Grupos de Trabajo" },
             { id: "areas_nomina", icon: "🏭", label: "Área Interna" },
@@ -15485,6 +15753,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "costo_referencia" && !areaLider && !soloNovedades && <ConsultarCostoReferenciaView />}
           {subView === "tns" && !areaLider && !soloNovedades && <TNSConexionView />}
           {subView === "novedades_tns" && !areaLider && !soloNovedades && <NovedadesTNSView trabajadores={trabajadores} />}
+          {subView === "comparar_tns" && !areaLider && !soloNovedades && <CompararNominaTNSView trabajadores={trabajadores} liquidacionesF={liquidacionesF} liquidacionesFD={liquidacionesFD} liquidacionesD={liquidacionesD} />}
           {subView === "novedades_quincena" && !areaLider && !soloNovedades && <NovedadesQuincenaView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} turnos={turnos} motivosDisponibles={nombresMotivosDisponibles} currentUser={currentUser} onGuardarAusencia={guardarAusencia} onGuardarPrestamo={guardarPrestamo} />}
           {subView === "liquidacion_retiro" && !areaLider && !soloNovedades && <LiquidacionRetiroView trabajadores={trabajadores} ausencias={ausencias} faltas={faltasSinJustificar} liquidacionesRetiro={liquidacionesRetiro} prestamos={prestamos} areasNomina={areasNomina} turnos={turnos} onGuardarLiquidacionRetiro={guardarLiquidacionRetiro} onGuardarTrabajador={guardarTrabajador} onGuardarAusencia={guardarAusencia} onCambiarEstadoPagoLiquidacion={cambiarEstadoPagoLiquidacion} onCambiarEmpleadorLiquidacion={cambiarEmpleadorLiquidacion} onBorrarLiquidacionRetiro={borrarLiquidacionRetiro} currentUser={currentUser} />}
           {subView === "dias_no_justificados" && !areaLider && !soloNovedades && <DiasNoJustificadosView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} areasNomina={areasNomina} />}
