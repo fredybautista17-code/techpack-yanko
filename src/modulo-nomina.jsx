@@ -7107,6 +7107,25 @@ const MOTIVOS_SIN_AUXILIO_CALENDARIO = ["Incapacidad", "Licencia Remunerada"];
 // Los aportes de seguridad social y las provisiones NO cambian con esto (siguen como hasta hoy).
 const INCAP_PORC_GENERAL = 0.6667;
 const INCAP_PORC_GENERAL_TARDIO = 0.5; // del dia 91 en adelante
+// (2026-10-30, a pedido de Fredy) Mes comercial de 30 dias, como TNS: en dias de CALENDARIO (incapacidad y ausencias que suspenden el auxilio
+// por calendario) el dia 31 no cuenta, y si la ausencia llega al ultimo dia de febrero se cuentan tambien el 29 y el 30 (la 2.a quincena
+// de febrero se paga como de 15 dias). Los dias que no existen en el calendario se escriben como texto ("2026-02-29") y comparan bien como fechas ISO.
+function _esUltimoDiaFebrero(iso) {
+  if (!iso || iso.slice(5, 7) !== "02") return false;
+  const y = Number(iso.slice(0, 4));
+  const bisiesto = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+  return Number(iso.slice(8, 10)) === (bisiesto ? 29 : 28);
+}
+function _finComercial(fin) {
+  return _esUltimoDiaFebrero(fin) ? `${fin.slice(0, 7)}-30` : fin;
+}
+function _diasVirtualesFebrero(fechaFin) {
+  if (!_esUltimoDiaFebrero(fechaFin)) return [];
+  const ult = Number(fechaFin.slice(8, 10));
+  const out = [];
+  for (let d = ult + 1; d <= 30; d++) out.push(`${fechaFin.slice(0, 7)}-${String(d).padStart(2, "0")}`);
+  return out;
+}
 function _incapSigDia(iso) {
   const d = new Date(iso + "T12:00:00");
   d.setDate(d.getDate() + 1);
@@ -7122,25 +7141,36 @@ function calcularIncapacidadPeriodo(ausencias, trabajador, inicio, fin) {
   const pisoDia = SMMLV_2026 / 30;
   const vistos = new Set();
   const origenes = new Set();
+  const finEf = _finComercial(fin);
   let finPrev = null, origenPrev = null, contador = 0;
   regs.forEach((a) => {
     const origen = a.origenIncapacidad === "Laboral" ? "Laboral" : "General";
     const continua = finPrev && origenPrev === origen && a.fechaInicio <= _incapSigDia(finPrev);
     if (!continua) contador = 0;
-    listaDeDiasISO(a.fechaInicio, a.fechaFin).forEach((fecha) => {
-      if (vistos.has(fecha)) return;
-      vistos.add(fecha);
-      contador += 1;
-      if (fecha < inicio || fecha > fin || r.dias >= 15) return;
+    const liquidar = (fecha, cont) => {
+      if (fecha < inicio || fecha > finEf || r.dias >= 15) return;
+      if (fecha.slice(8, 10) === "31") return; // mes comercial de 30 dias
       let pct, quien;
-      if (origen === "Laboral") { pct = 1; quien = contador === 1 ? "empresa" : "arl"; }
-      else { pct = contador > 90 ? INCAP_PORC_GENERAL_TARDIO : INCAP_PORC_GENERAL; quien = contador <= 2 ? "empresa" : "eps"; }
+      if (origen === "Laboral") { pct = 1; quien = cont === 1 ? "empresa" : "arl"; }
+      else { pct = cont > 90 ? INCAP_PORC_GENERAL_TARDIO : INCAP_PORC_GENERAL; quien = cont <= 2 ? "empresa" : "eps"; }
       const crudo = baseDia * pct;
       r.dias += 1;
       r.devengado += Math.max(crudo, pisoDia);
       r[quien] += crudo;
       r.garantia += Math.max(0, pisoDia - crudo);
       origenes.add(origen);
+    };
+    listaDeDiasISO(a.fechaInicio, a.fechaFin).forEach((fecha) => {
+      if (vistos.has(fecha)) return;
+      vistos.add(fecha);
+      contador += 1;
+      liquidar(fecha, contador);
+    });
+    // Febrero: si la incapacidad llega al ultimo dia del mes, el 29 y el 30 (comerciales) tambien se liquidan; no alteran el contador real.
+    _diasVirtualesFebrero(a.fechaFin).forEach((fecha, i) => {
+      if (vistos.has(fecha)) return;
+      vistos.add(fecha);
+      liquidar(fecha, contador + i + 1);
     });
     if (!finPrev || a.fechaFin > finPrev) finPrev = a.fechaFin;
     origenPrev = origen;
@@ -7173,8 +7203,12 @@ function diasSinAuxilioDeAusencias(ausencias, trabajador, turno, inicio, fin) {
     const habiles = MOTIVOS_SIN_AUXILIO_TRANSPORTE.includes(a.motivo);
     const calendario = MOTIVOS_SIN_AUXILIO_CALENDARIO.includes(a.motivo);
     if (!habiles && !calendario) return;
-    listaDeDiasISO(a.fechaInicio, a.fechaFin).forEach((fecha) => {
-      if (fecha < inicio || fecha > fin) return;
+    const finEf = calendario ? _finComercial(fin) : fin;
+    const fechas = listaDeDiasISO(a.fechaInicio, a.fechaFin);
+    if (calendario) fechas.push(..._diasVirtualesFebrero(a.fechaFin)); // mes comercial de 30 dias (ver _finComercial)
+    fechas.forEach((fecha) => {
+      if (fecha < inicio || fecha > finEf) return;
+      if (calendario && fecha.slice(8, 10) === "31") return;
       if (!calendario && !diaEsperado(fecha, turno)) return;
       dias.add(fecha);
     });
