@@ -7,7 +7,7 @@
 // datos de la referencia 975093 ni sus fotos). Las tasas (ICA, retención...)
 // en su hoja están escritas DENTRO de las fórmulas, así que aquí se reescriben
 // esas fórmulas con las tasas de la versión (ficha del cliente).
-import { TASAS_BASE, FIJOS_BASE, num, calcularCotizacion } from "./cotizador-calculo";
+import { TASAS_BASE, FIJOS_BASE, num, calcularCotizacion, tasasYFijosEfectivos } from "./cotizador-calculo";
 
 // Posiciones de la hoja de Fredy (las mismas que lee el importador).
 const FILAS_TELA = [6, 7, 8, 9]; // consumo de cada tela: fila + 5
@@ -32,8 +32,7 @@ function nombreHojaUnico(base, usados) {
 function llenarHoja(ws, cot, ver) {
   const avisos = [];
   const v = ver.v || {};
-  const tasas = { ...TASAS_BASE, ...(v.tasas || {}) };
-  const fijos = { ...FIJOS_BASE, ...(v.fijos || {}) };
+  const { tasas, fijos } = tasasYFijosEfectivos(v); // mismas tasas/fijos que la pantalla (incluye el interruptor "no sumar impuestos y administrativos")
   const t = (k) => num(tasas[k]);
   const val = (addr, valor) => { ws.getCell(addr).value = valor; };
   const fx = (addr, formula) => { ws.getCell(addr).value = { formula }; };

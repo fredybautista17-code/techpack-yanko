@@ -1067,8 +1067,14 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
           {/* PARÁMETROS (impuestos y administrativos) */}
           <Seccion plegable abierta={false} titulo="4 · Impuestos y administrativos" sub={`Copia propia de esta versión. Ficha base del cliente: «${buscarFicha(parametros, cot.cliente).nombre}».`}
             derecha={<button onClick={(e) => { e.stopPropagation(); cargarFicha(); }} style={btn(C.white, C.violet, C.violet)}>↻ Cargar ficha de {buscarFicha(parametros, cot.cliente).nombre}</button>}>
+            <label style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", marginBottom: 12, borderRadius: 10, border: `1px solid ${ver.v.sinAdmin ? C.seam : C.border}`, background: ver.v.sinAdmin ? C.canvas : C.white, cursor: bloqueada ? "default" : "pointer", fontSize: 13, fontWeight: 700, color: C.ink }}>
+              <input type="checkbox" disabled={bloqueada} checked={!!ver.v.sinAdmin} onChange={(e) => setV((v) => { v.sinAdmin = e.target.checked; })} />
+              <span>No sumar impuestos ni costos administrativos en esta versión
+                <span style={{ display: "block", fontWeight: 400, fontSize: 11.5, color: C.slate, marginTop: 2 }}>Daños, ICA, bancarios, retención, autorenta, renta y costos fijos valen 0. El precio sale del costo definitivo y el margen. Los valores de abajo se conservan por si desmarcas.</span>
+              </span>
+            </label>
             <div style={{ fontWeight: 700, fontSize: 12, color: C.slate, margin: "4px 0 6px" }}>TASAS (en decimal: 0,005 = 0,5%)</div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginBottom: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginBottom: 12, opacity: ver.v.sinAdmin ? 0.5 : 1 }}>
               {tasasEdit.map((k) => (
                 <Campo key={k} label={ETIQUETAS_TASAS[k]}>
                   <input type="text" inputMode="decimal" value={ver.v.tasas[k] ?? ""} onChange={(e) => setV((v) => { v.tasas[k] = e.target.value; })} style={inp} />
@@ -1076,7 +1082,7 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
               ))}
             </div>
             <div style={{ fontWeight: 700, fontSize: 12, color: C.slate, margin: "4px 0 6px" }}>COSTOS FIJOS POR PRENDA ($)</div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10, opacity: ver.v.sinAdmin ? 0.5 : 1 }}>
               {Object.keys(ETIQUETAS_FIJOS).map((k) => (
                 <Campo key={k} label={ETIQUETAS_FIJOS[k]}>
                   <input type="text" inputMode="decimal" value={ver.v.fijos[k] ?? ""} onChange={(e) => setV((v) => { v.fijos[k] = e.target.value; })} style={inp} />
@@ -1201,6 +1207,7 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
 
           <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 16, padding: "16px 18px", fontSize: 13 }}>
             <div style={{ fontWeight: 800, marginBottom: 8, color: C.ink }}>Cómo se arma el costo</div>
+            {ver.v.sinAdmin && <div style={{ fontSize: 11.5, color: C.slate, marginBottom: 8 }}>Impuestos y administrativos <b>no se suman</b> (interruptor de la sección 4).</div>}
             {[
               ["Telas", calc.telasTotal], ["Insumos", calc.insumosTotal], ["Procesos + imprevistos", calc.procesosTotal],
               ["Costo definitivo", calc.costoDefinitivo, true], [`Daños (${fmtPct(ver.v.tasas.danos)})`, calc.costoMasDanos - calc.costoDefinitivo],

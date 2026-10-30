@@ -127,9 +127,28 @@ export function versionVacia() {
   };
 }
 
+// Tasas y fijos "de la versión" a números. (2026-10-30) Los cuadros de la pantalla guardan TEXTO ("0.001"), y `1 + "0.001"` se
+// concatenaba ("10.001"): los daños se multiplicaban por 10 y una base de utilidad vacía daba precio $0 / $∞. Aquí todo pasa por num():
+// un cuadro vacío vale 0 y la base de utilidad vacía o en 0 vale 1 (sin efecto). Con v.sinAdmin (interruptor de la sección 4) no se suma
+// nada de daños, impuestos ni costos fijos: el precio sale solo del costo definitivo y el margen.
+export const CLAVES_NO_SUMAR_ADMIN = ["danos", "ica", "bancarios", "retencion", "autorenta", "renta"];
+export function tasasYFijosEfectivos(v) {
+  const rawT = { ...TASAS_BASE, ...(v.tasas || {}) };
+  const tasas = {};
+  Object.keys(TASAS_BASE).forEach((k) => { tasas[k] = num(rawT[k]); });
+  if (!(tasas.baseUtilidad > 0)) tasas.baseUtilidad = 1;
+  const rawF = { ...FIJOS_BASE, ...(v.fijos || {}) };
+  const fijos = {};
+  Object.keys(FIJOS_BASE).forEach((k) => { fijos[k] = num(rawF[k]); });
+  if (v.sinAdmin) {
+    CLAVES_NO_SUMAR_ADMIN.forEach((k) => { tasas[k] = 0; });
+    Object.keys(fijos).forEach((k) => { fijos[k] = 0; });
+  }
+  return { tasas, fijos };
+}
+
 export function calcularCotizacion(v) {
-  const tasas = { ...TASAS_BASE, ...(v.tasas || {}) };
-  const fijos = { ...FIJOS_BASE, ...(v.fijos || {}) };
+  const { tasas, fijos } = tasasYFijosEfectivos(v);
   // Telas: precio m = precio kg / rendimiento; por prenda = consumo (m) x precio m
   const telas = (v.telas || []).map((t) => {
     const rend = num(t.rendimiento) || 1;
