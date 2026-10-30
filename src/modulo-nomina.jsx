@@ -6806,7 +6806,9 @@ function sumaDeducciones(deduccionesDetalle) {
 // TAMBIEN suspende el sueldo -- es la unica de las cuatro que es,
 // literalmente, sin remuneracion (las otras tres son licencias pagadas
 // por ley: vacaciones, maternidad/paternidad y luto).
-const MOTIVOS_SIN_AUXILIO_TRANSPORTE = ["Vacaciones", "Licencia No Remunerada", "Licencia Maternidad/Paternidad", "Luto"];
+// (2026-10-30, a pedido de Fredy) "Suspensión de Contrato" tambien suspende el sueldo y el auxilio (durante la suspension no hay salario),
+// igual que la Licencia No Remunerada: antes no descontaba nada.
+const MOTIVOS_SIN_AUXILIO_TRANSPORTE = ["Vacaciones", "Licencia No Remunerada", "Suspensión de Contrato", "Licencia Maternidad/Paternidad", "Luto"];
 // (2026-10-30, a pedido de Fredy) Incapacidad y Licencia Remunerada TAMBIEN suspenden el auxilio de transporte (solo se paga por dia
 // efectivamente trabajado), pero a diferencia de los motivos de arriba se cuentan por dias de CALENDARIO (sabados, domingos y festivos
 // dentro de la ausencia incluidos): cada dia descuenta auxilio mensual / 30. El sueldo NO se toca. Si un dia queda cubierto por dos
@@ -6827,7 +6829,7 @@ function diasSinAuxilioDeAusencias(ausencias, trabajador, turno, inicio, fin) {
   });
   return dias.size;
 }
-const MOTIVOS_SIN_SUELDO = ["Licencia No Remunerada"];
+const MOTIVOS_SIN_SUELDO = ["Licencia No Remunerada", "Suspensión de Contrato"];
 // (2026-09-12) Cuenta, dentro de [inicio, fin], los dias HABILES reales del
 // trabajador (mismo criterio de diaEsperado que usa el Reporte de
 // Asistencia -- respeta su turno si tiene uno especial) que caen dentro de
