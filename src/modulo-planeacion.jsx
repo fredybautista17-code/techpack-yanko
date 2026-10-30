@@ -2366,8 +2366,6 @@ function InformesView({
   // pestaña por pestaña. Además, dentro de Semiterminado y En Planta, sigue
   // filtrando la tabla de esa pestaña como filtro rápido adicional.
   const [busquedaLote, setBusquedaLote] = useState("");
-  const [pedidoTallaExpandido, setPedidoTallaExpandido] = useState(null);
-  const [tallasPorPedido, setTallasPorPedido] = useState({});
   const [loteMovimientosExpandido, setLoteMovimientosExpandido] = useState(null);
   const [movimientosPorLote, setMovimientosPorLote] = useState({});
   // (2026-10-30, a pedido de Fredy) Cantidades por color y talla de UN lote, desde Busint (misma consulta que usan Devoluciones).
@@ -2414,63 +2412,6 @@ function InformesView({
       setTallasPorLote((prev) => ({ ...prev, [clave]: { cargando: false, ...resp.data } }));
     } catch (err) {
       setTallasPorLote((prev) => ({ ...prev, [clave]: { cargando: false, error: err?.message || String(err) } }));
-    }
-  }
-  // (2026-08-20) Desglose por talla de un pedido, EN VIVO desde la API "gen"
-  // de Busint (ApiGen_OrdenesDePedidoBusint vía getOrdenBusintPorNumero, ya
-  // usada en producción por Pedidos/Corte) — no la API "BD" que se exploró
-  // hoy y resultó tener casi todo congelado o vacío. Es a nivel de PEDIDO,
-  // no de lote individual (un pedido puede repartirse en varios lotes), así
-  // que se muestra el total del pedido completo, no solo lo de este lote.
-  // No guarda nada — es una consulta al vuelo cada vez que se despliega.
-  async function toggleTallasPedido(numPedido, fechaEntregaConfISO) {
-    const clave = String(numPedido);
-    if (pedidoTallaExpandido === clave) {
-      setPedidoTallaExpandido(null);
-      return;
-    }
-    setPedidoTallaExpandido(clave);
-    if (tallasPorPedido[clave]) return; // ya en caché, no repetir la consulta
-    setTallasPorPedido((prev) => ({ ...prev, [clave]: { cargando: true } }));
-    try {
-      const hoy = new Date();
-      const fin = fechaEntregaConfISO && isoToLocalDate(fechaEntregaConfISO) > hoy
-        ? dateToISO(new Date(isoToLocalDate(fechaEntregaConfISO).getTime() + 7 * 86400000))
-        : dateToISO(hoy);
-      const inicio = dateToISO(new Date(new Date(fin).getTime() - 240 * 86400000));
-      const llamar = httpsCallable(functionsClient, "getOrdenBusintPorNumero");
-      const resp = await llamar({ fechaInicio: inicio, fechaFin: fin, numeroPedido: clave });
-      const filas = resp.data?.filasCoincidentes || [];
-      const porRef = new Map();
-      let cliente = "";
-      let fechaDespacho = "";
-      filas.forEach((f) => {
-        cliente = cliente || (f.cliente || "").trim();
-        fechaDespacho = fechaDespacho || (f.fechaDespacho ? String(f.fechaDespacho).slice(0, 10) : "");
-        const claveRef = [f.ref, f.pinta, f.color].map((x) => x || "").join("|");
-        if (!porRef.has(claveRef)) {
-          porRef.set(claveRef, { ref: f.ref || "", descripcion: [f.pinta, f.color].filter(Boolean).join(" · "), tallas: {}, total: 0 });
-        }
-        const r = porRef.get(claveRef);
-        const talla = String(f.talla || "").trim() || "Sin talla";
-        const cant = Math.round(Number(f.cantPed) || 0);
-        r.tallas[talla] = (r.tallas[talla] || 0) + cant;
-        r.total += cant;
-      });
-      const referencias = [...porRef.values()];
-      setTallasPorPedido((prev) => ({
-        ...prev,
-        [clave]: {
-          cargando: false,
-          cliente,
-          fechaDespacho,
-          referencias,
-          totalUnidades: referencias.reduce((s, r) => s + r.total, 0),
-          rango: { inicio, fin },
-        },
-      }));
-    } catch (err) {
-      setTallasPorPedido((prev) => ({ ...prev, [clave]: { cargando: false, error: err?.message || String(err) } }));
     }
   }
   const busquedaLoteNorm = busquedaLote.trim().toLowerCase();
@@ -2788,12 +2729,20 @@ function InformesView({
                         </div>
                       )}
                       <div style={{ width: "100%" }}>
-                        <button
-                          onClick={() => toggleMovimientosLote(l.numLote)}
-                          style={{ padding: "5px 10px", borderRadius: 6, border: `1px solid ${C.border}`, background: C.white, color: C.ink, fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}
-                        >
-                          {loteMovimientosExpandido === String(l.numLote) ? "▲ Ocultar entradas/salidas reales" : "📦 Ver entradas/salidas reales (Busint)"}
-                        </button>
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                          <button
+                            onClick={() => toggleMovimientosLote(l.numLote)}
+                            style={{ padding: "5px 10px", borderRadius: 6, border: `1px solid ${C.border}`, background: C.white, color: C.ink, fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}
+                          >
+                            {loteMovimientosExpandido === String(l.numLote) ? "▲ Ocultar entradas/salidas reales" : "📦 Ver entradas/salidas reales (Busint)"}
+                          </button>
+                          <button
+                            onClick={() => toggleTallasLote(l.numLote)}
+                            style={{ padding: "5px 10px", borderRadius: 6, border: `1px solid ${C.border}`, background: C.white, color: C.ink, fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}
+                          >
+                            {loteTallasExpandido === String(l.numLote) ? "▲ Ocultar tallas del lote" : "📏 Ver tallas del lote (Busint)"}
+                          </button>
+                        </div>
                         {loteMovimientosExpandido === String(l.numLote) && (
                           <div style={{ marginTop: 8, padding: 10, background: C.white, border: `1px solid ${C.border}`, borderRadius: 8 }}>
                             {(() => {
@@ -2826,51 +2775,6 @@ function InformesView({
                             })()}
                           </div>
                         )}
-                      </div>
-                      {l.numPedido && (
-                        <div style={{ width: "100%" }}>
-                          <button
-                            onClick={() => toggleTallasPedido(l.numPedido, l.fechaEntregaConfISO)}
-                            style={{ padding: "5px 10px", borderRadius: 6, border: `1px solid ${C.border}`, background: C.white, color: C.ink, fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}
-                          >
-                            {pedidoTallaExpandido === String(l.numPedido) ? "▲ Ocultar tallas" : "🧵 Ver tallas del pedido"}
-                          </button>
-                          {pedidoTallaExpandido === String(l.numPedido) && (
-                            <div style={{ marginTop: 8, padding: 10, background: C.white, border: `1px solid ${C.border}`, borderRadius: 8 }}>
-                              {(() => {
-                                const info = tallasPorPedido[String(l.numPedido)];
-                                if (!info || info.cargando) return <div style={{ fontSize: 12, color: C.slate }}>Consultando Busint…</div>;
-                                if (info.error) return <div style={{ fontSize: 12, color: C.red }}>⚠ {info.error}</div>;
-                                if (!info.referencias?.length) return <div style={{ fontSize: 12, color: C.slate }}>Busint no devolvió líneas para este pedido en el rango consultado ({info.rango?.inicio} a {info.rango?.fin}).</div>;
-                                return (
-                                  <div>
-                                    <div style={{ fontSize: 11, color: C.slate, marginBottom: 8 }}>
-                                      Pedido #{l.numPedido} completo (todos los lotes) · {fmtNum(info.totalUnidades)} und. totales{info.fechaDespacho ? ` · Despacho: ${info.fechaDespacho}` : ""}
-                                    </div>
-                                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                                      {info.referencias.map((r, i) => (
-                                        <div key={i} style={{ fontSize: 11.5, color: C.ink }}>
-                                          <strong>{r.ref}</strong>{r.descripcion ? ` · ${r.descripcion}` : ""} — {fmtNum(r.total)} und.
-                                          <span style={{ color: C.slate }}>
-                                            {" "}({Object.entries(r.tallas).filter(([, c]) => c > 0).map(([t, c]) => `${t}:${c}`).join(", ")})
-                                          </span>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  </div>
-                                );
-                              })()}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                      <div style={{ width: "100%" }}>
-                        <button
-                          onClick={() => toggleTallasLote(l.numLote)}
-                          style={{ padding: "5px 10px", borderRadius: 6, border: `1px solid ${C.border}`, background: C.white, color: C.ink, fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}
-                        >
-                          {loteTallasExpandido === String(l.numLote) ? "▲ Ocultar tallas del lote" : "📏 Ver tallas del lote (Busint)"}
-                        </button>
                         {loteTallasExpandido === String(l.numLote) && (
                           <div style={{ marginTop: 8, padding: 10, background: C.white, border: `1px solid ${C.border}`, borderRadius: 8 }}>
                             {(() => {
