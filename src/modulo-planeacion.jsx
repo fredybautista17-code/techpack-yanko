@@ -2370,6 +2370,9 @@ function InformesView({
   const [tallasPorPedido, setTallasPorPedido] = useState({});
   const [loteMovimientosExpandido, setLoteMovimientosExpandido] = useState(null);
   const [movimientosPorLote, setMovimientosPorLote] = useState({});
+  // (2026-10-30, a pedido de Fredy) Cantidades por color y talla de UN lote, desde Busint (misma consulta que usan Devoluciones).
+  const [loteTallasExpandido, setLoteTallasExpandido] = useState(null);
+  const [tallasPorLote, setTallasPorLote] = useState({});
   // (2026-08-29) Entradas/salidas REALES por proceso, directo de Busint BD
   // (tablas "bmp - entrada plantaproc ref" / "bmp - salida plantaproc ref")
   // — a diferencia del inventario pendiente que ya se muestra arriba, esto
@@ -2394,6 +2397,23 @@ function InformesView({
       setMovimientosPorLote((prev) => ({ ...prev, [clave]: { cargando: false, ...resp.data } }));
     } catch (err) {
       setMovimientosPorLote((prev) => ({ ...prev, [clave]: { cargando: false, error: err?.message || String(err) } }));
+    }
+  }
+  async function toggleTallasLote(numLote) {
+    const clave = String(numLote);
+    if (loteTallasExpandido === clave) {
+      setLoteTallasExpandido(null);
+      return;
+    }
+    setLoteTallasExpandido(clave);
+    if (tallasPorLote[clave] && !tallasPorLote[clave].error) return; // ya en caché, no repetir la consulta
+    setTallasPorLote((prev) => ({ ...prev, [clave]: { cargando: true } }));
+    try {
+      const llamar = httpsCallable(functionsClient, "consultarLoteParaDevolucion", { timeout: 300000 });
+      const resp = await llamar({ lote: clave });
+      setTallasPorLote((prev) => ({ ...prev, [clave]: { cargando: false, ...resp.data } }));
+    } catch (err) {
+      setTallasPorLote((prev) => ({ ...prev, [clave]: { cargando: false, error: err?.message || String(err) } }));
     }
   }
   // (2026-08-20) Desglose por talla de un pedido, EN VIVO desde la API "gen"
@@ -2844,6 +2864,66 @@ function InformesView({
                           )}
                         </div>
                       )}
+                      <div style={{ width: "100%" }}>
+                        <button
+                          onClick={() => toggleTallasLote(l.numLote)}
+                          style={{ padding: "5px 10px", borderRadius: 6, border: `1px solid ${C.border}`, background: C.white, color: C.ink, fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}
+                        >
+                          {loteTallasExpandido === String(l.numLote) ? "▲ Ocultar tallas del lote" : "📏 Ver tallas del lote (Busint)"}
+                        </button>
+                        {loteTallasExpandido === String(l.numLote) && (
+                          <div style={{ marginTop: 8, padding: 10, background: C.white, border: `1px solid ${C.border}`, borderRadius: 8 }}>
+                            {(() => {
+                              const info = tallasPorLote[String(l.numLote)];
+                              if (!info || info.cargando) return <div style={{ fontSize: 12, color: C.slate }}>Consultando Busint… (puede tardar unos segundos)</div>;
+                              if (info.error) return <div style={{ fontSize: 12, color: C.red }}>⚠ {info.error}</div>;
+                              if (!info.colores?.length || !info.tallas?.length) return <div style={{ fontSize: 12, color: C.slate }}>Busint no tiene cantidades por talla registradas para este lote.</div>;
+                              const infantil = /ni[ñn][oa]/i.test(String(info.grupo || ""));
+                              const LETRAS = { T2: "U", T4: "XS", T6: "S", T8: "M", T10: "L", T12: "XL", T14: "2XL", T16: "3XL", T18: "4XL" };
+                              const etiqueta = (t) => (infantil ? String(t).replace(/^T/, "") : LETRAS[t] || String(t));
+                              const totalColor = (c) => info.tallas.reduce((s, t) => s + (Number(c.tallas?.[t]) || 0), 0);
+                              const totalTalla = (t) => info.colores.reduce((s, c) => s + (Number(c.tallas?.[t]) || 0), 0);
+                              const totalLote = info.colores.reduce((s, c) => s + totalColor(c), 0);
+                              const th = { padding: "7px 12px", color: C.seam, fontSize: 11, textAlign: "right", fontWeight: 700 };
+                              const td = { padding: "7px 12px", borderBottom: `1px solid ${C.border}`, textAlign: "right", fontVariantNumeric: "tabular-nums" };
+                              return (
+                                <div>
+                                  <div style={{ fontSize: 11, color: C.slate, marginBottom: 8 }}>
+                                    Lote #{l.numLote} · {info.ref || l.referencia} · cantidades por color y talla según Busint · {fmtNum(totalLote)} und. en total
+                                  </div>
+                                  <div style={{ overflowX: "auto" }}>
+                                    <table style={{ borderCollapse: "collapse", fontSize: 12.5, minWidth: 420 }}>
+                                      <thead>
+                                        <tr style={{ background: C.ink }}>
+                                          <th style={{ ...th, textAlign: "left" }}>Color</th>
+                                          {info.tallas.map((t) => <th key={t} style={th} title={t}>{etiqueta(t)}</th>)}
+                                          <th style={th}>Total</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {info.colores.map((c, i) => (
+                                          <tr key={c.color} style={{ background: i % 2 === 0 ? C.canvas : C.white }}>
+                                            <td style={{ ...td, textAlign: "left", fontWeight: 600 }}>{c.nombre ? `${c.color} · ${c.nombre}` : c.color}</td>
+                                            {info.tallas.map((t) => <td key={t} style={td}>{Number(c.tallas?.[t]) > 0 ? fmtNum(c.tallas[t]) : "—"}</td>)}
+                                            <td style={{ ...td, fontWeight: 800 }}>{fmtNum(totalColor(c))}</td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                      <tfoot>
+                                        <tr>
+                                          <td style={{ ...td, textAlign: "left", fontWeight: 800, borderTop: `2px solid ${C.ink}`, borderBottom: "none" }}>Total del lote</td>
+                                          {info.tallas.map((t) => <td key={t} style={{ ...td, fontWeight: 800, borderTop: `2px solid ${C.ink}`, borderBottom: "none" }}>{fmtNum(totalTalla(t))}</td>)}
+                                          <td style={{ ...td, fontWeight: 800, borderTop: `2px solid ${C.ink}`, borderBottom: "none" }}>{fmtNum(totalLote)}</td>
+                                        </tr>
+                                      </tfoot>
+                                    </table>
+                                  </div>
+                                </div>
+                              );
+                            })()}
+                          </div>
+                        )}
+                      </div>
                     </div>
                   ))
                 )}
