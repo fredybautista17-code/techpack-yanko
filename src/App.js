@@ -18872,6 +18872,7 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
     return () => { vivo = false; };
   }, [isAdmin, syncRefresco]);
   const [filtroFalta, setFiltroFalta] = useState("todos"); // todos | faltante | completos
+  const [clientesAbiertos, setClientesAbiertos] = useState({}); // (2026-10-30) cliente -> true/false (tablero por cliente)
   const [busqueda, setBusqueda] = useState("");
   const activos = pedidos.filter((p) => p.estado === "activo" || p.estado === "terminado");
   // Un único estado de cierre ("cerrado"), con el motivo en motivoCierre — ya
@@ -18903,6 +18904,28 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
   const proximos = activos.filter((p) => { if (!p.fechaDespacho) return false; const d = Math.ceil((new Date(p.fechaDespacho) - hoy) / 86400000); return d >= 0 && d <= 7; });
   const vigentes = activos.filter((p) => { if (!p.fechaDespacho) return true; return Math.ceil((new Date(p.fechaDespacho) - hoy) / 86400000) > 7; });
   const terminados = activos.filter((p) => p.estado === "terminado");
+  // (2026-10-30, a pedido de Fredy) Tablero por cliente: un renglón por cliente con lo pedido, lo cortado, lo que falta por cortar y sus alertas
+  // (vencidos / próximos a vencer), en vez de dos listas largas de pedidos. Al abrir un cliente se ven sus pedidos.
+  const gruposCliente = (() => {
+    if (filtro !== "activos") return [];
+    const m = new Map();
+    lista.forEach((p) => {
+      const k = String(p.cliente || "(sin cliente)").trim() || "(sin cliente)";
+      if (!m.has(k)) m.set(k, { cliente: k, pedidos: [], pedido: 0, cortado: 0, vencidos: 0, proximos: 0 });
+      const g = m.get(k);
+      g.pedidos.push(p);
+      g.pedido += (p.referencias || []).reduce((x, r) => x + (r.total || 0), 0);
+      g.cortado += (p.cortesRealizados || []).reduce((x, c) => x + (c.totalUnidades || 0), 0);
+      if (p.fechaDespacho) {
+        if (new Date(p.fechaDespacho) < hoy) g.vencidos += 1;
+        const d = Math.ceil((new Date(p.fechaDespacho) - hoy) / 86400000);
+        if (d >= 0 && d <= 7) g.proximos += 1;
+      }
+    });
+    return [...m.values()].sort((x, y) => (y.vencidos - x.vencidos) || (y.proximos - x.proximos) || ((y.pedido - y.cortado) - (x.pedido - x.cortado)) || x.cliente.localeCompare(y.cliente));
+  })();
+  const hayFiltroActivo = !!busquedaNorm || filtroFalta !== "todos";
+  const estaAbierto = (g) => (clientesAbiertos[g.cliente] !== undefined ? clientesAbiertos[g.cliente] : hayFiltroActivo);
   return (
     <div>
       {editPedido && <EditPedidoModal pedido={editPedido} onSave={(p) => { onUpdatePedido(p); setEditPedido(null); }} onClose={() => setEditPedido(null)} />}
@@ -18920,47 +18943,20 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
           </div>
         )}
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 12, marginBottom: 20 }}>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
         {[
-          { label: "Total Activos", value: activos.length, icon: "📦", color: T.denim, bg: T.denimBg },
-          { label: "Vigentes", value: vigentes.length, icon: "✅", color: T.jade, bg: T.jadeBg },
-          { label: "Próx. a vencer", value: proximos.length, icon: "⚠️", color: T.amber, bg: T.amberBg },
-          { label: "Vencidos", value: vencidos.length, icon: "🚨", color: T.coral, bg: T.coralBg },
-          { label: "Terminados", value: terminados.length, icon: "🏁", color: T.violet, bg: T.violetBg },
+          { label: "Activos", value: activos.length, color: T.denim },
+          { label: "Vigentes", value: vigentes.length, color: T.jade },
+          { label: "Próx. a vencer", value: proximos.length, color: T.amber },
+          { label: "Vencidos", value: vencidos.length, color: T.coral },
+          { label: "Terminados", value: terminados.length, color: T.violet },
         ].map((k) => (
-          <div key={k.label} style={{ background: k.bg, borderRadius: 12, padding: "14px 16px", border: `1px solid ${k.color}22` }}>
-            <div style={{ fontSize: 20, marginBottom: 4 }}>{k.icon}</div>
-            <div style={{ fontSize: 22, fontWeight: 900, color: k.color, lineHeight: 1 }}>{k.value}</div>
-            <div style={{ fontSize: 11, color: T.slate, marginTop: 4, fontWeight: 600 }}>{k.label}</div>
+          <div key={k.label} style={{ display: "flex", alignItems: "baseline", gap: 6, padding: "6px 14px", background: T.white, border: `1px solid ${T.border}`, borderRadius: 999 }}>
+            <span style={{ fontSize: 17, fontWeight: 900, color: k.color }}>{k.value}</span>
+            <span style={{ fontSize: 12, fontWeight: 600, color: T.slate }}>{k.label}</span>
           </div>
         ))}
       </div>
-      {(vencidos.length > 0 || proximos.length > 0) && (
-        <div style={{ marginBottom: 20 }}>
-          {vencidos.length > 0 && (
-            <div style={{ padding: "12px 16px", background: T.coralBg, borderRadius: 10, border: `1px solid ${T.coral}44`, marginBottom: 8 }}>
-              <div style={{ fontWeight: 800, fontSize: 13, color: T.coral, marginBottom: 6 }}>🚨 {vencidos.length} pedido{vencidos.length !== 1 ? "s" : ""} vencido{vencidos.length !== 1 ? "s" : ""}</div>
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                {vencidos.map((p) => {
-                  const dias = Math.abs(Math.ceil((new Date(p.fechaDespacho) - hoy) / 86400000));
-                  return <span key={p.id} onClick={() => onSelectPedido(p.id)} style={{ padding: "3px 10px", background: T.white, borderRadius: 20, fontSize: 11, fontWeight: 700, color: T.coral, cursor: "pointer", border: `1px solid ${T.coral}44` }}>#{p.numero} {p.cliente} · {dias}d vencido</span>;
-                })}
-              </div>
-            </div>
-          )}
-          {proximos.length > 0 && (
-            <div style={{ padding: "12px 16px", background: T.amberBg, borderRadius: 10, border: `1px solid ${T.amber}44` }}>
-              <div style={{ fontWeight: 800, fontSize: 13, color: T.amber, marginBottom: 6 }}>⚠️ {proximos.length} pedido{proximos.length !== 1 ? "s" : ""} vence{proximos.length === 1 ? "" : "n"} en los próximos 7 días</div>
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                {proximos.map((p) => {
-                  const dias = Math.ceil((new Date(p.fechaDespacho) - hoy) / 86400000);
-                  return <span key={p.id} onClick={() => onSelectPedido(p.id)} style={{ padding: "3px 10px", background: T.white, borderRadius: 20, fontSize: 11, fontWeight: 700, color: T.amber, cursor: "pointer", border: `1px solid ${T.amber}44` }}>#{p.numero} {p.cliente} · {dias}d</span>;
-                })}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
       <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
         {[["activos", `Activos (${activos.length})`], ["historico", `Histórico (${historico.length})`], ["vigentes_busint", "📡 Vigentes por Cliente (Busint)"], ["disponible_despachar", "📦 Disponible para despachar"]].map(([v, label]) => (
           <button key={v} onClick={() => setFiltro(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${filtro === v ? T.ink : T.border}`, background: filtro === v ? T.ink : T.white, color: filtro === v ? T.white : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
@@ -18972,6 +18968,12 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
             placeholder="🔍 Buscar por N° pedido, cliente, vendedor o referencia..."
             style={{ padding: "7px 12px", border: `1.5px solid ${busqueda ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, minWidth: 340, outline: "none", fontFamily: "inherit", marginLeft: 8 }}
           />
+        )}
+        {filtro === "activos" && gruposCliente.length > 0 && (
+          <div style={{ display: "flex", gap: 4, marginLeft: 8, alignItems: "center" }}>
+            <button onClick={() => setClientesAbiertos(Object.fromEntries(gruposCliente.map((g) => [g.cliente, true])))} style={{ padding: "6px 12px", borderRadius: 20, border: `1.5px solid ${T.border}`, background: T.white, color: T.slate, fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>Abrir todos</button>
+            <button onClick={() => setClientesAbiertos(Object.fromEntries(gruposCliente.map((g) => [g.cliente, false])))} style={{ padding: "6px 12px", borderRadius: 20, border: `1.5px solid ${T.border}`, background: T.white, color: T.slate, fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>Cerrar todos</button>
+          </div>
         )}
         {filtro === "activos" && (
           <div style={{ display: "flex", gap: 4, marginLeft: 8, alignItems: "center" }}>
@@ -18994,7 +18996,32 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
               </tr>
             </thead>
             <tbody>
-              {lista.sort((a, b) => (a.fechaDespacho || "").localeCompare(b.fechaDespacho || "")).map((p, i) => {
+              {gruposCliente.map((g) => {
+                const abierto = estaAbierto(g);
+                const falta = Math.max(0, g.pedido - g.cortado);
+                const pctG = g.pedido > 0 ? Math.min(100, Math.round((g.cortado / g.pedido) * 100)) : 0;
+                return (
+                  <React.Fragment key={"cli-" + g.cliente}>
+                    <tr onClick={() => setClientesAbiertos((o) => ({ ...o, [g.cliente]: !abierto }))} style={{ background: T.white, borderTop: `2px solid ${T.border}`, borderBottom: `1px solid ${T.border}`, cursor: "pointer" }}>
+                      <td colSpan={2} style={{ padding: "12px 14px", fontWeight: 800, color: T.ink }}>
+                        <span style={{ display: "inline-block", width: 16, color: T.slate }}>{abierto ? "▾" : "▸"}</span>{g.cliente}
+                        <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 600, color: T.slate }}>{g.pedidos.length} pedido{g.pedidos.length !== 1 ? "s" : ""}</span>
+                      </td>
+                      <td style={{ padding: "12px 14px", textAlign: "center", fontWeight: 700, color: T.ink }}>{fmtNum(g.pedido)}</td>
+                      <td style={{ padding: "12px 14px", textAlign: "center", fontWeight: 700, color: T.jade }}>{fmtNum(g.cortado)}</td>
+                      <td style={{ padding: "12px 14px", textAlign: "center", fontWeight: 800, color: falta > 0 ? T.coral : T.jade }}>{falta > 0 ? fmtNum(falta) : "✓ 0"}</td>
+                      <td style={{ padding: "12px 14px" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <div style={{ flex: 1, height: 7, borderRadius: 4, background: T.border, overflow: "hidden" }}><div style={{ height: "100%", width: `${pctG}%`, background: pctG === 100 ? T.jade : T.denim }} /></div>
+                          <span style={{ fontSize: 11, fontWeight: 700, color: pctG === 100 ? T.jade : T.denim, minWidth: 30 }}>{pctG}%</span>
+                        </div>
+                      </td>
+                      <td colSpan={3} style={{ padding: "12px 14px" }}>
+                        {g.vencidos > 0 && <span style={{ marginRight: 6, padding: "2px 10px", borderRadius: 20, background: T.coralBg, color: T.coral, fontSize: 11, fontWeight: 800 }}>{g.vencidos} vencido{g.vencidos !== 1 ? "s" : ""}</span>}
+                        {g.proximos > 0 && <span style={{ padding: "2px 10px", borderRadius: 20, background: T.amberBg, color: T.amber, fontSize: 11, fontWeight: 800 }}>{g.proximos} vence{g.proximos !== 1 ? "n" : ""} en 7 d</span>}
+                      </td>
+                    </tr>
+                    {abierto && g.pedidos.slice().sort((a, b) => (a.fechaDespacho || "").localeCompare(b.fechaDespacho || "")).map((p, i) => {
                 const totalP = p.referencias.reduce((s, r) => s + r.total, 0);
                 const totalC = (p.cortesRealizados || []).reduce((s, c) => s + (c.totalUnidades || 0), 0);
                 const pct = totalP > 0 ? Math.round((totalC / totalP) * 100) : 0;
@@ -19030,6 +19057,9 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
                   </tr>
                 );
               })}
+                  </React.Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -19050,6 +19080,7 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
                   <div style={{ fontWeight: 800, color: T.ink, display: "flex", alignItems: "center", gap: 8 }}>
                     Pedido #{p.numero} — {p.cliente}
                     <span style={{ fontSize: 10, fontWeight: 800, color: mi.color, background: mi.bg, padding: "1px 8px", borderRadius: 10 }}>{mi.label}</span>
+                    {totalP < 0 && <span title="Pedido con unidades negativas: es mercancía que el cliente devolvió de la consignación, no una venta." style={{ fontSize: 10, fontWeight: 800, color: T.violet, background: T.violetBg, padding: "1px 8px", borderRadius: 10 }}>↩ Devolución de consignación</span>}
                   </div>
                   <div style={{ fontSize: 12, color: T.slate }}>
                     {mi.desc}: {p.fechaCumplido || "—"} · {fmtNum(totalP)} uds pedidas · {fmtNum(totalC)} cortadas
