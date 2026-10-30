@@ -3189,6 +3189,16 @@ exports.getAvancePedidosActivos = onCallAuth(
     const hoy = fechaHoyBogota();
     const fechaInicio = `${Number(hoy.slice(0, 4)) - 1}-01-01`;
     const avisos = [];
+    // Las lecturas pesadas de Busint (ventas perdidas y órdenes de producción) arrancan YA y en paralelo con Planeación y las facturas,
+    // para que la respuesta llegue antes del límite de espera de la pantalla.
+    const pCumplidos = consultarTablaBusintBDCompleta("pedidos detalles clientes - cumplidos");
+    const pOrdenes = Promise.all([
+      consultarTablaBusintBDCompleta("orden produccion"),
+      consultarTablaBusintBDCompleta("orden produccion detalles"),
+      consultarTablaBusintBDCompleta("bmp - entrada planta ref").catch(() => []),
+    ]);
+    pCumplidos.catch(() => {});
+    pOrdenes.catch(() => {});
     const [carga, filasFact] = await Promise.all([
       leerCargaPlaneacionMasReciente().catch((e) => { avisos.push(`No se pudo leer la carga de Planeación: ${e?.message || String(e)}`); return null; }),
       consultarFacturadoBusint(fechaInicio, hoy).catch((e) => { avisos.push(`No se pudo leer lo facturado en Busint: ${e?.message || String(e)}`); return []; }),
@@ -3197,7 +3207,7 @@ exports.getAvancePedidosActivos = onCallAuth(
     const de = (n) => { if (!porPedido[n]) porPedido[n] = { cortadoPorRef: {}, facturadoPorRef: {}, perdidaPorRef: {}, facturado: 0 }; return porPedido[n]; };
     // Ventas perdidas por pedido+referencia (solo NConcepto = 12, la misma lectura validada contra Busint): el pedido real es lo pedido menos esto.
     try {
-      const cumplidos = await consultarTablaBusintBDCompleta("pedidos detalles clientes - cumplidos");
+      const cumplidos = await pCumplidos;
       cumplidos.forEach((f) => {
         if (Number(f?.NConcepto) !== 12) return;
         const n = String(f?.NumPed ?? "").trim();
@@ -3222,11 +3232,7 @@ exports.getAvancePedidosActivos = onCallAuth(
     // despachar" en "Sin cortar"): los lotes terminados salen de la carga de Planeación, pero siguen existiendo en Busint. Por referencia
     // se toma lo MAYOR entre Planeación y Busint.
     try {
-      const [ordProd, ordDet, entPlantaRefDD] = await Promise.all([
-        consultarTablaBusintBDCompleta("orden produccion"),
-        consultarTablaBusintBDCompleta("orden produccion detalles"),
-        consultarTablaBusintBDCompleta("bmp - entrada planta ref").catch(() => []),
-      ]);
+      const [ordProd, ordDet, entPlantaRefDD] = await pOrdenes;
       const claveL = (v) => String(v ?? "").trim().replace(/\.0+$/, "");
       const lotePed = new Map();
       for (const f of ordProd) {

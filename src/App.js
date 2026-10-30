@@ -16853,7 +16853,7 @@ let _avanceCache = { t: 0, promesa: null };
 function cargarAvancePedidos(forzar) {
   const ahora = Date.now();
   if (!forzar && _avanceCache.promesa && ahora - _avanceCache.t < 120000) return _avanceCache.promesa;
-  const prom = httpsCallable(functionsClient, "getAvancePedidosActivos")({}).then((r) => r.data || null);
+  const prom = httpsCallable(functionsClient, "getAvancePedidosActivos", { timeout: 300000 })({}).then((r) => r.data || null);
   _avanceCache = { t: ahora, promesa: prom };
   prom.catch(() => { if (_avanceCache.promesa === prom) _avanceCache = { t: 0, promesa: null }; });
   return prom;
@@ -18985,11 +18985,12 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
   }, [isAdmin, syncRefresco]);
   // (2026-10-30) Avance real: cortado según lotes de Planeación + facturado neto de Busint (por pedido y referencia). Si falla, el tablero usa solo los cortes de ATLAS.
   const [avance, setAvance] = useState(null);
+  const [avanceError, setAvanceError] = useState("");
   useEffect(() => {
     let vivo = true;
     cargarAvancePedidos(syncRefresco > 0)
       .then((d) => { if (vivo) setAvance(d); })
-      .catch(() => {});
+      .catch((err) => { if (vivo) setAvanceError(err?.message || String(err)); });
     return () => { vivo = false; };
   }, [syncRefresco]);
   const [filtroFalta, setFiltroFalta] = useState("todos"); // todos | faltante | completos
@@ -19193,7 +19194,7 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
           </table>
           <div style={{ padding: "8px 14px", fontSize: 11, color: T.slate, borderTop: `1px solid ${T.border}` }}>
             Cortado = lo mayor entre lo registrado en ATLAS, los lotes de Planeación{avance?.cargaPlaneacion ? ` (carga ${String(avance.cargaPlaneacion).slice(0, 10)})` : ""} y las órdenes de producción de Busint, o lo facturado si es mayor, referencia por referencia; Falta no se compensa entre referencias. Pedido = pedido menos ventas perdidas (como el reporte de Busint). Facturado = neto en Busint.
-            {avance?.avisos?.length ? ` · Aviso: ${avance.avisos.join(" · ")}` : ""}{!avance ? " · Cargando avance real desde Planeación y Busint…" : ""}
+            {avance?.avisos?.length ? ` · Aviso: ${avance.avisos.join(" · ")}` : ""}{!avance && !avanceError ? " · Cargando avance real desde Planeación y Busint…" : ""}{!avance && avanceError ? ` · No se pudo cargar el avance real (${avanceError}); se muestran solo los cortes de ATLAS.` : ""}
           </div>
         </div>
       )}
