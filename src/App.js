@@ -19003,6 +19003,7 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
   }, [syncRefresco]);
   const [filtroFalta, setFiltroFalta] = useState("todos"); // todos | faltante | completos
   const [clientesAbiertos, setClientesAbiertos] = useState({}); // (2026-10-30) cliente -> true/false (tablero por cliente)
+  const [diaSel, setDiaSel] = useState(null); // (2026-10-30) tarjeta de "Por cortar por día" seleccionada (null = todas)
   const [busqueda, setBusqueda] = useState("");
   const activos = pedidos.filter((p) => p.estado === "activo" || p.estado === "terminado");
   // Un único estado de cierre ("cerrado"), con el motivo en motivoCierre — ya
@@ -19022,7 +19023,42 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
   const avanceDe = (p) => calcularAvancePedido(p, avance);
   const faltaDe = (p) => avanceDe(p).falta;
   const listaFiltrada = filtro === "activos" && filtroFalta !== "todos" ? listaBase.filter((p) => (filtroFalta === "faltante" ? faltaDe(p) > 0 : faltaDe(p) === 0)) : listaBase;
-  const lista = !busquedaNorm ? listaFiltrada : listaFiltrada.filter((p) =>
+  // (2026-10-30, a pedido de Fredy) "Por cortar por día": unidades que faltan por cortar agrupadas por la fecha de despacho del pedido
+  // (vencidos / hoy / próximos 7 días / después / sin fecha). Usa el avance real; los pedidos Terminados no cuentan.
+  const _pad2 = (n) => String(n).padStart(2, "0");
+  const _claveFecha = (d) => `${d.getFullYear()}-${_pad2(d.getMonth() + 1)}-${_pad2(d.getDate())}`;
+  const _DIAS_CORTO = ["DOM", "LUN", "MAR", "MIÉ", "JUE", "VIE", "SÁB"];
+  const diasCorte = Array.from({ length: 8 }, (_, i) => { const d = new Date(); d.setHours(12, 0, 0, 0); d.setDate(d.getDate() + i); return { id: _claveFecha(d), label: i === 0 ? `HOY · ${_DIAS_CORTO[d.getDay()]} ${d.getDate()}` : `${_DIAS_CORTO[d.getDay()]} ${d.getDate()}`, esHoy: i === 0, domingo: d.getDay() === 0 }; });
+  const _hoyClave = diasCorte[0].id;
+  const _ultimaClave = diasCorte[diasCorte.length - 1].id;
+  const diaDePedido = (p) => {
+    if (!p.fechaDespacho) return "sin";
+    const s0 = String(p.fechaDespacho);
+    let k = /^\d{4}-\d{2}-\d{2}/.test(s0) ? s0.slice(0, 10) : null;
+    if (!k) { const x = new Date(p.fechaDespacho); if (isNaN(x.getTime())) return "sin"; k = _claveFecha(x); }
+    return k < _hoyClave ? "venc" : k > _ultimaClave ? "despues" : k;
+  };
+  const porCortarDia = (() => {
+    const m = {};
+    let total = 0, totalPedidos = 0;
+    activos.forEach((p) => {
+      if (p.estado !== "activo") return;
+      const f = faltaDe(p);
+      if (!(f > 0)) return;
+      const id = diaDePedido(p);
+      if (!m[id]) m[id] = { und: 0, pedidos: 0 };
+      m[id].und += f; m[id].pedidos += 1; total += f; totalPedidos += 1;
+    });
+    const tarjetas = [
+      { id: "venc", label: "VENCIDOS", tipo: "venc" },
+      ...diasCorte.map((d) => ({ id: d.id, label: d.label, tipo: d.esHoy ? "hoy" : d.domingo ? "dom" : "dia" })),
+      { id: "despues", label: "DESPUÉS", tipo: "dia" },
+      { id: "sin", label: "SIN FECHA", tipo: "dia" },
+    ].map((t) => ({ ...t, und: m[t.id]?.und || 0, pedidos: m[t.id]?.pedidos || 0 }));
+    return { tarjetas, total, totalPedidos };
+  })();
+  const listaDia = filtro === "activos" && diaSel ? listaFiltrada.filter((p) => p.estado === "activo" && faltaDe(p) > 0 && diaDePedido(p) === diaSel) : listaFiltrada;
+  const lista = !busquedaNorm ? listaDia : listaDia.filter((p) =>
     String(p.numero || "").toLowerCase().includes(busquedaNorm) ||
     (p.cliente || "").toLowerCase().includes(busquedaNorm) ||
     (p.vendedor || "").toLowerCase().includes(busquedaNorm) ||
@@ -19058,7 +19094,7 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
     });
     return [...m.values()].sort((x, y) => (y.vencidos - x.vencidos) || (y.proximos - x.proximos) || ((y.pedido - y.cortado) - (x.pedido - x.cortado)) || x.cliente.localeCompare(y.cliente));
   })();
-  const hayFiltroActivo = !!busquedaNorm || filtroFalta !== "todos";
+  const hayFiltroActivo = !!busquedaNorm || filtroFalta !== "todos" || !!diaSel;
   const estaAbierto = (g) => (clientesAbiertos[g.cliente] !== undefined ? clientesAbiertos[g.cliente] : hayFiltroActivo);
   return (
     <div>
@@ -19117,6 +19153,40 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
           </div>
         )}
       </div>
+      {filtro === "activos" && (
+        <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, padding: 16, marginBottom: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
+            <div>
+              <div style={{ fontSize: 15, fontWeight: 800, color: T.ink }}>✂️ ¿Cuánto tengo por cortar y para qué día?</div>
+              <div style={{ fontSize: 12, color: T.slate, marginTop: 2 }}>Unidades que faltan por cortar, según la fecha de despacho del pedido. Toca un día para ver solo esos pedidos.{!avance ? " (Calculando el avance real…)" : ""}</div>
+            </div>
+            {diaSel && <button onClick={() => setDiaSel(null)} style={{ padding: "5px 12px", borderRadius: 20, border: `1.5px solid ${T.denim}`, background: T.denimBg, color: T.denim, fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>✕ Quitar filtro de día</button>}
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {porCortarDia.tarjetas.map((t) => {
+              const vacio = t.und === 0;
+              const sel = diaSel === t.id;
+              const esVenc = t.tipo === "venc" && !vacio;
+              const esHoy = t.tipo === "hoy" && !vacio;
+              const bg = esVenc ? T.coralBg : esHoy ? T.amberBg : T.canvas;
+              const col = esVenc ? T.coral : esHoy ? T.amber : vacio ? T.slate : T.ink;
+              return (
+                <button key={t.id} disabled={vacio} onClick={() => setDiaSel(sel ? null : t.id)}
+                  style={{ flex: "1 1 96px", minWidth: 96, padding: "10px 8px", borderRadius: 10, border: sel ? `2.5px solid ${T.denim}` : `1px solid ${T.border}`, background: vacio ? T.white : bg, cursor: vacio ? "default" : "pointer", textAlign: "center", fontFamily: "inherit", opacity: vacio ? 0.65 : 1 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.5, color: esVenc ? T.coral : esHoy ? T.amber : T.slate }}>{t.label}</div>
+                  <div style={{ fontSize: 22, fontWeight: 800, margin: "4px 0 0", color: col }}>{fmtNum(t.und)}</div>
+                  <div style={{ fontSize: 11, color: T.slate }}>{vacio ? "—" : `${t.pedidos} pedido${t.pedidos !== 1 ? "s" : ""}`}</div>
+                </button>
+              );
+            })}
+            <div style={{ flex: "1 1 120px", minWidth: 120, padding: "10px 8px", borderRadius: 10, background: T.ink, textAlign: "center" }}>
+              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.5, color: T.seam }}>TOTAL POR CORTAR</div>
+              <div style={{ fontSize: 22, fontWeight: 800, margin: "4px 0 0", color: T.white }}>{fmtNum(porCortarDia.total)}</div>
+              <div style={{ fontSize: 11, color: T.seam }}>{porCortarDia.totalPedidos} pedido{porCortarDia.totalPedidos !== 1 ? "s" : ""}</div>
+            </div>
+          </div>
+        </div>
+      )}
       {filtro === "vigentes_busint" && <InformeVigentesBusintView isAdmin={isAdmin} pedidosActivos={pedidos} currentUser={currentUser} />}
       {filtro === "disponible_despachar" && <DisponibleDespacharView db={db} functionsClient={functionsClient} T={T} />}
       {filtro === "activos" && lista.length > 0 && (
