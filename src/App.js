@@ -16821,10 +16821,10 @@ const ORDEN_TALLAS_LETRAS = ["XXS", "XS", "S", "S/M", "M", "M/L", "L", "L/XL", "
 function compararTallas(a, b) {
   const clave = (t) => {
     const x = String(t).trim().toUpperCase();
-    const num = x.match(/^(\d+)/);
-    if (num) return [0, Number(num[1]), x];
     const i = ORDEN_TALLAS_LETRAS.indexOf(x);
     if (i >= 0) return [1, i, x];
+    const num = x.match(/^(\d+)/);
+    if (num) return [0, Number(num[1]), x];
     return [2, 0, x];
   };
   const ka = clave(a), kb = clave(b);
