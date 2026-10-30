@@ -16816,25 +16816,31 @@ function SubirPedidoModal2({ onSave, onClose, pedidoConfig, pedidos, clientes })
   );
 }
 
+// (2026-10-30) Orden de columnas de tallas en "Referencias y Excedentes": numéricas primero (por su número), luego las de letras (XS<S<M<L<XL<2XL...), luego el resto.
+const ORDEN_TALLAS_LETRAS = ["XXS", "XS", "S", "S/M", "M", "M/L", "L", "L/XL", "XL", "1XL", "XXL", "2XL", "3XL", "XXXL", "4XL", "5XL", "UNICA", "UNICO", "U"];
+function compararTallas(a, b) {
+  const clave = (t) => {
+    const x = String(t).trim().toUpperCase();
+    const num = x.match(/^(\d+)/);
+    if (num) return [0, Number(num[1]), x];
+    const i = ORDEN_TALLAS_LETRAS.indexOf(x);
+    if (i >= 0) return [1, i, x];
+    return [2, 0, x];
+  };
+  const ka = clave(a), kb = clave(b);
+  return (ka[0] - kb[0]) || (ka[1] - kb[1]) || ka[2].localeCompare(kb[2]);
+}
+
 function PedidoDetailView({ pedido, onBack, onUpdatePedido, soloLectura }) {
   const [showConfirmCumplido, setShowConfirmCumplido] = useState(false);
+  const [refsAbiertas, setRefsAbiertas] = useState({}); // referencia -> abierta (muestra sus colores)
   const [showEdit, setShowEdit] = useState(false);
-  const TALLA_LABELS = ["U-2/4-2 PLUS", "4 XS", "6-6/8 S-S/M", "8 M-M/L", "10-10/12 L-L/XL", "12 XL-1XL", "14-14/16 2XL", "16 3XL", "18 4XL", "20"];
   const totalPedido = pedido.referencias.reduce((s, r) => s + r.total, 0);
   const totalCortado = (pedido.cortesRealizados || []).reduce((s, c) => s + (c.totalUnidades || 0), 0);
   const pct = totalPedido > 0 ? Math.round((totalCortado / totalPedido) * 100) : 0;
   const sem = semaforo2(pedido.fechaDespacho);
   const etapasHechas = Object.values(pedido.seguimiento || {}).filter(Boolean).length;
   const etapasPct = Math.round((etapasHechas / PEDIDO_STAGES.length) * 100);
-  function excedente(ref) {
-    const cortado = (pedido.cortesRealizados || []).flatMap((c) => c.refs || []).filter((cr) => cr.refId === ref.id).reduce((acc, cr) => {
-      TALLA_LABELS.forEach((t) => { acc[t] = (acc[t] || 0) + (cr.tallas?.[t] || 0); });
-      return acc;
-    }, {});
-    const exc = {};
-    TALLA_LABELS.forEach((t) => { exc[t] = (ref.tallas?.[t] || 0) - (cortado[t] || 0); });
-    return exc;
-  }
   function toggleEtapa(stage) { if (soloLectura) return; onUpdatePedido({ ...pedido, seguimiento: { ...pedido.seguimiento, [stage]: !pedido.seguimiento?.[stage] } }); }
   // "cerrado" es el único estado de cierre desde el rediseño (antes había
   // "cumplido"/"cancelado_busint"/"venta_perdida_busint" por separado). Se
@@ -16893,37 +16899,87 @@ function PedidoDetailView({ pedido, onBack, onUpdatePedido, soloLectura }) {
       </div>
       <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, padding: 20, marginBottom: 20 }}>
         <div style={{ fontWeight: 700, fontSize: 14, color: T.ink, marginBottom: 14 }}>Referencias y Excedentes</div>
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-            <thead>
-              <tr style={{ background: T.ink }}>
-                <th style={{ padding: "8px 10px", color: T.seam, textAlign: "left", fontWeight: 700, fontSize: 11 }}>Ref</th>
-                <th style={{ padding: "8px 10px", color: T.seam, textAlign: "left", fontWeight: 700, fontSize: 11 }}>Descripción</th>
-                {TALLA_LABELS.map((t) => <th key={t} style={{ padding: "8px 4px", color: T.seam, textAlign: "center", fontWeight: 700, fontSize: 10 }}>{t.split(" ")[0]}</th>)}
-                <th style={{ padding: "8px 10px", color: T.seam, textAlign: "center", fontWeight: 700, fontSize: 11 }}>Total</th>
-                <th style={{ padding: "8px 10px", color: T.seam, textAlign: "center", fontWeight: 700, fontSize: 11 }}>Cortado</th>
-                <th style={{ padding: "8px 10px", color: T.seam, textAlign: "center", fontWeight: 700, fontSize: 11 }}>Excedente</th>
-              </tr>
-            </thead>
-            <tbody>
-              {pedido.referencias.map((ref, i) => {
-                const exc = excedente(ref);
-                const totalExc = Object.values(exc).reduce((a, b) => a + b, 0);
-                const cortadoRef = ref.total - totalExc;
-                return (
-                  <tr key={ref.id} style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}` }}>
-                    <td style={{ padding: "8px 10px", fontWeight: 700, color: T.ink }}>{ref.ref}</td>
-                    <td style={{ padding: "8px 10px", color: T.slate }}>{ref.descripcion}</td>
-                    {TALLA_LABELS.map((t) => <td key={t} style={{ padding: "8px 4px", textAlign: "center", color: ref.tallas?.[t] > 0 ? T.ink : T.border }}>{ref.tallas?.[t] || "—"}</td>)}
-                    <td style={{ padding: "8px 10px", textAlign: "center", fontWeight: 800, color: T.denim }}>{ref.total}</td>
-                    <td style={{ padding: "8px 10px", textAlign: "center", fontWeight: 700, color: T.jade }}>{cortadoRef}</td>
-                    <td style={{ padding: "8px 10px", textAlign: "center", fontWeight: 700, color: totalExc > 0 ? T.amber : T.jade }}>{totalExc > 0 ? totalExc : "✓"}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+        {(() => {
+          // (2026-10-30, a pedido de Fredy) Una fila por REFERENCIA (con sus totales); al abrirla salen los colores. Las columnas de tallas son las
+          // que realmente trae el pedido (S, M, L, XL... si viene de Busint), y el cortado sale de lo cortado en cada color (antes solo entendía
+          // los nombres de talla de los pedidos manuales y en los de Busint siempre mostraba todo como cortado).
+          const cortesRefs = (pedido.cortesRealizados || []).flatMap((c) => c.refs || []);
+          const setT = new Set();
+          pedido.referencias.forEach((r) => Object.keys(r.tallas || {}).forEach((t) => { if ((Number(r.tallas[t]) || 0) !== 0) setT.add(t); }));
+          const tallasCols = [...setT].sort(compararTallas);
+          const colores = pedido.referencias.map((r) => {
+            let cortado = 0;
+            cortesRefs.filter((cr) => cr.refId === r.id).forEach((cr) => {
+              const suma = Object.values(cr.tallas || {}).reduce((x, v) => x + (Number(v) || 0), 0);
+              cortado += suma > 0 ? suma : (Number(cr.total) || 0);
+            });
+            const total = Number(r.total) || 0;
+            return { r, total, cortado, falta: total - cortado };
+          });
+          const grupos = [];
+          const porRef = new Map();
+          colores.forEach((c) => {
+            const k = String(c.r.ref || "").trim();
+            if (!porRef.has(k)) { const g = { ref: k, colores: [], total: 0, cortado: 0, tallas: {} }; porRef.set(k, g); grupos.push(g); }
+            const g = porRef.get(k);
+            g.colores.push(c); g.total += c.total; g.cortado += c.cortado;
+            tallasCols.forEach((t) => { g.tallas[t] = (g.tallas[t] || 0) + (Number(c.r.tallas?.[t]) || 0); });
+          });
+          const th = { padding: "8px 10px", color: T.seam, fontWeight: 700, fontSize: 11 };
+          const celdaTalla = (v, k) => <td key={k} style={{ padding: "8px 4px", textAlign: "center", color: v > 0 ? T.ink : T.border }}>{v || "—"}</td>;
+          const celdaExc = (falta) => <td style={{ padding: "8px 10px", textAlign: "center", fontWeight: 700, color: falta > 0 ? T.amber : T.jade }}>{falta > 0 ? falta : "✓"}</td>;
+          return (
+            <div>
+              {grupos.length > 1 && (
+                <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+                  <button onClick={() => setRefsAbiertas(Object.fromEntries(grupos.map((g) => [g.ref, true])))} style={{ padding: "4px 12px", borderRadius: 20, border: `1.5px solid ${T.border}`, background: T.white, color: T.slate, fontWeight: 700, fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}>Abrir todas</button>
+                  <button onClick={() => setRefsAbiertas({})} style={{ padding: "4px 12px", borderRadius: 20, border: `1.5px solid ${T.border}`, background: T.white, color: T.slate, fontWeight: 700, fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}>Cerrar todas</button>
+                </div>
+              )}
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ background: T.ink }}>
+                      <th style={{ ...th, textAlign: "left" }}>Referencia</th>
+                      <th style={{ ...th, textAlign: "left" }}>Color</th>
+                      {tallasCols.map((t) => <th key={t} style={{ ...th, padding: "8px 4px", textAlign: "center", fontSize: 10 }}>{String(t).split(" ")[0]}</th>)}
+                      <th style={{ ...th, textAlign: "center" }}>Total</th>
+                      <th style={{ ...th, textAlign: "center" }}>Cortado</th>
+                      <th style={{ ...th, textAlign: "center" }}>Excedente</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {grupos.map((g, gi) => {
+                      const abierta = !!refsAbiertas[g.ref];
+                      return (
+                        <React.Fragment key={"ref-" + g.ref}>
+                          <tr onClick={() => setRefsAbiertas((o) => ({ ...o, [g.ref]: !abierta }))} style={{ background: gi % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}`, cursor: "pointer" }}>
+                            <td style={{ padding: "8px 10px", fontWeight: 800, color: T.ink }}><span style={{ display: "inline-block", width: 14, color: T.slate }}>{abierta ? "▾" : "▸"}</span>{g.ref}</td>
+                            <td style={{ padding: "8px 10px", color: T.slate }}>{g.colores.length} color{g.colores.length !== 1 ? "es" : ""}</td>
+                            {tallasCols.map((t) => celdaTalla(g.tallas[t] || 0, t))}
+                            <td style={{ padding: "8px 10px", textAlign: "center", fontWeight: 800, color: T.denim }}>{g.total}</td>
+                            <td style={{ padding: "8px 10px", textAlign: "center", fontWeight: 700, color: T.jade }}>{g.cortado}</td>
+                            {celdaExc(g.total - g.cortado)}
+                          </tr>
+                          {abierta && g.colores.map((c) => (
+                            <tr key={c.r.id} style={{ background: T.white, borderBottom: `1px solid ${T.border}` }}>
+                              <td style={{ padding: "7px 10px" }} />
+                              <td style={{ padding: "7px 10px", color: T.ink }}>{c.r.descripcion}</td>
+                              {tallasCols.map((t) => celdaTalla(Number(c.r.tallas?.[t]) || 0, t))}
+                              <td style={{ padding: "7px 10px", textAlign: "center", fontWeight: 700, color: T.denim }}>{c.total}</td>
+                              <td style={{ padding: "7px 10px", textAlign: "center", fontWeight: 600, color: T.jade }}>{c.cortado}</td>
+                              {celdaExc(c.falta)}
+                            </tr>
+                          ))}
+                        </React.Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          );
+        })()}
       </div>
       <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, padding: 20 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
