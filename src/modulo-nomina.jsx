@@ -11432,6 +11432,7 @@ function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobro
   const [mesQ, setMesQ] = useState(String(hoyDed.getMonth() + 1).padStart(2, "0"));
   const [quincenaQ, setQuincenaQ] = useState(hoyDed.getDate() <= 15 ? "1" : "2");
   const [corteManual, setCorteManual] = useState("");
+  const [buscarTrab, setBuscarTrab] = useState("");
   // (2026-09-18, a pedido de Fredy) Formulario para agregar un cobro manual
   // -- solo lo ve quien tenga el permiso (administrador, Yuleisi Virginia,
   // María Fernanda Páez). No depende de ningún lote de Bodega.
@@ -11572,6 +11573,8 @@ function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobro
       .map((g) => ({ ...g, total: g.pendiente + g.cobrado }))
       .sort((a, b) => (b.entra + b.atrasado) - (a.entra + a.atrasado) || b.pendiente - a.pendiente || b.total - a.total);
   })();
+  const normBuscarDed = (v) => String(v || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+  const porTrabajadorVista = normBuscarDed(buscarTrab) ? porTrabajador.filter((g) => normBuscarDed(g.nombre).includes(normBuscarDed(buscarTrab))) : porTrabajador;
   const conCobrosQ = porTrabajador.filter((g) => g.cobros.some((f) => ["entra", "atrasado", "cobrado_q"].includes(f.clase)));
   const ctxImp = { etiqueta: etiquetaQ, corte: corteQ };
   function imprimirResumenQ() {
@@ -11723,6 +11726,9 @@ function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobro
           <div style={{ width: 220 }}>
             <FSel value={filtroEstado} onChange={setFiltroEstado} options={[{ value: "pendiente", label: "Solo pendientes de cobrar" }, { value: "cobrado", label: "Solo cobrados" }]} placeholder="Todos los estados" />
           </div>
+          <div style={{ width: 260 }}>
+            <FInput value={buscarTrab} onChange={setBuscarTrab} placeholder="Buscar trabajador por nombre…" icon="🔍" />
+          </div>
         </div>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           <Btn variant="secondary" onClick={imprimirResumenQ} disabled={!conCobrosQ.length}>🖨 Imprimir resumen general</Btn>
@@ -11731,7 +11737,7 @@ function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobro
       </div>
       <div style={{ fontSize: 11, color: C.slate, marginBottom: 10 }}>Clic en un trabajador para ver el detalle de sus cobros; el ícono 🖨 imprime su hoja.</div>
       <Tabla
-        vacio="No hay cobros de Bodega registrados."
+        vacio={buscarTrab.trim() ? "Ningún trabajador coincide con la búsqueda." : "No hay cobros de Bodega registrados."}
         onRowClick={(f) => setTrabajadorAbierto(f)}
         columnas={[
           { key: "nombre", label: "Trabajador" },
@@ -11745,7 +11751,7 @@ function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobro
             <span title="Imprimir la hoja de este trabajador" style={{ cursor: "pointer", fontSize: 15 }} onClick={(e) => { e.stopPropagation(); imprimirHojasQ([f]); }}>🖨</span>
           ) },
         ]}
-        filas={porTrabajador}
+        filas={porTrabajadorVista}
       />
     </div>
   );
