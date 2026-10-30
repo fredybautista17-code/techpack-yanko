@@ -4280,6 +4280,8 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
     // huellero), para que tambien cuente como dia trabajado en el pago
     // "Por Dia".
     contarComoTrabajado: ausencia?.contarComoTrabajado || false,
+    // (2026-10-30) Origen de la incapacidad (define quien paga y el porcentaje; ver calcularIncapacidadPeriodo).
+    origenIncapacidad: ausencia?.origenIncapacidad || "General",
   });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   const trabajadorSeleccionado = trabajadores.find((t) => t.id === form.trabajadorId);
@@ -4335,6 +4337,7 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
       horaFin: form.horaFin || "",
       observaciones: form.observaciones.trim(),
       ...(mostrarContarComoTrabajado ? { contarComoTrabajado: !!form.contarComoTrabajado } : {}),
+      ...(form.motivo === "Incapacidad" ? { origenIncapacidad: form.origenIncapacidad === "Laboral" ? "Laboral" : "General" } : {}),
       ...extra,
     });
     onClose();
@@ -4352,6 +4355,15 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
       <Field label="Motivo">
         <FSel value={form.motivo} onChange={set("motivo")} options={motivosDisponibles} placeholder="Selecciona..." />
       </Field>
+      {form.motivo === "Incapacidad" && (
+        <Field label="Origen de la incapacidad">
+          <FSel value={form.origenIncapacidad} onChange={set("origenIncapacidad")} options={[
+            { value: "General", label: "General (enfermedad común): empresa días 1-2, EPS desde el 3 (66,67 %)" },
+            { value: "Laboral", label: "Laboral (accidente o enfermedad laboral): empresa día 1, ARL desde el 2 (100 %)" },
+          ]} />
+          <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>Cada día incapacitado se devenga como mínimo SMMLV/30. Para una prórroga, registra la nueva incapacidad desde el día siguiente con el mismo origen.</div>
+        </Field>
+      )}
       {esMotivoPermiso(form.motivo) && (form.trabajadorId || form.nombreLibre.trim()) && (
         necesitaCodigo ? (
           <div style={{ background: C.amberBg, border: `1px solid ${C.amber}`, borderRadius: 10, padding: "10px 12px", margin: "-6px 0 12px" }}>
@@ -6814,6 +6826,74 @@ const MOTIVOS_SIN_AUXILIO_TRANSPORTE = ["Vacaciones", "Licencia No Remunerada", 
 // dentro de la ausencia incluidos): cada dia descuenta auxilio mensual / 30. El sueldo NO se toca. Si un dia queda cubierto por dos
 // ausencias (ej. Incapacidad dentro de Vacaciones) cuenta una sola vez.
 const MOTIVOS_SIN_AUXILIO_CALENDARIO = ["Incapacidad", "Licencia Remunerada"];
+// (2026-10-30, a pedido de Fredy -- RRHH) Incapacidades: el devengado de cada dia incapacitado NO puede ser inferior al salario minimo
+// diario (SMMLV/30). Origen "General" (enfermedad comun): dias 1-2 a cargo de la EMPRESA y dias 3+ a cargo de la EPS (66,67 % hasta el dia 90,
+// 50 % del 91 en adelante). Origen "Laboral" (accidente / enfermedad laboral): el dia 1 lo paga la empresa y desde el dia 2 la ARL, al 100 %.
+// Se cuenta por dias de CALENDARIO, con el contador corrido desde el inicio de la incapacidad (aunque haya empezado en una quincena anterior;
+// una incapacidad que empieza el dia siguiente de otra del mismo origen cuenta como prorroga). Maximo 15 dias por quincena.
+// Si la base (66,67 % o 100 % del sueldo diario) queda por debajo del minimo, la diferencia se muestra aparte como "garantia del minimo".
+// Los aportes de seguridad social y las provisiones NO cambian con esto (siguen como hasta hoy).
+const INCAP_PORC_GENERAL = 0.6667;
+const INCAP_PORC_GENERAL_TARDIO = 0.5; // del dia 91 en adelante
+function _incapSigDia(iso) {
+  const d = new Date(iso + "T12:00:00");
+  d.setDate(d.getDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+function calcularIncapacidadPeriodo(ausencias, trabajador, inicio, fin) {
+  const r = { dias: 0, devengado: 0, empresa: 0, eps: 0, arl: 0, garantia: 0, origenes: [] };
+  if (!trabajador) return r;
+  const regs = (ausencias || []).filter((a) => a.trabajadorId === trabajador.id && a.motivo === "Incapacidad" && a.fechaInicio && a.fechaFin)
+    .sort((x, y) => x.fechaInicio.localeCompare(y.fechaInicio));
+  if (!regs.length) return r;
+  const baseDia = (Number(trabajador.sueldo) || SMMLV_2026) / 30;
+  const pisoDia = SMMLV_2026 / 30;
+  const vistos = new Set();
+  const origenes = new Set();
+  let finPrev = null, origenPrev = null, contador = 0;
+  regs.forEach((a) => {
+    const origen = a.origenIncapacidad === "Laboral" ? "Laboral" : "General";
+    const continua = finPrev && origenPrev === origen && a.fechaInicio <= _incapSigDia(finPrev);
+    if (!continua) contador = 0;
+    listaDeDiasISO(a.fechaInicio, a.fechaFin).forEach((fecha) => {
+      if (vistos.has(fecha)) return;
+      vistos.add(fecha);
+      contador += 1;
+      if (fecha < inicio || fecha > fin || r.dias >= 15) return;
+      let pct, quien;
+      if (origen === "Laboral") { pct = 1; quien = contador === 1 ? "empresa" : "arl"; }
+      else { pct = contador > 90 ? INCAP_PORC_GENERAL_TARDIO : INCAP_PORC_GENERAL; quien = contador <= 2 ? "empresa" : "eps"; }
+      const crudo = baseDia * pct;
+      r.dias += 1;
+      r.devengado += Math.max(crudo, pisoDia);
+      r[quien] += crudo;
+      r.garantia += Math.max(0, pisoDia - crudo);
+      origenes.add(origen);
+    });
+    if (!finPrev || a.fechaFin > finPrev) finPrev = a.fechaFin;
+    origenPrev = origen;
+  });
+  r.devengado = Math.round(r.devengado); r.empresa = Math.round(r.empresa); r.eps = Math.round(r.eps); r.arl = Math.round(r.arl); r.garantia = Math.round(r.garantia);
+  r.origenes = [...origenes];
+  return r;
+}
+// Campos que se guardan junto a la liquidacion (incapDias, incapDevengado, ...) -> objeto para IncapCelda.
+function incapDeCalculo(c) {
+  return c ? { dias: c.incapDias || 0, devengado: c.incapDevengado || 0, empresa: c.incapEmpresa || 0, eps: c.incapEps || 0, arl: c.incapArl || 0, garantia: c.incapGarantia || 0 } : null;
+}
+function incapCampos(i) {
+  return { incapDias: i?.dias || 0, incapDevengado: i?.devengado || 0, incapEmpresa: i?.empresa || 0, incapEps: i?.eps || 0, incapArl: i?.arl || 0, incapGarantia: i?.garantia || 0 };
+}
+function IncapCelda({ d }) {
+  if (!d || !d.dias) return <span style={{ color: C.slate }}>—</span>;
+  return (
+    <div style={{ textAlign: "right", lineHeight: 1.25 }} title="Devengado por incapacidad (nunca menos de SMMLV/30 por día)">
+      <div><strong style={{ color: C.blue }}>{fmtMoney(d.devengado)}</strong> <span style={{ fontSize: 11, color: C.slate }}>({d.dias} d)</span></div>
+      <div style={{ fontSize: 10.5, color: C.slate }}>Empresa {fmtMoney(d.empresa)} · EPS {fmtMoney(d.eps)}</div>
+      <div style={{ fontSize: 10.5, color: C.slate }}>ARL {fmtMoney(d.arl)} · Garantía mín. {fmtMoney(d.garantia)}</div>
+    </div>
+  );
+}
 function diasSinAuxilioDeAusencias(ausencias, trabajador, turno, inicio, fin) {
   const dias = new Set();
   (ausencias || []).forEach((a) => {
@@ -7215,7 +7295,7 @@ function causacionContraNeto(base, { totalHoras = 0, totalHorasExtra = 0, bonifi
   const ayudaCausacion = Math.max(0, bruto - causado);
   return { netoAPagar: bruto + bonificacionCausacion - descuentos, bonificacionCausacion, ayudaCausacion };
 }
-function calcularLiquidacionFiscal(trabajador, diasInasistencia, diasSinAuxilio = 0, diasSinSueldo = 0, causacionManualValor = null) {
+function calcularLiquidacionFiscal(trabajador, diasInasistencia, diasSinAuxilio = 0, diasSinSueldo = 0, causacionManualValor = null, incap = null) {
   const sueldo = Number(trabajador.sueldo) || 0;
   const auxilioMensual = sueldo > TOPE_SUELDO_PARA_AUXILIO ? 0 : (Number(trabajador.auxilioTransporte) || 0);
   // (2026-09-12) diasSinSueldo son los dias de Licencia No Remunerada --
@@ -7257,7 +7337,8 @@ function calcularLiquidacionFiscal(trabajador, diasInasistencia, diasSinAuxilio 
     diasInasistencia, diasSinAuxilio, diasSinSueldo, descuentoSueldo, descuentoAuxilio, sueldoQuincena, auxilioQuincena,
     epsTrabajador, pensionTrabajador, pensionEmpleador, arlEmpleador, cajaCompensacionEmpleador, epsEmpleador,
     causacionManual, causacionManualValor: causacionManualValorNum, bonificacionCausacion, ayudaCausacion,
-    netoAPagar: sueldoQuincena + auxilioQuincena - epsTrabajador - pensionTrabajador + bonificacionCausacion,
+    ...incapCampos(incap), descuentoIncap: (sueldo / 30) * (incap?.dias || 0),
+    netoAPagar: sueldoQuincena + auxilioQuincena - epsTrabajador - pensionTrabajador + bonificacionCausacion - (sueldo / 30) * (incap?.dias || 0) + (incap?.devengado || 0),
     cesantiasPeriodo, interesesPeriodo, primaPeriodo, vacacionesPeriodo,
     saldoCesantiasInicio, saldoCesantiasFin: saldoCesantiasInicio + cesantiasPeriodo,
   };
@@ -7411,13 +7492,14 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
       const diasRetiroTemprano = diasDespuesDeRetiro(t.fechaRetiro, inicio, fin);
       const diasSinAuxilio = diasSinAuxilioDeAusencias(ausencias, t, turno, inicio, fin) + diasIngresoTardio + diasRetiroTemprano;
       const diasSinSueldo = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_SUELDO, t, turno, inicio, fin) + diasIngresoTardio + diasRetiroTemprano;
+      const incap = calcularIncapacidadPeriodo(ausencias, t, inicio, fin);
       const causacionDoc = (causacionManual || []).find((c) => c.id === `${t.id}__${periodoId}`);
       // (2026-10-20) Retirado antes de la quincena: solo se le pagan sus horas /
       // bonificaciones pendientes (ver retiradoConPagosEnPeriodo).
       const soloPagosPendientes = esRetiradoAntesDe(t, inicio);
       const base = soloPagosPendientes
         ? calcularLiquidacionFiscal({ ...t, sueldo: 0, auxilioTransporte: 0 }, 0, 0, 0, null)
-        : calcularLiquidacionFiscal(t, dias, diasSinAuxilio, diasSinSueldo, causacionDoc ? causacionDoc.valor : null);
+        : calcularLiquidacionFiscal(t, dias, diasSinAuxilio, diasSinSueldo, causacionDoc ? causacionDoc.valor : null, incap);
       // (2026-09-18, a pedido de Fredy) Horas Sueltas (Registrar
       // Producción -> Horas) de la quincena -- se suman al Neto a Pagar,
       // igual que ya hace Resumen Semanal / Cierre de Quincena.
@@ -7701,6 +7783,7 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
               ) : f.calculo.ayudaCausacion > 0 ? (
                 <span style={{ color: C.violet, fontWeight: 700 }} title="No se le paga de más ni de menos -- es solo referencia de costeo">Ayuda {fmtMoney(f.calculo.ayudaCausacion)}</span>
               ) : <span style={{ color: C.slate }}>—</span> },
+              { key: "incapacidad", label: "Incapacidad (empresa / EPS / ARL / mín.)", align: "right", render: (f) => <IncapCelda d={incapDeCalculo(f.calculo)} /> },
               { key: "netoAPagar", label: "Neto a pagar", align: "right", render: (f) => <strong>{fmtMoney(f.calculo.netoAPagar)}</strong> },
               { key: "pensionEmpleador", label: "Pensión empresa (12%)", align: "right", render: (f) => fmtMoney(f.calculo.pensionEmpleador) },
               { key: "arlEmpleador", label: "ARL empresa", align: "right", render: (f) => fmtMoney(f.calculo.arlEmpleador) },
@@ -7823,7 +7906,7 @@ function HistorialFiscalView({ liquidaciones, trabajadores }) {
     </div>
   );
 }
-function calcularLiquidacionFiscalDestajo(trabajador, diasInasistencia, diasSinAuxilio = 0, diasSinSueldo = 0, causacionManualValor = null) {
+function calcularLiquidacionFiscalDestajo(trabajador, diasInasistencia, diasSinAuxilio = 0, diasSinSueldo = 0, causacionManualValor = null, incap = null) {
   const sueldo = Number(trabajador.sueldo) || 0;
   const auxilio = Number(trabajador.auxilioTransporte) || 0;
   // (2026-09-12) Mismo criterio que calcularLiquidacionFiscal: diasSinSueldo
@@ -7857,7 +7940,8 @@ function calcularLiquidacionFiscalDestajo(trabajador, diasInasistencia, diasSinA
   return {
     diasInasistencia, diasSinAuxilio, diasSinSueldo, descuentoSueldo, descuentoAuxilio, sueldoQuincena, auxilioQuincena,
     causacionManual, causacionManualValor: causacionManualValorNum, bonificacionCausacion, ayudaCausacion,
-    netoAPagar: sueldoQuincena + auxilioQuincena + bonificacionCausacion,
+    ...incapCampos(incap), descuentoIncap: (sueldo / 30) * (incap?.dias || 0),
+    netoAPagar: sueldoQuincena + auxilioQuincena + bonificacionCausacion - (sueldo / 30) * (incap?.dias || 0) + (incap?.devengado || 0),
     cesantiasPeriodo, interesesPeriodo, primaPeriodo, vacacionesPeriodo,
     saldoCesantiasInicio, saldoCesantiasFin: saldoCesantiasInicio + cesantiasPeriodo,
   };
@@ -8414,13 +8498,14 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
       const diasRetiroTemprano = diasDespuesDeRetiro(t.fechaRetiro, inicio, fin);
       const diasSinAuxilio = diasSinAuxilioDeAusencias(ausencias, t, turno, inicio, fin) + diasIngresoTardio + diasRetiroTemprano;
       const diasSinSueldo = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_SUELDO, t, turno, inicio, fin) + diasIngresoTardio + diasRetiroTemprano;
+      const incap = calcularIncapacidadPeriodo(ausencias, t, inicio, fin);
       const causacionDoc = (causacionManual || []).find((c) => c.id === `${t.id}__${periodoId}`);
       // (2026-10-20) Retirado antes de la quincena: solo se le pagan sus horas /
       // bonificaciones pendientes (ver retiradoConPagosEnPeriodo).
       const soloPagosPendientes = esRetiradoAntesDe(t, inicio);
       const base = soloPagosPendientes
         ? calcularLiquidacionFiscalDestajo({ ...t, sueldo: 0, auxilioTransporte: 0 }, 0, 0, 0, null)
-        : calcularLiquidacionFiscalDestajo(t, dias, diasSinAuxilio, diasSinSueldo, causacionDoc ? causacionDoc.valor : null);
+        : calcularLiquidacionFiscalDestajo(t, dias, diasSinAuxilio, diasSinSueldo, causacionDoc ? causacionDoc.valor : null, incap);
       // (2026-09-18, a pedido de Fredy) Horas Sueltas de la quincena --
       // igual que en Nómina Fiscal, para que el total coincida con Resumen
       // Semanal / Cierre de Quincena.
@@ -8676,6 +8761,7 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
               ) : f.calculo.ayudaCausacion > 0 ? (
                 <span style={{ color: C.violet, fontWeight: 700 }} title="No se le paga de más ni de menos -- es solo referencia de costeo">Ayuda {fmtMoney(f.calculo.ayudaCausacion)}</span>
               ) : <span style={{ color: C.slate }}>—</span> },
+              { key: "incapacidad", label: "Incapacidad (empresa / EPS / ARL / mín.)", align: "right", render: (f) => <IncapCelda d={incapDeCalculo(f.calculo)} /> },
               { key: "netoAPagar", label: "Neto a pagar", align: "right", render: (f) => <strong>{fmtMoney(f.calculo.netoAPagar)}</strong> },
               { key: "cesantiasPeriodo", label: "Cesantías (prov.)", align: "right", render: (f) => fmtMoney(f.calculo.cesantiasPeriodo) },
               { key: "interesesPeriodo", label: "Intereses cesantías", align: "right", render: (f) => fmtMoney(f.calculo.interesesPeriodo) },
@@ -8707,6 +8793,12 @@ function armarReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
   const auxilioBasico = Number(trabajador?.auxilioTransporte) || 0;
   const totalPrestaciones = (liquidacion.cesantiasPeriodo || 0) + (liquidacion.interesesPeriodo || 0) + (liquidacion.primaPeriodo || 0) + (liquidacion.vacacionesPeriodo || 0);
   const totalAportesPatronales = (liquidacion.pensionEmpleador || 0) + (liquidacion.arlEmpleador || 0) + (liquidacion.cajaCompensacionEmpleador || 0);
+  // (2026-10-30) Incapacidad de la quincena (devengado con piso del minimo; ver calcularIncapacidadPeriodo).
+  const filasIncap = (liquidacion.incapDias || 0) > 0 ? `
+      <tr><td>Incapacidad (${liquidacion.incapDias} día${liquidacion.incapDias !== 1 ? "s" : ""})</td><td style="text-align:right">${fmtMoney(liquidacion.incapDevengado)}</td></tr>
+      <tr><td colspan="2" style="font-size:11px;color:#5A5A7A;padding-top:0">Empresa ${fmtMoney(liquidacion.incapEmpresa)} · EPS ${fmtMoney(liquidacion.incapEps)} · ARL ${fmtMoney(liquidacion.incapArl)} · Garantía del mínimo ${fmtMoney(liquidacion.incapGarantia)}</td></tr>` : "";
+  const filaDescIncap = (liquidacion.descuentoIncap || 0) > 0 ? `
+      <tr><td>Descuento días de incapacidad (se pagan aparte)</td><td style="text-align:right;color:#B23A48">-${fmtMoney(liquidacion.descuentoIncap)}</td></tr>` : "";
   const filasPago = esPrestacionServicios
     ? `
       <tr><td>Valor mensual del contrato</td><td style="text-align:right">${fmtMoney(sueldoBasico)}</td></tr>
@@ -8720,7 +8812,7 @@ function armarReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
       <tr><td>Días trabajados (huellero)</td><td style="text-align:right">${liquidacion.diasTrabajados == null ? "—" : liquidacion.diasTrabajados}</td></tr>
       <tr><td>Descuento por inasistencia</td><td style="text-align:right;color:#B23A48">-${fmtMoney((liquidacion.descuentoSueldo || 0) + (liquidacion.descuentoAuxilio || 0))}</td></tr>
       <tr><td>Sueldo quincena</td><td style="text-align:right">${fmtMoney(liquidacion.sueldoQuincena)}</td></tr>
-      <tr><td>Auxilio quincena</td><td style="text-align:right">${fmtMoney(liquidacion.auxilioQuincena)}</td></tr>
+      <tr><td>Auxilio quincena</td><td style="text-align:right">${fmtMoney(liquidacion.auxilioQuincena)}</td></tr>${filaDescIncap}${filasIncap}
       <tr><td>EPS trabajador (4%)</td><td style="text-align:right;color:#B23A48">-${fmtMoney(liquidacion.epsTrabajador)}</td></tr>
       <tr><td>Pensión trabajador (4%)</td><td style="text-align:right;color:#B23A48">-${fmtMoney(liquidacion.pensionTrabajador)}</td></tr>`
     : esFiscal
@@ -8732,14 +8824,14 @@ function armarReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
       <tr><td>Días trabajados (huellero)</td><td style="text-align:right">${liquidacion.diasTrabajados == null ? "—" : liquidacion.diasTrabajados}</td></tr>
       <tr><td>Descuento por inasistencia</td><td style="text-align:right;color:#B23A48">-${fmtMoney((liquidacion.descuentoSueldo || 0) + (liquidacion.descuentoAuxilio || 0))}</td></tr>
       <tr><td>Sueldo quincena</td><td style="text-align:right">${fmtMoney(liquidacion.sueldoQuincena)}</td></tr>
-      <tr><td>Auxilio quincena</td><td style="text-align:right">${fmtMoney(liquidacion.auxilioQuincena)}</td></tr>`
+      <tr><td>Auxilio quincena</td><td style="text-align:right">${fmtMoney(liquidacion.auxilioQuincena)}</td></tr>${filaDescIncap}${filasIncap}`
     : liquidacion.pagoPorDia
     ? `
       <tr><td>Días trabajados (huellero)</td><td style="text-align:right">${liquidacion.diasPagados == null ? "—" : liquidacion.diasPagados}</td></tr>
       <tr><td>Valor día</td><td style="text-align:right">${fmtMoney(liquidacion.valorDia)}</td></tr>
-      <tr><td>Subtotal pago por día</td><td style="text-align:right">${fmtMoney(liquidacion.pagoDias)}</td></tr>`
+      <tr><td>Subtotal pago por día</td><td style="text-align:right">${fmtMoney(liquidacion.pagoDias)}</td></tr>${filasIncap}`
     : `
-      <tr><td>Producción registrada en la quincena</td><td style="text-align:right">${fmtMoney(liquidacion.netoAPagar)}</td></tr>
+      <tr><td>Producción registrada en la quincena</td><td style="text-align:right">${fmtMoney((liquidacion.netoAPagar || 0) - (liquidacion.incapDevengado || 0))}</td></tr>${filasIncap}
       <tr><td>Días trabajados (huellero)</td><td style="text-align:right">${liquidacion.diasTrabajados == null ? "—" : liquidacion.diasTrabajados}</td></tr>
       <tr><td colspan="2" style="color:#5A5A7A;font-size:11px;padding-top:2px">Sueldo básico de referencia: ${fmtMoney(sueldoBasico)} · Auxilio de referencia: ${fmtMoney(auxilioBasico)} — solo se usan para calcular las prestaciones sociales, no hacen parte del pago.</td></tr>`;
   const seccionAportesPatronales = esFiscalConSegSocial ? `
@@ -9612,9 +9704,12 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
       // siempre, incluso con Salario mínimo garantizado.
       const bonificacionPuntual = valorBonificacion(bonificaciones, t.id, periodoId);
       const base = calcularLiquidacionDestajo(t, netoProduccion, totalHorasQuincena, diasTrabajadosCount);
+      // (2026-10-30) Incapacidad: se suma su devengado (con piso del minimo). Si tiene salario minimo garantizado, esos dias se descuentan del pago fijo (SMMLV/30).
+      const incap = calcularIncapacidadPeriodo(ausencias, t, inicio, fin);
+      const incapNeto = (incap.devengado || 0) - (base.salarioMinimoGarantizado ? (SMMLV_2026 / 30) * incap.dias : 0);
       const cobrosDetalle = cobrosPendientesDeTrabajador(lotesConCobros, t.id, fin);
       const descuentoCobros = sumaCobrosPendientes(cobrosDetalle);
-      return { trabajador: t, calculo: { ...base, causacionManual: tieneCausacionManual, diasInasistencia, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, horasDetalle, horasCant, totalHorasExtra, bonificacionPuntual, descuentoCobros, cobrosDetalle, netoAntesDeAjuste: base.netoBase - descuentoCobros + totalHorasExtra + bonificacionPuntual } };
+      return { trabajador: t, calculo: { ...base, causacionManual: tieneCausacionManual, diasInasistencia, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, horasDetalle, horasCant, totalHorasExtra, bonificacionPuntual, descuentoCobros, cobrosDetalle, netoAntesDeAjuste: base.netoBase - descuentoCobros + totalHorasExtra + bonificacionPuntual + incapNeto, ...incapCampos(incap) } };
     });
     setResultados(filas);
     setGuardadoOk(false);
@@ -9908,6 +10003,7 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
                   <span style={{ color: f.calculo.ajusteValor > 0 ? C.green : C.red, fontWeight: 700 }} title={f.calculo.ajusteObservacion}>{f.calculo.ajusteValor > 0 ? "+" : ""}{fmtMoney(f.calculo.ajusteValor)}</span>
                 ) : <span style={{ color: C.slate }}>—</span>;
               } },
+              { key: "incapacidad", label: "Incapacidad (empresa / EPS / ARL / mín.)", align: "right", render: (f) => <IncapCelda d={incapDeCalculo(f.calculo)} /> },
               { key: "netoAPagar", label: "Neto a pagar", align: "right", render: (f) => <strong>{fmtMoney(f.calculo.netoAPagar)}</strong> },
               { key: "cesantiasPeriodo", label: "Cesantías (prov.)", align: "right", render: (f) => fmtMoney(f.calculo.cesantiasPeriodo) },
               { key: "interesesPeriodo", label: "Intereses cesantías", align: "right", render: (f) => fmtMoney(f.calculo.interesesPeriodo) },
@@ -12555,7 +12651,7 @@ function exportDesprendiblePagoHTML({
   cobrosDetalle, descuentoCobros,
   salarioMinimoGarantizado, sueldoFijoQuincena, auxilioFijoQuincena,
   pagoPorDia, valorDia, diasPagados, pagoDiasQuincena,
-  ajusteValor, ajusteObservacion,
+  ajusteValor, ajusteObservacion, incapInfo,
 }) {
   const fechaGen = new Date().toISOString().slice(0, 10);
   const filasProd = (produccionItems || [])
@@ -12661,6 +12757,13 @@ function exportDesprendiblePagoHTML({
       <span>${ajusteValor > 0 ? "+" : ""}${fmtMoney(ajusteValor)}</span>
     </div>`
     : "";
+  const seccionIncap = (incapInfo && incapInfo.dias > 0)
+    ? `<div class="section-title">🩺 Incapacidad (${incapInfo.dias} día${incapInfo.dias !== 1 ? "s" : ""})</div>
+    <table><tbody>
+      <tr><td>Devengado por incapacidad (mínimo SMMLV/30 por día)</td><td style="text-align:right;font-weight:700">${fmtMoney(incapInfo.devengado)}</td></tr>
+      <tr><td colspan="2" style="font-size:11px;color:#5A5A7A;padding-top:0">Empresa ${fmtMoney(incapInfo.empresa)} · EPS ${fmtMoney(incapInfo.eps)} · ARL ${fmtMoney(incapInfo.arl)} · Garantía del mínimo ${fmtMoney(incapInfo.garantia)}</td></tr>
+    </tbody></table>`
+    : "";
   // Tarjetas de totales -- varían según si es salario mínimo garantizado,
   // si tuvo deducciones y si tuvo un ajuste manual, para no mostrar
   // tarjetas vacías/en $0 sin sentido.
@@ -12732,6 +12835,7 @@ function exportDesprendiblePagoHTML({
     ${seccionProduccionYHoras}
     ${seccionDeducciones}
     ${seccionAjuste}
+    ${seccionIncap}
     <div class="totales">
       ${totalesHTML}
     </div>
@@ -12862,6 +12966,7 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
         let ajusteValor = 0, ajusteObservacion = "", ayudaSalarioMinimo = 0, excedenteSobreMinimo = 0;
         let sueldoFijoQuincena = 0, auxilioFijoQuincena = 0, pagoDiasQuincena = 0;
         let sueldoQuincena = 0, auxilioQuincena = 0;
+        let incapInfo = null; // (2026-10-30) Incapacidad de la quincena
         let netoAntesDeAjuste = totalBruto - descuentoCobros;
         const salarioMinimoGarantizado = tipo === "Destajo" && !!g.salarioMinimoGarantizado;
         // (2026-09-18, a pedido de Fredy) "Pagar por día" -- mismo modelo
@@ -12897,10 +13002,11 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
           const diasRetiroTemprano = diasDespuesDeRetiro(t.fechaRetiro, desde, hasta);
           const diasSinAuxilio = diasSinAuxilioDeAusencias(ausencias, t, turno, desde, hasta) + diasIngresoTardio + diasRetiroTemprano;
           const diasSinSueldo = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_SUELDO, t, turno, desde, hasta) + diasIngresoTardio + diasRetiroTemprano;
+          incapInfo = calcularIncapacidadPeriodo(ausencias, t, desde, hasta);
           const tCalc = soloPagosPendientes ? { ...t, sueldo: 0, auxilioTransporte: 0 } : t;
           const base = tipo === "Fiscal"
-            ? calcularLiquidacionFiscal(tCalc, diasInasistencia, diasSinAuxilio, diasSinSueldo)
-            : calcularLiquidacionFiscalDestajo(tCalc, diasInasistencia, diasSinAuxilio, diasSinSueldo);
+            ? calcularLiquidacionFiscal(tCalc, diasInasistencia, diasSinAuxilio, diasSinSueldo, null, incapInfo)
+            : calcularLiquidacionFiscalDestajo(tCalc, diasInasistencia, diasSinAuxilio, diasSinSueldo, null, incapInfo);
           sueldoQuincena = base.sueldoQuincena;
           auxilioQuincena = base.auxilioQuincena;
           netoAntesDeAjuste = base.netoAPagar + g.totalHoras - descuentoCobros - descuentoDeducciones;
@@ -12942,10 +13048,14 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
         // (2026-09-21, a pedido de Fredy) Bonificación puntual -- se suma
         // siempre, en los 4 tipos de nómina, se paga siempre en efectivo.
         const bonificacionPuntual = valorBonificacion(bonificaciones, g.trabajadorId, periodoIdActual);
+        if (tipo === "Destajo" && g.trabajador) {
+          incapInfo = calcularIncapacidadPeriodo(ausencias, g.trabajador, desde, hasta);
+          if (incapInfo.dias > 0) netoAntesDeAjuste += incapInfo.devengado - (salarioMinimoGarantizado ? (SMMLV_2026 / 30) * incapInfo.dias : 0);
+        }
         const totalGeneral = netoAntesDeAjuste + ajusteValor + totalHorasExtra + bonificacionPuntual;
-        return { ...g, tipoNomina: tipo, totalBruto, descuentoCobros, cobrosDetalle, deduccionesDetalle, descuentoDeducciones, salarioMinimoGarantizado, pagoPorDia, pagoDiasQuincena, ayudaSalarioMinimo, excedenteSobreMinimo, sueldoFijoQuincena, auxilioFijoQuincena, sueldoQuincena, auxilioQuincena, ajusteValor, ajusteObservacion, totalHorasExtra, bonificacionPuntual, totalGeneral };
+        return { ...g, incapInfo, tipoNomina: tipo, totalBruto, descuentoCobros, cobrosDetalle, deduccionesDetalle, descuentoDeducciones, salarioMinimoGarantizado, pagoPorDia, pagoDiasQuincena, ayudaSalarioMinimo, excedenteSobreMinimo, sueldoFijoQuincena, auxilioFijoQuincena, sueldoQuincena, auxilioQuincena, ajusteValor, ajusteObservacion, totalHorasExtra, bonificacionPuntual, totalGeneral };
       })
-      .filter((g) => g.totalBruto > 0 || g.unidades > 0 || g.horasCant > 0 || g.salarioMinimoGarantizado || g.pagoPorDia || g.sueldoQuincena > 0 || g.auxilioQuincena > 0)
+      .filter((g) => g.totalBruto > 0 || g.unidades > 0 || g.horasCant > 0 || g.salarioMinimoGarantizado || g.pagoPorDia || g.sueldoQuincena > 0 || g.auxilioQuincena > 0 || (g.incapInfo && g.incapInfo.dias > 0))
       // (2026-09-21, corregido a pedido de Fredy) Este sort iba por
       // totalGeneral descendente y le ganaba al orden alfabetico que ya
       // se le habia puesto a trabajadoresTipo mas arriba -- por eso el
@@ -13040,6 +13150,7 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
       pagoDiasQuincena: g.pagoDiasQuincena,
       ajusteValor: g.ajusteValor,
       ajusteObservacion: g.ajusteObservacion,
+      incapInfo: g.incapInfo,
       totalGeneral: g.totalGeneral,
     });
   }
@@ -13164,6 +13275,7 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
         columnas={modo === "area" ? [
           { key: "nombre", label: "Trabajador", render: (f) => f.nombre },
           { key: "tipoNomina", label: "Tipo de Nómina", render: (f) => f.tipoNomina },
+          { key: "incapacidad", label: "Incapacidad (empresa / EPS / ARL / mín.)", align: "right", render: (f) => <IncapCelda d={f.incapInfo} /> },
           { key: "totalHorasExtra", label: "Horas Extra", align: "right", render: (f) => (f.totalHorasExtra || 0) > 0 ? <span style={{ color: C.amber, fontWeight: 700 }}>{fmtMoney(f.totalHorasExtra)}</span> : <span style={{ color: C.slate }}>—</span> },
           { key: "bonificacionPuntual", label: "Bonificación", align: "right", render: (f) => (f.bonificacionPuntual || 0) > 0 ? <span style={{ color: C.green, fontWeight: 700 }}>{fmtMoney(f.bonificacionPuntual)}</span> : <span style={{ color: C.slate }}>—</span> },
           { key: "descuentoCobros", label: "Descuentos", align: "right", render: (f) => f.descuentoCobros > 0 ? <span style={{ color: C.amber, fontWeight: 700 }}>-{fmtMoney(f.descuentoCobros)}</span> : <span style={{ color: C.slate }}>—</span> },
@@ -13208,6 +13320,7 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
               ) : <span style={{ color: C.slate }}>—</span>;
             } },
           ]),
+          { key: "incapacidad", label: "Incapacidad (empresa / EPS / ARL / mín.)", align: "right", render: (f) => <IncapCelda d={f.incapInfo} /> },
           { key: "totalHorasExtra", label: "Horas Extra", align: "right", render: (f) => (f.totalHorasExtra || 0) > 0 ? <span style={{ color: C.amber, fontWeight: 700 }}>{fmtMoney(f.totalHorasExtra)}</span> : <span style={{ color: C.slate }}>—</span> },
           { key: "bonificacionPuntual", label: "Bonificación", align: "right", render: (f) => (f.bonificacionPuntual || 0) > 0 ? <span style={{ color: C.green, fontWeight: 700 }}>{fmtMoney(f.bonificacionPuntual)}</span> : <span style={{ color: C.slate }}>—</span> },
           { key: "totalGeneral", label: "Total a Pagar", align: "right", render: (f) => <strong>{fmtMoney(f.totalGeneral)}</strong> },
