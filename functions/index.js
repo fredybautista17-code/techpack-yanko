@@ -3184,11 +3184,13 @@ function refSinGuion(v) {
 // pedido y por referencia. Antes el tablero solo contaba los cortes registrados dentro de ATLAS y mostraba como "por cortar" pedidos que
 // en planta ya estaban cortados (ej. #1204: Busint 95 % facturado y cortado de más, ATLAS 12 % cortado). Solo lectura.
 exports.getAvancePedidosActivos = onCallAuth(
-  { secrets: [BUSINT_TOKEN, BUSINT_BASE_URL, BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY], timeoutSeconds: 300, memory: "2GiB" },
+  { secrets: [BUSINT_TOKEN, BUSINT_BASE_URL, BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY], timeoutSeconds: 540, memory: "4GiB" },
   async (request) => {
     const hoy = fechaHoyBogota();
     const fechaInicio = `${Number(hoy.slice(0, 4)) - 1}-01-01`;
     const avisos = [];
+    const t0 = Date.now();
+    const etapa = (nombre) => logger.info(`getAvancePedidosActivos etapa: ${nombre}`, { ms: Date.now() - t0, rssMB: Math.round(process.memoryUsage().rss / 1048576) });
     // Las lecturas pesadas de Busint (ventas perdidas y órdenes de producción) arrancan YA y en paralelo con Planeación y las facturas,
     // para que la respuesta llegue antes del límite de espera de la pantalla.
     const pCumplidos = consultarTablaBusintBDCompleta("pedidos detalles clientes - cumplidos");
@@ -3203,11 +3205,13 @@ exports.getAvancePedidosActivos = onCallAuth(
       leerCargaPlaneacionMasReciente().catch((e) => { avisos.push(`No se pudo leer la carga de Planeación: ${e?.message || String(e)}`); return null; }),
       consultarFacturadoBusint(fechaInicio, hoy).catch((e) => { avisos.push(`No se pudo leer lo facturado en Busint: ${e?.message || String(e)}`); return []; }),
     ]);
+    etapa("planeación y facturas leídas");
     const porPedido = {};
     const de = (n) => { if (!porPedido[n]) porPedido[n] = { cortadoPorRef: {}, facturadoPorRef: {}, perdidaPorRef: {}, facturado: 0 }; return porPedido[n]; };
     // Ventas perdidas por pedido+referencia (solo NConcepto = 12, la misma lectura validada contra Busint): el pedido real es lo pedido menos esto.
     try {
       const cumplidos = await pCumplidos;
+      etapa(`ventas perdidas leídas (${cumplidos.length} filas)`);
       cumplidos.forEach((f) => {
         if (Number(f?.NConcepto) !== 12) return;
         const n = String(f?.NumPed ?? "").trim();
@@ -3233,6 +3237,7 @@ exports.getAvancePedidosActivos = onCallAuth(
     // se toma lo MAYOR entre Planeación y Busint.
     try {
       const [ordProd, ordDet, entPlantaRefDD] = await pOrdenes;
+      etapa(`órdenes de producción leídas (${ordProd.length} / ${ordDet.length} / ${entPlantaRefDD.length} filas)`);
       const claveL = (v) => String(v ?? "").trim().replace(/\.0+$/, "");
       const lotePed = new Map();
       for (const f of ordProd) {
@@ -3293,6 +3298,16 @@ exports.getAvancePedidosActivos = onCallAuth(
       g.facturadoPorRef[r] = (g.facturadoPorRef[r] || 0) + neto;
       g.facturado += neto;
     });
+    // Solo se devuelven los pedidos que están en ATLAS como activos o terminados (el resto no se muestra y solo inflaría la respuesta).
+    try {
+      const snap = await db.collection("pedidos_activos").select("estado").get();
+      const vigentes = new Set();
+      snap.docs.forEach((d) => { const e = d.data().estado; if (e === "activo" || e === "terminado") vigentes.add(String(d.id)); });
+      Object.keys(porPedido).forEach((n) => { if (!vigentes.has(n)) delete porPedido[n]; });
+    } catch (err) {
+      avisos.push(`No se pudo filtrar por pedidos activos: ${err?.message || String(err)}`);
+    }
+    etapa(`listo (${Object.keys(porPedido).length} pedidos)`);
     return { generadoEn: new Date().toISOString(), cargaPlaneacion: carga ? String(carga.fecha || carga.creadoEn || "") : null, avisos, porPedido };
   }
 );

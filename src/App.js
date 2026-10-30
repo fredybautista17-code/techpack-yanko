@@ -16853,7 +16853,7 @@ let _avanceCache = { t: 0, promesa: null };
 function cargarAvancePedidos(forzar) {
   const ahora = Date.now();
   if (!forzar && _avanceCache.promesa && ahora - _avanceCache.t < 120000) return _avanceCache.promesa;
-  const prom = httpsCallable(functionsClient, "getAvancePedidosActivos", { timeout: 300000 })({}).then((r) => r.data || null);
+  const prom = httpsCallable(functionsClient, "getAvancePedidosActivos", { timeout: 540000 })({}).then((r) => r.data || null);
   _avanceCache = { t: ahora, promesa: prom };
   prom.catch(() => { if (_avanceCache.promesa === prom) _avanceCache = { t: 0, promesa: null }; });
   return prom;
