@@ -11348,8 +11348,90 @@ function HistorialDestajoView({ liquidaciones, trabajadores }) {
   );
 }
 // ─── DEDUCCIONES (cobros de Bodega, descuento automatico en Nomina) ──────
+// ─── DEDUCCIONES POR QUINCENA (2026-10-30, a pedido de Fredy) ───────────────
+// Igual que Horas Extras: cada quincena toma los cobros por su FECHA. Un cobro sin cobrar de una quincena anterior sale como "atrasado" y
+// se sigue incluyendo (la liquidación ya lo hace así); uno fechado después del corte no entra todavía. Solo lectura + impresión.
+const NOMBRES_MES_DED = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
+const CLASE_COBRO_DED = {
+  entra: { label: "Entra", color: "#C47C1A", bg: "#FDF5E6" },
+  atrasado: { label: "Atrasado", color: "#E85D4A", bg: "#FDF0EE" },
+  despues: { label: "Pasa después", color: "#3D6B9E", bg: "#EBF1F7" },
+  cobrado_q: { label: "Cobrado", color: "#2D9E6B", bg: "#EBF7F2" },
+  cobrado: { label: "Cobrado antes", color: "#5A5A7A", bg: "#F7F4F0" },
+};
+function escHTMLDed(s) {
+  return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+function fechaCortaDed(iso) {
+  if (!iso) return "—";
+  const [y, m, d] = String(iso).slice(0, 10).split("-");
+  return `${d}/${m}/${y}`;
+}
+const ESTILOS_HOJA_DED = `
+*{box-sizing:border-box}body{margin:0;background:#F7F4F0;font-family:"Segoe UI",Helvetica,Arial,sans-serif;color:#1A1A2E;font-size:12px}
+.page{background:#fff;width:210mm;min-height:140mm;margin:16px auto;padding:16mm 14mm;border-radius:6px;box-shadow:0 2px 10px rgba(26,26,46,.1)}
+h1{font-size:17px;margin:0 0 3px}.meta{font-size:11px;color:#5A5A7A;margin-bottom:12px;line-height:1.5}
+table{width:100%;border-collapse:collapse;font-size:11.5px}th{background:#1A1A2E;color:#C8B8A2;text-align:left;padding:7px 8px;font-size:10px;letter-spacing:.04em}
+td{padding:6px 8px;border-bottom:1px solid #E8E2DB}.r{text-align:right}tfoot td{border-top:2px solid #1A1A2E;font-weight:800;border-bottom:none}
+.k{display:flex;gap:10px;margin-bottom:12px}.k div{flex:1;border:1px solid #E8E2DB;border-radius:8px;padding:8px 10px}.k b{display:block;font-size:15px}.k span{font-size:10px;color:#5A5A7A}
+.p{display:inline-block;padding:1px 7px;border-radius:99px;font-size:10px;font-weight:700}
+.sig{display:flex;gap:36px;margin-top:38px;font-size:10.5px;color:#5A5A7A}.sig div{flex:1;border-top:1px solid #1A1A2E;padding-top:4px}
+.bar{max-width:210mm;margin:12px auto 0;text-align:right}.bar button{background:#1A1A2E;color:#C8B8A2;border:none;border-radius:6px;padding:7px 16px;cursor:pointer;font-size:12px;font-weight:700}
+@media print{body{background:#fff}.page{margin:0;box-shadow:none;border-radius:0;page-break-after:always;break-after:page;width:auto;min-height:0}.bar{display:none}}`;
+function pillDedHTML(clase) {
+  const c = CLASE_COBRO_DED[clase] || CLASE_COBRO_DED.entra;
+  return `<span class="p" style="background:${c.bg};color:${c.color}">${c.label}</span>`;
+}
+function pieHojaDed() {
+  return `<div style="font-size:9.5px;color:#5A5A7A;margin-top:10px">Generado desde ATLAS el ${fechaCortaDed(new Date().toISOString().slice(0, 10))}.</div>`;
+}
+// Una hoja por trabajador: sus cobros de la quincena (entran, atrasados y ya cobrados en ella).
+function hojaTrabajadorDedHTML(g, ctx) {
+  const lista = (g.cobros || []).filter((f) => ["entra", "atrasado", "cobrado_q"].includes(f.clase)).sort((a, b) => (a.fecha || "").localeCompare(b.fecha || ""));
+  const aDescontar = lista.filter((f) => f.clase !== "cobrado_q").reduce((s, f) => s + f.valor, 0);
+  const yaCobrado = lista.filter((f) => f.clase === "cobrado_q").reduce((s, f) => s + f.valor, 0);
+  const filas = lista.map((f) => `<tr><td>${fechaCortaDed(f.fecha)}</td><td>${escHTMLDed(f.numLote || "—")}</td><td>${escHTMLDed(f.referencia || "—")}</td><td>${escHTMLDed(f.tipo)}</td><td class="r">${fmtMoney(f.valor)}</td><td>${pillDedHTML(f.clase)}</td></tr>`).join("");
+  return `<div class="page"><h1>Cobros de Bodega y manuales — ${escHTMLDed(g.nombre)}</h1>
+<div class="meta">Quincena ${escHTMLDed(ctx.etiqueta)} · corte ${fechaCortaDed(ctx.corte)}${g.area ? ` · Área ${escHTMLDed(g.area)}` : ""}</div>
+<table><thead><tr><th>FECHA</th><th>LOTE</th><th>REFERENCIA</th><th>MOTIVO</th><th class="r">VALOR</th><th>ESTADO</th></tr></thead><tbody>${filas || '<tr><td colspan="6">Sin cobros en esta quincena.</td></tr>'}</tbody>
+<tfoot><tr><td colspan="4">Total a descontar en esta quincena</td><td class="r">${fmtMoney(aDescontar)}</td><td></td></tr>${yaCobrado ? `<tr><td colspan="4">Ya cobrado en esta quincena</td><td class="r">${fmtMoney(yaCobrado)}</td><td></td></tr>` : ""}</tfoot></table>
+<div class="sig"><div>Firma del trabajador</div><div>Firma de quien entrega</div></div>${pieHojaDed()}</div>`;
+}
+function hojaResumenDedHTML(grupos, ctx) {
+  const filas = grupos.map((g) => `<tr><td>${escHTMLDed(g.nombre)}</td><td>${escHTMLDed(g.area || "")}</td><td class="r">${fmtMoney(g.entra)}</td><td class="r">${fmtMoney(g.atrasado)}</td><td class="r">${fmtMoney(g.cobradoQ)}</td><td class="r"><b>${fmtMoney(g.entra + g.atrasado)}</b></td></tr>`).join("");
+  const tEntra = grupos.reduce((s, g) => s + g.entra, 0), tAtr = grupos.reduce((s, g) => s + g.atrasado, 0), tCob = grupos.reduce((s, g) => s + g.cobradoQ, 0);
+  return `<div class="page"><h1>Deducciones por cobros — resumen de la quincena</h1>
+<div class="meta">Quincena ${escHTMLDed(ctx.etiqueta)} · corte ${fechaCortaDed(ctx.corte)}</div>
+<div class="k"><div><b>${fmtMoney(tEntra + tAtr)}</b><span>A descontar en esta quincena</span></div><div><b>${fmtMoney(tAtr)}</b><span>De ellos, atrasado de quincenas anteriores</span></div><div><b>${fmtMoney(tCob)}</b><span>Ya cobrado en esta quincena</span></div></div>
+<table><thead><tr><th>TRABAJADOR</th><th>ÁREA</th><th class="r">ENTRA</th><th class="r">ATRASADO</th><th class="r">COBRADO</th><th class="r">A DESCONTAR</th></tr></thead><tbody>${filas || '<tr><td colspan="6">Sin cobros en esta quincena.</td></tr>'}</tbody>
+<tfoot><tr><td colspan="5">Total a descontar</td><td class="r">${fmtMoney(tEntra + tAtr)}</td></tr></tfoot></table>${pieHojaDed()}</div>`;
+}
+function abrirImpresionDed(paginas, titulo) {
+  if (!paginas.length) return false;
+  const html = `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"/><title>${escHTMLDed(titulo)}</title><style>${ESTILOS_HOJA_DED}</style></head><body><div class="bar"><button onclick="window.print()">🖨 Imprimir / PDF</button></div>${paginas.join("\n")}</body></html>`;
+  const url = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8;" }));
+  const w = window.open(url, "_blank");
+  setTimeout(() => URL.revokeObjectURL(url), 120000);
+  return !!w;
+}
+function agruparDed(lista, claveFn, etiquetaFn) {
+  const m = new Map();
+  lista.forEach((f) => {
+    const k = claveFn(f);
+    if (!m.has(k)) m.set(k, { id: k, label: etiquetaFn(f), cantidad: 0, valor: 0, trab: new Set() });
+    const g = m.get(k);
+    g.cantidad += 1; g.valor += f.valor; g.trab.add(f.trabajadorId || f.trabajadorNombre);
+  });
+  return [...m.values()].map((g) => ({ ...g, nTrab: g.trab.size })).sort((a, b) => b.valor - a.valor);
+}
 function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobrosManual, onAgregarCobroManual, isAdmin, onBorrarCobroManual, onRevertirCobro, onMarcarCobroManual }) {
   const [filtroEstado, setFiltroEstado] = useState("");
+  // (2026-10-30) Quincena y fecha de corte (como Horas Extras): cada cobro se clasifica por su fecha.
+  const hoyDed = new Date();
+  const [anioQ, setAnioQ] = useState(String(hoyDed.getFullYear()));
+  const [mesQ, setMesQ] = useState(String(hoyDed.getMonth() + 1).padStart(2, "0"));
+  const [quincenaQ, setQuincenaQ] = useState(hoyDed.getDate() <= 15 ? "1" : "2");
+  const [corteManual, setCorteManual] = useState("");
   // (2026-09-18, a pedido de Fredy) Formulario para agregar un cobro manual
   // -- solo lo ve quien tenga el permiso (administrador, Yuleisi Virginia,
   // María Fernanda Páez). No depende de ningún lote de Bodega.
@@ -11447,29 +11529,67 @@ function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobro
       });
     });
   });
-  const filasFiltradas = filas
+  // (2026-10-30) Quincena elegida: cada cobro se clasifica por su fecha (como Horas Extras).
+  const rangoQ = rangoQuincena(anioQ, mesQ, quincenaQ);
+  const periodoIdQ = `${anioQ}-${mesQ}-Q${quincenaQ}`;
+  const corteQ = corteManual || rangoQ.fin;
+  const etiquetaQ = `${quincenaQ === "1" ? "1.ª" : "2.ª"} de ${NOMBRES_MES_DED[Number(mesQ) - 1].toLowerCase()} ${anioQ} (${rangoQ.inicio.slice(8)} al ${rangoQ.fin.slice(8)})`;
+  const areaDeDed = (id) => (trabajadores || []).find((t) => t.id === id)?.area || "Sin área";
+  const filasClas = filas.map((f) => {
+    let clase;
+    if (f.cobrado) clase = f.periodoIdCobrado === periodoIdQ ? "cobrado_q" : "cobrado";
+    else if (!f.fecha) clase = "entra";
+    else if (f.fecha < rangoQ.inicio) clase = "atrasado";
+    else if (f.fecha <= corteQ) clase = "entra";
+    else clase = "despues";
+    return { ...f, clase, area: areaDeDed(f.trabajadorId) };
+  });
+  const filasFiltradas = filasClas
     .filter((f) => !filtroEstado || (filtroEstado === "cobrado" ? f.cobrado : !f.cobrado))
     .sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
-  const totalPendiente = filas.filter((f) => !f.cobrado).reduce((s, f) => s + f.valor, 0);
-  const totalCobrado = filas.filter((f) => f.cobrado).reduce((s, f) => s + f.valor, 0);
-  const porTrabajador = useMemo(() => {
+  const deLaQuincena = filasClas.filter((f) => ["entra", "atrasado", "cobrado_q"].includes(f.clase));
+  const sumaClase = (c) => filasClas.filter((f) => f.clase === c).reduce((s, f) => s + f.valor, 0);
+  const totalPendiente = filasClas.filter((f) => !f.cobrado).reduce((s, f) => s + f.valor, 0);
+  const totalEntra = sumaClase("entra"), totalAtrasado = sumaClase("atrasado"), totalDespues = sumaClase("despues"), totalCobradoQ = sumaClase("cobrado_q");
+  const porMotivo = agruparDed(deLaQuincena, (f) => f.tipo || "—", (f) => f.tipo || "—");
+  const porLote = agruparDed(deLaQuincena, (f) => (f.numLote ? `${f.numLote}|${f.referencia || ""}` : "sin"), (f) => (f.numLote ? `${f.numLote}${f.referencia ? ` · ${f.referencia}` : ""}` : "Sin lote (manuales)"));
+  const porArea = agruparDed(deLaQuincena, (f) => f.area, (f) => f.area);
+  const porTrabajador = (() => {
     const mapa = new Map();
     filasFiltradas.forEach((f) => {
       const key = f.trabajadorId || f.trabajadorNombre;
-      if (!mapa.has(key)) mapa.set(key, { key, nombre: f.trabajadorNombre, pendiente: 0, cobrado: 0, cantidad: 0, cobros: [] });
+      if (!mapa.has(key)) mapa.set(key, { key, nombre: f.trabajadorNombre, area: f.area, pendiente: 0, cobrado: 0, cantidad: 0, entra: 0, atrasado: 0, despues: 0, cobradoQ: 0, cobros: [] });
       const g = mapa.get(key);
       if (f.cobrado) g.cobrado += f.valor; else g.pendiente += f.valor;
+      if (f.clase === "entra") g.entra += f.valor;
+      else if (f.clase === "atrasado") g.atrasado += f.valor;
+      else if (f.clase === "despues") g.despues += f.valor;
+      else if (f.clase === "cobrado_q") g.cobradoQ += f.valor;
       g.cantidad += 1;
       g.cobros.push(f);
     });
     return [...mapa.values()]
       .map((g) => ({ ...g, total: g.pendiente + g.cobrado }))
-      .sort((a, b) => b.pendiente - a.pendiente || b.total - a.total);
-  }, [filasFiltradas]);
+      .sort((a, b) => (b.entra + b.atrasado) - (a.entra + a.atrasado) || b.pendiente - a.pendiente || b.total - a.total);
+  })();
+  const conCobrosQ = porTrabajador.filter((g) => g.cobros.some((f) => ["entra", "atrasado", "cobrado_q"].includes(f.clase)));
+  const ctxImp = { etiqueta: etiquetaQ, corte: corteQ };
+  function imprimirResumenQ() {
+    const grupos = conCobrosQ.map((g) => ({ ...g })).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
+    if (!abrirImpresionDed([hojaResumenDedHTML(grupos, ctxImp)], "Deducciones de la quincena")) window.alert("No hay cobros en esta quincena o el navegador bloqueó la ventana.");
+  }
+  function imprimirHojasQ(grupos) {
+    const paginas = grupos.map((g) => hojaTrabajadorDedHTML(g, ctxImp));
+    if (!abrirImpresionDed(paginas, "Cobros por trabajador")) window.alert("No hay cobros en esta quincena o el navegador bloqueó la ventana.");
+  }
   return (
     <div>
       {trabajadorAbierto && (
-        <Modal title={`Deducciones de "${trabajadorAbierto.nombre}"`} onClose={() => setTrabajadorAbierto(null)} width={720}>
+        <Modal title={`Deducciones de "${trabajadorAbierto.nombre}"`} onClose={() => setTrabajadorAbierto(null)} width={820}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, gap: 10, flexWrap: "wrap" }}>
+            <div style={{ fontSize: 12, color: C.slate }}>Quincena {etiquetaQ} · corte {fechaCortaDed(corteQ)}</div>
+            <Btn small onClick={() => imprimirHojasQ([trabajadorAbierto])}>🖨 Imprimir hoja</Btn>
+          </div>
           <Tabla
             vacio="Sin cobros registrados."
             columnas={[
@@ -11478,6 +11598,7 @@ function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobro
               { key: "tipo", label: "Motivo" },
               { key: "valor", label: "Valor", align: "right", render: (f) => fmtMoney(f.valor) },
               { key: "fecha", label: "Fecha del cobro", render: (f) => (f.fecha ? fmtFechaISO(f.fecha) : "—") },
+              { key: "clase", label: "En esta quincena", render: (f) => { const c = CLASE_COBRO_DED[f.clase] || CLASE_COBRO_DED.entra; return <span style={{ background: c.bg, color: c.color, fontWeight: 700, fontSize: 11, padding: "2px 9px", borderRadius: 99 }}>{c.label}</span>; } },
               { key: "estado", label: "Estado", render: (f) => (f.cobrado ? (
                 <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
                   <span style={{ color: C.green, fontWeight: 700 }}>Cobrado en {f.periodoIdCobrado || "—"}</span>
@@ -11536,7 +11657,17 @@ function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobro
         </Modal>
       )}
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
-        Todos los cobros pendientes contra un trabajador -- los que registra Bodega (Despachos Generales / Estado de Despacho) y los agregados manualmente aquí abajo -- se descuentan solos de la SIGUIENTE liquidación de ese trabajador, sin importar cuánto tiempo llevaban esperando. Clic en un trabajador para ver el detalle de cada cobro suyo.
+        Cobros contra un trabajador -- los que registra Bodega (Despachos Generales / Estado de Despacho) y los agregados manualmente aquí abajo. Como en Horas Extras, cada quincena toma los cobros por su fecha; al confirmar la nómina quedan marcados como cobrados y nunca se descuentan dos veces.
+      </div>
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end", background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: 14, marginBottom: 16 }}>
+        <div style={{ width: 100 }}><Field label="Año"><FInput type="number" value={anioQ} onChange={(v) => { setAnioQ(v); setCorteManual(""); }} /></Field></div>
+        <div style={{ width: 160 }}><Field label="Mes"><FSel value={mesQ} onChange={(v) => { setMesQ(v); setCorteManual(""); }} options={NOMBRES_MES_DED.map((n, i) => ({ value: String(i + 1).padStart(2, "0"), label: n }))} /></Field></div>
+        <div style={{ width: 190 }}><Field label="Quincena"><FSel value={quincenaQ} onChange={(v) => { setQuincenaQ(v); setCorteManual(""); }} options={[{ value: "1", label: "1.ª · 1 al 15" }, { value: "2", label: "2.ª · 16 al fin de mes" }]} /></Field></div>
+        <div style={{ width: 180 }}><Field label="Fecha de corte"><FInput type="date" value={corteQ} onChange={(v) => setCorteManual(v === rangoQ.fin ? "" : v)} /></Field></div>
+        {corteManual && <Btn small variant="secondary" onClick={() => setCorteManual("")}>Restablecer corte</Btn>}
+        <div style={{ fontSize: 11.5, color: C.slate, maxWidth: 340, lineHeight: 1.4, alignSelf: "center" }}>
+          Entran los cobros con fecha dentro de la quincena y hasta el corte. Un cobro sin cobrar de una quincena anterior sale como <b style={{ color: C.red }}>atrasado</b> y también se descuenta. Los fechados después del corte esperan.
+        </div>
       </div>
       {puedeAgregarCobrosManual && (
         <div style={{ marginBottom: 20 }}>
@@ -11555,24 +11686,64 @@ function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobro
         </div>
       )}
       <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
-        <KPI icon="⏳" label="Pendiente de cobrar" value={fmtMoney(totalPendiente)} color={C.amber} bg={C.amberBg} />
-        <KPI icon="✅" label="Ya cobrado" value={fmtMoney(totalCobrado)} color={C.green} bg={C.greenBg} />
+        <KPI icon="⏳" label="Pendiente total" value={fmtMoney(totalPendiente)} color={C.amber} bg={C.amberBg} sub={totalDespues > 0 ? `${fmtMoney(totalDespues)} fechado después del corte` : undefined} />
+        <KPI icon="➡️" label="A descontar en esta quincena" value={fmtMoney(totalEntra + totalAtrasado)} color={C.blue} bg={C.blueBg} sub={`Dentro de la quincena ${fmtMoney(totalEntra)}`} />
+        <KPI icon="⚠️" label="Atrasado de quincenas anteriores" value={fmtMoney(totalAtrasado)} color={totalAtrasado > 0 ? C.red : C.slate} bg={totalAtrasado > 0 ? C.redBg : C.canvas} />
+        <KPI icon="✅" label="Ya cobrado en esta quincena" value={fmtMoney(totalCobradoQ)} color={C.green} bg={C.greenBg} />
       </div>
-      <div style={{ marginBottom: 16, maxWidth: 260 }}>
-        <Field label="Filtrar por estado">
-          <FSel value={filtroEstado} onChange={setFiltroEstado} options={[{ value: "pendiente", label: "Pendiente de cobrar" }, { value: "cobrado", label: "Cobrado" }]} placeholder="Todos" />
-        </Field>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 14, marginBottom: 20 }}>
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 800, color: C.ink, marginBottom: 6 }}>Por motivo</div>
+          <Tabla vacio="Sin cobros en esta quincena." columnas={[
+            { key: "label", label: "Motivo" },
+            { key: "cantidad", label: "Cobros", align: "right", render: (f) => fmtNum(f.cantidad) },
+            { key: "valor", label: "Valor", align: "right", render: (f) => <strong>{fmtMoney(f.valor)}</strong> },
+          ]} filas={porMotivo} />
+        </div>
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 800, color: C.ink, marginBottom: 6 }}>Por lote y referencia</div>
+          <Tabla vacio="Sin cobros en esta quincena." columnas={[
+            { key: "label", label: "Lote · Ref." },
+            { key: "cantidad", label: "Cobros", align: "right", render: (f) => fmtNum(f.cantidad) },
+            { key: "valor", label: "Valor", align: "right", render: (f) => <strong>{fmtMoney(f.valor)}</strong> },
+          ]} filas={porLote} />
+        </div>
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 800, color: C.ink, marginBottom: 6 }}>Por área</div>
+          <Tabla vacio="Sin cobros en esta quincena." columnas={[
+            { key: "label", label: "Área" },
+            { key: "nTrab", label: "Trabajadores", align: "right", render: (f) => fmtNum(f.nTrab) },
+            { key: "valor", label: "Valor", align: "right", render: (f) => <strong>{fmtMoney(f.valor)}</strong> },
+          ]} filas={porArea} />
+        </div>
       </div>
-      <div style={{ fontSize: 11, color: C.slate, marginBottom: 10 }}>Clic en un trabajador para ver el detalle de sus cobros.</div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 8 }}>
+        <div style={{ display: "flex", gap: 14, alignItems: "flex-end", flexWrap: "wrap" }}>
+          <div style={{ fontSize: 14, fontWeight: 800, color: C.ink }}>Detalle por trabajador</div>
+          <div style={{ width: 220 }}>
+            <FSel value={filtroEstado} onChange={setFiltroEstado} options={[{ value: "pendiente", label: "Solo pendientes de cobrar" }, { value: "cobrado", label: "Solo cobrados" }]} placeholder="Todos los estados" />
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <Btn variant="secondary" onClick={imprimirResumenQ} disabled={!conCobrosQ.length}>🖨 Imprimir resumen general</Btn>
+          <Btn onClick={() => imprimirHojasQ(conCobrosQ.slice().sort((a, b) => a.nombre.localeCompare(b.nombre, "es")))} disabled={!conCobrosQ.length}>🖨 Imprimir hojas de todos</Btn>
+        </div>
+      </div>
+      <div style={{ fontSize: 11, color: C.slate, marginBottom: 10 }}>Clic en un trabajador para ver el detalle de sus cobros; el ícono 🖨 imprime su hoja.</div>
       <Tabla
         vacio="No hay cobros de Bodega registrados."
         onRowClick={(f) => setTrabajadorAbierto(f)}
         columnas={[
           { key: "nombre", label: "Trabajador" },
+          { key: "area", label: "Área", render: (f) => <span style={{ color: C.slate }}>{f.area}</span> },
           { key: "cantidad", label: "Cobros", align: "right", render: (f) => fmtNum(f.cantidad) },
-          { key: "pendiente", label: "Pendiente", align: "right", render: (f) => <span style={{ color: f.pendiente > 0 ? C.amber : C.slate, fontWeight: 700 }}>{fmtMoney(f.pendiente)}</span> },
-          { key: "cobrado", label: "Cobrado", align: "right", render: (f) => <span style={{ color: C.green, fontWeight: 700 }}>{fmtMoney(f.cobrado)}</span> },
-          { key: "total", label: "Total", align: "right", render: (f) => <strong>{fmtMoney(f.total)}</strong> },
+          { key: "entra", label: "Entra esta quincena", align: "right", render: (f) => <span style={{ color: f.entra > 0 ? C.amber : C.slate, fontWeight: 700 }}>{fmtMoney(f.entra)}</span> },
+          { key: "atrasado", label: "Atrasado", align: "right", render: (f) => <span style={{ color: f.atrasado > 0 ? C.red : C.slate, fontWeight: 700 }}>{fmtMoney(f.atrasado)}</span> },
+          { key: "cobradoQ", label: "Cobrado en la quincena", align: "right", render: (f) => <span style={{ color: C.green, fontWeight: 700 }}>{fmtMoney(f.cobradoQ)}</span> },
+          { key: "pendiente", label: "Pendiente total", align: "right", render: (f) => <strong>{fmtMoney(f.pendiente)}</strong> },
+          { key: "imp", label: "", align: "right", render: (f) => (
+            <span title="Imprimir la hoja de este trabajador" style={{ cursor: "pointer", fontSize: 15 }} onClick={(e) => { e.stopPropagation(); imprimirHojasQ([f]); }}>🖨</span>
+          ) },
         ]}
         filas={porTrabajador}
       />
