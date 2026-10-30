@@ -16849,11 +16849,14 @@ function calcularAvancePedido(p, avance) {
   return { total, totalBruto, perdidas, cortado, falta, sobrecorte, porRef, facturado: avance ? (av ? av.facturado : 0) : null };
 }
 // El avance se pide una sola vez cada 2 minutos y lo comparten el tablero y el detalle.
+// (2026-10-30) Se guarda el ÚLTIMO resultado bueno y las pantallas arrancan con él: si la pantalla se vuelve a montar mientras se pide de nuevo, los números
+// no desaparecen (se ven los anteriores hasta que llegan los nuevos). Se vuelve a pedir como máximo cada 10 minutos.
+let _avanceUltimo = null;
 let _avanceCache = { t: 0, promesa: null };
 function cargarAvancePedidos(forzar) {
   const ahora = Date.now();
-  if (!forzar && _avanceCache.promesa && ahora - _avanceCache.t < 120000) return _avanceCache.promesa;
-  const prom = httpsCallable(functionsClient, "getAvancePedidosActivos", { timeout: 540000 })({}).then((r) => r.data || null);
+  if (!forzar && _avanceCache.promesa && ahora - _avanceCache.t < 600000) return _avanceCache.promesa;
+  const prom = httpsCallable(functionsClient, "getAvancePedidosActivos", { timeout: 540000 })({}).then((r) => { const d = r.data || null; if (d) _avanceUltimo = d; return d; });
   _avanceCache = { t: ahora, promesa: prom };
   prom.catch(() => { if (_avanceCache.promesa === prom) _avanceCache = { t: 0, promesa: null }; });
   return prom;
@@ -16876,10 +16879,10 @@ function compararTallas(a, b) {
 function PedidoDetailView({ pedido, onBack, onUpdatePedido, soloLectura }) {
   const [showConfirmCumplido, setShowConfirmCumplido] = useState(false);
   const [refsAbiertas, setRefsAbiertas] = useState({}); // referencia -> abierta (muestra sus colores)
-  const [avanceDet, setAvanceDet] = useState(null);
+  const [avanceDet, setAvanceDet] = useState(_avanceUltimo);
   useEffect(() => {
     let vivo = true;
-    cargarAvancePedidos(false).then((d) => { if (vivo) setAvanceDet(d); }).catch(() => {});
+    cargarAvancePedidos(false).then((d) => { if (vivo && d) setAvanceDet(d); }).catch(() => {});
     return () => { vivo = false; };
   }, []);
   const avDet = calcularAvancePedido(pedido, avanceDet);
@@ -18984,12 +18987,12 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
     return () => { vivo = false; };
   }, [isAdmin, syncRefresco]);
   // (2026-10-30) Avance real: cortado según lotes de Planeación + facturado neto de Busint (por pedido y referencia). Si falla, el tablero usa solo los cortes de ATLAS.
-  const [avance, setAvance] = useState(null);
+  const [avance, setAvance] = useState(_avanceUltimo);
   const [avanceError, setAvanceError] = useState("");
   useEffect(() => {
     let vivo = true;
     cargarAvancePedidos(syncRefresco > 0)
-      .then((d) => { if (vivo) setAvance(d); })
+      .then((d) => { if (vivo && d) setAvance(d); })
       .catch((err) => { if (vivo) setAvanceError(err?.message || String(err)); });
     return () => { vivo = false; };
   }, [syncRefresco]);
