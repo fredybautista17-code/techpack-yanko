@@ -367,6 +367,47 @@ function agruparFilasBusintPorPedido(filas) {
   return porPedido;
 }
 
+// (2026-10-30, a pedido de Fredy) Facturado NETO de un conjunto de filas de ApiGen_FacturadoBusint.
+// Solo Kamila Colombia usa consignación: sale la mercancía en TCO (sin número de pedido amarrado) y, cuando ella vende, Busint
+// registra la devolución de la consignación (DTC/Dtcon) y la factura (FAC) del pedido, a los pocos minutos (ej. pedido 1573:
+// Dtcon 135 por 1.561 y Fact 3632 por 1.561). Esa DTC NO es una devolución del cliente: solo cierra la consignación. Antes se
+// sumaba todo y la DTC (sin su TCO en el mismo pedido) le restaba a la factura, dejando el pedido en 0 o 24 %.
+// Regla: neto = FAC (y demás tipos) + traslado externo neto (TEX+DTE, piso 0) + consignación neta (TCO+DTC, piso 0).
+// Una DTC jamás resta de la factura; lo que sobre de DTC (sin TCO que cancelar) queda en dtcIgnorado, solo informativo.
+function facturadoNetoDeFilas(filas) {
+  let fac = 0, tex = 0, tco = 0, dtc = 0;
+  for (const f of filas || []) {
+    const t = String(f?.tipo || "").trim().toUpperCase();
+    const c = Number(f?.cant) || 0;
+    if (t === "TEX" || t === "DTE") tex += c;
+    else if (t === "TCO") tco += c;
+    else if (t === "DTC") dtc += c;
+    else fac += c;
+  }
+  const consig = tco + dtc;
+  return { neto: fac + Math.max(0, tex) + Math.max(0, consig), fac, tex, tco, dtc, dtcIgnorado: consig < 0 ? -consig : 0 };
+}
+// Neto por pedido y por pedido+referencia (el piso de 0 se aplica por referencia y el pedido es la suma de sus referencias).
+// Claves: porPedido -> numped; porPedidoRef -> `${numped}|${REF en mayúsculas}` (mismo formato que usaban los mapas anteriores).
+function facturadoNetoPorPedido(filas) {
+  const grupos = new Map();
+  for (const f of filas || []) {
+    const numero = String(f?.numped ?? "").trim();
+    if (!numero) continue;
+    const k = `${numero}|${String(f?.ref ?? "").trim().toUpperCase()}`;
+    if (!grupos.has(k)) grupos.set(k, { numero, filas: [] });
+    grupos.get(k).filas.push(f);
+  }
+  const porPedido = new Map();
+  const porPedidoRef = new Map();
+  grupos.forEach((g, k) => {
+    const n = facturadoNetoDeFilas(g.filas).neto;
+    porPedidoRef.set(k, n);
+    porPedido.set(g.numero, (porPedido.get(g.numero) || 0) + n);
+  });
+  return { porPedido, porPedidoRef };
+}
+
 // Consulta "ApiGen_FacturadoBusint" — trae, para un rango de fechas, TODO lo
 // que ya se facturó o se sacó de la fábrica: facturas normales, traslados
 // externos, traslados en consignación y sus devoluciones (así lo describe la
@@ -2365,12 +2406,7 @@ exports.getPedidosVigentesBusint = onCallAuth(
     let avisoFacturacion = null;
     try {
       const filasFacturado = await consultarFacturadoBusint(fechaInicio, hoyISO);
-      filasFacturado.forEach((f) => {
-        const numero = String(f.numped ?? "").trim();
-        if (!numero) return;
-        const cant = Number(f.cant) || 0;
-        facturadoPorPedido.set(numero, (facturadoPorPedido.get(numero) || 0) + cant);
-      });
+      facturadoPorPedido = facturadoNetoPorPedido(filasFacturado).porPedido;
     } catch (err) {
       logger.error("Error consultando ApiGen_FacturadoBusint (getPedidosVigentesBusint)", { error: String(err) });
       avisoFacturacion = "No se pudo consultar la facturación de Busint — este informe puede estar mostrando pedidos que ya se facturaron.";
@@ -2583,15 +2619,8 @@ async function calcularCruceBusintAtlas(fechaInicio, fechaFin) {
     if (!numped || !porPedido.has(numped)) return;
     perdidaPorPedido.set(numped, (perdidaPorPedido.get(numped) || 0) + (Number(f?.Total) || 0));
   });
-  const facturadoPorPedido = new Map();
-  const facturadoPorPedidoRef = new Map(); // `${numero}|${REF}` -> unidades facturadas (netas)
-  filasFacturado.forEach((f) => {
-    const numero = String(f.numped ?? "").trim();
-    if (!numero) return;
-    facturadoPorPedido.set(numero, (facturadoPorPedido.get(numero) || 0) + (Number(f.cant) || 0));
-    const kRef = `${numero}|${String(f.ref ?? "").trim().toUpperCase()}`;
-    facturadoPorPedidoRef.set(kRef, (facturadoPorPedidoRef.get(kRef) || 0) + (Number(f.cant) || 0));
-  });
+  // `${numero}|${REF}` -> unidades facturadas (netas; la DTC de consignación no resta de la factura, ver facturadoNetoDeFilas)
+  const { porPedido: facturadoPorPedido, porPedidoRef: facturadoPorPedidoRef } = facturadoNetoPorPedido(filasFacturado);
 
   const carga = await leerCargaPlaneacionMasReciente();
   if (!carga) throw new Error("No hay ninguna carga de Planeación guardada, así que no se puede saber qué está en producción.");
@@ -2943,20 +2972,35 @@ exports.depurarPedidoBusint = onCallAuth(
       return porColor.get(clave);
     };
     ord.forEach((f) => { const c = Math.round(Number(f.cantPed) || 0); refDe(f.ref).pedidoApi += c; colorDe(f).pedidoApi += c; });
+    // (2026-10-30) El facturado de cada color/ref es NETO con la regla de facturadoNetoDeFilas (la DTC de consignación no resta
+    // de la factura). "Facturado por tipo" sigue mostrando lo crudo de Busint, tipo por tipo.
+    const filasPorColor = new Map();
     fac.forEach((f) => {
       const c = Number(f.cant) || 0;
       const r = refDe(f.ref);
-      r.facturado += c;
       const tipo = String(f.tipo || f.doc || "?").trim();
       r.facturadoPorTipo[tipo] = (r.facturadoPorTipo[tipo] || 0) + c;
-      colorDe(f).facturado += c;
+      colorDe(f);
+      const kc = [refSinGuion(f.ref), f.pinta || "", f.color || ""].join("|");
+      if (!filasPorColor.has(kc)) filasPorColor.set(kc, []);
+      filasPorColor.get(kc).push(f);
     });
+    let facturadoNetoTotal = 0, dtcIgnoradoTotal = 0;
+    filasPorColor.forEach((fs, kc) => {
+      const n = facturadoNetoDeFilas(fs);
+      porColor.get(kc).facturado = n.neto;
+      refDe(fs[0].ref).facturado += n.neto;
+      facturadoNetoTotal += n.neto;
+      dtcIgnoradoTotal += n.dtcIgnorado;
+    });
+    const facturadoBrutoTotal = fac.reduce((s2, f) => s2 + (Number(f.cant) || 0), 0);
+    if (dtcIgnoradoTotal > 0) avisos.push(`Hay ${dtcIgnoradoTotal} unidades de devolución de consignación (Dtc) que no se descontaron de la factura: solo Kamila Colombia usa consignación y su Dtc cierra la consignación, no devuelve lo facturado. Por eso el facturado neto (${facturadoNetoTotal}) es mayor que Fac + Dtc (${facturadoBrutoTotal}).`);
     lotes.forEach((l) => { const r = refDe(l.referencia); r.cortado += l.cantCortada; r.lotes.push(`${l.numLote} (${l.cantCortada}, ${l.ubicacionActual || "—"})`); });
     const cap = (arr, n) => arr.slice(0, n);
     return {
       numero, fechaInicio, fechaFin: fin, avisos,
       cliente: (ord[0]?.cliente || lotes[0]?.cliente || "").trim(),
-      totales: { pedidoApi: ord.reduce((s, f) => s + Math.round(Number(f.cantPed) || 0), 0), facturado: fac.reduce((s, f) => s + (Number(f.cant) || 0), 0), cortado: lotes.reduce((s, l) => s + l.cantCortada, 0), filasOrdenes: ord.length, filasFacturado: fac.length, filasDetalleBD: bd.length, filasCumplidosBD: cumpl.length, lotes: lotes.length },
+      totales: { pedidoApi: ord.reduce((s, f) => s + Math.round(Number(f.cantPed) || 0), 0), facturado: facturadoNetoTotal, facturadoBruto: facturadoBrutoTotal, dtcNoDescontado: dtcIgnoradoTotal, cortado: lotes.reduce((s, l) => s + l.cantCortada, 0), filasOrdenes: ord.length, filasFacturado: fac.length, filasDetalleBD: bd.length, filasCumplidosBD: cumpl.length, lotes: lotes.length },
       porRef: [...porRef.values()].sort((a, b) => a.ref.localeCompare(b.ref)),
       porColor: [...porColor.values()].sort((a, b) => a.ref.localeCompare(b.ref) || a.color.localeCompare(b.color)),
       lotes,

@@ -18499,7 +18499,7 @@ function DiagnosticoPedidoModal({ numeroInicial, onClose }) {
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 12 }}>
             {[
               { l: "Pedido según la consulta de Busint", v: datos.totales.pedidoApi, c: T.denim, bg: T.denimBg },
-              { l: "Facturado (FAC + traslados, netos)", v: datos.totales.facturado, c: T.jade, bg: T.jadeBg },
+              { l: "Facturado neto (Fac + traslados; la Dtc de consignación no resta)", v: datos.totales.facturado, c: T.jade, bg: T.jadeBg },
               { l: "Cortado según lotes de Planeación", v: datos.totales.cortado, c: T.amber, bg: T.amberBg },
               { l: "Filas: pedido / facturado / detalle BD / lotes", v: `${datos.totales.filasOrdenes} / ${datos.totales.filasFacturado} / ${datos.totales.filasDetalleBD} / ${datos.totales.lotes}`, c: T.slate, bg: T.canvas },
             ].map((k) => (
