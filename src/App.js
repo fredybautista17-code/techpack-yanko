@@ -16825,7 +16825,7 @@ function calcularAvancePedido(p, avance) {
   const porRef = new Map();
   (p.referencias || []).forEach((r) => {
     const k = normRefKeyPedido(r.ref);
-    const o = porRef.get(k) || { total: 0, atl: 0, comb: 0 };
+    const o = porRef.get(k) || { total: 0, atl: 0, comb: 0, perd: 0, neto: 0 };
     o.total += Number(r.total) || 0;
     porRef.set(k, o);
   });
@@ -16836,12 +16836,17 @@ function calcularAvancePedido(p, avance) {
     o.atl += suma > 0 ? suma : (Number(cr.total) || 0);
   }));
   const av = avance?.porPedido?.[String(p.numero)] || null;
-  let total = 0, cortado = 0, falta = 0, sobrecorte = 0;
+  // Pedido real de la referencia = pedido - ventas perdidas (igual que el reporte de Busint); cortado = lo mayor entre ATLAS, Planeación, órdenes de
+  // producción de Busint y lo facturado (lo facturado necesariamente se cortó: los lotes ya cerrados desaparecen de Busint y de la carga de Planeación).
+  let totalBruto = 0, total = 0, cortado = 0, falta = 0, sobrecorte = 0, perdidas = 0;
   porRef.forEach((o, k) => {
-    o.comb = Math.max(o.atl, av?.cortadoPorRef?.[k] || 0);
-    total += o.total; cortado += Math.min(o.comb, o.total); falta += Math.max(0, o.total - o.comb); sobrecorte += Math.max(0, o.comb - o.total);
+    o.perd = Math.min(o.total, av?.perdidaPorRef?.[k] || 0);
+    o.neto = o.total - o.perd;
+    o.comb = Math.max(o.atl, av?.cortadoPorRef?.[k] || 0, av?.facturadoPorRef?.[k] || 0);
+    totalBruto += o.total; perdidas += o.perd; total += o.neto;
+    cortado += Math.min(o.comb, o.neto); falta += Math.max(0, o.neto - o.comb); sobrecorte += Math.max(0, o.comb - o.neto);
   });
-  return { total, cortado, falta, sobrecorte, porRef, facturado: avance ? (av ? av.facturado : 0) : null };
+  return { total, totalBruto, perdidas, cortado, falta, sobrecorte, porRef, facturado: avance ? (av ? av.facturado : 0) : null };
 }
 // El avance se pide una sola vez cada 2 minutos y lo comparten el tablero y el detalle.
 let _avanceCache = { t: 0, promesa: null };
@@ -16880,8 +16885,8 @@ function PedidoDetailView({ pedido, onBack, onUpdatePedido, soloLectura }) {
   const avDet = calcularAvancePedido(pedido, avanceDet);
   const [showEdit, setShowEdit] = useState(false);
   const totalPedido = pedido.referencias.reduce((s, r) => s + r.total, 0);
-  const totalCortado = avDet.cortado; // lo mayor entre ATLAS, Planeación y Busint (por referencia)
-  const pct = totalPedido > 0 ? Math.round((totalCortado / totalPedido) * 100) : 0;
+  const totalCortado = avDet.cortado; // lo mayor entre ATLAS, Planeación, Busint y lo facturado (por referencia)
+  const pct = avDet.total > 0 ? Math.round((totalCortado / avDet.total) * 100) : 0;
   const sem = semaforo2(pedido.fechaDespacho);
   const etapasHechas = Object.values(pedido.seguimiento || {}).filter(Boolean).length;
   const etapasPct = Math.round((etapasHechas / PEDIDO_STAGES.length) * 100);
@@ -16928,7 +16933,7 @@ function PedidoDetailView({ pedido, onBack, onUpdatePedido, soloLectura }) {
         {[
           { icon: "📦", label: "Total Pedido", value: fmtNum(totalPedido), color: T.denim, bg: T.denimBg },
           { icon: "✂", label: "Total Cortado", value: fmtNum(totalCortado), color: T.jade, bg: T.jadeBg },
-          { icon: "⏳", label: "Pendiente", value: fmtNum(totalPedido - totalCortado), color: T.amber, bg: T.amberBg },
+          { icon: "⏳", label: avDet.perdidas > 0 ? `Pendiente (sin ${fmtNum(avDet.perdidas)} perdidas)` : "Pendiente", value: fmtNum(avDet.falta), color: T.amber, bg: T.amberBg },
           { icon: "📊", label: "Avance Corte", value: `${pct}%`, color: pct === 100 ? T.jade : T.denim, bg: pct === 100 ? T.jadeBg : T.denimBg },
         ].map((k) => (
           <div key={k.label} style={{ background: k.bg, borderRadius: 12, padding: "16px 18px", border: `1px solid ${k.color}22` }}>
@@ -16973,7 +16978,7 @@ function PedidoDetailView({ pedido, onBack, onUpdatePedido, soloLectura }) {
           grupos.forEach((g) => {
             const o = avDet.porRef.get(normRefKeyPedido(g.ref));
             g.cortadoAtl = g.cortado;
-            if (o) { g.cortado = Math.min(o.comb, g.total); g.falta = Math.max(0, g.total - o.comb); g.soloRef = o.comb > g.cortadoAtl; }
+            if (o) { g.cortado = Math.min(o.comb, o.neto); g.falta = Math.max(0, o.neto - o.comb); g.soloRef = o.comb > g.cortadoAtl; g.perd = o.perd; }
             else { g.falta = g.total - g.cortado; g.soloRef = false; }
           });
           const th = { padding: "8px 10px", color: T.seam, fontWeight: 700, fontSize: 11 };
@@ -19187,7 +19192,7 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
             </tbody>
           </table>
           <div style={{ padding: "8px 14px", fontSize: 11, color: T.slate, borderTop: `1px solid ${T.border}` }}>
-            Cortado = lo mayor entre lo registrado en ATLAS, los lotes de Planeación{avance?.cargaPlaneacion ? ` (carga ${String(avance.cargaPlaneacion).slice(0, 10)})` : ""} y las órdenes de producción de Busint, referencia por referencia; Falta no se compensa entre referencias. Facturado = neto en Busint.
+            Cortado = lo mayor entre lo registrado en ATLAS, los lotes de Planeación{avance?.cargaPlaneacion ? ` (carga ${String(avance.cargaPlaneacion).slice(0, 10)})` : ""} y las órdenes de producción de Busint, o lo facturado si es mayor, referencia por referencia; Falta no se compensa entre referencias. Pedido = pedido menos ventas perdidas (como el reporte de Busint). Facturado = neto en Busint.
             {avance?.avisos?.length ? ` · Aviso: ${avance.avisos.join(" · ")}` : ""}{!avance ? " · Cargando avance real desde Planeación y Busint…" : ""}
           </div>
         </div>

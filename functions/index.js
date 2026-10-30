@@ -3194,7 +3194,23 @@ exports.getAvancePedidosActivos = onCallAuth(
       consultarFacturadoBusint(fechaInicio, hoy).catch((e) => { avisos.push(`No se pudo leer lo facturado en Busint: ${e?.message || String(e)}`); return []; }),
     ]);
     const porPedido = {};
-    const de = (n) => { if (!porPedido[n]) porPedido[n] = { cortadoPorRef: {}, facturadoPorRef: {}, facturado: 0 }; return porPedido[n]; };
+    const de = (n) => { if (!porPedido[n]) porPedido[n] = { cortadoPorRef: {}, facturadoPorRef: {}, perdidaPorRef: {}, facturado: 0 }; return porPedido[n]; };
+    // Ventas perdidas por pedido+referencia (solo NConcepto = 12, la misma lectura validada contra Busint): el pedido real es lo pedido menos esto.
+    try {
+      const cumplidos = await consultarTablaBusintBDCompleta("pedidos detalles clientes - cumplidos");
+      cumplidos.forEach((f) => {
+        if (Number(f?.NConcepto) !== 12) return;
+        const n = String(f?.NumPed ?? "").trim();
+        const r = refSinGuion(f?.Ref);
+        const t = Number(f?.Total) || 0;
+        if (!n || !r || !t) return;
+        const g = de(n);
+        g.perdidaPorRef[r] = (g.perdidaPorRef[r] || 0) + t;
+      });
+    } catch (err) {
+      logger.error("Error leyendo ventas perdidas (getAvancePedidosActivos)", { error: String(err) });
+      avisos.push("No se pudieron leer las ventas perdidas de Busint: el pedido se muestra sin descontarlas.");
+    }
     (carga?.lotes || []).forEach((l) => {
       const n = String(l.numPedido ?? "").trim();
       if (!n) return;
