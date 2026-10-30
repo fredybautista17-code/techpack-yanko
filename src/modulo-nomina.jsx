@@ -6919,6 +6919,11 @@ function EstadisticasPermisosView({ areasNomina, trabajadores, ausencias, faltas
 const TASA_CESANTIAS_MENSUAL = 0.0833;
 const TASA_PRIMA_MENSUAL = 0.0833;
 const TASA_VACACIONES_MENSUAL = 0.0417;
+// (2026-10-30, a pedido de Fredy) Nomina Fiscal: fracciones exactas como las contabiliza TNS (cuadra al peso en la vista "Comparar con TNS").
+// Fiscal Destajo y Destajo conservan las tasas redondeadas de arriba (su tabla de referencia usa 8,33 % y 4,17 %).
+const TASA_CESANTIAS_MENSUAL_EXACTA = 1 / 12;
+const TASA_PRIMA_MENSUAL_EXACTA = 1 / 12;
+const TASA_VACACIONES_MENSUAL_EXACTA = 15 / 360;
 const TASA_INTERES_CESANTIAS_ANUAL = 0.12;
 // Confirmado con el usuario (26/08/2026): las provisiones SÍ se calculan
 // sobre el sueldo ya descontado por inasistencia de esa quincena (si faltó
@@ -7589,10 +7594,10 @@ function calcularLiquidacionFiscal(trabajador, diasInasistencia, diasSinAuxilio 
   const epsEmpleador = 0;
   const saldoCesantiasInicio = Number(trabajador.cesantiasAcumuladas) || 0;
   const baseConAuxilio = sueldoQuincena + auxilioQuincena;
-  const cesantiasPeriodo = baseConAuxilio * TASA_CESANTIAS_MENSUAL;
+  const cesantiasPeriodo = baseConAuxilio * TASA_CESANTIAS_MENSUAL_EXACTA;
   const interesesPeriodo = cesantiasPeriodo * TASA_INTERES_CESANTIAS_ANUAL;
-  const primaPeriodo = baseConAuxilio * TASA_PRIMA_MENSUAL;
-  const vacacionesPeriodo = sueldoQuincena * TASA_VACACIONES_MENSUAL;
+  const primaPeriodo = baseConAuxilio * TASA_PRIMA_MENSUAL_EXACTA;
+  const vacacionesPeriodo = sueldoQuincena * TASA_VACACIONES_MENSUAL_EXACTA;
   // (2026-09-20, a pedido de Fredy) "Mínimo garantizado por causación":
   // solo aplica si la ficha tiene el check Y hay un valor cargado en
   // Causación Manual esa quincena (si no hay causación cargada, esta
