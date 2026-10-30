@@ -18954,7 +18954,7 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
   const normRefBusq = (v) => String(v || "").toLowerCase().replace(/[^a-z0-9]/g, "");
   const busquedaRef = normRefBusq(busqueda);
   const refsQueCoinciden = (p) => (busquedaRef.length >= 2 ? (p.referencias || []).filter((r) => normRefBusq(r.ref).includes(busquedaRef)) : []);
-  // (2026-10-30, a pedido de Fredy) Avance por pedido, referencia por referencia: cortado = lo MAYOR entre lo registrado en ATLAS y los lotes de Planeación;
+  // (2026-10-30, a pedido de Fredy) Avance por pedido, referencia por referencia: cortado = lo MAYOR entre lo registrado en ATLAS, los lotes de Planeación y las órdenes de producción de Busint;
   // "falta" no se compensa entre referencias (el sobrecorte de una no tapa lo que falta en otra). Facturado = neto de Busint (null si aún no carga).
   const avanceDe = (p) => {
     const pedRef = new Map();
@@ -19154,7 +19154,7 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
             </tbody>
           </table>
           <div style={{ padding: "8px 14px", fontSize: 11, color: T.slate, borderTop: `1px solid ${T.border}` }}>
-            Cortado = lo mayor entre lo registrado en ATLAS y los lotes de Planeación{avance?.cargaPlaneacion ? ` (carga ${String(avance.cargaPlaneacion).slice(0, 10)})` : ""}, referencia por referencia; Falta no se compensa entre referencias. Facturado = neto en Busint.
+            Cortado = lo mayor entre lo registrado en ATLAS, los lotes de Planeación{avance?.cargaPlaneacion ? ` (carga ${String(avance.cargaPlaneacion).slice(0, 10)})` : ""} y las órdenes de producción de Busint, referencia por referencia; Falta no se compensa entre referencias. Facturado = neto en Busint.
             {avance?.avisos?.length ? ` · Aviso: ${avance.avisos.join(" · ")}` : ""}{!avance ? " · Cargando avance real desde Planeación y Busint…" : ""}
           </div>
         </div>

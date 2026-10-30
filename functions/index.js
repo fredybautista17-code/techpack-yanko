@@ -3184,7 +3184,7 @@ function refSinGuion(v) {
 // pedido y por referencia. Antes el tablero solo contaba los cortes registrados dentro de ATLAS y mostraba como "por cortar" pedidos que
 // en planta ya estaban cortados (ej. #1204: Busint 95 % facturado y cortado de más, ATLAS 12 % cortado). Solo lectura.
 exports.getAvancePedidosActivos = onCallAuth(
-  { secrets: [BUSINT_TOKEN, BUSINT_BASE_URL], timeoutSeconds: 180, memory: "1GiB" },
+  { secrets: [BUSINT_TOKEN, BUSINT_BASE_URL, BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY], timeoutSeconds: 300, memory: "2GiB" },
   async (request) => {
     const hoy = fechaHoyBogota();
     const fechaInicio = `${Number(hoy.slice(0, 4)) - 1}-01-01`;
@@ -3202,6 +3202,63 @@ exports.getAvancePedidosActivos = onCallAuth(
       const g = de(n);
       g.cortadoPorRef[r] = (g.cortadoPorRef[r] || 0) + (Number(l.cantCortada) || 0);
     });
+    // Prendas YA CORTADAS por pedido + referencia según las órdenes de producción de Busint (la misma lectura que usa "Disponible para
+    // despachar" en "Sin cortar"): los lotes terminados salen de la carga de Planeación, pero siguen existiendo en Busint. Por referencia
+    // se toma lo MAYOR entre Planeación y Busint.
+    try {
+      const [ordProd, ordDet, entPlantaRefDD] = await Promise.all([
+        consultarTablaBusintBDCompleta("orden produccion"),
+        consultarTablaBusintBDCompleta("orden produccion detalles"),
+        consultarTablaBusintBDCompleta("bmp - entrada planta ref").catch(() => []),
+      ]);
+      const claveL = (v) => String(v ?? "").trim().replace(/\.0+$/, "");
+      const lotePed = new Map();
+      for (const f of ordProd) {
+        if (/elimin/i.test(String(f.Mensaje || ""))) continue;
+        const lote = claveL(f.NumLote);
+        if (!(Number(lote) > 0)) continue;
+        const ped = Number(claveL(f.Nped)) > 0 ? claveL(f.Nped) : "";
+        const refNorm = refSinGuion(f.Ref);
+        if (!lotePed.has(lote) || (ped && !lotePed.get(lote).ped)) lotePed.set(lote, { ped, refNorm });
+      }
+      const prendasPorLote = new Map();
+      for (const f of ordDet) {
+        const lote = claveL(valorFlexible(f, ["NumLote", "Numlote", "numlote", "Nomlote", "NomLote"]));
+        if (!lote) continue;
+        const u = Object.keys(f).reduce((a2, k) => (/^T\d+$/i.test(k) && Number.isFinite(Number(f[k])) ? a2 + Number(f[k]) : a2), 0);
+        if (u > 0) prendasPorLote.set(lote, (prendasPorLote.get(lote) || 0) + u);
+      }
+      const entPorLote = new Map();
+      for (const f of entPlantaRefDD) {
+        const lote = claveL(valorFlexible(f, ["NumLote", "Numlote", "numlote", "Nomlote", "NomLote"]));
+        if (!lote) continue;
+        const u = Object.keys(f).reduce((a2, k) => (/^T\d+$/i.test(k) && Number.isFinite(Number(f[k])) ? a2 + Number(f[k]) : a2), 0);
+        if (!(u > 0)) continue;
+        const ent = claveL(f.Entrada);
+        const m = entPorLote.get(lote) || new Map();
+        m.set(ent, (m.get(ent) || 0) + u); entPorLote.set(lote, m);
+      }
+      entPorLote.forEach((m, lote) => {
+        const mejor = Math.max(...m.values());
+        if (mejor > (prendasPorLote.get(lote) || 0)) prendasPorLote.set(lote, mejor);
+      });
+      const busint = new Map(); // `${ped}|${refNorm}` -> prendas cortadas
+      lotePed.forEach((v, lote) => {
+        const u = prendasPorLote.get(lote) || 0;
+        if (!(u > 0) || !v.ped || !v.refNorm) return;
+        const k = `${v.ped}|${v.refNorm}`;
+        busint.set(k, (busint.get(k) || 0) + u);
+      });
+      busint.forEach((u, k) => {
+        const i = k.indexOf("|");
+        const g = de(k.slice(0, i));
+        const r = k.slice(i + 1);
+        g.cortadoPorRef[r] = Math.max(g.cortadoPorRef[r] || 0, u);
+      });
+    } catch (err) {
+      logger.error("Error leyendo las órdenes de producción (getAvancePedidosActivos)", { error: String(err) });
+      avisos.push("No se pudieron leer las órdenes de producción de Busint: el cortado sale solo de Planeación y de los cortes de ATLAS.");
+    }
     const { porPedidoRef } = facturadoNetoPorPedido(filasFact);
     porPedidoRef.forEach((neto, k) => {
       const i = k.indexOf("|");
