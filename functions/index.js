@@ -3179,6 +3179,41 @@ function campoFechaPrecioBusint(fila) {
 function refSinGuion(v) {
   return String(v ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
+// (2026-10-30, a pedido de Fredy) Avance real de los pedidos para el tablero de Pedidos: lo CORTADO según los lotes de Planeación
+// (carga más reciente) y lo FACTURADO neto en Busint (regla de facturadoNetoDeFilas: la Dtc de consignación no resta de la factura), por
+// pedido y por referencia. Antes el tablero solo contaba los cortes registrados dentro de ATLAS y mostraba como "por cortar" pedidos que
+// en planta ya estaban cortados (ej. #1204: Busint 95 % facturado y cortado de más, ATLAS 12 % cortado). Solo lectura.
+exports.getAvancePedidosActivos = onCallAuth(
+  { secrets: [BUSINT_TOKEN, BUSINT_BASE_URL], timeoutSeconds: 180, memory: "1GiB" },
+  async (request) => {
+    const hoy = fechaHoyBogota();
+    const fechaInicio = `${Number(hoy.slice(0, 4)) - 1}-01-01`;
+    const avisos = [];
+    const [carga, filasFact] = await Promise.all([
+      leerCargaPlaneacionMasReciente().catch((e) => { avisos.push(`No se pudo leer la carga de Planeación: ${e?.message || String(e)}`); return null; }),
+      consultarFacturadoBusint(fechaInicio, hoy).catch((e) => { avisos.push(`No se pudo leer lo facturado en Busint: ${e?.message || String(e)}`); return []; }),
+    ]);
+    const porPedido = {};
+    const de = (n) => { if (!porPedido[n]) porPedido[n] = { cortadoPorRef: {}, facturadoPorRef: {}, facturado: 0 }; return porPedido[n]; };
+    (carga?.lotes || []).forEach((l) => {
+      const n = String(l.numPedido ?? "").trim();
+      if (!n) return;
+      const r = refSinGuion(l.referencia);
+      const g = de(n);
+      g.cortadoPorRef[r] = (g.cortadoPorRef[r] || 0) + (Number(l.cantCortada) || 0);
+    });
+    const { porPedidoRef } = facturadoNetoPorPedido(filasFact);
+    porPedidoRef.forEach((neto, k) => {
+      const i = k.indexOf("|");
+      const n = k.slice(0, i);
+      const r = refSinGuion(k.slice(i + 1));
+      const g = de(n);
+      g.facturadoPorRef[r] = (g.facturadoPorRef[r] || 0) + neto;
+      g.facturado += neto;
+    });
+    return { generadoEn: new Date().toISOString(), cargaPlaneacion: carga ? String(carga.fecha || carga.creadoEn || "") : null, avisos, porPedido };
+  }
+);
 exports.getDisponibleParaDespachar = onCallAuth(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL, BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],

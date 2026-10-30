@@ -16816,6 +16816,8 @@ function SubirPedidoModal2({ onSave, onClose, pedidoConfig, pedidos, clientes })
   );
 }
 
+// (2026-10-30) Clave de referencia sin guiones ni mayúsculas (igual que refSinGuion de las funciones) para cruzar pedido, planta y Busint.
+function normRefKeyPedido(v) { return String(v ?? "").toUpperCase().replace(/[^A-Z0-9]/g, ""); }
 // (2026-10-30) Orden de columnas de tallas en "Referencias y Excedentes": numéricas primero (por su número), luego las de letras (XS<S<M<L<XL<2XL...), luego el resto.
 const ORDEN_TALLAS_LETRAS = ["XXS", "XS", "S", "S/M", "M", "M/L", "L", "L/XL", "XL", "1XL", "XXL", "2XL", "3XL", "XXXL", "4XL", "5XL", "UNICA", "UNICO", "U"];
 function compararTallas(a, b) {
@@ -18927,6 +18929,15 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
       .catch(() => {});
     return () => { vivo = false; };
   }, [isAdmin, syncRefresco]);
+  // (2026-10-30) Avance real: cortado según lotes de Planeación + facturado neto de Busint (por pedido y referencia). Si falla, el tablero usa solo los cortes de ATLAS.
+  const [avance, setAvance] = useState(null);
+  useEffect(() => {
+    let vivo = true;
+    httpsCallable(functionsClient, "getAvancePedidosActivos")({})
+      .then((r) => { if (vivo) setAvance(r.data || null); })
+      .catch(() => {});
+    return () => { vivo = false; };
+  }, [syncRefresco]);
   const [filtroFalta, setFiltroFalta] = useState("todos"); // todos | faltante | completos
   const [clientesAbiertos, setClientesAbiertos] = useState({}); // (2026-10-30) cliente -> true/false (tablero por cliente)
   const [busqueda, setBusqueda] = useState("");
@@ -18943,8 +18954,26 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
   const normRefBusq = (v) => String(v || "").toLowerCase().replace(/[^a-z0-9]/g, "");
   const busquedaRef = normRefBusq(busqueda);
   const refsQueCoinciden = (p) => (busquedaRef.length >= 2 ? (p.referencias || []).filter((r) => normRefBusq(r.ref).includes(busquedaRef)) : []);
-  // (2026-10-29, a pedido de Fredy) "Falta" = unidades del pedido - unidades cortadas (cortes registrados en el pedido).
-  const faltaDe = (p) => Math.max(0, (p.referencias || []).reduce((s, r) => s + (r.total || 0), 0) - (p.cortesRealizados || []).reduce((s, c) => s + (c.totalUnidades || 0), 0));
+  // (2026-10-30, a pedido de Fredy) Avance por pedido, referencia por referencia: cortado = lo MAYOR entre lo registrado en ATLAS y los lotes de Planeación;
+  // "falta" no se compensa entre referencias (el sobrecorte de una no tapa lo que falta en otra). Facturado = neto de Busint (null si aún no carga).
+  const avanceDe = (p) => {
+    const pedRef = new Map();
+    (p.referencias || []).forEach((r) => { const k = normRefKeyPedido(r.ref); pedRef.set(k, (pedRef.get(k) || 0) + (Number(r.total) || 0)); });
+    const atl = {};
+    (p.cortesRealizados || []).forEach((c) => (c.refs || []).forEach((cr) => {
+      const k = normRefKeyPedido(cr.ref);
+      const suma = Object.values(cr.tallas || {}).reduce((x, v) => x + (Number(v) || 0), 0);
+      atl[k] = (atl[k] || 0) + (suma > 0 ? suma : (Number(cr.total) || 0));
+    }));
+    const av = avance?.porPedido?.[String(p.numero)] || null;
+    let total = 0, cortado = 0, falta = 0, sobrecorte = 0;
+    pedRef.forEach((tot, k) => {
+      const c = Math.max(atl[k] || 0, av?.cortadoPorRef?.[k] || 0);
+      total += tot; cortado += Math.min(c, tot); falta += Math.max(0, tot - c); sobrecorte += Math.max(0, c - tot);
+    });
+    return { total, cortado, falta, sobrecorte, facturado: avance ? (av ? av.facturado : 0) : null };
+  };
+  const faltaDe = (p) => avanceDe(p).falta;
   const listaFiltrada = filtro === "activos" && filtroFalta !== "todos" ? listaBase.filter((p) => (filtroFalta === "faltante" ? faltaDe(p) > 0 : faltaDe(p) === 0)) : listaBase;
   const lista = !busquedaNorm ? listaFiltrada : listaFiltrada.filter((p) =>
     String(p.numero || "").toLowerCase().includes(busquedaNorm) ||
@@ -18967,13 +18996,15 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
     const m = new Map();
     lista.forEach((p) => {
       const k = String(p.cliente || "(sin cliente)").trim() || "(sin cliente)";
-      if (!m.has(k)) m.set(k, { cliente: k, pedidos: [], pedido: 0, cortado: 0, vencidos: 0, proximos: 0 });
+      if (!m.has(k)) m.set(k, { cliente: k, pedidos: [], pedido: 0, cortado: 0, facturado: 0, vencidos: 0, vencidosCortados: 0, proximos: 0 });
       const g = m.get(k);
       g.pedidos.push(p);
-      g.pedido += (p.referencias || []).reduce((x, r) => x + (r.total || 0), 0);
-      g.cortado += (p.cortesRealizados || []).reduce((x, c) => x + (c.totalUnidades || 0), 0);
+      const av = avanceDe(p);
+      g.pedido += av.total;
+      g.cortado += av.cortado;
+      if (av.facturado !== null) g.facturado += av.facturado;
       if (p.fechaDespacho) {
-        if (new Date(p.fechaDespacho) < hoy) g.vencidos += 1;
+        if (new Date(p.fechaDespacho) < hoy) { if (av.falta > 0) g.vencidos += 1; else g.vencidosCortados += 1; }
         const d = Math.ceil((new Date(p.fechaDespacho) - hoy) / 86400000);
         if (d >= 0 && d <= 7) g.proximos += 1;
       }
@@ -19046,7 +19077,7 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
             <thead>
               <tr style={{ background: T.ink }}>
-                {["N° Pedido", "Cliente", "Pedido", "Cortado", "Falta", "Avance", "Despacho", "Estado", ""].map((h, i) => (
+                {["N° Pedido", "Cliente", "Pedido", "Cortado", "Falta", "Facturado", "Avance", "Despacho", "Estado", ""].map((h, i) => (
                   <th key={h + i} style={{ padding: "10px 14px", color: T.seam, textAlign: i === 0 || i === 1 ? "left" : "center", fontWeight: 700, fontSize: 11 }}>{h}</th>
                 ))}
               </tr>
@@ -19066,6 +19097,7 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
                       <td style={{ padding: "12px 14px", textAlign: "center", fontWeight: 700, color: T.ink }}>{fmtNum(g.pedido)}</td>
                       <td style={{ padding: "12px 14px", textAlign: "center", fontWeight: 700, color: T.jade }}>{fmtNum(g.cortado)}</td>
                       <td style={{ padding: "12px 14px", textAlign: "center", fontWeight: 800, color: falta > 0 ? T.coral : T.jade }}>{falta > 0 ? fmtNum(falta) : "✓ 0"}</td>
+                      <td title="Facturado neto en Busint" style={{ padding: "12px 14px", textAlign: "center", fontWeight: 700, color: T.denim }}>{avance ? fmtNum(g.facturado) : "—"}</td>
                       <td style={{ padding: "12px 14px" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                           <div style={{ flex: 1, height: 7, borderRadius: 4, background: T.border, overflow: "hidden" }}><div style={{ height: "100%", width: `${pctG}%`, background: pctG === 100 ? T.jade : T.denim }} /></div>
@@ -19074,12 +19106,14 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
                       </td>
                       <td colSpan={3} style={{ padding: "12px 14px" }}>
                         {g.vencidos > 0 && <span style={{ marginRight: 6, padding: "2px 10px", borderRadius: 20, background: T.coralBg, color: T.coral, fontSize: 11, fontWeight: 800 }}>{g.vencidos} vencido{g.vencidos !== 1 ? "s" : ""}</span>}
+                        {g.vencidosCortados > 0 && <span title="Vencidos por fecha, pero ya cortados: solo falta despachar o facturar" style={{ marginRight: 6, padding: "2px 10px", borderRadius: 20, background: T.denimBg, color: T.denim, fontSize: 11, fontWeight: 800 }}>{g.vencidosCortados} ya cortado{g.vencidosCortados !== 1 ? "s" : ""}, por despachar</span>}
                         {g.proximos > 0 && <span style={{ padding: "2px 10px", borderRadius: 20, background: T.amberBg, color: T.amber, fontSize: 11, fontWeight: 800 }}>{g.proximos} vence{g.proximos !== 1 ? "n" : ""} en 7 d</span>}
                       </td>
                     </tr>
                     {abierto && g.pedidos.slice().sort((a, b) => (a.fechaDespacho || "").localeCompare(b.fechaDespacho || "")).map((p, i) => {
-                const totalP = p.referencias.reduce((s, r) => s + r.total, 0);
-                const totalC = (p.cortesRealizados || []).reduce((s, c) => s + (c.totalUnidades || 0), 0);
+                const av = avanceDe(p);
+                const totalP = av.total;
+                const totalC = av.cortado;
                 const pct = totalP > 0 ? Math.round((totalC / totalP) * 100) : 0;
                 const sem = semaforo2(p.fechaDespacho);
                 const isTerminado = p.estado === "terminado";
@@ -19096,7 +19130,8 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
                     </td>
                     <td onClick={() => onSelectPedido(p.id)} style={{ padding: "12px 14px", textAlign: "center", fontWeight: 700, color: T.ink }}>{fmtNum(totalP)}</td>
                     <td onClick={() => onSelectPedido(p.id)} style={{ padding: "12px 14px", textAlign: "center", fontWeight: 700, color: T.jade }}>{fmtNum(totalC)}</td>
-                    <td onClick={() => onSelectPedido(p.id)} style={{ padding: "12px 14px", textAlign: "center", fontWeight: 800, color: totalP - totalC > 0 ? T.coral : T.jade }}>{totalP - totalC > 0 ? fmtNum(totalP - totalC) : "✓ 0"}</td>
+                    <td onClick={() => onSelectPedido(p.id)} style={{ padding: "12px 14px", textAlign: "center", fontWeight: 800, color: av.falta > 0 ? T.coral : T.jade }}>{av.falta > 0 ? fmtNum(av.falta) : "✓ 0"}</td>
+                    <td onClick={() => onSelectPedido(p.id)} title="Facturado neto en Busint" style={{ padding: "12px 14px", textAlign: "center", fontWeight: 700, color: T.denim }}>{av.facturado === null ? "—" : fmtNum(av.facturado)}</td>
                     <td onClick={() => onSelectPedido(p.id)} style={{ padding: "12px 14px", textAlign: "center" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                         <div style={{ flex: 1, height: 6, borderRadius: 3, background: T.border, overflow: "hidden" }}><div style={{ height: "100%", width: `${pct}%`, background: pct === 100 ? T.jade : T.denim }} /></div>
@@ -19118,6 +19153,10 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
               })}
             </tbody>
           </table>
+          <div style={{ padding: "8px 14px", fontSize: 11, color: T.slate, borderTop: `1px solid ${T.border}` }}>
+            Cortado = lo mayor entre lo registrado en ATLAS y los lotes de Planeación{avance?.cargaPlaneacion ? ` (carga ${String(avance.cargaPlaneacion).slice(0, 10)})` : ""}, referencia por referencia; Falta no se compensa entre referencias. Facturado = neto en Busint.
+            {avance?.avisos?.length ? ` · Aviso: ${avance.avisos.join(" · ")}` : ""}{!avance ? " · Cargando avance real desde Planeación y Busint…" : ""}
+          </div>
         </div>
       )}
       {filtro === "historico" && (
