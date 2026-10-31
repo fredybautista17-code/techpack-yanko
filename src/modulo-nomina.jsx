@@ -8121,35 +8121,6 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
   );
 }
 // ─── HISTORIAL FISCAL (quincenas ya confirmadas) ──────────────────────────
-// (2026-10-31, a pedido de Fredy) Impresión masiva de desprendibles desde cada Historial: con el período elegido, filtra por Área y Empresa
-// (los ACTUALES del trabajador) e imprime todos los recibos de liquidación ya confirmados en UNA hoja, un trabajador por página, ordenados por
-// área y nombre. Reutiliza el mismo recibo de siempre (armarReciboLiquidacionHTML vía abrirRecibosLiquidacionLote). Solo lectura.
-function BarraImprimirDesprendibles({ filas, trabajadores, tipoNomina, periodoElegido }) {
-  const [areaF, setAreaF] = useState("");
-  const [empF, setEmpF] = useState("");
-  const trabDe = (l) => (trabajadores || []).find((t) => t.id === l.trabajadorId);
-  const areaDe = (l) => trabDe(l)?.area || "Sin asignar";
-  const areas = [...new Set((filas || []).map(areaDe))].sort((a, b) => a.localeCompare(b, "es"));
-  const seleccion = (filas || [])
-    .filter((l) => (!areaF || areaDe(l) === areaF) && (!empF || (trabDe(l)?.empleador || "") === empF))
-    .sort((a, b) => areaDe(a).localeCompare(areaDe(b), "es") || (a.nombre || "").localeCompare(b.nombre || "", "es"));
-  function imprimir() {
-    const items = seleccion.map((l) => ({ tipoNomina, trabajador: trabDe(l) || { id: l.trabajadorId, nombre: l.nombre }, liquidacion: l }));
-    if (!abrirRecibosLiquidacionLote(items, `Desprendibles ${tipoNomina} ${periodoElegido}`)) {
-      window.alert("No hay desprendibles con estos filtros o el navegador bloqueó la ventana emergente. Permite las ventanas de ATLAS e intenta de nuevo.");
-    }
-  }
-  if (!periodoElegido) {
-    return <div style={{ fontSize: 12, color: C.slate, maxWidth: 300, alignSelf: "center" }}>Elige un período para imprimir los desprendibles de todos de una vez.</div>;
-  }
-  return (
-    <div style={{ display: "flex", gap: 12, alignItems: "flex-end", flexWrap: "wrap" }}>
-      <div style={{ width: 190 }}><Field label="Área"><FSel value={areaF} onChange={setAreaF} options={areas.map((a) => ({ value: a, label: a }))} placeholder="Todas las áreas" /></Field></div>
-      <div style={{ width: 160 }}><Field label="Empresa"><FSel value={empF} onChange={setEmpF} options={EMPLEADORES.map((e) => ({ value: e, label: e }))} placeholder="Todas" /></Field></div>
-      <Btn onClick={imprimir} disabled={!seleccion.length}>🖨 Imprimir desprendibles ({seleccion.length})</Btn>
-    </div>
-  );
-}
 function HistorialFiscalView({ liquidaciones, trabajadores }) {
   const periodos = [...new Set(liquidaciones.map((l) => l.periodoId))].sort().reverse();
   const [periodoFiltro, setPeriodoFiltro] = useState("");
@@ -8201,7 +8172,6 @@ function HistorialFiscalView({ liquidaciones, trabajadores }) {
                 <FSel value={periodoFiltro} onChange={setPeriodoFiltro} options={periodos.map((p) => ({ value: p, label: p }))} placeholder="Todos los períodos" />
               </Field>
             </div>
-            <BarraImprimirDesprendibles filas={filas} trabajadores={trabajadores} tipoNomina="Fiscal" periodoElegido={periodoFiltro} />
             <Btn variant="secondary" small onClick={exportarExcel} disabled={!filas.length}>⬇ Exportar a Excel</Btn>
           </div>
           <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
@@ -9477,7 +9447,6 @@ function HistorialFiscalDestajoView({ liquidaciones, trabajadores }) {
                 <FSel value={periodoFiltro} onChange={setPeriodoFiltro} options={periodos.map((p) => ({ value: p, label: p }))} placeholder="Todos los períodos" />
               </Field>
             </div>
-            <BarraImprimirDesprendibles filas={filas} trabajadores={trabajadores} tipoNomina="Fiscal Destajo" periodoElegido={periodoFiltro} />
             <Btn variant="secondary" small onClick={exportarExcel} disabled={!filas.length}>⬇ Exportar a Excel</Btn>
           </div>
           <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
@@ -9814,7 +9783,6 @@ function HistorialPrestacionServicioView({ liquidaciones, trabajadores }) {
                 <FSel value={periodoFiltro} onChange={setPeriodoFiltro} options={periodos.map((p) => ({ value: p, label: p }))} placeholder="Todos los períodos" />
               </Field>
             </div>
-            <BarraImprimirDesprendibles filas={filas} trabajadores={trabajadores} tipoNomina="Prestación de Servicios" periodoElegido={periodoFiltro} />
             <Btn variant="secondary" small onClick={exportarExcel} disabled={!filas.length}>⬇ Exportar a Excel</Btn>
           </div>
           <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
@@ -11188,10 +11156,14 @@ function HistorialQuincenasView({ liquidacionesF, liquidacionesFD, liquidaciones
   const [periodoFiltro, setPeriodoFiltro] = useState("");
   const [tipoFiltro, setTipoFiltro] = useState("");
   const [areaFiltro, setAreaFiltro] = useState("");
+  // (2026-10-31, a pedido de Fredy) Filtro por empresa (Yanko / Indutex) para imprimir desprendibles por empresa.
+  const empresas = [...new Set(filasBase.map((f) => f.empleador))].sort((a, b) => a.localeCompare(b, "es"));
+  const [empresaFiltro, setEmpresaFiltro] = useState("");
   const filas = filasBase
     .filter((f) => !periodoFiltro || f.periodoId === periodoFiltro)
     .filter((f) => !tipoFiltro || f.tipoNomina === tipoFiltro)
     .filter((f) => !areaFiltro || f.area === areaFiltro)
+    .filter((f) => !empresaFiltro || f.empleador === empresaFiltro)
     .sort((a, b) => (b.periodoId || "").localeCompare(a.periodoId || "") || (a.nombre || "").localeCompare(b.nombre || "", "es"));
   const totalNeto = filas.reduce((s, f) => s + f.netoAPagar, 0);
   // (2026-10-02, a pedido de Fredy) Combinados por persona -- cuando la
@@ -11223,6 +11195,16 @@ function HistorialQuincenasView({ liquidacionesF, liquidacionesFD, liquidaciones
   function descargarRecibo(f) {
     exportReciboLiquidacionHTML({ tipoNomina: f.tipoNomina, trabajador: f.trabajador, liquidacion: f.liquidacion });
   }
+  // Impresión masiva: los mismos recibos de liquidación de siempre, de todas las filas filtradas, en UNA hoja (un trabajador por página),
+  // ordenados por área y nombre. Exige un período elegido para no imprimir todo el historial de golpe.
+  function imprimirDesprendibles() {
+    const items = [...filas]
+      .sort((a, b) => (a.area || "").localeCompare(b.area || "", "es") || (a.nombre || "").localeCompare(b.nombre || "", "es"))
+      .map((f) => ({ tipoNomina: f.tipoNomina, trabajador: f.trabajador || { id: f.liquidacion.trabajadorId, nombre: f.nombre }, liquidacion: f.liquidacion }));
+    if (!abrirRecibosLiquidacionLote(items, `Desprendibles ${periodoFiltro}`)) {
+      window.alert("No hay desprendibles con estos filtros o el navegador bloqueó la ventana emergente. Permite las ventanas de ATLAS e intenta de nuevo.");
+    }
+  }
   async function exportarExcel() {
     const encabezado = ["Período", "Nombre", "Área", "Empleador", "Tipo Nómina", "Neto a Pagar", "Confirmada"];
     const filasHoja = filas.map((f) => [f.periodoId, f.nombre, f.area, f.empleador, f.tipoNomina, f.netoAPagar, f.confirmadaEn ? new Date(f.confirmadaEn).toLocaleString("es-CO") : ""]);
@@ -11244,7 +11226,12 @@ function HistorialQuincenasView({ liquidacionesF, liquidacionesFD, liquidaciones
         <Field label="Área">
           <FSel value={areaFiltro} onChange={setAreaFiltro} options={areas} placeholder="Todas las áreas" />
         </Field>
+        <Field label="Empresa">
+          <FSel value={empresaFiltro} onChange={setEmpresaFiltro} options={empresas} placeholder="Todas" />
+        </Field>
         <Btn variant="secondary" small onClick={exportarExcel} disabled={!filas.length}>⬇ Exportar a Excel</Btn>
+        <Btn small onClick={imprimirDesprendibles} disabled={!periodoFiltro || !filas.length}>🖨 Imprimir desprendibles ({filas.length})</Btn>
+        {!periodoFiltro && <div style={{ fontSize: 11.5, color: C.slate, maxWidth: 240, alignSelf: "center" }}>Elige un período para imprimir los desprendibles de todos de una vez.</div>}
       </div>
       {filasBase.length === 0 ? (
         <div style={{ padding: "12px 16px", background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 8, color: C.slate, fontSize: 13, maxWidth: 560 }}>
@@ -11340,7 +11327,6 @@ function HistorialDestajoView({ liquidaciones, trabajadores }) {
                 <FSel value={periodoFiltro} onChange={setPeriodoFiltro} options={periodos.map((p) => ({ value: p, label: p }))} placeholder="Todos los períodos" />
               </Field>
             </div>
-            <BarraImprimirDesprendibles filas={filas} trabajadores={trabajadores} tipoNomina="Destajo" periodoElegido={periodoFiltro} />
             <Btn variant="secondary" small onClick={exportarExcel} disabled={!filas.length}>⬇ Exportar a Excel</Btn>
           </div>
           <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
