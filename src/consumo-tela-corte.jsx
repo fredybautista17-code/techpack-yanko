@@ -102,7 +102,13 @@ export default function ConsumoTelaCortePanel({ pedidos, desde, hasta, functions
       </p>
       {error && <div style={{ fontSize: 12.5, color: C.red, background: C.redBg, border: `1px solid ${C.red}`, borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>⚠ No se pudo traer el rendimiento de Busint: {error}. Se muestran solo los trazos de ATLAS.</div>}
       {errorCostos && <div style={{ fontSize: 12.5, color: C.amber, background: C.amberBg, border: `1px solid ${C.amber}`, borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>⚠ No se pudo traer el costo de la tela de Busint ({errorCostos}); la columna «Pagué de más» queda sin valores.</div>}
-      {busint && faltantes.length > 0 && (
+      {busint && busint.total === 0 && (
+        <div style={{ fontSize: 12.5, color: C.amber, background: C.amberBg, border: `1px solid ${C.amber}`, borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>
+          ⚠ La tabla «{busint.tablaUsada}» de Busint no trajo ninguna fila{busint.errorTabla ? ` (${busint.errorTabla})` : ""}.
+          {busint.candidatas?.length ? ` Tablas parecidas que existen: ${busint.candidatas.join(", ")}.` : " No se encontró otra tabla con «rendimiento» en el nombre."} Abre «Ver columnas de Busint» y avísame.
+        </div>
+      )}
+      {busint && faltantes.length > 0 && busint.total > 0 && (
         <div style={{ fontSize: 12.5, color: C.amber, background: C.amberBg, border: `1px solid ${C.amber}`, borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>
           ⚠ No se reconocieron estas columnas de la tabla de Busint: <strong>{faltantes.join(", ")}</strong>. Abre «Ver columnas de Busint» y avísame cómo se llaman para ajustarlo.
         </div>
@@ -195,6 +201,7 @@ export default function ConsumoTelaCortePanel({ pedidos, desde, hasta, functions
           <span onClick={() => setVerColumnas((v) => !v)} style={{ fontSize: 12, color: C.slate, cursor: "pointer", textDecoration: "underline" }}>{verColumnas ? "Ocultar" : "Ver"} columnas de Busint ({busint.columnas?.length || 0})</span>
           {verColumnas && (
             <div style={{ marginTop: 6, fontSize: 11.5, color: C.slate, lineHeight: 1.6 }}>
+              <div>Tabla usada: {busint.tablaUsada || "—"}{busint.candidatas?.length ? ` · tablas parecidas: ${busint.candidatas.join(", ")}` : ""}</div>
               <div>Filas en la tabla: {busint.total}. Columnas: {(busint.columnas || []).join(" · ") || "—"}</div>
               <div>Usadas: {Object.entries(busint.detectadas || {}).map(([k, v]) => `${k} → ${v || "(no encontrada)"}`).join(" · ")}</div>
             </div>

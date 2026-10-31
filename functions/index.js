@@ -15383,12 +15383,40 @@ exports.getRendimientoCorteBusint = onCallAuth(
     const d0 = new Date(hoy + "T12:00:00Z");
     d0.setUTCDate(d0.getUTCDate() - dias);
     const desde = d0.toISOString().slice(0, 10);
-    let filas;
+    // Si la tabla con el nombre esperado no existe o viene vacía, se buscan en la lista de tablas de Busint
+    // (swagger) las que tengan "rendimiento" en el nombre y se usa la primera que traiga filas con fecha y referencia.
+    let tablaUsada = "bc-visor de rendimiento de corte";
+    let errorTabla = "";
+    let candidatas = [];
+    let filas = [];
     try {
-      filas = await consultarTablaBusintBDCompleta("bc-visor de rendimiento de corte");
+      filas = await consultarTablaBusintBDCompleta(tablaUsada);
     } catch (err) {
+      errorTabla = err?.message || String(err);
       logger.error("Error consultando Busint BD (getRendimientoCorteBusint)", { error: String(err) });
-      throw new HttpsError("unavailable", `No se pudo consultar el rendimiento de corte en Busint: ${err?.message || String(err)}`);
+    }
+    const sirve = (fs) => {
+      if (!fs || !fs.length) return false;
+      const d = detectarColumnasRendCorte(Object.keys(fs[0]));
+      return !!(d.fecha && d.referencia && (d.mlReal || d.consMlTeor));
+    };
+    if (!sirve(filas)) {
+      try {
+        const swaggerResp = await fetch("https://api-yanko-bd.busint.info/swagger/v1/swagger.json");
+        const swagger = await swaggerResp.json();
+        const enumList = swagger.paths["/api/Query"].post.parameters.find((p) => p.name === "tableName").schema.enum || [];
+        candidatas = enumList.filter((t) => /rendimiento/i.test(t) || /visor.*corte/i.test(t) || /corte.*visor/i.test(t)).slice(0, 12);
+      } catch (err) {
+        logger.warn("getRendimientoCorteBusint: no se pudo leer la lista de tablas", { error: String(err) });
+      }
+      for (const t of candidatas.filter((x) => x !== tablaUsada).slice(0, 6)) {
+        try {
+          const fs = await consultarTablaBusintBDCompleta(t);
+          if (sirve(fs)) { filas = fs; tablaUsada = t; errorTabla = ""; break; }
+        } catch (err) {
+          logger.warn(`getRendimientoCorteBusint: tabla candidata "${t}" falló`, { error: String(err) });
+        }
+      }
     }
     const llaves = filas.length ? Object.keys(filas[0]) : [];
     const det = detectarColumnasRendCorte(llaves);
@@ -15431,6 +15459,9 @@ exports.getRendimientoCorteBusint = onCallAuth(
       ok: true,
       desde,
       total: filas.length,
+      tablaUsada,
+      candidatas,
+      errorTabla,
       columnas: llaves,
       detectadas: det,
       filas: request.data?.soloTeorico ? [] : filasVentana,

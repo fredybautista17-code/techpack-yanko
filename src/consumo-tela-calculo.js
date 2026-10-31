@@ -58,7 +58,8 @@ export function cortesAtlasConTrazo(pedidos, desde, hasta) {
         detalleTrazo: (c.materiales && c.materiales.length
           ? c.materiales.map((m) => `${m.largoTrazo || "?"} m × ${m.capas || "?"} capas`).join(" + ")
           : c.largoTrazo ? `${c.largoTrazo} m × ${c.capas || "?"} capas` : ""),
-        refs: refs.map((r) => ({ ref: String(r.ref), total: Number(r.total) || 0 })),
+        // Una línea por referencia (el corte trae una por color): se suman las unidades de cada referencia.
+        refs: [...refs.reduce((m, r) => m.set(String(r.ref), (m.get(String(r.ref)) || 0) + (Number(r.total) || 0)), new Map())].map(([ref, total]) => ({ ref, total })),
         unidades,
         trazoM: metros > 0 ? metros : null,
       });
