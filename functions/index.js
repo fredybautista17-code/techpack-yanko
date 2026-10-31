@@ -12294,6 +12294,69 @@ function idAvisoPrecioFaltante(referencia, proceso) {
   return `${r}__${p}`.replace(/[^A-Z0-9_]/g, "_").slice(0, 400);
 }
 
+// (2026-10-31, a pedido de Fredy) Envío de desprendibles de nómina (con la tirilla de lotes trabajados y pagados) por correo a cada trabajador.
+// El HTML lo arma la pantalla Resumen (mismo desprendible); aquí SOLO se envía. Seguridad: exige el permiso "nomina" (o admin) y el correo NO viene
+// del navegador: se lee de nomina_trabajadores/{id}.correo, así nadie puede mandar un desprendible a una dirección distinta a la de la ficha.
+// modo "prueba": manda el primer desprendible SOLO al correo real de quien lo pide. modo "enviar": uno por trabajador (máx. 15 por llamada).
+// Cada envío queda en nomina_desprendibles_envios (quién, cuándo, a quién y si falló).
+exports.enviarDesprendiblesNomina = onCallAuth(
+  {
+    secrets: [EMAIL_USER, EMAIL_APP_PASSWORD],
+    timeoutSeconds: 300,
+    memory: "512MiB",
+  },
+  async (request) => {
+    const userDoc = await verificarLlamadorConModulos(request, ["nomina"], "la nómina");
+    const modo = request.data?.modo === "prueba" ? "prueba" : "enviar";
+    const periodoId = String(request.data?.periodoId || "").slice(0, 60);
+    const etiqueta = String(request.data?.etiqueta || "").slice(0, 160);
+    const tipoNomina = String(request.data?.tipoNomina || "").slice(0, 60);
+    const items = Array.isArray(request.data?.items) ? request.data.items : [];
+    if (!items.length) throw new HttpsError("invalid-argument", "No hay desprendibles para enviar.");
+    if (items.length > 15) throw new HttpsError("invalid-argument", "Máximo 15 desprendibles por llamada.");
+    const correoValido = (c) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(c);
+    const transporte = crearTransporte();
+    const remitente = `Industrias Yanko <${EMAIL_USER.value()}>`;
+    if (modo === "prueba") {
+      const miCorreo = String(userDoc.data().email || "").trim();
+      if (!correoValido(miCorreo)) throw new HttpsError("failed-precondition", "Tu usuario no tiene un correo real cargado (Administración → Usuarios → Email).");
+      const it = items[0] || {};
+      const html = String(it.html || "");
+      if (!html || html.length > 400000) throw new HttpsError("invalid-argument", "Desprendible vacío o demasiado grande.");
+      await transporte.sendMail({ from: remitente, to: miCorreo, subject: `[PRUEBA] ${String(it.asunto || "Desprendible de pago").slice(0, 200)}`, html });
+      return { modo, enviadoA: miCorreo };
+    }
+    const resultados = [];
+    for (const it of items) {
+      const trabajadorId = String(it?.trabajadorId || "").trim();
+      const html = String(it?.html || "");
+      const asunto = String(it?.asunto || "Desprendible de pago").slice(0, 200);
+      if (!trabajadorId || !html || html.length > 400000) {
+        resultados.push({ trabajadorId, ok: false, error: "Datos incompletos" });
+        continue;
+      }
+      try {
+        const snap = await db.collection("nomina_trabajadores").doc(trabajadorId).get();
+        if (!snap.exists) { resultados.push({ trabajadorId, ok: false, error: "Trabajador no encontrado" }); continue; }
+        const t = snap.data();
+        const correo = String(t.correo || "").trim();
+        if (!correoValido(correo)) { resultados.push({ trabajadorId, nombre: t.nombre || "", ok: false, error: "Sin correo válido en su ficha" }); continue; }
+        await transporte.sendMail({ from: remitente, to: correo, subject: asunto, html });
+        resultados.push({ trabajadorId, nombre: t.nombre || "", correo, ok: true });
+      } catch (err) {
+        resultados.push({ trabajadorId, ok: false, error: String(err?.message || err).slice(0, 200) });
+      }
+    }
+    await db.collection("nomina_desprendibles_envios").add({
+      creadoEn: new Date().toISOString(),
+      enviadoPor: userDoc.data().name || userDoc.id,
+      periodoId, etiqueta, tipoNomina,
+      resultados,
+    });
+    return { modo, resultados };
+  }
+);
+
 exports.avisarProcesoSinPrecioMaximo = onCallAuth(
   {
     secrets: [EMAIL_USER, EMAIL_APP_PASSWORD],

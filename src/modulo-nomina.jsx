@@ -13150,6 +13150,59 @@ function RegistrarBonificacionView({ trabajadores, bonificaciones, currentUser, 
 // Junta Producción + Horas Sueltas de la semana activa, agrupado por
 // trabajador, para armar el pago — clic en un trabajador abre el desglose
 // línea por línea (qué procesos/tareas componen su total).
+// (2026-10-31, a pedido de Fredy) Versión PARA CORREO del desprendible de pago (con la tirilla de lotes trabajados y pagados). Mismo contenido que
+// exportDesprendiblePagoHTML, pero con tablas y estilos en línea: Gmail y los celulares no respetan grid/flex ni gradientes ni <style>.
+const REGEX_CORREO_NOM = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+function armarCorreoDesprendibleHTML({
+  trabajador, desde, hasta, label, produccionItems, horasItems, totalProduccion, totalHoras, totalGeneral,
+  cobrosDetalle, descuentoCobros,
+  salarioMinimoGarantizado, sueldoFijoQuincena, auxilioFijoQuincena,
+  pagoPorDia, valorDia, diasPagados, pagoDiasQuincena,
+  ajusteValor, ajusteObservacion, incapInfo,
+}) {
+  const e = escHTMLDed;
+  const th = (t, r) => `<th style="background:#1A1A2E;color:#C8B8A2;padding:7px 8px;font-size:11px;text-align:${r ? "right" : "left"};font-weight:700">${t}</th>`;
+  const td = (t, o = {}) => `<td style="padding:7px 8px;border-bottom:1px solid #E8E2DB;font-size:12.5px;text-align:${o.r ? "right" : "left"};${o.b ? "font-weight:700;" : ""}${o.c ? `color:${o.c};` : ""}">${t}</td>`;
+  const tabla = (cab, filas) => `<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:0 0 6px"><thead><tr>${cab}</tr></thead><tbody>${filas}</tbody></table>`;
+  const titulo = (t) => `<div style="font-size:14px;font-weight:800;margin:20px 0 8px;padding-bottom:6px;border-bottom:2px solid #E8E2DB;color:#1A1A2E">${t}</div>`;
+  const vacio = (t) => `<div style="padding:12px;color:#5A5A7A;font-size:12.5px;text-align:center">${t}</div>`;
+  const filasProd = (produccionItems || []).map((p) => `<tr>${td(fechaCortaDed(p.fecha), { c: "#5A5A7A" })}${td(e(p.proceso), { b: true })}${td(e(p.numLote || "—"), { c: "#5A5A7A" })}${td(e(p.referencia || "—"), { c: "#5A5A7A" })}${td(fmtNum(p.cantidad), { r: true })}${td(fmtMoney(p.precioUnidad), { r: true })}${td(fmtMoney(p.total), { r: true, b: true })}</tr>`).join("");
+  const filasHoras = (horasItems || []).map((h) => `<tr>${td(fechaCortaDed(h.fecha), { c: "#5A5A7A" })}${td(e(h.concepto), { b: true })}${td(fmtNum(h.horas), { r: true })}${td(fmtMoney(h.tarifaHora), { r: true })}${td(fmtMoney(h.total), { r: true, b: true })}</tr>`).join("");
+  const filasDed = (cobrosDetalle || []).map((c) => `<tr>${td(c.fecha ? fechaCortaDed(c.fecha) : "—", { c: "#5A5A7A" })}${td(e(c.tipo || c.motivo || c.concepto || "Cobro"), { b: true })}${td(`-${fmtMoney(c.valor)}`, { r: true, c: "#E85D4A", b: true })}</tr>`).join("");
+  const tablaHoras = filasHoras
+    ? tabla(th("Fecha") + th("Concepto") + th("Horas", 1) + th("Tarifa/Hora", 1) + th("Total", 1), filasHoras)
+    : vacio("Sin horas sueltas registradas en esta quincena.");
+  const tarjeta = (et, val) => `<td style="padding:6px 10px;border:1px solid #E8E2DB;background:#F7F4F0;border-radius:8px"><div style="font-size:10px;font-weight:700;color:#5A5A7A;text-transform:uppercase">${et}</div><div style="font-size:14px;font-weight:700;color:#1A1A2E;margin-top:3px">${val}</div></td>`;
+  const seccion = salarioMinimoGarantizado
+    ? `${titulo("💰 Salario")}<table width="100%" cellpadding="0" cellspacing="6"><tr>${tarjeta("Sueldo (quincena)", fmtMoney(sueldoFijoQuincena))}${tarjeta("Auxilio de transporte", fmtMoney(auxilioFijoQuincena))}</tr></table>`
+    : pagoPorDia
+    ? `${titulo("📅 Pago por día")}<table width="100%" cellpadding="0" cellspacing="6"><tr>${tarjeta("Días trabajados", fmtNum(diasPagados))}${tarjeta("Valor día", fmtMoney(valorDia))}${tarjeta("Subtotal", fmtMoney(pagoDiasQuincena))}</tr></table>${titulo("🕐 Horas sueltas")}${tablaHoras}`
+    : `${titulo("🧵 Lotes trabajados y pagados")}${filasProd
+        ? tabla(th("Fecha") + th("Proceso") + th("Lote") + th("Ref.") + th("Cant.", 1) + th("Precio/Und", 1) + th("Total", 1), filasProd + `<tr><td colspan="6" style="padding:8px;font-weight:800;text-align:right;border-top:2px solid #1A1A2E">Total producción</td><td style="padding:8px;font-weight:800;text-align:right;border-top:2px solid #1A1A2E">${fmtMoney(totalProduccion)}</td></tr>`)
+        : vacio("Sin producción registrada en esta quincena.")}${titulo("🕐 Horas sueltas")}${tablaHoras}`;
+  const seccionDed = `${titulo("🔻 Deducciones")}${filasDed ? tabla(th("Fecha") + th("Motivo") + th("Valor", 1), filasDed) : vacio("Sin deducciones esta quincena.")}`;
+  const seccionAjuste = !salarioMinimoGarantizado && ajusteValor
+    ? `${titulo("🛠 Ajuste de nómina")}<div style="font-size:13px"><b>${e(ajusteObservacion || "Ajuste")}</b>: ${ajusteValor > 0 ? "+" : ""}${fmtMoney(ajusteValor)}</div>`
+    : "";
+  const seccionIncap = incapInfo && incapInfo.dias > 0
+    ? `${titulo(`🩺 Incapacidad (${incapInfo.dias} día${incapInfo.dias !== 1 ? "s" : ""})`)}<div style="font-size:13px">Devengado por incapacidad: <b>${fmtMoney(incapInfo.devengado)}</b></div><div style="font-size:11px;color:#5A5A7A;margin-top:3px">Empresa ${fmtMoney(incapInfo.empresa)} · EPS ${fmtMoney(incapInfo.eps)} · ARL ${fmtMoney(incapInfo.arl)} · Garantía del mínimo ${fmtMoney(incapInfo.garantia)}</div>`
+    : "";
+  const tot = [];
+  if (salarioMinimoGarantizado) tot.push(["Sueldo + auxilio", fmtMoney((sueldoFijoQuincena || 0) + (auxilioFijoQuincena || 0)), "#EBF1F7", "#3D6B9E"]);
+  else if (pagoPorDia) { tot.push(["Pago por día", fmtMoney(pagoDiasQuincena), "#EBF1F7", "#3D6B9E"]); tot.push(["Total horas", fmtMoney(totalHoras), "#F3EEF9", "#7B5EA7"]); }
+  else { tot.push(["Total producción", fmtMoney(totalProduccion), "#EBF1F7", "#3D6B9E"]); tot.push(["Total horas", fmtMoney(totalHoras), "#F3EEF9", "#7B5EA7"]); }
+  if (descuentoCobros > 0) tot.push(["Deducciones", `-${fmtMoney(descuentoCobros)}`, "#FDF0EE", "#E85D4A"]);
+  if (!salarioMinimoGarantizado && ajusteValor) tot.push(["Ajuste", `${ajusteValor > 0 ? "+" : ""}${fmtMoney(ajusteValor)}`, "#FDF5E6", "#C47C1A"]);
+  tot.push(["Total a pagar", fmtMoney(totalGeneral), "#EBF7F2", "#2D9E6B"]);
+  const totalesHTML = `<table width="100%" cellpadding="0" cellspacing="6" style="margin-top:18px"><tr>${tot.map(([et, v, bg, col]) => `<td style="background:${bg};color:${col};border-radius:8px;padding:12px;text-align:center"><div style="font-size:10px;font-weight:700;text-transform:uppercase">${et}</div><div style="font-size:18px;font-weight:900;margin-top:4px">${v}</div></td>`).join("")}</tr></table>`;
+  return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"/></head><body style="margin:0;padding:16px;background:#F7F4F0;font-family:'Segoe UI',Arial,sans-serif;color:#1A1A2E">
+<table width="100%" cellpadding="0" cellspacing="0" style="max-width:720px;margin:0 auto;background:#fff;border-collapse:collapse"><tr><td style="background:#1A1A2E;padding:20px 24px"><div style="color:#fff;font-size:19px;font-weight:800">👷 Desprendible de pago</div><div style="color:#C8B8A2;font-size:12px;margin-top:4px">Industrias Yanko · ${e(label)}</div></td></tr>
+<tr><td style="padding:20px 24px">
+<table width="100%" cellpadding="0" cellspacing="6"><tr>${tarjeta("Trabajador", e(trabajador?.nombre || "—"))}${tarjeta("Cédula", e(trabajador?.cedula || "—"))}${tarjeta("Área", e(trabajador?.area || "—"))}</tr></table>
+${seccion}${seccionDed}${seccionAjuste}${seccionIncap}${totalesHTML}
+<div style="margin-top:22px;font-size:11px;color:#5A5A7A">Período: ${fechaCortaDed(desde)} — ${fechaCortaDed(hasta)}. Si algo no coincide con tu pago, comunícate con Nómina.</div>
+</td></tr></table></body></html>`;
+}
 // Desprendible de pago individual — mismo patrón que exportHojaDeVidaHTML en
 // App.js: arma un HTML con estilo (encabezado degradado, tarjetas de datos,
 // tablas) y lo descarga como .html; adentro trae un botón "Imprimir / PDF"
@@ -13373,6 +13426,13 @@ function exportDesprendiblePagoHTML({
 function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNomina, puedeCerrarQuincena, cierres, onCerrar, onReabrir, lotesConCobros, ajustesDestajo, causacionManual, diasTrabajados, faltas, ausencias, turnos, deduccionesTrabajador, horasExtras, bonificaciones }) {
   const [qOffset, setQOffset] = useState(0);
   const [trabajadorAbierto, setTrabajadorAbierto] = useState(null);
+  const [correoAbierto, setCorreoAbierto] = useState(false);
+  const [marcadosCorreo, setMarcadosCorreo] = useState({});
+  const [enviandoCorreo, setEnviandoCorreo] = useState(false);
+  const [progresoCorreo, setProgresoCorreo] = useState("");
+  const [resultadosCorreo, setResultadosCorreo] = useState(null);
+  const [errorCorreo, setErrorCorreo] = useState("");
+  const [pruebaCorreo, setPruebaCorreo] = useState("");
   // (2026-09-12, a pedido de Fredy) Cierre de Quincena ahora es POR TIPO de
   // nómina (Fiscal / Fiscal Destajo / Destajo) -- antes juntaba a todos sin
   // distinguir, y no quedaba claro cuál se estaba viendo o cerrando. Cada
@@ -13638,9 +13698,9 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
   // activa — se usa tanto desde el botón dentro del detalle como desde el
   // ícono de la fila en la tabla general, sin tener que abrir el detalle
   // primero.
-  function descargarDesprendible(g) {
+  function argsDesprendible(g) {
     const trabajador = trabajadores.find((t) => t.id === g.trabajadorId) || { nombre: g.nombre };
-    exportDesprendiblePagoHTML({
+    return {
       trabajador,
       desde,
       hasta,
@@ -13662,10 +13722,96 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
       ajusteObservacion: g.ajusteObservacion,
       incapInfo: g.incapInfo,
       totalGeneral: g.totalGeneral,
-    });
+    };
+  }
+  function descargarDesprendible(g) {
+    exportDesprendiblePagoHTML(argsDesprendible(g));
+  }
+  // (2026-10-31, a pedido de Fredy) Envío por correo de los desprendibles (con la tirilla de lotes) de lo que se ve en pantalla.
+  const filasCorreo = correoAbierto
+    ? porTrabajador.map((g) => {
+        const correo = String(g.trabajador?.correo || "").trim();
+        return { g, key: g.trabajadorId || g.nombre, nombre: g.nombre, area: g.trabajador?.area || "Sin asignar", correo, valido: REGEX_CORREO_NOM.test(correo), sinPago: !(g.totalGeneral > 0) };
+      })
+    : [];
+  const aEnviarCorreo = filasCorreo.filter((f) => marcadosCorreo[f.key] && f.valido);
+  const itemCorreo = (g) => ({ trabajadorId: g.trabajadorId, asunto: `Desprendible de pago — ${label}`, html: armarCorreoDesprendibleHTML(argsDesprendible(g)) });
+  function abrirCorreo() {
+    const m = {};
+    porTrabajador.forEach((g) => { m[g.trabajadorId || g.nombre] = REGEX_CORREO_NOM.test(String(g.trabajador?.correo || "").trim()) && g.totalGeneral > 0; });
+    setMarcadosCorreo(m); setResultadosCorreo(null); setErrorCorreo(""); setPruebaCorreo(""); setProgresoCorreo("");
+    setCorreoAbierto(true);
+  }
+  async function enviarPruebaCorreo() {
+    const f = aEnviarCorreo[0] || filasCorreo.find((x) => x.valido);
+    if (!f) { setErrorCorreo("No hay ningún desprendible con correo válido para probar."); return; }
+    setEnviandoCorreo(true); setErrorCorreo(""); setPruebaCorreo("");
+    try {
+      const llamar = httpsCallable(functionsClient, "enviarDesprendiblesNomina", { timeout: 300000 });
+      const r = await llamar({ modo: "prueba", periodoId: periodoIdActual, etiqueta: label, tipoNomina: tipoSel, items: [itemCorreo(f.g)] });
+      setPruebaCorreo(`Prueba enviada a ${r.data?.enviadoA} (desprendible de ${f.nombre}).`);
+    } catch (err) { setErrorCorreo(err?.message || String(err)); }
+    setEnviandoCorreo(false);
+  }
+  async function enviarCorreos() {
+    if (!aEnviarCorreo.length) return;
+    if (!window.confirm(`¿Enviar ${aEnviarCorreo.length} desprendible${aEnviarCorreo.length !== 1 ? "s" : ""} por correo? Cada trabajador recibe solo el suyo, en el correo de su ficha.`)) return;
+    setEnviandoCorreo(true); setErrorCorreo(""); setResultadosCorreo(null);
+    const llamar = httpsCallable(functionsClient, "enviarDesprendiblesNomina", { timeout: 300000 });
+    const todos = [];
+    try {
+      for (let i = 0; i < aEnviarCorreo.length; i += 10) {
+        const lote = aEnviarCorreo.slice(i, i + 10);
+        setProgresoCorreo(`Enviando ${Math.min(i + lote.length, aEnviarCorreo.length)} de ${aEnviarCorreo.length}…`);
+        const r = await llamar({ modo: "enviar", periodoId: periodoIdActual, etiqueta: label, tipoNomina: tipoSel, items: lote.map((f) => itemCorreo(f.g)) });
+        todos.push(...(r.data?.resultados || []));
+      }
+    } catch (err) { setErrorCorreo(`${err?.message || String(err)}${todos.length ? ` — ya se habían enviado ${todos.filter((x) => x.ok).length}.` : ""}`); }
+    setResultadosCorreo(todos);
+    setProgresoCorreo("");
+    setEnviandoCorreo(false);
   }
   return (
     <div>
+      {correoAbierto && (
+        <Modal title={`Enviar desprendibles por correo — ${label}`} onClose={() => { if (!enviandoCorreo) setCorreoAbierto(false); }} width={860}>
+          <div style={{ fontSize: 12.5, color: C.slate, marginBottom: 10, lineHeight: 1.5 }}>
+            Cada trabajador recibe <b>solo su desprendible</b> (con la tirilla de lotes trabajados y pagados), en el correo de su ficha. Quien no tiene correo no se envía.
+          </div>
+          {!cierre && <div style={{ fontSize: 12, color: C.amber, background: C.amberBg, border: `1px solid ${C.amber}`, borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>⚠ Esta quincena aún no está cerrada: los valores pueden cambiar. Conviene cerrarla antes de enviar.</div>}
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10, fontSize: 12.5 }}>
+            <span style={{ background: C.greenBg, color: C.green, fontWeight: 800, borderRadius: 20, padding: "3px 12px" }}>A enviar: {aEnviarCorreo.length}</span>
+            <span style={{ background: C.redBg, color: C.red, fontWeight: 800, borderRadius: 20, padding: "3px 12px" }}>Sin correo: {filasCorreo.filter((f) => !f.valido).length}</span>
+            <span style={{ background: C.canvas, color: C.slate, fontWeight: 800, borderRadius: 20, padding: "3px 12px" }}>Sin pago: {filasCorreo.filter((f) => f.sinPago).length}</span>
+          </div>
+          <div style={{ maxHeight: 340, overflowY: "auto", marginBottom: 12 }}>
+            <Tabla
+              vacio="No hay trabajadores en esta vista."
+              columnas={[
+                { key: "sel", label: "", render: (f) => <input type="checkbox" disabled={!f.valido || enviandoCorreo} checked={!!marcadosCorreo[f.key] && f.valido} onChange={(ev) => setMarcadosCorreo((m) => ({ ...m, [f.key]: ev.target.checked }))} /> },
+                { key: "nombre", label: "Trabajador" },
+                { key: "area", label: "Área", render: (f) => <span style={{ color: C.slate }}>{f.area}</span> },
+                { key: "correo", label: "Correo", render: (f) => f.valido ? f.correo : <span style={{ color: C.red, fontWeight: 700 }}>{f.correo ? "Correo no válido" : "SIN CORREO"}</span> },
+                { key: "total", label: "Total a pagar", align: "right", render: (f) => <strong>{fmtMoney(f.g.totalGeneral)}</strong> },
+                { key: "res", label: "Envío", render: (f) => {
+                  const r = (resultadosCorreo || []).find((x) => x.trabajadorId === f.g.trabajadorId);
+                  return r ? (r.ok ? <span style={{ color: C.green, fontWeight: 700 }}>✓ Enviado</span> : <span style={{ color: C.red, fontWeight: 700 }} title={r.error}>✗ {r.error}</span>) : "";
+                } },
+              ]}
+              filas={filasCorreo}
+            />
+          </div>
+          {pruebaCorreo && <div style={{ fontSize: 12.5, color: C.green, fontWeight: 700, marginBottom: 8 }}>✓ {pruebaCorreo}</div>}
+          {errorCorreo && <div style={{ fontSize: 12.5, color: C.red, fontWeight: 700, marginBottom: 8 }}>⚠ {errorCorreo}</div>}
+          {resultadosCorreo && <div style={{ fontSize: 12.5, color: C.ink, marginBottom: 8 }}>Resultado: <b style={{ color: C.green }}>{resultadosCorreo.filter((x) => x.ok).length} enviados</b>{resultadosCorreo.some((x) => !x.ok) ? <> · <b style={{ color: C.red }}>{resultadosCorreo.filter((x) => !x.ok).length} con error</b></> : null}.</div>}
+          {progresoCorreo && <div style={{ fontSize: 12.5, color: C.slate, marginBottom: 8 }}>{progresoCorreo}</div>}
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", flexWrap: "wrap" }}>
+            <Btn variant="secondary" small onClick={enviarPruebaCorreo} disabled={enviandoCorreo || !filasCorreo.some((f) => f.valido)}>✉ Mandarme una prueba a mí</Btn>
+            <Btn variant="secondary" small onClick={() => setCorreoAbierto(false)} disabled={enviandoCorreo}>Cerrar</Btn>
+            <Btn small onClick={enviarCorreos} disabled={enviandoCorreo || !aEnviarCorreo.length}>{enviandoCorreo ? "Enviando…" : `✉ Enviar a ${aEnviarCorreo.length} trabajador${aEnviarCorreo.length !== 1 ? "es" : ""}`}</Btn>
+          </div>
+        </Modal>
+      )}
       {trabajadorAbierto && (
         <Modal title={`Detalle de "${trabajadorAbierto.nombre}" — ${fmtFechaISO(desde)} al ${fmtFechaISO(hasta)}`} onClose={() => setTrabajadorAbierto(null)} width={720}>
           <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>
@@ -13770,6 +13916,9 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
       )}
       <div style={{ marginBottom: 14, display: "flex", gap: 10 }}>
         <Btn variant="secondary" small onClick={exportarExcel} disabled={!porTrabajador.length}>⬇ Exportar a Excel</Btn>
+        {modo === "tipo" && (tipoSel === "Destajo" || tipoSel === "Fiscal Destajo") && (
+          <Btn variant="secondary" small onClick={abrirCorreo} disabled={!porTrabajador.length}>✉ Enviar desprendibles por correo</Btn>
+        )}
         {modo === "tipo" && puedeCerrarQuincena && !cierre && (
           <Btn
             small
