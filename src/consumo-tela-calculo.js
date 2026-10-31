@@ -160,6 +160,17 @@ export function armarFilasConsumoTela({ cortes, filasBusint, desde, hasta, tol =
   return filas.sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)));
 }
 
+// Costo de la tela por lote (Busint): costoPorMetro = valor de la tela del lote / sus metros.
+// «Pagué de más» = (metros reales − metros teóricos) × costo por metro (negativo = ahorro).
+export function aplicarCostoTelaConsumo(filas, costosPorLote) {
+  return filas.map((f) => {
+    const c = f.lote ? (costosPorLote || {})[String(f.lote)] : null;
+    const costoMetro = c && c.costoPorMetro > 0 ? c.costoPorMetro : null;
+    const difM = f.realM !== null && f.realM !== undefined && f.teorM !== null && f.teorM !== undefined ? f.realM - f.teorM : null;
+    return { ...f, costoMetro, difM, pagadoDeMas: costoMetro !== null && difM !== null ? Math.round(difM * costoMetro) : null };
+  });
+}
+
 export function resumenConsumoTela(filas) {
   const cuenta = { cruza: 0, revisar: 0, nocruza: 0, esperando: 0, sin_teorico: 0 };
   filas.forEach((f) => { cuenta[f.estado] = (cuenta[f.estado] || 0) + 1; });
@@ -167,7 +178,9 @@ export function resumenConsumoTela(filas) {
   const teor = conReal.reduce((s, f) => s + f.teorM, 0);
   const real = conReal.reduce((s, f) => s + f.realM, 0);
   const trazo = conReal.reduce((s, f) => s + (f.trazoM || 0), 0);
-  return { cuenta, teor: redondear(teor), real: redondear(real), trazo: redondear(trazo), pctReal: pctSobre(real, teor), n: conReal.length };
+  const conPesos = conReal.filter((f) => f.pagadoDeMas !== null && f.pagadoDeMas !== undefined);
+  const pesos = conPesos.reduce((s, f) => s + f.pagadoDeMas, 0);
+  return { cuenta, teor: redondear(teor), real: redondear(real), trazo: redondear(trazo), pctReal: pctSobre(real, teor), n: conReal.length, pesos, nPesos: conPesos.length, sinPrecio: conReal.length - conPesos.length };
 }
 
 // Aviso al crear el lote en ATLAS (Busint aún no tiene el real): trazo del corte contra el

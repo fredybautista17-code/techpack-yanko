@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
 import { httpsCallable } from "firebase/functions";
-import { TOLERANCIA_CONSUMO, cortesAtlasConTrazo, armarFilasConsumoTela, resumenConsumoTela, clasificarDif } from "./consumo-tela-calculo";
+import { TOLERANCIA_CONSUMO, cortesAtlasConTrazo, armarFilasConsumoTela, aplicarCostoTelaConsumo, resumenConsumoTela, clasificarDif } from "./consumo-tela-calculo";
 
 // Consumo de tela de CORTE — teórico contra real (2026-10-31, a pedido de Fredy).
 // Se muestra dentro de "Centro de Costo — Planeación · CORTE". Une los cortes de ATLAS
@@ -19,6 +19,7 @@ const ESTADOS = {
 const COLUMNAS_CLAVE = ["fecha", "referencia", "cantidad", "consMlTeor", "mlReal"];
 const fmtM = (n) => (n === null || n === undefined ? "—" : Number(n).toLocaleString("es-CO", { minimumFractionDigits: 1, maximumFractionDigits: 1 }));
 const fmtP = (n) => (n === null || n === undefined ? "—" : Number(n).toLocaleString("es-CO", { minimumFractionDigits: 3, maximumFractionDigits: 3 }));
+const fmtPesos = (n) => (n < 0 ? "−$ " : "$ ") + Math.abs(Math.round(n)).toLocaleString("es-CO");
 const fmtFecha = (iso) => (iso ? iso.split("-").reverse().join("/") : "");
 
 function Pct({ v, tol }) {
@@ -36,6 +37,8 @@ export default function ConsumoTelaCortePanel({ pedidos, desde, hasta, functions
   const [tol, setTol] = useState(TOLERANCIA_CONSUMO);
   const [filtro, setFiltro] = useState("todos");
   const [verColumnas, setVerColumnas] = useState(false);
+  const [costosTela, setCostosTela] = useState({});
+  const [errorCostos, setErrorCostos] = useState("");
 
   useEffect(() => {
     let vivo = true;
@@ -50,10 +53,23 @@ export default function ConsumoTelaCortePanel({ pedidos, desde, hasta, functions
   }, [functionsClient, recarga]);
 
   const cortes = useMemo(() => cortesAtlasConTrazo(pedidos, desde, hasta), [pedidos, desde, hasta]);
-  const filas = useMemo(
+  const filasBase = useMemo(
     () => armarFilasConsumoTela({ cortes, filasBusint: busint?.filas || [], desde, hasta, tol }),
     [cortes, busint, desde, hasta, tol]
   );
+  // Costo de la tela de cada lote (Busint) para convertir los metros de más en pesos.
+  const lotesKey = useMemo(() => [...new Set(filasBase.filter((f) => f.lote && f.realM > 0).map((f) => String(f.lote)))].sort().join(","), [filasBase]);
+  useEffect(() => {
+    if (!lotesKey) return undefined;
+    let vivo = true;
+    setErrorCostos("");
+    const llamar = httpsCallable(functionsClient, "getCostoTelaLotesBusint", { timeout: 300000 });
+    llamar({ numLotes: lotesKey.split(",").slice(0, 400) })
+      .then((r) => { if (vivo) setCostosTela((prev) => ({ ...prev, ...(r.data?.lotes || {}) })); })
+      .catch((err) => { if (vivo) setErrorCostos(err?.message || String(err)); });
+    return () => { vivo = false; };
+  }, [lotesKey, functionsClient, recarga]);
+  const filas = useMemo(() => aplicarCostoTelaConsumo(filasBase, costosTela), [filasBase, costosTela]);
   const resumen = useMemo(() => resumenConsumoTela(filas), [filas]);
   const visibles = filtro === "todos" ? filas : filas.filter((f) => f.estado === filtro);
   const faltantes = busint ? COLUMNAS_CLAVE.filter((k) => !busint.detectadas?.[k]) : [];
@@ -85,6 +101,7 @@ export default function ConsumoTelaCortePanel({ pedidos, desde, hasta, functions
         Cada corte se cruza con tres números: los <strong>trazos</strong> que se tendieron en ATLAS (largo × capas), el consumo <strong>teórico</strong> de Busint (promedio por prenda × unidades) y el consumo <strong>real</strong> que Busint registra del corte. Medidas en metros lineales (ml).
       </p>
       {error && <div style={{ fontSize: 12.5, color: C.red, background: C.redBg, border: `1px solid ${C.red}`, borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>⚠ No se pudo traer el rendimiento de Busint: {error}. Se muestran solo los trazos de ATLAS.</div>}
+      {errorCostos && <div style={{ fontSize: 12.5, color: C.amber, background: C.amberBg, border: `1px solid ${C.amber}`, borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>⚠ No se pudo traer el costo de la tela de Busint ({errorCostos}); la columna «Pagué de más» queda sin valores.</div>}
       {busint && faltantes.length > 0 && (
         <div style={{ fontSize: 12.5, color: C.amber, background: C.amberBg, border: `1px solid ${C.amber}`, borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>
           ⚠ No se reconocieron estas columnas de la tabla de Busint: <strong>{faltantes.join(", ")}</strong>. Abre «Ver columnas de Busint» y avísame cómo se llaman para ajustarlo.
@@ -111,7 +128,7 @@ export default function ConsumoTelaCortePanel({ pedidos, desde, hasta, functions
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
             <thead>
               <tr style={{ borderBottom: `2px solid ${C.border}` }}>
-                {th("Corte / Lote")}{th("Referencia · Tela")}{th("Unid.", true)}{th("Trazos (m)", true)}{th("Teórico Busint (m)", true)}{th("Trazo vs teórico", true)}{th("Real Busint (m)", true)}{th("Real vs teórico", true)}{th("Estado")}
+                {th("Corte / Lote")}{th("Referencia · Tela")}{th("Unid.", true)}{th("Trazos (m)", true)}{th("Teórico Busint (m)", true)}{th("Trazo vs teórico", true)}{th("Real Busint (m)", true)}{th("Real vs teórico", true)}{th("Pagué de más ($)", true)}{th("Estado")}
               </tr>
             </thead>
             <tbody>
@@ -142,6 +159,14 @@ export default function ConsumoTelaCortePanel({ pedidos, desde, hasta, functions
                       {f.realPorPrenda !== null && <div style={{ fontSize: 11, color: C.slate }}>{fmtP(f.realPorPrenda)} m/prenda</div>}
                     </td>
                     <td style={{ padding: "9px 10px", textAlign: "right" }}><Pct v={f.realVsTeor} tol={tol} /></td>
+                    <td style={{ padding: "9px 10px", textAlign: "right", whiteSpace: "nowrap" }}>
+                      {f.pagadoDeMas !== null && f.pagadoDeMas !== undefined ? (
+                        <>
+                          <strong style={{ color: f.pagadoDeMas > 0 ? C.red : f.pagadoDeMas < 0 ? C.green : C.slate }}>{fmtPesos(f.pagadoDeMas)}</strong>
+                          <div style={{ fontSize: 11, color: C.slate }}>{f.difM > 0 ? "+" : ""}{fmtM(f.difM)} m × {fmtPesos(f.costoMetro)}/m</div>
+                        </>
+                      ) : f.realM > 0 && f.teorM > 0 ? <span style={{ fontSize: 11, color: C.slate }}>sin precio</span> : <span style={{ color: C.slate }}>—</span>}
+                    </td>
                     <td style={{ padding: "9px 10px", whiteSpace: "nowrap" }}>
                       <span style={{ background: e.bg, color: e.color, fontWeight: 800, fontSize: 11.5, borderRadius: 20, padding: "3px 10px" }}>● {e.label}</span>
                     </td>
@@ -157,6 +182,13 @@ export default function ConsumoTelaCortePanel({ pedidos, desde, hasta, functions
           Cortes con real ({resumen.n}): teórico <strong>{fmtM(resumen.teor)} m</strong> · real <strong>{fmtM(resumen.real)} m</strong>
           {resumen.pctReal !== null && <> → el real gastó <Pct v={resumen.pctReal} tol={tol} /> sobre el teórico</>}.
         </p>
+      )}
+      {resumen.nPesos > 0 && (
+        <div style={{ marginTop: 10, padding: "10px 14px", borderRadius: 10, background: resumen.pesos > 0 ? C.redBg : C.greenBg, border: `1px solid ${resumen.pesos > 0 ? C.red : C.green}55`, fontSize: 13.5, color: C.ink }}>
+          {resumen.pesos > 0 ? "Pagaste de más en tela: " : resumen.pesos < 0 ? "Ahorraste en tela: " : "Sin diferencia en pesos: "}
+          <strong style={{ color: resumen.pesos > 0 ? C.red : C.green, fontSize: 16 }}>{fmtPesos(resumen.pesos)}</strong>
+          <span style={{ color: C.slate, fontSize: 12 }}> · {resumen.nPesos} corte{resumen.nPesos !== 1 ? "s" : ""} con precio de tela{resumen.sinPrecio > 0 ? ` · ${resumen.sinPrecio} sin precio` : ""}. Metros de más × costo por metro de la tela de cada lote en Busint.</span>
+        </div>
       )}
       {busint && (
         <div style={{ marginTop: 8 }}>

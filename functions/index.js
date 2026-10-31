@@ -15439,3 +15439,51 @@ exports.getRendimientoCorteBusint = onCallAuth(
     };
   }
 );
+
+// ─── Costo de la tela por lote (Busint) — para "cuánto pagué de más" en el consumo de tela de Corte ─────────
+// (2026-10-31, a pedido de Fredy) Lee "orden produccion detalles telas" y, por cada lote pedido, suma los metros
+// (Largo x Ncapas + Ajuste) y su valor (metros x Costotela); costoPorMetro = valor / metros. Es la misma fuente de
+// tela que usa getCostosRealesLoteBusint (Cotizador → Ajustar costos reales).
+exports.getCostoTelaLotesBusint = onCallAuth(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 300,
+    memory: "512MiB",
+  },
+  async (request) => {
+    if (!request.auth) throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+    const usuarioSnap = await db.collection("users").where("authUid", "==", request.auth.uid).limit(1).get();
+    if (usuarioSnap.empty) throw new HttpsError("permission-denied", "No tienes permiso para hacer esto.");
+    if (usuarioSnap.docs[0].data().role === "Cliente") throw new HttpsError("permission-denied", "No tienes permiso para ver el costo de la tela.");
+    const pedidos = Array.isArray(request.data?.numLotes) ? request.data.numLotes : [];
+    const buscados = new Set(pedidos.map((x) => String(x ?? "").trim()).filter(Boolean).slice(0, 400));
+    if (!buscados.size) return { ok: true, lotes: {} };
+    let filas;
+    try {
+      filas = await consultarTablaBusintBDCompleta("orden produccion detalles telas");
+    } catch (err) {
+      logger.error("Error consultando Busint BD (getCostoTelaLotesBusint)", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar el costo de la tela en Busint: ${err?.message || String(err)}`);
+    }
+    const lotes = {};
+    filas.forEach((f) => {
+      const lote = String(valorFlexible(f, ["NumLote", "Numlote", "numlote"]) ?? "").trim();
+      if (!buscados.has(lote)) return;
+      const metros = (numRendCorte(valorFlexible(f, ["Largo", "largo"])) || 0) * (numRendCorte(valorFlexible(f, ["Ncapas", "ncapas"])) || 0) + (numRendCorte(valorFlexible(f, ["Ajuste", "ajuste"])) || 0);
+      const costoMetro = numRendCorte(valorFlexible(f, ["Costotela", "costotela"])) || 0;
+      if (!(metros !== 0)) return;
+      const cod = String(valorFlexible(f, ["Codcomp", "codcomp"]) ?? "").trim();
+      if (!lotes[lote]) lotes[lote] = { metros: 0, valor: 0, telas: [] };
+      lotes[lote].metros += metros;
+      lotes[lote].valor += metros * costoMetro;
+      lotes[lote].telas.push({ cod, metros: Math.round(metros * 100) / 100, costoMetro });
+    });
+    Object.keys(lotes).forEach((k) => {
+      const l = lotes[k];
+      l.metros = Math.round(l.metros * 100) / 100;
+      l.valor = Math.round(l.valor);
+      l.costoPorMetro = l.metros > 0 ? Math.round((l.valor / l.metros) * 100) / 100 : null;
+    });
+    return { ok: true, lotes };
+  }
+);
