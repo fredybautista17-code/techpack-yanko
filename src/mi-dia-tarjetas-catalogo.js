@@ -16,6 +16,10 @@ export const GRUPOS_MI_DIA = [
     ],
   },
   {
+    id: "consumo_tela", titulo: "Costos de Corte", requiere: "areaCorte",
+    tarjetas: [{ id: "consumo_tela", label: "Consumo de tela: teórico contra real (trazos de ATLAS y rendimiento de Busint)" }],
+  },
+  {
     id: "planeacion", titulo: "Planeación",
     tarjetas: [
       { id: "recibir_hoy", label: "Lotes por recibir hoy" },
@@ -48,6 +52,10 @@ export const IDS_PLANEACION = ids("planeacion");
 export const TARJETAS_MI_DIA = GRUPOS_MI_DIA.flatMap((g) => g.tarjetas.map((t) => ({ ...t, grupo: g.titulo })));
 export const TARJETAS_DEFECTO_MIDIA = ["meta_hoy", "saldo_acumulado", "cubren_salario", "meta_dia"];
 
+// (2026-10-31) true si su «Área Interna» es CORTE (la tarjeta de consumo de tela solo aplica a Corte).
+export function esAreaCorte(areaNomina) {
+  return !!areaNomina && claveArea(areaNomina) === "CORTE";
+}
 const AREAS_CON_CIERRE = ["CORTE", "ZONACALOR", "CONTROLCALIDAD"];
 // Clave del área con cierre diario a partir de su «Área Interna» (null si su área no tiene cierre diario todavía).
 export function claveCierreDeArea(areaNomina) {

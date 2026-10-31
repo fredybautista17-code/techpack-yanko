@@ -4,6 +4,9 @@
 // cubren su salario, meta día a día y cada trabajador. Usa los mismos cálculos del Tablero de costos
 // (cierre-diario.jsx). Sin gráficas: tarjetas y tablas, en el estilo del Mi Día de Planeación. Solo lectura.
 import React, { useState, useEffect, useMemo, useRef } from "react";
+import { collection, onSnapshot } from "firebase/firestore";
+import { getFunctions } from "firebase/functions";
+import ConsumoTelaCortePanel from "./consumo-tela-corte";
 import { useCierreDiario, TablaTrabajadores, ChipsMetaDias } from "./cierre-diario";
 import { diaDeArea, diasDelMesHasta, esHabilISO, sumarDiasISO } from "./cierre-diario-calculo";
 import { claveCierreDeArea, IDS_CIERRE, IDS_PLANEACION } from "./mi-dia-tarjetas-catalogo";
@@ -53,6 +56,34 @@ function Seccion({ titulo, children }) {
         {titulo} <span style={{ fontSize: 12, fontWeight: 700, color: C.blue, marginLeft: 6 }}>{abierta ? "▼ ocultar" : "▶ ver"}</span>
       </div>
       {abierta ? <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: "4px 0 14px" }}>{children}</div> : null}
+    </div>
+  );
+}
+
+// (2026-10-31, a pedido de Fredy) Consumo de tela de Corte: teórico contra real, con los trazos de ATLAS y el
+// rendimiento de Busint (mismo panel del Centro de Costo de CORTE en Áreas).
+function BloqueConsumoTela({ db }) {
+  const hoyISO = useMemo(() => new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 10), []);
+  const [alcance, setAlcance] = useState("mes");
+  const [pedidos, setPedidos] = useState([]);
+  const functionsClient = useMemo(() => getFunctions(db.app), [db]);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "pedidos_activos"), (snap) => setPedidos(snap.docs.map((d) => ({ ...d.data(), id: d.id }))));
+    return () => unsub();
+  }, [db]);
+  const mesKey = hoyISO.slice(0, 7);
+  const desde = alcance === "dia" ? hoyISO : alcance === "mes" ? `${mesKey}-01` : `${hoyISO.slice(0, 4)}-01-01`;
+  const hasta = alcance === "dia" ? hoyISO : alcance === "mes" ? `${mesKey}-31` : `${hoyISO.slice(0, 4)}-12-31`;
+  return (
+    <div style={{ padding: "0 4px" }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <Chip activo={alcance === "dia"} onClick={() => setAlcance("dia")}>Hoy</Chip>
+        <Chip activo={alcance === "mes"} onClick={() => setAlcance("mes")}>Este mes</Chip>
+        <Chip activo={alcance === "anio"} onClick={() => setAlcance("anio")}>Este año</Chip>
+      </div>
+      <div style={{ marginTop: -22 }}>
+        <ConsumoTelaCortePanel pedidos={pedidos} desde={desde} hasta={hasta} functionsClient={functionsClient} />
+      </div>
     </div>
   );
 }
@@ -217,6 +248,9 @@ export default function MiDiaTarjetasStandalone({ db, currentUser, onVolver, onL
   }
   if (hayCierre) {
     secciones.push({ id: "cierre", icon: "💰", label: "Cierre diario", render: () => <BloqueCierre db={db} currentUser={currentUser} /> });
+  }
+  if (marcadas.includes("consumo_tela")) {
+    secciones.push({ id: "consumo", icon: "🧵", label: "Consumo de tela", render: () => <BloqueConsumoTela db={db} /> });
   }
   if (idsPlaneacion.length) {
     secciones.push({ id: "planeacion", icon: "📊", label: "Planeación", render: () => <MiDiaPlaneacionBloque visibles={idsPlaneacion} /> });

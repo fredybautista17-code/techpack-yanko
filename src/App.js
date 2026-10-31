@@ -5,7 +5,7 @@ import ModuloContabilidad from "./modulo-contabilidad";
 import AsistenteAtlas from "./asistente-atlas";
 import ModuloPlaneacion, { MiDiaStandalone, ProgramadorProcesosStandalone, AreasStandalone, MiDiaNominaStandalone } from "./modulo-planeacion";
 import MiDiaTarjetasStandalone from "./mi-dia-tarjetas";
-import { GRUPOS_MI_DIA, TARJETAS_DEFECTO_MIDIA, claveCierreDeArea } from "./mi-dia-tarjetas-catalogo";
+import { GRUPOS_MI_DIA, TARJETAS_DEFECTO_MIDIA, claveCierreDeArea, esAreaCorte } from "./mi-dia-tarjetas-catalogo";
 import { FinancieraStandalone } from "./modulo-financiera";
 import ModuloPlanta from "./modulo-planta";
 import ModuloBodega from "./modulo-bodega";
@@ -12319,6 +12319,7 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
               return { ...f, tarjetasMiDia: on ? [...new Set([...actuales, id])] : actuales.filter((x) => x !== id) };
             });
             const hayArea = !!claveCierreDeArea(form.areaNomina);
+            const hayCorte = esAreaCorte(form.areaNomina);
             const hayProcesos = (form.procesosPlaneacion || []).length > 0;
             const otrosConTarjetas = users.filter((u) => u.id !== editUser.id && (u.tarjetasMiDia || []).length > 0);
             const delArea = form.areaNomina ? users.filter((u) => u.id !== editUser.id && u.areaNomina === form.areaNomina) : [];
@@ -12327,13 +12328,13 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
                 <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Tarjetas de «☀️ Mi Día»</label>
                 <div style={{ fontSize: 12, color: T.slate, marginBottom: 10 }}>Marca lo que quieres que vea en su Mi Día; se muestran una debajo de otra. Si no marcas ninguna, ve su Mi Día de siempre.</div>
                 {GRUPOS_MI_DIA.map((g) => {
-                  const bloqueado = (g.requiere === "area" && !hayArea) || (g.requiere === "areaInterna" && !form.areaNomina) || (g.requiere === "procesos" && !hayProcesos);
+                  const bloqueado = (g.requiere === "area" && !hayArea) || (g.requiere === "areaInterna" && !form.areaNomina) || (g.requiere === "procesos" && !hayProcesos) || (g.requiere === "areaCorte" && !hayCorte);
                   return (
                     <div key={g.id} style={{ marginBottom: 12, opacity: bloqueado ? 0.6 : 1 }}>
                       <div style={{ fontSize: 12, fontWeight: 800, color: T.ink, marginBottom: 6 }}>{g.titulo}</div>
                       {bloqueado && (
                         <div style={{ fontSize: 11.5, color: T.slate, marginBottom: 6 }}>
-                          {g.requiere === "area" ? "Primero elige su «Área Interna» (hoy con cierre diario: Corte, Zona calor y Control de calidad)." : g.requiere === "areaInterna" ? "Primero elige su «Área Interna»: de ahí salen sus procesos (Nómina → Área Interna) y su equipo." : "Primero marca los procesos que puede programar."}
+                          {g.requiere === "areaCorte" ? "Solo para quien tiene «Área Interna» = CORTE." : g.requiere === "area" ? "Primero elige su «Área Interna» (hoy con cierre diario: Corte, Zona calor y Control de calidad)." : g.requiere === "areaInterna" ? "Primero elige su «Área Interna»: de ahí salen sus procesos (Nómina → Área Interna) y su equipo." : "Primero marca los procesos que puede programar."}
                         </div>
                       )}
                       <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "6px 18px" }}>
