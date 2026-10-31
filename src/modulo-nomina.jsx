@@ -13728,8 +13728,16 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
     exportDesprendiblePagoHTML(argsDesprendible(g));
   }
   // (2026-10-31, a pedido de Fredy) Envío por correo de los desprendibles (con la tirilla de lotes) de lo que se ve en pantalla.
+  // En la vista por Área mezcla los 4 tipos de nómina: el correo con tirilla de lotes es solo para Destajo y Fiscal Destajo.
+  const esDestajoCorreo = (g) => g.trabajador?.tipoNomina === "Destajo" || g.trabajador?.tipoNomina === "Fiscal Destajo";
+  const porTrabajadorCorreo = modo === "area" ? porTrabajador.filter(esDestajoCorreo) : porTrabajador;
+  const omitidosCorreoArea = modo === "area" ? porTrabajador.length - porTrabajadorCorreo.length : 0;
+  const etiquetaTipoCorreo = modo === "area" ? `Área: ${areaSel || ""}` : tipoSel;
+  const cierreCorreoOk = modo === "area"
+    ? [...new Set(porTrabajadorCorreo.map((g) => g.trabajador?.tipoNomina))].every((t) => (cierres || []).some((c) => c.desde === desde && c.tipoNomina === t && !c.area))
+    : !!cierre;
   const filasCorreo = correoAbierto
-    ? porTrabajador.map((g) => {
+    ? porTrabajadorCorreo.map((g) => {
         const correo = String(g.trabajador?.correo || "").trim();
         return { g, key: g.trabajadorId || g.nombre, nombre: g.nombre, area: g.trabajador?.area || "Sin asignar", correo, valido: REGEX_CORREO_NOM.test(correo), sinPago: !(g.totalGeneral > 0) };
       })
@@ -13738,7 +13746,7 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
   const itemCorreo = (g) => ({ trabajadorId: g.trabajadorId, asunto: `Desprendible de pago — ${label}`, html: armarCorreoDesprendibleHTML(argsDesprendible(g)) });
   function abrirCorreo() {
     const m = {};
-    porTrabajador.forEach((g) => { m[g.trabajadorId || g.nombre] = REGEX_CORREO_NOM.test(String(g.trabajador?.correo || "").trim()) && g.totalGeneral > 0; });
+    porTrabajadorCorreo.forEach((g) => { m[g.trabajadorId || g.nombre] = REGEX_CORREO_NOM.test(String(g.trabajador?.correo || "").trim()) && g.totalGeneral > 0; });
     setMarcadosCorreo(m); setResultadosCorreo(null); setErrorCorreo(""); setPruebaCorreo(""); setProgresoCorreo("");
     setCorreoAbierto(true);
   }
@@ -13748,7 +13756,7 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
     setEnviandoCorreo(true); setErrorCorreo(""); setPruebaCorreo("");
     try {
       const llamar = httpsCallable(functionsClient, "enviarDesprendiblesNomina", { timeout: 300000 });
-      const r = await llamar({ modo: "prueba", periodoId: periodoIdActual, etiqueta: label, tipoNomina: tipoSel, items: [itemCorreo(f.g)] });
+      const r = await llamar({ modo: "prueba", periodoId: periodoIdActual, etiqueta: label, tipoNomina: etiquetaTipoCorreo, items: [itemCorreo(f.g)] });
       setPruebaCorreo(`Prueba enviada a ${r.data?.enviadoA} (desprendible de ${f.nombre}).`);
     } catch (err) { setErrorCorreo(err?.message || String(err)); }
     setEnviandoCorreo(false);
@@ -13763,7 +13771,7 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
       for (let i = 0; i < aEnviarCorreo.length; i += 10) {
         const lote = aEnviarCorreo.slice(i, i + 10);
         setProgresoCorreo(`Enviando ${Math.min(i + lote.length, aEnviarCorreo.length)} de ${aEnviarCorreo.length}…`);
-        const r = await llamar({ modo: "enviar", periodoId: periodoIdActual, etiqueta: label, tipoNomina: tipoSel, items: lote.map((f) => itemCorreo(f.g)) });
+        const r = await llamar({ modo: "enviar", periodoId: periodoIdActual, etiqueta: label, tipoNomina: etiquetaTipoCorreo, items: lote.map((f) => itemCorreo(f.g)) });
         todos.push(...(r.data?.resultados || []));
       }
     } catch (err) { setErrorCorreo(`${err?.message || String(err)}${todos.length ? ` — ya se habían enviado ${todos.filter((x) => x.ok).length}.` : ""}`); }
@@ -13778,7 +13786,8 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
           <div style={{ fontSize: 12.5, color: C.slate, marginBottom: 10, lineHeight: 1.5 }}>
             Cada trabajador recibe <b>solo su desprendible</b> (con la tirilla de lotes trabajados y pagados), en el correo de su ficha. Quien no tiene correo no se envía.
           </div>
-          {!cierre && <div style={{ fontSize: 12, color: C.amber, background: C.amberBg, border: `1px solid ${C.amber}`, borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>⚠ Esta quincena aún no está cerrada: los valores pueden cambiar. Conviene cerrarla antes de enviar.</div>}
+          {omitidosCorreoArea > 0 && <div style={{ fontSize: 12, color: C.slate, background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>Esta área tiene {omitidosCorreoArea} trabajador{omitidosCorreoArea !== 1 ? "es" : ""} de nómina Fiscal o Prestación de Servicios que no aparece{omitidosCorreoArea !== 1 ? "n" : ""} aquí: por ahora el correo es solo para Destajo y Fiscal Destajo.</div>}
+          {!cierreCorreoOk && <div style={{ fontSize: 12, color: C.amber, background: C.amberBg, border: `1px solid ${C.amber}`, borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>⚠ Esta quincena aún no está cerrada: los valores pueden cambiar. Conviene cerrarla antes de enviar.</div>}
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10, fontSize: 12.5 }}>
             <span style={{ background: C.greenBg, color: C.green, fontWeight: 800, borderRadius: 20, padding: "3px 12px" }}>A enviar: {aEnviarCorreo.length}</span>
             <span style={{ background: C.redBg, color: C.red, fontWeight: 800, borderRadius: 20, padding: "3px 12px" }}>Sin correo: {filasCorreo.filter((f) => !f.valido).length}</span>
@@ -13916,8 +13925,8 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
       )}
       <div style={{ marginBottom: 14, display: "flex", gap: 10 }}>
         <Btn variant="secondary" small onClick={exportarExcel} disabled={!porTrabajador.length}>⬇ Exportar a Excel</Btn>
-        {modo === "tipo" && (tipoSel === "Destajo" || tipoSel === "Fiscal Destajo") && (
-          <Btn variant="secondary" small onClick={abrirCorreo} disabled={!porTrabajador.length}>✉ Enviar desprendibles por correo</Btn>
+        {((modo === "tipo" && (tipoSel === "Destajo" || tipoSel === "Fiscal Destajo")) || (modo === "area" && areaSel)) && (
+          <Btn variant="secondary" small onClick={abrirCorreo} disabled={!porTrabajadorCorreo.length}>✉ Enviar desprendibles por correo</Btn>
         )}
         {modo === "tipo" && puedeCerrarQuincena && !cierre && (
           <Btn
