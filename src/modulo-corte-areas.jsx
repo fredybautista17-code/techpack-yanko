@@ -3,6 +3,7 @@ import { initializeApp, getApps } from "firebase/app";
 import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import CentroCostoAnioPanel from "./centro-costo-historico";
+import ConsumoTelaCortePanel from "./consumo-tela-corte";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
   authDomain: "techpack-yanko-f37b8.firebaseapp.com",
@@ -355,6 +356,12 @@ export default function CentroCostoCorteEnAreas({ areaNombre, currentUser }) {
           </tbody>
         </table>
       )}
+      <ConsumoTelaCortePanel
+        pedidos={pedidos}
+        desde={periodo === "dia" ? fechaDia : periodo === "mes" ? `${mesKey}-01` : `${anioSel}-01-01`}
+        hasta={periodo === "dia" ? fechaDia : periodo === "mes" ? `${mesKey}-31` : `${anioSel}-12-31`}
+        functionsClient={functionsClient}
+      />
       <div style={{ marginTop: 34 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
           <h3 style={{ margin: "0 0 4px", fontSize: 18, fontWeight: 900, color: C.ink }}>✂ Ingreso por pedido</h3>

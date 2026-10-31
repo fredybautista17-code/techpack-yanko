@@ -12,6 +12,7 @@ import {
 } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import CentroCostoAnioPanel from "./centro-costo-historico";
+import { evaluarCorteContraTeorico } from "./consumo-tela-calculo";
 // ─── FIREBASE ────────────────────────────────────────────────────────────────
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
@@ -9799,7 +9800,26 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
     if (!pedido) return;
     const corte = (pedido.cortesRealizados || []).find((c) => c.id === corteId);
     if (!corte) return;
-    const actualizado = pedido.cortesRealizados.map((c) => (c.id === corteId ? { ...c, lote } : c));
+    // (2026-10-31, a pedido de Fredy) Aviso de consumo de tela al crear el lote: se compara lo que
+    // tendieron los trazos del corte contra el consumo TEÓRICO de Busint para esa referencia (el real
+    // todavía no existe en Busint en este momento). Si no cruza (más del límite), se pregunta antes de
+    // crear el lote y, si se sigue, queda anotado en el corte. Si Busint no responde, el lote se crea igual.
+    let avisoConsumo = null;
+    try {
+      const llamarRend = httpsCallable(functionsClient, "getRendimientoCorteBusint", { timeout: 120000 });
+      const rend = await llamarRend({ soloTeorico: true, dias: 7 });
+      const ev = evaluarCorteContraTeorico(corte, rend.data?.teoricoPorRef || {});
+      if (ev.ok && (ev.estado === "nocruza" || ev.estado === "revisar")) {
+        const signo = ev.pct > 0 ? "más" : "menos";
+        const difTxt = `${Math.abs(ev.difM).toLocaleString("es-CO", { maximumFractionDigits: 1 })} m ${signo}`;
+        const msg = `${ev.estado === "nocruza" ? "⚠ Este corte NO cruza" : "Este corte merece revisión"}: el trazo usa ${Math.abs(ev.pct).toLocaleString("es-CO", { maximumFractionDigits: 1 })} % ${signo} tela que el consumo teórico de Busint.\n\nTrazos: ${ev.trazo.toLocaleString("es-CO", { maximumFractionDigits: 1 })} m · Teórico: ${ev.teor.toLocaleString("es-CO", { maximumFractionDigits: 1 })} m (${difTxt}) para ${ev.unid} und.\n\nAceptar = crear el lote de todos modos (queda anotado).\nCancelar = volver y revisar el trazo o las capas.`;
+        if (ev.estado === "nocruza" && !window.confirm(msg)) return;
+        avisoConsumo = { estado: ev.estado, pct: Math.round(ev.pct * 10) / 10, trazoM: ev.trazo, teoricoM: Math.round(ev.teor * 10) / 10, unidades: ev.unid, creadoPor: currentUser?.name || currentUser?.username || "", fecha: new Date().toISOString() };
+      }
+    } catch (errAviso) {
+      console.warn("Aviso de consumo de tela no disponible", errAviso);
+    }
+    const actualizado = pedido.cortesRealizados.map((c) => (c.id === corteId ? { ...c, lote, ...(avisoConsumo ? { avisoConsumo } : {}) } : c));
     await fsSave("pedidos_activos", pedidoId, { cortesRealizados: actualizado });
     await guardarLoteCorte({
       numero: lote,

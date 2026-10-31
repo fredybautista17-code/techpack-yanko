@@ -15310,3 +15310,132 @@ exports.resumenMananaAtlas = onSchedule(
     logger.info("resumenMananaAtlas: enviado", { destinatarios: admins.length + otros.length });
   }
 );
+
+// ─── Rendimiento de Corte (Busint) — consumo de tela teórico vs real ───────────
+// (2026-10-31, a pedido de Fredy) Lee la tabla "bc-visor de rendimiento de corte"
+// (pantalla "Modelo-Visor de Rendimiento de Corte" de Busint): por corte trae la
+// cantidad, los ml/m² reales, y el consumo por prenda real y teórico. Los nombres
+// exactos de las columnas de la API no se conocían al escribir esto, así que las
+// columnas se detectan por nombre (sin tildes, mayúsculas ni separadores) y se
+// devuelve `columnas` (todas las llaves de la tabla) y `detectadas` (cuál se usó
+// para cada dato) para poder ajustar si alguna no se encontró.
+function normClaveRendCorte(k) {
+  return String(k || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+function numRendCorte(v) {
+  if (v === null || v === undefined || v === "") return null;
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  const s = String(v).trim().replace(/\s/g, "");
+  if (!s) return null;
+  // "1.234,56" -> 1234.56 ; "0,54" -> 0.54 ; "0.54" -> 0.54
+  const conComa = s.includes(",");
+  const limpio = conComa ? s.replace(/\./g, "").replace(",", ".") : s;
+  const n = Number(limpio);
+  return Number.isFinite(n) ? n : null;
+}
+function fechaRendCorte(v) {
+  if (!v) return "";
+  const s = String(v).trim();
+  let m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (m) return `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`;
+  return "";
+}
+function detectarColumnasRendCorte(llaves) {
+  const mapa = llaves.map((k) => ({ k, n: normClaveRendCorte(k) }));
+  const buscar = (...preds) => {
+    for (const p of preds) {
+      const h = mapa.find((x) => p(x.n));
+      if (h) return h.k;
+    }
+    return null;
+  };
+  return {
+    fecha: buscar((n) => n.includes("fecha") && n.includes("cor"), (n) => n.includes("fecha")),
+    referencia: buscar((n) => n === "referen" || n === "referencia" || n === "ref", (n) => n.startsWith("referen") && !n.includes("ext")),
+    refExt: buscar((n) => n.includes("refext") || n.includes("referext")),
+    cantidad: buscar((n) => n.startsWith("cantidadto"), (n) => n === "cantidad", (n) => n.startsWith("cantidad")),
+    mlReal: buscar((n) => n.includes("totalml") && n.includes("real")),
+    m2Real: buscar((n) => (n.includes("totalmt2") || n.includes("totalm2")) && n.includes("real")),
+    consMlReal: buscar((n) => n.includes("consml") && n.includes("rea")),
+    consM2Real: buscar((n) => (n.includes("consmt2") || n.includes("consm2")) && n.includes("rea")),
+    consMlTeor: buscar((n) => n.includes("consml") && n.includes("teor")),
+    consM2Teor: buscar((n) => (n.includes("consmt2") || n.includes("consm2")) && n.includes("teor")),
+    lote: buscar((n) => n === "numlote" || n === "numerolote" || n === "nlote" || n === "lote" || n.includes("lote")),
+    tipoCorte: buscar((n) => n.includes("tipodecor") || n.includes("tipocor")),
+    poExter: buscar((n) => n.includes("poexter")),
+  };
+}
+exports.getRendimientoCorteBusint = onCallAuth(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 300,
+    memory: "512MiB",
+  },
+  async (request) => {
+    if (!request.auth) throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+    const usuarioSnap = await db.collection("users").where("authUid", "==", request.auth.uid).limit(1).get();
+    if (usuarioSnap.empty) throw new HttpsError("permission-denied", "No tienes permiso para hacer esto.");
+    if (usuarioSnap.docs[0].data().role === "Cliente") throw new HttpsError("permission-denied", "No tienes permiso para ver el rendimiento de corte.");
+    const dias = Math.min(400, Math.max(7, Number(request.data?.dias) || 120));
+    const hoy = new Date().toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
+    const d0 = new Date(hoy + "T12:00:00Z");
+    d0.setUTCDate(d0.getUTCDate() - dias);
+    const desde = d0.toISOString().slice(0, 10);
+    let filas;
+    try {
+      filas = await consultarTablaBusintBDCompleta("bc-visor de rendimiento de corte");
+    } catch (err) {
+      logger.error("Error consultando Busint BD (getRendimientoCorteBusint)", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar el rendimiento de corte en Busint: ${err?.message || String(err)}`);
+    }
+    const llaves = filas.length ? Object.keys(filas[0]) : [];
+    const det = detectarColumnasRendCorte(llaves);
+    const val = (f, col) => (col ? f[col] : undefined);
+    const todas = filas.map((f) => {
+      const cantidad = numRendCorte(val(f, det.cantidad)) || 0;
+      const consMlTeor = numRendCorte(val(f, det.consMlTeor));
+      const mlReal = numRendCorte(val(f, det.mlReal));
+      return {
+        fecha: fechaRendCorte(val(f, det.fecha)),
+        referencia: String(val(f, det.referencia) ?? "").trim(),
+        refExt: String(val(f, det.refExt) ?? "").trim(),
+        tipoCorte: String(val(f, det.tipoCorte) ?? "").trim(),
+        poExter: String(val(f, det.poExter) ?? "").trim(),
+        lote: String(val(f, det.lote) ?? "").trim(),
+        cantidad,
+        mlReal,
+        m2Real: numRendCorte(val(f, det.m2Real)),
+        consMlReal: numRendCorte(val(f, det.consMlReal)),
+        consM2Real: numRendCorte(val(f, det.consM2Real)),
+        consMlTeor,
+        consM2Teor: numRendCorte(val(f, det.consM2Teor)),
+        mlTeor: consMlTeor !== null && cantidad > 0 ? Math.round(consMlTeor * cantidad * 100) / 100 : null,
+      };
+    });
+    // Teórico más reciente por referencia (sin ventana de fechas): sirve para avisar al crear el
+    // lote en ATLAS, cuando Busint todavía no tiene el consumo real de ese corte.
+    const teoricoPorRef = {};
+    todas
+      .filter((r) => r.referencia && r.consMlTeor > 0)
+      .sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)))
+      .forEach((r) => {
+        teoricoPorRef[r.referencia] = { consMlTeor: r.consMlTeor, fecha: r.fecha };
+        if (r.refExt) teoricoPorRef[r.refExt] = { consMlTeor: r.consMlTeor, fecha: r.fecha };
+      });
+    const filasVentana = (det.fecha ? todas.filter((r) => !r.fecha || r.fecha >= desde) : todas)
+      .sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)))
+      .slice(0, 4000);
+    return {
+      ok: true,
+      desde,
+      total: filas.length,
+      columnas: llaves,
+      detectadas: det,
+      filas: request.data?.soloTeorico ? [] : filasVentana,
+      teoricoPorRef,
+      muestra: request.data?.diagnostico ? filas.slice(0, 3) : undefined,
+    };
+  }
+);
