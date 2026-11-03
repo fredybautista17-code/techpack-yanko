@@ -16880,6 +16880,7 @@ function compararTallas(a, b) {
 function PedidoDetailView({ pedido, onBack, onUpdatePedido, soloLectura }) {
   const [showConfirmCumplido, setShowConfirmCumplido] = useState(false);
   const [refsAbiertas, setRefsAbiertas] = useState({}); // referencia -> abierta (muestra sus colores)
+  const [filtroRefs, setFiltroRefs] = useState("todas"); // (2026-11-03) todas | cortar (con faltante) | cortadas (completas)
   const [avanceDet, setAvanceDet] = useState(_avanceUltimo);
   useEffect(() => {
     let vivo = true;
@@ -16993,12 +16994,26 @@ function PedidoDetailView({ pedido, onBack, onUpdatePedido, soloLectura }) {
           const th = { padding: "8px 10px", color: T.seam, fontWeight: 700, fontSize: 11 };
           const celdaTalla = (v, k) => <td key={k} style={{ padding: "8px 4px", textAlign: "center", color: v > 0 ? T.ink : T.border }}>{v || "—"}</td>;
           const celdaExc = (falta) => <td style={{ padding: "8px 10px", textAlign: "center", fontWeight: 700, color: falta > 0 ? T.amber : T.jade }}>{falta > 0 ? falta : "✓"}</td>;
+          // (2026-11-03, a pedido de Fredy) Filtro "¿qué tenemos por cortar?": solo las referencias con faltante o solo las ya completas.
+          const gruposPorCortar = grupos.filter((g) => g.falta > 0);
+          const gruposCortadas = grupos.filter((g) => !(g.falta > 0));
+          const undPorCortar = gruposPorCortar.reduce((acc, g) => acc + g.falta, 0);
+          const filtroEf = grupos.length > 1 ? filtroRefs : "todas";
+          const gruposVer = filtroEf === "cortar" ? gruposPorCortar : filtroEf === "cortadas" ? gruposCortadas : grupos;
+          const chipRef = (activo) => ({ padding: "4px 12px", borderRadius: 20, border: `1.5px solid ${activo ? T.denim : T.border}`, background: activo ? T.denimBg : T.white, color: activo ? T.denim : T.slate, fontWeight: 700, fontSize: 11, cursor: "pointer", fontFamily: "inherit" });
           return (
             <div>
               {grupos.length > 1 && (
-                <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+                <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap", alignItems: "center" }}>
                   <button onClick={() => setRefsAbiertas(Object.fromEntries(grupos.map((g) => [g.ref, true])))} style={{ padding: "4px 12px", borderRadius: 20, border: `1.5px solid ${T.border}`, background: T.white, color: T.slate, fontWeight: 700, fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}>Abrir todas</button>
                   <button onClick={() => setRefsAbiertas({})} style={{ padding: "4px 12px", borderRadius: 20, border: `1.5px solid ${T.border}`, background: T.white, color: T.slate, fontWeight: 700, fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}>Cerrar todas</button>
+                  <span style={{ width: 10 }} />
+                  <button onClick={() => setFiltroRefs("todas")} style={chipRef(filtroEf === "todas")}>Todas ({grupos.length})</button>
+                  <button onClick={() => { setFiltroRefs("cortar"); setRefsAbiertas(Object.fromEntries(gruposPorCortar.map((g) => [g.ref, true]))); }} style={chipRef(filtroEf === "cortar")}>✂ Por cortar ({gruposPorCortar.length})</button>
+                  <button onClick={() => setFiltroRefs("cortadas")} style={chipRef(filtroEf === "cortadas")}>✓ Ya cortadas ({gruposCortadas.length})</button>
+                  <span style={{ marginLeft: 8, fontSize: 12, fontWeight: 700, color: filtroEf === "cortadas" ? T.jade : T.amber }}>
+                    {filtroEf === "cortadas" ? `${gruposCortadas.length} referencia${gruposCortadas.length !== 1 ? "s" : ""} completa${gruposCortadas.length !== 1 ? "s" : ""}` : `Por cortar: ${fmtNum(undPorCortar)} und en ${gruposPorCortar.length} referencia${gruposPorCortar.length !== 1 ? "s" : ""}`}
+                  </span>
                 </div>
               )}
               <div style={{ overflowX: "auto" }}>
@@ -17014,7 +17029,10 @@ function PedidoDetailView({ pedido, onBack, onUpdatePedido, soloLectura }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {grupos.map((g, gi) => {
+                    {gruposVer.length === 0 && (
+                      <tr><td colSpan={tallasCols.length + 5} style={{ padding: "14px 10px", textAlign: "center", color: T.slate, fontSize: 12 }}>No hay referencias en este filtro.</td></tr>
+                    )}
+                    {gruposVer.map((g, gi) => {
                       const abierta = !!refsAbiertas[g.ref];
                       return (
                         <React.Fragment key={"ref-" + g.ref}>
