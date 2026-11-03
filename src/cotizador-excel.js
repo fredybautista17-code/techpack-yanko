@@ -20,7 +20,7 @@ function aFecha(iso) {
   return m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])) : null;
 }
 function nombreHojaUnico(base, usados) {
-  const n = String(base || "Hoja").replace(/[:\\/?*[\]]/g, "-").slice(0, 28).trim() || "Hoja";
+  const n = String(base || "Hoja").replace(/[:\\/?*[\]]/g, "-").slice(0, 31).trim() || "Hoja";
   let candidato = n;
   let k = 2;
   while (usados.has(candidato.toLowerCase())) { candidato = `${n.slice(0, 24)} (${k})`; k += 1; }
@@ -153,37 +153,73 @@ export async function generarLibroCotizaciones(ExcelJS, plantilla, lista, opcion
   const usados = new Set(["resumen"]);
   const avisos = [];
   const hojas = [];
-  (lista || []).forEach((cot) => (cot.versiones || []).filter((ver) => !opciones.soloAprobadas || ver.estado === "aprobada").forEach((ver) => {
-    const esDef = opciones.definitivaNumero === ver.numero;
-    const base = lista.length === 1 ? `V${ver.numero}${esDef ? " DEFINITIVA" : ""}` : `${cot.referencia || "cot"} V${ver.numero}`;
+  // (2026-11-02, a pedido de Fredy) LIBRO DE DEFINITIVAS: con `opciones.historialDef` (una entrada por lote aprobado, cada
+  // una con la versión y los costos reales tal como estaban ese día) el libro lleva una hoja DEFINITIVA y otra de
+  // COSTOS REALES por cada lote ("V3 DEFINITIVA lote 7431", "V4 DEFINITIVA lote 7880"...), lo más nuevo primero, y el
+  // Resumen suma dos filas por lote sin borrar las anteriores. Sin `historialDef` todo funciona como antes.
+  const hist = !!(opciones.historialDef && opciones.historialDef.length);
+  const trabajosDe = (cot) => {
+    const aprobadasOpt = (cot.versiones || []).filter((ver) => !opciones.soloAprobadas || ver.estado === "aprobada");
+    if (!hist) {
+      return aprobadasOpt.map((ver) => {
+        const esDef = opciones.definitivaNumero === ver.numero;
+        return { ver, esDef, entrada: null, cr: esDef ? opciones.costosReales : null, antigua: false, maxDef: null };
+      });
+    }
+    const ordenadas = opciones.historialDef
+      .map((e, i) => ({ e, i }))
+      .sort((a, b) => String(b.e.fecha || "").localeCompare(String(a.e.fecha || "")) || b.i - a.i)
+      .map((x) => x.e);
+    const conDef = new Set(ordenadas.map((e) => Number(e.version)));
+    const maxDef = Math.max(...conDef);
+    const out = ordenadas.map((e, i) => ({
+      ver: { ...(e.ver || {}), numero: (e.ver && e.ver.numero) != null ? e.ver.numero : e.version },
+      esDef: true, entrada: e, cr: { fecha: e.fecha, lote: e.lote }, antigua: i > 0, maxDef,
+    }));
+    aprobadasOpt
+      .filter((ver) => !conDef.has(Number(ver.numero)))
+      .sort((a, b) => b.numero - a.numero)
+      .forEach((ver) => out.push({ ver, esDef: false, entrada: null, cr: null, antigua: true, maxDef }));
+    return out;
+  };
+  (lista || []).forEach((cot) => trabajosDe(cot).forEach((trabajo) => {
+    const { ver, esDef, entrada, cr, antigua } = trabajo;
+    const sufijo = entrada ? ` lote ${entrada.lote}` : "";
+    const base = lista.length === 1 ? `V${ver.numero}${esDef ? " DEFINITIVA" : ""}${sufijo}` : `${cot.referencia || "cot"} V${ver.numero}`;
     const nombre = nombreHojaUnico(base, usados);
     const ws = wb.addWorksheet(nombre);
     ws.model = Object.assign(structuredClone(modelo), { mergeCells: modelo.merges, name: nombre });
     const av = llenarHoja(ws, cot, ver);
     av.forEach((a) => { if (!avisos.includes(a)) avisos.push(a); });
     // Línea de encabezado: versión, fecha de aprobación y carpeta de Dropbox donde queda guardada.
-    const leyenda = opciones.leyenda ? opciones.leyenda(cot, ver, esDef) : "";
+    const leyenda = opciones.leyenda ? opciones.leyenda(cot, ver, esDef, entrada, trabajo.maxDef) : "";
     if (leyenda) {
       const c = ws.getCell("D1");
       c.value = leyenda;
       c.font = { bold: true, size: 12, color: { argb: esDef ? "FF14532D" : "FF1E3A5F" } };
       c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: esDef ? "FFD1FAE5" : "FFE0ECF8" } };
       c.alignment = { vertical: "middle", horizontal: "left" };
-      ws.properties = { ...(ws.properties || {}), tabColor: { argb: esDef ? "FF2D9E6B" : "FF2B5C8A" } };
+      ws.properties = { ...(ws.properties || {}), tabColor: { argb: esDef ? (antigua ? "FF9FCFB3" : "FF2D9E6B") : "FF2B5C8A" } };
     }
     if (opciones.imagen && cot === opciones.imagen.cot) {
       const idImg = wb.addImage({ base64: opciones.imagen.base64, extension: opciones.imagen.extension });
       const w = 560;
       ws.addImage(idImg, { tl: { col: 13.1, row: 0.5 }, ext: { width: w, height: Math.round(w * (opciones.imagen.alto / opciones.imagen.ancho)) } });
     }
-    hojas.push({ cot, ver, nombre });
+    hojas.push({ cot, ver, nombre, entrada, tipo: entrada ? "Definitiva" : "Aprobada (sin lote cerrado)" });
     // (2026-10-21) Libro DEFINITIVO: si la versión tiene "costos reales", va una hoja extra con esos costos,
     // el precio aprobado FIJO (el que se vendió) y la utilidad/margen real que quedó.
     // (2026-10-27, a pedido de Fredy) También sale en el libro de Diseño cuando los costos reales se cargaron desde
     // Busint (ver.real.busint), con la referencia, el lote, la fecha del cumplido y la de la carga.
-    if (ver.real && ver.real.v && ((esDef && opciones.costosReales) || (opciones.incluirRealesBusint && ver.real.busint))) {
+    // (2026-11-02) En el libro de definitivas por lote, la hoja de costos reales solo sale si esos costos son de ESE lote
+    // (si venían de otro lote de Busint se omite para no mezclar).
+    const bzTmp = ver.real && ver.real.busint ? ver.real.busint : null;
+    const mostrarReal = !!(ver.real && ver.real.v) && (entrada
+      ? !(bzTmp && bzTmp.lote != null && String(bzTmp.lote) !== String(entrada.lote))
+      : ((esDef && cr) || (opciones.incluirRealesBusint && bzTmp)));
+    if (mostrarReal) {
       const fijo = Number(ver.precio) || (cot.precioAplicado && cot.precioAplicado.version === ver.numero ? Number(cot.precioAplicado.valor) : 0) || 0;
-      const nombreReal = nombreHojaUnico(`V${ver.numero} COSTOS REALES`, usados);
+      const nombreReal = nombreHojaUnico(`V${ver.numero} COSTOS REALES${sufijo}`, usados);
       const wr = wb.addWorksheet(nombreReal);
       wr.model = Object.assign(structuredClone(modelo), { mergeCells: modelo.merges, name: nombreReal });
       const vReal = { ...ver, v: { ...ver.real.v, precioClienteIva: fijo > 0 ? fijo : ver.real.v.precioClienteIva } };
@@ -195,7 +231,6 @@ export async function generarLibroCotizaciones(ExcelJS, plantilla, lista, opcion
       const money = (n) => `$${Math.round(n).toLocaleString("es-CO")}`;
       const c = wr.getCell("D1");
       const bz = ver.real.busint || null;
-      const cr = esDef ? opciones.costosReales : null;
       const partes = [
         `COSTOS REALES · Ref ${String(cot.referencia || "").trim() || "—"} · V${ver.numero}`,
         `Precio aprobado FIJO ${fijo > 0 ? money(fijo) : "—"}${nuevo > 0 ? ` · Con costos reales daría ${money(nuevo)}${txtPct}` : ""}`,
@@ -211,32 +246,49 @@ export async function generarLibroCotizaciones(ExcelJS, plantilla, lista, opcion
       c.font = { bold: true, size: 12, color: { argb: "FF7C2D12" } };
       c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFDE7C8" } };
       c.alignment = { vertical: "middle", horizontal: "left" };
-      wr.properties = { ...(wr.properties || {}), tabColor: { argb: "FFE08A1E" } };
-      hojas.push({ cot, ver: { ...ver, nota: `Costos reales · precio aprobado fijo` }, nombre: nombreReal });
+      wr.properties = { ...(wr.properties || {}), tabColor: { argb: antigua ? "FFEEBD94" : "FFE08A1E" } };
+      hojas.push({ cot, ver: { ...ver, nota: `Costos reales · precio aprobado fijo` }, nombre: nombreReal, entrada, tipo: "Costos reales" });
     }
   }));
   wb.removeWorksheet(molde.id);
 
-  // Hoja Resumen (primera): una fila por versión, con fórmulas hacia cada hoja.
-  rs.columns = [
-    { header: "Referencia", width: 14 }, { header: "Cliente", width: 18 }, { header: "Versión", width: 9 }, { header: "Fecha", width: 12 },
-    { header: "Nota", width: 40 }, { header: "Costo FULL", width: 15 }, { header: "Precio sin IVA", width: 16 },
-    { header: "Precio con IVA", width: 16 }, { header: "Precio a aplicar", width: 17 }, { header: "Utilidad por prenda", width: 19 },
-  ];
+  // Hoja Resumen (primera): una fila por hoja, con fórmulas hacia cada una. En el libro de definitivas lleva además
+  // el LOTE y el TIPO (Definitiva / Costos reales) y la fecha del dado por cumplido, y crece con cada lote aprobado.
+  rs.columns = hist
+    ? [
+      { header: "Referencia", width: 14 }, { header: "Cliente", width: 18 }, { header: "Versión", width: 9 }, { header: "Lote", width: 9 },
+      { header: "Tipo", width: 16 }, { header: "Fecha", width: 12 }, { header: "Costo FULL", width: 15 }, { header: "Precio sin IVA", width: 16 },
+      { header: "Precio con IVA", width: 16 }, { header: "Precio a aplicar", width: 17 }, { header: "Utilidad por prenda", width: 19 }, { header: "Nota", width: 40 },
+    ]
+    : [
+      { header: "Referencia", width: 14 }, { header: "Cliente", width: 18 }, { header: "Versión", width: 9 }, { header: "Fecha", width: 12 },
+      { header: "Nota", width: 40 }, { header: "Costo FULL", width: 15 }, { header: "Precio sin IVA", width: 16 },
+      { header: "Precio con IVA", width: 16 }, { header: "Precio a aplicar", width: 17 }, { header: "Utilidad por prenda", width: 19 },
+    ];
   const cab = rs.getRow(1);
   cab.font = { bold: true, color: { argb: "FFFFFFFF" } };
   cab.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1A1A2E" } };
+  const aFechaCol = (iso) => { const t = String(iso || ""); if (!t) return null; const d = new Date(t); return t.length > 10 && !Number.isNaN(d.getTime()) ? aFecha(d.toLocaleDateString("en-CA", { timeZone: "America/Bogota" })) : aFecha(t); };
+  const colsPrecio = hist ? ["G", "H", "I", "J", "K"] : ["F", "G", "H", "I", "J"];
   hojas.forEach((h, i) => {
     const r = i + 2;
     const q = `'${h.nombre.replace(/'/g, "''")}'!`;
     rs.getCell(`A${r}`).value = h.cot.referencia || "";
     rs.getCell(`B${r}`).value = h.cot.cliente || "General";
     rs.getCell(`C${r}`).value = `V${h.ver.numero}`;
-    rs.getCell(`D${r}`).value = aFecha(h.ver.fecha);
-    rs.getCell(`D${r}`).numFmt = "dd/mm/yyyy";
-    rs.getCell(`E${r}`).value = h.ver.nota || "";
-    [["F", "K72"], ["G", "K73"], ["H", "K75"], ["I", "ROUND(" + q + "K75,0)"], ["J", "K74"]].forEach(([c, ref2]) => {
-      rs.getCell(`${c}${r}`).value = { formula: c === "I" ? ref2 : q + ref2 };
+    const celdaFecha = hist ? `F${r}` : `D${r}`;
+    rs.getCell(celdaFecha).value = hist && h.entrada ? aFechaCol(h.entrada.fecha) : aFecha(h.ver.fecha);
+    rs.getCell(celdaFecha).numFmt = "dd/mm/yyyy";
+    if (hist) {
+      rs.getCell(`D${r}`).value = h.entrada ? String(h.entrada.lote) : "";
+      rs.getCell(`E${r}`).value = h.tipo || "";
+      rs.getCell(`L${r}`).value = h.ver.nota || "";
+    } else {
+      rs.getCell(`E${r}`).value = h.ver.nota || "";
+    }
+    const formulas = [q + "K72", q + "K73", q + "K75", "ROUND(" + q + "K75,0)", q + "K74"];
+    colsPrecio.forEach((c, k) => {
+      rs.getCell(`${c}${r}`).value = { formula: formulas[k] };
       rs.getCell(`${c}${r}`).numFmt = "$#,##0";
     });
   });
@@ -316,15 +368,28 @@ export function leyendaCotizacion(ver, opcionesDef) {
   return `V${ver.numero} · Aprobada ${aprobada} · Versión anterior (no es la definitiva) · Guardada en: ${CARPETA_DEFINITIVA}`;
 }
 
+// (2026-11-02) Versión aprobada que todavía no tiene lote cerrado en el libro de definitivas.
+export function leyendaSinLote(ver, maxDef) {
+  const aprobada = fechaColombia(ver.decision?.fecha || ver.fecha);
+  if (maxDef != null && Number(ver.numero) > Number(maxDef)) return `V${ver.numero} · Aprobada ${aprobada} · Aún sin lote cerrado (no es definitiva) · Guardada en: ${CARPETA_DEFINITIVA}`;
+  return `V${ver.numero} · Aprobada ${aprobada} · Versión anterior (no es la definitiva) · Guardada en: ${CARPETA_DEFINITIVA}`;
+}
+
 // Libro en base64 con las versiones aprobadas de una cotización. opcionesDef: ver leyendaCotizacion.
+// (2026-11-02) opcionesDef.historial = una entrada {lote, version, fecha, ver} por lote aprobado: arma el libro de definitivas por lote.
 export async function excelLibroBase64(cot, imagenDataUrl, opcionesDef) {
   if (!(cot.versiones || []).some((v) => v.estado === "aprobada")) throw new Error("La cotización no tiene versiones aprobadas");
   const { buf } = await construirExcelCotizaciones([cot], imagenDataUrl, {
     soloAprobadas: true,
     definitivaNumero: opcionesDef ? opcionesDef.numero : null,
     costosReales: opcionesDef ? { fecha: opcionesDef.fecha, lote: opcionesDef.lote } : null,
+    historialDef: opcionesDef && Array.isArray(opcionesDef.historial) ? opcionesDef.historial : null,
     incluirRealesBusint: true,
-    leyenda: (c, ver) => leyendaCotizacion(ver, opcionesDef),
+    leyenda: (c, ver, esDef, entrada, maxDef) => {
+      if (entrada) return leyendaCotizacion(ver, { numero: Number(entrada.version), lote: entrada.lote, fecha: entrada.fecha });
+      if (opcionesDef && Array.isArray(opcionesDef.historial) && opcionesDef.historial.length) return leyendaSinLote(ver, maxDef);
+      return leyendaCotizacion(ver, opcionesDef);
+    },
   });
   const dataUrl = await new Promise((resolve, reject) => {
     const fr = new FileReader();

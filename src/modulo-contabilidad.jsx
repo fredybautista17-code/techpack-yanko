@@ -3541,15 +3541,32 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases, puedeSincroni
     const ver = aprobadas.reduce((a, b) => (b.numero > a.numero ? b : a));
     const m = await import("./cotizador-excel");
     const fecha = fechaIso || new Date().toISOString();
-    const archivoBase64 = await m.excelLibroBase64(cot, null, { numero: ver.numero, lote: lote.numLote, fecha });
+    // (2026-11-02, a pedido de Fredy) El libro de COTIZACIONES APROBADAS acumula una definitiva POR LOTE: hoja
+    // "V3 DEFINITIVA lote 7431", luego "V4 DEFINITIVA lote 7880"..., cada una con la versión y los costos reales
+    // tal como estaban ese día, y el Resumen sigue creciendo. Se guarda la lista en la cotización (`definitivas`)
+    // y el libro se arma completo desde ella, sin leer lo que ya hay en Dropbox.
+    const limpio = (o) => JSON.parse(JSON.stringify(o || null));
+    const foto = (v) => limpio({ numero: v.numero, estado: v.estado || "aprobada", fecha: v.fecha || "", nota: v.nota || "", precio: v.precio || 0, v: v.v || {}, real: v.real || null, decision: v.decision || null });
+    const claveLote = String(lote.numLote || lote.id || "");
+    let previas = Array.isArray(cot.definitivas) ? [...cot.definitivas] : [];
+    // Lotes aprobados antes de este cambio: la última definitiva marcada se reconstruye con la versión guardada.
+    const marcaPrev = cot.definitiva;
+    if (marcaPrev && marcaPrev.lote && !previas.some((e) => String(e.lote) === String(marcaPrev.lote))) {
+      const verPrev = (cot.versiones || []).find((v) => Number(v.numero) === Number(marcaPrev.version));
+      if (verPrev) previas.push({ lote: String(marcaPrev.lote), version: verPrev.numero, fecha: marcaPrev.fecha || "", por: marcaPrev.por || "", reconstruida: true, ver: foto(verPrev) });
+    }
+    previas = previas.filter((e) => String(e.lote) !== claveLote);
+    const entradaNueva = { lote: claveLote, version: ver.numero, fecha, por: currentUser?.name || "", ver: foto(ver) };
+    const historial = [...previas, entradaNueva];
+    const archivoBase64 = await m.excelLibroBase64(cot, null, { numero: ver.numero, lote: lote.numLote, fecha, historial });
     const refCot = String(cot.referencia || "").trim();
     const nombre = m.nombreLibroDropbox(cot, refCot && refCot !== "-" ? refCot : lote.referencia);
     const r = await httpsCallable(functionsClient, "subirCotizacionADropbox")({ destino: "definitiva", carpeta: nombre, archivoBase64 });
     const ruta = r.data?.ruta || "";
     const marca = { ruta, fecha: new Date().toISOString(), version: ver.numero, lote: lote.numLote || "", por: currentUser?.name || "" };
-    await fsSave("cotizaciones", cot.id, { definitiva: marca });
+    await fsSave("cotizaciones", cot.id, { definitiva: marca, definitivas: historial });
     await fsSave("dado_por_cumplido_lotes", lote.id, { cotizacionDropbox: { ruta, version: ver.numero, fecha: marca.fecha } });
-    return { ok: true, mensaje: `V${ver.numero} de la cotización de ${nombre} guardada como definitiva en Dropbox (${ruta})` };
+    return { ok: true, mensaje: `V${ver.numero} de la cotización de ${nombre} guardada como definitiva del lote ${lote.numLote || ""} en Dropbox (${ruta}); el libro ya tiene ${historial.length} definitiva(s)` };
   }
   async function reintentarCotizacionDefinitiva(lote) {
     setGuardandoDefId(lote.id);
