@@ -19045,6 +19045,7 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
   const [clientesAbiertos, setClientesAbiertos] = useState({}); // (2026-10-30) cliente -> true/false (tablero por cliente)
   const [diaSel, setDiaSel] = useState(null); // (2026-10-30) tarjeta de "Por cortar por día" seleccionada (null = todas)
   const [busqueda, setBusqueda] = useState("");
+  const [clienteSel, setClienteSel] = useState(""); // (2026-11-03) filtro por cliente: "" = todos los clientes
   const activos = pedidos.filter((p) => p.estado === "activo" || p.estado === "terminado");
   // Un único estado de cierre ("cerrado"), con el motivo en motivoCierre — ya
   // no hay "cumplido"/"cancelado_busint"/"venta_perdida_busint" por separado.
@@ -19053,7 +19054,6 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
   // consulta en vivo de Busint, o a mano desde el detalle del pedido.
   const historico = pedidos.filter((p) => p.estado === "cerrado");
   const busquedaNorm = busqueda.trim().toLowerCase();
-  const listaBase = filtro === "activos" ? activos : historico;
   // Búsqueda por referencia: ignora guiones, espacios y mayúsculas ("GM5004" = "gm-5004").
   const normRefBusq = (v) => String(v || "").toLowerCase().replace(/[^a-z0-9]/g, "");
   const busquedaRef = normRefBusq(busqueda);
@@ -19062,6 +19062,26 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
   // "falta" no se compensa entre referencias (el sobrecorte de una no tapa lo que falta en otra). Facturado = neto de Busint (null si aún no carga).
   const avanceDe = (p) => calcularAvancePedido(p, avance);
   const faltaDe = (p) => avanceDe(p).falta;
+  // (2026-11-03, a pedido de Fredy) FILTRO POR CLIENTE: elige un cliente y el panel "¿Cuánto tengo por cortar y para qué día?" y la tabla
+  // se calculan solo con sus pedidos; la lista muestra cuánto le falta por cortar a cada cliente.
+  const claveCliente = (p) => String(p.cliente || "(sin cliente)").trim() || "(sin cliente)";
+  const opcionesCliente = (() => {
+    const m = new Map();
+    activos.forEach((p) => {
+      const k = claveCliente(p);
+      if (!m.has(k)) m.set(k, { cliente: k, falta: 0, pedidos: 0 });
+      if (p.estado === "activo") {
+        const f = faltaDe(p);
+        if (f > 0) { m.get(k).falta += f; m.get(k).pedidos += 1; }
+      }
+    });
+    return [...m.values()].sort((a, b) => (b.falta - a.falta) || a.cliente.localeCompare(b.cliente));
+  })();
+  const faltaTodosClientes = opcionesCliente.reduce((acc, o) => acc + o.falta, 0);
+  const clienteFiltro = opcionesCliente.some((o) => o.cliente === clienteSel) ? clienteSel : "";
+  const activosCliente = clienteFiltro ? activos.filter((p) => claveCliente(p) === clienteFiltro) : activos;
+  const resumenClienteSel = clienteFiltro ? activosCliente.reduce((acc, p) => { const av = avanceDe(p); return { total: acc.total + av.total, cortado: acc.cortado + av.cortado }; }, { total: 0, cortado: 0 }) : null;
+  const listaBase = filtro === "activos" ? activosCliente : historico;
   const listaFiltrada = filtro === "activos" && filtroFalta !== "todos" ? listaBase.filter((p) => (filtroFalta === "faltante" ? faltaDe(p) > 0 : faltaDe(p) === 0)) : listaBase;
   // (2026-10-30, a pedido de Fredy) "Por cortar por día": unidades que faltan por cortar agrupadas por la fecha de despacho del pedido
   // (vencidos / hoy / próximos 7 días / después / sin fecha). Usa el avance real; los pedidos Terminados no cuentan.
@@ -19081,7 +19101,7 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
   const porCortarDia = (() => {
     const m = {};
     let total = 0, totalPedidos = 0;
-    activos.forEach((p) => {
+    activosCliente.forEach((p) => {
       if (p.estado !== "activo") return;
       const f = faltaDe(p);
       if (!(f > 0)) return;
@@ -19134,7 +19154,7 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
     });
     return [...m.values()].sort((x, y) => (y.vencidos - x.vencidos) || (y.proximos - x.proximos) || ((y.pedido - y.cortado) - (x.pedido - x.cortado)) || x.cliente.localeCompare(y.cliente));
   })();
-  const hayFiltroActivo = !!busquedaNorm || filtroFalta !== "todos" || !!diaSel;
+  const hayFiltroActivo = !!busquedaNorm || filtroFalta !== "todos" || !!diaSel || !!clienteFiltro;
   const estaAbierto = (g) => (clientesAbiertos[g.cliente] !== undefined ? clientesAbiertos[g.cliente] : hayFiltroActivo);
   return (
     <div>
@@ -19179,6 +19199,19 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
             style={{ padding: "7px 12px", border: `1.5px solid ${busqueda ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, minWidth: 340, outline: "none", fontFamily: "inherit", marginLeft: 8 }}
           />
         )}
+        {filtro === "activos" && opcionesCliente.length > 0 && (
+          <select
+            value={clienteFiltro}
+            onChange={(e) => { setClienteSel(e.target.value); setDiaSel(null); }}
+            title="Elige un cliente para ver cuánto le falta por cortar"
+            style={{ padding: "7px 10px", borderRadius: 8, border: `1.5px solid ${clienteFiltro ? T.denim : T.border}`, background: clienteFiltro ? T.denimBg : T.white, color: clienteFiltro ? T.denim : T.ink, fontWeight: 700, fontSize: 12, fontFamily: "inherit", cursor: "pointer", marginLeft: 8, maxWidth: 320 }}
+          >
+            <option value="">👤 Todos los clientes · faltan {fmtNum(faltaTodosClientes)}</option>
+            {opcionesCliente.map((o) => (
+              <option key={o.cliente} value={o.cliente}>{o.cliente} · {o.falta > 0 ? `faltan ${fmtNum(o.falta)}` : "completo ✓"}</option>
+            ))}
+          </select>
+        )}
         {filtro === "activos" && gruposCliente.length > 0 && (
           <div style={{ display: "flex", gap: 4, marginLeft: 8, alignItems: "center" }}>
             <button onClick={() => setClientesAbiertos(Object.fromEntries(gruposCliente.map((g) => [g.cliente, true])))} style={{ padding: "6px 12px", borderRadius: 20, border: `1.5px solid ${T.border}`, background: T.white, color: T.slate, fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>Abrir todos</button>
@@ -19187,7 +19220,7 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
         )}
         {filtro === "activos" && (
           <div style={{ display: "flex", gap: 4, marginLeft: 8, alignItems: "center" }}>
-            {[["todos", "Todos"], ["faltante", `Con faltante (${activos.filter((p) => faltaDe(p) > 0).length})`], ["completos", `Completos (${activos.filter((p) => faltaDe(p) === 0).length})`]].map(([v, label]) => (
+            {[["todos", "Todos"], ["faltante", `Con faltante (${activosCliente.filter((p) => faltaDe(p) > 0).length})`], ["completos", `Completos (${activosCliente.filter((p) => faltaDe(p) === 0).length})`]].map(([v, label]) => (
               <button key={v} onClick={() => setFiltroFalta(v)} style={{ padding: "6px 12px", borderRadius: 20, border: `1.5px solid ${filtroFalta === v ? T.denim : T.border}`, background: filtroFalta === v ? T.denimBg : T.white, color: filtroFalta === v ? T.denim : T.slate, fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>{label}</button>
             ))}
           </div>
@@ -19197,9 +19230,10 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
         <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, padding: 16, marginBottom: 16 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
             <div>
-              <div style={{ fontSize: 15, fontWeight: 800, color: T.ink }}>✂️ ¿Cuánto tengo por cortar y para qué día?</div>
-              <div style={{ fontSize: 12, color: T.slate, marginTop: 2 }}>Unidades que faltan por cortar, según la fecha de despacho del pedido. Toca un día para ver solo esos pedidos.{!avance ? " (Calculando el avance real…)" : ""}</div>
+              <div style={{ fontSize: 15, fontWeight: 800, color: T.ink }}>✂️ ¿Cuánto tengo por cortar y para qué día?{clienteFiltro && <span style={{ color: T.denim }}> · {clienteFiltro}</span>}</div>
+              <div style={{ fontSize: 12, color: T.slate, marginTop: 2 }}>{clienteFiltro ? "Solo los pedidos de este cliente. " : ""}Unidades que faltan por cortar, según la fecha de despacho del pedido. Toca un día para ver solo esos pedidos.{!avance ? " (Calculando el avance real…)" : ""}</div>
             </div>
+            {clienteFiltro && <button onClick={() => { setClienteSel(""); setDiaSel(null); }} style={{ padding: "5px 12px", borderRadius: 20, border: `1.5px solid ${T.denim}`, background: T.denimBg, color: T.denim, fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>✕ Quitar cliente</button>}
             {diaSel && <button onClick={() => setDiaSel(null)} style={{ padding: "5px 12px", borderRadius: 20, border: `1.5px solid ${T.denim}`, background: T.denimBg, color: T.denim, fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>✕ Quitar filtro de día</button>}
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -19220,9 +19254,9 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
               );
             })}
             <div style={{ flex: "1 1 120px", minWidth: 120, padding: "10px 8px", borderRadius: 10, background: T.ink, textAlign: "center" }}>
-              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.5, color: T.seam }}>TOTAL POR CORTAR</div>
+              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.5, color: T.seam }}>TOTAL POR CORTAR{clienteFiltro ? ` · ${clienteFiltro}` : ""}</div>
               <div style={{ fontSize: 22, fontWeight: 800, margin: "4px 0 0", color: T.white }}>{fmtNum(porCortarDia.total)}</div>
-              <div style={{ fontSize: 11, color: T.seam }}>{porCortarDia.totalPedidos} pedido{porCortarDia.totalPedidos !== 1 ? "s" : ""}</div>
+              <div style={{ fontSize: 11, color: T.seam }}>{porCortarDia.totalPedidos} pedido{porCortarDia.totalPedidos !== 1 ? "s" : ""}{resumenClienteSel && resumenClienteSel.total > 0 ? ` · cortado ${fmtNum(resumenClienteSel.cortado)} de ${fmtNum(resumenClienteSel.total)} (${Math.min(100, Math.round((resumenClienteSel.cortado / resumenClienteSel.total) * 100))} %)` : ""}</div>
             </div>
           </div>
         </div>
