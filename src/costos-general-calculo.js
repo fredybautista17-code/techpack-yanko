@@ -2,7 +2,7 @@
 // (2026-11-04, a pedido de Fredy) Cierre mensual del centro de costo general. Responde dos cosas:
 //   1. ¿Cuánto estoy recogiendo con los básicos del Dado por Cumplido? (lotes aprobados en el mes)
 //   2. ¿Me alcanza para pagar lo que está fuera del costo del lote? = gastos del Excel + nómina fiscal +
-//      lo que se pone de más en destajo (ayudas − excedentes) + provisión de prestaciones y vacaciones.
+//      las ayudas de destajo (los excedentes no se restan) + provisión de prestaciones y vacaciones.
 // Lo que producen los trabajadores de destajo (y Fiscal Destajo) YA entra como costo directo del lote, así que
 // aquí solo cuenta la diferencia entre lo que se les pagó y lo que produjeron, más su provisión.
 import { normTexto, parseNumero } from "./centro-costo-historico-parser";
@@ -156,7 +156,8 @@ export function resumenFiscal(liquidaciones) {
 
 // ─── Destajo: lo que ponemos de más ──────────────────────────────────────────
 // areas: [{ clave, nombre, trabajadores: [{id, nombre, valor, costo}] | null, agregado: {valor, costo} | null, dias, fuente }]
-// Por trabajador: produjo − le pagamos. Negativo = ayuda; positivo = excedente (compensa las ayudas del área).
+// Por trabajador: produjo − le pagamos. Negativo = ayuda; positivo = excedente. SOLO cuentan las ayudas: los excedentes
+// son montos extras y NO se restan (decisión de Fredy, 2026-11-04); se muestran aparte como dato.
 export function destajoDelMes(areas, fichas) {
   const out = (areas || []).map((a) => {
     let personas = [];
@@ -181,7 +182,7 @@ export function destajoDelMes(areas, fichas) {
       excedentes = Math.max(0, -dif);
       provision = provisionDeTrabajador(num(a.agregado.costo), null).total;
     }
-    const neta = ayudas - excedentes;
+    const neta = ayudas; // los excedentes no se restan
     return { clave: a.clave, nombre: a.nombre, fuente: a.fuente || "", dias: a.dias || 0, detalle: personas.length > 0, personas, ayudados: personas.filter((p) => p.resultado < 0).length, total: personas.length, ayudas, excedentes, neta, provision, extra: neta + provision };
   });
   const sum = (k) => out.reduce((s, a) => s + a[k], 0);

@@ -3,7 +3,7 @@
 //   · Recogido con los básicos: lo que dejan los lotes aprobados en el mes en Dado por Cumplido (base × cortadas + los dos
 //     porcentajes), por categoría BASE.
 //   · Por pagar fuera de los lotes: gastos del Excel (se cargan aquí cada mes) + nómina fiscal confirmada + lo que se pone
-//     de más en destajo (ayudas − excedentes, de los cierres de Centro de Costo) + provisión de cesantías, prima, intereses
+//     de más en destajo (solo las ayudas, de los cierres de Centro de Costo; los excedentes no se restan) + provisión de cesantías, prima, intereses
 //     y vacaciones de esos trabajadores.
 //   · A quién estamos ayudando: lista por trabajador con lo que produjo, lo que se le pagó y su provisión.
 // Lo que producen los de destajo ya está dentro del costo del lote; por eso aquí solo entra la diferencia.
@@ -208,7 +208,7 @@ export default function CostosGeneralView({ db }) {
   return (
     <div>
       <div style={{ fontSize: 13, color: C.slate, marginBottom: 14, lineHeight: 1.6, maxWidth: 900 }}>
-        ¿Lo que recogen los lotes con los básicos paga lo que está fuera del costo del lote? Lo que producen los trabajadores de destajo ya entra al lote; aquí solo se suma lo que ponemos de más (ayudas menos excedentes) y su provisión de cesantías, prima, intereses y vacaciones.
+        ¿Lo que recogen los lotes con los básicos paga lo que está fuera del costo del lote? Lo que producen los trabajadores de destajo ya entra al lote; aquí solo se suman las ayudas (los excedentes no se restan, son montos extras) y su provisión de cesantías, prima, intereses y vacaciones.
       </div>
 
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
@@ -229,7 +229,7 @@ export default function CostosGeneralView({ db }) {
 
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 22 }}>
         <Tile titulo="Recogido con los básicos" valor={money(r.recogido.aporte)} color={C.green} sub={`${r.recogido.lotes} lotes aprobados · ${fmt(r.recogido.cortadas)} prendas cortadas`} />
-        <Tile titulo="Por pagar fuera de los lotes" valor={money(r.estructura)} color={C.amber} sub="gastos + nómina fiscal + destajo (ayuda y provisión)" />
+        <Tile titulo="Por pagar fuera de los lotes" valor={money(r.estructura)} color={C.amber} sub="gastos + nómina fiscal + destajo (ayudas y provisión)" />
         <Tile
           titulo={alcanza ? "Me alcanza" : "Me falta"}
           valor={`${alcanza ? "+" : "−"}${money(Math.abs(r.resultado))}`}
@@ -263,7 +263,7 @@ export default function CostosGeneralView({ db }) {
           <tbody>
             <tr><td style={tdL}>Gastos del Excel</td><td style={{ ...td, textAlign: "left", color: C.slate }}>{r.gastos.incluidas} gastos incluidos{r.gastos.excluidas ? ` · ${r.gastos.excluidas} fuera (${money(r.gastos.excluidoValor)})` : ""}{origenGastos === "anterior" ? " · del mes anterior" : origenGastos === "ninguno" ? " · sin cargar" : ""}</td><td style={td}>{money(r.gastos.total)}</td></tr>
             <tr><td style={tdL}>Nómina fiscal completa</td><td style={{ ...td, textAlign: "left", color: C.slate }}>{r.fiscal.personas} personas · {quincenasFiscal} de 2 quincenas confirmadas (neto + seguridad social + prestaciones)</td><td style={td}>{money(r.fiscal.total)}</td></tr>
-            <tr><td style={tdL}>Destajo: ayuda neta</td><td style={{ ...td, textAlign: "left", color: C.slate }}>{money(r.destajo.ayudas)} de ayudas − {money(r.destajo.excedentes)} de excedentes</td><td style={td}>{money(r.destajo.neta)}</td></tr>
+            <tr><td style={tdL}>Destajo: ayudas</td><td style={{ ...td, textAlign: "left", color: C.slate }}>{r.destajo.areas.reduce((s, a) => s + a.ayudados, 0)} personas ayudadas · los excedentes ({money(r.destajo.excedentes)}) no se restan</td><td style={td}>{money(r.destajo.neta)}</td></tr>
             <tr><td style={tdL}>Destajo: provisión</td><td style={{ ...td, textAlign: "left", color: C.slate }}>Cesantías, prima, intereses y vacaciones</td><td style={td}>{money(r.destajo.provision)}</td></tr>
             <tr style={{ background: C.canvas }}><td style={tdL}>Total por pagar</td><td style={td} /><td style={{ ...td, fontWeight: 800, color: C.amber }}>{money(r.estructura)}</td></tr>
           </tbody>
@@ -273,14 +273,14 @@ export default function CostosGeneralView({ db }) {
       <div style={{ fontSize: 15, fontWeight: 800, color: C.ink, marginBottom: 8 }}>3 · Áreas de destajo: lo que pone la estructura</div>
       <div style={caja}>
         <table style={tabla}>
-          <thead><tr><th style={thL}>Área</th><th style={th}>Personas ayudadas</th><th style={th}>Ayudas</th><th style={th}>Excedentes</th><th style={th}>Ayuda neta</th><th style={th}>Provisión</th><th style={th}>Extra que pone la estructura</th></tr></thead>
+          <thead><tr><th style={thL}>Área</th><th style={th}>Personas ayudadas</th><th style={th}>Ayudas</th><th style={th}>Excedentes (no se restan)</th><th style={th}>Provisión</th><th style={th}>Extra que pone la estructura</th></tr></thead>
           <tbody>
             {r.destajo.areas.map((a) => (
-              <tr key={a.clave}><td style={tdL}>{a.nombre}</td><td style={td}>{a.detalle ? `${a.ayudados} de ${a.total}` : "—"}</td><td style={{ ...td, color: C.red }}>{money(a.ayudas)}</td><td style={{ ...td, color: C.green }}>{money(a.excedentes)}</td><td style={td}>{money(a.neta)}</td><td style={td}>{money(a.provision)}</td><td style={{ ...td, fontWeight: 800 }}>{money(a.extra)}</td></tr>
+              <tr key={a.clave}><td style={tdL}>{a.nombre}</td><td style={td}>{a.detalle ? `${a.ayudados} de ${a.total}` : "—"}</td><td style={{ ...td, color: C.red }}>{money(a.ayudas)}</td><td style={{ ...td, color: C.slate }}>{money(a.excedentes)}</td><td style={td}>{money(a.provision)}</td><td style={{ ...td, fontWeight: 800 }}>{money(a.extra)}</td></tr>
             ))}
             {!r.destajo.areas.length && <tr><td colSpan={7} style={{ ...td, textAlign: "left", color: C.slate }}>Todavía no hay cierres de Centro de Costo de este mes.</td></tr>}
             {r.destajo.areas.length > 0 && (
-              <tr style={{ background: C.canvas }}><td style={tdL}>Total destajo</td><td style={td} /><td style={{ ...td, fontWeight: 800 }}>{money(r.destajo.ayudas)}</td><td style={{ ...td, fontWeight: 800 }}>{money(r.destajo.excedentes)}</td><td style={{ ...td, fontWeight: 800 }}>{money(r.destajo.neta)}</td><td style={{ ...td, fontWeight: 800 }}>{money(r.destajo.provision)}</td><td style={{ ...td, fontWeight: 800 }}>{money(r.destajo.extra)}</td></tr>
+              <tr style={{ background: C.canvas }}><td style={tdL}>Total destajo</td><td style={td} /><td style={{ ...td, fontWeight: 800 }}>{money(r.destajo.ayudas)}</td><td style={{ ...td, fontWeight: 800, color: C.slate }}>{money(r.destajo.excedentes)}</td><td style={{ ...td, fontWeight: 800 }}>{money(r.destajo.provision)}</td><td style={{ ...td, fontWeight: 800 }}>{money(r.destajo.extra)}</td></tr>
             )}
           </tbody>
         </table>
@@ -308,7 +308,7 @@ export default function CostosGeneralView({ db }) {
         </table>
       </div>
       <div style={{ fontSize: 11.5, color: C.slate, marginBottom: 22, lineHeight: 1.6 }}>
-        Resultado = lo que produjo − lo que se le pagó (excedente si es positivo, ayuda si es negativo). Extra total = su ayuda (si la hay) + su provisión; los excedentes se restan en el total del área. La provisión usa las mismas tasas de Nómina (cesantías y prima 8,33 %, intereses 12 % de las cesantías, vacaciones 4,17 %) y se proporciona a lo pagado en el mes. * = sin ficha en Nómina: se usó el mínimo legal.
+        Resultado = lo que produjo − lo que se le pagó (excedente si es positivo, ayuda si es negativo). Extra total = su ayuda (si la hay) + su provisión; los excedentes no se restan porque son montos extras. La provisión usa las mismas tasas de Nómina (cesantías y prima 8,33 %, intereses 12 % de las cesantías, vacaciones 4,17 %) y se proporciona a lo pagado en el mes. * = sin ficha en Nómina: se usó el mínimo legal.
       </div>
 
       <div style={{ fontSize: 15, fontWeight: 800, color: C.ink, marginBottom: 8, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
