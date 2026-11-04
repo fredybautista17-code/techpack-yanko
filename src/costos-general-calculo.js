@@ -23,7 +23,7 @@ const num = (v) => {
 
 // Provisión del mes de UN trabajador de destajo / Fiscal Destajo.
 //   - Destajo: cesantías y prima sobre sueldo + auxilio; vacaciones solo sobre el sueldo.
-//   - Fiscal Destajo: cesantías y prima sobre el sueldo (sin auxilio), como lo calcula hoy Nómina.
+//   - Fiscal Destajo: igual que Destajo (cesantías y prima sobre sueldo + auxilio; desde 2026-11-04 Nómina también lo calcula así).
 //   - Se proporciona a lo que se le ha pagado en el mes (costo del cierre) frente a su pago mensual, para que un mes
 //     a medias provisione a medias. Sin ficha se supone el mínimo legal.
 export function provisionDeTrabajador(costo, ficha) {
@@ -33,7 +33,7 @@ export function provisionDeTrabajador(costo, ficha) {
   const tieneFicha = sueldo > 0;
   const s = tieneFicha ? sueldo : SMMLV_2026;
   const a = tieneFicha ? aux : AUXILIO_2026;
-  const baseCes = ficha?.tipoNomina === "Fiscal Destajo" ? s : s + a;
+  const baseCes = s + a;
   const cesantias = baseCes * TASA_CESANTIAS;
   const intereses = cesantias * TASA_INTERES_CESANTIAS;
   const prima = baseCes * TASA_PRIMA;

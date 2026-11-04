@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import { initializeApp, getApps } from "firebase/app";
 import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc } from "firebase/firestore";
 import { calcularEquiposCorte } from "./corte-equipos";
+import { unirPorAlias } from "./nombres-alias";
 import { AREAS_HISTORICO, claveArea, nombreAreaPorClave, normTexto, parsearHojaHistorico, unirResultados } from "./centro-costo-historico-parser";
 
 // ─── CENTRO DE COSTO — HISTÓRICO DEL AÑO POR ÁREA ───────────────────────────
@@ -233,9 +234,11 @@ function EtiquetaResultado({ bal }) {
 const thCell = (txt, right) => <th style={{ textAlign: right ? "right" : "left", padding: "7px 9px", fontSize: 10.5, color: C.slate, textTransform: "uppercase" }}>{txt}</th>;
 
 // Detalle que se abre al tocar un mes del año.
-function DetalleMes({ titulo, f, cierre, h, filasTrab, miembros }) {
+function DetalleMes({ titulo, f, cierre, h, filasTrab: filasTrabCrudas, miembros, alias }) {
   const [busq, setBusq] = useState("");
   const q = normTexto(busq);
+  // Los cierres guardados con el nombre viejo de alguien renombrado en Admin Corte se unen al nombre nuevo.
+  const filasTrab = useMemo(() => unirPorAlias(filasTrabCrudas, alias), [filasTrabCrudas, alias]);
   const todas = [...filasTrab].sort((a, b) => (a.valor - a.costo) - (b.valor - b.costo));
   const filas = todas.filter((t) => !q || normTexto(t.nombre).includes(q));
   // (2026-11-04, a pedido de Fredy) CORTE se mide por equipos (cortador + ayudante); doña Berta es apoyo. Solo si ya hay
@@ -659,6 +662,11 @@ export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentU
   const claveSel = claveArea(areaNombre || "CORTE");
   const { historico, pedidos, trabajadoresCorte, cargando, cierresResueltos, datosArea } = useCentroCostoDatos(anioSel, claveSel);
   // Roles de los equipos de Corte (se arman en Corte → Centro de Costo).
+  const [aliasCorte, setAliasCorte] = useState({});
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, "corte_config", "main"), (d) => setAliasCorte(d.exists() ? d.data().nomina?.nombresAnteriores || {} : {}), () => setAliasCorte({}));
+    return () => unsub();
+  }, []);
   const [miembrosCorte, setMiembrosCorte] = useState([]);
   useEffect(() => {
     const unsub = onSnapshot(doc(db, "costos_config", "corte_equipos"), (d) => setMiembrosCorte(d.exists() && Array.isArray(d.data().miembros) ? d.data().miembros : []), () => setMiembrosCorte([]));
@@ -878,6 +886,7 @@ export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentU
                         h={f.fuente === "historico" ? historico.find((x) => x.clave === claveSel && x.anio === Number(anioSel) && x.mes === m) : null}
                         filasTrab={filasTrabMes}
                         miembros={claveSel === "CORTE" ? miembrosCorte : []}
+                        alias={claveSel === "CORTE" ? aliasCorte : null}
                       />
                     </td>
                   </tr>

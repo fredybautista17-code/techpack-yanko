@@ -4,6 +4,7 @@ import {
   getFirestore,
   collection,
   doc,
+  getDoc,
   getDocs,
   setDoc,
   deleteDoc,
@@ -12,6 +13,9 @@ import {
 } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import CentroCostoAnioPanel from "./centro-costo-historico";
+import { normTexto } from "./centro-costo-historico-parser";
+import { mismoNombre } from "./corte-equipos";
+import { resolverNombre } from "./nombres-alias";
 import { evaluarCorteContraTeorico } from "./consumo-tela-calculo";
 import EquiposCorteVista from "./corte-equipos-vista";
 // ─── FIREBASE ────────────────────────────────────────────────────────────────
@@ -3915,6 +3919,44 @@ function DetallePedido({
   );
 }
 // ─── ADMIN CORTE ──────────────────────────────────────────────────────────────
+// Nombre de un trabajador de Corte que se edita en el mismo lugar: Enter o salir del campo guarda, Esc cancela.
+function NombreEditable({ valor, onCommit }) {
+  const [txt, setTxt] = useState(valor);
+  const cancelado = useRef(false);
+  useEffect(() => setTxt(valor), [valor]);
+  async function confirmar() {
+    if (cancelado.current) {
+      cancelado.current = false;
+      setTxt(valor);
+      return;
+    }
+    const nuevo = txt.trim().toUpperCase();
+    if (!nuevo || nuevo === valor) {
+      setTxt(valor);
+      return;
+    }
+    const ok = await onCommit(nuevo);
+    if (!ok) setTxt(valor);
+  }
+  return (
+    <input
+      value={txt}
+      onChange={(e) => setTxt(e.target.value)}
+      onBlur={confirmar}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") e.currentTarget.blur();
+        if (e.key === "Escape") {
+          cancelado.current = true;
+          e.currentTarget.blur();
+        }
+      }}
+      title="Clic para editar el nombre (Enter guarda, Esc cancela)"
+      style={{ width: "100%", padding: "4px 8px", border: "1.5px solid transparent", borderRadius: 8, background: "transparent", fontWeight: 700, color: C.ink, fontSize: 14, fontFamily: "inherit" }}
+      onFocus={(e) => { e.currentTarget.style.border = `1.5px solid ${C.border}`; e.currentTarget.style.background = "#fff"; }}
+    />
+  );
+}
+
 function AdminCorte({ config, onSave, onReiniciarCortes, currentUser, ultimaCargaPrecios }) {
   const [reiniciando, setReiniciando] = useState(false);
   const [resultReinicio, setResultReinicio] = useState(null);
@@ -4081,6 +4123,51 @@ function AdminCorte({ config, onSave, onReiniciarCortes, currentUser, ultimaCarg
     });
     setNewTrabajador({ nombre: "", sueldo: "" });
   }
+  // (2026-11-04, a pedido de Fredy) Cambiar el nombre de alguien. Guarda «nombre viejo → nombre nuevo» para unir los cierres y meses
+  // anteriores, evita duplicados al subir el Excel de nómina y actualiza su rol en los equipos de Corte.
+  async function renombrarTrabajador(id, nuevoNombre) {
+    const t = trabajadores.find((x) => x.id === id);
+    const nuevo = String(nuevoNombre || "").trim().toUpperCase();
+    if (!t || !nuevo || nuevo === t.nombre) return false;
+    if (trabajadores.some((x) => x.id !== id && normTexto(x.nombre) === normTexto(nuevo))) {
+      window.alert("Ya hay otro trabajador con ese nombre.");
+      return false;
+    }
+    if (
+      !window.confirm(
+        `Cambiar «${t.nombre}» por «${nuevo}»?\n\n• Los cierres y meses anteriores guardados con el nombre viejo se unen al nombre nuevo.\n• Si esta persona ya tiene cortes registrados con el nombre viejo, esos cortes siguen con el nombre viejo y aparecen aparte.\n• Su rol en los equipos de Corte se actualiza solo.`
+      )
+    )
+      return false;
+    const previos = { ...(config.nomina?.nombresAnteriores || {}) };
+    Object.keys(previos).forEach((k) => {
+      if (normTexto(previos[k]) === normTexto(t.nombre)) previos[k] = nuevo;
+    });
+    previos[normTexto(t.nombre)] = nuevo;
+    onSave({
+      ...config,
+      nomina: {
+        ...config.nomina,
+        trabajadores: trabajadores.map((x) => (x.id === id ? { ...x, nombre: nuevo } : x)),
+        nombresAnteriores: previos,
+      },
+    });
+    try {
+      const ref = doc(db, "costos_config", "corte_equipos");
+      const snap = await getDoc(ref);
+      if (snap.exists() && Array.isArray(snap.data().miembros)) {
+        const miembros = snap.data().miembros.map((m) => ({
+          ...m,
+          nombre: mismoNombre(m.nombre, t.nombre) ? nuevo : m.nombre,
+          ...(m.ayudanteDe ? { ayudanteDe: mismoNombre(m.ayudanteDe, t.nombre) ? nuevo : m.ayudanteDe } : {}),
+        }));
+        await setDoc(ref, { miembros, actualizadoEn: new Date().toISOString() }, { merge: true });
+      }
+    } catch (e) {
+      console.error("No se pudo actualizar el rol en los equipos de Corte", e);
+    }
+    return true;
+  }
   function delTrabajador(id) {
     onSave({
       ...config,
@@ -4127,13 +4214,16 @@ function AdminCorte({ config, onSave, onReiniciarCortes, currentUser, ultimaCarg
       const actuales = [...trabajadores];
       let actualizados = 0;
       let nuevos = 0;
+      const aliasNombres = config.nomina?.nombresAnteriores || {};
       filas.forEach((f) => {
-        const idx = actuales.findIndex((t) => norm(t.nombre) === norm(f.nombre));
+        // Si en el Excel viene el nombre viejo de alguien que ya se renombró, se toma como el nombre nuevo.
+        const nombreVigente = resolverNombre(f.nombre, aliasNombres);
+        const idx = actuales.findIndex((t) => norm(t.nombre) === norm(nombreVigente));
         if (idx >= 0) {
           actuales[idx] = { ...actuales[idx], sueldo: f.sueldo };
           actualizados++;
         } else {
-          actuales.push({ id: uid(), nombre: f.nombre, sueldo: f.sueldo });
+          actuales.push({ id: uid(), nombre: nombreVigente, sueldo: f.sueldo });
           nuevos++;
         }
       });
@@ -4561,8 +4651,9 @@ function AdminCorte({ config, onSave, onReiniciarCortes, currentUser, ultimaCarg
               }}
             >
               <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 700, color: C.ink }}>
-                  👤 {t.nombre}
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span>👤</span>
+                  <NombreEditable valor={t.nombre} onCommit={(n) => renombrarTrabajador(t.id, n)} />
                 </div>
                 {t.fechaSalida && (
                   <div style={{ fontSize: 11, fontWeight: 700, color: C.amber, marginTop: 2 }}>

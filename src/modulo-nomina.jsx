@@ -8232,14 +8232,18 @@ function calcularLiquidacionFiscalDestajo(trabajador, diasInasistencia, diasSinA
   const auxilioQuincena = Math.max(0, auxilio / 2 - descuentoAuxilio);
   const saldoCesantiasInicio = Number(trabajador.cesantiasAcumuladas) || 0;
   const baseParafiscales = PARAFISCALES_SOBRE_SUELDO_DESCONTADO ? sueldoQuincena : sueldo / 2;
-  const cesantiasPeriodo = baseParafiscales * TASA_CESANTIAS_MENSUAL;
+  // (2026-11-04, a pedido de Fredy; confirmado con su contador) Cesantías y prima de Fiscal Destajo van sobre sueldo + auxilio de
+  // transporte (auxilio ya neto de inasistencias de la quincena); vacaciones siguen solo sobre el sueldo e intereses 12 % de las
+  // cesantías. Antes iban solo sobre el sueldo. Las liquidaciones ya confirmadas no se recalculan.
+  const baseCesantiasPrima = baseParafiscales + auxilioQuincena;
+  const cesantiasPeriodo = baseCesantiasPrima * TASA_CESANTIAS_MENSUAL;
   // (2026-09-21, a pedido de Fredy) Antes esto se calculaba sobre el saldo
   // acumulado guardado en la ficha del trabajador (Cesantías Acumuladas),
   // campo que se eliminó -- ahora se calcula igual que en Nómina Fiscal:
   // con base en la cesantía de ESTA quincena, sin depender de ningún
   // acumulado guardado.
   const interesesPeriodo = cesantiasPeriodo * TASA_INTERES_CESANTIAS_ANUAL;
-  const primaPeriodo = baseParafiscales * TASA_PRIMA_MENSUAL;
+  const primaPeriodo = baseCesantiasPrima * TASA_PRIMA_MENSUAL;
   const vacacionesPeriodo = baseParafiscales * TASA_VACACIONES_MENSUAL;
   // (2026-09-20, a pedido de Fredy) Mismo mecanismo de "Mínimo garantizado
   // por causación" que calcularLiquidacionFiscal -- ver comentario ahí.
@@ -9826,11 +9830,9 @@ function HistorialPrestacionServicioView({ liquidaciones, trabajadores }) {
 //    por Fredy: cesantías y prima SÍ incluyen el auxilio de transporte en
 //    la base (sueldo+auxilio), vacaciones NO (solo sueldo) — así lo trae
 //    su archivo de referencia.
-//  - OJO: Fiscal Destajo hoy calcula cesantías/prima solo sobre el sueldo
-//    (sin auxilio) — es una fórmula distinta a esta. Si corresponde
-//    corregir Fiscal Destajo también, es una decisión aparte pendiente de
-//    confirmar con Fredy antes de tocarla (afectaría liquidaciones ya
-//    confirmadas en su historial).
+//  - (2026-11-04) Fiscal Destajo ya se corrigió igual: cesantías y prima sobre
+//    sueldo + auxilio (confirmado por Fredy con su contador). Aplica a las
+//    liquidaciones nuevas; las ya confirmadas no se recalcularon.
 function calcularLiquidacionDestajo(trabajador, netoProduccion, totalHoras = 0, diasTrabajadosQuincena = 0) {
   // (2026-09-18, a pedido de Fredy) "Pagar por día": no se liquida por
   // producción ni por un sueldo fijo -- se paga (días trabajados según el

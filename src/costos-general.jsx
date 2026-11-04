@@ -14,6 +14,7 @@ import { useCentroCostoDatos } from "./centro-costo-historico";
 import { AREAS_HISTORICO, normTexto } from "./centro-costo-historico-parser";
 import { ayudaQuincenasPorPersona } from "./ayuda-quincena";
 import { mismoNombre } from "./corte-equipos";
+import { unirPorAlias } from "./nombres-alias";
 import { cierreGeneral, parsearGastos, totalGastos, detalleLotes, detalleFiscal, AREAS_FUERA_DEFECTO } from "./costos-general-calculo";
 
 const C = {
@@ -267,6 +268,8 @@ export default function CostosGeneralView({ db }) {
   const [excepciones, setExcepciones] = useState({});
   const [msgAreas, setMsgAreas] = useState("");
   const [equiposCorte, setEquiposCorte] = useState([]);
+  // Nombres anteriores de los trabajadores de Corte (se guardan al renombrar en Admin Corte → Nómina).
+  const [aliasCorte, setAliasCorte] = useState({});
   // Datos de Nómina para la «Ayuda por quincena»: liquidaciones de destajo, horas, producción y causación manual del mes.
   const [nominaQ, setNominaQ] = useState({ liquidaciones: [], horas: [], produccion: [], causaciones: [] });
   useEffect(() => {
@@ -281,6 +284,9 @@ export default function CostosGeneralView({ db }) {
     // Equipos de Corte (quién es cortador, ayudante o apoyo): se arman en Corte → Centro de Costo.
     getDoc(doc(db, "costos_config", "corte_equipos"))
       .then((d) => { if (vivo && d.exists() && Array.isArray(d.data().miembros)) setEquiposCorte(d.data().miembros); })
+      .catch(() => {});
+    getDoc(doc(db, "corte_config", "main"))
+      .then((d) => { if (vivo && d.exists() && d.data().nomina?.nombresAnteriores) setAliasCorte(d.data().nomina.nombresAnteriores); })
       .catch(() => {});
     return () => { vivo = false; };
   }, [db]);
@@ -378,10 +384,10 @@ export default function CostosGeneralView({ db }) {
   const areasDestajo = useMemo(() => AREAS_HISTORICO.map((a) => {
     const r = cierresResueltos.get(`${a.clave}|${ym}`);
     const m = datosArea[a.clave]?.meses?.[mes];
-    if (r && r.trabajadores?.length) return { clave: a.clave, nombre: a.nombre, trabajadores: r.trabajadores, dias: r.dias, fuente: "cierre" };
+    if (r && r.trabajadores?.length) return { clave: a.clave, nombre: a.nombre, trabajadores: a.clave === "CORTE" ? unirPorAlias(r.trabajadores, aliasCorte) : r.trabajadores, dias: r.dias, fuente: "cierre" };
     if (m && (m.valor > 0 || m.costo > 0)) return { clave: a.clave, nombre: a.nombre, agregado: { valor: m.valor, costo: m.costo }, fuente: m.fuente };
     return null;
-  }).filter(Boolean), [cierresResueltos, datosArea, ym, mes]);
+  }).filter(Boolean), [cierresResueltos, datosArea, ym, mes, aliasCorte]);
 
   const r = useMemo(() => cierreGeneral({ lotes: datos.lotes, bases: datos.bases, gastos: lineasGastos, liquidacionesFiscal: datos.liqFiscal, areasDestajo, fichas: datos.fichas, areasFuera, excepciones, equiposCorte }), [datos, lineasGastos, areasDestajo, areasFuera, excepciones, equiposCorte]);
 
@@ -557,7 +563,7 @@ export default function CostosGeneralView({ db }) {
           { k: "nombre", label: "Trabajador", izq: true }, { k: "area", label: "Área", izq: true }, { k: "cesantias", label: "Cesantías", suma: true }, { k: "prima", label: "Prima", suma: true }, { k: "intereses", label: "Intereses", suma: true }, { k: "vacaciones", label: "Vacaciones", suma: true }, { k: "provision", label: "Provisión", suma: true }, { k: "fiscalTxt", label: "Nómina fiscal", izq: true, ver: (f) => (f.fiscalTxt ? <span style={{ color: f.fiscalCuenta ? C.amber : C.slate, fontWeight: f.fiscalCuenta ? 800 : 600 }}>{f.fiscalTxt}</span> : "") },
         ],
         filas, nombreExcel: `Destajo_provision_${ym}`, vacio: "Sin trabajadores para este mes.", onClose: cerrar,
-        nota: "Destajo: cesantías y prima sobre sueldo + auxilio (Fiscal Destajo: solo sueldo), intereses 12 % de las cesantías, vacaciones sobre el sueldo.",
+        nota: "Destajo y Fiscal Destajo: cesantías y prima sobre sueldo + auxilio, intereses 12 % de las cesantías, vacaciones solo sobre el sueldo.",
       };
     }
     // estructura: desglose de «Por pagar fuera de los lotes»
