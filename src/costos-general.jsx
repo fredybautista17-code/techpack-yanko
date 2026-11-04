@@ -566,6 +566,12 @@ export default function CostosGeneralView({ db }) {
   const sinDatos = r.recogido.lotes === 0 && r.estructura === 0;
   const quincenasFiscal = r.fiscal.quincenas.length;
   const sinDetalle = r.destajo.areas.filter((a) => !a.detalle);
+  // «Ayuda por quincena (Nómina)» por área: suma de las personas de destajo del área (las de Corte por equipos no la llevan).
+  const ayudaQAreas = new Map(r.destajo.areas.map((a) => {
+    const v = a.porEquipos ? [] : a.personas.map((p) => ayudaQ.get(p.id)).filter(Boolean);
+    return [a.clave, v.length ? v.reduce((t, x) => t + x.total, 0) : null];
+  }));
+  const ayudaQTotal = [...ayudaQAreas.values()].reduce((t, v) => t + (v || 0), 0);
 
   return (
     <div>
@@ -635,14 +641,14 @@ export default function CostosGeneralView({ db }) {
       <div style={{ fontSize: 15, fontWeight: 800, color: C.ink, marginBottom: 8 }}>3 · Áreas de destajo: lo que pone la estructura</div>
       <div style={caja}>
         <table style={tabla}>
-          <thead><tr><th style={thL}>Área</th><th style={th}>Personas ayudadas</th><th style={th}>Ayudas</th><th style={th}>Excedentes (no se restan)</th><th style={th}>Provisión</th><th style={th}>Extra que pone la estructura</th></tr></thead>
+          <thead><tr><th style={thL}>Área</th><th style={th}>Personas ayudadas</th><th style={th}>Ayudas</th><th style={{ ...th, background: "#FFE9A8", color: "#7A5200" }}>Ayuda por quincena (Nómina)</th><th style={th}>Excedentes (no se restan)</th><th style={th}>Provisión</th><th style={th}>Extra que pone la estructura</th></tr></thead>
           <tbody>
             {r.destajo.areas.map((a) => (
-              <tr key={a.clave} onClick={() => setVentana({ tipo: "area", clave: a.clave })} style={{ cursor: "pointer" }}><td style={tdL}>▸ {a.nombre}</td><td style={td}>{a.porEquipos ? "por equipos" : a.detalle ? `${a.ayudados} de ${a.total}` : "—"}</td><td style={{ ...td, color: C.red }}>{money(a.ayudas)}</td><td style={{ ...td, color: C.slate }}>{money(a.excedentes)}</td><td style={td}>{money(a.provision)}</td><td style={{ ...td, fontWeight: 800 }}>{money(a.extra)}</td></tr>
+              <tr key={a.clave} onClick={() => setVentana({ tipo: "area", clave: a.clave })} style={{ cursor: "pointer" }}><td style={tdL}>▸ {a.nombre}</td><td style={td}>{a.porEquipos ? "por equipos" : a.detalle ? `${a.ayudados} de ${a.total}` : "—"}</td><td style={{ ...td, color: C.red }}>{money(a.ayudas)}</td><td style={{ ...td, background: "#FFF4D6" }}>{ayudaQAreas.get(a.clave) == null ? "—" : money(ayudaQAreas.get(a.clave))}</td><td style={{ ...td, color: C.slate }}>{money(a.excedentes)}</td><td style={td}>{money(a.provision)}</td><td style={{ ...td, fontWeight: 800 }}>{money(a.extra)}</td></tr>
             ))}
             {!r.destajo.areas.length && <tr><td colSpan={7} style={{ ...td, textAlign: "left", color: C.slate }}>Todavía no hay cierres de Centro de Costo de este mes.</td></tr>}
             {r.destajo.areas.length > 0 && (
-              <tr style={{ background: C.canvas }}><td style={tdL}>Total destajo</td><td style={td} /><td style={{ ...td, fontWeight: 800 }}>{money(r.destajo.ayudas)}</td><td style={{ ...td, fontWeight: 800, color: C.slate }}>{money(r.destajo.excedentes)}</td><td style={{ ...td, fontWeight: 800 }}>{money(r.destajo.provision)}</td><td style={{ ...td, fontWeight: 800 }}>{money(r.destajo.extra)}</td></tr>
+              <tr style={{ background: C.canvas }}><td style={tdL}>Total destajo</td><td style={td} /><td style={{ ...td, fontWeight: 800 }}>{money(r.destajo.ayudas)}</td><td style={{ ...td, fontWeight: 800, background: "#FFF4D6" }}>{money(ayudaQTotal)}</td><td style={{ ...td, fontWeight: 800, color: C.slate }}>{money(r.destajo.excedentes)}</td><td style={{ ...td, fontWeight: 800 }}>{money(r.destajo.provision)}</td><td style={{ ...td, fontWeight: 800 }}>{money(r.destajo.extra)}</td></tr>
             )}
           </tbody>
         </table>
