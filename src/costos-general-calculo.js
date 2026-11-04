@@ -145,12 +145,30 @@ export function costoTotalLiquidacion(l) {
     + num(l.cesantiasPeriodo) + num(l.interesesPeriodo) + num(l.primaPeriodo) + num(l.vacacionesPeriodo);
 }
 
-export function resumenFiscal(liquidaciones) {
+// Áreas cuyo sueldo ya va dentro del costo del lote (su centro de costo está en la cotización): no son estructura.
+// Fredy las puede cambiar desde la ventana de nómina fiscal (2026-11-04); estas son las del arranque.
+export const AREAS_FUERA_DEFECTO = ["CORTE", "MAQUILA"];
+
+export function areaDeLiquidacion(l, fichas) {
+  const ficha = (fichas || []).find((f) => f.id === l.trabajadorId);
+  return ficha?.area || l.area || "Sin asignar";
+}
+const normFuera = (areasFuera) => new Set((areasFuera || []).map((a) => normTexto(a)));
+
+export function resumenFiscal(liquidaciones, fichas, areasFuera) {
   const lista = liquidaciones || [];
+  const fuera = normFuera(areasFuera);
+  const cuenta = [];
+  const noCuenta = [];
+  lista.forEach((l) => (fuera.has(normTexto(areaDeLiquidacion(l, fichas))) ? noCuenta : cuenta).push(l));
+  const suma = (a) => a.reduce((s, l) => s + costoTotalLiquidacion(l), 0);
+  const personas = (a) => new Set(a.map((l) => l.trabajadorId || l.nombre)).size;
   return {
-    total: lista.reduce((s, l) => s + costoTotalLiquidacion(l), 0),
-    personas: new Set(lista.map((l) => l.trabajadorId || l.nombre)).size,
+    total: suma(cuenta),
+    personas: personas(cuenta),
     quincenas: [...new Set(lista.map((l) => l.periodoId).filter(Boolean))].sort(),
+    fuera: { total: suma(noCuenta), personas: personas(noCuenta) },
+    totalTodo: suma(lista),
   };
 }
 
@@ -203,7 +221,8 @@ export function detalleLotes(lotes, bases, categoriaId) {
 }
 
 // Nómina fiscal confirmada del mes, una fila por persona (suma sus quincenas).
-export function detalleFiscal(liquidaciones, fichas) {
+export function detalleFiscal(liquidaciones, fichas, areasFuera) {
+  const fuera = normFuera(areasFuera);
   const por = new Map();
   (liquidaciones || []).forEach((l) => {
     const id = l.trabajadorId || l.nombre || l.id;
@@ -216,14 +235,16 @@ export function detalleFiscal(liquidaciones, fichas) {
     g.prestaciones += num(l.cesantiasPeriodo) + num(l.interesesPeriodo) + num(l.primaPeriodo) + num(l.vacacionesPeriodo);
     g.costo += costoTotalLiquidacion(l);
   });
-  return [...por.values()].map((g) => ({ ...g, quincenas: g.quincenas.sort() })).sort((a, b) => b.costo - a.costo);
+  return [...por.values()]
+    .map((g) => { const cuenta = !fuera.has(normTexto(g.area)); return { ...g, quincenas: g.quincenas.sort(), cuenta, costoCuenta: cuenta ? g.costo : 0, apagada: !cuenta }; })
+    .sort((a, b) => (a.cuenta === b.cuenta ? b.costo - a.costo : a.cuenta ? -1 : 1));
 }
 
 // ─── Todo junto ──────────────────────────────────────────────────────────────
-export function cierreGeneral({ lotes, bases, gastos, liquidacionesFiscal, areasDestajo, fichas }) {
+export function cierreGeneral({ lotes, bases, gastos, liquidacionesFiscal, areasDestajo, fichas, areasFuera }) {
   const recogido = recogidoDeLotes(lotes, bases);
   const g = totalGastos(gastos);
-  const fiscal = resumenFiscal(liquidacionesFiscal);
+  const fiscal = resumenFiscal(liquidacionesFiscal, fichas, areasFuera);
   const destajo = destajoDelMes(areasDestajo, fichas);
   const estructura = g.total + fiscal.total + destajo.extra;
   const resultado = recogido.aporte - estructura;
