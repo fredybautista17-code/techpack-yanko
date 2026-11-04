@@ -3,6 +3,7 @@ import { initializeApp, getApps } from "firebase/app";
 import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, query, where, writeBatch } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { abrirRecibosLiquidacionLote } from "./modulo-nomina";
+import { CuantoPagarMesView, EndeudamientoView } from "./financiera-cuanto-pagar";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
@@ -3287,6 +3288,8 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
   const isAdmin = currentUser?.isAdmin;
   const NAV = [
     { id: "pago_nomina", icon: "💰", label: "Pago de Nómina" },
+    { id: "cuanto_pagar", icon: "🧮", label: "Cuánto debo pagar" },
+    { id: "endeudamiento", icon: "🏦", label: "Endeudamiento" },
     { id: "proyeccion", icon: "🎯", label: "Proyección" },
     { id: "clientes", icon: "🤝", label: "Presupuesto Clientes" },
     { id: "programacion_pagos", icon: "🧭", label: "Programación de Pagos" },
@@ -3377,6 +3380,8 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
       <div style={{ flex: 1, padding: "28px 32px", overflow: "auto" }}>
         <div style={{ maxWidth: 1100, margin: "0 auto" }}>
           {subView === "pago_nomina" && <PagoNominaView currentUser={currentUser} />}
+          {subView === "cuanto_pagar" && <CuantoPagarMesView db={db} onIrEndeudamiento={() => setSubView("endeudamiento")} />}
+          {subView === "endeudamiento" && <EndeudamientoView db={db} isAdmin={isAdmin} />}
           {subView === "proyeccion" && (
             <ProyeccionView
               compras={compras}
