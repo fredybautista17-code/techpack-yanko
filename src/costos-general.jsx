@@ -3,7 +3,7 @@
 //   · Recogido con los básicos: lo que dejan los lotes aprobados en el mes en Dado por Cumplido (base × cortadas + los dos
 //     porcentajes), por categoría BASE.
 //   · Por pagar fuera de los lotes: gastos del Excel (se cargan aquí cada mes) + nómina fiscal confirmada + lo que se pone
-//     de más en destajo (ayudas − excedentes, de los cierres de Centro de Costo) + provisión de cesantías, prima, intereses
+//     de más en destajo (solo las ayudas, de los cierres de Centro de Costo; los excedentes no se restan) + provisión de cesantías, prima, intereses
 //     y vacaciones de esos trabajadores.
 //   · A quién estamos ayudando: lista por trabajador con lo que produjo, lo que se le pagó y su provisión.
 // Lo que producen los de destajo ya está dentro del costo del lote; por eso aquí solo entra la diferencia.
@@ -12,7 +12,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import { collection, doc, getDocs, query, setDoc, where } from "firebase/firestore";
 import { useCentroCostoDatos } from "./centro-costo-historico";
 import { AREAS_HISTORICO, normTexto } from "./centro-costo-historico-parser";
-import { cierreGeneral, parsearGastos, totalGastos } from "./costos-general-calculo";
+import { cierreGeneral, parsearGastos, totalGastos, detalleLotes, detalleFiscal } from "./costos-general-calculo";
 
 const C = {
   ink: "#1A1A2E", slate: "#5A5A7A", border: "#E8E2DB", canvas: "#F7F4F0", white: "#FFFFFF",
@@ -29,10 +29,14 @@ const thL = { ...th, textAlign: "left" };
 const tabla = { width: "100%", borderCollapse: "collapse", background: C.white };
 const caja = { overflowX: "auto", border: `1px solid ${C.border}`, borderRadius: 12, background: C.white, marginBottom: 22 };
 
-function Tile({ titulo, valor, sub, color, fondo }) {
+function Tile({ titulo, valor, sub, color, fondo, onClick }) {
   return (
-    <div style={{ flex: "1 1 220px", background: fondo || C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 16px" }}>
-      <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", letterSpacing: 0.4 }}>{titulo}</div>
+    <div
+      onClick={onClick}
+      title={onClick ? "Clic para ver de dónde sale" : undefined}
+      style={{ flex: "1 1 220px", background: fondo || C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 16px", cursor: onClick ? "pointer" : "default" }}
+    >
+      <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", letterSpacing: 0.4 }}>{titulo}{onClick ? " ▸" : ""}</div>
       <div style={{ fontSize: 24, fontWeight: 800, color: color || C.ink, marginTop: 4 }}>{valor}</div>
       {sub ? <div style={{ fontSize: 12, color: C.slate, marginTop: 2, lineHeight: 1.4 }}>{sub}</div> : null}
     </div>
@@ -58,6 +62,75 @@ function Etiqueta({ valor }) {
   );
 }
 
+// Ventana con el detalle de una cifra: tabla, buscador, total y Excel. Se cierra con la X, Esc o un clic afuera.
+//   columnas: [{ k, label, izq?, suma?, ver?(fila) }]  ·  filas: objetos; si traen `abrir`, la fila abre otra ventana.
+function Ventana({ titulo, sub, total, columnas, filas, nombreExcel, nota, vacio, onClose, onAbrir, accion }) {
+  const [q, setQ] = useState("");
+  useEffect(() => {
+    const h = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [onClose]);
+  const buscarEn = (f) => normTexto(columnas.map((c) => (typeof f[c.k] === "string" ? f[c.k] : "")).join(" "));
+  const visibles = q ? filas.filter((f) => buscarEn(f).includes(normTexto(q))) : filas;
+  const sumas = columnas.filter((c) => c.suma).map((c) => ({ k: c.k, v: visibles.reduce((s, f) => s + (Number(f[c.k]) || 0), 0) }));
+  async function bajarExcel() {
+    const XLSX = await import("xlsx");
+    const wb = XLSX.utils.book_new();
+    const datos = visibles.map((f) => Object.fromEntries(columnas.map((c) => [c.label, c.excel ? c.excel(f) : (typeof f[c.k] === "number" ? Math.round(f[c.k]) : f[c.k] ?? "")])));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(datos), "Detalle");
+    XLSX.writeFile(wb, `${nombreExcel || "Detalle"}.xlsx`);
+  }
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: C.canvas, borderRadius: 14, width: "min(1100px, 100%)", maxHeight: "88vh", display: "flex", flexDirection: "column", boxShadow: "0 12px 40px rgba(0,0,0,0.25)" }}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "16px 20px", borderBottom: `1px solid ${C.border}` }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 17, fontWeight: 800, color: C.ink }}>{titulo}</div>
+            {sub ? <div style={{ fontSize: 12.5, color: C.slate, marginTop: 3, lineHeight: 1.5 }}>{sub}</div> : null}
+          </div>
+          {total !== undefined ? <div style={{ fontSize: 20, fontWeight: 800, color: C.ink, whiteSpace: "nowrap" }}>{total}</div> : null}
+          <button onClick={onClose} aria-label="Cerrar" style={{ border: "none", background: "transparent", fontSize: 22, lineHeight: 1, cursor: "pointer", color: C.slate }}>×</button>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", padding: "10px 20px" }}>
+          {filas.length > 6 ? <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar…" style={{ padding: "7px 10px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, width: 220, fontFamily: "inherit" }} /> : null}
+          {filas.length > 0 ? <Boton onClick={bajarExcel}>⬇ Excel</Boton> : null}
+          {accion}
+          <div style={{ flex: 1 }} />
+          <div style={{ fontSize: 12, color: C.slate }}>{visibles.length} {visibles.length === 1 ? "fila" : "filas"}</div>
+        </div>
+        <div style={{ overflow: "auto", padding: "0 20px 8px" }}>
+          <div style={{ ...caja, marginBottom: 12 }}>
+            <table style={tabla}>
+              <thead><tr>{columnas.map((c) => <th key={c.k} style={c.izq ? thL : th}>{c.label}</th>)}</tr></thead>
+              <tbody>
+                {visibles.map((f, i) => (
+                  <tr key={i} onClick={f.abrir ? () => onAbrir(f.abrir) : undefined} style={{ cursor: f.abrir ? "pointer" : "default", opacity: f.apagada ? 0.55 : 1 }}>
+                    {columnas.map((c, j) => {
+                      const v = c.ver ? c.ver(f) : (typeof f[c.k] === "number" ? money(f[c.k]) : f[c.k]);
+                      return <td key={c.k} style={c.izq ? (j === 0 ? tdL : { ...td, textAlign: "left" }) : td}>{j === 0 && f.abrir ? "▸ " : ""}{v}</td>;
+                    })}
+                  </tr>
+                ))}
+                {!visibles.length && <tr><td colSpan={columnas.length} style={{ ...td, textAlign: "left", color: C.slate }}>{vacio || "Sin filas para mostrar."}</td></tr>}
+                {visibles.length > 0 && sumas.length > 0 && (
+                  <tr style={{ background: C.canvas }}>
+                    {columnas.map((c, j) => {
+                      const sm = sumas.find((x) => x.k === c.k);
+                      return <td key={c.k} style={{ ...(c.izq ? tdL : td), fontWeight: 800 }}>{j === 0 ? "Total" : sm ? (c.sumaFmt ? c.sumaFmt(sm.v) : money(sm.v)) : ""}</td>;
+                    })}
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          {nota ? <div style={{ fontSize: 11.5, color: C.slate, lineHeight: 1.6, marginBottom: 12 }}>{nota}</div> : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function CostosGeneralView({ db }) {
   const hoy = useMemo(() => new Date(Date.now() - 5 * 3600 * 1000), []);
   const [anio, setAnio] = useState(hoy.getUTCFullYear());
@@ -74,14 +147,13 @@ export default function CostosGeneralView({ db }) {
   const [msgCierre, setMsgCierre] = useState("");
   const [busq, setBusq] = useState("");
   const [verGastos, setVerGastos] = useState(false);
+  const [ventana, setVentana] = useState(null);
 
   useEffect(() => {
     let vivo = true;
     setDatos((d) => ({ ...d, cargando: true, error: "" }));
     setGastosEdit(null);
     setArchivoGastos("");
-    setMsgGastos("");
-    setMsgCierre("");
     const inicio = new Date(Date.UTC(anio, mes - 1, 1, 5));
     const fin = new Date(Date.UTC(anio, mes, 1, 5));
     Promise.all([
@@ -132,6 +204,8 @@ export default function CostosGeneralView({ db }) {
     if (m > 12) { m = 1; a += 1; }
     setMes(m);
     setAnio(a);
+    setMsgGastos("");
+    setMsgCierre("");
   }
 
   async function leerExcelGastos(file) {
@@ -195,6 +269,113 @@ export default function CostosGeneralView({ db }) {
     }
   }
 
+  // Qué muestra cada ventana (clic en una fila o tarjeta).
+  function armarVentana(v) {
+    const mesTxt = `${MESES[mes - 1]} ${anio}`;
+    const cerrar = () => setVentana(null);
+    const sinDetalle = r.destajo.areas.filter((a) => !a.detalle);
+    const personasAyuda = r.destajo.personas.filter((p) => p.resultado < 0);
+    if (v.tipo === "lotes") {
+      const cat = v.categoria === undefined || v.categoria === null ? null : r.recogido.categorias.find((c) => c.id === v.categoria);
+      const filas = detalleLotes(datos.lotes, datos.bases, v.categoria);
+      return {
+        titulo: cat ? `Lotes de ${cat.nombre} — ${mesTxt}` : `Lotes aprobados en ${mesTxt}`,
+        sub: "Lotes aprobados por Contabilidad en Dado por Cumplido este mes. Aporte = base × cortadas + % sobre costo + % sobre venta.",
+        total: money(filas.reduce((s, f) => s + f.aporte, 0)),
+        columnas: [
+          { k: "numLote", label: "Lote", izq: true }, { k: "referencia", label: "Referencia", izq: true }, { k: "cliente", label: "Cliente", izq: true }, { k: "categoria", label: "Categoría", izq: true },
+          { k: "cortadas", label: "Cortadas", suma: true, ver: (f) => fmt(f.cortadas), sumaFmt: fmt }, { k: "despachadas", label: "Despachadas", suma: true, ver: (f) => fmt(f.despachadas), sumaFmt: fmt },
+          { k: "basicos", label: "Básicos", suma: true }, { k: "porcentajes", label: "Porcentajes", suma: true }, { k: "aporte", label: "Aporte", suma: true },
+        ],
+        filas, nombreExcel: `Lotes_${ym}`, vacio: "Ningún lote aprobado en este mes.", onClose: cerrar,
+      };
+    }
+    if (v.tipo === "gastos") {
+      const filas = lineasGastos.map((l) => ({ estado: l.incluir ? "Incluido" : "Fuera", empresa: l.empresa, concepto: l.concepto, dia: l.dia || "", valor: Number(l.valor) || 0, nota: l.motivo || l.frecuencia || "", apagada: !l.incluir, incluido: l.incluir ? Number(l.valor) || 0 : 0 }));
+      return {
+        titulo: `Gastos — ${mesTxt}`,
+        sub: origenGastos === "anterior" ? `Este mes no tiene gastos guardados: son los del último mes cargado (${datos.gastosAnterior?.id}).` : origenGastos === "ninguno" ? "Todavía no hay gastos cargados." : "Gastos del Excel de control de gastos y vencimientos. Los que están «Fuera» no suman.",
+        total: money(r.gastos.total),
+        columnas: [
+          { k: "estado", label: "Estado", izq: true }, { k: "empresa", label: "Empresa", izq: true }, { k: "concepto", label: "Concepto", izq: true }, { k: "dia", label: "Día" },
+          { k: "valor", label: "Valor mensual", ver: (f) => (f.valor > 0 ? money(f.valor) : "Por definir") }, { k: "incluido", label: "Cuenta", suma: true }, { k: "nota", label: "Nota", izq: true },
+        ],
+        filas, nombreExcel: `Gastos_${ym}`, vacio: "Sin gastos cargados. Usa «Cargar Excel de gastos».", onClose: cerrar,
+        accion: <Boton onClick={() => { cerrar(); setVerGastos(true); }}>Ver y ajustar abajo</Boton>,
+        nota: "Para cambiar qué gastos cuentan, usa las casillas de la sección «Gastos del mes».",
+      };
+    }
+    if (v.tipo === "fiscal") {
+      const filas = detalleFiscal(datos.liqFiscal, datos.fichas);
+      return {
+        titulo: `Nómina fiscal completa — ${mesTxt}`,
+        sub: `Liquidaciones confirmadas (${quincenasFiscal} de 2 quincenas). Costo para la empresa = neto + seguridad social + prestaciones.`,
+        total: money(r.fiscal.total),
+        columnas: [
+          { k: "nombre", label: "Trabajador", izq: true }, { k: "area", label: "Área", izq: true }, { k: "q", label: "Quincenas", ver: (f) => f.quincenas.map((x) => x.slice(-2)).join(" y "), excel: (f) => f.quincenas.join(", ") },
+          { k: "neto", label: "Neto pagado", suma: true }, { k: "seguridad", label: "Seguridad social", suma: true }, { k: "prestaciones", label: "Prestaciones", suma: true }, { k: "costo", label: "Costo total", suma: true },
+        ],
+        filas, nombreExcel: `Nomina_fiscal_${ym}`, vacio: "No hay liquidaciones fiscales confirmadas este mes.", onClose: cerrar,
+      };
+    }
+    const filasPersonas = (lista) => lista.map((p) => ({ nombre: p.nombre, area: p.area, valor: p.valor, costo: p.costo, ayuda: Math.max(0, -p.resultado), excedente: Math.max(0, p.resultado), cesantias: p.cesantias, prima: p.prima, intereses: p.intereses, vacaciones: p.vacaciones, provision: p.provision, extra: Math.max(0, -p.resultado) + p.provision }));
+    const filasAreaSinDetalle = (lista) => lista.map((a) => ({ nombre: `${a.nombre} (total del área, sin detalle por trabajador)`, area: a.nombre, valor: 0, costo: 0, ayuda: a.ayudas, excedente: a.excedentes, cesantias: 0, prima: 0, intereses: 0, vacaciones: 0, provision: a.provision, extra: a.ayudas + a.provision }));
+    if (v.tipo === "ayudas") {
+      const filas = [...filasPersonas(personasAyuda), ...filasAreaSinDetalle(sinDetalle.filter((a) => a.ayudas > 0))].sort((a, b) => b.ayuda - a.ayuda);
+      return {
+        titulo: `Destajo: ayudas — ${mesTxt}`,
+        sub: "Personas a las que se les pagó más de lo que produjeron. Ayuda = le pagamos − produjo. Los excedentes no se restan.",
+        total: money(r.destajo.ayudas),
+        columnas: [
+          { k: "nombre", label: "Trabajador", izq: true }, { k: "area", label: "Área", izq: true }, { k: "valor", label: "Produjo", suma: true }, { k: "costo", label: "Le pagamos", suma: true }, { k: "ayuda", label: "Ayuda", suma: true },
+        ],
+        filas, nombreExcel: `Destajo_ayudas_${ym}`, vacio: "Nadie recibió ayuda este mes (o aún no hay cierres de Centro de Costo).", onClose: cerrar,
+      };
+    }
+    if (v.tipo === "provision" || v.tipo === "area") {
+      const delArea = v.tipo === "area";
+      const lista = delArea ? r.destajo.personas.filter((p) => p.claveArea === v.clave) : r.destajo.personas;
+      const areasSin = delArea ? sinDetalle.filter((a) => a.clave === v.clave) : sinDetalle;
+      const filas = [...filasPersonas(lista), ...filasAreaSinDetalle(areasSin)].sort((a, b) => (delArea ? b.extra - a.extra : b.provision - a.provision));
+      const nombreArea = delArea ? (r.destajo.areas.find((a) => a.clave === v.clave)?.nombre || "") : "";
+      if (delArea) {
+        return {
+          titulo: `${nombreArea} — ${mesTxt}`,
+          sub: "Cada trabajador del área: lo que produjo, lo que se le pagó, su ayuda o excedente y su provisión. Extra = ayuda + provisión.",
+          total: money(filas.reduce((s, f) => s + f.extra, 0)),
+          columnas: [
+            { k: "nombre", label: "Trabajador", izq: true }, { k: "valor", label: "Produjo", suma: true }, { k: "costo", label: "Le pagamos", suma: true }, { k: "ayuda", label: "Ayuda", suma: true }, { k: "excedente", label: "Excedente (no se resta)", suma: true }, { k: "provision", label: "Provisión", suma: true }, { k: "extra", label: "Extra total", suma: true },
+          ],
+          filas, nombreExcel: `${nombreArea.replace(/ /g, "_")}_${ym}`, vacio: "Sin trabajadores para este mes.", onClose: cerrar,
+        };
+      }
+      return {
+        titulo: `Destajo: provisión — ${mesTxt}`,
+        sub: "Cesantías, prima, intereses y vacaciones de los trabajadores de destajo, proporcional a lo pagado en el mes. Mismas tasas de Nómina.",
+        total: money(r.destajo.provision),
+        columnas: [
+          { k: "nombre", label: "Trabajador", izq: true }, { k: "area", label: "Área", izq: true }, { k: "cesantias", label: "Cesantías", suma: true }, { k: "prima", label: "Prima", suma: true }, { k: "intereses", label: "Intereses", suma: true }, { k: "vacaciones", label: "Vacaciones", suma: true }, { k: "provision", label: "Provisión", suma: true },
+        ],
+        filas, nombreExcel: `Destajo_provision_${ym}`, vacio: "Sin trabajadores para este mes.", onClose: cerrar,
+        nota: "Destajo: cesantías y prima sobre sueldo + auxilio (Fiscal Destajo: solo sueldo), intereses 12 % de las cesantías, vacaciones sobre el sueldo.",
+      };
+    }
+    // estructura: desglose de «Por pagar fuera de los lotes»
+    const piezas = [
+      { concepto: "Gastos del Excel", valor: r.gastos.total, abrir: { tipo: "gastos" } },
+      { concepto: "Nómina fiscal completa", valor: r.fiscal.total, abrir: { tipo: "fiscal" } },
+      { concepto: "Destajo: ayudas", valor: r.destajo.neta, abrir: { tipo: "ayudas" } },
+      { concepto: "Destajo: provisión", valor: r.destajo.provision, abrir: { tipo: "provision" } },
+    ].map((x) => ({ ...x, porc: r.estructura > 0 ? `${Math.round((x.valor / r.estructura) * 100)} %` : "—" }));
+    return {
+      titulo: `Por pagar fuera de los lotes — ${mesTxt}`,
+      sub: "Haz clic en una fila para ver su detalle.",
+      total: money(r.estructura),
+      columnas: [{ k: "concepto", label: "Concepto", izq: true }, { k: "valor", label: "Valor del mes", suma: true }, { k: "porc", label: "% del total" }],
+      filas: piezas, nombreExcel: `Por_pagar_${ym}`, onClose: cerrar,
+    };
+  }
+
   const personas = useMemo(() => {
     const q = normTexto(busq);
     return r.destajo.personas.filter((p) => !q || normTexto(p.nombre).includes(q) || normTexto(p.area).includes(q));
@@ -208,7 +389,7 @@ export default function CostosGeneralView({ db }) {
   return (
     <div>
       <div style={{ fontSize: 13, color: C.slate, marginBottom: 14, lineHeight: 1.6, maxWidth: 900 }}>
-        ¿Lo que recogen los lotes con los básicos paga lo que está fuera del costo del lote? Lo que producen los trabajadores de destajo ya entra al lote; aquí solo se suma lo que ponemos de más (ayudas menos excedentes) y su provisión de cesantías, prima, intereses y vacaciones.
+        ¿Lo que recogen los lotes con los básicos paga lo que está fuera del costo del lote? Lo que producen los trabajadores de destajo ya entra al lote; aquí solo se suman las ayudas (los excedentes no se restan, son montos extras) y su provisión de cesantías, prima, intereses y vacaciones.
       </div>
 
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
@@ -228,8 +409,8 @@ export default function CostosGeneralView({ db }) {
       {(datos.cargando || cargandoCC) ? <div style={{ fontSize: 13, color: C.slate, marginBottom: 14 }}>Leyendo lotes, nómina y cierres…</div> : null}
 
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 22 }}>
-        <Tile titulo="Recogido con los básicos" valor={money(r.recogido.aporte)} color={C.green} sub={`${r.recogido.lotes} lotes aprobados · ${fmt(r.recogido.cortadas)} prendas cortadas`} />
-        <Tile titulo="Por pagar fuera de los lotes" valor={money(r.estructura)} color={C.amber} sub="gastos + nómina fiscal + destajo (ayuda y provisión)" />
+        <Tile onClick={() => setVentana({ tipo: "lotes", categoria: null })} titulo="Recogido con los básicos" valor={money(r.recogido.aporte)} color={C.green} sub={`${r.recogido.lotes} lotes aprobados · ${fmt(r.recogido.cortadas)} prendas cortadas`} />
+        <Tile onClick={() => setVentana({ tipo: "estructura" })} titulo="Por pagar fuera de los lotes" valor={money(r.estructura)} color={C.amber} sub="gastos + nómina fiscal + destajo (ayudas y provisión)" />
         <Tile
           titulo={alcanza ? "Me alcanza" : "Me falta"}
           valor={`${alcanza ? "+" : "−"}${money(Math.abs(r.resultado))}`}
@@ -246,11 +427,11 @@ export default function CostosGeneralView({ db }) {
           <thead><tr><th style={thL}>Categoría BASE</th><th style={th}>Lotes</th><th style={th}>Cortadas</th><th style={th}>Despachadas</th><th style={th}>Básicos</th><th style={th}>Porcentajes</th><th style={th}>Aporte</th></tr></thead>
           <tbody>
             {r.recogido.categorias.map((c) => (
-              <tr key={c.id || "sin"}><td style={tdL}>{c.nombre}</td><td style={td}>{c.lotes}</td><td style={td}>{fmt(c.cortadas)}</td><td style={td}>{fmt(c.despachadas)}</td><td style={td}>{money(c.basicos)}</td><td style={td}>{money(c.porcentajes)}</td><td style={{ ...td, fontWeight: 800 }}>{money(c.aporte)}</td></tr>
+              <tr key={c.id || "sin"} onClick={() => setVentana({ tipo: "lotes", categoria: c.id })} style={{ cursor: "pointer" }}><td style={tdL}>▸ {c.nombre}</td><td style={td}>{c.lotes}</td><td style={td}>{fmt(c.cortadas)}</td><td style={td}>{fmt(c.despachadas)}</td><td style={td}>{money(c.basicos)}</td><td style={td}>{money(c.porcentajes)}</td><td style={{ ...td, fontWeight: 800 }}>{money(c.aporte)}</td></tr>
             ))}
             {!r.recogido.categorias.length && <tr><td colSpan={7} style={{ ...td, textAlign: "left", color: C.slate }}>Ningún lote aprobado en Dado por Cumplido en este mes.</td></tr>}
             {r.recogido.categorias.length > 0 && (
-              <tr style={{ background: C.canvas }}><td style={tdL}>Total</td><td style={{ ...td, fontWeight: 800 }}>{r.recogido.lotes}</td><td style={{ ...td, fontWeight: 800 }}>{fmt(r.recogido.cortadas)}</td><td style={{ ...td, fontWeight: 800 }}>{fmt(r.recogido.despachadas)}</td><td style={{ ...td, fontWeight: 800 }}>{money(r.recogido.basicos)}</td><td style={{ ...td, fontWeight: 800 }}>{money(r.recogido.porcentajes)}</td><td style={{ ...td, fontWeight: 800, color: C.green }}>{money(r.recogido.aporte)}</td></tr>
+              <tr onClick={() => setVentana({ tipo: "lotes", categoria: null })} style={{ background: C.canvas, cursor: "pointer" }}><td style={tdL}>▸ Total (ver todos los lotes)</td><td style={{ ...td, fontWeight: 800 }}>{r.recogido.lotes}</td><td style={{ ...td, fontWeight: 800 }}>{fmt(r.recogido.cortadas)}</td><td style={{ ...td, fontWeight: 800 }}>{fmt(r.recogido.despachadas)}</td><td style={{ ...td, fontWeight: 800 }}>{money(r.recogido.basicos)}</td><td style={{ ...td, fontWeight: 800 }}>{money(r.recogido.porcentajes)}</td><td style={{ ...td, fontWeight: 800, color: C.green }}>{money(r.recogido.aporte)}</td></tr>
             )}
           </tbody>
         </table>
@@ -261,10 +442,10 @@ export default function CostosGeneralView({ db }) {
         <table style={tabla}>
           <thead><tr><th style={thL}>Concepto</th><th style={thL}>De dónde sale</th><th style={th}>Valor del mes</th></tr></thead>
           <tbody>
-            <tr><td style={tdL}>Gastos del Excel</td><td style={{ ...td, textAlign: "left", color: C.slate }}>{r.gastos.incluidas} gastos incluidos{r.gastos.excluidas ? ` · ${r.gastos.excluidas} fuera (${money(r.gastos.excluidoValor)})` : ""}{origenGastos === "anterior" ? " · del mes anterior" : origenGastos === "ninguno" ? " · sin cargar" : ""}</td><td style={td}>{money(r.gastos.total)}</td></tr>
-            <tr><td style={tdL}>Nómina fiscal completa</td><td style={{ ...td, textAlign: "left", color: C.slate }}>{r.fiscal.personas} personas · {quincenasFiscal} de 2 quincenas confirmadas (neto + seguridad social + prestaciones)</td><td style={td}>{money(r.fiscal.total)}</td></tr>
-            <tr><td style={tdL}>Destajo: ayuda neta</td><td style={{ ...td, textAlign: "left", color: C.slate }}>{money(r.destajo.ayudas)} de ayudas − {money(r.destajo.excedentes)} de excedentes</td><td style={td}>{money(r.destajo.neta)}</td></tr>
-            <tr><td style={tdL}>Destajo: provisión</td><td style={{ ...td, textAlign: "left", color: C.slate }}>Cesantías, prima, intereses y vacaciones</td><td style={td}>{money(r.destajo.provision)}</td></tr>
+            <tr onClick={() => setVentana({ tipo: "gastos" })} style={{ cursor: "pointer" }}><td style={tdL}>▸ Gastos del Excel</td><td style={{ ...td, textAlign: "left", color: C.slate }}>{r.gastos.incluidas} gastos incluidos{r.gastos.excluidas ? ` · ${r.gastos.excluidas} fuera (${money(r.gastos.excluidoValor)})` : ""}{origenGastos === "anterior" ? " · del mes anterior" : origenGastos === "ninguno" ? " · sin cargar" : ""}</td><td style={td}>{money(r.gastos.total)}</td></tr>
+            <tr onClick={() => setVentana({ tipo: "fiscal" })} style={{ cursor: "pointer" }}><td style={tdL}>▸ Nómina fiscal completa</td><td style={{ ...td, textAlign: "left", color: C.slate }}>{r.fiscal.personas} personas · {quincenasFiscal} de 2 quincenas confirmadas (neto + seguridad social + prestaciones)</td><td style={td}>{money(r.fiscal.total)}</td></tr>
+            <tr onClick={() => setVentana({ tipo: "ayudas" })} style={{ cursor: "pointer" }}><td style={tdL}>▸ Destajo: ayudas</td><td style={{ ...td, textAlign: "left", color: C.slate }}>{r.destajo.areas.reduce((s, a) => s + a.ayudados, 0)} personas ayudadas · los excedentes ({money(r.destajo.excedentes)}) no se restan</td><td style={td}>{money(r.destajo.neta)}</td></tr>
+            <tr onClick={() => setVentana({ tipo: "provision" })} style={{ cursor: "pointer" }}><td style={tdL}>▸ Destajo: provisión</td><td style={{ ...td, textAlign: "left", color: C.slate }}>Cesantías, prima, intereses y vacaciones</td><td style={td}>{money(r.destajo.provision)}</td></tr>
             <tr style={{ background: C.canvas }}><td style={tdL}>Total por pagar</td><td style={td} /><td style={{ ...td, fontWeight: 800, color: C.amber }}>{money(r.estructura)}</td></tr>
           </tbody>
         </table>
@@ -273,14 +454,14 @@ export default function CostosGeneralView({ db }) {
       <div style={{ fontSize: 15, fontWeight: 800, color: C.ink, marginBottom: 8 }}>3 · Áreas de destajo: lo que pone la estructura</div>
       <div style={caja}>
         <table style={tabla}>
-          <thead><tr><th style={thL}>Área</th><th style={th}>Personas ayudadas</th><th style={th}>Ayudas</th><th style={th}>Excedentes</th><th style={th}>Ayuda neta</th><th style={th}>Provisión</th><th style={th}>Extra que pone la estructura</th></tr></thead>
+          <thead><tr><th style={thL}>Área</th><th style={th}>Personas ayudadas</th><th style={th}>Ayudas</th><th style={th}>Excedentes (no se restan)</th><th style={th}>Provisión</th><th style={th}>Extra que pone la estructura</th></tr></thead>
           <tbody>
             {r.destajo.areas.map((a) => (
-              <tr key={a.clave}><td style={tdL}>{a.nombre}</td><td style={td}>{a.detalle ? `${a.ayudados} de ${a.total}` : "—"}</td><td style={{ ...td, color: C.red }}>{money(a.ayudas)}</td><td style={{ ...td, color: C.green }}>{money(a.excedentes)}</td><td style={td}>{money(a.neta)}</td><td style={td}>{money(a.provision)}</td><td style={{ ...td, fontWeight: 800 }}>{money(a.extra)}</td></tr>
+              <tr key={a.clave} onClick={() => setVentana({ tipo: "area", clave: a.clave })} style={{ cursor: "pointer" }}><td style={tdL}>▸ {a.nombre}</td><td style={td}>{a.detalle ? `${a.ayudados} de ${a.total}` : "—"}</td><td style={{ ...td, color: C.red }}>{money(a.ayudas)}</td><td style={{ ...td, color: C.slate }}>{money(a.excedentes)}</td><td style={td}>{money(a.provision)}</td><td style={{ ...td, fontWeight: 800 }}>{money(a.extra)}</td></tr>
             ))}
             {!r.destajo.areas.length && <tr><td colSpan={7} style={{ ...td, textAlign: "left", color: C.slate }}>Todavía no hay cierres de Centro de Costo de este mes.</td></tr>}
             {r.destajo.areas.length > 0 && (
-              <tr style={{ background: C.canvas }}><td style={tdL}>Total destajo</td><td style={td} /><td style={{ ...td, fontWeight: 800 }}>{money(r.destajo.ayudas)}</td><td style={{ ...td, fontWeight: 800 }}>{money(r.destajo.excedentes)}</td><td style={{ ...td, fontWeight: 800 }}>{money(r.destajo.neta)}</td><td style={{ ...td, fontWeight: 800 }}>{money(r.destajo.provision)}</td><td style={{ ...td, fontWeight: 800 }}>{money(r.destajo.extra)}</td></tr>
+              <tr style={{ background: C.canvas }}><td style={tdL}>Total destajo</td><td style={td} /><td style={{ ...td, fontWeight: 800 }}>{money(r.destajo.ayudas)}</td><td style={{ ...td, fontWeight: 800, color: C.slate }}>{money(r.destajo.excedentes)}</td><td style={{ ...td, fontWeight: 800 }}>{money(r.destajo.provision)}</td><td style={{ ...td, fontWeight: 800 }}>{money(r.destajo.extra)}</td></tr>
             )}
           </tbody>
         </table>
@@ -308,7 +489,7 @@ export default function CostosGeneralView({ db }) {
         </table>
       </div>
       <div style={{ fontSize: 11.5, color: C.slate, marginBottom: 22, lineHeight: 1.6 }}>
-        Resultado = lo que produjo − lo que se le pagó (excedente si es positivo, ayuda si es negativo). Extra total = su ayuda (si la hay) + su provisión; los excedentes se restan en el total del área. La provisión usa las mismas tasas de Nómina (cesantías y prima 8,33 %, intereses 12 % de las cesantías, vacaciones 4,17 %) y se proporciona a lo pagado en el mes. * = sin ficha en Nómina: se usó el mínimo legal.
+        Resultado = lo que produjo − lo que se le pagó (excedente si es positivo, ayuda si es negativo). Extra total = su ayuda (si la hay) + su provisión; los excedentes no se restan porque son montos extras. La provisión usa las mismas tasas de Nómina (cesantías y prima 8,33 %, intereses 12 % de las cesantías, vacaciones 4,17 %) y se proporciona a lo pagado en el mes. * = sin ficha en Nómina: se usó el mínimo legal.
       </div>
 
       <div style={{ fontSize: 15, fontWeight: 800, color: C.ink, marginBottom: 8, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
@@ -357,6 +538,7 @@ export default function CostosGeneralView({ db }) {
         {sinDetalle.length ? `${sinDetalle.map((a) => a.nombre).join(", ")} sin detalle por trabajador (se usó el total del área); ` : ""}
         el aporte cuenta cuando Contabilidad aprueba el lote en Dado por Cumplido; Confección y Terminación todavía no tienen cierre de ayuda; la prestación de servicios no está incluida (si va en los gastos del Excel, ya cuenta ahí).
       </div>
+      {ventana ? <Ventana {...armarVentana(ventana)} onAbrir={setVentana} /> : null}
     </div>
   );
 }

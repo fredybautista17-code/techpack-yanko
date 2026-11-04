@@ -2,7 +2,7 @@
 // (2026-11-04, a pedido de Fredy) Cierre mensual del centro de costo general. Responde dos cosas:
 //   1. ¿Cuánto estoy recogiendo con los básicos del Dado por Cumplido? (lotes aprobados en el mes)
 //   2. ¿Me alcanza para pagar lo que está fuera del costo del lote? = gastos del Excel + nómina fiscal +
-//      lo que se pone de más en destajo (ayudas − excedentes) + provisión de prestaciones y vacaciones.
+//      las ayudas de destajo (los excedentes no se restan) + provisión de prestaciones y vacaciones.
 // Lo que producen los trabajadores de destajo (y Fiscal Destajo) YA entra como costo directo del lote, así que
 // aquí solo cuenta la diferencia entre lo que se les pagó y lo que produjeron, más su provisión.
 import { normTexto, parseNumero } from "./centro-costo-historico-parser";
@@ -156,7 +156,8 @@ export function resumenFiscal(liquidaciones) {
 
 // ─── Destajo: lo que ponemos de más ──────────────────────────────────────────
 // areas: [{ clave, nombre, trabajadores: [{id, nombre, valor, costo}] | null, agregado: {valor, costo} | null, dias, fuente }]
-// Por trabajador: produjo − le pagamos. Negativo = ayuda; positivo = excedente (compensa las ayudas del área).
+// Por trabajador: produjo − le pagamos. Negativo = ayuda; positivo = excedente. SOLO cuentan las ayudas: los excedentes
+// son montos extras y NO se restan (decisión de Fredy, 2026-11-04); se muestran aparte como dato.
 export function destajoDelMes(areas, fichas) {
   const out = (areas || []).map((a) => {
     let personas = [];
@@ -170,7 +171,7 @@ export function destajoDelMes(areas, fichas) {
         const costo = num(t.costo);
         const resultado = valor - costo;
         const prov = provisionDeTrabajador(costo, ficha);
-        return { id: t.id, nombre: t.nombre, area: a.nombre, claveArea: a.clave, tipoNomina: ficha?.tipoNomina || "", valor, costo, resultado, provision: prov.total, sinFicha: prov.sinFicha, extra: Math.max(0, -resultado) + prov.total };
+        return { id: t.id, nombre: t.nombre, area: a.nombre, claveArea: a.clave, tipoNomina: ficha?.tipoNomina || "", valor, costo, resultado, provision: prov.total, cesantias: prov.cesantias, intereses: prov.intereses, prima: prov.prima, vacaciones: prov.vacaciones, sinFicha: prov.sinFicha, extra: Math.max(0, -resultado) + prov.total };
       }).sort((x, y) => y.extra - x.extra);
       ayudas = personas.reduce((s, p) => s + Math.max(0, -p.resultado), 0);
       excedentes = personas.reduce((s, p) => s + Math.max(0, p.resultado), 0);
@@ -181,11 +182,41 @@ export function destajoDelMes(areas, fichas) {
       excedentes = Math.max(0, -dif);
       provision = provisionDeTrabajador(num(a.agregado.costo), null).total;
     }
-    const neta = ayudas - excedentes;
+    const neta = ayudas; // los excedentes no se restan
     return { clave: a.clave, nombre: a.nombre, fuente: a.fuente || "", dias: a.dias || 0, detalle: personas.length > 0, personas, ayudados: personas.filter((p) => p.resultado < 0).length, total: personas.length, ayudas, excedentes, neta, provision, extra: neta + provision };
   });
   const sum = (k) => out.reduce((s, a) => s + a[k], 0);
   return { areas: out, ayudas: sum("ayudas"), excedentes: sum("excedentes"), neta: sum("neta"), provision: sum("provision"), extra: sum("extra"), personas: out.flatMap((a) => a.personas) };
+}
+
+// ─── Detalle para las ventanas (clic en una cifra) ────────────────────────────
+export function detalleLotes(lotes, bases, categoriaId) {
+  const nombreBase = (id) => (bases || []).find((b) => b.id === id)?.nombre || id || "Sin categoría";
+  const todas = categoriaId === undefined || categoriaId === null;
+  return (lotes || [])
+    .filter((l) => todas || (l.categoriaBaseId || "") === categoriaId)
+    .map((l) => {
+      const a = aporteDeLote(l);
+      return { numLote: String(l.numLote || ""), referencia: l.referencia || "", cliente: l.cliente || "", categoria: nombreBase(l.categoriaBaseId), cortadas: num(l.cantCortada), despachadas: num(l.cantDespachada), basicos: a.basicos, porcentajes: a.porcentajes, aporte: a.aporte };
+    })
+    .sort((x, y) => y.aporte - x.aporte);
+}
+
+// Nómina fiscal confirmada del mes, una fila por persona (suma sus quincenas).
+export function detalleFiscal(liquidaciones, fichas) {
+  const por = new Map();
+  (liquidaciones || []).forEach((l) => {
+    const id = l.trabajadorId || l.nombre || l.id;
+    const ficha = (fichas || []).find((f) => f.id === l.trabajadorId);
+    if (!por.has(id)) por.set(id, { id, nombre: l.nombre || ficha?.nombre || "—", area: ficha?.area || "Sin asignar", quincenas: [], neto: 0, seguridad: 0, prestaciones: 0, costo: 0 });
+    const g = por.get(id);
+    if (l.periodoId && !g.quincenas.includes(l.periodoId)) g.quincenas.push(l.periodoId);
+    g.neto += num(l.netoAPagar);
+    g.seguridad += num(l.epsTrabajador) + num(l.pensionTrabajador) + num(l.pensionEmpleador) + num(l.arlEmpleador) + num(l.cajaCompensacionEmpleador) + num(l.epsEmpleador);
+    g.prestaciones += num(l.cesantiasPeriodo) + num(l.interesesPeriodo) + num(l.primaPeriodo) + num(l.vacacionesPeriodo);
+    g.costo += costoTotalLiquidacion(l);
+  });
+  return [...por.values()].map((g) => ({ ...g, quincenas: g.quincenas.sort() })).sort((a, b) => b.costo - a.costo);
 }
 
 // ─── Todo junto ──────────────────────────────────────────────────────────────
