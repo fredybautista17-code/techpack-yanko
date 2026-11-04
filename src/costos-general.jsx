@@ -131,9 +131,9 @@ function Ventana({ titulo, sub, total, columnas, filas, nombreExcel, nota, vacio
   );
 }
 
-// Interruptor (encendido / apagado / mixto) para decidir qué cuenta como estructura.
+// Interruptor para decidir qué cuenta como estructura: verde = cuenta, rojo = no cuenta (ya va en el lote), ámbar = mixto (solo en áreas).
 function Interruptor({ estado, onClick, titulo }) {
-  const fondo = estado === "on" ? C.ink : estado === "mixto" ? C.amber : "#CFCBD6";
+  const fondo = estado === "on" ? C.green : estado === "mixto" ? C.amber : C.red;
   const izq = estado === "on" ? 19 : estado === "mixto" ? 11 : 3;
   return (
     <button onClick={onClick} title={titulo} aria-label={titulo} style={{ width: 38, height: 22, borderRadius: 12, border: "none", background: fondo, position: "relative", cursor: "pointer", padding: 0, flex: "none" }}>
@@ -174,16 +174,16 @@ function VentanaFiscal({ mesTxt, ym, quincenas, resumen, filas, onArea, onPerson
   const mini = { width: 104, textAlign: "right", fontSize: 12.5, color: C.slate, whiteSpace: "nowrap" };
   const miniEt = { display: "block", fontSize: 10, textTransform: "uppercase", letterSpacing: 0.3, color: "#A0A0B5", marginBottom: 1 };
   const persona = (f, col) => (
-    <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 14, padding: "10px 16px", borderTop: `1px solid ${C.border}`, opacity: f.cuenta ? 1 : 0.6 }}>
-      <div style={{ width: 36, height: 36, borderRadius: "50%", background: `${col}22`, color: col, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 12.5, flex: "none", filter: f.cuenta ? "none" : "grayscale(1)" }}>{iniciales(f.nombre)}</div>
-      <div style={{ flex: 1, minWidth: 0 }}>
+    <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 14, padding: "10px 16px", borderTop: `1px solid ${C.border}` }}>
+      <div style={{ width: 36, height: 36, borderRadius: "50%", background: `${col}22`, color: col, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 12.5, flex: "none", filter: f.cuenta ? "none" : "grayscale(1)", opacity: f.cuenta ? 1 : 0.6 }}>{iniciales(f.nombre)}</div>
+      <div style={{ flex: 1, minWidth: 0, opacity: f.cuenta ? 1 : 0.6 }}>
         <div style={{ fontSize: 13.5, fontWeight: 800, color: C.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{bonito(f.nombre)}</div>
         <div style={{ fontSize: 11.5, color: C.slate }}>{f.quincenas.length >= 2 ? "Quincenas 1 y 2" : f.quincenas.length === 1 ? `Quincena ${f.quincenas[0].slice(-1)}` : "—"}</div>
       </div>
-      <div style={mini}><span style={miniEt}>Neto</span>{money(f.neto)}</div>
-      <div style={mini}><span style={miniEt}>Seg. social</span>{money(f.seguridad)}</div>
-      <div style={mini}><span style={miniEt}>Prestaciones</span>{money(f.prestaciones)}</div>
-      <div style={{ width: 118, textAlign: "right", fontWeight: 800, fontSize: 15, color: C.ink, textDecoration: f.cuenta ? "none" : "line-through" }}>{money(f.costo)}</div>
+      <div style={{ ...mini, opacity: f.cuenta ? 1 : 0.6 }}><span style={miniEt}>Neto</span>{money(f.neto)}</div>
+      <div style={{ ...mini, opacity: f.cuenta ? 1 : 0.6 }}><span style={miniEt}>Seg. social</span>{money(f.seguridad)}</div>
+      <div style={{ ...mini, opacity: f.cuenta ? 1 : 0.6 }}><span style={miniEt}>Prestaciones</span>{money(f.prestaciones)}</div>
+      <div style={{ width: 118, textAlign: "right", fontWeight: 800, fontSize: 15, color: C.ink, textDecoration: f.cuenta ? "none" : "line-through", opacity: f.cuenta ? 1 : 0.6 }}>{money(f.costo)}</div>
       <Interruptor estado={f.cuenta ? "on" : "off"} onClick={() => onPersona(f)} titulo={f.cuenta ? "Clic para sacarla: ya va dentro del lote" : "Clic para volver a contarla"} />
     </div>
   );
@@ -198,7 +198,7 @@ function VentanaFiscal({ mesTxt, ym, quincenas, resumen, filas, onArea, onPerson
           {g.estado === "off" ? <span style={{ fontSize: 11.5, fontWeight: 700, color: C.amber, background: C.amberBg, padding: "2px 9px", borderRadius: 12 }}>Ya va en el costo del lote</span> : null}
           <div style={{ flex: 1 }} />
           <span style={{ fontWeight: 800, fontSize: 14, textDecoration: g.estado === "off" ? "line-through" : "none" }}>{money(g.estado === "off" ? g.total : g.suma)}</span>
-          <span style={{ fontSize: 11.5, fontWeight: 700, color: C.slate, minWidth: 88, textAlign: "right" }}>{g.estado === "on" ? "Cuenta" : g.estado === "off" ? "No cuenta" : `Cuenta ${g.cuentan} de ${g.todas.length}`}</span>
+          <span style={{ fontSize: 11.5, fontWeight: 700, color: g.estado === "on" ? C.green : g.estado === "off" ? C.red : C.amber, minWidth: 88, textAlign: "right" }}>{g.estado === "on" ? "Cuenta" : g.estado === "off" ? "No cuenta" : `Cuenta ${g.cuentan} de ${g.todas.length}`}</span>
           <Interruptor estado={g.estado} onClick={() => onArea(g.area, g.todas)} titulo={g.estado === "on" ? "Apagar toda el área: ya va dentro del lote" : "Encender toda el área"} />
         </div>
         {g.personas.map((f) => persona(f, col))}
