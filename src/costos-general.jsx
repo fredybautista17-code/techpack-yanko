@@ -13,6 +13,7 @@ import { collection, doc, getDoc, getDocs, query, setDoc, where } from "firebase
 import { useCentroCostoDatos } from "./centro-costo-historico";
 import { AREAS_HISTORICO, normTexto } from "./centro-costo-historico-parser";
 import { ayudaQuincenasPorPersona } from "./ayuda-quincena";
+import { mismoNombre } from "./corte-equipos";
 import { cierreGeneral, parsearGastos, totalGastos, detalleLotes, detalleFiscal, AREAS_FUERA_DEFECTO } from "./costos-general-calculo";
 
 const C = {
@@ -148,7 +149,7 @@ const iniciales = (n) => { const p = String(n || "").split(/\s+/).filter(Boolean
 const bonito = (n) => String(n || "").toLowerCase().replace(/(^|\s)(\S)/g, (m, a, b) => a + b.toUpperCase());
 
 // Nómina fiscal del mes, persona por persona y agrupada por área; cada persona y cada área tiene su interruptor.
-function VentanaFiscal({ mesTxt, ym, quincenas, resumen, filas, onArea, onPersona, msg, onClose }) {
+function VentanaFiscal({ mesTxt, ym, quincenas, resumen, filas, marcas, onArea, onPersona, msg, onClose }) {
   const [q, setQ] = useState("");
   useEffect(() => {
     const h = (e) => { if (e.key === "Escape") onClose(); };
@@ -180,6 +181,7 @@ function VentanaFiscal({ mesTxt, ym, quincenas, resumen, filas, onArea, onPerson
       <div style={{ flex: 1, minWidth: 0, opacity: f.cuenta ? 1 : 0.6 }}>
         <div style={{ fontSize: 13.5, fontWeight: 800, color: C.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{bonito(f.nombre)}</div>
         <div style={{ fontSize: 11.5, color: C.slate }}>{f.quincenas.length >= 2 ? "Quincenas 1 y 2" : f.quincenas.length === 1 ? `Quincena ${f.quincenas[0].slice(-1)}` : "—"}</div>
+        {marcas && marcas.get(f.id) ? <div style={{ fontSize: 11, fontWeight: 700, color: C.amber, marginTop: 2 }}>{marcas.get(f.id)}</div> : null}
       </div>
       <div style={{ ...mini, opacity: f.cuenta ? 1 : 0.6 }}><span style={miniEt}>Neto</span>{money(f.neto)}</div>
       <div style={{ ...mini, opacity: f.cuenta ? 1 : 0.6 }}><span style={miniEt}>Seg. social</span>{money(f.seguridad)}</div>
@@ -388,6 +390,23 @@ export default function CostosGeneralView({ db }) {
     [ym, r, datos.fichas, nominaQ, hoy]
   );
 
+  // Personas que están en la nómina fiscal Y en un centro de costo (destajo): si la fiscal las cuenta, se suman en los dos lados.
+  const filasFiscal = useMemo(() => detalleFiscal(datos.liqFiscal, datos.fichas, areasFuera, excepciones), [datos.liqFiscal, datos.fichas, areasFuera, excepciones]);
+  const cruce = useMemo(() => {
+    const porPersona = new Map();
+    const marcas = new Map();
+    r.destajo.personas.forEach((p) => {
+      const f = filasFiscal.find((x) => x.id === p.id) || filasFiscal.find((x) => mismoNombre(x.nombre, p.nombre));
+      if (!f) return;
+      porPersona.set(p.id ?? p.nombre, f);
+      marcas.set(f.id, `También en ${p.area} (centro de costo): ayuda y provisión ${money(p.extra)}${f.cuenta ? " — se suma en los dos lados" : " — aquí está apagada, cuenta solo en destajo"}`);
+    });
+    const cuentan = r.destajo.personas.filter((p) => porPersona.get(p.id ?? p.nombre)?.cuenta);
+    return { porPersona, marcas, total: porPersona.size, cuentan: cuentan.length, dobles: cuentan.reduce((t, p) => t + p.extra, 0) };
+  }, [r, filasFiscal]);
+  const fiscalDePersona = cruce.porPersona;
+  const marcasFiscal = cruce.marcas;
+
   function moverMes(d) {
     let m = mes + d;
     let a = anio;
@@ -497,7 +516,7 @@ export default function CostosGeneralView({ db }) {
         nota: "Para cambiar qué gastos cuentan, usa las casillas de la sección «Gastos del mes».",
       };
     }
-    const filasPersonas = (lista) => lista.map((p) => ({ nombre: p.nombre, area: p.area, ayudaQ: p.porEquipos ? null : (ayudaQ.get(p.id)?.total ?? null), valor: p.valor, costo: p.costo, ayuda: Math.max(0, -p.resultado), excedente: Math.max(0, p.resultado), cesantias: p.cesantias, prima: p.prima, intereses: p.intereses, vacaciones: p.vacaciones, provision: p.provision, extra: Math.max(0, -p.resultado) + p.provision }));
+    const filasPersonas = (lista) => lista.map((p) => ({ nombre: p.nombre, area: p.area, ayudaQ: p.porEquipos ? null : (ayudaQ.get(p.id)?.total ?? null), fiscalTxt: fiscalDePersona.has(p.id ?? p.nombre) ? (fiscalDePersona.get(p.id ?? p.nombre).cuenta ? "También en nómina fiscal · cuenta" : "En nómina fiscal · fuera") : "—", fiscalCuenta: !!fiscalDePersona.get(p.id ?? p.nombre)?.cuenta, valor: p.valor, costo: p.costo, ayuda: Math.max(0, -p.resultado), excedente: Math.max(0, p.resultado), cesantias: p.cesantias, prima: p.prima, intereses: p.intereses, vacaciones: p.vacaciones, provision: p.provision, extra: Math.max(0, -p.resultado) + p.provision }));
     const filasAreaSinDetalle = (lista) => lista.map((a) => ({ nombre: `${a.nombre} (total del área, sin detalle por trabajador)`, area: a.nombre, valor: 0, costo: 0, ayuda: a.ayudas, excedente: a.excedentes, cesantias: 0, prima: 0, intereses: 0, vacaciones: 0, provision: a.provision, extra: a.ayudas + a.provision }));
     const filasPorEquipos = (lista) => lista.map((a) => ({ nombre: `${a.nombre}: ayuda por equipos (los excedentes de los equipos ya se compensaron)`, area: a.nombre, valor: a.equipos.ingresoTotal, costo: a.equipos.costoTotal, ayuda: a.ayudas, excedente: a.excedentes, cesantias: 0, prima: 0, intereses: 0, vacaciones: 0, provision: 0, extra: a.ayudas }));
     if (v.tipo === "ayudas") {
@@ -507,7 +526,7 @@ export default function CostosGeneralView({ db }) {
         sub: "Personas a las que se les pagó más de lo que produjeron. Ayuda = le pagamos − produjo. Los excedentes no se restan.",
         total: money(r.destajo.ayudas),
         columnas: [
-          { k: "nombre", label: "Trabajador", izq: true }, { k: "area", label: "Área", izq: true }, { k: "valor", label: "Produjo", suma: true }, { k: "costo", label: "Le pagamos", suma: true }, { k: "ayuda", label: "Ayuda", suma: true },
+          { k: "nombre", label: "Trabajador", izq: true }, { k: "area", label: "Área", izq: true }, { k: "valor", label: "Produjo", suma: true }, { k: "costo", label: "Le pagamos", suma: true }, { k: "ayuda", label: "Ayuda", suma: true }, { k: "fiscalTxt", label: "Nómina fiscal", izq: true, ver: (f) => (f.fiscalTxt ? <span style={{ color: f.fiscalCuenta ? C.amber : C.slate, fontWeight: f.fiscalCuenta ? 800 : 600 }}>{f.fiscalTxt}</span> : "") },
         ],
         filas, nombreExcel: `Destajo_ayudas_${ym}`, vacio: "Nadie recibió ayuda este mes (o aún no hay cierres de Centro de Costo).", onClose: cerrar,
       };
@@ -524,7 +543,7 @@ export default function CostosGeneralView({ db }) {
           sub: "Cada trabajador del área: lo que produjo, lo que se le pagó, su ayuda o excedente y su provisión. Extra = ayuda del mes + provisión. «Ayuda por quincena (Nómina)» es la misma de Centro de Costo: cuenta las horas trabajadas y no netea entre quincenas; no se suma al extra.",
           total: money(filas.reduce((s, f) => s + f.extra, 0)),
           columnas: [
-            { k: "nombre", label: "Trabajador", izq: true }, { k: "valor", label: "Produjo", suma: true }, { k: "costo", label: "Le pagamos", suma: true }, { k: "ayuda", label: "Ayuda del mes", suma: true }, { k: "ayudaQ", label: "Ayuda por quincena (Nómina)", suma: true, resalta: true, ver: (f) => (f.ayudaQ == null ? "—" : money(f.ayudaQ)) }, { k: "excedente", label: "Excedente (no se resta)", suma: true }, { k: "provision", label: "Provisión", suma: true }, { k: "extra", label: "Extra total", suma: true },
+            { k: "nombre", label: "Trabajador", izq: true }, { k: "valor", label: "Produjo", suma: true }, { k: "costo", label: "Le pagamos", suma: true }, { k: "ayuda", label: "Ayuda del mes", suma: true }, { k: "ayudaQ", label: "Ayuda por quincena (Nómina)", suma: true, resalta: true, ver: (f) => (f.ayudaQ == null ? "—" : money(f.ayudaQ)) }, { k: "excedente", label: "Excedente (no se resta)", suma: true }, { k: "provision", label: "Provisión", suma: true }, { k: "extra", label: "Extra total", suma: true }, { k: "fiscalTxt", label: "Nómina fiscal", izq: true, ver: (f) => (f.fiscalTxt ? <span style={{ color: f.fiscalCuenta ? C.amber : C.slate, fontWeight: f.fiscalCuenta ? 800 : 600 }}>{f.fiscalTxt}</span> : "") },
           ],
           filas, nombreExcel: `${nombreArea.replace(/ /g, "_")}_${ym}`, vacio: "Sin trabajadores para este mes.", onClose: cerrar,
           nota: [...ayudaQ.values()].some((v) => v.enCurso) ? "La «Ayuda por quincena» solo cuenta quincenas ya terminadas; la que sigue en curso se suma cuando termine. «—» = persona que no es de destajo o que se mide por equipos." : "«—» = persona que no es de destajo o que se mide por equipos (Corte). Las quincenas sin liquidación confirmada usan la causación manual o el registro de producción.",
@@ -535,7 +554,7 @@ export default function CostosGeneralView({ db }) {
         sub: "Cesantías, prima, intereses y vacaciones de los trabajadores de destajo, proporcional a lo pagado en el mes. Mismas tasas de Nómina.",
         total: money(r.destajo.provision),
         columnas: [
-          { k: "nombre", label: "Trabajador", izq: true }, { k: "area", label: "Área", izq: true }, { k: "cesantias", label: "Cesantías", suma: true }, { k: "prima", label: "Prima", suma: true }, { k: "intereses", label: "Intereses", suma: true }, { k: "vacaciones", label: "Vacaciones", suma: true }, { k: "provision", label: "Provisión", suma: true },
+          { k: "nombre", label: "Trabajador", izq: true }, { k: "area", label: "Área", izq: true }, { k: "cesantias", label: "Cesantías", suma: true }, { k: "prima", label: "Prima", suma: true }, { k: "intereses", label: "Intereses", suma: true }, { k: "vacaciones", label: "Vacaciones", suma: true }, { k: "provision", label: "Provisión", suma: true }, { k: "fiscalTxt", label: "Nómina fiscal", izq: true, ver: (f) => (f.fiscalTxt ? <span style={{ color: f.fiscalCuenta ? C.amber : C.slate, fontWeight: f.fiscalCuenta ? 800 : 600 }}>{f.fiscalTxt}</span> : "") },
         ],
         filas, nombreExcel: `Destajo_provision_${ym}`, vacio: "Sin trabajadores para este mes.", onClose: cerrar,
         nota: "Destajo: cesantías y prima sobre sueldo + auxilio (Fiscal Destajo: solo sueldo), intereses 12 % de las cesantías, vacaciones sobre el sueldo.",
@@ -638,6 +657,16 @@ export default function CostosGeneralView({ db }) {
         </table>
       </div>
 
+      {cruce.total > 0 && (
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", background: cruce.cuentan > 0 ? C.amberBg : C.canvas, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 14px", marginBottom: 12, fontSize: 12.5, color: C.ink, lineHeight: 1.5 }}>
+          <div style={{ flex: 1, minWidth: 260 }}>
+            {cruce.cuentan > 0
+              ? <><b>{cruce.cuentan} {cruce.cuentan === 1 ? "persona está" : "personas están"} en nómina fiscal (contando) y en un centro de costo.</b> Su ayuda y su provisión ({money(cruce.dobles)}) se suman además de su costo fiscal. Revísalas con los interruptores de la nómina fiscal.</>
+              : <>{cruce.total} {cruce.total === 1 ? "persona aparece" : "personas aparecen"} en nómina fiscal y en un centro de costo, pero en la fiscal están apagadas: cuentan una sola vez.</>}
+          </div>
+          <Boton onClick={() => setVentana({ tipo: "fiscal" })}>Revisar en nómina fiscal</Boton>
+        </div>
+      )}
       <div style={{ fontSize: 15, fontWeight: 800, color: C.ink, marginBottom: 8 }}>3 · Áreas de destajo: lo que pone la estructura</div>
       <div style={caja}>
         <table style={tabla}>
@@ -728,7 +757,7 @@ export default function CostosGeneralView({ db }) {
       {ventana?.tipo === "fiscal" ? (
         <VentanaFiscal
           mesTxt={`${MESES[mes - 1]} ${anio}`} ym={ym} quincenas={quincenasFiscal} resumen={r.fiscal}
-          filas={detalleFiscal(datos.liqFiscal, datos.fichas, areasFuera, excepciones)}
+          filas={filasFiscal} marcas={marcasFiscal}
           onArea={alternarArea} onPersona={alternarPersona} msg={msgAreas} onClose={() => setVentana(null)}
         />
       ) : ventana ? <Ventana {...armarVentana(ventana)} onAbrir={setVentana} /> : null}
