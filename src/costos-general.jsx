@@ -131,6 +131,127 @@ function Ventana({ titulo, sub, total, columnas, filas, nombreExcel, nota, vacio
   );
 }
 
+// Interruptor (encendido / apagado / mixto) para decidir qué cuenta como estructura.
+function Interruptor({ estado, onClick, titulo }) {
+  const fondo = estado === "on" ? C.ink : estado === "mixto" ? C.amber : "#CFCBD6";
+  const izq = estado === "on" ? 19 : estado === "mixto" ? 11 : 3;
+  return (
+    <button onClick={onClick} title={titulo} aria-label={titulo} style={{ width: 38, height: 22, borderRadius: 12, border: "none", background: fondo, position: "relative", cursor: "pointer", padding: 0, flex: "none" }}>
+      <span style={{ position: "absolute", top: 3, left: izq, width: 16, height: 16, borderRadius: "50%", background: "#fff", transition: "left .15s" }} />
+    </button>
+  );
+}
+const COLORES_AREA = ["#3D6B9E", "#9E5B8F", "#C47C1A", "#D2613A", "#2D9E6B", "#5B7FA8", "#8A6BB0", "#B5654A"];
+const colorDeArea = (a) => COLORES_AREA[[...String(a)].reduce((s, ch) => s + ch.charCodeAt(0), 0) % COLORES_AREA.length];
+const iniciales = (n) => { const p = String(n || "").split(/\s+/).filter(Boolean); return ((p[0]?.[0] || "") + (p[1]?.[0] || "")).toUpperCase() || "?"; };
+const bonito = (n) => String(n || "").toLowerCase().replace(/(^|\s)(\S)/g, (m, a, b) => a + b.toUpperCase());
+
+// Nómina fiscal del mes, persona por persona y agrupada por área; cada persona y cada área tiene su interruptor.
+function VentanaFiscal({ mesTxt, ym, quincenas, resumen, filas, onArea, onPersona, msg, onClose }) {
+  const [q, setQ] = useState("");
+  useEffect(() => {
+    const h = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [onClose]);
+  const k = normTexto(q);
+  const visibles = k ? filas.filter((f) => normTexto(`${f.nombre} ${f.area}`).includes(k)) : filas;
+  const porArea = new Map();
+  filas.forEach((f) => { if (!porArea.has(f.area)) porArea.set(f.area, []); porArea.get(f.area).push(f); });
+  const grupos = [...porArea.entries()].map(([area, todas]) => {
+    const cuentan = todas.filter((f) => f.cuenta).length;
+    return { area, todas, personas: todas.filter((f) => visibles.includes(f)), cuentan, estado: cuentan === todas.length ? "on" : cuentan === 0 ? "off" : "mixto", suma: todas.filter((f) => f.cuenta).reduce((s, f) => s + f.costo, 0), total: todas.reduce((s, f) => s + f.costo, 0) };
+  }).filter((g) => g.personas.length).sort((a, b) => b.suma - a.suma || b.total - a.total);
+  const dentro = grupos.filter((g) => g.estado !== "off");
+  const fuera = grupos.filter((g) => g.estado === "off");
+  async function bajarExcel() {
+    const XLSX = await import("xlsx");
+    const wb = XLSX.utils.book_new();
+    const datos = visibles.map((f) => ({ Trabajador: f.nombre, Área: f.area, Quincenas: f.quincenas.join(", "), Neto: Math.round(f.neto), "Seguridad social": Math.round(f.seguridad), Prestaciones: Math.round(f.prestaciones), "Costo total": Math.round(f.costo), Estado: f.cuenta ? "Cuenta" : "Ya va en el lote", "Suma a la estructura": Math.round(f.costoCuenta) }));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(datos), "Nómina fiscal");
+    XLSX.writeFile(wb, `Nomina_fiscal_${ym}.xlsx`);
+  }
+  const mini = { width: 104, textAlign: "right", fontSize: 12.5, color: C.slate, whiteSpace: "nowrap" };
+  const miniEt = { display: "block", fontSize: 10, textTransform: "uppercase", letterSpacing: 0.3, color: "#A0A0B5", marginBottom: 1 };
+  const persona = (f, col) => (
+    <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 14, padding: "10px 16px", borderTop: `1px solid ${C.border}`, opacity: f.cuenta ? 1 : 0.6 }}>
+      <div style={{ width: 36, height: 36, borderRadius: "50%", background: `${col}22`, color: col, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 12.5, flex: "none", filter: f.cuenta ? "none" : "grayscale(1)" }}>{iniciales(f.nombre)}</div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 13.5, fontWeight: 800, color: C.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{bonito(f.nombre)}</div>
+        <div style={{ fontSize: 11.5, color: C.slate }}>{f.quincenas.length >= 2 ? "Quincenas 1 y 2" : f.quincenas.length === 1 ? `Quincena ${f.quincenas[0].slice(-1)}` : "—"}</div>
+      </div>
+      <div style={mini}><span style={miniEt}>Neto</span>{money(f.neto)}</div>
+      <div style={mini}><span style={miniEt}>Seg. social</span>{money(f.seguridad)}</div>
+      <div style={mini}><span style={miniEt}>Prestaciones</span>{money(f.prestaciones)}</div>
+      <div style={{ width: 118, textAlign: "right", fontWeight: 800, fontSize: 15, color: C.ink, textDecoration: f.cuenta ? "none" : "line-through" }}>{money(f.costo)}</div>
+      <Interruptor estado={f.cuenta ? "on" : "off"} onClick={() => onPersona(f)} titulo={f.cuenta ? "Clic para sacarla: ya va dentro del lote" : "Clic para volver a contarla"} />
+    </div>
+  );
+  const seccion = (g) => {
+    const col = colorDeArea(g.area);
+    return (
+      <div key={g.area} style={{ background: g.estado === "off" ? "#FAF8F5" : C.white, border: `1px solid ${C.border}`, borderRadius: 14, marginBottom: 12, overflow: "hidden" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 16px", background: "#FBF9F6" }}>
+          <span style={{ width: 10, height: 10, borderRadius: "50%", background: g.estado === "off" ? "#9A9AB0" : col, flex: "none" }} />
+          <b style={{ fontSize: 13.5, letterSpacing: 0.3 }}>{g.area}</b>
+          <span style={{ fontSize: 12, color: C.slate }}>{g.todas.length} {g.todas.length === 1 ? "persona" : "personas"}</span>
+          {g.estado === "off" ? <span style={{ fontSize: 11.5, fontWeight: 700, color: C.amber, background: C.amberBg, padding: "2px 9px", borderRadius: 12 }}>Ya va en el costo del lote</span> : null}
+          <div style={{ flex: 1 }} />
+          <span style={{ fontWeight: 800, fontSize: 14, textDecoration: g.estado === "off" ? "line-through" : "none" }}>{money(g.estado === "off" ? g.total : g.suma)}</span>
+          <span style={{ fontSize: 11.5, fontWeight: 700, color: C.slate, minWidth: 88, textAlign: "right" }}>{g.estado === "on" ? "Cuenta" : g.estado === "off" ? "No cuenta" : `Cuenta ${g.cuentan} de ${g.todas.length}`}</span>
+          <Interruptor estado={g.estado} onClick={() => onArea(g.area, g.todas)} titulo={g.estado === "on" ? "Apagar toda el área: ya va dentro del lote" : "Encender toda el área"} />
+        </div>
+        {g.personas.map((f) => persona(f, col))}
+      </div>
+    );
+  };
+  const stat = (titulo, valor, sub, color, fondo) => (
+    <div style={{ flex: 1, background: fondo || C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: "12px 16px" }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", letterSpacing: 0.4 }}>{titulo}</div>
+      <div style={{ fontSize: 22, fontWeight: 800, color: color || C.ink, marginTop: 3 }}>{valor}</div>
+      <div style={{ fontSize: 11.5, color: C.slate }}>{sub}</div>
+    </div>
+  );
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: C.canvas, borderRadius: 18, width: "min(1180px, 100%)", maxHeight: "90vh", display: "flex", flexDirection: "column", boxShadow: "0 12px 40px rgba(0,0,0,0.25)" }}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "20px 26px 12px" }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 20, fontWeight: 800, color: C.ink }}>Nómina fiscal completa — {mesTxt}</div>
+            <div style={{ fontSize: 12.5, color: C.slate, marginTop: 4, lineHeight: 1.5 }}>Liquidaciones confirmadas ({quincenas} de 2 quincenas). Costo para la empresa = neto + seguridad social + prestaciones. El interruptor decide si esa persona (o toda el área) cuenta como estructura; lo apagado ya va dentro del costo del lote.</div>
+          </div>
+          <button onClick={onClose} aria-label="Cerrar" style={{ border: "none", background: "transparent", fontSize: 26, lineHeight: 1, cursor: "pointer", color: C.slate }}>×</button>
+        </div>
+        <div style={{ display: "flex", gap: 12, padding: "0 26px 14px", flexWrap: "wrap" }}>
+          {stat("Suma a la estructura", money(resumen.total), `${resumen.personas} ${resumen.personas === 1 ? "persona" : "personas"} con el interruptor encendido`, C.amber, C.amberBg)}
+          {stat("Ya va en el costo del lote", money(resumen.fuera.total), `${resumen.fuera.personas} ${resumen.fuera.personas === 1 ? "persona" : "personas"} · no suman`, C.green, C.greenBg)}
+          {stat("Nómina fiscal total del mes", money(resumen.totalTodo), `${filas.length} personas`)}
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", padding: "0 26px 12px" }}>
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar por nombre o área…" style={{ padding: "8px 12px", border: `1.5px solid ${C.border}`, borderRadius: 10, fontSize: 13, width: 240, fontFamily: "inherit" }} />
+          {filas.length > 0 ? <Boton onClick={bajarExcel}>⬇ Excel</Boton> : null}
+          {msg ? <span style={{ fontSize: 12, color: C.red }}>{msg}</span> : null}
+          <div style={{ flex: 1 }} />
+          <div style={{ fontSize: 12, color: C.slate }}>{visibles.length} {visibles.length === 1 ? "persona" : "personas"}</div>
+        </div>
+        <div style={{ overflow: "auto", padding: "0 26px 20px" }}>
+          {!filas.length ? <div style={{ fontSize: 13, color: C.slate, padding: "10px 2px" }}>No hay liquidaciones fiscales confirmadas este mes.</div> : null}
+          {dentro.map(seccion)}
+          {fuera.length ? (
+            <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: 0.5, textTransform: "uppercase", color: C.slate, margin: "16px 2px 10px", display: "flex", alignItems: "center", gap: 10 }}>
+              Ya van dentro del costo del lote · no suman<span style={{ flex: 1, height: 1, background: C.border }} />
+            </div>
+          ) : null}
+          {fuera.map(seccion)}
+          <div style={{ fontSize: 11.5, color: C.slate, lineHeight: 1.6 }}>
+            Lo que decidas se guarda y vale para todos los meses. De quien quede fuera solo cuenta lo que se le paga de más (ayuda) y su provisión, que sale de los cierres de Centro de Costo (hoy MAQUILA no tiene cierre, así que no suma).
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function CostosGeneralView({ db }) {
   const hoy = useMemo(() => new Date(Date.now() - 5 * 3600 * 1000), []);
   const [anio, setAnio] = useState(hoy.getUTCFullYear());
@@ -140,22 +261,42 @@ export default function CostosGeneralView({ db }) {
 
   const [recarga, setRecarga] = useState(0);
   const [areasFuera, setAreasFuera] = useState(AREAS_FUERA_DEFECTO);
+  const [excepciones, setExcepciones] = useState({});
   const [msgAreas, setMsgAreas] = useState("");
   useEffect(() => {
     let vivo = true;
     getDoc(doc(db, "costos_config", "general"))
-      .then((d) => { if (vivo && d.exists() && Array.isArray(d.data().areasFuera)) setAreasFuera(d.data().areasFuera); })
+      .then((d) => {
+        if (!vivo || !d.exists()) return;
+        if (Array.isArray(d.data().areasFuera)) setAreasFuera(d.data().areasFuera);
+        if (d.data().excepciones && typeof d.data().excepciones === "object") setExcepciones(d.data().excepciones);
+      })
       .catch(() => {});
     return () => { vivo = false; };
   }, [db]);
-  async function alternarArea(nombre) {
-    const k = normTexto(nombre);
-    const esta = areasFuera.some((a) => normTexto(a) === k);
-    const nuevas = esta ? areasFuera.filter((a) => normTexto(a) !== k) : [...areasFuera, nombre];
-    setAreasFuera(nuevas);
+  async function guardarEleccion(nuevasAreas, nuevasExc) {
+    setAreasFuera(nuevasAreas);
+    setExcepciones(nuevasExc);
     setMsgAreas("");
-    try { await setDoc(doc(db, "costos_config", "general"), { areasFuera: nuevas, actualizadoEn: new Date().toISOString() }, { merge: true }); }
+    try { await setDoc(doc(db, "costos_config", "general"), { areasFuera: nuevasAreas, excepciones: nuevasExc, actualizadoEn: new Date().toISOString() }, { merge: true }); }
     catch (e) { setMsgAreas(`No se pudo guardar la elección: ${e?.message || e}`); }
+  }
+  // Interruptor del área: si todas sus personas cuentan la apaga; si no, la enciende. Borra las excepciones de sus personas.
+  function alternarArea(area, personas) {
+    const k = normTexto(area);
+    const todasCuentan = personas.every((p) => p.cuenta);
+    const sinArea = areasFuera.filter((a) => normTexto(a) !== k);
+    const nuevasExc = { ...excepciones };
+    personas.forEach((p) => { delete nuevasExc[p.id]; });
+    guardarEleccion(todasCuentan ? [...sinArea, area] : sinArea, nuevasExc);
+  }
+  // Interruptor de una persona: guarda excepción solo si difiere de lo que diría su área.
+  function alternarPersona(p) {
+    const deseada = !p.cuenta;
+    const porArea = !areasFuera.some((a) => normTexto(a) === normTexto(p.area));
+    const nuevasExc = { ...excepciones };
+    if (deseada === porArea) delete nuevasExc[p.id]; else nuevasExc[p.id] = deseada;
+    guardarEleccion(areasFuera, nuevasExc);
   }
   const [datos, setDatos] = useState({ cargando: true, error: "", lotes: [], bases: [], fichas: [], liqFiscal: [], gastosMes: null, gastosAnterior: null, cierreGuardado: null });
   const [gastosEdit, setGastosEdit] = useState(null);
@@ -213,7 +354,7 @@ export default function CostosGeneralView({ db }) {
     return null;
   }).filter(Boolean), [cierresResueltos, datosArea, ym, mes]);
 
-  const r = useMemo(() => cierreGeneral({ lotes: datos.lotes, bases: datos.bases, gastos: lineasGastos, liquidacionesFiscal: datos.liqFiscal, areasDestajo, fichas: datos.fichas, areasFuera }), [datos, lineasGastos, areasDestajo, areasFuera]);
+  const r = useMemo(() => cierreGeneral({ lotes: datos.lotes, bases: datos.bases, gastos: lineasGastos, liquidacionesFiscal: datos.liqFiscal, areasDestajo, fichas: datos.fichas, areasFuera, excepciones }), [datos, lineasGastos, areasDestajo, areasFuera, excepciones]);
 
   function moverMes(d) {
     let m = mes + d;
@@ -269,7 +410,7 @@ export default function CostosGeneralView({ db }) {
     try {
       const limpio = (p) => ({ nombre: p.nombre, area: p.area, valor: Math.round(p.valor), costo: Math.round(p.costo), provision: Math.round(p.provision) });
       await setDoc(doc(db, "costos_cierres_mes", ym), {
-        anio, mes, guardadoEn: new Date().toISOString(), gastosOrigen: origenGastos, areasFueraDeNominaFiscal: areasFuera,
+        anio, mes, guardadoEn: new Date().toISOString(), gastosOrigen: origenGastos, areasFueraDeNominaFiscal: areasFuera, excepcionesNominaFiscal: excepciones,
         resumen: {
           aporte: Math.round(r.recogido.aporte), basicos: Math.round(r.recogido.basicos), porcentajes: Math.round(r.recogido.porcentajes), lotes: r.recogido.lotes, cortadas: r.recogido.cortadas, despachadas: r.recogido.despachadas,
           gastos: Math.round(r.gastos.total), fiscal: Math.round(r.fiscal.total), fiscalFuera: Math.round(r.fiscal.fuera.total), destajoAyudas: Math.round(r.destajo.ayudas), destajoExcedentes: Math.round(r.destajo.excedentes), destajoProvision: Math.round(r.destajo.provision),
@@ -321,37 +462,6 @@ export default function CostosGeneralView({ db }) {
         filas, nombreExcel: `Gastos_${ym}`, vacio: "Sin gastos cargados. Usa «Cargar Excel de gastos».", onClose: cerrar,
         accion: <Boton onClick={() => { cerrar(); setVerGastos(true); }}>Ver y ajustar abajo</Boton>,
         nota: "Para cambiar qué gastos cuentan, usa las casillas de la sección «Gastos del mes».",
-      };
-    }
-    if (v.tipo === "fiscal") {
-      const filas = detalleFiscal(datos.liqFiscal, datos.fichas, areasFuera);
-      const areasFiscal = [...new Set(filas.map((f) => f.area))].sort();
-      return {
-        titulo: `Nómina fiscal completa — ${mesTxt}`,
-        sub: `Liquidaciones confirmadas (${quincenasFiscal} de 2 quincenas). Costo para la empresa = neto + seguridad social + prestaciones. Las áreas sin marcar ya van dentro del costo del lote y no suman.`,
-        total: money(r.fiscal.total),
-        columnas: [
-          { k: "nombre", label: "Trabajador", izq: true }, { k: "area", label: "Área", izq: true }, { k: "q", label: "Quincenas", ver: (f) => f.quincenas.map((x) => x.slice(-2)).join(" y "), excel: (f) => f.quincenas.join(", ") },
-          { k: "neto", label: "Neto pagado" }, { k: "seguridad", label: "Seguridad social" }, { k: "prestaciones", label: "Prestaciones" }, { k: "costo", label: "Costo total" },
-          { k: "estado", label: "Estado", izq: true, ver: (f) => (f.cuenta ? "Cuenta" : "Ya va en el lote"), excel: (f) => (f.cuenta ? "Cuenta" : "Ya va en el lote") },
-          { k: "costoCuenta", label: "Suma a la estructura", suma: true },
-        ],
-        filas, nombreExcel: `Nomina_fiscal_${ym}`, vacio: "No hay liquidaciones fiscales confirmadas este mes.", onClose: cerrar,
-        accion: (
-          <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-            <span style={{ fontSize: 12, fontWeight: 700, color: C.slate }}>Áreas que cuentan:</span>
-            {areasFiscal.map((a) => {
-              const cuenta = !areasFuera.some((x) => normTexto(x) === normTexto(a));
-              return (
-                <button key={a} onClick={() => alternarArea(a)} title={cuenta ? "Clic para sacarla: ya va dentro del lote" : "Clic para volver a contarla"} style={{ padding: "5px 10px", borderRadius: 16, fontSize: 12, fontWeight: 700, fontFamily: "inherit", cursor: "pointer", border: `1.5px solid ${cuenta ? C.ink : C.border}`, background: cuenta ? C.ink : C.white, color: cuenta ? C.white : C.slate }}>
-                  {cuenta ? "✓ " : "○ "}{a}
-                </button>
-              );
-            })}
-            {msgAreas ? <span style={{ fontSize: 12, color: C.red }}>{msgAreas}</span> : null}
-          </div>
-        ),
-        nota: r.fiscal.fuera.personas > 0 ? `Queda${r.fiscal.fuera.personas === 1 ? "" : "n"} fuera ${r.fiscal.fuera.personas} ${r.fiscal.fuera.personas === 1 ? "persona" : "personas"} por ${money(r.fiscal.fuera.total)} porque su centro de costo ya está en el costo del lote. De ellas solo cuenta lo que se les paga de más (ayuda) y su provisión, que sale de los cierres de Centro de Costo (hoy MAQUILA no tiene cierre, así que no suma).` : "Todas las áreas están contando. Desmarca las que ya van dentro del costo del lote.",
       };
     }
     const filasPersonas = (lista) => lista.map((p) => ({ nombre: p.nombre, area: p.area, valor: p.valor, costo: p.costo, ayuda: Math.max(0, -p.resultado), excedente: Math.max(0, p.resultado), cesantias: p.cesantias, prima: p.prima, intereses: p.intereses, vacaciones: p.vacaciones, provision: p.provision, extra: Math.max(0, -p.resultado) + p.provision }));
@@ -574,7 +684,13 @@ export default function CostosGeneralView({ db }) {
         {sinDetalle.length ? `${sinDetalle.map((a) => a.nombre).join(", ")} sin detalle por trabajador (se usó el total del área); ` : ""}
         el aporte cuenta cuando Contabilidad aprueba el lote en Dado por Cumplido; Confección y Terminación todavía no tienen cierre de ayuda; la prestación de servicios no está incluida (si va en los gastos del Excel, ya cuenta ahí).
       </div>
-      {ventana ? <Ventana {...armarVentana(ventana)} onAbrir={setVentana} /> : null}
+      {ventana?.tipo === "fiscal" ? (
+        <VentanaFiscal
+          mesTxt={`${MESES[mes - 1]} ${anio}`} ym={ym} quincenas={quincenasFiscal} resumen={r.fiscal}
+          filas={detalleFiscal(datos.liqFiscal, datos.fichas, areasFuera, excepciones)}
+          onArea={alternarArea} onPersona={alternarPersona} msg={msgAreas} onClose={() => setVentana(null)}
+        />
+      ) : ventana ? <Ventana {...armarVentana(ventana)} onAbrir={setVentana} /> : null}
     </div>
   );
 }

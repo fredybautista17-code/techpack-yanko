@@ -154,13 +154,18 @@ export function areaDeLiquidacion(l, fichas) {
   return ficha?.area || l.area || "Sin asignar";
 }
 const normFuera = (areasFuera) => new Set((areasFuera || []).map((a) => normTexto(a)));
+// ¿Esta persona cuenta como estructura? Una excepción propia (true = cuenta, false = fuera) manda sobre la regla de su área.
+export function personaCuenta(id, area, areasFuera, excepciones) {
+  const ex = excepciones ? excepciones[id] : undefined;
+  if (ex === true || ex === false) return ex;
+  return !normFuera(areasFuera).has(normTexto(area));
+}
 
-export function resumenFiscal(liquidaciones, fichas, areasFuera) {
+export function resumenFiscal(liquidaciones, fichas, areasFuera, excepciones) {
   const lista = liquidaciones || [];
-  const fuera = normFuera(areasFuera);
   const cuenta = [];
   const noCuenta = [];
-  lista.forEach((l) => (fuera.has(normTexto(areaDeLiquidacion(l, fichas))) ? noCuenta : cuenta).push(l));
+  lista.forEach((l) => (personaCuenta(l.trabajadorId || l.nombre || l.id, areaDeLiquidacion(l, fichas), areasFuera, excepciones) ? cuenta : noCuenta).push(l));
   const suma = (a) => a.reduce((s, l) => s + costoTotalLiquidacion(l), 0);
   const personas = (a) => new Set(a.map((l) => l.trabajadorId || l.nombre)).size;
   return {
@@ -221,8 +226,7 @@ export function detalleLotes(lotes, bases, categoriaId) {
 }
 
 // Nómina fiscal confirmada del mes, una fila por persona (suma sus quincenas).
-export function detalleFiscal(liquidaciones, fichas, areasFuera) {
-  const fuera = normFuera(areasFuera);
+export function detalleFiscal(liquidaciones, fichas, areasFuera, excepciones) {
   const por = new Map();
   (liquidaciones || []).forEach((l) => {
     const id = l.trabajadorId || l.nombre || l.id;
@@ -236,15 +240,15 @@ export function detalleFiscal(liquidaciones, fichas, areasFuera) {
     g.costo += costoTotalLiquidacion(l);
   });
   return [...por.values()]
-    .map((g) => { const cuenta = !fuera.has(normTexto(g.area)); return { ...g, quincenas: g.quincenas.sort(), cuenta, costoCuenta: cuenta ? g.costo : 0, apagada: !cuenta }; })
+    .map((g) => { const cuenta = personaCuenta(g.id, g.area, areasFuera, excepciones); return { ...g, quincenas: g.quincenas.sort(), cuenta, costoCuenta: cuenta ? g.costo : 0, apagada: !cuenta }; })
     .sort((a, b) => (a.cuenta === b.cuenta ? b.costo - a.costo : a.cuenta ? -1 : 1));
 }
 
 // ─── Todo junto ──────────────────────────────────────────────────────────────
-export function cierreGeneral({ lotes, bases, gastos, liquidacionesFiscal, areasDestajo, fichas, areasFuera }) {
+export function cierreGeneral({ lotes, bases, gastos, liquidacionesFiscal, areasDestajo, fichas, areasFuera, excepciones }) {
   const recogido = recogidoDeLotes(lotes, bases);
   const g = totalGastos(gastos);
-  const fiscal = resumenFiscal(liquidacionesFiscal, fichas, areasFuera);
+  const fiscal = resumenFiscal(liquidacionesFiscal, fichas, areasFuera, excepciones);
   const destajo = destajoDelMes(areasDestajo, fichas);
   const estructura = g.total + fiscal.total + destajo.extra;
   const resultado = recogido.aporte - estructura;
