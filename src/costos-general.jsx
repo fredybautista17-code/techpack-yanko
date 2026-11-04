@@ -15,7 +15,7 @@ import { AREAS_HISTORICO, normTexto } from "./centro-costo-historico-parser";
 import { ayudaQuincenasPorPersona } from "./ayuda-quincena";
 import { mismoNombre } from "./corte-equipos";
 import { unirPorAlias } from "./nombres-alias";
-import { cierreGeneral, parsearGastos, totalGastos, detalleLotes, detalleFiscal, AREAS_FUERA_DEFECTO } from "./costos-general-calculo";
+import { cierreGeneral, parsearGastos, totalGastos, detalleLotes, detalleFiscal, AREAS_FUERA_DEFECTO, DESTAJO_AYUDA_FUERA_DEFECTO, DESTAJO_PROVISION_FUERA_DEFECTO } from "./costos-general-calculo";
 
 const C = {
   ink: "#1A1A2E", slate: "#5A5A7A", border: "#E8E2DB", canvas: "#F7F4F0", white: "#FFFFFF",
@@ -144,6 +144,30 @@ function Interruptor({ estado, onClick, titulo }) {
     </button>
   );
 }
+// Cifra que cuenta o no cuenta: apagada se ve tachada y gris con su valor completo.
+const tachado = { textDecoration: "line-through", opacity: 0.55 };
+function Cifra({ valor, bruto, cuenta }) {
+  return cuenta ? money(valor) : <span style={tachado}>{money(bruto)}</span>;
+}
+function MarcaApagada({ estado, bruto }) {
+  if (estado === "on" || !(bruto > 0)) return null;
+  return <div style={{ fontSize: 10.5, fontWeight: 700, color: estado === "off" ? C.red : C.amber }}>{estado === "off" ? `No cuenta (${money(bruto)})` : "Cuenta una parte"}</div>;
+}
+const textoEstado = (e) => (e === "on" ? "Cuenta" : e === "off" ? "No cuenta" : "Parcial");
+// Interruptores de Ayuda y Provisión de cada área de destajo (cual: "ayuda" | "provision" | undefined = los dos).
+function ControlesArea({ areas, cual, onAlternar }) {
+  return (
+    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+      {areas.map((a) => (
+        <div key={a.clave} style={{ display: "flex", alignItems: "center", gap: 10, background: C.white, border: `1px solid ${C.border}`, borderRadius: 10, padding: "5px 11px", fontSize: 12.5 }}>
+          <b>{a.nombre}</b>
+          {cual !== "provision" ? <span style={{ display: "flex", alignItems: "center", gap: 6, color: C.slate }}>Ayuda<Interruptor estado={a.estadoAyuda} onClick={() => onAlternar("ayuda", a)} titulo={a.estadoAyuda === "on" ? `Que la ayuda de ${a.nombre} no cuente` : `Que la ayuda de ${a.nombre} cuente`} /></span> : null}
+          {cual !== "ayuda" ? <span style={{ display: "flex", alignItems: "center", gap: 6, color: C.slate }}>Provisión<Interruptor estado={a.estadoProvision} onClick={() => onAlternar("provision", a)} titulo={a.estadoProvision === "on" ? `Que la provisión de ${a.nombre} no cuente (ya va en el costo del lote)` : `Que la provisión de ${a.nombre} cuente`} /></span> : null}
+        </div>
+      ))}
+    </div>
+  );
+}
 const COLORES_AREA = ["#3D6B9E", "#9E5B8F", "#C47C1A", "#D2613A", "#2D9E6B", "#5B7FA8", "#8A6BB0", "#B5654A"];
 const colorDeArea = (a) => COLORES_AREA[[...String(a)].reduce((s, ch) => s + ch.charCodeAt(0), 0) % COLORES_AREA.length];
 const iniciales = (n) => { const p = String(n || "").split(/\s+/).filter(Boolean); return ((p[0]?.[0] || "") + (p[1]?.[0] || "")).toUpperCase() || "?"; };
@@ -266,6 +290,8 @@ export default function CostosGeneralView({ db }) {
   const [recarga, setRecarga] = useState(0);
   const [areasFuera, setAreasFuera] = useState(AREAS_FUERA_DEFECTO);
   const [excepciones, setExcepciones] = useState({});
+  // Interruptores de destajo: qué áreas/personas NO suman su ayuda o su provisión. CORTE arranca sin provisión (ya va en el costo del lote).
+  const [destajoCfg, setDestajoCfg] = useState({ ayudaFuera: DESTAJO_AYUDA_FUERA_DEFECTO, provisionFuera: DESTAJO_PROVISION_FUERA_DEFECTO, ayudaExc: {}, provisionExc: {} });
   const [msgAreas, setMsgAreas] = useState("");
   const [equiposCorte, setEquiposCorte] = useState([]);
   // Nombres anteriores de los trabajadores de Corte (se guardan al renombrar en Admin Corte → Nómina).
@@ -279,6 +305,14 @@ export default function CostosGeneralView({ db }) {
         if (!vivo || !d.exists()) return;
         if (Array.isArray(d.data().areasFuera)) setAreasFuera(d.data().areasFuera);
         if (d.data().excepciones && typeof d.data().excepciones === "object") setExcepciones(d.data().excepciones);
+        const g = d.data();
+        const obj = (x) => (x && typeof x === "object" && !Array.isArray(x) ? x : {});
+        setDestajoCfg((c) => ({
+          ayudaFuera: Array.isArray(g.destajoAyudaFuera) ? g.destajoAyudaFuera : c.ayudaFuera,
+          provisionFuera: Array.isArray(g.destajoProvisionFuera) ? g.destajoProvisionFuera : c.provisionFuera,
+          ayudaExc: obj(g.destajoAyudaExc),
+          provisionExc: obj(g.destajoProvisionExc),
+        }));
       })
       .catch(() => {});
     // Equipos de Corte (quién es cortador, ayudante o apoyo): se arman en Corte → Centro de Costo.
@@ -313,6 +347,32 @@ export default function CostosGeneralView({ db }) {
     const nuevasExc = { ...excepciones };
     if (deseada === porArea) delete nuevasExc[p.id]; else nuevasExc[p.id] = deseada;
     guardarEleccion(areasFuera, nuevasExc);
+  }
+  async function guardarDestajo(nuevo) {
+    setDestajoCfg(nuevo);
+    setMsgAreas("");
+    try { await setDoc(doc(db, "costos_config", "general"), { destajoAyudaFuera: nuevo.ayudaFuera, destajoProvisionFuera: nuevo.provisionFuera, destajoAyudaExc: nuevo.ayudaExc, destajoProvisionExc: nuevo.provisionExc, actualizadoEn: new Date().toISOString() }, { merge: true }); }
+    catch (e) { setMsgAreas(`No se pudo guardar la elección: ${e?.message || e}`); }
+  }
+  // tipo: "ayuda" | "provision". Interruptor del área: si todo cuenta lo apaga; si no, lo enciende. Borra las excepciones de sus personas.
+  function alternarAreaDestajo(tipo, a) {
+    const kF = tipo === "ayuda" ? "ayudaFuera" : "provisionFuera";
+    const kE = tipo === "ayuda" ? "ayudaExc" : "provisionExc";
+    const estado = tipo === "ayuda" ? a.estadoAyuda : a.estadoProvision;
+    const sinArea = destajoCfg[kF].filter((x) => normTexto(x) !== normTexto(a.clave));
+    const exc = { ...destajoCfg[kE] };
+    a.personas.forEach((p) => { delete exc[p.key]; });
+    guardarDestajo({ ...destajoCfg, [kF]: estado === "on" ? [...sinArea, a.clave] : sinArea, [kE]: exc });
+  }
+  // Interruptor de una persona: guarda excepción solo si difiere de lo que diría su área.
+  function alternarPersonaDestajo(tipo, p) {
+    const kF = tipo === "ayuda" ? "ayudaFuera" : "provisionFuera";
+    const kE = tipo === "ayuda" ? "ayudaExc" : "provisionExc";
+    const actual = tipo === "ayuda" ? p.cuentaAyuda : p.cuentaProvision;
+    const porArea = !destajoCfg[kF].some((x) => normTexto(x) === normTexto(p.claveArea));
+    const exc = { ...destajoCfg[kE] };
+    if (!actual === porArea) delete exc[p.key]; else exc[p.key] = !actual;
+    guardarDestajo({ ...destajoCfg, [kE]: exc });
   }
   const [datos, setDatos] = useState({ cargando: true, error: "", lotes: [], bases: [], fichas: [], liqFiscal: [], gastosMes: null, gastosAnterior: null, cierreGuardado: null });
   const [gastosEdit, setGastosEdit] = useState(null);
@@ -389,7 +449,7 @@ export default function CostosGeneralView({ db }) {
     return null;
   }).filter(Boolean), [cierresResueltos, datosArea, ym, mes, aliasCorte]);
 
-  const r = useMemo(() => cierreGeneral({ lotes: datos.lotes, bases: datos.bases, gastos: lineasGastos, liquidacionesFiscal: datos.liqFiscal, areasDestajo, fichas: datos.fichas, areasFuera, excepciones, equiposCorte }), [datos, lineasGastos, areasDestajo, areasFuera, excepciones, equiposCorte]);
+  const r = useMemo(() => cierreGeneral({ lotes: datos.lotes, bases: datos.bases, gastos: lineasGastos, liquidacionesFiscal: datos.liqFiscal, areasDestajo, fichas: datos.fichas, areasFuera, excepciones, equiposCorte, destajoOpc: destajoCfg }), [datos, lineasGastos, areasDestajo, areasFuera, excepciones, equiposCorte, destajoCfg]);
 
   const ayudaQ = useMemo(
     () => ayudaQuincenasPorPersona(ym, r.destajo.personas, { fichas: datos.fichas, ...nominaQ }, hoy.toISOString().slice(0, 10)),
@@ -465,15 +525,15 @@ export default function CostosGeneralView({ db }) {
     setGuardando(true);
     setMsgCierre("");
     try {
-      const limpio = (p) => ({ nombre: p.nombre, area: p.area, valor: Math.round(p.valor), costo: Math.round(p.costo), provision: Math.round(p.provision) });
+      const limpio = (p) => ({ nombre: p.nombre, area: p.area, valor: Math.round(p.valor), costo: Math.round(p.costo), provision: Math.round(p.provision), cuentaAyuda: !!p.cuentaAyuda, cuentaProvision: !!p.cuentaProvision });
       await setDoc(doc(db, "costos_cierres_mes", ym), {
-        anio, mes, guardadoEn: new Date().toISOString(), gastosOrigen: origenGastos, areasFueraDeNominaFiscal: areasFuera, excepcionesNominaFiscal: excepciones,
+        anio, mes, guardadoEn: new Date().toISOString(), gastosOrigen: origenGastos, areasFueraDeNominaFiscal: areasFuera, excepcionesNominaFiscal: excepciones, destajoAyudaFuera: destajoCfg.ayudaFuera, destajoProvisionFuera: destajoCfg.provisionFuera, destajoAyudaExc: destajoCfg.ayudaExc, destajoProvisionExc: destajoCfg.provisionExc,
         resumen: {
           aporte: Math.round(r.recogido.aporte), basicos: Math.round(r.recogido.basicos), porcentajes: Math.round(r.recogido.porcentajes), lotes: r.recogido.lotes, cortadas: r.recogido.cortadas, despachadas: r.recogido.despachadas,
-          gastos: Math.round(r.gastos.total), fiscal: Math.round(r.fiscal.total), fiscalFuera: Math.round(r.fiscal.fuera.total), destajoAyudas: Math.round(r.destajo.ayudas), destajoExcedentes: Math.round(r.destajo.excedentes), destajoProvision: Math.round(r.destajo.provision),
+          gastos: Math.round(r.gastos.total), fiscal: Math.round(r.fiscal.total), fiscalFuera: Math.round(r.fiscal.fuera.total), destajoAyudas: Math.round(r.destajo.ayudas), destajoExcedentes: Math.round(r.destajo.excedentes), destajoProvision: Math.round(r.destajo.provision), destajoAyudasTodas: Math.round(r.destajo.ayudasTodas), destajoProvisionTodas: Math.round(r.destajo.provisionTodas),
           estructura: Math.round(r.estructura), resultado: Math.round(r.resultado),
         },
-        areas: r.destajo.areas.map((a) => ({ clave: a.clave, nombre: a.nombre, ayudas: Math.round(a.ayudas), excedentes: Math.round(a.excedentes), provision: Math.round(a.provision) })),
+        areas: r.destajo.areas.map((a) => ({ clave: a.clave, nombre: a.nombre, ayudas: Math.round(a.ayudas), ayudasTodas: Math.round(a.ayudasTodas), excedentes: Math.round(a.excedentes), provision: Math.round(a.provision), provisionTodas: Math.round(a.provisionTodas), cuentaAyuda: a.estadoAyuda, cuentaProvision: a.estadoProvision })),
         personas: r.destajo.personas.map(limpio),
       });
       setMsgCierre("Cierre del mes guardado.");
@@ -522,37 +582,75 @@ export default function CostosGeneralView({ db }) {
         nota: "Para cambiar qué gastos cuentan, usa las casillas de la sección «Gastos del mes».",
       };
     }
-    const filasPersonas = (lista) => lista.map((p) => ({ nombre: p.nombre, area: p.area, ayudaQ: p.porEquipos ? null : (ayudaQ.get(p.id)?.total ?? null), fiscalTxt: fiscalDePersona.has(p.id ?? p.nombre) ? (fiscalDePersona.get(p.id ?? p.nombre).cuenta ? "También en nómina fiscal · cuenta" : "En nómina fiscal · fuera") : "—", fiscalCuenta: !!fiscalDePersona.get(p.id ?? p.nombre)?.cuenta, valor: p.valor, costo: p.costo, ayuda: Math.max(0, -p.resultado), excedente: Math.max(0, p.resultado), cesantias: p.cesantias, prima: p.prima, intereses: p.intereses, vacaciones: p.vacaciones, provision: p.provision, extra: Math.max(0, -p.resultado) + p.provision }));
-    const filasAreaSinDetalle = (lista) => lista.map((a) => ({ nombre: `${a.nombre} (total del área, sin detalle por trabajador)`, area: a.nombre, valor: 0, costo: 0, ayuda: a.ayudas, excedente: a.excedentes, cesantias: 0, prima: 0, intereses: 0, vacaciones: 0, provision: a.provision, extra: a.ayudas + a.provision }));
-    const filasPorEquipos = (lista) => lista.map((a) => ({ nombre: `${a.nombre}: ayuda por equipos (los excedentes de los equipos ya se compensaron)`, area: a.nombre, valor: a.equipos.ingresoTotal, costo: a.equipos.costoTotal, ayuda: a.ayudas, excedente: a.excedentes, cesantias: 0, prima: 0, intereses: 0, vacaciones: 0, provision: 0, extra: a.ayudas }));
+    const nada = { ayuda: 0, ayudaRaw: 0, ayudaCuenta: true, excedente: 0, provision: 0, provisionRaw: 0, provCuenta: true, cesantias: 0, cesantiasRaw: 0, prima: 0, primaRaw: 0, intereses: 0, interesesRaw: 0, vacaciones: 0, vacacionesRaw: 0 };
+    const filasPersonas = (lista) => lista.map((p) => {
+      const cp = p.cuentaProvision;
+      return {
+        ...nada, nombre: p.nombre, area: p.area, ayudaQ: p.porEquipos ? null : (ayudaQ.get(p.id)?.total ?? null),
+        fiscalTxt: fiscalDePersona.has(p.id ?? p.nombre) ? (fiscalDePersona.get(p.id ?? p.nombre).cuenta ? "También en nómina fiscal · cuenta" : "En nómina fiscal · fuera") : "—", fiscalCuenta: !!fiscalDePersona.get(p.id ?? p.nombre)?.cuenta,
+        valor: p.valor, costo: p.costo, ayuda: p.ayuda, ayudaRaw: p.ayudaRaw, ayudaCuenta: p.cuentaAyuda, excedente: Math.max(0, p.resultado),
+        cesantias: cp ? p.cesantias : 0, cesantiasRaw: p.cesantias, prima: cp ? p.prima : 0, primaRaw: p.prima, intereses: cp ? p.intereses : 0, interesesRaw: p.intereses, vacaciones: cp ? p.vacaciones : 0, vacacionesRaw: p.vacaciones,
+        provision: p.provisionCuenta, provisionRaw: p.provision, provCuenta: cp, extra: p.extra,
+        swAyuda: p.porEquipos ? null : { estado: p.cuentaAyuda ? "on" : "off", onClick: () => alternarPersonaDestajo("ayuda", p) },
+        swProv: { estado: cp ? "on" : "off", onClick: () => alternarPersonaDestajo("provision", p) },
+      };
+    });
+    const filasAreaSinDetalle = (lista) => lista.map((a) => ({
+      ...nada, nombre: `${a.nombre} (total del área, sin detalle por trabajador)`, area: a.nombre, valor: 0, costo: 0,
+      ayuda: a.ayudas, ayudaRaw: a.ayudasTodas, ayudaCuenta: a.estadoAyuda !== "off", excedente: a.excedentes,
+      provision: a.provision, provisionRaw: a.provisionTodas, provCuenta: a.estadoProvision !== "off", extra: a.ayudas + a.provision,
+      swAyuda: { estado: a.estadoAyuda, onClick: () => alternarAreaDestajo("ayuda", a) }, swProv: { estado: a.estadoProvision, onClick: () => alternarAreaDestajo("provision", a) },
+    }));
+    const filasPorEquipos = (lista) => lista.map((a) => ({
+      ...nada, nombre: `${a.nombre}: ayuda por equipos (los excedentes de los equipos ya se compensaron)`, area: a.nombre, valor: a.equipos.ingresoTotal, costo: a.equipos.costoTotal,
+      ayuda: a.ayudas, ayudaRaw: a.ayudasTodas, ayudaCuenta: a.estadoAyuda !== "off", excedente: a.excedentes, extra: a.ayudas,
+      swAyuda: { estado: a.estadoAyuda, onClick: () => alternarAreaDestajo("ayuda", a) }, swProv: null,
+    }));
+    // Columnas con interruptor y cifras que se tachan cuando no cuentan.
+    const colSw = (tipo) => {
+      const campo = tipo === "ayuda" ? "swAyuda" : "swProv";
+      return {
+        k: campo, label: tipo === "ayuda" ? "¿Cuenta la ayuda?" : "¿Cuenta la provisión?",
+        excel: (f) => (f[campo] ? textoEstado(f[campo].estado) : ""),
+        ver: (f) => (f[campo] ? <Interruptor estado={f[campo].estado} onClick={f[campo].onClick} titulo={f[campo].estado === "on" ? "Clic para que no cuente" : "Clic para que cuente"} /> : <span style={{ fontSize: 11.5, color: C.slate }}>{tipo === "ayuda" ? "Por equipos" : "—"}</span>),
+      };
+    };
+    const colAyuda = (label) => ({ k: "ayuda", label, suma: true, ver: (f) => <Cifra valor={f.ayuda} bruto={f.ayudaRaw} cuenta={f.ayudaCuenta} /> });
+    const colProv = (k, label) => ({ k, label, suma: true, ver: (f) => <Cifra valor={f[k]} bruto={f[`${k}Raw`]} cuenta={f.provCuenta} /> });
+    const colFiscal = { k: "fiscalTxt", label: "Nómina fiscal", izq: true, ver: (f) => (f.fiscalTxt ? <span style={{ color: f.fiscalCuenta ? C.amber : C.slate, fontWeight: f.fiscalCuenta ? 800 : 600 }}>{f.fiscalTxt}</span> : "") };
+    const avisoApagado = "Lo que apagues no suma a «¿Cubro mis costos?»: se ve tachado con su valor completo. La elección se guarda y vale para todos los meses.";
     if (v.tipo === "ayudas") {
-      const filas = [...filasPersonas(personasAyuda), ...filasAreaSinDetalle(sinDetalle.filter((a) => a.ayudas > 0)), ...filasPorEquipos(porEquipos.filter((a) => a.ayudas > 0))].sort((a, b) => b.ayuda - a.ayuda);
+      const filas = [...filasPersonas(personasAyuda), ...filasAreaSinDetalle(sinDetalle.filter((a) => a.ayudasTodas > 0)), ...filasPorEquipos(porEquipos.filter((a) => a.ayudasTodas > 0))].sort((a, b) => b.ayudaRaw - a.ayudaRaw);
       return {
         titulo: `Destajo: ayudas — ${mesTxt}`,
         sub: "Personas a las que se les pagó más de lo que produjeron. Ayuda = le pagamos − produjo. Los excedentes no se restan.",
         total: money(r.destajo.ayudas),
         columnas: [
-          { k: "nombre", label: "Trabajador", izq: true }, { k: "area", label: "Área", izq: true }, { k: "valor", label: "Produjo", suma: true }, { k: "costo", label: "Le pagamos", suma: true }, { k: "ayuda", label: "Ayuda", suma: true }, { k: "fiscalTxt", label: "Nómina fiscal", izq: true, ver: (f) => (f.fiscalTxt ? <span style={{ color: f.fiscalCuenta ? C.amber : C.slate, fontWeight: f.fiscalCuenta ? 800 : 600 }}>{f.fiscalTxt}</span> : "") },
+          { k: "nombre", label: "Trabajador", izq: true }, { k: "area", label: "Área", izq: true }, { k: "valor", label: "Produjo", suma: true }, { k: "costo", label: "Le pagamos", suma: true }, colAyuda("Ayuda"), colSw("ayuda"), colFiscal,
         ],
         filas, nombreExcel: `Destajo_ayudas_${ym}`, vacio: "Nadie recibió ayuda este mes (o aún no hay cierres de Centro de Costo).", onClose: cerrar,
+        accion: <ControlesArea areas={r.destajo.areas.filter((a) => a.ayudasTodas > 0)} cual="ayuda" onAlternar={alternarAreaDestajo} />,
+        nota: `${avisoApagado}${msgAreas ? ` ${msgAreas}` : ""}`,
       };
     }
     if (v.tipo === "provision" || v.tipo === "area") {
       const delArea = v.tipo === "area";
       const lista = delArea ? r.destajo.personas.filter((p) => p.claveArea === v.clave) : r.destajo.personas;
       const areasSin = delArea ? sinDetalle.filter((a) => a.clave === v.clave) : sinDetalle;
-      const filas = [...filasPersonas(lista), ...filasAreaSinDetalle(areasSin), ...(delArea ? filasPorEquipos(porEquipos.filter((a) => a.clave === v.clave)) : [])].sort((a, b) => (delArea ? b.extra - a.extra : b.provision - a.provision));
-      const nombreArea = delArea ? (r.destajo.areas.find((a) => a.clave === v.clave)?.nombre || "") : "";
+      const filas = [...filasPersonas(lista), ...filasAreaSinDetalle(areasSin), ...(delArea ? filasPorEquipos(porEquipos.filter((a) => a.clave === v.clave)) : [])].sort((a, b) => (delArea ? (b.ayudaRaw + b.provisionRaw) - (a.ayudaRaw + a.provisionRaw) : b.provisionRaw - a.provisionRaw));
+      const areaV = delArea ? r.destajo.areas.find((a) => a.clave === v.clave) : null;
+      const nombreArea = areaV?.nombre || "";
       if (delArea) {
         return {
           titulo: `${nombreArea} — ${mesTxt}`,
-          sub: "Cada trabajador del área: lo que produjo, lo que se le pagó, su ayuda o excedente y su provisión. Extra = ayuda del mes + provisión. «Ayuda por quincena (Nómina)» es la misma de Centro de Costo: cuenta las horas trabajadas y no netea entre quincenas; no se suma al extra.",
+          sub: "Cada trabajador del área: lo que produjo, lo que se le pagó, su ayuda o excedente y su provisión. Extra = ayuda del mes + provisión (solo lo que cuenta). «Ayuda por quincena (Nómina)» es la misma de Centro de Costo: cuenta las horas trabajadas y no netea entre quincenas; no se suma al extra.",
           total: money(filas.reduce((s, f) => s + f.extra, 0)),
           columnas: [
-            { k: "nombre", label: "Trabajador", izq: true }, { k: "valor", label: "Produjo", suma: true }, { k: "costo", label: "Le pagamos", suma: true }, { k: "ayuda", label: "Ayuda del mes", suma: true }, { k: "ayudaQ", label: "Ayuda por quincena (Nómina)", suma: true, resalta: true, ver: (f) => (f.ayudaQ == null ? "—" : money(f.ayudaQ)) }, { k: "excedente", label: "Excedente (no se resta)", suma: true }, { k: "provision", label: "Provisión", suma: true }, { k: "extra", label: "Extra total", suma: true }, { k: "fiscalTxt", label: "Nómina fiscal", izq: true, ver: (f) => (f.fiscalTxt ? <span style={{ color: f.fiscalCuenta ? C.amber : C.slate, fontWeight: f.fiscalCuenta ? 800 : 600 }}>{f.fiscalTxt}</span> : "") },
+            { k: "nombre", label: "Trabajador", izq: true }, { k: "valor", label: "Produjo", suma: true }, { k: "costo", label: "Le pagamos", suma: true }, colAyuda("Ayuda del mes"), colSw("ayuda"), { k: "ayudaQ", label: "Ayuda por quincena (Nómina)", suma: true, resalta: true, ver: (f) => (f.ayudaQ == null ? "—" : money(f.ayudaQ)) }, { k: "excedente", label: "Excedente (no se resta)", suma: true }, colProv("provision", "Provisión"), colSw("provision"), { k: "extra", label: "Extra total", suma: true }, colFiscal,
           ],
           filas, nombreExcel: `${nombreArea.replace(/ /g, "_")}_${ym}`, vacio: "Sin trabajadores para este mes.", onClose: cerrar,
-          nota: [...ayudaQ.values()].some((v) => v.enCurso) ? "La «Ayuda por quincena» solo cuenta quincenas ya terminadas; la que sigue en curso se suma cuando termine. «—» = persona que no es de destajo o que se mide por equipos." : "«—» = persona que no es de destajo o que se mide por equipos (Corte). Las quincenas sin liquidación confirmada usan la causación manual o el registro de producción.",
+          accion: areaV ? <ControlesArea areas={[areaV]} onAlternar={alternarAreaDestajo} /> : null,
+          nota: `${avisoApagado} ${[...ayudaQ.values()].some((x) => x.enCurso) ? "La «Ayuda por quincena» solo cuenta quincenas ya terminadas; la que sigue en curso se suma cuando termine. «—» = persona que no es de destajo o que se mide por equipos." : "«—» = persona que no es de destajo o que se mide por equipos (Corte). Las quincenas sin liquidación confirmada usan la causación manual o el registro de producción."}${msgAreas ? ` ${msgAreas}` : ""}`,
         };
       }
       return {
@@ -560,10 +658,11 @@ export default function CostosGeneralView({ db }) {
         sub: "Cesantías, prima, intereses y vacaciones de los trabajadores de destajo, proporcional a lo pagado en el mes. Mismas tasas de Nómina.",
         total: money(r.destajo.provision),
         columnas: [
-          { k: "nombre", label: "Trabajador", izq: true }, { k: "area", label: "Área", izq: true }, { k: "cesantias", label: "Cesantías", suma: true }, { k: "prima", label: "Prima", suma: true }, { k: "intereses", label: "Intereses", suma: true }, { k: "vacaciones", label: "Vacaciones", suma: true }, { k: "provision", label: "Provisión", suma: true }, { k: "fiscalTxt", label: "Nómina fiscal", izq: true, ver: (f) => (f.fiscalTxt ? <span style={{ color: f.fiscalCuenta ? C.amber : C.slate, fontWeight: f.fiscalCuenta ? 800 : 600 }}>{f.fiscalTxt}</span> : "") },
+          { k: "nombre", label: "Trabajador", izq: true }, { k: "area", label: "Área", izq: true }, colProv("cesantias", "Cesantías"), colProv("prima", "Prima"), colProv("intereses", "Intereses"), colProv("vacaciones", "Vacaciones"), colProv("provision", "Provisión"), colSw("provision"), colFiscal,
         ],
         filas, nombreExcel: `Destajo_provision_${ym}`, vacio: "Sin trabajadores para este mes.", onClose: cerrar,
-        nota: "Destajo y Fiscal Destajo: cesantías y prima sobre sueldo + auxilio, intereses 12 % de las cesantías, vacaciones solo sobre el sueldo.",
+        accion: <ControlesArea areas={r.destajo.areas} cual="provision" onAlternar={alternarAreaDestajo} />,
+        nota: `Destajo y Fiscal Destajo: cesantías y prima sobre sueldo + auxilio, intereses 12 % de las cesantías, vacaciones solo sobre el sueldo. CORTE arranca apagada porque su sueldo y prestaciones ya van en el costo del lote. ${avisoApagado}${msgAreas ? ` ${msgAreas}` : ""}`,
       };
     }
     // estructura: desglose de «Por pagar fuera de los lotes»
@@ -679,7 +778,7 @@ export default function CostosGeneralView({ db }) {
           <thead><tr><th style={thL}>Área</th><th style={th}>Personas ayudadas</th><th style={th}>Ayudas</th><th style={{ ...th, background: "#FFE9A8", color: "#7A5200" }}>Ayuda por quincena (Nómina)</th><th style={th}>Excedentes (no se restan)</th><th style={th}>Provisión</th><th style={th}>Extra que pone la estructura</th></tr></thead>
           <tbody>
             {r.destajo.areas.map((a) => (
-              <tr key={a.clave} onClick={() => setVentana({ tipo: "area", clave: a.clave })} style={{ cursor: "pointer" }}><td style={tdL}>▸ {a.nombre}</td><td style={td}>{a.porEquipos ? "por equipos" : a.detalle ? `${a.ayudados} de ${a.total}` : "—"}</td><td style={{ ...td, color: C.red }}>{money(a.ayudas)}</td><td style={{ ...td, background: "#FFF4D6" }}>{ayudaQAreas.get(a.clave) == null ? "—" : money(ayudaQAreas.get(a.clave))}</td><td style={{ ...td, color: C.slate }}>{money(a.excedentes)}</td><td style={td}>{money(a.provision)}</td><td style={{ ...td, fontWeight: 800 }}>{money(a.extra)}</td></tr>
+              <tr key={a.clave} onClick={() => setVentana({ tipo: "area", clave: a.clave })} style={{ cursor: "pointer" }}><td style={tdL}>▸ {a.nombre}</td><td style={td}>{a.porEquipos ? "por equipos" : a.detalle ? `${a.ayudados} de ${a.total}` : "—"}</td><td style={{ ...td, color: C.red }}>{money(a.ayudas)}<MarcaApagada estado={a.estadoAyuda} bruto={a.ayudasTodas} /></td><td style={{ ...td, background: "#FFF4D6" }}>{ayudaQAreas.get(a.clave) == null ? "—" : money(ayudaQAreas.get(a.clave))}</td><td style={{ ...td, color: C.slate }}>{money(a.excedentes)}</td><td style={td}>{money(a.provision)}<MarcaApagada estado={a.estadoProvision} bruto={a.provisionTodas} /></td><td style={{ ...td, fontWeight: 800 }}>{money(a.extra)}</td></tr>
             ))}
             {!r.destajo.areas.length && <tr><td colSpan={7} style={{ ...td, textAlign: "left", color: C.slate }}>Todavía no hay cierres de Centro de Costo de este mes.</td></tr>}
             {r.destajo.areas.length > 0 && (
@@ -701,8 +800,8 @@ export default function CostosGeneralView({ db }) {
                 <td style={{ ...td, textAlign: "left" }}>{p.area}</td>
                 <td style={{ ...td, color: C.green }}>{money(p.valor)}</td>
                 <td style={{ ...td, color: C.amber }}>{money(p.costo)}</td>
-                <td style={td}>{p.porEquipos ? <span style={{ fontSize: 12, color: C.slate }}>Se mide por equipos</span> : <Etiqueta valor={p.resultado} />}</td>
-                <td style={td}>{money(p.provision)}</td>
+                <td style={td}>{p.porEquipos ? <span style={{ fontSize: 12, color: C.slate }}>Se mide por equipos</span> : <Etiqueta valor={p.resultado} />}{!p.porEquipos && p.resultado < 0 && !p.cuentaAyuda ? <span style={{ fontSize: 11, color: C.slate, marginLeft: 6 }}>(ayuda no cuenta)</span> : null}</td>
+                <td style={td}><Cifra valor={p.provisionCuenta} bruto={p.provision} cuenta={p.cuentaProvision} /></td>
                 <td style={{ ...td, fontWeight: 800 }}>{money(p.extra)}</td>
               </tr>
             ))}

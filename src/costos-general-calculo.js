@@ -184,13 +184,31 @@ export function resumenFiscal(liquidaciones, fichas, areasFuera, excepciones) {
 // son montos extras y NO se restan (decisión de Fredy, 2026-11-04); se muestran aparte como dato.
 // equiposCorte: lista `miembros` de costos_config/corte_equipos. Si hay cortadores configurados, el área CORTE se mide por equipos:
 // su ayuda es la ayuda general de Corte (lo que los equipos y doña Berta juntos no alcanzaron a cubrir) y sus excedentes se suman entre sí.
-export function destajoDelMes(areas, fichas, equiposCorte) {
+// Interruptores de destajo (2026-11-05): cada área y cada persona decide por separado si su AYUDA cuenta y si su PROVISIÓN cuenta.
+// CORTE arranca con la provisión fuera (su sueldo y prestaciones ya van en el costo del lote) y la ayuda dentro.
+export const DESTAJO_AYUDA_FUERA_DEFECTO = [];
+export const DESTAJO_PROVISION_FUERA_DEFECTO = ["CORTE"];
+export const clavePersonaDestajo = (claveArea, id, nombre) => `${claveArea}|${id ?? nombre}`;
+// ¿Cuenta? Una excepción propia (true/false) manda sobre la regla de su área.
+export function cuentaDestajo(areasFuera, excepciones, claveArea, clavePersona) {
+  const ex = clavePersona && excepciones ? excepciones[clavePersona] : undefined;
+  if (ex === true || ex === false) return ex;
+  return !(areasFuera || []).some((a) => normTexto(a) === normTexto(claveArea));
+}
+const estadoDe = (cuentan, total) => (total === 0 ? "off" : cuentan === total ? "on" : cuentan === 0 ? "off" : "mixto");
+// opc: { ayudaFuera, provisionFuera, ayudaExc, provisionExc }. Sin opc todo cuenta (como antes).
+export function destajoDelMes(areas, fichas, equiposCorte, opc) {
+  const o = opc || {};
   const out = (areas || []).map((a) => {
     let personas = [];
     let ayudas = 0;
     let excedentes = 0;
     let provision = 0;
     let porEquipos = null;
+    let ayudasTodas = 0;
+    let provisionTodas = 0;
+    const areaAyuda = cuentaDestajo(o.ayudaFuera, null, a.clave, null);
+    const areaProv = cuentaDestajo(o.provisionFuera, null, a.clave, null);
     if (a.trabajadores && a.trabajadores.length) {
       personas = a.trabajadores.map((t) => {
         const ficha = fichaDeTrabajador(t, fichas);
@@ -198,32 +216,48 @@ export function destajoDelMes(areas, fichas, equiposCorte) {
         const costo = num(t.costo);
         const resultado = valor - costo;
         const prov = provisionDeTrabajador(costo, ficha);
-        return { id: t.id, nombre: t.nombre, area: a.nombre, claveArea: a.clave, tipoNomina: ficha?.tipoNomina || "", valor, costo, resultado, provision: prov.total, cesantias: prov.cesantias, intereses: prov.intereses, prima: prov.prima, vacaciones: prov.vacaciones, sinFicha: prov.sinFicha, extra: Math.max(0, -resultado) + prov.total };
-      }).sort((x, y) => y.extra - x.extra);
-      ayudas = personas.reduce((s, p) => s + Math.max(0, -p.resultado), 0);
+        const key = clavePersonaDestajo(a.clave, t.id, t.nombre);
+        const cuentaAyuda = cuentaDestajo(o.ayudaFuera, o.ayudaExc, a.clave, key);
+        const cuentaProvision = cuentaDestajo(o.provisionFuera, o.provisionExc, a.clave, key);
+        const ayudaRaw = Math.max(0, -resultado);
+        const ayuda = cuentaAyuda ? ayudaRaw : 0;
+        const provisionCuenta = cuentaProvision ? prov.total : 0;
+        // provision = valor completo (informativo); provisionCuenta = lo que suma. extra = lo que suma (ayuda + provisión que cuentan).
+        return { id: t.id, key, nombre: t.nombre, area: a.nombre, claveArea: a.clave, tipoNomina: ficha?.tipoNomina || "", valor, costo, resultado, provision: prov.total, provisionCuenta, cuentaProvision, ayudaRaw, ayuda, cuentaAyuda, cesantias: prov.cesantias, intereses: prov.intereses, prima: prov.prima, vacaciones: prov.vacaciones, sinFicha: prov.sinFicha, extra: ayuda + provisionCuenta };
+      }).sort((x, y) => y.extra - x.extra || y.ayudaRaw + y.provision - (x.ayudaRaw + x.provision));
+      ayudas = personas.reduce((s, p) => s + p.ayuda, 0);
+      ayudasTodas = personas.reduce((s, p) => s + p.ayudaRaw, 0);
       excedentes = personas.reduce((s, p) => s + Math.max(0, p.resultado), 0);
-      provision = personas.reduce((s, p) => s + p.provision, 0);
+      provision = personas.reduce((s, p) => s + p.provisionCuenta, 0);
+      provisionTodas = personas.reduce((s, p) => s + p.provision, 0);
       if (a.clave === "CORTE") {
         const eq = calcularEquiposCorte(a.trabajadores.map((t) => ({ nombre: t.nombre, ingreso: num(t.valor), costo: num(t.costo), unidades: num(t.unidades) })), equiposCorte);
         if (eq) {
           porEquipos = eq;
-          ayudas = eq.ayudaGeneral;
+          ayudasTodas = eq.ayudaGeneral;
+          ayudas = areaAyuda ? eq.ayudaGeneral : 0;
           excedentes = eq.excedenteGeneral;
-          // Cada persona deja de contar su propia ayuda: la ayuda se mide por equipos y queda en el total del área.
-          personas = personas.map((p) => ({ ...p, resultado: 0, extra: p.provision, porEquipos: true })).sort((x, y) => y.extra - x.extra);
+          // Cada persona deja de contar su propia ayuda: la ayuda se mide por equipos y queda en el total del área (su interruptor es el del área).
+          personas = personas.map((p) => ({ ...p, resultado: 0, ayudaRaw: 0, ayuda: 0, cuentaAyuda: areaAyuda, extra: p.provisionCuenta, porEquipos: true })).sort((x, y) => y.extra - x.extra || y.provision - x.provision);
         }
       }
     } else if (a.agregado) {
       const dif = num(a.agregado.costo) - num(a.agregado.valor);
-      ayudas = Math.max(0, dif);
+      ayudasTodas = Math.max(0, dif);
+      ayudas = areaAyuda ? ayudasTodas : 0;
       excedentes = Math.max(0, -dif);
-      provision = provisionDeTrabajador(num(a.agregado.costo), null).total;
+      provisionTodas = provisionDeTrabajador(num(a.agregado.costo), null).total;
+      provision = areaProv ? provisionTodas : 0;
     }
+    // Estado del interruptor del área: encendido, apagado o mixto (algunas personas con excepción).
+    const detalleNormal = personas.length > 0 && !porEquipos;
+    const estadoAyuda = detalleNormal ? estadoDe(personas.filter((p) => p.cuentaAyuda).length, personas.length) : areaAyuda ? "on" : "off";
+    const estadoProvision = personas.length > 0 ? estadoDe(personas.filter((p) => p.cuentaProvision).length, personas.length) : areaProv ? "on" : "off";
     const neta = ayudas; // los excedentes no se restan
-    return { clave: a.clave, nombre: a.nombre, fuente: a.fuente || "", dias: a.dias || 0, detalle: personas.length > 0, personas, ayudados: porEquipos ? (porEquipos.ayudaGeneral > 0 ? 1 : 0) : personas.filter((p) => p.resultado < 0).length, total: personas.length, porEquipos: !!porEquipos, equipos: porEquipos, ayudas, excedentes, neta, provision, extra: neta + provision };
+    return { clave: a.clave, nombre: a.nombre, fuente: a.fuente || "", dias: a.dias || 0, detalle: personas.length > 0, personas, ayudados: porEquipos ? (ayudas > 0 ? 1 : 0) : personas.filter((p) => p.resultado < 0 && p.cuentaAyuda).length, total: personas.length, porEquipos: !!porEquipos, equipos: porEquipos, ayudas, ayudasTodas, excedentes, neta, provision, provisionTodas, estadoAyuda, estadoProvision, extra: neta + provision };
   });
   const sum = (k) => out.reduce((s, a) => s + a[k], 0);
-  return { areas: out, ayudas: sum("ayudas"), excedentes: sum("excedentes"), neta: sum("neta"), provision: sum("provision"), extra: sum("extra"), personas: out.flatMap((a) => a.personas) };
+  return { areas: out, ayudas: sum("ayudas"), ayudasTodas: sum("ayudasTodas"), excedentes: sum("excedentes"), neta: sum("neta"), provision: sum("provision"), provisionTodas: sum("provisionTodas"), extra: sum("extra"), personas: out.flatMap((a) => a.personas) };
 }
 
 // ─── Detalle para las ventanas (clic en una cifra) ────────────────────────────
@@ -259,11 +293,11 @@ export function detalleFiscal(liquidaciones, fichas, areasFuera, excepciones) {
 }
 
 // ─── Todo junto ──────────────────────────────────────────────────────────────
-export function cierreGeneral({ lotes, bases, gastos, liquidacionesFiscal, areasDestajo, fichas, areasFuera, excepciones, equiposCorte }) {
+export function cierreGeneral({ lotes, bases, gastos, liquidacionesFiscal, areasDestajo, fichas, areasFuera, excepciones, equiposCorte, destajoOpc }) {
   const recogido = recogidoDeLotes(lotes, bases);
   const g = totalGastos(gastos);
   const fiscal = resumenFiscal(liquidacionesFiscal, fichas, areasFuera, excepciones);
-  const destajo = destajoDelMes(areasDestajo, fichas, equiposCorte);
+  const destajo = destajoDelMes(areasDestajo, fichas, equiposCorte, destajoOpc);
   const estructura = g.total + fiscal.total + destajo.extra;
   const resultado = recogido.aporte - estructura;
   const aportePorPrenda = recogido.cortadas > 0 ? recogido.aporte / recogido.cortadas : 0;
