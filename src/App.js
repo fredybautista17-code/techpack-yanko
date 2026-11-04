@@ -6482,6 +6482,10 @@ function ComprasSinOrdenModal({ entregas, preordenes, config, puedeIngresarTela,
 // ningún lote de Busint todavía) no tienen cómo saber su línea, así que se
 // dejan siempre visibles en "(Sin categoría)" sin importar el filtro --
 // desaparecerlas sería esconder pedido pendiente real.
+// (2026-11-04, a pedido de Fredy) Las referencias se emparejan SIN guiones ni
+// mayúsculas (normalizarRefComparacion, igual que el resto de ATLAS): antes
+// "98-423" del Pedido y "98423" del lote de Busint quedaban como dos filas, y
+// el pedido salía entero como "Sin cortar" aunque ya estuviera cortado.
 function agruparProduccionPorCampo(lotesCliente, pedidosCliente, preordenesCliente, campo, filtroLinea, columnaPreorden) {
   // (2026-10-03, a pedido de Fredy) Antes decia "(Sin categoria)", que
   // sonaba a error o a dato faltante por descuido -- se le puso este nombre
@@ -6506,6 +6510,7 @@ function agruparProduccionPorCampo(lotesCliente, pedidosCliente, preordenesClien
   // En cuanto se convierte a Pedido real, sale de acá igual que "En
   // Preórdenes" (queda excluido por "graduado" más abajo).
   const tieneDatosPreorden = Array.isArray(preordenesCliente);
+  const heredar = new Map(); // clave de referencia -> { categoria, linea } vistos en Preórdenes
   // (2026-09-29, a pedido de Fredy) Un pedido cerrado (cumplido a mano o ya
   // facturado en Busint) no cuenta para "Sin cortar" -- ya no queda nada
   // pendiente de ese pedido. Esto es SOLO para "Sin cortar"; para decidir si
@@ -6528,16 +6533,18 @@ function agruparProduccionPorCampo(lotesCliente, pedidosCliente, preordenesClien
       (p.referencias || []).forEach((r) => {
         const ref = String(r.ref || "").trim();
         if (!ref) return;
-        if (!porReferencia.has(ref)) porReferencia.set(ref, { referencia: ref, categoria: "", linea: "", pedidoTotal: 0, cortado: 0, planta: 0, semiterminado: 0, bpt: 0, enPreorden: 0, enOrdenes: 0 });
-        porReferencia.get(ref).pedidoTotal += Number(r.total) || 0;
+        const clave = normalizarRefComparacion(ref);
+        if (!porReferencia.has(clave)) porReferencia.set(clave, { referencia: ref, categoria: "", linea: "", pedidoTotal: 0, cortado: 0, planta: 0, semiterminado: 0, bpt: 0, enPreorden: 0, enOrdenes: 0 });
+        porReferencia.get(clave).pedidoTotal += Number(r.total) || 0;
       });
     });
   }
   (lotesCliente || []).forEach((l) => {
     const ref = String(l.referencia || "").trim();
     if (!ref) return;
-    if (!porReferencia.has(ref)) porReferencia.set(ref, { referencia: ref, categoria: "", linea: "", pedidoTotal: 0, cortado: 0, planta: 0, semiterminado: 0, bpt: 0, enPreorden: 0, enOrdenes: 0 });
-    const fila = porReferencia.get(ref);
+        const clave = normalizarRefComparacion(ref);
+    if (!porReferencia.has(clave)) porReferencia.set(clave, { referencia: ref, categoria: "", linea: "", pedidoTotal: 0, cortado: 0, planta: 0, semiterminado: 0, bpt: 0, enPreorden: 0, enOrdenes: 0 });
+    const fila = porReferencia.get(clave);
     if (!fila.categoria && l.categoria) fila.categoria = l.categoria;
     if (!fila.linea && l.linea) fila.linea = l.linea;
     fila.cortado += Number(l.cantCortada) || 0;
@@ -6550,10 +6557,20 @@ function agruparProduccionPorCampo(lotesCliente, pedidosCliente, preordenesClien
       (p.items || []).forEach((it) => {
         const ref = String(it.referencia || "").trim();
         if (!ref) return;
+        const clave = normalizarRefComparacion(ref);
         const graduado = !!it.pedidoVinculado || usedInPedidoPreorden(it.referencia, pedidosCandidatosConversionProduccion(p.fechaCreado));
+        // (2026-11-04, a pedido de Fredy) Aunque la referencia ya se haya
+        // convertido a Pedido (y por eso no sume en "En Preórdenes"), su ítem
+        // de Preorden sí sabe la categoría y la línea -- se guardan para
+        // prestárselas a la referencia que solo vive en el Pedido y así no
+        // caiga en "(Sin línea)".
+        const sabe = heredar.get(clave) || { categoria: "", linea: "" };
+        if (!sabe.categoria && it.categoria) sabe.categoria = it.categoria;
+        if (!sabe.linea && (it.lineaBusint || it.tipo)) sabe.linea = it.lineaBusint || it.tipo;
+        heredar.set(clave, sabe);
         if (graduado) return;
-        if (!porReferencia.has(ref)) porReferencia.set(ref, { referencia: ref, categoria: "", linea: "", pedidoTotal: 0, cortado: 0, planta: 0, semiterminado: 0, bpt: 0, enPreorden: 0, enOrdenes: 0 });
-        const fila = porReferencia.get(ref);
+        if (!porReferencia.has(clave)) porReferencia.set(clave, { referencia: ref, categoria: "", linea: "", pedidoTotal: 0, cortado: 0, planta: 0, semiterminado: 0, bpt: 0, enPreorden: 0, enOrdenes: 0 });
+        const fila = porReferencia.get(clave);
         if (!fila.categoria && it.categoria) fila.categoria = it.categoria;
         // (2026-09-30, a pedido de Fredy) Preferir la línea CRUDA de Busint
         // (it.lineaBusint, ej. "DAMA DEPOR PREMIUM") sobre el grupo ya
@@ -6581,6 +6598,14 @@ function agruparProduccionPorCampo(lotesCliente, pedidosCliente, preordenesClien
       });
     });
   }
+  // (2026-11-04, a pedido de Fredy) La referencia que no tiene lote en
+  // Busint toma categoría/línea de su Preorden (aunque ya sea Pedido).
+  porReferencia.forEach((fila, clave) => {
+    const sabe = heredar.get(clave);
+    if (!sabe) return;
+    if (!fila.categoria && sabe.categoria) fila.categoria = sabe.categoria;
+    if (!fila.linea && sabe.linea) fila.linea = sabe.linea;
+  });
   let filasBase = [...porReferencia.values()];
   if (campo === "categoria" && filtroLinea) {
     filasBase = filasBase.filter((f) => !f.categoria || f.linea === filtroLinea);
@@ -6617,14 +6642,14 @@ function agruparProduccionPorCampo(lotesCliente, pedidosCliente, preordenesClien
 // total" de esa referencia. Lo cortado NO se puede repartir por pedido:
 // Busint lo reporta por referencia, no por pedido.
 function pedidosAbiertosDeReferencia(pedidosCliente, referencia) {
-  const ref = String(referencia || "").trim();
+  const refNorm = normalizarRefComparacion(referencia);
   return (Array.isArray(pedidosCliente) ? pedidosCliente : [])
     .filter((p) => p.estado !== "cerrado")
     .map((p) => ({
       id: p.id,
       numero: p.numero,
       fechaDespacho: p.fechaDespacho,
-      cantidad: (p.referencias || []).filter((r) => String(r.ref || "").trim() === ref).reduce((s, r) => s + (Number(r.total) || 0), 0),
+      cantidad: (p.referencias || []).filter((r) => normalizarRefComparacion(r.ref) === refNorm).reduce((s, r) => s + (Number(r.total) || 0), 0),
     }))
     .filter((x) => x.cantidad > 0)
     .sort((a, b) => (a.fechaDespacho || "9999").localeCompare(b.fechaDespacho || "9999"));
@@ -6721,6 +6746,23 @@ function ProduccionView({ currentUser, pedidosCliente, preordenesCliente, todosP
   // referencia ya es unica dentro de "categorias" (agruparProduccionPorCampo
   // la mete en un solo grupo), asi que alcanza con aplanar las filas de
   // todas las tarjetas y filtrar por referencia.
+  // (2026-11-04, a pedido de Fredy) Para entender de dónde sale el "Sin
+  // cortar": cuántos pedidos abiertos hay y cuántos ya pasaron su fecha de
+  // despacho (un pedido viejo sin cerrar sigue sumando). Son unidades PEDIDAS
+  // (no restan lo cortado, que Busint reporta por referencia y no por pedido).
+  const resumenPedidosAbiertos = useMemo(() => {
+    if (!Array.isArray(pedidosParaCruce)) return null;
+    const d = new Date();
+    const hoy = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const r = { pedidos: 0, unidades: 0, vencidos: 0, unidadesVencidas: 0 };
+    pedidosParaCruce.filter((p) => p.estado !== "cerrado").forEach((p) => {
+      const q = (p.referencias || []).reduce((sum, x) => sum + (Number(x.total) || 0), 0);
+      r.pedidos += 1; r.unidades += q;
+      if (p.fechaDespacho && String(p.fechaDespacho).slice(0, 10) < hoy) { r.vencidos += 1; r.unidadesVencidas += q; }
+    });
+    return r;
+  }, [pedidosParaCruce]);
+  const refsSinLinea = (categoriasPorLinea.find((c) => c.grupo === "(Sin línea)") || { filas: [] }).filas.length;
   const bqRefProduccion = normalizarRefComparacion(busquedaRefProduccion);
   const filasBuscadasProduccion = bqRefProduccion
     ? categorias.flatMap((c) => c.filas).filter((f) => normalizarRefComparacion(f.referencia).includes(bqRefProduccion))
@@ -6817,6 +6859,16 @@ function ProduccionView({ currentUser, pedidosCliente, preordenesCliente, todosP
               <option key={l} value={l}>{l}</option>
             ))}
           </select>
+        </div>
+      )}
+      {!cargando && ((resumenPedidosAbiertos && resumenPedidosAbiertos.vencidos > 0) || refsSinLinea > 0) && (
+        <div style={{ padding: "10px 14px", borderRadius: 8, background: T.canvas, border: `1px solid ${T.border}`, color: T.slate, fontSize: 12, marginBottom: 16, lineHeight: 1.5 }}>
+          {resumenPedidosAbiertos && resumenPedidosAbiertos.vencidos > 0 && (
+            <div>📦 {fmtNum(resumenPedidosAbiertos.pedidos)} pedidos abiertos ({fmtNum(resumenPedidosAbiertos.unidades)} unidades pedidas); <b>{fmtNum(resumenPedidosAbiertos.vencidos)}</b> ya pasaron su fecha de despacho ({fmtNum(resumenPedidosAbiertos.unidadesVencidas)} unidades pedidas). Un pedido que ya no aplica sigue sumando en "Sin cortar" hasta que se cierre.</div>
+          )}
+          {refsSinLinea > 0 && (
+            <div>🏷️ {fmtNum(refsSinLinea)} referencias sin línea: todavía no tienen corte en Busint ni una Preorden con línea conocida.</div>
+          )}
         </div>
       )}
       {error && (
