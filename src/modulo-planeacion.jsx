@@ -5235,14 +5235,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
   const totalUnidades = filas.reduce((s, f) => s + f.unidades, 0);
   const totalValor = filas.reduce((s, f) => s + f.valorProducido, 0);
   const totalCosto = filas.reduce((s, f) => s + (f.sinSueldo ? 0 : f.costo), 0);
-  // (2026-10-01, a pedido de Fredy) El KPI "Balance" ya NO compara contra
-  // el Costo nómina completo (que trae sumadas las provisiones de
-  // cesantias/prima/vacaciones) -- ahora compara Valor producido contra el
-  // Sueldo esperado (hasta hoy), igual que la columna de la tabla. El KPI
-  // "Costo nómina" sigue mostrandose aparte, sin cambios, como referencia.
-  const totalSueldoEsperado = filas.reduce((s, f) => s + (f.sueldoEsperado || 0), 0);
-  const balance = totalValor - totalSueldoEsperado;
-  const pctCobertura = totalSueldoEsperado > 0 ? (totalValor / totalSueldoEsperado) * 100 : 0;
+  // (2026-11-04, a pedido de Fredy) Se quitó el KPI "Balance" (y su % cubierto): confundía al convivir con Total ayudado.
   const algunoSinSueldo = trabajadoresArea.some((t) => t.tipoNomina !== "Destajo" && !t.sueldo);
   // ── Modo apoyo: unidades movidas (Busint) en los procesos del área ──────
   const movimientosArea = useMemo(() => {
@@ -5273,16 +5266,19 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
   // supera, ese extra es "excedente". Se excluyen los trabajadores sin
   // sueldo cargado (no hay con qué comparar). Se suman aparte del
   // Balance neto de arriba, para ver los dos lados por separado.
-  const totalAyuda = filas.reduce((s, f) => {
-    if (f.sinSueldo) return s;
-    const bal = f.valorProducido - f.costo;
-    return bal < 0 ? s + (f.costo - f.valorProducido) : s;
-  }, 0);
+  // (2026-11-04, a pedido de Fredy) UNA sola ayuda en todas las pantallas: lo garantizado (sueldo + auxilio de la
+  // ficha; en destajo, "Sueldo esperado") menos lo que la persona produjo. Antes se comparaba contra el costo causado
+  // (que mezclaba prestaciones y otros pagos) y por eso no cuadraba con el cierre ni con «¿Cubro mis costos?».
+  const garantizadoDe = (f) => (f.sueldoEsperado != null ? f.sueldoEsperado : f.costo);
+  const personasAyudadas = filas.filter((f) => !f.sinSueldo && f.valorProducido < garantizadoDe(f));
+  const totalAyuda = personasAyudadas.reduce((s, f) => s + (garantizadoDe(f) - f.valorProducido), 0);
   const totalExcedente = filas.reduce((s, f) => {
     if (f.sinSueldo) return s;
-    const bal = f.valorProducido - f.costo;
+    const bal = f.valorProducido - garantizadoDe(f);
     return bal > 0 ? s + bal : s;
   }, 0);
+  const nombresAyudados = personasAyudadas.map((f) => String(f.nombre || "").trim().split(/\s+/)[0]);
+  const textoAyudados = personasAyudadas.length === 0 ? "nadie quedó por debajo de lo garantizado" : `${personasAyudadas.length} ${personasAyudadas.length === 1 ? "persona" : "personas"}: ${nombresAyudados.slice(0, 3).join(", ")}${nombresAyudados.length > 3 ? ` +${nombresAyudados.length - 3}` : ""}`;
   // (2026-09-04, a pedido de Fredy) El botón "Guardar cierre" y el
   // historial de cierres se movieron a la pestaña "Centro de Costo
   // Cierre" (CentroCostoCierreView, más abajo en este archivo) -- Centro
@@ -5984,22 +5980,21 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
                 <KPI icon="📦" label="Unidades producidas" value={fmtNum(totalUnidades)} color={C.blue} bg={C.blueBg} />
                 <KPI icon="✅" label="Unidades en Terminadas" value={fmtNum(unidadesTerminadasPeriodo)} color={C.amber} bg={C.amberBg} sub="proceso Terminación, toda la empresa" />
                 <KPI icon="💵" label="Valor producido" value={fmtMoney(totalValor)} color={C.green} bg={C.greenBg} sub={filas.some((f) => f.huboCausado) ? "🟡 incluye causado sin confirmar" : undefined} />
-                <KPI icon="🏦" label={`Costo nómina (${etiquetaPeriodo})`} value={fmtMoney(totalCosto)} color={C.violet} bg={C.violetBg} sub={filas.some((f) => f.huboCausado) ? "🟡 incluye causado sin confirmar" : undefined} />
+                <KPI icon="🏦" label={`Costo nómina causado (${etiquetaPeriodo})`} value={fmtMoney(totalCosto)} color={C.violet} bg={C.violetBg} sub={filas.some((f) => f.huboCausado) ? "🟡 incluye causado sin confirmar" : undefined} />
                 <KPI icon="💰" label={`Presupuesto (${etiquetaPeriodo})`} value={presupuestoPeriodoArea > 0 ? fmtMoney(presupuestoPeriodoArea) : "Sin presupuesto"} color={C.slate} bg={C.canvas} />
                 {presupuestoPeriodoArea > 0 && (
                   <KPI icon={dentroPresupuesto ? "✅" : "⚠️"} label="Presupuesto nómina" value={`${pctPresupuesto.toFixed(0)}%`} color={dentroPresupuesto ? C.green : C.red} bg={dentroPresupuesto ? C.greenBg : C.redBg} sub={dentroPresupuesto ? "✓ Dentro del presupuesto" : "⚠ Se pasó del presupuesto"} />
                 )}
-                <KPI icon={balance >= 0 ? "✅" : "⚠️"} label="Balance" value={fmtMoney(balance)} color={balance >= 0 ? C.green : C.red} bg={balance >= 0 ? C.greenBg : C.redBg} sub={totalSueldoEsperado > 0 ? `${pctCobertura.toFixed(0)}% cubierto` : undefined} />
-                <KPI icon="🆘" label="Total ayudado" value={fmtMoney(totalAyuda)} color={C.red} bg={C.redBg} sub="trabajadores que no llegaron a su sueldo con destajo" />
-                <KPI icon="📈" label="Total excedente" value={fmtMoney(totalExcedente)} color={C.green} bg={C.greenBg} sub="trabajadores que superaron su sueldo con destajo" />
+                <KPI icon="🆘" label="Total ayudado (garantizado − producido)" value={fmtMoney(totalAyuda)} color={C.red} bg={C.redBg} sub={textoAyudados} />
+                <KPI icon="🩹" label="Ayuda por quincena (Nómina)" value={fmtMoney(totalAyudaQuincenas)} color={C.amber} bg={C.amberBg} sub="cuenta las horas trabajadas, sin netear entre quincenas -- ver detalle abajo" />
+                <KPI icon="📈" label="Total excedente" value={fmtMoney(totalExcedente)} color={C.green} bg={C.greenBg} sub="no se resta" />
                 <KPI icon="⏱️" label="Costo indirecto" value={fmtMoney(totalCostoIndirectoQuincenas)} color={C.amber} bg={C.amberBg} sub="horas trabajadas causadas -- no es costo del producto, ver detalle abajo" />
-                <KPI icon="🩹" label="Ayuda por quincena" value={fmtMoney(totalAyudaQuincenas)} color={C.red} bg={C.redBg} sub="sin netear entre quincenas -- ver detalle abajo" />
               </div>
               {detalleQuincenasDestajoCC.length > 0 && (
                 <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
                   <details style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12 }}>
                     <summary style={{ cursor: "pointer", padding: "12px 16px", fontWeight: 800, fontSize: 13, color: C.ink }}>
-                      🩹 Ayuda por quincena ({fmtMoney(totalAyudaQuincenas)}) — clic para ver quién recibió ayuda en cada quincena
+                      🩹 Ayuda por quincena (Nómina) ({fmtMoney(totalAyudaQuincenas)}) — clic para ver quién recibió ayuda en cada quincena
                     </summary>
                     <div style={{ padding: "0 16px 16px" }}>
                       {detalleQuincenasDestajoCC.every((q) => q.ayudaDetalle.length === 0) ? (

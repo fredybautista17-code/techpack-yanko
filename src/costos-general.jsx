@@ -12,6 +12,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import { collection, doc, getDoc, getDocs, query, setDoc, where } from "firebase/firestore";
 import { useCentroCostoDatos } from "./centro-costo-historico";
 import { AREAS_HISTORICO, normTexto } from "./centro-costo-historico-parser";
+import { ayudaQuincenasPorPersona } from "./ayuda-quincena";
 import { cierreGeneral, parsearGastos, totalGastos, detalleLotes, detalleFiscal, AREAS_FUERA_DEFECTO } from "./costos-general-calculo";
 
 const C = {
@@ -102,13 +103,13 @@ function Ventana({ titulo, sub, total, columnas, filas, nombreExcel, nota, vacio
         <div style={{ overflow: "auto", padding: "0 20px 8px" }}>
           <div style={{ ...caja, marginBottom: 12 }}>
             <table style={tabla}>
-              <thead><tr>{columnas.map((c) => <th key={c.k} style={c.izq ? thL : th}>{c.label}</th>)}</tr></thead>
+              <thead><tr>{columnas.map((c) => <th key={c.k} style={{ ...(c.izq ? thL : th), ...(c.resalta ? { background: "#FFE9A8", color: "#7A5200" } : null) }}>{c.label}</th>)}</tr></thead>
               <tbody>
                 {visibles.map((f, i) => (
                   <tr key={i} onClick={f.abrir ? () => onAbrir(f.abrir) : undefined} style={{ cursor: f.abrir ? "pointer" : "default", opacity: f.apagada ? 0.55 : 1 }}>
                     {columnas.map((c, j) => {
                       const v = c.ver ? c.ver(f) : (typeof f[c.k] === "number" ? money(f[c.k]) : f[c.k]);
-                      return <td key={c.k} style={c.izq ? (j === 0 ? tdL : { ...td, textAlign: "left" }) : td}>{j === 0 && f.abrir ? "▸ " : ""}{v}</td>;
+                      return <td key={c.k} style={{ ...(c.izq ? (j === 0 ? tdL : { ...td, textAlign: "left" }) : td), ...(c.resalta ? { background: "#FFF4D6" } : null) }}>{j === 0 && f.abrir ? "▸ " : ""}{v}</td>;
                     })}
                   </tr>
                 ))}
@@ -264,6 +265,8 @@ export default function CostosGeneralView({ db }) {
   const [excepciones, setExcepciones] = useState({});
   const [msgAreas, setMsgAreas] = useState("");
   const [equiposCorte, setEquiposCorte] = useState([]);
+  // Datos de Nómina para la «Ayuda por quincena»: liquidaciones de destajo, horas, producción y causación manual del mes.
+  const [nominaQ, setNominaQ] = useState({ liquidaciones: [], horas: [], produccion: [], causaciones: [] });
   useEffect(() => {
     let vivo = true;
     getDoc(doc(db, "costos_config", "general"))
@@ -348,6 +351,25 @@ export default function CostosGeneralView({ db }) {
     return () => { vivo = false; };
   }, [db, anio, mes, ym, recarga]);
 
+  useEffect(() => {
+    let vivo = true;
+    const ini = `${ym}-01`;
+    const fin = `${ym}-31`;
+    Promise.all([
+      getDocs(query(collection(db, "nomina_destajo_liquidaciones"), where("periodoId", ">=", `${ym}-Q1`), where("periodoId", "<=", `${ym}-Q2`))),
+      getDocs(query(collection(db, "nomina_horas"), where("fecha", ">=", ini), where("fecha", "<=", fin))),
+      getDocs(query(collection(db, "nomina_produccion"), where("fecha", ">=", ini), where("fecha", "<=", fin))),
+      getDocs(collection(db, "nomina_causacion_manual")),
+    ])
+      .then(([liq, hor, pro, cau]) => {
+        if (!vivo) return;
+        const f = (s) => s.docs.map((d) => ({ ...d.data(), id: d.id }));
+        setNominaQ({ liquidaciones: f(liq), horas: f(hor), produccion: f(pro), causaciones: f(cau).filter((c) => String(c.id).includes(`__${ym}-Q`)) });
+      })
+      .catch(() => { if (vivo) setNominaQ({ liquidaciones: [], horas: [], produccion: [], causaciones: [] }); });
+    return () => { vivo = false; };
+  }, [db, ym]);
+
   const origenGastos = gastosEdit ? "edicion" : datos.gastosMes ? "guardado" : datos.gastosAnterior ? "anterior" : "ninguno";
   const lineasGastos = gastosEdit || datos.gastosMes?.lineas || datos.gastosAnterior?.lineas || [];
 
@@ -360,6 +382,11 @@ export default function CostosGeneralView({ db }) {
   }).filter(Boolean), [cierresResueltos, datosArea, ym, mes]);
 
   const r = useMemo(() => cierreGeneral({ lotes: datos.lotes, bases: datos.bases, gastos: lineasGastos, liquidacionesFiscal: datos.liqFiscal, areasDestajo, fichas: datos.fichas, areasFuera, excepciones, equiposCorte }), [datos, lineasGastos, areasDestajo, areasFuera, excepciones, equiposCorte]);
+
+  const ayudaQ = useMemo(
+    () => ayudaQuincenasPorPersona(ym, r.destajo.personas, { fichas: datos.fichas, ...nominaQ }, hoy.toISOString().slice(0, 10)),
+    [ym, r, datos.fichas, nominaQ, hoy]
+  );
 
   function moverMes(d) {
     let m = mes + d;
@@ -470,7 +497,7 @@ export default function CostosGeneralView({ db }) {
         nota: "Para cambiar qué gastos cuentan, usa las casillas de la sección «Gastos del mes».",
       };
     }
-    const filasPersonas = (lista) => lista.map((p) => ({ nombre: p.nombre, area: p.area, valor: p.valor, costo: p.costo, ayuda: Math.max(0, -p.resultado), excedente: Math.max(0, p.resultado), cesantias: p.cesantias, prima: p.prima, intereses: p.intereses, vacaciones: p.vacaciones, provision: p.provision, extra: Math.max(0, -p.resultado) + p.provision }));
+    const filasPersonas = (lista) => lista.map((p) => ({ nombre: p.nombre, area: p.area, ayudaQ: p.porEquipos ? null : (ayudaQ.get(p.id)?.total ?? null), valor: p.valor, costo: p.costo, ayuda: Math.max(0, -p.resultado), excedente: Math.max(0, p.resultado), cesantias: p.cesantias, prima: p.prima, intereses: p.intereses, vacaciones: p.vacaciones, provision: p.provision, extra: Math.max(0, -p.resultado) + p.provision }));
     const filasAreaSinDetalle = (lista) => lista.map((a) => ({ nombre: `${a.nombre} (total del área, sin detalle por trabajador)`, area: a.nombre, valor: 0, costo: 0, ayuda: a.ayudas, excedente: a.excedentes, cesantias: 0, prima: 0, intereses: 0, vacaciones: 0, provision: a.provision, extra: a.ayudas + a.provision }));
     const filasPorEquipos = (lista) => lista.map((a) => ({ nombre: `${a.nombre}: ayuda por equipos (los excedentes de los equipos ya se compensaron)`, area: a.nombre, valor: a.equipos.ingresoTotal, costo: a.equipos.costoTotal, ayuda: a.ayudas, excedente: a.excedentes, cesantias: 0, prima: 0, intereses: 0, vacaciones: 0, provision: 0, extra: a.ayudas }));
     if (v.tipo === "ayudas") {
@@ -494,12 +521,13 @@ export default function CostosGeneralView({ db }) {
       if (delArea) {
         return {
           titulo: `${nombreArea} — ${mesTxt}`,
-          sub: "Cada trabajador del área: lo que produjo, lo que se le pagó, su ayuda o excedente y su provisión. Extra = ayuda + provisión.",
+          sub: "Cada trabajador del área: lo que produjo, lo que se le pagó, su ayuda o excedente y su provisión. Extra = ayuda del mes + provisión. «Ayuda por quincena (Nómina)» es la misma de Centro de Costo: cuenta las horas trabajadas y no netea entre quincenas; no se suma al extra.",
           total: money(filas.reduce((s, f) => s + f.extra, 0)),
           columnas: [
-            { k: "nombre", label: "Trabajador", izq: true }, { k: "valor", label: "Produjo", suma: true }, { k: "costo", label: "Le pagamos", suma: true }, { k: "ayuda", label: "Ayuda", suma: true }, { k: "excedente", label: "Excedente (no se resta)", suma: true }, { k: "provision", label: "Provisión", suma: true }, { k: "extra", label: "Extra total", suma: true },
+            { k: "nombre", label: "Trabajador", izq: true }, { k: "valor", label: "Produjo", suma: true }, { k: "costo", label: "Le pagamos", suma: true }, { k: "ayuda", label: "Ayuda del mes", suma: true }, { k: "ayudaQ", label: "Ayuda por quincena (Nómina)", suma: true, resalta: true, ver: (f) => (f.ayudaQ == null ? "—" : money(f.ayudaQ)) }, { k: "excedente", label: "Excedente (no se resta)", suma: true }, { k: "provision", label: "Provisión", suma: true }, { k: "extra", label: "Extra total", suma: true },
           ],
           filas, nombreExcel: `${nombreArea.replace(/ /g, "_")}_${ym}`, vacio: "Sin trabajadores para este mes.", onClose: cerrar,
+          nota: [...ayudaQ.values()].some((v) => v.enCurso) ? "La «Ayuda por quincena» solo cuenta quincenas ya terminadas; la que sigue en curso se suma cuando termine. «—» = persona que no es de destajo o que se mide por equipos." : "«—» = persona que no es de destajo o que se mide por equipos (Corte). Las quincenas sin liquidación confirmada usan la causación manual o el registro de producción.",
         };
       }
       return {
