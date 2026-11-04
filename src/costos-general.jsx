@@ -76,7 +76,7 @@ function Ventana({ titulo, sub, total, columnas, filas, nombreExcel, nota, vacio
   }, [onClose]);
   const buscarEn = (f) => normTexto(columnas.map((c) => (typeof f[c.k] === "string" ? f[c.k] : "")).join(" "));
   const visibles = q ? filas.filter((f) => buscarEn(f).includes(normTexto(q))) : filas;
-  const sumas = columnas.filter((c) => c.suma).map((c) => ({ k: c.k, v: visibles.reduce((s, f) => s + (Number(f[c.k]) || 0), 0) }));
+  const sumas = columnas.filter((c) => c.suma).map((c) => ({ k: c.k, v: visibles.reduce((s, f) => s + (f.sinSuma && f.sinSuma.includes(c.k) ? 0 : Number(f[c.k]) || 0), 0) }));
   async function bajarExcel() {
     const XLSX = await import("xlsx");
     const wb = XLSX.utils.book_new();
@@ -604,6 +604,8 @@ export default function CostosGeneralView({ db }) {
     const filasPorEquipos = (lista) => lista.map((a) => ({
       ...nada, nombre: `${a.nombre}: ayuda por equipos (los excedentes de los equipos ya se compensaron)`, area: a.nombre, valor: a.equipos.ingresoTotal, costo: a.equipos.costoTotal,
       ayuda: a.ayudas, ayudaRaw: a.ayudasTodas, ayudaCuenta: a.estadoAyuda !== "off", excedente: a.excedentes, extra: a.ayudas,
+      // Produjo y Le pagamos de los equipos ya son la suma de las personas de abajo: se muestran pero no entran al Total.
+      sinSuma: ["valor", "costo"],
       swAyuda: { estado: a.estadoAyuda, onClick: () => alternarAreaDestajo("ayuda", a) }, swProv: null,
     }));
     // Columnas con interruptor y cifras que se tachan cuando no cuentan.
