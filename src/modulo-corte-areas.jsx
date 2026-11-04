@@ -4,6 +4,7 @@ import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc } from "fi
 import { getFunctions, httpsCallable } from "firebase/functions";
 import CentroCostoAnioPanel from "./centro-costo-historico";
 import ConsumoTelaCortePanel from "./consumo-tela-corte";
+import EquiposCorteVista from "./corte-equipos-vista";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
   authDomain: "techpack-yanko-f37b8.firebaseapp.com",
@@ -327,6 +328,7 @@ export default function CentroCostoCorteEnAreas({ areaNombre, currentUser }) {
           {estado === "ok" ? "El corte cubre la nómina" : "El corte NO cubre la nómina"} · {pctCobertura.toFixed(1)}% de cobertura
         </div>
       )}
+      <EquiposCorteVista db={db} filas={filas} />
       {!filas.length ? (
         <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>Sin trabajadores en nómina ni cortes registrados en este periodo.</div>
       ) : (

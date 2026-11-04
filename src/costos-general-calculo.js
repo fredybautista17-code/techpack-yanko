@@ -6,6 +6,7 @@
 // Lo que producen los trabajadores de destajo (y Fiscal Destajo) YA entra como costo directo del lote, así que
 // aquí solo cuenta la diferencia entre lo que se les pagó y lo que produjeron, más su provisión.
 import { normTexto, parseNumero } from "./centro-costo-historico-parser";
+import { calcularEquiposCorte } from "./corte-equipos";
 
 // Mismas tasas de Nómina (modulo-nomina.jsx): cesantías y prima 8,33 %, intereses 12 % de las cesantías, vacaciones 4,17 %.
 export const TASA_CESANTIAS = 0.0833;
@@ -181,12 +182,15 @@ export function resumenFiscal(liquidaciones, fichas, areasFuera, excepciones) {
 // areas: [{ clave, nombre, trabajadores: [{id, nombre, valor, costo}] | null, agregado: {valor, costo} | null, dias, fuente }]
 // Por trabajador: produjo − le pagamos. Negativo = ayuda; positivo = excedente. SOLO cuentan las ayudas: los excedentes
 // son montos extras y NO se restan (decisión de Fredy, 2026-11-04); se muestran aparte como dato.
-export function destajoDelMes(areas, fichas) {
+// equiposCorte: lista `miembros` de costos_config/corte_equipos. Si hay cortadores configurados, el área CORTE se mide por equipos:
+// su ayuda es la ayuda general de Corte (lo que los equipos y doña Berta juntos no alcanzaron a cubrir) y sus excedentes se suman entre sí.
+export function destajoDelMes(areas, fichas, equiposCorte) {
   const out = (areas || []).map((a) => {
     let personas = [];
     let ayudas = 0;
     let excedentes = 0;
     let provision = 0;
+    let porEquipos = null;
     if (a.trabajadores && a.trabajadores.length) {
       personas = a.trabajadores.map((t) => {
         const ficha = fichaDeTrabajador(t, fichas);
@@ -199,6 +203,16 @@ export function destajoDelMes(areas, fichas) {
       ayudas = personas.reduce((s, p) => s + Math.max(0, -p.resultado), 0);
       excedentes = personas.reduce((s, p) => s + Math.max(0, p.resultado), 0);
       provision = personas.reduce((s, p) => s + p.provision, 0);
+      if (a.clave === "CORTE") {
+        const eq = calcularEquiposCorte(a.trabajadores.map((t) => ({ nombre: t.nombre, ingreso: num(t.valor), costo: num(t.costo), unidades: num(t.unidades) })), equiposCorte);
+        if (eq) {
+          porEquipos = eq;
+          ayudas = eq.ayudaGeneral;
+          excedentes = eq.excedenteGeneral;
+          // Cada persona deja de contar su propia ayuda: la ayuda se mide por equipos y queda en el total del área.
+          personas = personas.map((p) => ({ ...p, resultado: 0, extra: p.provision, porEquipos: true })).sort((x, y) => y.extra - x.extra);
+        }
+      }
     } else if (a.agregado) {
       const dif = num(a.agregado.costo) - num(a.agregado.valor);
       ayudas = Math.max(0, dif);
@@ -206,7 +220,7 @@ export function destajoDelMes(areas, fichas) {
       provision = provisionDeTrabajador(num(a.agregado.costo), null).total;
     }
     const neta = ayudas; // los excedentes no se restan
-    return { clave: a.clave, nombre: a.nombre, fuente: a.fuente || "", dias: a.dias || 0, detalle: personas.length > 0, personas, ayudados: personas.filter((p) => p.resultado < 0).length, total: personas.length, ayudas, excedentes, neta, provision, extra: neta + provision };
+    return { clave: a.clave, nombre: a.nombre, fuente: a.fuente || "", dias: a.dias || 0, detalle: personas.length > 0, personas, ayudados: porEquipos ? (porEquipos.ayudaGeneral > 0 ? 1 : 0) : personas.filter((p) => p.resultado < 0).length, total: personas.length, porEquipos: !!porEquipos, equipos: porEquipos, ayudas, excedentes, neta, provision, extra: neta + provision };
   });
   const sum = (k) => out.reduce((s, a) => s + a[k], 0);
   return { areas: out, ayudas: sum("ayudas"), excedentes: sum("excedentes"), neta: sum("neta"), provision: sum("provision"), extra: sum("extra"), personas: out.flatMap((a) => a.personas) };
@@ -245,11 +259,11 @@ export function detalleFiscal(liquidaciones, fichas, areasFuera, excepciones) {
 }
 
 // ─── Todo junto ──────────────────────────────────────────────────────────────
-export function cierreGeneral({ lotes, bases, gastos, liquidacionesFiscal, areasDestajo, fichas, areasFuera, excepciones }) {
+export function cierreGeneral({ lotes, bases, gastos, liquidacionesFiscal, areasDestajo, fichas, areasFuera, excepciones, equiposCorte }) {
   const recogido = recogidoDeLotes(lotes, bases);
   const g = totalGastos(gastos);
   const fiscal = resumenFiscal(liquidacionesFiscal, fichas, areasFuera, excepciones);
-  const destajo = destajoDelMes(areasDestajo, fichas);
+  const destajo = destajoDelMes(areasDestajo, fichas, equiposCorte);
   const estructura = g.total + fiscal.total + destajo.extra;
   const resultado = recogido.aporte - estructura;
   const aportePorPrenda = recogido.cortadas > 0 ? recogido.aporte / recogido.cortadas : 0;

@@ -263,6 +263,7 @@ export default function CostosGeneralView({ db }) {
   const [areasFuera, setAreasFuera] = useState(AREAS_FUERA_DEFECTO);
   const [excepciones, setExcepciones] = useState({});
   const [msgAreas, setMsgAreas] = useState("");
+  const [equiposCorte, setEquiposCorte] = useState([]);
   useEffect(() => {
     let vivo = true;
     getDoc(doc(db, "costos_config", "general"))
@@ -271,6 +272,10 @@ export default function CostosGeneralView({ db }) {
         if (Array.isArray(d.data().areasFuera)) setAreasFuera(d.data().areasFuera);
         if (d.data().excepciones && typeof d.data().excepciones === "object") setExcepciones(d.data().excepciones);
       })
+      .catch(() => {});
+    // Equipos de Corte (quién es cortador, ayudante o apoyo): se arman en Corte → Centro de Costo.
+    getDoc(doc(db, "costos_config", "corte_equipos"))
+      .then((d) => { if (vivo && d.exists() && Array.isArray(d.data().miembros)) setEquiposCorte(d.data().miembros); })
       .catch(() => {});
     return () => { vivo = false; };
   }, [db]);
@@ -354,7 +359,7 @@ export default function CostosGeneralView({ db }) {
     return null;
   }).filter(Boolean), [cierresResueltos, datosArea, ym, mes]);
 
-  const r = useMemo(() => cierreGeneral({ lotes: datos.lotes, bases: datos.bases, gastos: lineasGastos, liquidacionesFiscal: datos.liqFiscal, areasDestajo, fichas: datos.fichas, areasFuera, excepciones }), [datos, lineasGastos, areasDestajo, areasFuera, excepciones]);
+  const r = useMemo(() => cierreGeneral({ lotes: datos.lotes, bases: datos.bases, gastos: lineasGastos, liquidacionesFiscal: datos.liqFiscal, areasDestajo, fichas: datos.fichas, areasFuera, excepciones, equiposCorte }), [datos, lineasGastos, areasDestajo, areasFuera, excepciones, equiposCorte]);
 
   function moverMes(d) {
     let m = mes + d;
@@ -433,6 +438,7 @@ export default function CostosGeneralView({ db }) {
     const mesTxt = `${MESES[mes - 1]} ${anio}`;
     const cerrar = () => setVentana(null);
     const sinDetalle = r.destajo.areas.filter((a) => !a.detalle);
+    const porEquipos = r.destajo.areas.filter((a) => a.porEquipos);
     const personasAyuda = r.destajo.personas.filter((p) => p.resultado < 0);
     if (v.tipo === "lotes") {
       const cat = v.categoria === undefined || v.categoria === null ? null : r.recogido.categorias.find((c) => c.id === v.categoria);
@@ -466,8 +472,9 @@ export default function CostosGeneralView({ db }) {
     }
     const filasPersonas = (lista) => lista.map((p) => ({ nombre: p.nombre, area: p.area, valor: p.valor, costo: p.costo, ayuda: Math.max(0, -p.resultado), excedente: Math.max(0, p.resultado), cesantias: p.cesantias, prima: p.prima, intereses: p.intereses, vacaciones: p.vacaciones, provision: p.provision, extra: Math.max(0, -p.resultado) + p.provision }));
     const filasAreaSinDetalle = (lista) => lista.map((a) => ({ nombre: `${a.nombre} (total del área, sin detalle por trabajador)`, area: a.nombre, valor: 0, costo: 0, ayuda: a.ayudas, excedente: a.excedentes, cesantias: 0, prima: 0, intereses: 0, vacaciones: 0, provision: a.provision, extra: a.ayudas + a.provision }));
+    const filasPorEquipos = (lista) => lista.map((a) => ({ nombre: `${a.nombre}: ayuda por equipos (los excedentes de los equipos ya se compensaron)`, area: a.nombre, valor: a.equipos.ingresoTotal, costo: a.equipos.costoTotal, ayuda: a.ayudas, excedente: a.excedentes, cesantias: 0, prima: 0, intereses: 0, vacaciones: 0, provision: 0, extra: a.ayudas }));
     if (v.tipo === "ayudas") {
-      const filas = [...filasPersonas(personasAyuda), ...filasAreaSinDetalle(sinDetalle.filter((a) => a.ayudas > 0))].sort((a, b) => b.ayuda - a.ayuda);
+      const filas = [...filasPersonas(personasAyuda), ...filasAreaSinDetalle(sinDetalle.filter((a) => a.ayudas > 0)), ...filasPorEquipos(porEquipos.filter((a) => a.ayudas > 0))].sort((a, b) => b.ayuda - a.ayuda);
       return {
         titulo: `Destajo: ayudas — ${mesTxt}`,
         sub: "Personas a las que se les pagó más de lo que produjeron. Ayuda = le pagamos − produjo. Los excedentes no se restan.",
@@ -482,7 +489,7 @@ export default function CostosGeneralView({ db }) {
       const delArea = v.tipo === "area";
       const lista = delArea ? r.destajo.personas.filter((p) => p.claveArea === v.clave) : r.destajo.personas;
       const areasSin = delArea ? sinDetalle.filter((a) => a.clave === v.clave) : sinDetalle;
-      const filas = [...filasPersonas(lista), ...filasAreaSinDetalle(areasSin)].sort((a, b) => (delArea ? b.extra - a.extra : b.provision - a.provision));
+      const filas = [...filasPersonas(lista), ...filasAreaSinDetalle(areasSin), ...(delArea ? filasPorEquipos(porEquipos.filter((a) => a.clave === v.clave)) : [])].sort((a, b) => (delArea ? b.extra - a.extra : b.provision - a.provision));
       const nombreArea = delArea ? (r.destajo.areas.find((a) => a.clave === v.clave)?.nombre || "") : "";
       if (delArea) {
         return {
@@ -590,7 +597,7 @@ export default function CostosGeneralView({ db }) {
           <tbody>
             <tr onClick={() => setVentana({ tipo: "gastos" })} style={{ cursor: "pointer" }}><td style={tdL}>▸ Gastos del Excel</td><td style={{ ...td, textAlign: "left", color: C.slate }}>{r.gastos.incluidas} gastos incluidos{r.gastos.excluidas ? ` · ${r.gastos.excluidas} fuera (${money(r.gastos.excluidoValor)})` : ""}{origenGastos === "anterior" ? " · del mes anterior" : origenGastos === "ninguno" ? " · sin cargar" : ""}</td><td style={td}>{money(r.gastos.total)}</td></tr>
             <tr onClick={() => setVentana({ tipo: "fiscal" })} style={{ cursor: "pointer" }}><td style={tdL}>▸ Nómina fiscal completa</td><td style={{ ...td, textAlign: "left", color: C.slate }}>{r.fiscal.personas} personas · {quincenasFiscal} de 2 quincenas confirmadas (neto + seguridad social + prestaciones){r.fiscal.fuera.personas ? ` · ${r.fiscal.fuera.personas} ${r.fiscal.fuera.personas === 1 ? "persona" : "personas"} (${money(r.fiscal.fuera.total)}) ya van en el costo del lote y no suman` : ""}</td><td style={td}>{money(r.fiscal.total)}</td></tr>
-            <tr onClick={() => setVentana({ tipo: "ayudas" })} style={{ cursor: "pointer" }}><td style={tdL}>▸ Destajo: ayudas</td><td style={{ ...td, textAlign: "left", color: C.slate }}>{r.destajo.areas.reduce((s, a) => s + a.ayudados, 0)} personas ayudadas · los excedentes ({money(r.destajo.excedentes)}) no se restan</td><td style={td}>{money(r.destajo.neta)}</td></tr>
+            <tr onClick={() => setVentana({ tipo: "ayudas" })} style={{ cursor: "pointer" }}><td style={tdL}>▸ Destajo: ayudas</td><td style={{ ...td, textAlign: "left", color: C.slate }}>{r.destajo.areas.reduce((s, a) => s + (a.porEquipos ? 0 : a.ayudados), 0)} personas ayudadas{r.destajo.areas.some((a) => a.porEquipos) ? " + Corte medido por equipos" : ""} · los excedentes ({money(r.destajo.excedentes)}) no se restan</td><td style={td}>{money(r.destajo.neta)}</td></tr>
             <tr onClick={() => setVentana({ tipo: "provision" })} style={{ cursor: "pointer" }}><td style={tdL}>▸ Destajo: provisión</td><td style={{ ...td, textAlign: "left", color: C.slate }}>Cesantías, prima, intereses y vacaciones</td><td style={td}>{money(r.destajo.provision)}</td></tr>
             <tr style={{ background: C.canvas }}><td style={tdL}>Total por pagar</td><td style={td} /><td style={{ ...td, fontWeight: 800, color: C.amber }}>{money(r.estructura)}</td></tr>
           </tbody>
@@ -603,7 +610,7 @@ export default function CostosGeneralView({ db }) {
           <thead><tr><th style={thL}>Área</th><th style={th}>Personas ayudadas</th><th style={th}>Ayudas</th><th style={th}>Excedentes (no se restan)</th><th style={th}>Provisión</th><th style={th}>Extra que pone la estructura</th></tr></thead>
           <tbody>
             {r.destajo.areas.map((a) => (
-              <tr key={a.clave} onClick={() => setVentana({ tipo: "area", clave: a.clave })} style={{ cursor: "pointer" }}><td style={tdL}>▸ {a.nombre}</td><td style={td}>{a.detalle ? `${a.ayudados} de ${a.total}` : "—"}</td><td style={{ ...td, color: C.red }}>{money(a.ayudas)}</td><td style={{ ...td, color: C.slate }}>{money(a.excedentes)}</td><td style={td}>{money(a.provision)}</td><td style={{ ...td, fontWeight: 800 }}>{money(a.extra)}</td></tr>
+              <tr key={a.clave} onClick={() => setVentana({ tipo: "area", clave: a.clave })} style={{ cursor: "pointer" }}><td style={tdL}>▸ {a.nombre}</td><td style={td}>{a.porEquipos ? "por equipos" : a.detalle ? `${a.ayudados} de ${a.total}` : "—"}</td><td style={{ ...td, color: C.red }}>{money(a.ayudas)}</td><td style={{ ...td, color: C.slate }}>{money(a.excedentes)}</td><td style={td}>{money(a.provision)}</td><td style={{ ...td, fontWeight: 800 }}>{money(a.extra)}</td></tr>
             ))}
             {!r.destajo.areas.length && <tr><td colSpan={7} style={{ ...td, textAlign: "left", color: C.slate }}>Todavía no hay cierres de Centro de Costo de este mes.</td></tr>}
             {r.destajo.areas.length > 0 && (
@@ -625,7 +632,7 @@ export default function CostosGeneralView({ db }) {
                 <td style={{ ...td, textAlign: "left" }}>{p.area}</td>
                 <td style={{ ...td, color: C.green }}>{money(p.valor)}</td>
                 <td style={{ ...td, color: C.amber }}>{money(p.costo)}</td>
-                <td style={td}><Etiqueta valor={p.resultado} /></td>
+                <td style={td}>{p.porEquipos ? <span style={{ fontSize: 12, color: C.slate }}>Se mide por equipos</span> : <Etiqueta valor={p.resultado} />}</td>
                 <td style={td}>{money(p.provision)}</td>
                 <td style={{ ...td, fontWeight: 800 }}>{money(p.extra)}</td>
               </tr>
