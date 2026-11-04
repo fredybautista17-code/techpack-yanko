@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { initializeApp, getApps } from "firebase/app";
 import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc } from "firebase/firestore";
+import { calcularEquiposCorte } from "./corte-equipos";
 import { AREAS_HISTORICO, claveArea, nombreAreaPorClave, normTexto, parsearHojaHistorico, unirResultados } from "./centro-costo-historico-parser";
 
 // ─── CENTRO DE COSTO — HISTÓRICO DEL AÑO POR ÁREA ───────────────────────────
@@ -232,15 +233,27 @@ function EtiquetaResultado({ bal }) {
 const thCell = (txt, right) => <th style={{ textAlign: right ? "right" : "left", padding: "7px 9px", fontSize: 10.5, color: C.slate, textTransform: "uppercase" }}>{txt}</th>;
 
 // Detalle que se abre al tocar un mes del año.
-function DetalleMes({ titulo, f, cierre, h, filasTrab }) {
+function DetalleMes({ titulo, f, cierre, h, filasTrab, miembros }) {
   const [busq, setBusq] = useState("");
   const q = normTexto(busq);
   const todas = [...filasTrab].sort((a, b) => (a.valor - a.costo) - (b.valor - b.costo));
   const filas = todas.filter((t) => !q || normTexto(t.nombre).includes(q));
-  const totAyuda = todas.reduce((s, t) => s + Math.max(0, t.costo - t.valor), 0);
-  const totExced = todas.reduce((s, t) => s + Math.max(0, t.valor - t.costo), 0);
+  // (2026-11-04, a pedido de Fredy) CORTE se mide por equipos (cortador + ayudante); doña Berta es apoyo. Solo si ya hay
+  // roles guardados en costos_config/corte_equipos; si no, todo sigue persona por persona.
+  const eq = useMemo(
+    () => (miembros && miembros.length ? calcularEquiposCorte(filasTrab.map((t) => ({ nombre: t.nombre, ingreso: t.valor, costo: t.costo, unidades: 0 })), miembros) : null),
+    [filasTrab, miembros]
+  );
+  const totAyuda = eq ? eq.ayudaGeneral : todas.reduce((s, t) => s + Math.max(0, t.costo - t.valor), 0);
+  const totExced = eq ? eq.excedenteGeneral : todas.reduce((s, t) => s + Math.max(0, t.valor - t.costo), 0);
   const nAyudados = todas.filter((t) => t.costo - t.valor >= 1).length;
   const nExced = todas.filter((t) => t.valor - t.costo >= 1).length;
+  const primerNombre = (n) => String(n || "").trim().split(/\s+/).slice(0, 2).join(" ");
+  // Filas de la tabla por equipo: encabezado del equipo (suma de su cortador y sus ayudantes) y debajo cada persona.
+  const filasEquipo = eq ? [
+    ...eq.equipos.map((e, i) => ({ clave: `e${i}`, titulo: e.sinRol ? `${e.cortador.nombre} (sin rol asignado)` : `Equipo de ${primerNombre(e.cortador.nombre)}`, ingreso: e.ingreso, costo: e.costo, resultado: e.resultado, personas: [e.cortador, ...e.ayudantes] })),
+    ...(eq.apoyo.length ? [{ clave: "apoyo", titulo: "Apoyo (marras y segundas)", ingreso: eq.apoyoIngreso, costo: eq.apoyoCosto, resultado: null, personas: eq.apoyo }] : []),
+  ].filter((g) => !q || normTexto(g.titulo).includes(q) || g.personas.some((p) => normTexto(p.nombre).includes(q))) : [];
   return (
     <div style={{ background: C.canvas, borderRadius: 12, padding: 16, margin: "4px 0 12px" }}>
       <div style={{ fontWeight: 900, color: C.ink, fontSize: 14 }}>{titulo}</div>
@@ -267,12 +280,12 @@ function DetalleMes({ titulo, f, cierre, h, filasTrab }) {
             <div style={{ background: C.redBg, borderRadius: 10, padding: "10px 12px" }}>
               <div style={{ fontSize: 11, color: C.slate, fontWeight: 700 }}>Ayudas del mes</div>
               <div style={{ fontSize: 17, fontWeight: 900, color: C.red }}>{fmtMoney(totAyuda)}</div>
-              <div style={{ fontSize: 11, color: C.slate }}>{nAyudados} {nAyudados === 1 ? "trabajador" : "trabajadores"}</div>
+              <div style={{ fontSize: 11, color: C.slate }}>{eq ? "lo que Corte no alcanzó a cubrir con sus equipos" : `${nAyudados} ${nAyudados === 1 ? "trabajador" : "trabajadores"}`}</div>
             </div>
             <div style={{ background: C.greenBg, borderRadius: 10, padding: "10px 12px" }}>
               <div style={{ fontSize: 11, color: C.slate, fontWeight: 700 }}>Excedentes del mes</div>
               <div style={{ fontSize: 17, fontWeight: 900, color: C.green }}>{fmtMoney(totExced)}</div>
-              <div style={{ fontSize: 11, color: C.slate }}>{nExced} {nExced === 1 ? "trabajador" : "trabajadores"}</div>
+              <div style={{ fontSize: 11, color: C.slate }}>{eq ? (eq.apoyoRecibe > 0 ? `los equipos sobraron ${fmtMoney(eq.apoyoRecibe)}: cubren a ${eq.apoyo.map((a) => primerNombre(a.nombre)).join(", ")}` : eq.excedenteEquipos < 0 ? `los equipos quedaron cortos ${fmtMoney(-eq.excedenteEquipos)}` : "sin excedente de equipos") : `${nExced} ${nExced === 1 ? "trabajador" : "trabajadores"}`}</div>
             </div>
             <div style={{ background: C.white, borderRadius: 10, padding: "10px 12px" }}>
               <div style={{ fontSize: 11, color: C.slate, fontWeight: 700 }}>Balance del mes</div>
@@ -287,7 +300,25 @@ function DetalleMes({ titulo, f, cierre, h, filasTrab }) {
                 <tr style={{ borderBottom: `2px solid ${C.border}` }}>{thCell("Trabajador")}{thCell("Produjo", true)}{thCell("Le pagamos (nómina)", true)}{thCell("Resultado", true)}</tr>
               </thead>
               <tbody>
-                {filas.map((t) => (
+                {eq && filasEquipo.map((g) => (
+                  <React.Fragment key={g.clave}>
+                    <tr style={{ background: C.white, borderBottom: `1px solid ${C.border}` }}>
+                      <td style={{ padding: "8px 9px", fontWeight: 900, color: C.ink }}>{g.titulo}</td>
+                      <td style={{ padding: "8px 9px", textAlign: "right", color: C.green, fontWeight: 800 }}>{fmtMoney(g.ingreso)}</td>
+                      <td style={{ padding: "8px 9px", textAlign: "right", color: C.amber, fontWeight: 800 }}>{fmtMoney(g.costo)}</td>
+                      <td style={{ padding: "8px 9px", textAlign: "right" }}>{g.resultado === null ? <span style={{ fontSize: 11.5, color: C.slate }}>se cubre con lo que sobre de los equipos</span> : <EtiquetaResultado bal={g.resultado} />}</td>
+                    </tr>
+                    {g.personas.map((p) => (
+                      <tr key={`${g.clave}-${p.nombre}`} style={{ borderBottom: `1px solid ${C.border}` }}>
+                        <td style={{ padding: "6px 9px 6px 24px", color: C.slate, fontWeight: 700 }}>{p.nombre}</td>
+                        <td style={{ padding: "6px 9px", textAlign: "right", color: C.slate }}>{fmtMoney(p.ingreso)}</td>
+                        <td style={{ padding: "6px 9px", textAlign: "right", color: C.slate }}>{fmtMoney(p.costo)}</td>
+                        <td style={{ padding: "6px 9px" }} />
+                      </tr>
+                    ))}
+                  </React.Fragment>
+                ))}
+                {!eq && filas.map((t) => (
                   <tr key={t.id} style={{ borderBottom: `1px solid ${C.border}` }}>
                     <td style={{ padding: "8px 9px", fontWeight: 800, color: C.ink }}>{t.nombre}</td>
                     <td style={{ padding: "8px 9px", textAlign: "right", color: C.green, fontWeight: 700 }}>{fmtMoney(t.valor)}</td>
@@ -295,7 +326,7 @@ function DetalleMes({ titulo, f, cierre, h, filasTrab }) {
                     <td style={{ padding: "8px 9px", textAlign: "right" }}><EtiquetaResultado bal={t.valor - t.costo} /></td>
                   </tr>
                 ))}
-                {!filas.length && <tr><td colSpan={4} style={{ padding: 12, color: C.slate, fontSize: 12.5 }}>Ningún trabajador coincide con la búsqueda.</td></tr>}
+                {(eq ? !filasEquipo.length : !filas.length) && <tr><td colSpan={4} style={{ padding: 12, color: C.slate, fontSize: 12.5 }}>Ningún trabajador coincide con la búsqueda.</td></tr>}
               </tbody>
             </table>
           </div>
@@ -627,6 +658,12 @@ export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentU
 
   const claveSel = claveArea(areaNombre || "CORTE");
   const { historico, pedidos, trabajadoresCorte, cargando, cierresResueltos, datosArea } = useCentroCostoDatos(anioSel, claveSel);
+  // Roles de los equipos de Corte (se arman en Corte → Centro de Costo).
+  const [miembrosCorte, setMiembrosCorte] = useState([]);
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, "costos_config", "corte_equipos"), (d) => setMiembrosCorte(d.exists() && Array.isArray(d.data().miembros) ? d.data().miembros : []), () => setMiembrosCorte([]));
+    return () => unsub();
+  }, []);
 
   const resumenAreas = Object.entries(datosArea)
     .filter(([, d]) => d.mesesConDato > 0 && d.costo > 0)
@@ -840,6 +877,7 @@ export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentU
                         cierre={f.fuente === "cierre" ? cierresResueltos.get(`${claveSel}|${anioSel}-${String(m).padStart(2, "0")}`) : null}
                         h={f.fuente === "historico" ? historico.find((x) => x.clave === claveSel && x.anio === Number(anioSel) && x.mes === m) : null}
                         filasTrab={filasTrabMes}
+                        miembros={claveSel === "CORTE" ? miembrosCorte : []}
                       />
                     </td>
                   </tr>
