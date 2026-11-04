@@ -12,6 +12,7 @@ import { useCentroCostoDatos } from "./centro-costo-historico";
 import { AREAS_HISTORICO } from "./centro-costo-historico-parser";
 import { cotizadoVsReal, resumenAreaMes } from "./costos-calculo";
 import CierreDiarioView from "./cierre-diario";
+import CostosGeneralView from "./costos-general";
 
 const C = {
   ink: "#1A1A2E", slate: "#5A5A7A", border: "#E8E2DB", canvas: "#F7F4F0", white: "#FFFFFF",
@@ -267,6 +268,7 @@ function ManoDeObraYCotizaciones({ db }) {
   );
 }
 
+// (2026-11-04) Tercera pestaña «¿Cubro mis costos?» (costos-general.jsx).
 // (2026-10-26) Dos pestañas: el cierre diario por área (para la persona encargada de costos) y lo que ya había
 // (mano de obra por mes y cotizado frente a real).
 export default function TableroCostosView({ db }) {
@@ -276,8 +278,9 @@ export default function TableroCostosView({ db }) {
       <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
         <Chip activo={pestana === "cierre"} onClick={() => setPestana("cierre")}>Cierre diario</Chip>
         <Chip activo={pestana === "analisis"} onClick={() => setPestana("analisis")}>Mano de obra y cotizaciones</Chip>
+        <Chip activo={pestana === "cubro"} onClick={() => setPestana("cubro")}>¿Cubro mis costos?</Chip>
       </div>
-      {pestana === "cierre" ? <CierreDiarioView db={db} /> : <ManoDeObraYCotizaciones db={db} />}
+      {pestana === "cierre" ? <CierreDiarioView db={db} /> : pestana === "cubro" ? <CostosGeneralView db={db} /> : <ManoDeObraYCotizaciones db={db} />}
     </div>
   );
 }
