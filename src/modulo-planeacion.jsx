@@ -7416,6 +7416,27 @@ export function AreasStandalone({ currentUser, onVolver, onLogout, puedeCentroCo
 // proceso de Busint -- importa sobre todo en BAJADA DE VINILO y ESTAMPACION)
 // y, si esta programado en ese proceso, el operario y la fecha. Si el lote
 // esta repartido en varios procesos salen todos, con sus unidades.
+// (2026-11-04, a pedido de Fredy) Kamila Colombia y Kamila Venezuela por
+// separado en los filtros de cliente de Tubo Productivo y Por línea.
+// "clienteAgrupado" (que une a las dos) se deja intacto porque lo usan otras
+// pantallas (Informes, carga de Planeación); aquí se usa el nombre real de
+// cada una, y se ofrece además la opción combinada para verlas juntas.
+const CLIENTE_KAMILA_COMBINADO = "KAMILA (COLOMBIA + VENEZUELA)";
+function clienteSeparadoKamila(l) {
+  if (l.nombreCliente === "KAMILA GROUP SAS-KAMILA COLOMBIA") return "KAMILA COLOMBIA";
+  if (l.nombreCliente === "KAMILA VENEZUELA-KAMILA VENEZUELA") return "KAMILA VENEZUELA";
+  return l.clienteAgrupado || l.nombreCliente;
+}
+function opcionesClienteKamila(lotes) {
+  const set = new Set(lotes.map(clienteSeparadoKamila).filter(Boolean));
+  if (set.has("KAMILA COLOMBIA") || set.has("KAMILA VENEZUELA")) set.add(CLIENTE_KAMILA_COMBINADO);
+  return [...set].sort();
+}
+function loteEsDeCliente(l, filtro) {
+  if (!filtro) return true;
+  if (filtro === CLIENTE_KAMILA_COMBINADO) return l.clienteAgrupado === CLIENTE_KAMILA_COMBINADO;
+  return clienteSeparadoKamila(l) === filtro;
+}
 function procesosConUnidadesLote(l) {
   const conInv = (l.procesos || []).filter((p) => Number(p.inventario) > 0).map((p) => ({ nombre: p.nombre, planta: p.planta || "", unidades: Number(p.inventario) }));
   if (conInv.length) return conInv;
@@ -7513,12 +7534,12 @@ function TuboProductivoView() {
   // || nombreCliente" que ya usa BuscarPorLineaView, para que un mismo
   // cliente con variantes de nombre en Busint se vea como uno solo.
   const clientesDisponibles = useMemo(
-    () => [...new Set(lotes.map((l) => l.clienteAgrupado || l.nombreCliente).filter(Boolean))].sort(),
+    () => opcionesClienteKamila(lotes),
     [lotes]
   );
   const lotesFiltrados = useMemo(() => {
     if (!filtroCliente) return lotes;
-    return lotes.filter((l) => (l.clienteAgrupado || l.nombreCliente) === filtroCliente);
+    return lotes.filter((l) => loteEsDeCliente(l, filtroCliente));
   }, [lotes, filtroCliente]);
 
   const etapas = useMemo(() => {
@@ -7825,15 +7846,14 @@ function BuscarPorLineaView() {
   }, []);
 
   const clientes = useMemo(
-    () => [...new Set(lotes.map((l) => l.clienteAgrupado || l.nombreCliente).filter(Boolean))].sort(),
+    () => opcionesClienteKamila(lotes),
     [lotes]
   );
   const lineas = useMemo(() => [...new Set(lotes.map((l) => l.linea).filter(Boolean))].sort(), [lotes]);
 
   const lotesFiltrados = useMemo(() => {
     return lotes.filter((l) => {
-      const cliente = l.clienteAgrupado || l.nombreCliente;
-      if (filtroCliente && cliente !== filtroCliente) return false;
+      if (!loteEsDeCliente(l, filtroCliente)) return false;
       if (filtroLinea && l.linea !== filtroLinea) return false;
       return true;
     });
@@ -7842,7 +7862,7 @@ function BuscarPorLineaView() {
   const grupos = useMemo(() => {
     const mapa = new Map();
     lotesFiltrados.forEach((l) => {
-      const cliente = l.clienteAgrupado || l.nombreCliente;
+      const cliente = clienteSeparadoKamila(l);
       const linea = l.linea || "(Sin línea)";
       const clave = `${cliente}||${linea}`;
       if (!mapa.has(clave)) {
