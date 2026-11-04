@@ -10,12 +10,12 @@
 // Escribe solo en costos_gastos_mes (gastos cargados) y costos_cierres_mes (foto del cierre). Lo demás solo lo lee.
 import React, { useState, useEffect, useMemo } from "react";
 import { collection, doc, getDoc, getDocs, query, setDoc, where } from "firebase/firestore";
-import { useCentroCostoDatos } from "./centro-costo-historico";
+import { useCentroCostoDatos, filasCorteVivo } from "./centro-costo-historico";
 import { AREAS_HISTORICO, normTexto } from "./centro-costo-historico-parser";
 import { ayudaQuincenasPorPersona } from "./ayuda-quincena";
 import { mismoNombre } from "./corte-equipos";
 import { unirPorAlias } from "./nombres-alias";
-import { cierreGeneral, parsearGastos, totalGastos, detalleLotes, detalleFiscal, AREAS_FUERA_DEFECTO, DESTAJO_AYUDA_FUERA_DEFECTO, DESTAJO_PROVISION_FUERA_DEFECTO } from "./costos-general-calculo";
+import { cierreGeneral, parsearGastos, totalGastos, detalleLotes, detalleFiscal, AREAS_FUERA_DEFECTO, cuentaPorDefecto, TIPO_FISCAL, TIPO_FISCAL_DESTAJO, TIPO_PRESTACION, DESTAJO_AYUDA_FUERA_DEFECTO, DESTAJO_PROVISION_FUERA_DEFECTO } from "./costos-general-calculo";
 
 const C = {
   ink: "#1A1A2E", slate: "#5A5A7A", border: "#E8E2DB", canvas: "#F7F4F0", white: "#FFFFFF",
@@ -194,7 +194,7 @@ function VentanaFiscal({ mesTxt, ym, quincenas, resumen, filas, marcas, onArea, 
   async function bajarExcel() {
     const XLSX = await import("xlsx");
     const wb = XLSX.utils.book_new();
-    const datos = visibles.map((f) => ({ Trabajador: f.nombre, Área: f.area, Quincenas: f.quincenas.join(", "), Neto: Math.round(f.neto), "Seguridad social": Math.round(f.seguridad), Prestaciones: Math.round(f.prestaciones), "Costo total": Math.round(f.costo), Estado: f.cuenta ? "Cuenta" : "Ya va en el lote", "Suma a la estructura": Math.round(f.costoCuenta) }));
+    const datos = visibles.map((f) => ({ Trabajador: f.nombre, Área: f.area, Quincenas: f.quincenas.join(", "), Neto: Math.round(f.neto), "Seguridad social": Math.round(f.seguridad), Prestaciones: Math.round(f.prestaciones), "Costo total": Math.round(f.costo), Tipo: f.tipoNomina, Estado: f.cuenta ? "Cuenta" : "No cuenta", "Suma a la estructura": Math.round(f.costoCuenta) }));
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(datos), "Nómina fiscal");
     XLSX.writeFile(wb, `Nomina_fiscal_${ym}.xlsx`);
   }
@@ -204,7 +204,7 @@ function VentanaFiscal({ mesTxt, ym, quincenas, resumen, filas, marcas, onArea, 
     <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 14, padding: "10px 16px", borderTop: `1px solid ${C.border}` }}>
       <div style={{ width: 36, height: 36, borderRadius: "50%", background: `${col}22`, color: col, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 12.5, flex: "none", filter: f.cuenta ? "none" : "grayscale(1)", opacity: f.cuenta ? 1 : 0.6 }}>{iniciales(f.nombre)}</div>
       <div style={{ flex: 1, minWidth: 0, opacity: f.cuenta ? 1 : 0.6 }}>
-        <div style={{ fontSize: 13.5, fontWeight: 800, color: C.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{bonito(f.nombre)}</div>
+        <div style={{ fontSize: 13.5, fontWeight: 800, color: C.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{bonito(f.nombre)}{f.tipoNomina && f.tipoNomina !== TIPO_FISCAL ? <span style={{ marginLeft: 8, fontSize: 10.5, fontWeight: 800, padding: "2px 8px", borderRadius: 10, background: f.tipoNomina === TIPO_FISCAL_DESTAJO ? "#EFE9F7" : C.blueBg, color: f.tipoNomina === TIPO_FISCAL_DESTAJO ? "#6B4C9A" : C.blue }}>{f.tipoNomina}</span> : null}</div>
         <div style={{ fontSize: 11.5, color: C.slate }}>{f.quincenas.length >= 2 ? "Quincenas 1 y 2" : f.quincenas.length === 1 ? `Quincena ${f.quincenas[0].slice(-1)}` : "—"}</div>
         {marcas && marcas.get(f.id) ? <div style={{ fontSize: 11, fontWeight: 700, color: C.amber, marginTop: 2 }}>{marcas.get(f.id)}</div> : null}
       </div>
@@ -246,7 +246,7 @@ function VentanaFiscal({ mesTxt, ym, quincenas, resumen, filas, marcas, onArea, 
         <div style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "20px 26px 12px" }}>
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 20, fontWeight: 800, color: C.ink }}>Nómina fiscal completa — {mesTxt}</div>
-            <div style={{ fontSize: 12.5, color: C.slate, marginTop: 4, lineHeight: 1.5 }}>Liquidaciones confirmadas ({quincenas} de 2 quincenas). Costo para la empresa = neto + seguridad social + prestaciones. El interruptor decide si esa persona (o toda el área) cuenta como estructura; lo apagado ya va dentro del costo del lote.</div>
+            <div style={{ fontSize: 12.5, color: C.slate, marginTop: 4, lineHeight: 1.5 }}>Liquidaciones confirmadas de Fiscal ({quincenas} de 2 quincenas), Fiscal Destajo y Prestación de Servicios. Costo para la empresa = neto + seguridad social + prestaciones (Prestación de Servicios: lo que se le paga). El interruptor decide si esa persona (o toda el área) cuenta como estructura. Arrancan apagados: las áreas con centro de costo (Fiscal Destajo) y toda la Prestación de Servicios (puede estar ya en el Excel de gastos).</div>
           </div>
           <button onClick={onClose} aria-label="Cerrar" style={{ border: "none", background: "transparent", fontSize: 26, lineHeight: 1, cursor: "pointer", color: C.slate }}>×</button>
         </div>
@@ -272,7 +272,7 @@ function VentanaFiscal({ mesTxt, ym, quincenas, resumen, filas, marcas, onArea, 
           ) : null}
           {fuera.map(seccion)}
           <div style={{ fontSize: 11.5, color: C.slate, lineHeight: 1.6 }}>
-            Lo que decidas se guarda y vale para todos los meses. De quien quede fuera solo cuenta lo que se le paga de más (ayuda) y su provisión, que sale de los cierres de Centro de Costo (hoy MAQUILA no tiene cierre, así que no suma).
+            Lo que decidas se guarda y vale para todos los meses. De quien quede fuera de un área con centro de costo solo cuenta lo que se le paga de más (ayuda) y su provisión, que salen de Centro de Costo (hoy MAQUILA no tiene cierre, así que no suma).
           </div>
         </div>
       </div>
@@ -285,7 +285,7 @@ export default function CostosGeneralView({ db }) {
   const [anio, setAnio] = useState(hoy.getUTCFullYear());
   const [mes, setMes] = useState(hoy.getUTCMonth() + 1);
   const ym = `${anio}-${String(mes).padStart(2, "0")}`;
-  const { cierresResueltos, datosArea, cargando: cargandoCC } = useCentroCostoDatos(anio, "CORTE");
+  const { cierresResueltos, datosArea, pedidos: pedidosCorte, trabajadoresCorte, cargando: cargandoCC } = useCentroCostoDatos(anio, "CORTE");
 
   const [recarga, setRecarga] = useState(0);
   const [areasFuera, setAreasFuera] = useState(AREAS_FUERA_DEFECTO);
@@ -331,21 +331,26 @@ export default function CostosGeneralView({ db }) {
     try { await setDoc(doc(db, "costos_config", "general"), { areasFuera: nuevasAreas, excepciones: nuevasExc, actualizadoEn: new Date().toISOString() }, { merge: true }); }
     catch (e) { setMsgAreas(`No se pudo guardar la elección: ${e?.message || e}`); }
   }
-  // Interruptor del área: si todas sus personas cuentan la apaga; si no, la enciende. Borra las excepciones de sus personas.
+  // Interruptor del área: si todas sus personas cuentan la apaga; si no, la enciende. Borra las excepciones de sus personas
+  // (menos las que, aun con el área encendida, arrancan apagadas por su tipo —Prestación de Servicios, Fiscal Destajo con centro de costo—: esas quedan encendidas con excepción).
   function alternarArea(area, personas) {
     const k = normTexto(area);
     const todasCuentan = personas.every((p) => p.cuenta);
     const sinArea = areasFuera.filter((a) => normTexto(a) !== k);
+    const nuevasAreas = todasCuentan ? [...sinArea, area] : sinArea;
     const nuevasExc = { ...excepciones };
-    personas.forEach((p) => { delete nuevasExc[p.id]; });
-    guardarEleccion(todasCuentan ? [...sinArea, area] : sinArea, nuevasExc);
+    personas.forEach((p) => {
+      delete nuevasExc[p.id];
+      if (!todasCuentan && !cuentaPorDefecto(p.area, nuevasAreas, p.tipoNomina)) nuevasExc[p.id] = true;
+    });
+    guardarEleccion(nuevasAreas, nuevasExc);
   }
-  // Interruptor de una persona: guarda excepción solo si difiere de lo que diría su área.
+  // Interruptor de una persona: guarda excepción solo si difiere de lo que diría su área y su tipo de nómina.
   function alternarPersona(p) {
     const deseada = !p.cuenta;
-    const porArea = !areasFuera.some((a) => normTexto(a) === normTexto(p.area));
+    const porDefecto = cuentaPorDefecto(p.area, areasFuera, p.tipoNomina);
     const nuevasExc = { ...excepciones };
-    if (deseada === porArea) delete nuevasExc[p.id]; else nuevasExc[p.id] = deseada;
+    if (deseada === porDefecto) delete nuevasExc[p.id]; else nuevasExc[p.id] = deseada;
     guardarEleccion(areasFuera, nuevasExc);
   }
   async function guardarDestajo(nuevo) {
@@ -374,7 +379,7 @@ export default function CostosGeneralView({ db }) {
     if (!actual === porArea) delete exc[p.key]; else exc[p.key] = !actual;
     guardarDestajo({ ...destajoCfg, [kE]: exc });
   }
-  const [datos, setDatos] = useState({ cargando: true, error: "", lotes: [], bases: [], fichas: [], liqFiscal: [], gastosMes: null, gastosAnterior: null, cierreGuardado: null });
+  const [datos, setDatos] = useState({ cargando: true, error: "", lotes: [], bases: [], fichas: [], liqFiscal: [], liqFD: [], liqPS: [], gastosMes: null, gastosAnterior: null, cierreGuardado: null });
   const [gastosEdit, setGastosEdit] = useState(null);
   const [archivoGastos, setArchivoGastos] = useState("");
   const [msgGastos, setMsgGastos] = useState("");
@@ -398,8 +403,11 @@ export default function CostosGeneralView({ db }) {
       getDocs(query(collection(db, "nomina_fiscal_liquidaciones"), where("periodoId", ">=", `${ym}-Q1`), where("periodoId", "<=", `${ym}-Q2`))),
       getDocs(collection(db, "costos_gastos_mes")),
       getDocs(collection(db, "costos_cierres_mes")),
+      // Fiscal Destajo y Prestación de Servicios se guardan en sus propias colecciones de Nómina.
+      getDocs(query(collection(db, "nomina_fiscal_destajo_liquidaciones"), where("periodoId", ">=", `${ym}-Q1`), where("periodoId", "<=", `${ym}-Q2`))).catch(() => ({ docs: [] })),
+      getDocs(query(collection(db, "nomina_prestacion_servicios_liquidaciones"), where("periodoId", ">=", `${ym}-Q1`), where("periodoId", "<=", `${ym}-Q2`))).catch(() => ({ docs: [] })),
     ])
-      .then(([lotes, bases, fichas, liq, gastos, cierres]) => {
+      .then(([lotes, bases, fichas, liq, gastos, cierres, liqFD, liqPS]) => {
         if (!vivo) return;
         const gs = gastos.docs.map((d) => ({ ...d.data(), id: d.id }));
         const anteriores = gs.filter((g) => g.id < ym).sort((a, b) => (a.id < b.id ? 1 : -1));
@@ -410,6 +418,8 @@ export default function CostosGeneralView({ db }) {
           bases: bases.docs.map((d) => ({ ...d.data(), id: d.id })),
           fichas: fichas.docs.map((d) => ({ ...d.data(), id: d.id })),
           liqFiscal: liq.docs.map((d) => ({ ...d.data(), id: d.id })),
+          liqFD: liqFD.docs.map((d) => ({ ...d.data(), id: d.id })),
+          liqPS: liqPS.docs.map((d) => ({ ...d.data(), id: d.id })),
           gastosMes: gs.find((g) => g.id === ym) || null,
           gastosAnterior: anteriores[0] || null,
           cierreGuardado: cierres.docs.map((d) => ({ ...d.data(), id: d.id })).find((c) => c.id === ym) || null,
@@ -441,15 +451,26 @@ export default function CostosGeneralView({ db }) {
   const origenGastos = gastosEdit ? "edicion" : datos.gastosMes ? "guardado" : datos.gastosAnterior ? "anterior" : "ninguno";
   const lineasGastos = gastosEdit || datos.gastosMes?.lineas || datos.gastosAnterior?.lineas || [];
 
+  // Misma regla de fuentes que el panel «Año» de Centro de Costo: histórico con prioridad > CORTE en vivo (cortes de ATLAS) > histórico > cierres diarios.
   const areasDestajo = useMemo(() => AREAS_HISTORICO.map((a) => {
     const r = cierresResueltos.get(`${a.clave}|${ym}`);
     const m = datosArea[a.clave]?.meses?.[mes];
-    if (r && r.trabajadores?.length) return { clave: a.clave, nombre: a.nombre, trabajadores: a.clave === "CORTE" ? unirPorAlias(r.trabajadores, aliasCorte) : r.trabajadores, dias: r.dias, fuente: "cierre" };
+    if (a.clave === "CORTE" && m?.fuente === "vivo") {
+      const filas = filasCorteVivo(pedidosCorte, trabajadoresCorte, ym);
+      if (filas.length) return { clave: a.clave, nombre: a.nombre, trabajadores: filas, dias: 0, fuente: "vivo" };
+    }
+    if (m?.fuente !== "historico" && r && r.trabajadores?.length) return { clave: a.clave, nombre: a.nombre, trabajadores: a.clave === "CORTE" ? unirPorAlias(r.trabajadores, aliasCorte) : r.trabajadores, dias: r.dias, fuente: "cierre" };
     if (m && (m.valor > 0 || m.costo > 0)) return { clave: a.clave, nombre: a.nombre, agregado: { valor: m.valor, costo: m.costo }, fuente: m.fuente };
     return null;
-  }).filter(Boolean), [cierresResueltos, datosArea, ym, mes, aliasCorte]);
+  }).filter(Boolean), [cierresResueltos, datosArea, ym, mes, aliasCorte, pedidosCorte, trabajadoresCorte]);
 
-  const r = useMemo(() => cierreGeneral({ lotes: datos.lotes, bases: datos.bases, gastos: lineasGastos, liquidacionesFiscal: datos.liqFiscal, areasDestajo, fichas: datos.fichas, areasFuera, excepciones, equiposCorte, destajoOpc: destajoCfg }), [datos, lineasGastos, areasDestajo, areasFuera, excepciones, equiposCorte, destajoCfg]);
+  // Toda la nómina que no es destajo puro, con su tipo: Fiscal, Fiscal Destajo y Prestación de Servicios.
+  const liqTodas = useMemo(() => [
+    ...datos.liqFiscal.map((l) => ({ ...l, tipoNomina: TIPO_FISCAL })),
+    ...datos.liqFD.map((l) => ({ ...l, tipoNomina: TIPO_FISCAL_DESTAJO })),
+    ...datos.liqPS.map((l) => ({ ...l, tipoNomina: TIPO_PRESTACION })),
+  ], [datos.liqFiscal, datos.liqFD, datos.liqPS]);
+  const r = useMemo(() => cierreGeneral({ lotes: datos.lotes, bases: datos.bases, gastos: lineasGastos, liquidacionesFiscal: liqTodas, areasDestajo, fichas: datos.fichas, areasFuera, excepciones, equiposCorte, destajoOpc: destajoCfg }), [datos, liqTodas, lineasGastos, areasDestajo, areasFuera, excepciones, equiposCorte, destajoCfg]);
 
   const ayudaQ = useMemo(
     () => ayudaQuincenasPorPersona(ym, r.destajo.personas, { fichas: datos.fichas, ...nominaQ }, hoy.toISOString().slice(0, 10)),
@@ -457,7 +478,7 @@ export default function CostosGeneralView({ db }) {
   );
 
   // Personas que están en la nómina fiscal Y en un centro de costo (destajo): si la fiscal las cuenta, se suman en los dos lados.
-  const filasFiscal = useMemo(() => detalleFiscal(datos.liqFiscal, datos.fichas, areasFuera, excepciones), [datos.liqFiscal, datos.fichas, areasFuera, excepciones]);
+  const filasFiscal = useMemo(() => detalleFiscal(liqTodas, datos.fichas, areasFuera, excepciones), [liqTodas, datos.fichas, areasFuera, excepciones]);
   const cruce = useMemo(() => {
     const porPersona = new Map();
     const marcas = new Map();
@@ -530,7 +551,7 @@ export default function CostosGeneralView({ db }) {
         anio, mes, guardadoEn: new Date().toISOString(), gastosOrigen: origenGastos, areasFueraDeNominaFiscal: areasFuera, excepcionesNominaFiscal: excepciones, destajoAyudaFuera: destajoCfg.ayudaFuera, destajoProvisionFuera: destajoCfg.provisionFuera, destajoAyudaExc: destajoCfg.ayudaExc, destajoProvisionExc: destajoCfg.provisionExc,
         resumen: {
           aporte: Math.round(r.recogido.aporte), basicos: Math.round(r.recogido.basicos), porcentajes: Math.round(r.recogido.porcentajes), lotes: r.recogido.lotes, cortadas: r.recogido.cortadas, despachadas: r.recogido.despachadas,
-          gastos: Math.round(r.gastos.total), fiscal: Math.round(r.fiscal.total), fiscalFuera: Math.round(r.fiscal.fuera.total), destajoAyudas: Math.round(r.destajo.ayudas), destajoExcedentes: Math.round(r.destajo.excedentes), destajoProvision: Math.round(r.destajo.provision), destajoAyudasTodas: Math.round(r.destajo.ayudasTodas), destajoProvisionTodas: Math.round(r.destajo.provisionTodas),
+          gastos: Math.round(r.gastos.total), fiscal: Math.round(r.fiscal.total), fiscalFuera: Math.round(r.fiscal.fuera.total), fiscalPorTipo: r.fiscal.porTipo.map((t) => ({ tipo: t.tipo, total: Math.round(t.total), personas: t.personas, fueraTotal: Math.round(t.fueraTotal), fueraPersonas: t.fueraPersonas })), destajoAyudas: Math.round(r.destajo.ayudas), destajoExcedentes: Math.round(r.destajo.excedentes), destajoProvision: Math.round(r.destajo.provision), destajoAyudasTodas: Math.round(r.destajo.ayudasTodas), destajoProvisionTodas: Math.round(r.destajo.provisionTodas),
           estructura: Math.round(r.estructura), resultado: Math.round(r.resultado),
         },
         areas: r.destajo.areas.map((a) => ({ clave: a.clave, nombre: a.nombre, ayudas: Math.round(a.ayudas), ayudasTodas: Math.round(a.ayudasTodas), excedentes: Math.round(a.excedentes), provision: Math.round(a.provision), provisionTodas: Math.round(a.provisionTodas), cuentaAyuda: a.estadoAyuda, cuentaProvision: a.estadoProvision })),
@@ -756,7 +777,7 @@ export default function CostosGeneralView({ db }) {
           <thead><tr><th style={thL}>Concepto</th><th style={thL}>De dónde sale</th><th style={th}>Valor del mes</th></tr></thead>
           <tbody>
             <tr onClick={() => setVentana({ tipo: "gastos" })} style={{ cursor: "pointer" }}><td style={tdL}>▸ Gastos del Excel</td><td style={{ ...td, textAlign: "left", color: C.slate }}>{r.gastos.incluidas} gastos incluidos{r.gastos.excluidas ? ` · ${r.gastos.excluidas} fuera (${money(r.gastos.excluidoValor)})` : ""}{origenGastos === "anterior" ? " · del mes anterior" : origenGastos === "ninguno" ? " · sin cargar" : ""}</td><td style={td}>{money(r.gastos.total)}</td></tr>
-            <tr onClick={() => setVentana({ tipo: "fiscal" })} style={{ cursor: "pointer" }}><td style={tdL}>▸ Nómina fiscal completa</td><td style={{ ...td, textAlign: "left", color: C.slate }}>{r.fiscal.personas} personas · {quincenasFiscal} de 2 quincenas confirmadas (neto + seguridad social + prestaciones){r.fiscal.fuera.personas ? ` · ${r.fiscal.fuera.personas} ${r.fiscal.fuera.personas === 1 ? "persona" : "personas"} (${money(r.fiscal.fuera.total)}) ya van en el costo del lote y no suman` : ""}</td><td style={td}>{money(r.fiscal.total)}</td></tr>
+            <tr onClick={() => setVentana({ tipo: "fiscal" })} style={{ cursor: "pointer" }}><td style={tdL}>▸ Nómina fiscal completa</td><td style={{ ...td, textAlign: "left", color: C.slate }}>{r.fiscal.personas} personas · {quincenasFiscal} de 2 quincenas confirmadas (neto + seguridad social + prestaciones){r.fiscal.porTipo.filter((t) => t.tipo !== TIPO_FISCAL && (t.personas || t.fueraPersonas)).map((t) => ` · ${t.tipo}: ${t.personas} ${money(t.total)}${t.fueraPersonas ? ` (${t.fueraPersonas} apagadas, ${money(t.fueraTotal)})` : ""}`).join("")}{r.fiscal.fuera.personas ? ` · ${r.fiscal.fuera.personas} ${r.fiscal.fuera.personas === 1 ? "persona" : "personas"} (${money(r.fiscal.fuera.total)}) apagadas: no suman` : ""}</td><td style={td}>{money(r.fiscal.total)}</td></tr>
             <tr onClick={() => setVentana({ tipo: "ayudas" })} style={{ cursor: "pointer" }}><td style={tdL}>▸ Destajo: ayudas</td><td style={{ ...td, textAlign: "left", color: C.slate }}>{r.destajo.areas.reduce((s, a) => s + (a.porEquipos ? 0 : a.ayudados), 0)} personas ayudadas{r.destajo.areas.some((a) => a.porEquipos) ? " + Corte medido por equipos" : ""} · los excedentes ({money(r.destajo.excedentes)}) no se restan</td><td style={td}>{money(r.destajo.neta)}</td></tr>
             <tr onClick={() => setVentana({ tipo: "provision" })} style={{ cursor: "pointer" }}><td style={tdL}>▸ Destajo: provisión</td><td style={{ ...td, textAlign: "left", color: C.slate }}>Cesantías, prima, intereses y vacaciones</td><td style={td}>{money(r.destajo.provision)}</td></tr>
             <tr style={{ background: C.canvas }}><td style={tdL}>Total por pagar</td><td style={td} /><td style={{ ...td, fontWeight: 800, color: C.amber }}>{money(r.estructura)}</td></tr>
@@ -859,7 +880,7 @@ export default function CostosGeneralView({ db }) {
       <div style={{ background: C.amberBg, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 16px", fontSize: 12.5, color: C.amber, lineHeight: 1.6 }}>
         Antes de decidir con estas cifras: {quincenasFiscal < 2 ? `la nómina fiscal solo tiene ${quincenasFiscal} de 2 quincenas confirmadas este mes; ` : ""}
         {sinDetalle.length ? `${sinDetalle.map((a) => a.nombre).join(", ")} sin detalle por trabajador (se usó el total del área); ` : ""}
-        el aporte cuenta cuando Contabilidad aprueba el lote en Dado por Cumplido; Confección y Terminación todavía no tienen cierre de ayuda; la prestación de servicios no está incluida (si va en los gastos del Excel, ya cuenta ahí).
+        el aporte cuenta cuando Contabilidad aprueba el lote en Dado por Cumplido; Confección y Terminación todavía no tienen cierre de ayuda; Prestación de Servicios aparece en la nómina fiscal pero apagada: enciéndela solo si esos pagos no están ya en los gastos del Excel.
       </div>
       {ventana?.tipo === "fiscal" ? (
         <VentanaFiscal

@@ -574,6 +574,29 @@ function CargarHistoricoModal({ onClose, currentUser, anioInicial }) {
   );
 }
 
+// (2026-11-05) CORTE de un mes con los cortes registrados en ATLAS: una fila por persona de la nómina de Corte (sueldo completo del mes;
+// quien tiene fecha de salida deja de contar desde ese mes) con lo que cortó. La usan el panel «Año» y «¿Cubro mis costos?», para que
+// las dos pantallas lean exactamente lo mismo. mk = "AAAA-MM".
+export function filasCorteVivo(pedidos, trabajadoresCorte, mk) {
+  const porCortador = new Map();
+  (pedidos || []).forEach((p) => (p.cortesRealizados || []).forEach((c) => {
+    if (String(c.fecha || "").slice(0, 7) !== mk) return;
+    const nombre = String(c.cortador || "").trim() || "(Sin cortador asignado)";
+    const k = normTexto(nombre);
+    if (!porCortador.has(k)) porCortador.set(k, { nombre, valor: 0 });
+    porCortador.get(k).valor += Number(c.ingresoCorte) || 0;
+  }));
+  const filas = [];
+  const usados = new Set();
+  (trabajadoresCorte || []).filter((t) => !t.fechaSalida || mk <= String(t.fechaSalida).slice(0, 7)).forEach((t) => {
+    const k = normTexto(t.nombre);
+    usados.add(k);
+    filas.push({ id: k, nombre: t.nombre, valor: porCortador.get(k)?.valor || 0, costo: Number(t.sueldo) || 0 });
+  });
+  porCortador.forEach((d, k) => { if (!usados.has(k)) filas.push({ id: k, nombre: d.nombre, valor: d.valor, costo: 0 }); });
+  return filas.filter((x) => x.costo > 0);
+}
+
 // ─── PANEL "AÑO" ─────────────────────────────────────────────────────────────
 // (2026-10-26) Lectura compartida del Centro de Costo: la usan el panel «Año» y el Tablero de costos.
 // Devuelve, por área y mes, lo producido y el costo de nómina (histórico cargado, CORTE en vivo o cierres guardados).
@@ -716,24 +739,7 @@ export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentU
     if (!f) return [];
     if (f.fuente === "cierre") return cierresResueltos.get(`${claveSel}|${anioSel}-${String(mesAbierto).padStart(2, "0")}`)?.trabajadores || [];
     if (f.fuente !== "vivo") return [];
-    const mk = `${anioSel}-${String(mesAbierto).padStart(2, "0")}`;
-    const porCortador = new Map();
-    pedidos.forEach((p) => (p.cortesRealizados || []).forEach((c) => {
-      if (String(c.fecha || "").slice(0, 7) !== mk) return;
-      const nombre = String(c.cortador || "").trim() || "(Sin cortador asignado)";
-      const k = normTexto(nombre);
-      if (!porCortador.has(k)) porCortador.set(k, { nombre, valor: 0 });
-      porCortador.get(k).valor += Number(c.ingresoCorte) || 0;
-    }));
-    const filas = [];
-    const usados = new Set();
-    trabajadoresCorte.filter((t) => !t.fechaSalida || mk <= String(t.fechaSalida).slice(0, 7)).forEach((t) => {
-      const k = normTexto(t.nombre);
-      usados.add(k);
-      filas.push({ id: k, nombre: t.nombre, valor: porCortador.get(k)?.valor || 0, costo: Number(t.sueldo) || 0 });
-    });
-    porCortador.forEach((d, k) => { if (!usados.has(k)) filas.push({ id: k, nombre: d.nombre, valor: d.valor, costo: 0 }); });
-    return filas.filter((x) => x.costo > 0);
+    return filasCorteVivo(pedidos, trabajadoresCorte, `${anioSel}-${String(mesAbierto).padStart(2, "0")}`);
   }, [mesAbierto, sel, cierresResueltos, claveSel, anioSel, pedidos, trabajadoresCorte]);
 
   const hoy = new Date();

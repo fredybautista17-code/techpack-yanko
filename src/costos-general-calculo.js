@@ -156,23 +156,38 @@ export function areaDeLiquidacion(l, fichas) {
 }
 const normFuera = (areasFuera) => new Set((areasFuera || []).map((a) => normTexto(a)));
 // ¿Esta persona cuenta como estructura? Una excepción propia (true = cuenta, false = fuera) manda sobre la regla de su área.
-export function personaCuenta(id, area, areasFuera, excepciones) {
+// Tipos de nómina que se leen además de la fiscal (2026-11-05): cada uno vive en su propia colección de Nómina.
+export const TIPO_FISCAL = "Fiscal";
+export const TIPO_FISCAL_DESTAJO = "Fiscal Destajo";
+export const TIPO_PRESTACION = "Prestación de Servicios";
+// Áreas que ya miden su centro de costo: sus Fiscal Destajo arrancan apagados (su ayuda y su provisión entran por destajo).
+export const AREAS_CON_CENTRO_COSTO = ["CORTE", "MAQUILA", "ZONA CALOR", "CONTROL DE CALIDAD"];
+// Lo que haría la regla sin excepción propia. Prestación de Servicios arranca apagada (puede estar ya en el Excel de gastos).
+export function cuentaPorDefecto(area, areasFuera, tipo) {
+  if (tipo === TIPO_PRESTACION) return false;
+  const a = normTexto(area);
+  if (normFuera(areasFuera).has(a)) return false;
+  if (tipo === TIPO_FISCAL_DESTAJO && AREAS_CON_CENTRO_COSTO.some((x) => normTexto(x) === a)) return false;
+  return true;
+}
+export function personaCuenta(id, area, areasFuera, excepciones, tipo) {
   const ex = excepciones ? excepciones[id] : undefined;
   if (ex === true || ex === false) return ex;
-  return !normFuera(areasFuera).has(normTexto(area));
+  return cuentaPorDefecto(area, areasFuera, tipo);
 }
 
 export function resumenFiscal(liquidaciones, fichas, areasFuera, excepciones) {
   const lista = liquidaciones || [];
   const cuenta = [];
   const noCuenta = [];
-  lista.forEach((l) => (personaCuenta(l.trabajadorId || l.nombre || l.id, areaDeLiquidacion(l, fichas), areasFuera, excepciones) ? cuenta : noCuenta).push(l));
+  lista.forEach((l) => (personaCuenta(l.trabajadorId || l.nombre || l.id, areaDeLiquidacion(l, fichas), areasFuera, excepciones, l.tipoNomina) ? cuenta : noCuenta).push(l));
   const suma = (a) => a.reduce((s, l) => s + costoTotalLiquidacion(l), 0);
   const personas = (a) => new Set(a.map((l) => l.trabajadorId || l.nombre)).size;
   return {
     total: suma(cuenta),
     personas: personas(cuenta),
-    quincenas: [...new Set(lista.map((l) => l.periodoId).filter(Boolean))].sort(),
+    quincenas: [...new Set(lista.filter((l) => !l.tipoNomina || l.tipoNomina === TIPO_FISCAL).map((l) => l.periodoId).filter(Boolean))].sort(),
+    porTipo: [TIPO_FISCAL, TIPO_FISCAL_DESTAJO, TIPO_PRESTACION].map((t) => { const c = cuenta.filter((l) => (l.tipoNomina || TIPO_FISCAL) === t); const n = noCuenta.filter((l) => (l.tipoNomina || TIPO_FISCAL) === t); return { tipo: t, total: suma(c), personas: personas(c), fueraTotal: suma(n), fueraPersonas: personas(n) }; }),
     fuera: { total: suma(noCuenta), personas: personas(noCuenta) },
     totalTodo: suma(lista),
   };
@@ -279,7 +294,7 @@ export function detalleFiscal(liquidaciones, fichas, areasFuera, excepciones) {
   (liquidaciones || []).forEach((l) => {
     const id = l.trabajadorId || l.nombre || l.id;
     const ficha = (fichas || []).find((f) => f.id === l.trabajadorId);
-    if (!por.has(id)) por.set(id, { id, nombre: l.nombre || ficha?.nombre || "—", area: ficha?.area || "Sin asignar", quincenas: [], neto: 0, seguridad: 0, prestaciones: 0, costo: 0 });
+    if (!por.has(id)) por.set(id, { id, nombre: l.nombre || ficha?.nombre || "—", area: ficha?.area || "Sin asignar", tipoNomina: l.tipoNomina || TIPO_FISCAL, quincenas: [], neto: 0, seguridad: 0, prestaciones: 0, costo: 0 });
     const g = por.get(id);
     if (l.periodoId && !g.quincenas.includes(l.periodoId)) g.quincenas.push(l.periodoId);
     g.neto += num(l.netoAPagar);
@@ -288,7 +303,7 @@ export function detalleFiscal(liquidaciones, fichas, areasFuera, excepciones) {
     g.costo += costoTotalLiquidacion(l);
   });
   return [...por.values()]
-    .map((g) => { const cuenta = personaCuenta(g.id, g.area, areasFuera, excepciones); return { ...g, quincenas: g.quincenas.sort(), cuenta, costoCuenta: cuenta ? g.costo : 0, apagada: !cuenta }; })
+    .map((g) => { const cuenta = personaCuenta(g.id, g.area, areasFuera, excepciones, g.tipoNomina); return { ...g, quincenas: g.quincenas.sort(), cuenta, costoCuenta: cuenta ? g.costo : 0, apagada: !cuenta }; })
     .sort((a, b) => (a.cuenta === b.cuenta ? b.costo - a.costo : a.cuenta ? -1 : 1));
 }
 
