@@ -364,6 +364,9 @@ export default function ExplosionMaterialesView({ db, functionsClient, T, pedido
   const [opc, setOpc] = useState(leerOpciones);
   const [sel, setSel] = useState({});
   const [q, setQ] = useState("");
+  const [clienteSel, setClienteSel] = useState(""); // (2026-11-04) filtro por cliente del paso 1
+  const [pegados, setPegados] = useState(""); // (2026-11-04) números de pedido pegados para marcarlos de una vez
+  const [avisoPegado, setAvisoPegado] = useState("");
   const [calculando, setCalculando] = useState(false);
   const [error, setError] = useState("");
   const [avisoOC, setAvisoOC] = useState("");
@@ -386,11 +389,31 @@ export default function ExplosionMaterialesView({ db, functionsClient, T, pedido
     const total = (p.referencias || []).reduce((s, r) => s + (Number(r.total) || 0), 0);
     return { p, unidades, total };
   }).sort((a, b) => String(a.p.fechaDespacho || "9999").localeCompare(String(b.p.fechaDespacho || "9999"))), [pedidos]);
+  // (2026-11-04, a pedido de Fredy) Atajos para elegir pedidos: por cliente y pegando varios números de pedido.
+  const claveCli = (p) => String(p.cliente || "(sin cliente)").trim() || "(sin cliente)";
+  const clientesLista = useMemo(() => {
+    const m = new Map();
+    candidatos.forEach(({ p }) => { const k = claveCli(p); m.set(k, { cliente: k, n: (m.get(k)?.n || 0) + 1, marcados: (m.get(k)?.marcados || 0) + (sel[p.id] ? 1 : 0) }); });
+    return [...m.values()].sort((a, b) => a.cliente.localeCompare(b.cliente));
+  }, [candidatos, sel]);
+  const clienteEf = clientesLista.some((c) => c.cliente === clienteSel) ? clienteSel : "";
   const visibles = useMemo(() => {
     const k = normTxt(q);
-    return !k ? candidatos : candidatos.filter(({ p }) => normTxt(`${p.numero} ${p.cliente} ${(p.referencias || []).map((r) => r.ref).join(" ")}`).includes(k));
-  }, [candidatos, q]);
+    const base = clienteEf ? candidatos.filter(({ p }) => claveCli(p) === clienteEf) : candidatos;
+    return !k ? base : base.filter(({ p }) => normTxt(`${p.numero} ${p.cliente} ${(p.referencias || []).map((r) => r.ref).join(" ")}`).includes(k));
+  }, [candidatos, q, clienteEf]);
   const elegidos = candidatos.filter(({ p }) => sel[p.id]);
+  const marcarPegados = () => {
+    const fichas = [...new Set(String(pegados || "").split(/[\s,;]+/).map((t) => t.trim().replace(/^#/, "")).filter(Boolean))];
+    if (!fichas.length) { setAvisoPegado("Escribe o pega uno o más números de pedido."); return; }
+    const porNumero = new Map(candidatos.map(({ p }) => [String(p.numero || "").trim(), p]));
+    const hallados = [];
+    const noHallados = [];
+    fichas.forEach((t) => { const p = porNumero.get(t); if (p) hallados.push(p); else noHallados.push(t); });
+    if (hallados.length) setSel((s0) => { const n = { ...s0 }; hallados.forEach((p) => { n[p.id] = true; }); return n; });
+    setAvisoPegado(`Marqué ${hallados.length} pedido${hallados.length === 1 ? "" : "s"}${noHallados.length ? ` · no encontré o no están activos: ${noHallados.join(", ")}` : ""}.`);
+    if (!noHallados.length) setPegados("");
+  };
 
   // Líneas (ref + color + unidades) de los pedidos elegidos, según la opción de unidades.
   // pendAtlas = lo que falta por cortar según los cortes registrados en ATLAS.
@@ -846,8 +869,24 @@ export default function ExplosionMaterialesView({ db, functionsClient, T, pedido
               <div style={{ fontWeight: 800, color: T.ink, fontSize: 15 }}>1. Elige los pedidos</div>
               <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="🔍 N° pedido, cliente o referencia" style={{ ...campo, minWidth: 260 }} />
               <button onClick={() => setSel((s) => { const n = { ...s }; visibles.forEach(({ p }) => { n[p.id] = true; }); return n; })} style={{ ...campo, cursor: "pointer", fontWeight: 600 }}>Seleccionar los visibles</button>
-              <button onClick={() => setSel({})} style={{ ...campo, cursor: "pointer", fontWeight: 600 }}>Quitar selección</button>
+              <button onClick={() => { setSel({}); setAvisoPegado(""); }} style={{ ...campo, cursor: "pointer", fontWeight: 600 }}>Quitar selección</button>
+              <span style={{ fontSize: 13, fontWeight: 700, color: elegidos.length ? T.denim : T.slate }}>{elegidos.length} seleccionado{elegidos.length === 1 ? "" : "s"}</span>
               {resultado && <button onClick={() => setSelAbierta(false)} style={{ ...campo, marginLeft: "auto", cursor: "pointer", fontWeight: 600 }}>Ocultar</button>}
+            </div>
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
+              <select value={clienteEf} onChange={(e) => setClienteSel(e.target.value)} title="Muestra solo los pedidos de un cliente" style={{ ...campo, cursor: "pointer", fontWeight: 700, maxWidth: 320, border: `1.5px solid ${clienteEf ? T.denim : T.border}`, background: clienteEf ? T.denimBg : T.white }}>
+                <option value="">👤 Todos los clientes ({candidatos.length})</option>
+                {clientesLista.map((c) => <option key={c.cliente} value={c.cliente}>{c.cliente} ({c.n}{c.marcados ? ` · ${c.marcados} marcado${c.marcados === 1 ? "" : "s"}` : ""})</option>)}
+              </select>
+              {clienteEf && (
+                <button onClick={() => setSel((s0) => { const n = { ...s0 }; candidatos.forEach(({ p }) => { if (claveCli(p) === clienteEf) n[p.id] = true; }); return n; })} style={{ ...campo, cursor: "pointer", fontWeight: 700, color: T.denim, border: `1.5px solid ${T.denim}` }}>
+                  ☑ Marcar los {clientesLista.find((c) => c.cliente === clienteEf)?.n || 0} pedidos de {clienteEf}
+                </button>
+              )}
+              <span style={{ width: 8 }} />
+              <input value={pegados} onChange={(e) => setPegados(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") marcarPegados(); }} placeholder="Pegar números de pedido: 1605, 1606, 1481" style={{ ...campo, minWidth: 300 }} />
+              <button onClick={marcarPegados} style={{ ...campo, cursor: "pointer", fontWeight: 700 }}>Marcar</button>
+              {avisoPegado && <span style={{ fontSize: 12.5, color: /no encontré/.test(avisoPegado) ? T.amber : T.slate, fontWeight: 600 }}>{avisoPegado}</span>}
             </div>
             <div style={{ maxHeight: 260, overflow: "auto", border: `1px solid ${T.border}`, borderRadius: 10 }}>
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
