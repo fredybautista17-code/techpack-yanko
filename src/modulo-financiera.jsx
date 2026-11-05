@@ -4,6 +4,7 @@ import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, query, wh
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { abrirRecibosLiquidacionLote } from "./modulo-nomina";
 import { CuantoPagarMesView, EndeudamientoView } from "./financiera-cuanto-pagar";
+import QuePagarPrimero from "./financiera-que-pagar";
 import { IngresosView } from "./financiera-ingresos";
 
 const firebaseConfig = {
@@ -2437,7 +2438,7 @@ function ProgramacionPagosView({ presupuestosCliente, presupuestos, calendarioCx
 // hasta que se pulse "Aplicar esta sugerencia", que reemplaza el calendario
 // de cada proveedor incluido en el plan (mismo guardarCalendarioProveedor
 // que se usa más abajo en aplicarPlanEstrategia, uno por uno).
-function EstrategiaPagoView({ cortes, manuales, calendario, presupuestosCliente, presupuestos, nombresProveedor, onAplicarPlan, isAdmin }) {
+function EstrategiaPagoView({ db, cortes, manuales, calendario, presupuestosCliente, presupuestos, nombresProveedor, onAplicarPlan, isAdmin }) {
   const [aplicando, setAplicando] = useState(false);
   const [aplicado, setAplicado] = useState(false);
 
@@ -2533,6 +2534,7 @@ function EstrategiaPagoView({ cortes, manuales, calendario, presupuestosCliente,
           Ordena todas las cuentas por pagar del corte más reciente por antigüedad (91+ días primero) y reparte el disponible proyectado de caja mes a mes, empezando siempre por lo más vencido. Es una sugerencia de lectura — no cambia nada hasta que se aplique.
         </p>
       </div>
+      {db ? <QuePagarPrimero db={db} items={filasOrdenadas.map((f) => { const tier = urgencia(f)[0]; return { nombre: f.nombreMostrado || f.nombre, total: f.total, tier, etiqueta: ETIQUETAS_TIER[tier] }; })} /> : null}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 14, marginBottom: 22 }}>
         <KPI icon="📌" label="Deuda total (corte más reciente + manuales)" value={fmtCOP(totalDeuda)} color={C.violet} bg={C.violetBg} />
         <KPI icon="✅" label="Cubierto por el plan (próx. 24 meses)" value={fmtCOP(totalPlanificado)} color={C.green} bg={C.greenBg} />
@@ -3441,6 +3443,7 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
           )}
           {subView === "estrategia_pago" && (
             <EstrategiaPagoView
+              db={db}
               cortes={cortesCxp}
               manuales={manualCxp}
               calendario={calendarioCxp}

@@ -223,3 +223,33 @@ export function cumplimientoPresupuesto({ ym, presupuestos, movimientos, confirm
     abonoPorDia: restantes > 0 ? Math.max(0, total - abonado) / restantes : null,
   };
 }
+
+// ─── ¿Qué pagar primero? (2026-11-05, a pedido de Fredy) ─────────────────────────────────────────────────────────────────────────────────
+// Reparte un cupo de caja entre las cuentas por pagar YA ORDENADAS por urgencia: cada una recibe lo que pueda hasta agotar el cupo.
+// items = [{ nombre, total, ... }] → [{ ...item, paga, falta }]
+export function repartirCupo(items, cupo) {
+  let resto = Math.max(0, num(cupo));
+  return (items || []).map((it) => {
+    const deuda = Math.max(0, num(it.total));
+    const paga = Math.min(deuda, resto);
+    resto -= paga;
+    return { ...it, paga, falta: deuda - paga };
+  });
+}
+// Qué sale en el mes y cuándo: las cuotas con su día de pago, la nómina por quincena (fechas aproximadas: 15 y fin de mes) y lo que no tiene fecha.
+export function calendarioObligaciones(estimado, cuotasLista, ym) {
+  const [a, m] = String(ym).split("-").map(Number);
+  const ult = new Date(Date.UTC(a, m, 0)).getUTCDate();
+  const conFecha = [
+    { dia: 15, concepto: "Nómina · quincena 1", valor: estimado.nomina / 2, aprox: true },
+    { dia: ult, concepto: "Nómina · quincena 2", valor: estimado.nomina / 2, aprox: true },
+  ];
+  const sinDia = [];
+  (cuotasLista || []).forEach((c) => {
+    const fila = { dia: c.diaPago ? Math.min(Math.max(1, Number(c.diaPago) || 1), ult) : null, concepto: `Cuota · ${c.nombre}`, valor: num(c.valorMensual) };
+    if (fila.dia) conFecha.push(fila); else sinDia.push(fila);
+  });
+  [["Seguridad social", estimado.seguridad], ["Provisiones", estimado.provisiones], ["Gastos del Excel", estimado.gastos]].forEach(([concepto, valor]) => { if (valor > 0) sinDia.push({ dia: null, concepto, valor }); });
+  conFecha.sort((x, y) => x.dia - y.dia);
+  return { conFecha, sinDia };
+}
