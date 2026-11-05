@@ -5,6 +5,7 @@ import ModuloContabilidad from "./modulo-contabilidad";
 import AsistenteAtlas from "./asistente-atlas";
 import ModuloPlaneacion, { MiDiaStandalone, ProgramadorProcesosStandalone, AreasStandalone, MiDiaNominaStandalone } from "./modulo-planeacion";
 import MiDiaTarjetasStandalone from "./mi-dia-tarjetas";
+import { setDiasSinTrabajar } from "./dias-habiles";
 import { GRUPOS_MI_DIA, TARJETAS_DEFECTO_MIDIA, claveCierreDeArea, esAreaCorte } from "./mi-dia-tarjetas-catalogo";
 import { FinancieraStandalone } from "./modulo-financiera";
 import ModuloPlanta from "./modulo-planta";
@@ -19700,6 +19701,9 @@ function AppInner() {
         const unsubConfig = onSnapshot(collection(db, "config"), (snap) => {
           if (!snap.docs.length) { setConfig(INIT_CONFIG); return; }
           const mainDoc = snap.docs.find((d) => d.id === "main") || snap.docs[0];
+          // (2026-11-05) «Días sin trabajar» (Administración → Notificaciones) también descuentan días hábiles en Cierre/Costos/Corte.
+          const corrProg = snap.docs.find((d) => d.id === "correos_programacion");
+          setDiasSinTrabajar(corrProg ? corrProg.data().diasSinTrabajar : []);
           setConfig({ ...INIT_CONFIG, ...mainDoc.data() });
         });
         unsubsDatos.push(unsubConfig);

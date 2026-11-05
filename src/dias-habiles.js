@@ -63,8 +63,15 @@ export function sabadoSeTrabajaISO(iso) {
   for (let i = 1; i <= 4; i++) if (esFestivoColombiaISO(sumar(lunes, i))) return true; // festivo martes-viernes: se repone el sábado
   return false;
 }
-// ¿Es día de trabajo (se cobra sueldo / cuenta para metas)? Lunes-viernes no festivo; sábado trabajado desde SABADO_PUENTE_DESDE; domingo nunca.
+// (2026-11-05) «Días sin trabajar» del panel Administración → Notificaciones (config/correos_programacion.diasSinTrabajar): puentes u otros
+// días que la empresa no trabaja. App.js los carga al abrir y los deja acá; un día de esta lista nunca es de trabajo.
+let _sinTrabajar = new Set();
+export function setDiasSinTrabajar(lista) {
+  _sinTrabajar = new Set((Array.isArray(lista) ? lista : []).map((x) => String(x || "").slice(0, 10)).filter((x) => /^\d{4}-\d{2}-\d{2}$/.test(x)));
+}
+// ¿Es día de trabajo (se cobra sueldo / cuenta para metas)? Lunes-viernes no festivo ni de la lista «Días sin trabajar»; sábado trabajado desde SABADO_PUENTE_DESDE; domingo nunca.
 export function esDiaDeTrabajoISO(iso) {
+  if (_sinTrabajar.has(String(iso).slice(0, 10))) return false;
   const w = dow(iso);
   if (w === 0) return false;
   if (w === 6) return String(iso) >= SABADO_PUENTE_DESDE && sabadoSeTrabajaISO(iso);
