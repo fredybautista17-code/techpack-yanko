@@ -49,7 +49,7 @@ function Ventana({ titulo, sub, onClose, children, ancho = 680 }) {
   }, [onClose]);
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: C.canvas, borderRadius: 14, width: `min(${ancho}px, 100%)`, maxHeight: "88vh", display: "flex", flexDirection: "column", boxShadow: "0 12px 40px rgba(0,0,0,0.25)" }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: C.canvas, borderRadius: 14, width: `min(${ancho}px, 100%)`, maxWidth: "100%", maxHeight: "92vh", minWidth: 320, minHeight: 240, resize: "both", overflow: "hidden", display: "flex", flexDirection: "column", boxShadow: "0 12px 40px rgba(0,0,0,0.25)" }} title={undefined}>
         <div style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "16px 20px", borderBottom: `1px solid ${C.border}` }}>
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 17, fontWeight: 800, color: C.ink }}>{titulo}</div>
@@ -57,7 +57,7 @@ function Ventana({ titulo, sub, onClose, children, ancho = 680 }) {
           </div>
           <button onClick={onClose} aria-label="Cerrar" style={{ border: "none", background: "transparent", fontSize: 22, lineHeight: 1, cursor: "pointer", color: C.slate }}>×</button>
         </div>
-        <div style={{ overflow: "auto", padding: 20 }}>{children}</div>
+        <div style={{ overflow: "auto", padding: 20, flex: 1, minHeight: 0 }}>{children}</div>
       </div>
     </div>
   );
@@ -246,7 +246,7 @@ export function CuantoPagarMesView({ db, onIrEndeudamiento }) {
       </div>
 
       {vd ? (
-        <Ventana titulo={`${vd.label} — ${nombreMes(ym)}`} sub={vd.campoTipo ? "Por tipo de nómina, de las liquidaciones confirmadas." : vd.k === "gastos" ? (actual.gastosInfo.origen === "anterior" ? `Gastos de ${nombreMes(actual.gastosInfo.deMes)} (el mes no tiene gastos guardados).` : "Gastos incluidos del Excel.") : "Cuotas vigentes en el mes."} onClose={() => setDetalle(null)}>
+        <Ventana ancho={vd.k === "provisiones" ? 1100 : 680} titulo={`${vd.label} — ${nombreMes(ym)}`} sub={vd.campoTipo ? "Por tipo de nómina, de las liquidaciones confirmadas." : vd.k === "gastos" ? (actual.gastosInfo.origen === "anterior" ? `Gastos de ${nombreMes(actual.gastosInfo.deMes)} (el mes no tiene gastos guardados).` : "Gastos incluidos del Excel.") : "Cuotas vigentes en el mes."} onClose={() => setDetalle(null)}>
           {vd.campoTipo ? (
             <>
             <table style={{ width: "100%", borderCollapse: "collapse", background: C.white }}>
@@ -279,12 +279,12 @@ export function CuantoPagarMesView({ db, onIrEndeudamiento }) {
                         <div style={{ fontSize: 12.5, color: C.slate }}>Sin liquidaciones confirmadas de este tipo en {nombreMes(mesMostrado.ym)}.</div>
                       ) : (
                         <table style={{ width: "100%", borderCollapse: "collapse", background: C.white }}>
-                          <thead><tr><th style={thL}>Persona</th><th style={th}>Quinc.</th><th style={th}>Cesantías</th><th style={th}>Intereses</th><th style={th}>Prima</th><th style={th}>Vacaciones</th><th style={th}>Total</th></tr></thead>
+                          <thead><tr>{[["#", "right"], ["Persona", "left"], ["Quinc.", "right"], ["Cesantías", "right"], ["Intereses", "right"], ["Prima", "right"], ["Vacaciones", "right"], ["Total", "right"]].map(([h, al]) => <th key={h} style={{ ...th, textAlign: al, position: "sticky", top: 0, background: C.white, zIndex: 1 }}>{h}</th>)}</tr></thead>
                           <tbody>
-                            {t.personasLista.map((p) => (
-                              <tr key={p.clave}><td style={{ ...td, textAlign: "left" }}>{p.nombre}</td><td style={td}>{p.quincenas}</td><td style={td}>{money(p.cesantias)}</td><td style={td}>{money(p.intereses)}</td><td style={td}>{money(p.prima)}</td><td style={td}>{money(p.vacaciones)}</td><td style={{ ...td, fontWeight: 800 }}>{money(p.total)}</td></tr>
+                            {t.personasLista.map((p, i) => (
+                              <tr key={p.clave}><td style={{ ...td, color: C.slate, width: 36 }}>{i + 1}</td><td style={{ ...td, textAlign: "left" }}>{p.nombre}</td><td style={td}>{p.quincenas}</td><td style={td}>{money(p.cesantias)}</td><td style={td}>{money(p.intereses)}</td><td style={td}>{money(p.prima)}</td><td style={td}>{money(p.vacaciones)}</td><td style={{ ...td, fontWeight: 800 }}>{money(p.total)}</td></tr>
                             ))}
-                            <tr style={{ background: C.canvas }}><td style={tdL}>Total ({t.personasLista.length} personas)</td><td style={td} /><td style={{ ...td, fontWeight: 800 }}>{money(t.cesantias)}</td><td style={{ ...td, fontWeight: 800 }}>{money(t.intereses)}</td><td style={{ ...td, fontWeight: 800 }}>{money(t.prima)}</td><td style={{ ...td, fontWeight: 800 }}>{money(t.vacaciones)}</td><td style={{ ...td, fontWeight: 900 }}>{money(t.prestaciones)}</td></tr>
+                            <tr style={{ background: C.canvas }}><td style={td} /><td style={tdL}>Total ({t.personasLista.length} personas)</td><td style={td} /><td style={{ ...td, fontWeight: 800 }}>{money(t.cesantias)}</td><td style={{ ...td, fontWeight: 800 }}>{money(t.intereses)}</td><td style={{ ...td, fontWeight: 800 }}>{money(t.prima)}</td><td style={{ ...td, fontWeight: 800 }}>{money(t.vacaciones)}</td><td style={{ ...td, fontWeight: 900 }}>{money(t.prestaciones)}</td></tr>
                           </tbody>
                         </table>
                       )}
