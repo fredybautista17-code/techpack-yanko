@@ -118,6 +118,9 @@ export function CuantoPagarMesView({ db, onIrEndeudamiento }) {
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState("");
   const [detalle, setDetalle] = useState(null);
+  // (2026-11-05) Provisiones: tipo de nómina abierto (lista de personas) y mes que se muestra ("actual" | "anterior").
+  const [provTipo, setProvTipo] = useState(null);
+  const [provMes, setProvMes] = useState("actual");
   const { cuotas, error: errorCuotas } = useCuotas(db);
 
   useEffect(() => {
@@ -147,7 +150,7 @@ export function CuantoPagarMesView({ db, onIrEndeudamiento }) {
   const subActual = actual.completo ? "Todas las quincenas confirmadas" : actual.hayDatos ? `Faltan por confirmar: ${textoFaltan(actual)}` : "Todavía no hay liquidaciones confirmadas este mes";
   const varMes = actual.hayDatos && anterior.hayDatos ? variacion(actual.total, anterior.total) : null;
 
-  const abrirDetalle = (r) => setDetalle(r.k);
+  const abrirDetalle = (r) => { setDetalle(r.k); setProvTipo(null); setProvMes("actual"); };
   const vd = detalle ? RUBROS.find((r) => r.k === detalle) : null;
 
   return (
@@ -245,15 +248,54 @@ export function CuantoPagarMesView({ db, onIrEndeudamiento }) {
       {vd ? (
         <Ventana titulo={`${vd.label} — ${nombreMes(ym)}`} sub={vd.campoTipo ? "Por tipo de nómina, de las liquidaciones confirmadas." : vd.k === "gastos" ? (actual.gastosInfo.origen === "anterior" ? `Gastos de ${nombreMes(actual.gastosInfo.deMes)} (el mes no tiene gastos guardados).` : "Gastos incluidos del Excel.") : "Cuotas vigentes en el mes."} onClose={() => setDetalle(null)}>
           {vd.campoTipo ? (
+            <>
             <table style={{ width: "100%", borderCollapse: "collapse", background: C.white }}>
               <thead><tr><th style={thL}>Tipo de nómina</th><th style={th}>Personas</th><th style={th}>Quincenas</th><th style={th}>{nombreMes(ym).split(" ")[0]}</th><th style={th}>{MESES[Number(anterior.ym.slice(5, 7)) - 1]}</th></tr></thead>
               <tbody>
                 {TIPOS_NOMINA.map((t) => { const a = actual.porTipo[t]; const b = anterior.porTipo[t]; return (
-                  <tr key={t}><td style={tdL}>{t}</td><td style={td}>{a.personas}</td><td style={td}>{a.quincenas.length ? a.quincenas.join(" y ") : "—"}</td><td style={td}>{money(a[vd.campoTipo])}</td><td style={td}>{money(b[vd.campoTipo])}</td></tr>
+                  <tr key={t} onClick={vd.k === "provisiones" ? () => setProvTipo(provTipo === t ? null : t) : undefined} style={vd.k === "provisiones" ? { cursor: "pointer", background: provTipo === t ? C.canvas : undefined } : undefined} title={vd.k === "provisiones" ? "Clic para ver las cuatro provisiones y las personas" : undefined}><td style={tdL}>{vd.k === "provisiones" ? <span style={{ display: "inline-block", transition: "transform 0.15s", transform: provTipo === t ? "rotate(90deg)" : "none", fontSize: 11, marginRight: 6, color: C.slate }}>›</span> : null}{t}</td><td style={td}>{a.personas}</td><td style={td}>{a.quincenas.length ? a.quincenas.join(" y ") : "—"}</td><td style={td}>{money(a[vd.campoTipo])}</td><td style={td}>{money(b[vd.campoTipo])}</td></tr>
                 ); })}
                 <tr style={{ background: C.canvas }}><td style={{ ...tdL, fontWeight: 900 }}>Total</td><td style={td} /><td style={td} /><td style={{ ...td, fontWeight: 900 }}>{money(actual[vd.k])}</td><td style={{ ...td, fontWeight: 900 }}>{money(anterior[vd.k])}</td></tr>
               </tbody>
             </table>
+            {vd.k === "provisiones" && (() => {
+              const mesMostrado = provMes === "anterior" ? anterior : actual;
+              const t = provTipo ? mesMostrado.porTipo[provTipo] : null;
+              return (
+                <div style={{ marginTop: 14 }}>
+                  <div style={{ background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 14px", fontSize: 12, color: C.slate, lineHeight: 1.6, marginBottom: 12 }}>
+                    <b>De dónde salen:</b> de las liquidaciones de Nómina ya confirmadas (Q1 y Q2 de cada mes); aquí no se calcula nada nuevo. Cada liquidación trae, por persona y quincena: cesantías = (sueldo + auxilio) ÷ 12, intereses = cesantías × 12 %, prima = (sueldo + auxilio) ÷ 12 y vacaciones = sueldo × 15 ÷ 360. En Destajo se calculan sobre el sueldo mínimo de la ficha del trabajador, no sobre lo que produjo; Prestación de Servicios no tiene provisiones.
+                    {!actual.hayDatos && <div style={{ marginTop: 6 }}><b>{nombreMes(ym).split(" ")[0]} sale en $0</b> porque todavía no hay quincenas de ese mes confirmadas en Nómina; se llena cuando se confirme la Q1.</div>}
+                  </div>
+                  {provTipo ? (
+                    <div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+                        <div style={{ fontWeight: 800, color: C.ink, fontSize: 13 }}>{provTipo}</div>
+                        {[["actual", nombreMes(ym).split(" ")[0]], ["anterior", MESES[Number(anterior.ym.slice(5, 7)) - 1]]].map(([k, label]) => (
+                          <Boton key={k} chico variante={provMes === k ? "oscuro" : "claro"} onClick={() => setProvMes(k)}>{label}</Boton>
+                        ))}
+                      </div>
+                      {t.personasLista.length === 0 ? (
+                        <div style={{ fontSize: 12.5, color: C.slate }}>Sin liquidaciones confirmadas de este tipo en {nombreMes(mesMostrado.ym)}.</div>
+                      ) : (
+                        <table style={{ width: "100%", borderCollapse: "collapse", background: C.white }}>
+                          <thead><tr><th style={thL}>Persona</th><th style={th}>Quinc.</th><th style={th}>Cesantías</th><th style={th}>Intereses</th><th style={th}>Prima</th><th style={th}>Vacaciones</th><th style={th}>Total</th></tr></thead>
+                          <tbody>
+                            {t.personasLista.map((p) => (
+                              <tr key={p.clave}><td style={{ ...td, textAlign: "left" }}>{p.nombre}</td><td style={td}>{p.quincenas}</td><td style={td}>{money(p.cesantias)}</td><td style={td}>{money(p.intereses)}</td><td style={td}>{money(p.prima)}</td><td style={td}>{money(p.vacaciones)}</td><td style={{ ...td, fontWeight: 800 }}>{money(p.total)}</td></tr>
+                            ))}
+                            <tr style={{ background: C.canvas }}><td style={tdL}>Total ({t.personasLista.length} personas)</td><td style={td} /><td style={{ ...td, fontWeight: 800 }}>{money(t.cesantias)}</td><td style={{ ...td, fontWeight: 800 }}>{money(t.intereses)}</td><td style={{ ...td, fontWeight: 800 }}>{money(t.prima)}</td><td style={{ ...td, fontWeight: 800 }}>{money(t.vacaciones)}</td><td style={{ ...td, fontWeight: 900 }}>{money(t.prestaciones)}</td></tr>
+                          </tbody>
+                        </table>
+                      )}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 12, color: C.slate }}>Toca un tipo de nómina para ver las cuatro provisiones y las personas.</div>
+                  )}
+                </div>
+              );
+            })()}
+            </>
           ) : vd.k === "gastos" ? (
             <table style={{ width: "100%", borderCollapse: "collapse", background: C.white }}>
               <thead><tr><th style={thL}>Empresa</th><th style={thL}>Concepto</th><th style={th}>Valor mensual</th></tr></thead>

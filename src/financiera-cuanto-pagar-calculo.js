@@ -19,6 +19,24 @@ export function prestacionesDe(l) {
   return num(l.cesantiasPeriodo) + num(l.interesesPeriodo) + num(l.primaPeriodo) + num(l.vacacionesPeriodo);
 }
 
+// (2026-11-05, a pedido de Fredy) Detalle por persona de las provisiones de un tipo de nómina en el mes: una fila por trabajador
+// (suma de sus quincenas confirmadas) con cesantías, intereses, prima y vacaciones, de mayor a menor.
+export function personasProvisionDe(lista) {
+  const m = new Map();
+  (lista || []).forEach((l) => {
+    const k = l.trabajadorId || l.nombre || l.id;
+    if (!m.has(k)) m.set(k, { clave: k, nombre: l.nombre || String(k), quincenas: 0, cesantias: 0, intereses: 0, prima: 0, vacaciones: 0, total: 0 });
+    const r = m.get(k);
+    r.quincenas += 1;
+    r.cesantias += num(l.cesantiasPeriodo);
+    r.intereses += num(l.interesesPeriodo);
+    r.prima += num(l.primaPeriodo);
+    r.vacaciones += num(l.vacacionesPeriodo);
+    r.total = r.cesantias + r.intereses + r.prima + r.vacaciones;
+  });
+  return [...m.values()].sort((a, b) => b.total - a.total);
+}
+
 // "AAAA-MM" ± n meses
 export function sumarMes(ym, n) {
   const [a, m] = String(ym).split("-").map(Number);
@@ -74,6 +92,11 @@ export function rubrosDelMes({ ym, liquidaciones, gastosDocs, cuotas }) {
       neto: lista.reduce((s, l) => s + num(l.netoAPagar), 0),
       seguridad: lista.reduce((s, l) => s + seguridadSocialDe(l), 0),
       prestaciones: lista.reduce((s, l) => s + prestacionesDe(l), 0),
+      cesantias: lista.reduce((s, l) => s + num(l.cesantiasPeriodo), 0),
+      intereses: lista.reduce((s, l) => s + num(l.interesesPeriodo), 0),
+      prima: lista.reduce((s, l) => s + num(l.primaPeriodo), 0),
+      vacaciones: lista.reduce((s, l) => s + num(l.vacacionesPeriodo), 0),
+      personasLista: personasProvisionDe(lista),
     };
   });
   const tipos = Object.values(porTipo);
