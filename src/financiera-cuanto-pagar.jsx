@@ -163,8 +163,8 @@ export function CuantoPagarMesView({ db, onIrEndeudamiento }) {
     if (!lista.length) return null;
     return { n: lista.length, desde: lista[lista.length - 1].ym, hasta: lista[0].ym, prom: lista.reduce((t, m) => t + Number(m.total), 0) / lista.length };
   };
-  const ingresosProm = useMemo(() => promIngresos(ingresosCache), [ingresosCache]); // eslint-disable-line react-hooks/exhaustive-deps
-  const indutexProm = useMemo(() => promIngresos(ingresosIndutex), [ingresosIndutex]); // eslint-disable-line react-hooks/exhaustive-deps
+  const ingresosProm = useMemo(() => promIngresos(ingresosCache), [ingresosCache]);
+  const indutexProm = useMemo(() => promIngresos(ingresosIndutex), [ingresosIndutex]);
   const difIngreso = ingresosProm && hayPond ? ingresosProm.prom - res.necesito : null;
 
   const subActual = actual.completo ? "Todas las quincenas confirmadas" : actual.hayDatos ? `Faltan por confirmar: ${textoFaltan(actual)}` : "Todavía no hay liquidaciones confirmadas este mes";
