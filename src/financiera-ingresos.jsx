@@ -227,8 +227,8 @@ export function IngresosView({ db, functionsClient, isAdmin }) {
       {verDiag && datos && esTns ? (
         <div style={{ marginTop: 14, background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 16px", fontSize: 12, color: C.slate, lineHeight: 1.6 }}>
           <div style={{ fontWeight: 800, color: C.ink, marginBottom: 4 }}>Diagnóstico de TNS (para validar contra los extractos)</div>
-          <div>Sucursales: {(datos.sucursales || []).join(", ")} · clientes detectados (1305/2805): {datos.diagnosticoTns?.clientesDetectados} · débitos en el Libro: {datos.diagnosticoTns?.lineasDebitoLibro} ({datos.diagnosticoTns?.lineasConTercero} con tercero) · el total usa {datos.clientes?.usaLibro ? "el Libro Auxiliar (solo terceros que son clientes)" : "la estimación por cartera"}.</div>
-          {datos.diagnosticoTns?.errorLibro ? <div style={{ color: C.red }}>Libro Auxiliar: {datos.diagnosticoTns.errorLibro}</div> : null}
+          <div>Sucursales: {(datos.sucursales || []).join(", ")} · clientes detectados (1305/2805): {datos.diagnosticoTns?.clientesDetectados} · con pagos y consultados en el Libro: {datos.diagnosticoTns?.clientesConsultados} (respondieron {datos.diagnosticoTns?.consultasOk}, sin Libro {datos.diagnosticoTns?.clientesSinLibro}) · débitos leídos: {datos.diagnosticoTns?.lineasDebitoLibro} · tardó {datos.diagnosticoTns?.segundos} s · el total usa {datos.clientes?.usaLibro ? "el Libro Auxiliar por cliente (y la cartera solo para los que no respondieron)" : "la estimación por cartera"}.</div>
+          {(datos.diagnosticoTns?.erroresLibro || []).map((e, i) => <div key={i} style={{ color: C.red }}>Libro Auxiliar: {e}</div>)}
           <div style={{ marginTop: 6 }}>Por mes: total de débitos de caja y bancos (contra tu extracto), de ahí lo que es de clientes, lo que es de otros, y la estimación por cartera:</div>
           <div style={{ overflowX: "auto" }}>
             <table style={{ borderCollapse: "collapse", marginTop: 4 }}>
