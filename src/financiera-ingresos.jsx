@@ -59,7 +59,7 @@ function combinarTotalYanko(t, b) {
     const porMedio = {};
     Object.entries(x.porMedio || {}).forEach(([k, v]) => { porMedio[`TNS · ${k}`] = v; });
     Object.entries(y?.porMedio || {}).forEach(([k, v]) => { porMedio[`Busint (traslado) · ${k}`] = v; });
-    porMes[ym] = { ym, total: (x.total || 0) + (y?.total || 0), tnsTotal: x.total || 0, trasladosTotal: y?.total || 0, totalCajaBancos: x.totalCajaBancos || 0, porCliente, porMedio };
+    porMes[ym] = { ym, total: (x.total || 0) + (y?.total || 0), tnsTotal: x.total || 0, trasladosTotal: y?.total || 0, totalCajaBancos: x.totalCajaBancos || 0, porCliente, porMedio, recibosBus: y?.recibosDetalle || [], tnsDet: x.porClienteDetalle || {} };
   });
   const nombres = {};
   Object.entries(t.nombres || {}).forEach(([k, v]) => { nombres[`tns:${k}`] = v; });
@@ -181,6 +181,56 @@ function ClasificarIngresosModal({ filas, soloCk, clientesNombres, mapa, onMapa,
   );
 }
 
+// ─── Ver de qué se compone el cobro de un cliente en un mes ─────────────────────
+function DetalleIngresoModal({ titulo, recibos, tns, nota, onClose }) {
+  const sumaR = (recibos || []).reduce((t, r) => t + r.parte, 0);
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.45)", zIndex: 1100, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: C.white, borderRadius: 14, width: "min(860px, 95vw)", height: "70vh", minWidth: 440, minHeight: 260, maxWidth: "98vw", maxHeight: "96vh", resize: "both", overflow: "auto", display: "flex", flexDirection: "column", boxShadow: "0 18px 60px rgba(0,0,0,0.3)" }}>
+        <div style={{ padding: "14px 18px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", gap: 12, position: "sticky", top: 0, background: C.white, zIndex: 2 }}>
+          <div style={{ fontSize: 16, fontWeight: 900, color: C.ink }}>{titulo}</div>
+          <div style={{ marginLeft: "auto" }}><Boton chico onClick={onClose}>Cerrar</Boton></div>
+        </div>
+        <div style={{ padding: "12px 18px 18px", flex: 1 }}>
+          {nota ? <div style={{ fontSize: 12, color: C.slate, lineHeight: 1.5, marginBottom: 10 }}>{nota}</div> : null}
+          {recibos ? (
+            recibos.length ? (
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <thead><tr><th style={thL}>Fecha</th><th style={thL}>Recibo</th><th style={thL}>Tipo</th><th style={th}>Valor de este cliente</th><th style={thL}>Caja / banco</th><th style={thL}>Aplicado a</th></tr></thead>
+                  <tbody>
+                    {recibos.map((r, i) => (
+                      <tr key={`${r.origen}-${r.np}-${i}`}>
+                        <td style={tdL}>{r.fecha || "—"}</td>
+                        <td style={{ ...td, textAlign: "left" }}>{r.np}</td>
+                        <td style={{ ...td, textAlign: "left" }}>{r.origen}</td>
+                        <td style={{ ...td, fontWeight: 800 }}>{money(r.parte)}{r.monto !== r.parte ? <div style={{ fontSize: 10.5, color: C.slate, fontWeight: 600 }}>recibo total {money(r.monto)}</div> : null}</td>
+                        <td style={{ ...td, textAlign: "left" }}>{r.medio}</td>
+                        <td style={{ ...td, textAlign: "left", whiteSpace: "normal", maxWidth: 220 }}>{r.docs && r.docs.length ? r.docs.join(", ") : "—"}</td>
+                      </tr>
+                    ))}
+                    <tr style={{ background: C.canvas }}><td style={tdL} colSpan={3}>Total ({recibos.length} {recibos.length === 1 ? "recibo" : "recibos"})</td><td style={{ ...td, fontWeight: 900 }}>{money(sumaR)}</td><td style={td} colSpan={2} /></tr>
+                  </tbody>
+                </table>
+              </div>
+            ) : <div style={{ fontSize: 13, color: C.slate }}>No se encontraron recibos para este cliente en ese mes. Trae los datos de nuevo para actualizar el detalle.</div>
+          ) : null}
+          {tns ? (
+            <table style={{ borderCollapse: "collapse", minWidth: 420 }}>
+              <tbody>
+                <tr><td style={tdL}>Créditos de la cuenta de clientes (1305)</td><td style={td}>{money(tns.c1305)}</td></tr>
+                <tr><td style={tdL}>Anticipos recibidos (créditos 2805)</td><td style={td}>{money(tns.c2805)}</td></tr>
+                <tr><td style={tdL}>Anticipos aplicados a facturas (débitos 2805)</td><td style={td}>{money(-tns.d2805)}</td></tr>
+                <tr style={{ background: C.canvas }}><td style={tdL}>Cobro estimado del mes</td><td style={{ ...td, fontWeight: 900 }}>{money(tns.c1305 + tns.c2805 - tns.d2805)}</td></tr>
+              </tbody>
+            </table>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function IngresosView({ db, functionsClient, isAdmin, clientesNombres = [] }) {
   const [fuente, setFuente] = useState("total_yanko");
   const F = FUENTES[fuente];
@@ -200,6 +250,7 @@ export function IngresosView({ db, functionsClient, isAdmin, clientesNombres = [
   const [mapa, setMapa] = useState({}); // clave de cliente -> nombre en el presupuesto | NO_APLICA
   const [abrirClasif, setAbrirClasif] = useState(null); // null | { soloCk }
   const [pedirClasif, setPedirClasif] = useState(false);
+  const [detalle, setDetalle] = useState(null); // { key, ym } -> ventana «Ver detalle»
   useEffect(() => onSnapshot(collection(db, "financiera_ingresos_clasificacion"), (s) => { const o = {}; s.docs.forEach((d) => { o[d.id] = d.data(); }); setClasif(o); }, () => {}), [db]);
   useEffect(() => onSnapshot(doc(db, "financiera_ingresos_clientes", "main"), (s) => setMapa(s.exists() ? s.data().mapa || {} : {}), () => {}), [db]);
 
@@ -356,6 +407,26 @@ export function IngresosView({ db, functionsClient, isAdmin, clientesNombres = [
     } catch (e) { setError(`No se pudo cambiar el cliente del presupuesto: ${e?.message || e}`); }
   }
 
+  // ── Ver detalle: de qué se compone el cobro de un cliente en un mes ──
+  function detalleDe(key, ym) {
+    if (!datos) return null;
+    const nombre = datos.nombres?.[key] || key;
+    const titulo = `${nombre} · ${etiquetaMes(ym)}`;
+    const deRecibos = (lista, cod, origen) => (lista || []).filter((r) => r.partes && r.partes[cod] !== undefined).map((r) => ({ np: r.np, fecha: r.fecha, parte: r.partes[cod], monto: r.monto, medio: r.medio, docs: r.docs, origen }));
+    const mm = datos.clientes?.porMes?.[ym] || {};
+    if (fuente === "busint") {
+      const rec = [...deRecibos(mm.recibosDetalle, key, "Cobro normal"), ...(incluirTras ? deRecibos(datos.traslados?.porMes?.[ym]?.recibosDetalle, key, "Traslado externo") : [])].sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)));
+      return { titulo, recibos: rec, nota: "Recibos de caja de Busint de este cliente en el mes (tablas pagos y pagos detalles; si el interruptor de traslados está marcado, también pagostras)." };
+    }
+    if (fuente === "total_yanko" && String(key).startsWith("bus:")) {
+      const rec = deRecibos(mm.recibosBus, String(key).slice(4), "Traslado externo").sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)));
+      return { titulo, recibos: rec, nota: "Pagos registrados en Busint para traslados externos (consignación) de este cliente en el mes: tablas pagostras y pagostras detalles." };
+    }
+    const base = fuente === "total_yanko" ? String(key).replace(/^tns:/, "") : key;
+    const t = fuente === "total_yanko" ? mm.tnsDet?.[base] : mm.porClienteDetalle?.[base];
+    return { titulo, tns: t || { c1305: 0, c2805: 0, d2805: 0 }, nota: "TNS no entrega recibos de caja. El cobro de este cliente se estima con el Balance de Comprobación de ese mes: lo que se abonó a su cuenta de clientes más los anticipos que dejó, menos los anticipos que se aplicaron." };
+  }
+  const detalleAbierto = detalle ? detalleDe(detalle.key, detalle.ym) : null;
   const maximo = Math.max(1, ...meses.map(totalMes));
   const quien = cache?.actualizadoEn ? new Date(cache.actualizadoEn).toLocaleString("es-CO") : "";
 
@@ -444,6 +515,7 @@ export function IngresosView({ db, functionsClient, isAdmin, clientesNombres = [
                           title={pend ? "Sin clasificar: clic para clasificar" : undefined}
                           style={{ ...td, color: f.porMes[ym] ? C.ink : C.seam, cursor: vista === "cliente" && puedeClasificar && f.porMes[ym] > 1 ? "pointer" : "default", background: pend ? C.amberBg : undefined }}>
                           {f.porMes[ym] ? money(f.porMes[ym]) : "—"}
+                          {vista === "cliente" && f.porMes[ym] ? <span onClick={(e) => { e.stopPropagation(); setDetalle({ key: f.cod, ym }); }} title="Ver de qué se compone" style={{ cursor: "pointer", marginLeft: 5, fontSize: 11, opacity: 0.7 }}>🔍</span> : null}
                         </td>
                       );
                     })}
@@ -462,6 +534,8 @@ export function IngresosView({ db, functionsClient, isAdmin, clientesNombres = [
           {filtradas.length > 40 && !verTodos ? <div style={{ marginTop: 8 }}><Boton chico onClick={() => setVerTodos(true)}>Ver los {filtradas.length}</Boton></div> : null}
         </>
       ) : null}
+
+      {detalleAbierto ? <DetalleIngresoModal titulo={detalleAbierto.titulo} recibos={detalleAbierto.recibos} tns={detalleAbierto.tns} nota={detalleAbierto.nota} onClose={() => setDetalle(null)} /> : null}
 
       {abrirClasif && puedeClasificar ? (
         <ClasificarIngresosModal filas={filasClasif} soloCk={abrirClasif.soloCk} clientesNombres={clientesNombres} mapa={mapa} onMapa={cambiarMapa} onGuardar={guardarClasif} onTodoA={todoA} onClose={() => setAbrirClasif(null)} />

@@ -5533,6 +5533,8 @@ function ingresosProcesarTabla(cab, det, nombresCliente, nombresMedio) {
   const candMedioCab = ingresosCandidatas(cab, EXACTAS_MEDIO, PAT_MEDIO);
   const candMedioDet = ingresosCandidatas(det, EXACTAS_MEDIO, PAT_MEDIO);
   const candEstadoCab = ingresosCandidatas(cab, ["Anulado", "Estado", "Mensaje", "Status"], /(anul|estado|status|elimin|activo|vigente|cancel|nulo|void|inactiv)/i);
+  // (2026-11-05) Documento al que se aplicó cada renglón (factura/traslado), para el «Ver detalle» de la pantalla.
+  const candDocDet = ingresosCandidatas(det, ["Nfact", "NFact", "Factura", "Ndoc", "Documento", "Doc"], /(fact|doc)/i).filter((c) => !/(npago|recibo)/i.test(c.col));
   const cols = {
     cabFecha: ingresosColumna(cab, ["Fechaini", "Fecha", "FechaPago", "Fechapago"], /fecha/i),
     cabNpago: ingresosColumna(cab, ["Npago", "NPago", "Numero", "Ndoc", "Nrecibo"], /^n(pago|recibo|doc)/i),
@@ -5541,6 +5543,7 @@ function ingresosProcesarTabla(cab, det, nombresCliente, nombresMedio) {
     cabMedio: ingresosMejorColumna(candMedioCab),
     cabEstado: ingresosMejorColumna(candEstadoCab),
     detMedio: ingresosMejorColumna(candMedioDet),
+    detDoc: ingresosMejorColumna(candDocDet),
     detNpago: ingresosColumna(det, ["Npago", "NPago", "Numero", "Ndoc", "Nrecibo"], /^n(pago|recibo|doc)/i),
     detCliente: ingresosColumna(det, ["Cod", "Codigo", "CODIGO", "Codcliente", "CodCliente"], /^cod/i),
     detValor: ingresosColumna(det, ["Valor", "Total", "Vrpago"], /^valor/i),
@@ -5575,7 +5578,8 @@ function ingresosProcesarTabla(cab, det, nombresCliente, nombresMedio) {
   (det || []).forEach((r) => {
     const np = llaveNpago(cols.detNpago ? r[cols.detNpago] : "");
     if (!np) return;
-    if (!detPorNpago.has(np)) detPorNpago.set(np, { valor: 0, clientes: new Map(), fecha: null, medio: "" });
+    if (!detPorNpago.has(np)) detPorNpago.set(np, { valor: 0, clientes: new Map(), fecha: null, medio: "", docs: new Set() });
+    if (cols.detDoc && ingresosLleno(r[cols.detDoc])) detPorNpago.get(np).docs.add(String(r[cols.detDoc]).trim());
     if (cols.detMedio && !detPorNpago.get(np).medio && ingresosLleno(r[cols.detMedio])) detPorNpago.get(np).medio = String(r[cols.detMedio]).trim();
     const d = detPorNpago.get(np);
     const v = cols.detValor ? num(r[cols.detValor]) : 0;
@@ -5585,7 +5589,7 @@ function ingresosProcesarTabla(cab, det, nombresCliente, nombresMedio) {
     if (!d.fecha && cols.detFecha) d.fecha = ingresosYmdDeCampo(r[cols.detFecha]);
   });
   const porMes = {};
-  const mes = (ym) => (porMes[ym] || (porMes[ym] = { ym, recibos: 0, totalCabecera: 0, totalDetalles: 0, total: 0, porCliente: {}, porMedio: {} }));
+  const mes = (ym) => (porMes[ym] || (porMes[ym] = { ym, recibos: 0, totalCabecera: 0, totalDetalles: 0, total: 0, porCliente: {}, porMedio: {}, recibosDetalle: [] }));
   let sinFecha = 0;
   const usaCabecera = cols.cabTotal !== null;
   cabPorNpago.forEach((c, np) => {
@@ -5602,15 +5606,18 @@ function ingresosProcesarTabla(cab, det, nombresCliente, nombresMedio) {
     m.totalDetalles += totDet;
     m.total += monto;
     // Por cliente: si el detalle trae clientes, se reparte por ellos (proporcional al total del recibo); si no, el cliente de la cabecera.
+    const partes = {};
     if (d && d.clientes.size && Math.abs(totDet) > 0.5) {
-      d.clientes.forEach((v, cod) => { m.porCliente[cod] = (m.porCliente[cod] || 0) + monto * (v / totDet); });
+      d.clientes.forEach((v, cod) => { m.porCliente[cod] = (m.porCliente[cod] || 0) + monto * (v / totDet); partes[cod] = Math.round(monto * (v / totDet)); });
     } else {
       const cod = c.cliente || "0";
       m.porCliente[cod] = (m.porCliente[cod] || 0) + monto;
+      partes[cod] = Math.round(monto);
     }
     const codMedio = c.medio || (d && d.medio) || "";
     const nomMedio = nombresMedio.get(codMedio) || nombresMedio.get(codMedio.replace(/\D/g, "")) || codMedio || "Sin dato";
     m.porMedio[nomMedio] = (m.porMedio[nomMedio] || 0) + monto;
+    m.recibosDetalle.push({ np, fecha, monto: Math.round(monto), medio: nomMedio, docs: d ? [...d.docs].slice(0, 6) : [], partes });
   });
   return { cols, porMes, anuladas, sinFecha, recibosCabecera: cabPorNpago.size, usaCabecera, candidatas: { medioCab: candMedioCab, medioDet: candMedioDet, estadoCab: candEstadoCab } };
 }
@@ -13442,7 +13449,7 @@ exports.getIngresosClientesTNS = onCallAuth(
       const porMes = {};
       const avisos = [];
       crudos.forEach((c) => {
-        const mm = { ym: c.ym, recibos: 0, total: 0, totalCajaBancos: 0, otrosCaja: 0, creditos1305: 0, creditos2805: 0, debitos2805: 0, estimadoCartera: 0, porCliente: {}, porMedio: {} };
+        const mm = { ym: c.ym, recibos: 0, total: 0, totalCajaBancos: 0, otrosCaja: 0, creditos1305: 0, creditos2805: 0, debitos2805: 0, estimadoCartera: 0, porCliente: {}, porMedio: {}, porClienteDetalle: {} };
         porMes[c.ym] = mm;
         c.cuentasCaja.forEach((x) => {
           const deb = numeroTNS(x.totalDebito);
@@ -13450,13 +13457,16 @@ exports.getIngresosClientesTNS = onCallAuth(
           if (deb !== 0) sumar(mm.porMedio, `${String(x.codigo || "").trim()} ${String(x.nombre || x.descripcion || "").trim()}`.trim() || "Sin dato", deb);
         });
         const anotar = (t, v) => { const b = baseNitTNS(t); if (!nombresCliente.has(b)) nombresCliente.set(b, String(t.nombre || b).trim()); sumar(mm.porCliente, b, v); };
-        c.t1305.forEach((t) => { const cr = numeroTNS(t.totalCredito); mm.creditos1305 += cr; anotar(t, cr); });
-        c.t2805.forEach((t) => { const cr = numeroTNS(t.totalCredito); const d2 = numeroTNS(t.totalDebito); mm.creditos2805 += cr; mm.debitos2805 += d2; anotar(t, cr - d2); });
+        // Desglose por cliente para el «Ver detalle»: créditos 1305, anticipos recibidos (créditos 2805) y anticipos aplicados (débitos 2805).
+        const det = (t) => { const b = baseNitTNS(t); return (mm.porClienteDetalle[b] = mm.porClienteDetalle[b] || { c1305: 0, c2805: 0, d2805: 0 }); };
+        c.t1305.forEach((t) => { const cr = numeroTNS(t.totalCredito); mm.creditos1305 += cr; anotar(t, cr); det(t).c1305 += cr; });
+        c.t2805.forEach((t) => { const cr = numeroTNS(t.totalCredito); const d2 = numeroTNS(t.totalDebito); mm.creditos2805 += cr; mm.debitos2805 += d2; anotar(t, cr - d2); const x = det(t); x.c2805 += cr; x.d2805 += d2; });
         mm.estimadoCartera = mm.creditos1305 + mm.creditos2805 - mm.debitos2805;
         mm.total = mm.estimadoCartera;
         mm.otrosCaja = mm.totalCajaBancos - mm.estimadoCartera;
         Object.keys(mm.porCliente).forEach((k) => { mm.porCliente[k] = Math.round(mm.porCliente[k]); if (mm.porCliente[k] === 0) delete mm.porCliente[k]; });
         Object.keys(mm.porMedio).forEach((k) => { mm.porMedio[k] = Math.round(mm.porMedio[k]); });
+        Object.values(mm.porClienteDetalle).forEach((x) => { x.c1305 = Math.round(x.c1305); x.c2805 = Math.round(x.c2805); x.d2805 = Math.round(x.d2805); });
         mm.recibos = Object.keys(mm.porCliente).length; // clientes con movimiento ese mes
       });
       crudos.forEach((c) => c.errores.forEach((e) => avisos.push(e)));
