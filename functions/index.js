@@ -5482,6 +5482,169 @@ function normalizarCodigoCxp(v) {
 // columna en "maestro de proveedores", asi que se detecta sola: la primera
 // columna cuyo nombre contenga "nit" (sin digito de verificacion) o, si no
 // hay, "identific"/"cedula"/"documento", que tenga valores numericos.
+// (2026-11-05, a pedido de Fredy) INGRESOS DE CAJA Y BANCOS desde Busint: lo que los clientes pagan (recibos de caja de cartera), por mes,
+// por cliente y por caja/banco. Tablas de la API BD: "pagos" (cabecera del recibo), "pagos detalles" (renglones aplicados a facturas),
+// "maestro de clientes" (nombres) y "maestro plan unico de cuentas - bancos" (nombre de la caja/banco). Los traslados externos
+// (consignación) van aparte: "pagostras" y "pagostras detalles". PRIMERA VERSIÓN: las columnas de esas tablas se detectan por nombre y se
+// devuelve un diagnóstico (columnas, filas de muestra, sumas por la cabecera y por los detalles) para poder validar un mes contra
+// los extractos y ajustar qué cuenta como ingreso.
+function ingresosYmdDeCampo(c) {
+  if (!c) return null;
+  if (typeof c === "string") return /^\d{4}-\d{2}-\d{2}/.test(c) ? c.slice(0, 10) : null;
+  if (typeof c === "object" && c.year) return `${c.year}-${String(c.month || 1).padStart(2, "0")}-${String(c.day || 1).padStart(2, "0")}`;
+  return null;
+}
+function ingresosColumna(filas, exactas, patron) {
+  const muestra = (filas || []).slice(0, 50);
+  const claves = new Set();
+  muestra.forEach((f) => Object.keys(f || {}).forEach((k) => claves.add(k)));
+  for (const e of exactas) if (claves.has(e)) return e;
+  if (patron) for (const k of claves) if (patron.test(k)) return k;
+  return null;
+}
+function ingresosProcesarTabla(cab, det, nombresCliente, nombresMedio) {
+  const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+  const cols = {
+    cabFecha: ingresosColumna(cab, ["Fechaini", "Fecha", "FechaPago", "Fechapago"], /fecha/i),
+    cabNpago: ingresosColumna(cab, ["Npago", "NPago", "Numero", "Ndoc", "Nrecibo"], /^n(pago|recibo|doc)/i),
+    cabCliente: ingresosColumna(cab, ["Cod", "Codigo", "CODIGO", "Codcliente", "CodCliente"], /^cod/i),
+    cabTotal: ingresosColumna(cab, ["Total", "Valor", "TotalP", "Totalp", "Vrtotal", "ValorTotal"], /^(total|valor)/i),
+    cabMedio: ingresosColumna(cab, ["Banco", "CodBanco", "Codbanco", "Ctabanco", "Ctapuc", "Puc", "Cuenta", "FormaPago", "Formapago"], /(banco|ctapuc|puc|cuenta|forma)/i),
+    cabEstado: ingresosColumna(cab, ["Mensaje", "Anulado", "Estado"], /(anul|mensaje|estado)/i),
+    detNpago: ingresosColumna(det, ["Npago", "NPago", "Numero", "Ndoc", "Nrecibo"], /^n(pago|recibo|doc)/i),
+    detCliente: ingresosColumna(det, ["Cod", "Codigo", "CODIGO", "Codcliente", "CodCliente"], /^cod/i),
+    detValor: ingresosColumna(det, ["Valor", "Total", "Vrpago"], /^valor/i),
+    detFecha: ingresosColumna(det, ["Fechaini", "Fecha"], /fecha/i),
+  };
+  const anulado = (r) => {
+    if (!cols.cabEstado) return false;
+    const v = r[cols.cabEstado];
+    if (typeof v === "string") return /(anul|elimin)/i.test(v);
+    return v === true;
+  };
+  const llaveNpago = (v) => String(v ?? "").trim();
+  // Cabecera por número de recibo
+  const cabPorNpago = new Map();
+  let anuladas = 0;
+  (cab || []).forEach((r) => {
+    if (anulado(r)) { anuladas++; return; }
+    const np = llaveNpago(cols.cabNpago ? r[cols.cabNpago] : "");
+    if (!np) return;
+    cabPorNpago.set(np, {
+      fecha: cols.cabFecha ? ingresosYmdDeCampo(r[cols.cabFecha]) : null,
+      cliente: cols.cabCliente ? String(r[cols.cabCliente] ?? "").trim() : "",
+      total: cols.cabTotal ? num(r[cols.cabTotal]) : null,
+      medio: cols.cabMedio ? String(r[cols.cabMedio] ?? "").trim() : "",
+    });
+  });
+  // Detalles por recibo
+  const detPorNpago = new Map();
+  (det || []).forEach((r) => {
+    const np = llaveNpago(cols.detNpago ? r[cols.detNpago] : "");
+    if (!np) return;
+    if (!detPorNpago.has(np)) detPorNpago.set(np, { valor: 0, clientes: new Map(), fecha: null });
+    const d = detPorNpago.get(np);
+    const v = cols.detValor ? num(r[cols.detValor]) : 0;
+    d.valor += v;
+    const cod = cols.detCliente ? String(r[cols.detCliente] ?? "").trim() : "";
+    if (cod && cod !== "0") d.clientes.set(cod, (d.clientes.get(cod) || 0) + v);
+    if (!d.fecha && cols.detFecha) d.fecha = ingresosYmdDeCampo(r[cols.detFecha]);
+  });
+  const porMes = {};
+  const mes = (ym) => (porMes[ym] || (porMes[ym] = { ym, recibos: 0, totalCabecera: 0, totalDetalles: 0, total: 0, porCliente: {}, porMedio: {} }));
+  let sinFecha = 0;
+  const usaCabecera = cols.cabTotal !== null;
+  cabPorNpago.forEach((c, np) => {
+    const d = detPorNpago.get(np);
+    const fecha = c.fecha || (d && d.fecha) || null;
+    if (!fecha) { sinFecha++; return; }
+    const ym = fecha.slice(0, 7);
+    const m = mes(ym);
+    const totDet = d ? d.valor : 0;
+    const totCab = c.total === null ? totDet : c.total;
+    const monto = usaCabecera ? totCab : totDet;
+    m.recibos += 1;
+    m.totalCabecera += totCab;
+    m.totalDetalles += totDet;
+    m.total += monto;
+    // Por cliente: si el detalle trae clientes, se reparte por ellos (proporcional al total del recibo); si no, el cliente de la cabecera.
+    if (d && d.clientes.size && Math.abs(totDet) > 0.5) {
+      d.clientes.forEach((v, cod) => { m.porCliente[cod] = (m.porCliente[cod] || 0) + monto * (v / totDet); });
+    } else {
+      const cod = c.cliente || "0";
+      m.porCliente[cod] = (m.porCliente[cod] || 0) + monto;
+    }
+    const nomMedio = nombresMedio.get(c.medio) || c.medio || "Sin dato";
+    m.porMedio[nomMedio] = (m.porMedio[nomMedio] || 0) + monto;
+  });
+  return { cols, porMes, anuladas, sinFecha, recibosCabecera: cabPorNpago.size, usaCabecera };
+}
+function ingresosMuestra(filas, n = 3) {
+  return (filas || []).slice(0, n).map((f) => {
+    const o = {};
+    Object.entries(f || {}).slice(0, 24).forEach(([k, v]) => { o[k] = v && typeof v === "object" ? ingresosYmdDeCampo(v) || JSON.stringify(v).slice(0, 40) : v; });
+    return o;
+  });
+}
+exports.getIngresosClientesBusint = onCallAuth(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 540,
+    memory: "1GiB",
+  },
+  async (request) => {
+    await verificarLlamadorEsAdmin(request);
+    const meses = Math.max(1, Math.min(24, Number(request.data?.meses) || 13));
+    const avisos = [];
+    const leer = (t) => consultarTablaBusintBDCompleta(t).catch((e) => { avisos.push(`No se pudo leer "${t}": ${e?.message || String(e)}`); return null; });
+    const [cab, det, clientes, bancos, cabTras, detTras] = await Promise.all([
+      leer("pagos"), leer("pagos detalles"), leer("maestro de clientes"), leer("maestro plan unico de cuentas - bancos"), leer("pagostras"), leer("pagostras detalles"),
+    ]);
+    if (!cab || !cab.length) {
+      throw new HttpsError("failed-precondition", `La tabla "pagos" de Busint no devolvió filas. ${avisos.join(" ")}`);
+    }
+    const nombresCliente = new Map();
+    (clientes || []).forEach((c) => { const cod = String(c.Codigo ?? "").trim(); if (cod) nombresCliente.set(cod, String(c.Nombre || c.NombreFact || cod).trim()); });
+    // Nombre de la caja/banco: código = Puc/Cuenta/Codigo; nombre = Nombre/Descripcion/Banco
+    const nombresMedio = new Map();
+    const colBancoCod = ingresosColumna(bancos, ["Puc", "Cuenta", "Codigo", "Cod", "CodBanco", "Ctapuc"], /(puc|cuenta|cod)/i);
+    const colBancoNom = ingresosColumna(bancos, ["Nombre", "Descripcion", "NombreBanco", "Banco", "Detalle"], /(nombre|descr|banco)/i);
+    (bancos || []).forEach((b) => { if (colBancoCod && colBancoNom) nombresMedio.set(String(b[colBancoCod] ?? "").trim(), String(b[colBancoNom] ?? "").trim()); });
+
+    const clientesPagos = ingresosProcesarTabla(cab, det || [], nombresCliente, nombresMedio);
+    const traslados = cabTras && cabTras.length ? ingresosProcesarTabla(cabTras, detTras || [], nombresCliente, nombresMedio) : null;
+    // Lista de meses (los últimos `meses`, hasta el mes actual en Bogotá)
+    const hoy = new Date().toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
+    const lista = [];
+    let [a, m] = [Number(hoy.slice(0, 4)), Number(hoy.slice(5, 7))];
+    for (let i = 0; i < meses; i++) { lista.unshift(`${a}-${String(m).padStart(2, "0")}`); m -= 1; if (m === 0) { m = 12; a -= 1; } }
+    const recorta = (res) => {
+      const out = {};
+      lista.forEach((ym) => { if (res && res.porMes[ym]) out[ym] = res.porMes[ym]; });
+      return out;
+    };
+    const nombres = {};
+    const juntar = (res) => Object.values(res ? recorta(res) : {}).forEach((mm) => Object.keys(mm.porCliente).forEach((cod) => { nombres[cod] = nombresCliente.get(cod) || `Cliente ${cod}`; }));
+    juntar(clientesPagos);
+    juntar(traslados);
+    const quitarPesado = (res) => (res ? { columnas: res.cols, recibosCabecera: res.recibosCabecera, anuladas: res.anuladas, sinFecha: res.sinFecha, usaCabecera: res.usaCabecera, porMes: recorta(res) } : null);
+    return {
+      hoy,
+      meses: lista,
+      clientes: quitarPesado(clientesPagos),
+      traslados: quitarPesado(traslados),
+      nombres,
+      avisos,
+      diagnostico: {
+        pagos: { filas: cab.length, columnas: Object.keys(cab[0] || {}), muestra: ingresosMuestra(cab) },
+        pagosDetalles: det ? { filas: det.length, columnas: Object.keys(det[0] || {}), muestra: ingresosMuestra(det) } : null,
+        bancos: bancos ? { filas: bancos.length, columnas: Object.keys(bancos[0] || {}), muestra: ingresosMuestra(bancos), colCodigo: colBancoCod, colNombre: colBancoNom } : null,
+        pagostras: cabTras ? { filas: cabTras.length, columnas: Object.keys(cabTras[0] || {}) } : null,
+      },
+    };
+  }
+);
+
 function detectarCampoNitProveedor(filas) {
   const claves = new Set();
   (filas || []).slice(0, 300).forEach((f) => Object.keys(f || {}).forEach((k) => claves.add(k)));

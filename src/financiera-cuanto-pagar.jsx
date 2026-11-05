@@ -122,6 +122,9 @@ export function CuantoPagarMesView({ db, onIrEndeudamiento }) {
   const [provTipo, setProvTipo] = useState(null);
   const [provMes, setProvMes] = useState("actual");
   const { cuotas, error: errorCuotas } = useCuotas(db);
+  // (2026-11-05) Resumen mensual de ingresos de clientes (lo guarda la pantalla «Ingresos» al traer de Busint).
+  const [ingresosCache, setIngresosCache] = useState(null);
+  useEffect(() => onSnapshot(doc(db, "financiera_ingresos_cache", "main"), (s) => setIngresosCache(s.exists() ? s.data() : null), () => {}), [db]);
 
   useEffect(() => {
     let vivo = true;
@@ -146,6 +149,15 @@ export function CuantoPagarMesView({ db, onIrEndeudamiento }) {
   const hayPond = pond.mesesUsados > 0;
   const textoFaltan = (m) => m.faltan.map((f) => `${f.tipo} ${f.falta.join(" y ")}`).join(" · ");
   const psMonto = actual.porTipo["Prestación de Servicios"]?.neto || 0;
+
+  // Ingresos promedio: hasta 3 meses completos (anteriores al mes de hoy en Bogotá) con ingresos > 0, frente a lo que necesito al mes.
+  const ingresosProm = useMemo(() => {
+    const mesHoy = new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 7);
+    const lista = (ingresosCache?.meses || []).filter((m) => m.ym < mesHoy && Number(m.total) > 0).sort((a, b) => (a.ym < b.ym ? 1 : -1)).slice(0, 3);
+    if (!lista.length) return null;
+    return { n: lista.length, desde: lista[lista.length - 1].ym, hasta: lista[0].ym, prom: lista.reduce((t, m) => t + Number(m.total), 0) / lista.length };
+  }, [ingresosCache]);
+  const difIngreso = ingresosProm && hayPond ? ingresosProm.prom - res.necesito : null;
 
   const subActual = actual.completo ? "Todas las quincenas confirmadas" : actual.hayDatos ? `Faltan por confirmar: ${textoFaltan(actual)}` : "Todavía no hay liquidaciones confirmadas este mes";
   const varMes = actual.hayDatos && anterior.hayDatos ? variacion(actual.total, anterior.total) : null;
@@ -174,6 +186,14 @@ export function CuantoPagarMesView({ db, onIrEndeudamiento }) {
         <Tarjeta titulo={`Mes anterior · ${minusculaMes(anterior.ym)}`} valor={anterior.hayDatos ? money(anterior.total) : "—"} sub={anterior.hayDatos ? `${nombreMes(ym).split(" ")[0]} es ${txtVariacion(varMes)} frente a ${minusculaMes(anterior.ym)}${anterior.completo ? "" : ` · incompleto: ${textoFaltan(anterior)}`}` : "Sin liquidaciones confirmadas ese mes"} />
         <Tarjeta titulo={`Promedio ponderado · ${MESES_PONDERADO} meses`} valor={hayPond ? money(pond.total) : "—"} sub={hayPond ? `${pond.mesesUsados} de ${pond.mesesPosibles} meses con todas las quincenas confirmadas, con más peso a los recientes${pond.mesesGastos < pond.mesesUsados ? ` · gastos: solo ${pond.mesesGastos} ${pond.mesesGastos === 1 ? "mes" : "meses"} con gastos cargados` : ""}` : "Todavía no hay meses completos para ponderar"} />
         <Tarjeta fondo={C.redBg} borde="#F3C9C2" colorValor={C.red} titulo="Necesito al mes (con endeudamiento)" valor={hayPond ? money(res.necesito) : "—"} sub={hayPond ? `${money(pond.operacion)} operación ponderada + ${money(res.cuotasHoy)} de cuotas vigentes` : `Sin ponderado; hoy las cuotas vigentes suman ${money(res.cuotasHoy)}`} />
+        <Tarjeta
+          titulo="Ingresos de clientes (promedio)"
+          valor={ingresosProm ? money(ingresosProm.prom) : "—"}
+          colorValor={difIngreso === null ? undefined : difIngreso >= 0 ? "#1E7B4B" : C.red}
+          sub={ingresosProm
+            ? `${difIngreso === null ? "Sin ponderado para comparar" : difIngreso >= 0 ? `Sobran ${money(difIngreso)} al mes frente a lo que necesito` : `Faltan ${money(-difIngreso)} al mes frente a lo que necesito`} · promedio de ${ingresosProm.n} ${ingresosProm.n === 1 ? "mes" : "meses"} (${nombreMes(ingresosProm.desde)}${ingresosProm.n > 1 ? ` a ${nombreMes(ingresosProm.hasta)}` : ""}) · cobros de Busint`
+            : "Entra a Financiera > Ingresos y pulsa «Traer desde Busint» para ver cuánto entra frente a cuánto debo pagar"}
+        />
       </div>
 
       <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 16 }}>
