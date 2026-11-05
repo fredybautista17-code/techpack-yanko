@@ -13320,6 +13320,184 @@ exports.getMovimientosProveedorTNS = onCallAuth(
 // comparten código de empresa y se separan por sucursal. Consulta el saldo por
 // cliente (1305 + 2805) en cada código de sucursal (por defecto 00 a 09) y dice
 // cuáles existen, cuántos clientes y qué saldo tienen. Solo LEE.
+// (2026-11-05, a pedido de Fredy) INGRESOS DE CLIENTES desde TNS (Yanko e Indutex; Busint solo tiene Yanko). TNS no tiene consulta de recibos de caja,
+// así que se arma desde contabilidad, mes por mes y por sucursal:
+//  - Libro Auxiliar de caja y bancos (1105 a 1120): cada DÉBITO es plata que entra. Si trae el tercero y es cliente (aparece en 1305 o 2805),
+//    es un cobro de cliente; si no, va a «otros ingresos de caja» (préstamos, traslados entre bancos, devoluciones...).
+//  - Balance de Comprobación de caja/bancos: total de débitos por cuenta (ancla para cuadrar con el extracto).
+//  - Balance de 1305 y 2805 por tercero: estimado por cartera = créditos 1305 + créditos 2805 − débitos 2805 (cobros + anticipos recibidos − anticipos aplicados).
+// Se usa el Libro si devolvió líneas con tercero; si no, el estimado por cartera. PRIMERA VERSIÓN: devuelve diagnóstico para validar un mes contra el extracto.
+function ingresosTnsRecolectarLibro(data) {
+  const filas = [];
+  const visitar = (x, cuentaPadre, n) => {
+    if (n > 7 || x === null || typeof x !== "object") return;
+    if (Array.isArray(x)) {
+      const esFilas = x.length && typeof x[0] === "object" && !Array.isArray(x[0]) && /debit|credit/i.test(Object.keys(x[0]).join(" "));
+      if (esFilas) x.forEach((f) => filas.push({ f, cuentaPadre }));
+      else x.forEach((el) => visitar(el, cuentaPadre, n + 1));
+      return;
+    }
+    const kCta = Object.keys(x).find((k) => /^(codigo|cuenta|codigocuenta|puc)$/i.test(k) && typeof x[k] !== "object");
+    const kNom = Object.keys(x).find((k) => /^(nombre|nombrecuenta|descripcion)$/i.test(k) && typeof x[k] === "string");
+    const cuenta = kCta ? { codigo: String(x[kCta]), nombre: kNom ? String(x[kNom]) : "" } : cuentaPadre;
+    Object.values(x).forEach((v) => visitar(v, cuenta, n + 1));
+  };
+  visitar(data, null, 0);
+  return filas;
+}
+async function ingresosTnsCuentasBalance({ empresa, sucursal, fechaInicial, fechaFinal, cuentaInicial, cuentaFinal }) {
+  let resp;
+  try {
+    resp = await llamarTNS(`/v2/contabilidad/Reportes/BalanceComprobacion?codigosucursal=${encodeURIComponent(sucursal)}`, { method: "POST", body: { fechaInicial, fechaFinal, cuentaInicial, cuentaFinal }, empresa });
+  } catch (err) {
+    if (/TNS respondió 404/.test(String(err?.message || "")) && /no se encontraron registros/i.test(String(err?.message || ""))) return [];
+    throw err;
+  }
+  if (resp && resp.status === false) {
+    if (/no se encontraron registros/i.test(String(resp.message || ""))) return [];
+    throw new Error(resp.message || "TNS rechazó la consulta del Balance.");
+  }
+  const cuentas = Array.isArray(resp?.data) ? resp.data : [];
+  const norm = (c) => String(c || "").replace(/\D/g, "");
+  const codigos = cuentas.map((c) => norm(c.codigo));
+  return cuentas.filter((c, i) => !codigos.some((o, j) => j !== i && o.length > codigos[i].length && o.startsWith(codigos[i])));
+}
+async function ingresosTnsLibroCajaBancos({ empresa, sucursal, fechaInicial, fechaFinal, campos }) {
+  const path = "/v2/contabilidad/Reportes/LibroAuxiliar";
+  const dato = { fechaInicial, fechaFinal, cuentaInicial: "1105", cuentaFinal: "112099" };
+  const cuerpos = [cuerpoLibroAuxiliarTNS(campos, dato), { fechaInicial, fechaFinal, cuentaInicial: "1105", cuentaFinal: "112099" }];
+  let ultimoError = "";
+  for (const cuerpo of cuerpos) {
+    try {
+      const resp = await llamarTNS(`${path}?codigosucursal=${encodeURIComponent(sucursal)}`, { method: "POST", body: cuerpo, empresa });
+      if (resp && resp.status === false) {
+        if (/no se encontraron registros/i.test(String(resp.message || ""))) return { filas: [], error: "" };
+        throw new Error(resp.message || "TNS rechazó la consulta del Libro Auxiliar.");
+      }
+      return { filas: ingresosTnsRecolectarLibro(resp), error: "", cuerpo };
+    } catch (e) {
+      if (/TNS respondió 404/.test(String(e?.message || "")) && /no se encontraron registros/i.test(String(e?.message || ""))) return { filas: [], error: "" };
+      ultimoError = String(e?.message || e).slice(0, 300);
+    }
+  }
+  return { filas: [], error: ultimoError };
+}
+async function ingresosTnsMes({ empresa, sucursales, ym, hoy, campos }) {
+  const fechaInicial = `${ym}-01`;
+  const [a, m] = [Number(ym.slice(0, 4)), Number(ym.slice(5, 7))];
+  const ultimoDia = new Date(Date.UTC(a, m, 0)).getUTCDate();
+  const finMes = `${ym}-${String(ultimoDia).padStart(2, "0")}`;
+  const fechaFinal = finMes > hoy ? hoy : finMes;
+  const salida = { ym, cuentasCaja: [], t1305: [], t2805: [], libro: [], errorLibro: "", errores: [] };
+  await Promise.all(sucursales.map(async (sucursal) => {
+    const base = { empresa, sucursal, fechaInicial, fechaFinal };
+    const [cajas, t1305, t2805, libro] = await Promise.all([
+      ingresosTnsCuentasBalance({ ...base, cuentaInicial: "1105", cuentaFinal: "112099" }).catch((e) => { salida.errores.push(`Caja/bancos ${ym} suc. ${sucursal}: ${e?.message || e}`); return []; }),
+      tercerosBalanceTNS({ ...base, cuentaInicial: "1305", cuentaFinal: "130599" }).catch((e) => { salida.errores.push(`1305 ${ym} suc. ${sucursal}: ${e?.message || e}`); return []; }),
+      tercerosBalanceTNS({ ...base, cuentaInicial: "2805", cuentaFinal: "280599" }).catch((e) => { salida.errores.push(`2805 ${ym} suc. ${sucursal}: ${e?.message || e}`); return []; }),
+      ingresosTnsLibroCajaBancos({ ...base, campos }),
+    ]);
+    salida.cuentasCaja.push(...cajas);
+    salida.t1305.push(...t1305);
+    salida.t2805.push(...t2805);
+    salida.libro.push(...libro.filas);
+    if (libro.error) salida.errorLibro = libro.error;
+  }));
+  return salida;
+}
+exports.getIngresosClientesTNS = onCallAuth(
+  {
+    secrets: TNS_SECRETS_TODAS,
+    timeoutSeconds: 540,
+    memory: "1GiB",
+  },
+  async (request) => {
+    await verificarLlamadorEsAdmin(request);
+    const empresa = request.data?.empresa === "indutex" ? "indutex" : "yanko";
+    const meses = Math.max(1, Math.min(24, Number(request.data?.meses) || 13));
+    const cfg = await db.collection("config").doc("tns_sucursales").get();
+    const sucursales = clavesSucursalesTNS(cfg.exists ? cfg.data()?.[empresa] : null);
+    if (!sucursales.length) {
+      throw new HttpsError("failed-precondition", "Faltan las sucursales de TNS de esta empresa. Entra a Nómina → Conexión TNS → \"Explorar sucursales\", marca las que son de esta empresa y pulsa \"Guardar\".");
+    }
+    const hoy = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Bogota" }).format(new Date());
+    const lista = [];
+    let [a, m] = [Number(hoy.slice(0, 4)), Number(hoy.slice(5, 7))];
+    for (let i = 0; i < meses; i++) { lista.unshift(`${a}-${String(m).padStart(2, "0")}`); m -= 1; if (m === 0) { m = 12; a -= 1; } }
+    try {
+      const esquema = await esquemaCuerpoTNS("/v2/contabilidad/Reportes/LibroAuxiliar", empresa).catch(() => null);
+      // Meses de a 3 en paralelo para no saturar a TNS.
+      const crudos = [];
+      for (let i = 0; i < lista.length; i += 3) {
+        const tanda = await Promise.all(lista.slice(i, i + 3).map((ym) => ingresosTnsMes({ empresa, sucursales, ym, hoy, campos: esquema?.campos })));
+        crudos.push(...tanda);
+      }
+      // Clientes = terceros que aparecen en cartera (1305) o anticipos (2805) en algún mes.
+      const clientes = new Map(); // base -> nombre
+      crudos.forEach((c) => [...c.t1305, ...c.t2805].forEach((t) => { const b = baseNitTNS(t); if (!clientes.has(b)) clientes.set(b, String(t.nombre || b).trim()); }));
+      const nombreCuenta = new Map();
+      const soloDigitos = (v) => String(v || "").replace(/\D/g, "");
+      crudos.forEach((c) => c.cuentasCaja.forEach((x) => nombreCuenta.set(soloDigitos(x.codigo), String(x.nombre || x.descripcion || "").trim())));
+      const etiquetaCuenta = (cod) => { const k = String(cod || "").trim(); const n = nombreCuenta.get(soloDigitos(k)); return n ? `${k} ${n}` : k || "Sin dato"; };
+      const porMes = {};
+      let lineasConTercero = 0;
+      let lineasDebito = 0;
+      const muestraLibro = [];
+      const avisos = [];
+      crudos.forEach((c) => {
+        const mm = { ym: c.ym, recibos: 0, total: 0, totalLibroClientes: 0, totalCajaBancos: 0, otrosCaja: 0, creditos1305: 0, creditos2805: 0, debitos2805: 0, estimadoCartera: 0, porCliente: {}, porMedio: {}, porClienteCartera: {}, porMedioLibro: {} };
+        porMes[c.ym] = mm;
+        c.cuentasCaja.forEach((x) => { mm.totalCajaBancos += numeroTNS(x.totalDebito); });
+        const sumar = (obj, k, v) => { obj[k] = (obj[k] || 0) + v; };
+        c.t1305.forEach((t) => { const b = baseNitTNS(t); const cr = numeroTNS(t.totalCredito); mm.creditos1305 += cr; sumar(mm.porClienteCartera, b, cr); });
+        c.t2805.forEach((t) => { const b = baseNitTNS(t); const cr = numeroTNS(t.totalCredito); const db2 = numeroTNS(t.totalDebito); mm.creditos2805 += cr; mm.debitos2805 += db2; sumar(mm.porClienteCartera, b, cr - db2); });
+        mm.estimadoCartera = mm.creditos1305 + mm.creditos2805 - mm.debitos2805;
+        c.libro.forEach(({ f, cuentaPadre }) => {
+          const n = normalizarFilaLibroTNS(f);
+          if (!(n.debito > 0)) return;
+          lineasDebito += 1;
+          const kNit = Object.keys(f).find((k) => /(^|_)(nit|identific|tercero)/i.test(k) && !/nombre/i.test(k) && typeof f[k] !== "object");
+          const nit = kNit ? String(f[kNit] ?? "").trim() : "";
+          const base = nit ? baseNitTNS({ nit }) : "";
+          const cuenta = (cuentaPadre && cuentaPadre.codigo) || n.cuenta || "";
+          if (muestraLibro.length < 3) muestraLibro.push(f);
+          if (base) lineasConTercero += 1;
+          if (base && clientes.has(base)) {
+            mm.recibos += 1;
+            mm.totalLibroClientes += n.debito;
+            sumar(mm.porCliente, base, n.debito);
+            sumar(mm.porMedioLibro, etiquetaCuenta(cuenta), n.debito);
+          } else {
+            mm.otrosCaja += n.debito;
+          }
+        });
+      });
+      const usaLibro = lineasConTercero > 0;
+      Object.values(porMes).forEach((mm) => {
+        if (usaLibro) { mm.total = mm.totalLibroClientes; mm.porMedio = mm.porMedioLibro; }
+        else { mm.total = mm.estimadoCartera; mm.porCliente = mm.porClienteCartera; mm.porMedio = {}; }
+        Object.keys(mm.porCliente).forEach((k) => { mm.porCliente[k] = Math.round(mm.porCliente[k]); });
+        delete mm.porClienteCartera; delete mm.porMedioLibro;
+      });
+      const errorLibro = crudos.map((c) => c.errorLibro).find(Boolean) || "";
+      if (!usaLibro) avisos.push(`El Libro Auxiliar de caja y bancos no devolvió líneas con tercero${errorLibro ? ` (${errorLibro})` : ""}: el total se estima con la cartera (créditos 1305 + anticipos 2805). Revísalo en «Diagnóstico».`);
+      crudos.forEach((c) => c.errores.forEach((e) => avisos.push(e)));
+      const nombres = {};
+      Object.values(porMes).forEach((mm) => Object.keys(mm.porCliente).forEach((k) => { nombres[k] = clientes.get(k) || `Tercero ${k}`; }));
+      logger.info("getIngresosClientesTNS OK", { empresa, sucursales, meses: lista.length, usaLibro, lineasDebito, lineasConTercero });
+      return {
+        fuente: "tns", empresa, hoy, meses: lista, sucursales,
+        clientes: { usaLibro, porMes },
+        traslados: null, nombres, avisos: avisos.slice(0, 12),
+        diagnosticoTns: { clientesDetectados: clientes.size, lineasDebitoLibro: lineasDebito, lineasConTercero, errorLibro, camposLibro: esquema?.campos || null, muestraLibro, muestraCuenta: crudos.flatMap((c) => c.cuentasCaja).slice(0, 2).map((x) => { const { terceros, ...resto } = x || {}; return resto; }) },
+      };
+    } catch (err) {
+      logger.error("getIngresosClientesTNS falló", { mensaje: err?.message, stack: err?.stack, empresa });
+      throw new HttpsError("internal", err?.message || "Error desconocido al traer los ingresos de TNS.");
+    }
+  }
+);
+
 exports.explorarSucursalesTNS = onCallAuth(
   {
     secrets: TNS_SECRETS_TODAS,

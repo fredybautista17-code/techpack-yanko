@@ -36,7 +36,17 @@ function Tarjeta({ titulo, valor, sub, oscura }) {
   );
 }
 
+// (2026-11-05) Fuentes: Busint (solo Yanko) y TNS (Yanko e Indutex). Cada una guarda su resumen en su propio documento de caché.
+const FUENTES = {
+  busint: { etiqueta: "Busint · Yanko", docId: "main", funcion: "getIngresosClientesBusint", args: {}, nombre: "Busint" },
+  tns_yanko: { etiqueta: "TNS · Yanko", docId: "tns_yanko", funcion: "getIngresosClientesTNS", args: { empresa: "yanko" }, nombre: "TNS (Yanko)" },
+  tns_indutex: { etiqueta: "TNS · Indutex", docId: "tns_indutex", funcion: "getIngresosClientesTNS", args: { empresa: "indutex" }, nombre: "TNS (Indutex)" },
+};
+
 export function IngresosView({ db, functionsClient, isAdmin }) {
+  const [fuente, setFuente] = useState("busint");
+  const F = FUENTES[fuente];
+  const esTns = fuente !== "busint";
   const [datos, setDatos] = useState(null); // respuesta completa del servidor (en memoria)
   const [cache, setCache] = useState(null); // resumen guardado { actualizadoEn, meses: [{ ym, total, traslados }] }
   const [cargando, setCargando] = useState(false);
@@ -48,21 +58,23 @@ export function IngresosView({ db, functionsClient, isAdmin }) {
   const [verDiag, setVerDiag] = useState(false);
 
   useEffect(() => {
-    const u = onSnapshot(doc(db, "financiera_ingresos_cache", "main"), (s) => setCache(s.exists() ? s.data() : null), () => {});
+    setCache(null);
+    const u = onSnapshot(doc(db, "financiera_ingresos_cache", F.docId), (s) => setCache(s.exists() ? s.data() : null), () => {});
     return u;
-  }, [db]);
+  }, [db, F.docId]);
+  function cambiarFuente(k) { setFuente(k); setDatos(null); setError(""); setVerTodos(false); setBusqueda(""); setVerDiag(false); setIncluirTras(false); }
 
   async function traer() {
     setCargando(true);
     setError("");
     try {
-      const r = await httpsCallable(functionsClient, "getIngresosClientesBusint", { timeout: 540000 })({ meses: 13 });
+      const r = await httpsCallable(functionsClient, F.funcion, { timeout: 540000 })({ meses: 13, ...F.args });
       const d = r.data;
       setDatos(d);
       const resumen = d.meses.map((ym) => ({ ym, total: Math.round(d.clientes?.porMes?.[ym]?.total || 0), traslados: Math.round(d.traslados?.porMes?.[ym]?.total || 0) }));
-      await setDoc(doc(db, "financiera_ingresos_cache", "main"), { actualizadoEn: new Date().toISOString(), meses: resumen });
+      await setDoc(doc(db, "financiera_ingresos_cache", F.docId), { actualizadoEn: new Date().toISOString(), fuente, meses: resumen });
     } catch (e) {
-      setError(e?.message || "No se pudo traer los ingresos de Busint.");
+      setError(e?.message || `No se pudo traer los ingresos de ${F.nombre}.`);
     } finally {
       setCargando(false);
     }
@@ -125,15 +137,22 @@ export function IngresosView({ db, functionsClient, isAdmin }) {
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 6 }}>
         <h2 style={{ margin: 0, fontSize: 21, fontWeight: 900, color: C.ink }}>Ingresos de clientes</h2>
         <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <label style={{ fontSize: 12.5, color: C.slate, display: "flex", alignItems: "center", gap: 6 }}>
-            <input type="checkbox" checked={incluirTras} onChange={(e) => setIncluirTras(e.target.checked)} /> Sumar traslados externos (consignación)
-          </label>
-          {isAdmin ? <Boton variante="oscuro" onClick={traer} disabled={cargando}>{cargando ? "Consultando Busint…" : "🔄 Traer desde Busint"}</Boton> : null}
+          {!esTns ? (
+            <label style={{ fontSize: 12.5, color: C.slate, display: "flex", alignItems: "center", gap: 6 }}>
+              <input type="checkbox" checked={incluirTras} onChange={(e) => setIncluirTras(e.target.checked)} /> Sumar traslados externos (consignación)
+            </label>
+          ) : null}
+          {isAdmin ? <Boton variante="oscuro" onClick={traer} disabled={cargando}>{cargando ? `Consultando ${F.nombre}…` : `🔄 Traer desde ${F.nombre}`}</Boton> : null}
         </div>
       </div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+        {Object.entries(FUENTES).map(([k, v]) => <Boton key={k} chico variante={fuente === k ? "oscuro" : "claro"} onClick={() => cambiarFuente(k)}>{v.etiqueta}</Boton>)}
+      </div>
       <div style={{ fontSize: 12.5, color: C.slate, marginBottom: 14, maxWidth: 860, lineHeight: 1.5 }}>
-        Lo que los clientes pagan (recibos de caja de cartera en Busint), por mes, por cliente y por caja o banco. Sirve para comparar lo que entra con lo que debes pagar al mes.
-        {quien ? ` Último resumen guardado: ${quien}.` : " Todavía no hay datos: pulsa «Traer desde Busint»."}
+        {esTns
+          ? "Lo que entra a caja y bancos en TNS por cobros de clientes (Libro Auxiliar de las cuentas 1105 a 1120, solo terceros que son clientes), por mes, por cliente y por caja o banco. Si TNS no entrega el tercero en el Libro, se estima con la cartera. Indutex solo existe en TNS."
+          : "Lo que los clientes pagan (recibos de caja de cartera en Busint, solo Yanko), por mes, por cliente y por caja o banco. Sirve para comparar lo que entra con lo que debes pagar al mes."}
+        {quien ? ` Último resumen guardado: ${quien}.` : ` Todavía no hay datos: pulsa «Traer desde ${F.nombre}».`}
         {!datos && cache ? " El detalle por cliente y banco aparece al traerlo de nuevo." : ""}
       </div>
       {error ? <div style={{ background: C.redBg, color: C.red, borderRadius: 10, padding: "10px 14px", fontSize: 13, marginBottom: 12 }}>{error}</div> : null}
@@ -205,7 +224,28 @@ export function IngresosView({ db, functionsClient, isAdmin }) {
         </>
       ) : null}
 
-      {verDiag && datos ? (
+      {verDiag && datos && esTns ? (
+        <div style={{ marginTop: 14, background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 16px", fontSize: 12, color: C.slate, lineHeight: 1.6 }}>
+          <div style={{ fontWeight: 800, color: C.ink, marginBottom: 4 }}>Diagnóstico de TNS (para validar contra los extractos)</div>
+          <div>Sucursales: {(datos.sucursales || []).join(", ")} · clientes detectados (1305/2805): {datos.diagnosticoTns?.clientesDetectados} · débitos en el Libro: {datos.diagnosticoTns?.lineasDebitoLibro} ({datos.diagnosticoTns?.lineasConTercero} con tercero) · el total usa {datos.clientes?.usaLibro ? "el Libro Auxiliar (solo terceros que son clientes)" : "la estimación por cartera"}.</div>
+          {datos.diagnosticoTns?.errorLibro ? <div style={{ color: C.red }}>Libro Auxiliar: {datos.diagnosticoTns.errorLibro}</div> : null}
+          <div style={{ marginTop: 6 }}>Por mes: total de débitos de caja y bancos (contra tu extracto), de ahí lo que es de clientes, lo que es de otros, y la estimación por cartera:</div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ borderCollapse: "collapse", marginTop: 4 }}>
+              <thead><tr><th style={thL}>Mes</th><th style={th}>Débitos caja/bancos</th><th style={th}>Clientes (Libro)</th><th style={th}>Otros ingresos</th><th style={th}>Créditos 1305</th><th style={th}>Anticipos 2805 (neto)</th><th style={th}>Estimado cartera</th></tr></thead>
+              <tbody>
+                {datos.meses.map((ym) => { const m = datos.clientes?.porMes?.[ym]; if (!m) return null; return (
+                  <tr key={ym}><td style={tdL}>{etiquetaMes(ym)}</td><td style={td}>{money(m.totalCajaBancos)}</td><td style={td}>{money(m.totalLibroClientes)}</td><td style={td}>{money(m.otrosCaja)}</td><td style={td}>{money(m.creditos1305)}</td><td style={td}>{money(m.creditos2805 - m.debitos2805)}</td><td style={td}>{money(m.estimadoCartera)}</td></tr>
+                ); })}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ marginTop: 6, wordBreak: "break-word" }}>Campos que acepta el Libro Auxiliar: {(datos.diagnosticoTns?.camposLibro || []).join(", ") || "no se pudieron leer"}</div>
+          <div style={{ wordBreak: "break-word" }}>Ejemplo de línea del Libro: {JSON.stringify((datos.diagnosticoTns?.muestraLibro || [])[0] || null).slice(0, 500)}</div>
+        </div>
+      ) : null}
+
+      {verDiag && datos && !esTns ? (
         <div style={{ marginTop: 14, background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 16px", fontSize: 12, color: C.slate, lineHeight: 1.6 }}>
           <div style={{ fontWeight: 800, color: C.ink, marginBottom: 4 }}>Diagnóstico (para validar contra los extractos)</div>
           <div>Columnas detectadas: {Object.entries(datos.clientes?.columnas || {}).map(([k, v]) => `${k}=${v || "—"}`).join(" · ")}</div>

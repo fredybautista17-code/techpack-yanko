@@ -125,6 +125,8 @@ export function CuantoPagarMesView({ db, onIrEndeudamiento }) {
   // (2026-11-05) Resumen mensual de ingresos de clientes (lo guarda la pantalla «Ingresos» al traer de Busint).
   const [ingresosCache, setIngresosCache] = useState(null);
   useEffect(() => onSnapshot(doc(db, "financiera_ingresos_cache", "main"), (s) => setIngresosCache(s.exists() ? s.data() : null), () => {}), [db]);
+  const [ingresosIndutex, setIngresosIndutex] = useState(null);
+  useEffect(() => onSnapshot(doc(db, "financiera_ingresos_cache", "tns_indutex"), (s) => setIngresosIndutex(s.exists() ? s.data() : null), () => {}), [db]);
 
   useEffect(() => {
     let vivo = true;
@@ -151,12 +153,14 @@ export function CuantoPagarMesView({ db, onIrEndeudamiento }) {
   const psMonto = actual.porTipo["Prestación de Servicios"]?.neto || 0;
 
   // Ingresos promedio: hasta 3 meses completos (anteriores al mes de hoy en Bogotá) con ingresos > 0, frente a lo que necesito al mes.
-  const ingresosProm = useMemo(() => {
+  const promIngresos = (cache) => {
     const mesHoy = new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 7);
-    const lista = (ingresosCache?.meses || []).filter((m) => m.ym < mesHoy && Number(m.total) > 0).sort((a, b) => (a.ym < b.ym ? 1 : -1)).slice(0, 3);
+    const lista = (cache?.meses || []).filter((m) => m.ym < mesHoy && Number(m.total) > 0).sort((a, b) => (a.ym < b.ym ? 1 : -1)).slice(0, 3);
     if (!lista.length) return null;
     return { n: lista.length, desde: lista[lista.length - 1].ym, hasta: lista[0].ym, prom: lista.reduce((t, m) => t + Number(m.total), 0) / lista.length };
-  }, [ingresosCache]);
+  };
+  const ingresosProm = useMemo(() => promIngresos(ingresosCache), [ingresosCache]);
+  const indutexProm = useMemo(() => promIngresos(ingresosIndutex), [ingresosIndutex]);
   const difIngreso = ingresosProm && hayPond ? ingresosProm.prom - res.necesito : null;
 
   const subActual = actual.completo ? "Todas las quincenas confirmadas" : actual.hayDatos ? `Faltan por confirmar: ${textoFaltan(actual)}` : "Todavía no hay liquidaciones confirmadas este mes";
@@ -191,7 +195,7 @@ export function CuantoPagarMesView({ db, onIrEndeudamiento }) {
           valor={ingresosProm ? money(ingresosProm.prom) : "—"}
           colorValor={difIngreso === null ? undefined : difIngreso >= 0 ? "#1E7B4B" : C.red}
           sub={ingresosProm
-            ? `${difIngreso === null ? "Sin ponderado para comparar" : difIngreso >= 0 ? `Sobran ${money(difIngreso)} al mes frente a lo que necesito` : `Faltan ${money(-difIngreso)} al mes frente a lo que necesito`} · promedio de ${ingresosProm.n} ${ingresosProm.n === 1 ? "mes" : "meses"} (${nombreMes(ingresosProm.desde)}${ingresosProm.n > 1 ? ` a ${nombreMes(ingresosProm.hasta)}` : ""}) · cobros de Busint`
+            ? `${difIngreso === null ? "Sin ponderado para comparar" : difIngreso >= 0 ? `Sobran ${money(difIngreso)} al mes frente a lo que necesito` : `Faltan ${money(-difIngreso)} al mes frente a lo que necesito`} · promedio de ${ingresosProm.n} ${ingresosProm.n === 1 ? "mes" : "meses"} (${nombreMes(ingresosProm.desde)}${ingresosProm.n > 1 ? ` a ${nombreMes(ingresosProm.hasta)}` : ""}) · cobros de Busint (Yanko)${indutexProm ? ` · Indutex (TNS) aparte: ${money(indutexProm.prom)} al mes` : ""}`
             : "Entra a Financiera > Ingresos y pulsa «Traer desde Busint» para ver cuánto entra frente a cuánto debo pagar"}
         />
       </div>
