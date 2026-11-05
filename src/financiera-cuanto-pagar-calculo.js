@@ -143,5 +143,83 @@ export function cuantoPagarMes({ ym, liquidaciones, gastosDocs, cuotas }) {
   const previos = lista.slice(0, -1);
   const pond = ponderadoDe(previos);
   const cuotasHoy = actual.cuotas;
-  return { ym, lista, actual, anterior, ponderado: pond, necesito: pond.operacion + cuotasHoy, cuotasHoy, escalon: escalonCuotas(cuotas, ym) };
+  // (2026-11-05, a pedido de Fredy) La base de «Necesito al mes» pasa del ponderado al MES ANTERIOR: operación del mes anterior + cuotas vigentes hoy.
+  const operacionAnterior = anterior.nomina + anterior.seguridad + anterior.provisiones + anterior.gastos;
+  return {
+    ym, lista, actual, anterior, ponderado: pond, necesito: pond.operacion + cuotasHoy, cuotasHoy, escalon: escalonCuotas(cuotas, ym),
+    operacionAnterior, necesitoAnterior: operacionAnterior + cuotasHoy, estimado: estimadoDelMes(actual, anterior),
+  };
+}
+
+// ─── Estimado del mes: por tipo de nómina, lo confirmado si ya está completo; si no, se completa con el mes anterior ─────────────────────
+// 2 quincenas confirmadas = confirmado · 1 = lo confirmado + una quincena promedio del mes anterior · 0 = el mes anterior completo.
+// Gastos del Excel y cuotas ya traen su propio respaldo (gastos: el último mes cargado; cuotas: las vigentes del mes).
+const CAMPOS_ESTIMADO = [["nomina", "neto"], ["seguridad", "seguridad"], ["provisiones", "prestaciones"]];
+export function estimadoDelMes(actual, anterior) {
+  const out = { nomina: 0, seguridad: 0, provisiones: 0 };
+  const fuentes = [];
+  TIPOS_NOMINA.forEach((tipo) => {
+    const a = actual.porTipo[tipo];
+    const b = anterior.porTipo[tipo];
+    const k = a.quincenas.length;
+    const kb = b.quincenas.length;
+    if (k === 0 && kb === 0) return;
+    let fuente = "confirmado";
+    if (k < 2) fuente = k === 1 ? "parcial" : "mes anterior";
+    CAMPOS_ESTIMADO.forEach(([dest, campo]) => {
+      const porQuincenaAnterior = kb > 0 ? b[campo] / kb : 0;
+      out[dest] += k >= 2 ? a[campo] : a[campo] + porQuincenaAnterior * (2 - k);
+    });
+    fuentes.push({ tipo, fuente, quincenas: k });
+  });
+  out.gastos = actual.gastos;
+  out.cuotas = actual.cuotas;
+  out.operacion = out.nomina + out.seguridad + out.provisiones + out.gastos;
+  out.total = out.operacion + out.cuotas;
+  out.fuentes = fuentes;
+  out.gastosOrigen = actual.gastosInfo.origen;
+  out.sinNominaConfirmada = fuentes.length > 0 && fuentes.every((f) => f.fuente !== "confirmado");
+  return out;
+}
+
+// ─── ¿Voy a cumplir con el Presupuesto de Clientes? ─────────────────────────────────────────────────────────────────────────────────────
+// presupuestos = contabilidad_presupuestos_cliente {mes, cliente, categoria, monto}; movimientos = contabilidad_movimientos (los ingresos tienen
+// tipo "ingreso", fecha, cliente|proveedor, categoria, valor). «Anticipo Tela» no cuenta (igual que en Presupuesto Clientes).
+// diasTotal / diasTranscurridos = días de trabajo del mes (con festivos) para el ritmo; hoyISO = hoy en Bogotá.
+export const CATEGORIA_NO_CUENTA = "Anticipo Tela";
+export function cumplimientoPresupuesto({ ym, presupuestos, movimientos, confirmado, estimado, hoyISO, diasTotal, diasTranscurridos }) {
+  const lineas = (presupuestos || []).filter((p) => p.mes === ym && p.categoria !== CATEGORIA_NO_CUENTA);
+  const abonadoDe = (cliente, categoria) => (movimientos || [])
+    .filter((m) => m.tipo === "ingreso" && String(m.fecha || "").slice(0, 7) === ym && (m.cliente || m.proveedor) === cliente && m.categoria === categoria)
+    .reduce((t, m) => t + num(m.valor), 0);
+  const porCat = {};
+  lineas.forEach((p) => {
+    const c = (porCat[p.categoria] = porCat[p.categoria] || { categoria: p.categoria, presupuestado: 0, abonado: 0 });
+    c.presupuestado += num(p.monto);
+    c.abonado += abonadoDe(p.cliente, p.categoria);
+  });
+  const presupuestado = Object.values(porCat).reduce((t, c) => t + c.presupuestado, 0);
+  const abonado = Object.values(porCat).reduce((t, c) => t + c.abonado, 0);
+  const mesHoy = String(hoyISO || "").slice(0, 7);
+  const estado = ym === mesHoy ? "en curso" : ym < mesHoy ? "pasado" : "futuro";
+  const transcurridos = estado === "pasado" ? diasTotal : estado === "en curso" ? diasTranscurridos : 0;
+  const restantes = Math.max(0, diasTotal - transcurridos);
+  const proyeccion = transcurridos > 0 && diasTotal > 0 ? (estado === "pasado" ? abonado : (abonado / transcurridos) * diasTotal) : null;
+  const confiable = estado === "pasado" || transcurridos >= 5;
+  const total = estimado.total;
+  const ratioPres = total > 0 && lineas.length ? presupuestado / total : null;
+  const ratioRitmo = proyeccion !== null && confiable && total > 0 ? proyeccion / total : null;
+  const disponibles = [ratioPres, ratioRitmo].filter((x) => x !== null);
+  const peor = disponibles.length ? Math.min(...disponibles) : null;
+  const nivel = !lineas.length ? "sin_presupuesto" : peor === null ? "sin_dato" : peor >= 1 ? "verde" : peor >= 0.85 ? "ambar" : "rojo";
+  return {
+    lineas: lineas.length, presupuestado, abonado, faltaAbonar: Math.max(0, presupuestado - abonado), avance: presupuestado > 0 ? abonado / presupuestado : null,
+    porCategoria: Object.values(porCat),
+    estado, transcurridos, restantes, diasTotal, proyeccion, confiable,
+    coberturaConfirmado: presupuestado - confirmado.total, coberturaEstimado: presupuestado - total,
+    abonadoVsConfirmado: confirmado.total > 0 ? abonado / confirmado.total : null,
+    ratioPres, ratioRitmo, nivel,
+    faltaParaEstimado: Math.max(0, total - abonado),
+    abonoPorDia: restantes > 0 ? Math.max(0, total - abonado) / restantes : null,
+  };
 }

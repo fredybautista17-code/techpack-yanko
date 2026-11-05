@@ -1,12 +1,13 @@
 // ─── FINANCIERA · ¿Cuánto debo pagar al mes? y Endeudamiento ──────────────────
 // (2026-11-05, a pedido de Fredy) Dos pantallas del módulo Financiera:
-//   · «Cuánto debo pagar»: nómina + seguridad social + provisiones + gastos del Excel + cuotas del mes, contra el mes anterior y el
-//     promedio ponderado de los 6 meses anteriores; dice cuánto se necesita al mes con las cuotas vigentes.
+//   · «Cuánto debo pagar»: nómina + seguridad social + provisiones + gastos del Excel + cuotas del mes, contra el mes anterior; dice cuánto se
+//     necesita al mes (base: mes anterior + cuotas vigentes) y si el Presupuesto de Clientes alcanza para cumplirlo (bloque «¿Cumplo con el presupuesto?»).
 //   · «Endeudamiento»: lista de cuotas (valor mensual fijo, día de pago, mes en que empieza y termina). Es lo único que se escribe
 //     (colección financiera_cuotas); lo demás se lee de Nómina (liquidaciones confirmadas) y de costos_gastos_mes.
 import React, { useState, useEffect, useMemo } from "react";
 import { collection, doc, getDocs, onSnapshot, query, setDoc, deleteDoc, where } from "firebase/firestore";
-import { cuantoPagarMes, cuotasDelMes, escalonCuotas, sumarMes, TIPOS_NOMINA, MESES_PONDERADO } from "./financiera-cuanto-pagar-calculo";
+import { cuantoPagarMes, cuotasDelMes, escalonCuotas, sumarMes, TIPOS_NOMINA, MESES_PONDERADO, cumplimientoPresupuesto } from "./financiera-cuanto-pagar-calculo";
+import { diasDeTrabajoDelMes } from "./dias-habiles";
 
 const C = {
   ink: "#1A1A2E", slate: "#5A5A7A", border: "#E8E2DB", canvas: "#F7F4F0", white: "#FFFFFF", seam: "#C8B8A2",
@@ -81,7 +82,7 @@ function useCuotas(db) {
 }
 
 // Barras apiladas de los 7 meses con la línea del ponderado.
-function Grafico({ lista, ponderado }) {
+function Grafico({ lista, ponderado, etiqueta = "ponderado" }) {
   const W = 520, H = 250, pad = 30, bw = 44;
   const gap = (W - 2 * pad - lista.length * bw) / (lista.length - 1);
   const max = Math.max(1, ...lista.map((m) => m.total), ponderado.mesesUsados ? ponderado.total : 0) * 1.08;
@@ -90,7 +91,7 @@ function Grafico({ lista, ponderado }) {
   const millones = (v) => (v / 1e6).toFixed(0);
   const yPond = base - escala(ponderado.total);
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label="Lo que se paga cada mes por rubro, con el promedio ponderado">
+    <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label="Lo que se paga cada mes por rubro, con la línea de lo que necesito al mes">
       {lista.map((m, k) => {
         const x = pad + k * (bw + gap);
         let y = base;
@@ -105,7 +106,7 @@ function Grafico({ lista, ponderado }) {
       })}
       {ponderado.mesesUsados ? <line x1={pad - 8} x2={W - pad + 8} y1={yPond} y2={yPond} stroke={C.ink} strokeWidth="1.5" strokeDasharray="5 4" /> : null}
       <line x1={pad - 8} x2={pad + 14} y1={11} y2={11} stroke={C.ink} strokeWidth="1.5" strokeDasharray="5 4" />
-      <text x={pad + 20} y={15} fontSize="10.5" fontWeight="700" fill={C.ink}>{ponderado.mesesUsados ? `ponderado ${millones(ponderado.total)} (millones)` : "sin ponderado todavía"}</text>
+      <text x={pad + 20} y={15} fontSize="10.5" fontWeight="700" fill={C.ink}>{ponderado.mesesUsados ? `${etiqueta} ${millones(ponderado.total)} (millones)` : `sin ${etiqueta} todavía`}</text>
     </svg>
   );
 }
@@ -129,6 +130,11 @@ export function CuantoPagarMesView({ db, onIrEndeudamiento }) {
   useEffect(() => onSnapshot(doc(db, "financiera_ingresos_cache", "main"), (s) => setCacheBusint(s.exists() ? s.data() : null), () => {}), [db]);
   useEffect(() => onSnapshot(doc(db, "financiera_ingresos_cache", "total_yanko"), (s) => setCacheTotal(s.exists() ? s.data() : null), () => {}), [db]);
   const ingresosCache = cacheTotal || cacheBusint;
+  // (2026-11-05) Presupuesto de Clientes y abonos (ingresos clasificados) para saber si alcanza.
+  const [presClientes, setPresClientes] = useState([]);
+  const [movIngresos, setMovIngresos] = useState([]);
+  useEffect(() => onSnapshot(collection(db, "contabilidad_presupuestos_cliente"), (s) => setPresClientes(s.docs.map((d) => ({ ...d.data(), id: d.id }))), () => {}), [db]);
+  useEffect(() => onSnapshot(query(collection(db, "contabilidad_movimientos"), where("tipo", "==", "ingreso")), (s) => setMovIngresos(s.docs.map((d) => ({ ...d.data(), id: d.id }))), () => {}), [db]);
   const [ingresosIndutex, setIngresosIndutex] = useState(null);
   useEffect(() => onSnapshot(doc(db, "financiera_ingresos_cache", "tns_indutex"), (s) => setIngresosIndutex(s.exists() ? s.data() : null), () => {}), [db]);
 
@@ -151,8 +157,8 @@ export function CuantoPagarMesView({ db, onIrEndeudamiento }) {
   }, [db, ym]);
 
   const res = useMemo(() => cuantoPagarMes({ ym, liquidaciones: datos.liq, gastosDocs: datos.gastos, cuotas }), [ym, datos, cuotas]);
-  const { actual, anterior, ponderado: pond } = res;
-  const hayPond = pond.mesesUsados > 0;
+  const { actual, anterior } = res;
+  const hayBase = anterior.hayDatos;
   const textoFaltan = (m) => m.faltan.map((f) => `${f.tipo} ${f.falta.join(" y ")}`).join(" · ");
   const psMonto = actual.porTipo["Prestación de Servicios"]?.neto || 0;
 
@@ -165,7 +171,16 @@ export function CuantoPagarMesView({ db, onIrEndeudamiento }) {
   };
   const ingresosProm = useMemo(() => promIngresos(ingresosCache), [ingresosCache]);
   const indutexProm = useMemo(() => promIngresos(ingresosIndutex), [ingresosIndutex]);
-  const difIngreso = ingresosProm && hayPond ? ingresosProm.prom - res.necesito : null;
+  const difIngreso = ingresosProm && hayBase ? ingresosProm.prom - res.necesitoAnterior : null;
+
+  // Cumplimiento del presupuesto de clientes del mes elegido (días de trabajo con festivos).
+  const hoyISO = hoy.toISOString().slice(0, 10);
+  const cumpl = useMemo(() => {
+    const [a, m] = ym.split("-").map(Number);
+    const diasTotal = diasDeTrabajoDelMes(a, m);
+    const diasTranscurridos = ym === hoyISO.slice(0, 7) ? diasDeTrabajoDelMes(a, m, Number(hoyISO.slice(8, 10))) : 0;
+    return cumplimientoPresupuesto({ ym, presupuestos: presClientes, movimientos: movIngresos, confirmado: res.actual, estimado: res.estimado, hoyISO, diasTotal, diasTranscurridos });
+  }, [ym, presClientes, movIngresos, res, hoyISO]);
 
   const subActual = actual.completo ? "Todas las quincenas confirmadas" : actual.hayDatos ? `Faltan por confirmar: ${textoFaltan(actual)}` : "Todavía no hay liquidaciones confirmadas este mes";
   const varMes = actual.hayDatos && anterior.hayDatos ? variacion(actual.total, anterior.total) : null;
@@ -184,7 +199,7 @@ export function CuantoPagarMesView({ db, onIrEndeudamiento }) {
         </div>
       </div>
       <div style={{ fontSize: 12.5, color: C.slate, marginBottom: 16, maxWidth: 840, lineHeight: 1.5 }}>
-        Suma lo que sale cada mes: nómina, seguridad social, provisiones, gastos del Excel y cuotas. Compara con el mes anterior y con el <b>promedio ponderado de los 6 meses anteriores</b> (cada mes pesa más cuanto más reciente: 1, 2, 3, 4, 5 y 6) para saber cuánto necesitas al mes de verdad. Solo cuentan liquidaciones ya confirmadas.
+        Suma lo que sale cada mes: nómina, seguridad social, provisiones, gastos del Excel y cuotas. Compara con el <b>mes anterior</b>, que es la base para saber cuánto necesitas al mes (más las cuotas vigentes), y dice si el <b>Presupuesto de Clientes</b> alcanza para cumplirlo. Solo cuentan liquidaciones ya confirmadas.
       </div>
       {error || errorCuotas ? <div style={{ background: C.redBg, color: C.red, borderRadius: 10, padding: "10px 14px", fontSize: 13, marginBottom: 12 }}>{error || errorCuotas}</div> : null}
       {cargando ? <div style={{ fontSize: 13, color: C.slate, marginBottom: 12 }}>Leyendo nómina y gastos…</div> : null}
@@ -192,38 +207,37 @@ export function CuantoPagarMesView({ db, onIrEndeudamiento }) {
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 18 }}>
         <Tarjeta oscura fondo={C.ink} borde={C.ink} titulo={`Debo pagar en ${minusculaMes(ym)}`} valor={money(actual.total)} sub={subActual} />
         <Tarjeta titulo={`Mes anterior · ${minusculaMes(anterior.ym)}`} valor={anterior.hayDatos ? money(anterior.total) : "—"} sub={anterior.hayDatos ? `${nombreMes(ym).split(" ")[0]} es ${txtVariacion(varMes)} frente a ${minusculaMes(anterior.ym)}${anterior.completo ? "" : ` · incompleto: ${textoFaltan(anterior)}`}` : "Sin liquidaciones confirmadas ese mes"} />
-        <Tarjeta titulo={`Promedio ponderado · ${MESES_PONDERADO} meses`} valor={hayPond ? money(pond.total) : "—"} sub={hayPond ? `${pond.mesesUsados} de ${pond.mesesPosibles} meses con todas las quincenas confirmadas, con más peso a los recientes${pond.mesesGastos < pond.mesesUsados ? ` · gastos: solo ${pond.mesesGastos} ${pond.mesesGastos === 1 ? "mes" : "meses"} con gastos cargados` : ""}` : "Todavía no hay meses completos para ponderar"} />
-        <Tarjeta fondo={C.redBg} borde="#F3C9C2" colorValor={C.red} titulo="Necesito al mes (con endeudamiento)" valor={hayPond ? money(res.necesito) : "—"} sub={hayPond ? `${money(pond.operacion)} operación ponderada + ${money(res.cuotasHoy)} de cuotas vigentes` : `Sin ponderado; hoy las cuotas vigentes suman ${money(res.cuotasHoy)}`} />
+        <Tarjeta fondo={C.redBg} borde="#F3C9C2" colorValor={C.red} titulo="Necesito al mes (con endeudamiento)" valor={hayBase ? money(res.necesitoAnterior) : "—"} sub={hayBase ? `${money(res.operacionAnterior)} de operación de ${minusculaMes(anterior.ym)} (base: mes anterior) + ${money(res.cuotasHoy)} de cuotas vigentes${anterior.completo ? "" : ` · ${minusculaMes(anterior.ym)} incompleto`}` : `Sin datos del mes anterior; hoy las cuotas vigentes suman ${money(res.cuotasHoy)}`} />
         <Tarjeta
           titulo="Ingresos de clientes (promedio)"
           valor={ingresosProm ? money(ingresosProm.prom) : "—"}
           colorValor={difIngreso === null ? undefined : difIngreso >= 0 ? "#1E7B4B" : C.red}
           sub={ingresosProm
-            ? `${difIngreso === null ? "Sin ponderado para comparar" : difIngreso >= 0 ? `Sobran ${money(difIngreso)} al mes frente a lo que necesito` : `Faltan ${money(-difIngreso)} al mes frente a lo que necesito`} · promedio de ${ingresosProm.n} ${ingresosProm.n === 1 ? "mes" : "meses"} (${nombreMes(ingresosProm.desde)}${ingresosProm.n > 1 ? ` a ${nombreMes(ingresosProm.hasta)}` : ""}) · ${cacheTotal ? "cobros de TNS + traslados externos de Busint (Yanko)" : "cobros de Busint (Yanko)"}${indutexProm ? ` · Indutex (TNS) aparte: ${money(indutexProm.prom)} al mes` : ""}`
+            ? `${difIngreso === null ? "Sin mes anterior para comparar" : difIngreso >= 0 ? `Sobran ${money(difIngreso)} al mes frente a lo que necesito` : `Faltan ${money(-difIngreso)} al mes frente a lo que necesito`} · promedio de ${ingresosProm.n} ${ingresosProm.n === 1 ? "mes" : "meses"} (${nombreMes(ingresosProm.desde)}${ingresosProm.n > 1 ? ` a ${nombreMes(ingresosProm.hasta)}` : ""}) · ${cacheTotal ? "cobros de TNS + traslados externos de Busint (Yanko)" : "cobros de Busint (Yanko)"}${indutexProm ? ` · Indutex (TNS) aparte: ${money(indutexProm.prom)} al mes` : ""}`
             : "Entra a Financiera > Ingresos y pulsa «Traer desde TNS y Busint» para ver cuánto entra frente a cuánto debo pagar"}
         />
       </div>
 
+      <CumplePresupuesto ym={ym} cumpl={cumpl} confirmado={actual} estimado={res.estimado} />
+
       <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 16 }}>
         <div style={{ ...caja, flex: "1.45 1 520px", overflowX: "auto" }}>
-          <div style={{ fontSize: 13.5, fontWeight: 800, marginBottom: 8 }}>Por rubro: este mes, el anterior y el ponderado</div>
+          <div style={{ fontSize: 13.5, fontWeight: 800, marginBottom: 8 }}>Por rubro: este mes y el mes anterior (base)</div>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead><tr><th style={thL}>Rubro</th><th style={th}>{nombreMes(ym).split(" ")[0]}</th><th style={th}>{MESES[Number(anterior.ym.slice(5, 7)) - 1]}</th><th style={{ ...th, background: "#FFE9A8", color: "#7A5200" }}>Ponderado {MESES_PONDERADO} meses</th><th style={th}>vs. anterior</th></tr></thead>
+            <thead><tr><th style={thL}>Rubro</th><th style={th}>{nombreMes(ym).split(" ")[0]}</th><th style={{ ...th, background: "#FFE9A8", color: "#7A5200" }}>{MESES[Number(anterior.ym.slice(5, 7)) - 1]} (base)</th><th style={th}>vs. anterior</th></tr></thead>
             <tbody>
               {RUBROS.map((r) => (
                 <tr key={r.k} onClick={() => abrirDetalle(r)} style={{ cursor: "pointer" }} title="Clic para ver el detalle">
                   <td style={tdL}><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: "50%", background: r.color, marginRight: 8 }} />{r.label} ▸</td>
                   <td style={td}>{money(actual[r.k])}</td>
-                  <td style={td}>{anterior.hayDatos ? money(anterior[r.k]) : "—"}</td>
-                  <td style={{ ...td, background: "#FFF4D6", fontWeight: 800 }}>{hayPond ? money(pond[r.k]) : "—"}</td>
+                  <td style={{ ...td, background: "#FFF4D6", fontWeight: 800 }}>{anterior.hayDatos ? money(anterior[r.k]) : "—"}</td>
                   <td style={{ ...td, color: C.slate, fontSize: 12 }}>{anterior.hayDatos && anterior[r.k] !== actual[r.k] ? txtVariacion(variacion(actual[r.k], anterior[r.k])) : "—"}</td>
                 </tr>
               ))}
               <tr style={{ background: C.canvas }}>
                 <td style={{ ...tdL, fontWeight: 900, borderBottom: "none" }}>Total por pagar</td>
                 <td style={{ ...td, fontWeight: 900, borderBottom: "none" }}>{money(actual.total)}</td>
-                <td style={{ ...td, fontWeight: 900, borderBottom: "none" }}>{anterior.hayDatos ? money(anterior.total) : "—"}</td>
-                <td style={{ ...td, fontWeight: 900, background: "#FFF4D6", borderBottom: "none" }}>{hayPond ? money(pond.total) : "—"}</td>
+                <td style={{ ...td, fontWeight: 900, background: "#FFF4D6", borderBottom: "none" }}>{anterior.hayDatos ? money(anterior.total) : "—"}</td>
                 <td style={{ ...td, color: C.slate, fontSize: 12, fontWeight: 800, borderBottom: "none" }}>{txtVariacion(varMes)}</td>
               </tr>
             </tbody>
@@ -231,7 +245,7 @@ export function CuantoPagarMesView({ db, onIrEndeudamiento }) {
         </div>
         <div style={{ ...caja, flex: "1 1 340px" }}>
           <div style={{ fontSize: 13.5, fontWeight: 800, marginBottom: 6 }}>Los últimos 7 meses (millones)</div>
-          <Grafico lista={res.lista} ponderado={pond} />
+          <Grafico lista={res.lista} ponderado={{ total: res.necesitoAnterior, mesesUsados: hayBase ? 1 : 0 }} etiqueta="necesito al mes" />
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap", fontSize: 11, color: C.slate, marginTop: 2 }}>
             {RUBROS.map((r) => <span key={r.k}><i style={{ display: "inline-block", width: 9, height: 9, borderRadius: "50%", background: r.color, marginRight: 5 }} />{r.label.split(" (")[0]}</span>)}
           </div>
@@ -270,7 +284,7 @@ export function CuantoPagarMesView({ db, onIrEndeudamiento }) {
       {actual.gastosInfo.origen === "anterior" ? <div style={{ background: C.amberBg, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 14px", fontSize: 12, color: C.amber, lineHeight: 1.5, marginBottom: 10 }}>Este mes no tiene gastos guardados: se usan los de {nombreMes(actual.gastosInfo.deMes)}. Cárgalos en ¿Cubro mis costos? para dejarlos fijos.</div> : null}
       {actual.gastosInfo.origen === "ninguno" ? <div style={{ background: C.amberBg, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 14px", fontSize: 12, color: C.amber, lineHeight: 1.5, marginBottom: 10 }}>Todavía no hay gastos del Excel cargados. Súbelos en Planeación → Tablero de Costos → ¿Cubro mis costos?</div> : null}
       <div style={{ fontSize: 11.5, color: C.slate, lineHeight: 1.6 }}>
-        El ponderado solo usa meses con todas las quincenas confirmadas de cada tipo de nómina. Los gastos de cada mes salen de lo que hayas guardado ese mes en ¿Cubro mis costos? (si falta, el último mes cargado). Las cuotas cuentan en los meses entre su inicio y su fin.
+        La base de «Necesito al mes» es el mes anterior (con las cuotas vigentes de hoy); si ese mes está incompleto se avisa. Los gastos de cada mes salen de lo que hayas guardado ese mes en ¿Cubro mis costos? (si falta, el último mes cargado). Las cuotas cuentan en los meses entre su inicio y su fin.
       </div>
 
       {vd ? (
@@ -345,6 +359,93 @@ export function CuantoPagarMesView({ db, onIrEndeudamiento }) {
           )}
         </Ventana>
       ) : null}
+    </div>
+  );
+}
+
+// (2026-11-05, a pedido de Fredy) ¿El Presupuesto de Clientes alcanza para lo que debo pagar? Compara contra lo confirmado (piso seguro) y contra
+// el estimado del mes (por tipo de nómina: lo confirmado si está completo; si no, se completa con el mes anterior), y mira el ritmo de abonos.
+const NIVELES = {
+  verde: { txt: "Sí cumplo", color: C.green, bg: C.greenBg },
+  ambar: { txt: "En riesgo", color: C.amber, bg: C.amberBg },
+  rojo: { txt: "No alcanza", color: C.red, bg: C.redBg },
+  sin_dato: { txt: "Sin datos", color: C.gris, bg: C.canvas },
+  sin_presupuesto: { txt: "Sin presupuesto", color: C.gris, bg: C.canvas },
+};
+const pct = (x) => (x === null || x === undefined ? "—" : `${(x * 100).toFixed(0)} %`);
+function CumplePresupuesto({ ym, cumpl, confirmado, estimado }) {
+  const nv = NIVELES[cumpl.nivel] || NIVELES.sin_dato;
+  const mes = minusculaMes(ym);
+  const razones = [];
+  if (cumpl.ratioPres !== null) {
+    razones.push(cumpl.ratioPres >= 1
+      ? `el presupuesto de clientes (${money(cumpl.presupuestado)}) cubre lo estimado (${money(estimado.total)}) con ${money(cumpl.presupuestado - estimado.total)} de sobra`
+      : `el presupuesto de clientes (${money(cumpl.presupuestado)}) queda ${money(estimado.total - cumpl.presupuestado)} por debajo de lo estimado (${money(estimado.total)})`);
+  }
+  if (cumpl.ratioRitmo !== null) {
+    razones.push(cumpl.ratioRitmo >= 1
+      ? `al ritmo actual los abonos cerrarían en ${money(cumpl.proyeccion)}, suficiente para lo estimado`
+      : `al ritmo actual los abonos cerrarían en ${money(cumpl.proyeccion)}, ${money(estimado.total - cumpl.proyeccion)} por debajo de lo estimado`);
+  }
+  const veredicto = cumpl.nivel === "sin_presupuesto"
+    ? `No hay presupuesto de clientes cargado para ${mes}. Cárgalo en Financiera → Presupuesto Clientes para saber si se cumple.`
+    : razones.length ? `${nv.txt}: ${razones.join("; ")}.` : "Todavía no hay datos suficientes para comparar.";
+  const cat = (k) => cumpl.porCategoria.find((c) => c.categoria === k) || { presupuestado: 0, abonado: 0 };
+  const nom = cat("Anticipo Nómina");
+  const ins = cat("Anticipo Insumos");
+  const maq = cat("Anticipo Maquinaria");
+  const filas = [
+    { k: "nom", label: "Anticipo Nómina ↔ nómina, seguridad social y provisiones", pres: nom.presupuestado, ab: nom.abonado, debo: estimado.nomina + estimado.seguridad + estimado.provisiones },
+    { k: "res", label: "Insumos y Maquinaria ↔ gastos del Excel y cuotas", pres: ins.presupuestado + maq.presupuestado, ab: ins.abonado + maq.abonado, debo: estimado.gastos + estimado.cuotas },
+  ];
+  const textoFuente = (f) => `${f.tipo}: ${f.fuente === "confirmado" ? "confirmado" : f.fuente === "parcial" ? "1 quincena confirmada + el resto del mes anterior" : "mes anterior"}`;
+  const origenGastos = estimado.gastosOrigen === "guardado" ? "guardados este mes" : estimado.gastosOrigen === "anterior" ? "del último mes cargado" : "sin cargar";
+  return (
+    <div style={{ ...caja, marginBottom: 16, borderColor: nv.color, borderWidth: 1.5 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
+        <div style={{ fontSize: 15, fontWeight: 900, color: C.ink }}>¿Cumplo con el presupuesto de clientes en {mes}?</div>
+        <span style={{ padding: "3px 12px", borderRadius: 999, background: nv.bg, color: nv.color, fontSize: 12, fontWeight: 900, border: `1px solid ${nv.color}` }}>{nv.txt}</span>
+      </div>
+      <div style={{ fontSize: 13, color: C.ink, lineHeight: 1.55, marginBottom: 12 }}>{veredicto}</div>
+      {cumpl.nivel !== "sin_presupuesto" ? (
+        <>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+            <Tarjeta titulo="Presupuesto de clientes" valor={money(cumpl.presupuestado)} sub={`${cumpl.lineas} ${cumpl.lineas === 1 ? "línea" : "líneas"} · Anticipo Tela no cuenta`} />
+            <Tarjeta titulo="Abonado hasta hoy" valor={money(cumpl.abonado)} colorValor={C.blue} sub={`${pct(cumpl.avance)} del presupuesto · faltan ${money(cumpl.faltaAbonar)}`} />
+            <Tarjeta titulo="Debo pagar · confirmado" valor={money(confirmado.total)} sub={cumpl.coberturaConfirmado >= 0 ? `El presupuesto lo cubre con ${money(cumpl.coberturaConfirmado)} de sobra` : `Al presupuesto le faltan ${money(-cumpl.coberturaConfirmado)} para cubrirlo`} />
+            <Tarjeta titulo="Debo pagar · estimado del mes" valor={money(estimado.total)} fondo={C.amberBg} borde="#F0DDB4" sub={cumpl.coberturaEstimado >= 0 ? `El presupuesto lo cubre con ${money(cumpl.coberturaEstimado)} de sobra` : `Al presupuesto le faltan ${money(-cumpl.coberturaEstimado)} para cubrirlo`} />
+          </div>
+          {cumpl.estado === "en curso" ? (
+            <div style={{ fontSize: 12.5, color: C.slate, lineHeight: 1.55, marginBottom: 10 }}>
+              <b style={{ color: C.ink }}>Ritmo:</b> van {cumpl.transcurridos} de {cumpl.diasTotal} días de trabajo del mes (sin festivos). {cumpl.proyeccion !== null ? <>Al ritmo actual los abonos cerrarían en <b>{money(cumpl.proyeccion)}</b>{cumpl.confiable ? "" : " (pocos días transcurridos: tómalo como referencia)"}. </> : null}
+              {cumpl.faltaParaEstimado > 0 && cumpl.abonoPorDia !== null ? <>Para cubrir lo estimado faltan <b>{money(cumpl.faltaParaEstimado)}</b>, unos <b>{money(cumpl.abonoPorDia)}</b> por día de trabajo que queda.</> : cumpl.faltaParaEstimado <= 0 ? <>Lo abonado ya cubre lo estimado.</> : null}
+            </div>
+          ) : null}
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead><tr><th style={thL}>Por categoría</th><th style={th}>Presupuesto</th><th style={th}>Abonado</th><th style={th}>Debo pagar (estimado)</th><th style={th}>Presupuesto − pagar</th></tr></thead>
+              <tbody>
+                {filas.map((f) => (
+                  <tr key={f.k}>
+                    <td style={tdL}>{f.label}</td><td style={td}>{money(f.pres)}</td><td style={td}>{money(f.ab)}</td><td style={td}>{money(f.debo)}</td>
+                    <td style={{ ...td, fontWeight: 800, color: f.pres - f.debo >= 0 ? C.green : C.red }}>{money(f.pres - f.debo)}</td>
+                  </tr>
+                ))}
+                <tr style={{ background: C.canvas }}>
+                  <td style={{ ...tdL, fontWeight: 900, borderBottom: "none" }}>Total</td>
+                  <td style={{ ...td, fontWeight: 900, borderBottom: "none" }}>{money(cumpl.presupuestado)}</td>
+                  <td style={{ ...td, fontWeight: 900, borderBottom: "none" }}>{money(cumpl.abonado)}</td>
+                  <td style={{ ...td, fontWeight: 900, borderBottom: "none" }}>{money(estimado.total)}</td>
+                  <td style={{ ...td, fontWeight: 900, borderBottom: "none", color: cumpl.coberturaEstimado >= 0 ? C.green : C.red }}>{money(cumpl.coberturaEstimado)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </>
+      ) : null}
+      <div style={{ fontSize: 11.5, color: C.slate, lineHeight: 1.55, marginTop: 10 }}>
+        <b>Cómo se estima el mes:</b> {estimado.fuentes.length ? estimado.fuentes.map(textoFuente).join(" · ") : "sin nómina de este mes ni del anterior"}; gastos del Excel {origenGastos}; cuotas vigentes del mes. El semáforo toma el peor de dos controles: que el presupuesto cubra lo estimado (verde desde 100 %, en riesgo desde 85 %) y que el ritmo de abonos, con al menos 5 días de trabajo, también lo cubra. Los abonos salen de los ingresos que clasificas en Financiera → Ingresos.
+      </div>
     </div>
   );
 }
