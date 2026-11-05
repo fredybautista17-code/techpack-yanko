@@ -123,8 +123,12 @@ export function CuantoPagarMesView({ db, onIrEndeudamiento }) {
   const [provMes, setProvMes] = useState("actual");
   const { cuotas, error: errorCuotas } = useCuotas(db);
   // (2026-11-05) Resumen mensual de ingresos de clientes (lo guarda la pantalla «Ingresos» al traer de Busint).
-  const [ingresosCache, setIngresosCache] = useState(null);
-  useEffect(() => onSnapshot(doc(db, "financiera_ingresos_cache", "main"), (s) => setIngresosCache(s.exists() ? s.data() : null), () => {}), [db]);
+  // Se prefiere el «Total Yanko» (TNS + traslados externos de Busint); si no existe, el de Busint.
+  const [cacheBusint, setCacheBusint] = useState(null);
+  const [cacheTotal, setCacheTotal] = useState(null);
+  useEffect(() => onSnapshot(doc(db, "financiera_ingresos_cache", "main"), (s) => setCacheBusint(s.exists() ? s.data() : null), () => {}), [db]);
+  useEffect(() => onSnapshot(doc(db, "financiera_ingresos_cache", "total_yanko"), (s) => setCacheTotal(s.exists() ? s.data() : null), () => {}), [db]);
+  const ingresosCache = cacheTotal || cacheBusint;
   const [ingresosIndutex, setIngresosIndutex] = useState(null);
   useEffect(() => onSnapshot(doc(db, "financiera_ingresos_cache", "tns_indutex"), (s) => setIngresosIndutex(s.exists() ? s.data() : null), () => {}), [db]);
 
@@ -159,8 +163,8 @@ export function CuantoPagarMesView({ db, onIrEndeudamiento }) {
     if (!lista.length) return null;
     return { n: lista.length, desde: lista[lista.length - 1].ym, hasta: lista[0].ym, prom: lista.reduce((t, m) => t + Number(m.total), 0) / lista.length };
   };
-  const ingresosProm = useMemo(() => promIngresos(ingresosCache), [ingresosCache]);
-  const indutexProm = useMemo(() => promIngresos(ingresosIndutex), [ingresosIndutex]);
+  const ingresosProm = useMemo(() => promIngresos(ingresosCache), [ingresosCache]); // eslint-disable-line react-hooks/exhaustive-deps
+  const indutexProm = useMemo(() => promIngresos(ingresosIndutex), [ingresosIndutex]); // eslint-disable-line react-hooks/exhaustive-deps
   const difIngreso = ingresosProm && hayPond ? ingresosProm.prom - res.necesito : null;
 
   const subActual = actual.completo ? "Todas las quincenas confirmadas" : actual.hayDatos ? `Faltan por confirmar: ${textoFaltan(actual)}` : "Todavía no hay liquidaciones confirmadas este mes";
@@ -195,8 +199,8 @@ export function CuantoPagarMesView({ db, onIrEndeudamiento }) {
           valor={ingresosProm ? money(ingresosProm.prom) : "—"}
           colorValor={difIngreso === null ? undefined : difIngreso >= 0 ? "#1E7B4B" : C.red}
           sub={ingresosProm
-            ? `${difIngreso === null ? "Sin ponderado para comparar" : difIngreso >= 0 ? `Sobran ${money(difIngreso)} al mes frente a lo que necesito` : `Faltan ${money(-difIngreso)} al mes frente a lo que necesito`} · promedio de ${ingresosProm.n} ${ingresosProm.n === 1 ? "mes" : "meses"} (${nombreMes(ingresosProm.desde)}${ingresosProm.n > 1 ? ` a ${nombreMes(ingresosProm.hasta)}` : ""}) · cobros de Busint (Yanko)${indutexProm ? ` · Indutex (TNS) aparte: ${money(indutexProm.prom)} al mes` : ""}`
-            : "Entra a Financiera > Ingresos y pulsa «Traer desde Busint» para ver cuánto entra frente a cuánto debo pagar"}
+            ? `${difIngreso === null ? "Sin ponderado para comparar" : difIngreso >= 0 ? `Sobran ${money(difIngreso)} al mes frente a lo que necesito` : `Faltan ${money(-difIngreso)} al mes frente a lo que necesito`} · promedio de ${ingresosProm.n} ${ingresosProm.n === 1 ? "mes" : "meses"} (${nombreMes(ingresosProm.desde)}${ingresosProm.n > 1 ? ` a ${nombreMes(ingresosProm.hasta)}` : ""}) · ${cacheTotal ? "cobros de TNS + traslados externos de Busint (Yanko)" : "cobros de Busint (Yanko)"}${indutexProm ? ` · Indutex (TNS) aparte: ${money(indutexProm.prom)} al mes` : ""}`
+            : "Entra a Financiera > Ingresos y pulsa «Traer desde TNS y Busint» para ver cuánto entra frente a cuánto debo pagar"}
         />
       </div>
 

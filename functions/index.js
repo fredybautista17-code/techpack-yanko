@@ -13320,31 +13320,13 @@ exports.getMovimientosProveedorTNS = onCallAuth(
 // comparten código de empresa y se separan por sucursal. Consulta el saldo por
 // cliente (1305 + 2805) en cada código de sucursal (por defecto 00 a 09) y dice
 // cuáles existen, cuántos clientes y qué saldo tienen. Solo LEE.
-// (2026-11-05, a pedido de Fredy) INGRESOS DE CLIENTES desde TNS (Yanko e Indutex; Busint solo tiene Yanko). TNS no tiene consulta de recibos de caja,
-// así que se arma desde contabilidad, mes por mes y por sucursal:
-//  - Libro Auxiliar de caja y bancos (1105 a 1120): cada DÉBITO es plata que entra. Si trae el tercero y es cliente (aparece en 1305 o 2805),
-//    es un cobro de cliente; si no, va a «otros ingresos de caja» (préstamos, traslados entre bancos, devoluciones...).
-//  - Balance de Comprobación de caja/bancos: total de débitos por cuenta (ancla para cuadrar con el extracto).
-//  - Balance de 1305 y 2805 por tercero: estimado por cartera = créditos 1305 + créditos 2805 − débitos 2805 (cobros + anticipos recibidos − anticipos aplicados).
-// Se usa el Libro si devolvió líneas con tercero; si no, el estimado por cartera. PRIMERA VERSIÓN: devuelve diagnóstico para validar un mes contra el extracto.
-function ingresosTnsRecolectarLibro(data) {
-  const filas = [];
-  const visitar = (x, cuentaPadre, n) => {
-    if (n > 7 || x === null || typeof x !== "object") return;
-    if (Array.isArray(x)) {
-      const esFilas = x.length && typeof x[0] === "object" && !Array.isArray(x[0]) && /debit|credit/i.test(Object.keys(x[0]).join(" "));
-      if (esFilas) x.forEach((f) => filas.push({ f, cuentaPadre }));
-      else x.forEach((el) => visitar(el, cuentaPadre, n + 1));
-      return;
-    }
-    const kCta = Object.keys(x).find((k) => /^(codigo|cuenta|codigocuenta|puc)$/i.test(k) && typeof x[k] !== "object");
-    const kNom = Object.keys(x).find((k) => /^(nombre|nombrecuenta|descripcion)$/i.test(k) && typeof x[k] === "string");
-    const cuenta = kCta ? { codigo: String(x[kCta]), nombre: kNom ? String(x[kNom]) : "" } : cuentaPadre;
-    Object.values(x).forEach((v) => visitar(v, cuenta, n + 1));
-  };
-  visitar(data, null, 0);
-  return filas;
-}
+// (2026-11-05, a pedido de Fredy) INGRESOS DE CLIENTES desde TNS (Yanko e Indutex). En TNS está casi todo el ingreso, salvo los clientes que se facturan
+// en Busint por traslado externo (eso se suma aparte en la pantalla desde Busint). TNS no tiene consulta de recibos de caja y su Libro Auxiliar responde
+// error 500 (ya pasó en Cuentas por Pagar), así que se arma con los Balances de Comprobación, mes por mes y por sucursal (config/tns_sucursales):
+//  - Por cliente: estimado por cartera = créditos 1305 + créditos 2805 − débitos 2805 (cobros + anticipos recibidos − anticipos aplicados). Verificado:
+//    nov-2025 el estimado coincide al peso con los débitos de caja y bancos.
+//  - Por caja/banco: débitos de cada cuenta de caja/bancos (1105 a 1120) en el mes. Es TODO lo que entra a la cuenta, no solo cobros de clientes.
+//  - «Otros / sin explicar» = débitos de caja/bancos − estimado de clientes (préstamos, traslados entre bancos, anticipos cruzados...).
 async function ingresosTnsCuentasBalance({ empresa, sucursal, fechaInicial, fechaFinal, cuentaInicial, cuentaFinal }) {
   let resp;
   try {
@@ -13382,49 +13364,11 @@ async function ingresosTnsMes({ empresa, sucursales, ym, hoy }) {
   }));
   return salida;
 }
-function ingresosTnsFechaYmd(v) {
-  const t = String(v || "").trim();
-  if (/^\d{4}-\d{2}-\d{2}/.test(t)) return t.slice(0, 10);
-  const m = t.match(/^(\d{2})[\/\-](\d{2})[\/\-](\d{4})/);
-  return m ? `${m[3]}-${m[2]}-${m[1]}` : "";
-}
-// Libro Auxiliar de caja y bancos de UN cliente en todo el rango. Intenta con el NIT sin dígito y, si TNS responde error, con el NIT completo.
-async function ingresosTnsLibroCliente({ empresa, sucursal, fechaInicial, fechaFinal, campos, nitBase, nitCompleto }) {
-  const path = "/v2/contabilidad/Reportes/LibroAuxiliar";
-  let ultimoError = "";
-  const intentos = [nitBase, ...(nitCompleto && nitCompleto !== nitBase ? [nitCompleto] : [])];
-  for (const nit of intentos) {
-    const cuerpo = cuerpoLibroAuxiliarTNS(campos, { fechaInicial, fechaFinal, cuentaInicial: "1105", cuentaFinal: "112099", nit });
-    try {
-      const resp = await llamarTNS(`${path}?codigosucursal=${encodeURIComponent(sucursal)}`, { method: "POST", body: cuerpo, empresa });
-      if (resp && resp.status === false) {
-        if (/no se encontraron registros/i.test(String(resp.message || ""))) return { filas: [], error: "" };
-        throw new Error(resp.message || "TNS rechazó la consulta del Libro Auxiliar.");
-      }
-      return { filas: ingresosTnsRecolectarLibro(resp), error: "", cuerpo };
-    } catch (e) {
-      if (/TNS respondió 404/.test(String(e?.message || "")) && /no se encontraron registros/i.test(String(e?.message || ""))) return { filas: [], error: "" };
-      ultimoError = String(e?.message || e).slice(0, 300);
-    }
-  }
-  return { filas: [], error: ultimoError };
-}
-async function ingresosTnsEnPool(tareas, concurrencia, puedeSeguir) {
-  let i = 0;
-  const trabajador = async () => {
-    while (i < tareas.length) {
-      const mia = i++;
-      if (puedeSeguir && !puedeSeguir()) { await tareas[mia](true); continue; }
-      await tareas[mia](false);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(concurrencia, tareas.length) }, trabajador));
-}
 exports.getIngresosClientesTNS = onCallAuth(
   {
     secrets: TNS_SECRETS_TODAS,
-    timeoutSeconds: 540,
-    memory: "1GiB",
+    timeoutSeconds: 300,
+    memory: "512MiB",
   },
   async (request) => {
     await verificarLlamadorEsAdmin(request);
@@ -13441,92 +13385,46 @@ exports.getIngresosClientesTNS = onCallAuth(
     let [a, m] = [Number(hoy.slice(0, 4)), Number(hoy.slice(5, 7))];
     for (let i = 0; i < meses; i++) { lista.unshift(`${a}-${String(m).padStart(2, "0")}`); m -= 1; if (m === 0) { m = 12; a -= 1; } }
     try {
-      const esquema = await esquemaCuerpoTNS("/v2/contabilidad/Reportes/LibroAuxiliar", empresa).catch(() => null);
-      // Paso 1: balances por mes (de a 3 en paralelo): caja/bancos, 1305 y 2805 por tercero.
+      // Balances por mes, de a 3 en paralelo para no saturar a TNS.
       const crudos = [];
       for (let i = 0; i < lista.length; i += 3) {
         const tanda = await Promise.all(lista.slice(i, i + 3).map((ym) => ingresosTnsMes({ empresa, sucursales, ym, hoy })));
         crudos.push(...tanda);
       }
       const soloDigitos = (v) => String(v || "").replace(/\D/g, "");
-      // Clientes = terceros de 1305/2805. Solo se consultan en el Libro los que tuvieron algún crédito (un pago nunca ocurre sin crédito en 1305 o 2805).
-      const clientes = new Map(); // base -> { nombre, nit, conPagos }
-      crudos.forEach((c) => [["t1305", c.t1305], ["t2805", c.t2805]].forEach(([, arr]) => arr.forEach((t) => {
-        const b = baseNitTNS(t);
-        if (!clientes.has(b)) clientes.set(b, { nombre: String(t.nombre || b).trim(), nit: String(t.nit || "").trim(), conPagos: false });
-        if (numeroTNS(t.totalCredito) > 0) clientes.get(b).conPagos = true;
-      })));
-      const nombreCuenta = new Map();
-      crudos.forEach((c) => c.cuentasCaja.forEach((x) => nombreCuenta.set(soloDigitos(x.codigo), String(x.nombre || x.descripcion || "").trim())));
-      const etiquetaCuenta = (cod) => { const k = String(cod || "").trim(); const n = nombreCuenta.get(soloDigitos(k)); return n ? `${k} ${n}` : k || "Sin dato"; };
-      const porMes = {};
+      const nombresCliente = new Map();
       const sumar = (obj, k, v) => { obj[k] = (obj[k] || 0) + v; };
-      crudos.forEach((c) => {
-        const mm = { ym: c.ym, recibos: 0, total: 0, totalLibroClientes: 0, totalCajaBancos: 0, otrosCaja: 0, creditos1305: 0, creditos2805: 0, debitos2805: 0, estimadoCartera: 0, porCliente: {}, porMedio: {}, porClienteCartera: {}, estimadoPorFallo: 0 };
-        porMes[c.ym] = mm;
-        c.cuentasCaja.forEach((x) => { mm.totalCajaBancos += numeroTNS(x.totalDebito); });
-        c.t1305.forEach((t) => { const b = baseNitTNS(t); const cr = numeroTNS(t.totalCredito); mm.creditos1305 += cr; sumar(mm.porClienteCartera, b, cr); });
-        c.t2805.forEach((t) => { const b = baseNitTNS(t); const cr = numeroTNS(t.totalCredito); const db2 = numeroTNS(t.totalDebito); mm.creditos2805 += cr; mm.debitos2805 += db2; sumar(mm.porClienteCartera, b, cr - db2); });
-        mm.estimadoCartera = mm.creditos1305 + mm.creditos2805 - mm.debitos2805;
-      });
-      // Paso 2: Libro Auxiliar por cliente × sucursal, rango completo, de a 8 en paralelo, con tope de tiempo.
-      const fechaInicial = `${lista[0]}-01`;
-      const aConsultar = [...clientes.entries()].filter(([, c]) => c.conPagos);
-      const falloCliente = new Set(); // clientes cuya consulta falló o no se alcanzó a hacer
-      const erroresLibro = [];
-      let consultasOk = 0;
-      let lineasDebito = 0;
-      const muestraLibro = [];
-      const tareas = [];
-      aConsultar.forEach(([base, c]) => sucursales.forEach((sucursal) => {
-        tareas.push(async (omitir) => {
-          if (omitir) { falloCliente.add(base); return; }
-          const r = await ingresosTnsLibroCliente({ empresa, sucursal, fechaInicial, fechaFinal: hoy, campos: esquema?.campos, nitBase: base, nitCompleto: c.nit });
-          if (r.error) { falloCliente.add(base); if (erroresLibro.length < 5) erroresLibro.push(`${c.nombre}: ${r.error}`); return; }
-          consultasOk += 1;
-          r.filas.forEach(({ f, cuentaPadre }) => {
-            const n = normalizarFilaLibroTNS(f);
-            if (!(n.debito > 0)) return;
-            const ym = ingresosTnsFechaYmd(n.fecha).slice(0, 7);
-            const mm = porMes[ym];
-            if (!mm) return;
-            lineasDebito += 1;
-            if (muestraLibro.length < 3) muestraLibro.push(f);
-            mm.recibos += 1;
-            mm.totalLibroClientes += n.debito;
-            sumar(mm.porCliente, base, n.debito);
-            sumar(mm.porMedio, etiquetaCuenta((cuentaPadre && cuentaPadre.codigo) || n.cuenta), n.debito);
-          });
-        });
-      }));
-      await ingresosTnsEnPool(tareas, 8, () => Date.now() - inicio < 420000);
-      const usaLibro = consultasOk > 0;
+      const porMes = {};
       const avisos = [];
-      Object.values(porMes).forEach((mm) => {
-        if (usaLibro) {
-          // Clientes sin Libro (falló o no alcanzó el tiempo): se suma su estimación por cartera para no perder su cobro.
-          falloCliente.forEach((base) => { const v = mm.porClienteCartera[base] || 0; if (v > 0) { mm.porCliente[base] = (mm.porCliente[base] || 0) + v; mm.estimadoPorFallo += v; } });
-          mm.total = mm.totalLibroClientes + mm.estimadoPorFallo;
-          mm.otrosCaja = Math.max(0, mm.totalCajaBancos - mm.totalLibroClientes);
-        } else {
-          mm.total = mm.estimadoCartera; mm.porCliente = mm.porClienteCartera; mm.porMedio = {};
-        }
-        Object.keys(mm.porCliente).forEach((k) => { mm.porCliente[k] = Math.round(mm.porCliente[k]); });
-        delete mm.porClienteCartera;
+      crudos.forEach((c) => {
+        const mm = { ym: c.ym, recibos: 0, total: 0, totalCajaBancos: 0, otrosCaja: 0, creditos1305: 0, creditos2805: 0, debitos2805: 0, estimadoCartera: 0, porCliente: {}, porMedio: {} };
+        porMes[c.ym] = mm;
+        c.cuentasCaja.forEach((x) => {
+          const deb = numeroTNS(x.totalDebito);
+          mm.totalCajaBancos += deb;
+          if (deb !== 0) sumar(mm.porMedio, `${String(x.codigo || "").trim()} ${String(x.nombre || x.descripcion || "").trim()}`.trim() || "Sin dato", deb);
+        });
+        const anotar = (t, v) => { const b = baseNitTNS(t); if (!nombresCliente.has(b)) nombresCliente.set(b, String(t.nombre || b).trim()); sumar(mm.porCliente, b, v); };
+        c.t1305.forEach((t) => { const cr = numeroTNS(t.totalCredito); mm.creditos1305 += cr; anotar(t, cr); });
+        c.t2805.forEach((t) => { const cr = numeroTNS(t.totalCredito); const d2 = numeroTNS(t.totalDebito); mm.creditos2805 += cr; mm.debitos2805 += d2; anotar(t, cr - d2); });
+        mm.estimadoCartera = mm.creditos1305 + mm.creditos2805 - mm.debitos2805;
+        mm.total = mm.estimadoCartera;
+        mm.otrosCaja = mm.totalCajaBancos - mm.estimadoCartera;
+        Object.keys(mm.porCliente).forEach((k) => { mm.porCliente[k] = Math.round(mm.porCliente[k]); if (mm.porCliente[k] === 0) delete mm.porCliente[k]; });
+        Object.keys(mm.porMedio).forEach((k) => { mm.porMedio[k] = Math.round(mm.porMedio[k]); });
+        mm.recibos = Object.keys(mm.porCliente).length; // clientes con movimiento ese mes
       });
-      if (!usaLibro) avisos.push(`El Libro Auxiliar no respondió para ningún cliente${erroresLibro[0] ? ` (${erroresLibro[0]})` : ""}: el total se estima con la cartera (créditos 1305 + anticipos 2805). Revísalo en «Diagnóstico».`);
-      else if (falloCliente.size) avisos.push(`${falloCliente.size} cliente(s) sin Libro Auxiliar (falló la consulta o se acabó el tiempo): para ellos se usó la estimación por cartera.${erroresLibro[0] ? ` Ej.: ${erroresLibro[0]}` : ""}`);
       crudos.forEach((c) => c.errores.forEach((e) => avisos.push(e)));
       const nombres = {};
-      Object.values(porMes).forEach((mm) => Object.keys(mm.porCliente).forEach((k) => { nombres[k] = clientes.get(k)?.nombre || `Tercero ${k}`; }));
-      logger.info("getIngresosClientesTNS OK", { empresa, sucursales, meses: lista.length, usaLibro, consultasOk, fallos: falloCliente.size, lineasDebito, segundos: Math.round((Date.now() - inicio) / 1000) });
+      Object.values(porMes).forEach((mm) => Object.keys(mm.porCliente).forEach((k) => { nombres[k] = nombresCliente.get(k) || `Tercero ${k}`; }));
+      const cajasVistas = new Set(crudos.flatMap((c) => c.cuentasCaja.map((x) => soloDigitos(x.codigo))));
+      logger.info("getIngresosClientesTNS OK", { empresa, sucursales, meses: lista.length, clientes: nombresCliente.size, cajas: cajasVistas.size, segundos: Math.round((Date.now() - inicio) / 1000) });
       return {
         fuente: "tns", empresa, hoy, meses: lista, sucursales,
-        clientes: { usaLibro, porMes },
+        clientes: { usaLibro: false, porMes },
         traslados: null, nombres, avisos: avisos.slice(0, 12),
         diagnosticoTns: {
-          clientesDetectados: clientes.size, clientesConsultados: aConsultar.length, consultasOk, clientesSinLibro: falloCliente.size, lineasDebitoLibro: lineasDebito,
-          erroresLibro, camposLibro: esquema?.campos || null, muestraLibro, segundos: Math.round((Date.now() - inicio) / 1000),
+          clientesDetectados: nombresCliente.size, cuentasCajaBanco: cajasVistas.size, segundos: Math.round((Date.now() - inicio) / 1000),
           muestraCuenta: crudos.flatMap((c) => c.cuentasCaja).slice(0, 2).map((x) => { const { terceros, ...resto } = x || {}; return resto; }),
         },
       };
