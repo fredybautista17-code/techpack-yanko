@@ -13774,8 +13774,19 @@ function Chip({ nombre, correo, onQuitar }) {
   );
 }
 function DestinatariosExtra({ tareaId, extras, usuariosDisponibles, onAgregar, onQuitar }) {
-  const yaAgregados = new Set((extras || []).map((e) => e.correo));
-  const opciones = (usuariosDisponibles || []).filter((u) => u.email && !yaAgregados.has(u.email));
+  const yaAgregados = new Set((extras || []).map((e) => String(e.correo || "").toLowerCase()));
+  const opciones = (usuariosDisponibles || []).filter((u) => u.email && !yaAgregados.has(String(u.email).toLowerCase()));
+  // (2026-11-05, a pedido de Fredy) También se puede escribir un correo suelto (personas sin usuario en ATLAS, p. ej. Tesorería o el contador).
+  const [correoLibre, setCorreoLibre] = useState("");
+  const [nombreLibre, setNombreLibre] = useState("");
+  const [errorLibre, setErrorLibre] = useState("");
+  function agregarLibre() {
+    const correo = correoLibre.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo)) { setErrorLibre("Escribe un correo válido, por ejemplo nombre@empresa.com."); return; }
+    if (yaAgregados.has(correo)) { setErrorLibre("Ese correo ya está en la lista."); return; }
+    onAgregar({ name: nombreLibre.trim() || correo, email: correo });
+    setCorreoLibre(""); setNombreLibre(""); setErrorLibre("");
+  }
   return (
     <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px dashed ${T.border}` }}>
       <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 6, textTransform: "uppercase" }}>Adicionales</div>
@@ -13796,6 +13807,12 @@ function DestinatariosExtra({ tareaId, extras, usuariosDisponibles, onAgregar, o
         <option value="">+ Agregar destinatario…</option>
         {opciones.map((u) => <option key={u.email} value={u.email}>{u.name || u.email}</option>)}
       </select>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8, alignItems: "center" }}>
+        <input value={nombreLibre} onChange={(e) => setNombreLibre(e.target.value)} placeholder="Nombre (opcional)" style={{ padding: "6px 10px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 12.5, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit", width: 160 }} />
+        <input value={correoLibre} onChange={(e) => { setCorreoLibre(e.target.value); setErrorLibre(""); }} onKeyDown={(e) => { if (e.key === "Enter") agregarLibre(); }} placeholder="o escribe un correo: nombre@empresa.com" style={{ padding: "6px 10px", border: `1.5px solid ${errorLibre ? T.coral : T.border}`, borderRadius: 8, fontSize: 12.5, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit", width: 260 }} />
+        <Btn variant="secondary" small onClick={agregarLibre} disabled={!correoLibre.trim()}>+ Agregar correo</Btn>
+      </div>
+      {errorLibre && <div style={{ fontSize: 11.5, color: T.coral, fontWeight: 600, marginTop: 4 }}>{errorLibre}</div>}
     </div>
   );
 }
@@ -13820,7 +13837,7 @@ function NotificacionesProgramadasPanel({ users, config, onUpdateConfig }) {
   }
   useEffect(() => { cargar(); }, []);
 
-  const usuariosConCorreo = (users || []).filter((u) => u.email);
+  const usuariosConCorreo = (users || []).filter((u) => u.email && u.activo !== false); // los inactivos (p. ej. exdiseñadores) no se ofrecen
 
   function actualizarExtras(tareaId, nuevaLista) {
     onUpdateConfig({ notificacionesExtras: { ...(config.notificacionesExtras || {}), [tareaId]: nuevaLista } });
@@ -13828,7 +13845,7 @@ function NotificacionesProgramadasPanel({ users, config, onUpdateConfig }) {
   }
   function agregarExtra(tareaId, u) {
     const actuales = (config.notificacionesExtras || {})[tareaId] || [];
-    if (actuales.some((e) => e.correo === u.email)) return;
+    if (actuales.some((e) => String(e.correo || "").toLowerCase() === String(u.email).toLowerCase())) return;
     actualizarExtras(tareaId, [...actuales, { nombre: u.name || u.email, correo: u.email }]);
   }
   function quitarExtra(tareaId, correo) {
