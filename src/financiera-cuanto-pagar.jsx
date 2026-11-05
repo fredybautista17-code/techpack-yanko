@@ -7,6 +7,7 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { collection, doc, getDocs, onSnapshot, query, setDoc, deleteDoc, where } from "firebase/firestore";
 import { cuantoPagarMes, cuotasDelMes, escalonCuotas, sumarMes, TIPOS_NOMINA, MESES_PONDERADO, cumplimientoPresupuesto } from "./financiera-cuanto-pagar-calculo";
+import { httpsCallable } from "firebase/functions";
 import { diasDeTrabajoDelMes } from "./dias-habiles";
 
 const C = {
@@ -112,7 +113,7 @@ function Grafico({ lista, ponderado, etiqueta = "ponderado" }) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-export function CuantoPagarMesView({ db, onIrEndeudamiento }) {
+export function CuantoPagarMesView({ db, onIrEndeudamiento, functionsClient, isAdmin }) {
   const hoy = useMemo(() => new Date(Date.now() - 5 * 3600 * 1000), []);
   const [ym, setYm] = useState(`${hoy.getUTCFullYear()}-${String(hoy.getUTCMonth() + 1).padStart(2, "0")}`);
   const [datos, setDatos] = useState({ liq: {}, gastos: [] });
@@ -122,6 +123,20 @@ export function CuantoPagarMesView({ db, onIrEndeudamiento }) {
   // (2026-11-05) Provisiones: tipo de nómina abierto (lista de personas) y mes que se muestra ("actual" | "anterior").
   const [provTipo, setProvTipo] = useState(null);
   const [provMes, setProvMes] = useState("actual");
+  // (2026-11-05) Correo de prueba del cumplimiento (lunes 8 a. m. → Gerencia y Tesorería): lo manda solo al correo real del administrador.
+  const [probando, setProbando] = useState(false);
+  const [msgPrueba, setMsgPrueba] = useState("");
+  async function enviarPrueba() {
+    setProbando(true);
+    setMsgPrueba("");
+    try {
+      await httpsCallable(functionsClient, "enviarCorreoCumplimientoPrueba", { timeout: 540000 })({ paraMi: true });
+      setMsgPrueba("Listo: te mandé el correo de prueba (revisa tu bandeja y el spam).");
+    } catch (e) {
+      setMsgPrueba(e?.message || "No se pudo enviar el correo de prueba.");
+    }
+    setProbando(false);
+  }
   const { cuotas, error: errorCuotas } = useCuotas(db);
   // (2026-11-05) Resumen mensual de ingresos de clientes (lo guarda la pantalla «Ingresos» al traer de Busint).
   // Se prefiere el «Total Yanko» (TNS + traslados externos de Busint); si no existe, el de Busint.
@@ -218,7 +233,7 @@ export function CuantoPagarMesView({ db, onIrEndeudamiento }) {
         />
       </div>
 
-      <CumplePresupuesto ym={ym} cumpl={cumpl} confirmado={actual} estimado={res.estimado} />
+      <CumplePresupuesto ym={ym} cumpl={cumpl} confirmado={actual} estimado={res.estimado} onProbar={isAdmin && functionsClient ? enviarPrueba : null} probando={probando} msgPrueba={msgPrueba} />
 
       <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 16 }}>
         <div style={{ ...caja, flex: "1.45 1 520px", overflowX: "auto" }}>
@@ -373,7 +388,7 @@ const NIVELES = {
   sin_presupuesto: { txt: "Sin presupuesto", color: C.gris, bg: C.canvas },
 };
 const pct = (x) => (x === null || x === undefined ? "—" : `${(x * 100).toFixed(0)} %`);
-function CumplePresupuesto({ ym, cumpl, confirmado, estimado }) {
+function CumplePresupuesto({ ym, cumpl, confirmado, estimado, onProbar, probando, msgPrueba }) {
   const nv = NIVELES[cumpl.nivel] || NIVELES.sin_dato;
   const mes = minusculaMes(ym);
   const razones = [];
@@ -405,7 +420,9 @@ function CumplePresupuesto({ ym, cumpl, confirmado, estimado }) {
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
         <div style={{ fontSize: 15, fontWeight: 900, color: C.ink }}>¿Cumplo con el presupuesto de clientes en {mes}?</div>
         <span style={{ padding: "3px 12px", borderRadius: 999, background: nv.bg, color: nv.color, fontSize: 12, fontWeight: 900, border: `1px solid ${nv.color}` }}>{nv.txt}</span>
+        {onProbar ? <div style={{ marginLeft: "auto" }}><Boton chico onClick={onProbar} disabled={probando}>{probando ? "Enviando…" : "✉ Enviarme el correo de prueba"}</Boton></div> : null}
       </div>
+      {msgPrueba ? <div style={{ fontSize: 12, color: C.slate, marginBottom: 8 }}>{msgPrueba}</div> : null}
       <div style={{ fontSize: 13, color: C.ink, lineHeight: 1.55, marginBottom: 12 }}>{veredicto}</div>
       {cumpl.nivel !== "sin_presupuesto" ? (
         <>
@@ -444,7 +461,7 @@ function CumplePresupuesto({ ym, cumpl, confirmado, estimado }) {
         </>
       ) : null}
       <div style={{ fontSize: 11.5, color: C.slate, lineHeight: 1.55, marginTop: 10 }}>
-        <b>Cómo se estima el mes:</b> {estimado.fuentes.length ? estimado.fuentes.map(textoFuente).join(" · ") : "sin nómina de este mes ni del anterior"}; gastos del Excel {origenGastos}; cuotas vigentes del mes. El semáforo toma el peor de dos controles: que el presupuesto cubra lo estimado (verde desde 100 %, en riesgo desde 85 %) y que el ritmo de abonos, con al menos 5 días de trabajo, también lo cubra. Los abonos salen de los ingresos que clasificas en Financiera → Ingresos.
+        <b>Cómo se estima el mes:</b> {estimado.fuentes.length ? estimado.fuentes.map(textoFuente).join(" · ") : "sin nómina de este mes ni del anterior"}; gastos del Excel {origenGastos}; cuotas vigentes del mes. El semáforo toma el peor de dos controles: que el presupuesto cubra lo estimado (verde desde 100 %, en riesgo desde 85 %) y que el ritmo de abonos, con al menos 5 días de trabajo, también lo cubra. Los abonos salen de los ingresos que clasificas en Financiera → Ingresos. Cada lunes a las 8 a. m. este resumen (con las órdenes de compra pendientes) le llega por correo a Gerencia y Tesorería.
       </div>
     </div>
   );

@@ -11603,6 +11603,16 @@ exports.obtenerResumenNotificacionesProgramadas = onCallAuth({ timeoutSeconds: 6
         nota: "Este grupo (Fredy, Yuleisi Moreno, María Fernanda Páez) recibe TODAS las áreas juntas en un solo correo, no solo la suya.",
       },
       {
+        id: "correoCumplimientoPresupuesto",
+        nombre: "Presupuesto de clientes y órdenes de compra pendientes",
+        descripcion: "Cada lunes manda el semáforo «¿Cumplo con el presupuesto de clientes?» (presupuesto vs. lo que debo pagar y ritmo de abonos) más las órdenes de compra pendientes. Los demás días de trabajo solo avisa si el semáforo cambió.",
+        horario: "Lunes 8:00 a.m. (primer día de trabajo de la semana) · aviso corto 8:00 a.m. si cambia el semáforo · correo aparte, no entra en el resumen de las 7:00 p.m.",
+        tipo: "correo",
+        destinatarios: paraDestino([...admins, ...usuarios.filter((u) => !u.isAdmin && u.email && String(u.areaNomina || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().includes("TESORER"))]),
+        destinatariosExtra: extrasDe("correoCumplimientoPresupuesto"),
+        nota: "Gerencia = los administradores; Tesorería = usuarios con el área «Contabilidad y Tesorería» en Usuarios. No se envía a usuarios inactivos.",
+      },
+      {
         id: "enviarResumenDiarioNotificaciones",
         nombre: "Envío consolidado del resumen diario",
         descripcion: "Junta todo lo de arriba (auditoría, despachos, resumen por cliente, vencidos en Diseño) y le manda a cada destinatario UN SOLO correo con todas sus secciones del día, en vez de varios correos sueltos. Si alguien no tuvo nada ese día, no recibe nada.",
@@ -14048,6 +14058,87 @@ exports.depurarOrdenCompraBusint = onCallAuth(
 // Bruto = Σ Cant × Costo; Descuento = Σ Cant × Costo × Dsc/100; Base = bruto − descuento; IVA = 19 % de la base (la columna
 // Iva de la cabecera dice 16 y no coincide con el PDF, por eso el IVA se calcula en pantalla y no se toma de ahí).
 // Respuesta compacta: l = [[Codcomp, Cant, Costo, Dsc], ...]. Las fechas son AAAA-MM-DD.
+// (2026-11-05) Lógica de órdenes de compra de Busint separada para usarla también en el correo del lunes (correoCumplimientoPresupuesto).
+async function ordenesCompraBusintDatos() {
+  let cabeceras, detalles, proveedores, componentes, detallesDxc;
+  try {
+    [cabeceras, detalles, proveedores, componentes, detallesDxc] = await Promise.all([
+      consultarTablaBusintBDCompleta("orden de compra"),
+      consultarTablaBusintBDCompleta("orden de compra detalles"),
+      consultarTablaBusintBDCompleta("maestro de proveedores"),
+      consultarTablaBusintBDCompleta("estandar componentes prod"),
+      consultarTablaBusintBDCompleta("orden de compra detallesdxc"),
+    ]);
+  } catch (err) {
+    logger.error("Error consultando Busint BD (getOrdenesCompraBusint)", { error: String(err) });
+    throw new HttpsError("unavailable", `No se pudo consultar Busint BD: ${err?.message || String(err)}`);
+  }
+  const num = (v) => (v !== undefined && v !== null && v !== "" && Number.isFinite(Number(v)) ? Number(v) : 0);
+  const clave = (v) => String(v ?? "").trim().replace(/\.0+$/, "");
+  const nombreProv = new Map();
+  proveedores.forEach((p) => { const k = clave(p?.Codigo); if (k) nombreProv.set(k, String(p.Nombre || "").trim()); });
+  const lineasPorOrden = new Map();
+  const codigosUsados = new Set();
+  // (2026-10-27, a pedido de Fredy) Las líneas de las órdenes NO traen columna de unidad: solo el texto libre
+  // "Observacion" (ej. "KILOS "). Se lee de ahí para no comparar precios por kilo contra precios por metro.
+  // "KG", "M" o "" (no se pudo saber).
+  const unidadDeObservacion = (texto) => {
+    const s = String(texto ?? "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    const kg = /kilo|\bkgs?\b|\bkls?\b/.test(s);
+    const m = /metro|\bmts?\b|\bmtrs?\b|\bml\b/.test(s);
+    return kg && !m ? "KG" : m && !kg ? "M" : "";
+  };
+  detalles.forEach((d) => {
+    const oc = clave(d?.NumOC);
+    if (!oc) return;
+    const cod = clave(d?.Codcomp);
+    codigosUsados.add(cod);
+    if (!lineasPorOrden.has(oc)) lineasPorOrden.set(oc, []);
+    lineasPorOrden.get(oc).push([cod, num(d.Cant), num(d.Costo), num(d.Dsc), unidadDeObservacion(d.Observacion)]);
+  });
+  // "Dado por cumplido" en Busint: la cabecera trae DadoPorCumplido / FechaDxC / UsuarioDxC y las líneas de las órdenes
+  // ya cerradas se copian a "orden de compra detallesdxc". Una orden cuenta como cumplida si tiene fecha de cumplimiento,
+  // una marca en DadoPorCumplido (que no sea 0/N/NO/FALSE) o aparece en esa tabla. `dx` lleva el valor crudo para poder verificarlo.
+  const enDxc = new Set();
+  detallesDxc.forEach((d) => { const k = clave(d?.NumOC); if (k) enDxc.add(k); });
+  const ordenes = [];
+  let cumplidas = 0;
+  cabeceras.forEach((c) => {
+    const n = clave(c?.NumOC);
+    if (!n) return;
+    const prov = clave(c?.codprove);
+    const marcaDxc = c.DadoPorCumplido;
+    const textoMarca = String(marcaDxc ?? "").trim();
+    const fechaDxc = fechaBDaISO(c.FechaDxC) || null;
+    const marcada = textoMarca !== "" && !["0", "N", "NO", "FALSE", "NULL"].includes(textoMarca.toUpperCase());
+    const dx = fechaDxc || marcada || enDxc.has(n)
+      ? { f: fechaDxc, u: String(c.UsuarioDxC ?? "").trim(), v: textoMarca, t: enDxc.has(n) }
+      : null;
+    if (dx) cumplidas += 1;
+    ordenes.push({
+      dx,
+      n: Number(n),
+      p: prov,
+      pn: nombreProv.get(prov) || (prov ? `Proveedor ${prov}` : ""),
+      fi: fechaBDaISO(c.Fechaini) || null,
+      ff: fechaBDaISO(c.FechaFin) || null,
+      u: String(c.USUARIO || "").trim(),
+      l: lineasPorOrden.get(n) || [],
+    });
+  });
+  const insumos = {};
+  componentes.forEach((f) => {
+    const cod = clave(f?.Codcomp);
+    if (!cod || !codigosUsados.has(cod) || insumos[cod]) return;
+    const nombre = [String(f.Componente || "").trim(), String(f.Color || "").trim()].filter(Boolean).join(" ");
+    if (nombre) insumos[cod] = nombre;
+  });
+  ordenes.sort((a, b) => b.n - a.n);
+  const valoresDxc = [...new Set(ordenes.filter((o) => o.dx).map((o) => o.dx.v || (o.dx.f ? "(fecha)" : o.dx.t ? "(en detallesdxc)" : "")))];
+  logger.info("getOrdenesCompraBusint", { ordenes: ordenes.length, lineas: detalles.length, cumplidas, valoresDxc, insumosConNombre: Object.keys(insumos).length, insumosUsados: codigosUsados.size });
+  return { ok: true, generado: new Date().toISOString(), ordenes, insumos };
+}
+
 exports.getOrdenesCompraBusint = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
@@ -14057,83 +14148,7 @@ exports.getOrdenesCompraBusint = onCallAuth(
   async (request) => {
     // (2026-10-20, a pedido de Fredy) Antes solo el administrador; ahora también quien tenga el permiso "contabilidad_ordenes_compra" en su rol.
     await verificarLlamadorConModulos(request, ["contabilidad_ordenes_compra"], "las órdenes de compra");
-    let cabeceras, detalles, proveedores, componentes, detallesDxc;
-    try {
-      [cabeceras, detalles, proveedores, componentes, detallesDxc] = await Promise.all([
-        consultarTablaBusintBDCompleta("orden de compra"),
-        consultarTablaBusintBDCompleta("orden de compra detalles"),
-        consultarTablaBusintBDCompleta("maestro de proveedores"),
-        consultarTablaBusintBDCompleta("estandar componentes prod"),
-        consultarTablaBusintBDCompleta("orden de compra detallesdxc"),
-      ]);
-    } catch (err) {
-      logger.error("Error consultando Busint BD (getOrdenesCompraBusint)", { error: String(err) });
-      throw new HttpsError("unavailable", `No se pudo consultar Busint BD: ${err?.message || String(err)}`);
-    }
-    const num = (v) => (v !== undefined && v !== null && v !== "" && Number.isFinite(Number(v)) ? Number(v) : 0);
-    const clave = (v) => String(v ?? "").trim().replace(/\.0+$/, "");
-    const nombreProv = new Map();
-    proveedores.forEach((p) => { const k = clave(p?.Codigo); if (k) nombreProv.set(k, String(p.Nombre || "").trim()); });
-    const lineasPorOrden = new Map();
-    const codigosUsados = new Set();
-    // (2026-10-27, a pedido de Fredy) Las líneas de las órdenes NO traen columna de unidad: solo el texto libre
-    // "Observacion" (ej. "KILOS "). Se lee de ahí para no comparar precios por kilo contra precios por metro.
-    // "KG", "M" o "" (no se pudo saber).
-    const unidadDeObservacion = (texto) => {
-      const s = String(texto ?? "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-      const kg = /kilo|\bkgs?\b|\bkls?\b/.test(s);
-      const m = /metro|\bmts?\b|\bmtrs?\b|\bml\b/.test(s);
-      return kg && !m ? "KG" : m && !kg ? "M" : "";
-    };
-    detalles.forEach((d) => {
-      const oc = clave(d?.NumOC);
-      if (!oc) return;
-      const cod = clave(d?.Codcomp);
-      codigosUsados.add(cod);
-      if (!lineasPorOrden.has(oc)) lineasPorOrden.set(oc, []);
-      lineasPorOrden.get(oc).push([cod, num(d.Cant), num(d.Costo), num(d.Dsc), unidadDeObservacion(d.Observacion)]);
-    });
-    // "Dado por cumplido" en Busint: la cabecera trae DadoPorCumplido / FechaDxC / UsuarioDxC y las líneas de las órdenes
-    // ya cerradas se copian a "orden de compra detallesdxc". Una orden cuenta como cumplida si tiene fecha de cumplimiento,
-    // una marca en DadoPorCumplido (que no sea 0/N/NO/FALSE) o aparece en esa tabla. `dx` lleva el valor crudo para poder verificarlo.
-    const enDxc = new Set();
-    detallesDxc.forEach((d) => { const k = clave(d?.NumOC); if (k) enDxc.add(k); });
-    const ordenes = [];
-    let cumplidas = 0;
-    cabeceras.forEach((c) => {
-      const n = clave(c?.NumOC);
-      if (!n) return;
-      const prov = clave(c?.codprove);
-      const marcaDxc = c.DadoPorCumplido;
-      const textoMarca = String(marcaDxc ?? "").trim();
-      const fechaDxc = fechaBDaISO(c.FechaDxC) || null;
-      const marcada = textoMarca !== "" && !["0", "N", "NO", "FALSE", "NULL"].includes(textoMarca.toUpperCase());
-      const dx = fechaDxc || marcada || enDxc.has(n)
-        ? { f: fechaDxc, u: String(c.UsuarioDxC ?? "").trim(), v: textoMarca, t: enDxc.has(n) }
-        : null;
-      if (dx) cumplidas += 1;
-      ordenes.push({
-        dx,
-        n: Number(n),
-        p: prov,
-        pn: nombreProv.get(prov) || (prov ? `Proveedor ${prov}` : ""),
-        fi: fechaBDaISO(c.Fechaini) || null,
-        ff: fechaBDaISO(c.FechaFin) || null,
-        u: String(c.USUARIO || "").trim(),
-        l: lineasPorOrden.get(n) || [],
-      });
-    });
-    const insumos = {};
-    componentes.forEach((f) => {
-      const cod = clave(f?.Codcomp);
-      if (!cod || !codigosUsados.has(cod) || insumos[cod]) return;
-      const nombre = [String(f.Componente || "").trim(), String(f.Color || "").trim()].filter(Boolean).join(" ");
-      if (nombre) insumos[cod] = nombre;
-    });
-    ordenes.sort((a, b) => b.n - a.n);
-    const valoresDxc = [...new Set(ordenes.filter((o) => o.dx).map((o) => o.dx.v || (o.dx.f ? "(fecha)" : o.dx.t ? "(en detallesdxc)" : "")))];
-    logger.info("getOrdenesCompraBusint", { ordenes: ordenes.length, lineas: detalles.length, cumplidas, valoresDxc, insumosConNombre: Object.keys(insumos).length, insumosUsados: codigosUsados.size });
-    return { ok: true, generado: new Date().toISOString(), ordenes, insumos };
+    return await ordenesCompraBusintDatos();
   }
 );
 
@@ -15635,6 +15650,334 @@ exports.recordatoriosAtlas = onSchedule(
       await d.ref.update({ estado: "avisado", avisadoEn: admin.firestore.FieldValue.serverTimestamp(), correoEnviado: enviado });
     }
     logger.info("recordatoriosAtlas: avisados", { cantidad: vencidos.length });
+  }
+);
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+// (2026-11-05, a pedido de Fredy) CORREO «¿Cumplo con el presupuesto de clientes?» + ÓRDENES DE COMPRA PENDIENTES.
+// Para Gerencia (administradores) y Tesorería (usuarios con el área «Contabilidad y Tesorería») + adicionales de Administración → Notificaciones.
+//  · Lunes 8:00 a. m. (o el primer día de trabajo de la semana si el lunes es festivo): correo completo = semáforo de cumplimiento + órdenes de
+//    compra pendientes (mismas reglas de la pantalla Contabilidad → Órdenes de compra).
+//  · Los demás días de trabajo, 8:00 a. m.: solo un aviso corto si el semáforo cambió respecto al último correo del mismo mes.
+// El cálculo es COPIA del frontend (src/financiera-cuanto-pagar-calculo.js y src/dias-habiles.js): functions/ es un runtime aparte. Si se cambia
+// una regla allá, hay que cambiarla acá (el frontend es la referencia; se probó que dan las mismas cifras).
+const FIN_TIPOS_NOMINA = ["Fiscal", "Fiscal Destajo", "Destajo", "Prestación de Servicios"];
+const finNum = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+function finSumarMes(ym, n) {
+  const [a, m] = String(ym).split("-").map(Number);
+  const t = a * 12 + (m - 1) + n;
+  return `${Math.floor(t / 12)}-${String((t % 12) + 1).padStart(2, "0")}`;
+}
+const finSeguridad = (l) => finNum(l.epsTrabajador) + finNum(l.pensionTrabajador) + finNum(l.pensionEmpleador) + finNum(l.arlEmpleador) + finNum(l.cajaCompensacionEmpleador) + finNum(l.epsEmpleador);
+const finPrestaciones = (l) => finNum(l.cesantiasPeriodo) + finNum(l.interesesPeriodo) + finNum(l.primaPeriodo) + finNum(l.vacacionesPeriodo);
+function finGastosDelMes(gastosDocs, ym) {
+  const totalDe = (lineas) => (lineas || []).filter((l) => l.incluir).reduce((s, l) => s + finNum(l.valor), 0);
+  const docs = gastosDocs || [];
+  const propio = docs.find((g) => g.id === ym);
+  if (propio) return { total: totalDe(propio.lineas), origen: "guardado", deMes: ym };
+  const anterior = docs.filter((g) => g.id < ym).sort((a, b) => (a.id < b.id ? 1 : -1))[0];
+  if (anterior) return { total: totalDe(anterior.lineas), origen: "anterior", deMes: anterior.id };
+  return { total: 0, origen: "ninguno", deMes: "" };
+}
+function finRubrosDelMes({ ym, liquidaciones, gastosDocs, cuotas }) {
+  const porTipo = {};
+  FIN_TIPOS_NOMINA.forEach((tipo) => {
+    const lista = ((liquidaciones || {})[tipo] || []).filter((l) => String(l.periodoId || "").startsWith(`${ym}-`));
+    const quincenas = [...new Set(lista.map((l) => String(l.periodoId).slice(-2)))].sort();
+    porTipo[tipo] = {
+      tipo, quincenas,
+      neto: lista.reduce((s, l) => s + finNum(l.netoAPagar), 0),
+      seguridad: lista.reduce((s, l) => s + finSeguridad(l), 0),
+      prestaciones: lista.reduce((s, l) => s + finPrestaciones(l), 0),
+    };
+  });
+  const tipos = Object.values(porTipo);
+  const conDatos = tipos.filter((t) => t.quincenas.length > 0);
+  const g = finGastosDelMes(gastosDocs, ym);
+  const cuotasMes = (cuotas || []).filter((c) => c && c.desde && c.desde <= ym && (!c.hasta || ym <= c.hasta));
+  const nomina = tipos.reduce((s, t) => s + t.neto, 0);
+  const seguridad = tipos.reduce((s, t) => s + t.seguridad, 0);
+  const provisiones = tipos.reduce((s, t) => s + t.prestaciones, 0);
+  const cuotasTotal = cuotasMes.reduce((s, c) => s + finNum(c.valorMensual), 0);
+  return { ym, porTipo, nomina, seguridad, provisiones, gastos: g.total, cuotas: cuotasTotal, total: nomina + seguridad + provisiones + g.total + cuotasTotal, gastosOrigen: g.origen, hayDatos: conDatos.length > 0 };
+}
+function finEstimadoDelMes(actual, anterior) {
+  const out = { nomina: 0, seguridad: 0, provisiones: 0 };
+  const fuentes = [];
+  FIN_TIPOS_NOMINA.forEach((tipo) => {
+    const a = actual.porTipo[tipo];
+    const b = anterior.porTipo[tipo];
+    const k = a.quincenas.length;
+    const kb = b.quincenas.length;
+    if (k === 0 && kb === 0) return;
+    [["nomina", "neto"], ["seguridad", "seguridad"], ["provisiones", "prestaciones"]].forEach(([dest, campo]) => {
+      const porQuincenaAnterior = kb > 0 ? b[campo] / kb : 0;
+      out[dest] += k >= 2 ? a[campo] : a[campo] + porQuincenaAnterior * (2 - k);
+    });
+    fuentes.push({ tipo, fuente: k >= 2 ? "confirmado" : k === 1 ? "parcial" : "mes anterior" });
+  });
+  out.gastos = actual.gastos;
+  out.cuotas = actual.cuotas;
+  out.operacion = out.nomina + out.seguridad + out.provisiones + out.gastos;
+  out.total = out.operacion + out.cuotas;
+  out.fuentes = fuentes;
+  out.gastosOrigen = actual.gastosOrigen;
+  return out;
+}
+// Días de trabajo (misma regla que src/dias-habiles.js): domingo no; festivo no; sábado solo el «puente» o de reposición desde SABADO_PUENTE_DESDE; lista «Días sin trabajar» no.
+function finEsFestivo(iso) {
+  return esFestivoColombiaCP(iso) || FESTIVOS_COLOMBIA_2026_ASISTENCIA.includes(String(iso).slice(0, 10));
+}
+function finEsDiaTrabajo(iso, sinTrabajar) {
+  const f = String(iso).slice(0, 10);
+  if (sinTrabajar && sinTrabajar.has(f)) return false;
+  const w = new Date(`${f}T12:00:00Z`).getUTCDay();
+  if (w === 0) return false;
+  if (w === 6) return f >= SABADO_PUENTE_DESDE && sabadoSeTrabajaAsistencia(f);
+  return !finEsFestivo(f);
+}
+function finDiasTrabajoMes(ym, sinTrabajar, hastaISO) {
+  const [a, m] = ym.split("-").map(Number);
+  const ult = new Date(Date.UTC(a, m, 0)).getUTCDate();
+  let n = 0;
+  for (let d = 1; d <= ult; d++) {
+    const iso = `${ym}-${String(d).padStart(2, "0")}`;
+    if (hastaISO && iso > hastaISO) break;
+    if (finEsDiaTrabajo(iso, sinTrabajar)) n++;
+  }
+  return n;
+}
+function finCumplimiento({ ym, presupuestos, movimientos, confirmado, estimado, hoyISO, diasTotal, diasTranscurridos }) {
+  const lineas = (presupuestos || []).filter((p) => p.mes === ym && p.categoria !== "Anticipo Tela");
+  const abonadoDe = (cliente, categoria) => (movimientos || [])
+    .filter((m) => m.tipo === "ingreso" && String(m.fecha || "").slice(0, 7) === ym && (m.cliente || m.proveedor) === cliente && m.categoria === categoria)
+    .reduce((t, m) => t + finNum(m.valor), 0);
+  const porCat = {};
+  lineas.forEach((p) => {
+    const c = (porCat[p.categoria] = porCat[p.categoria] || { categoria: p.categoria, presupuestado: 0, abonado: 0 });
+    c.presupuestado += finNum(p.monto);
+    c.abonado += abonadoDe(p.cliente, p.categoria);
+  });
+  const presupuestado = Object.values(porCat).reduce((t, c) => t + c.presupuestado, 0);
+  const abonado = Object.values(porCat).reduce((t, c) => t + c.abonado, 0);
+  const mesHoy = String(hoyISO || "").slice(0, 7);
+  const estado = ym === mesHoy ? "en curso" : ym < mesHoy ? "pasado" : "futuro";
+  const transcurridos = estado === "pasado" ? diasTotal : estado === "en curso" ? diasTranscurridos : 0;
+  const restantes = Math.max(0, diasTotal - transcurridos);
+  const proyeccion = transcurridos > 0 && diasTotal > 0 ? (estado === "pasado" ? abonado : (abonado / transcurridos) * diasTotal) : null;
+  const confiable = estado === "pasado" || transcurridos >= 5;
+  const total = estimado.total;
+  const ratioPres = total > 0 && lineas.length ? presupuestado / total : null;
+  const ratioRitmo = proyeccion !== null && confiable && total > 0 ? proyeccion / total : null;
+  const disponibles = [ratioPres, ratioRitmo].filter((x) => x !== null);
+  const peor = disponibles.length ? Math.min(...disponibles) : null;
+  const nivel = !lineas.length ? "sin_presupuesto" : peor === null ? "sin_dato" : peor >= 1 ? "verde" : peor >= 0.85 ? "ambar" : "rojo";
+  return {
+    lineas: lineas.length, presupuestado, abonado, faltaAbonar: Math.max(0, presupuestado - abonado), avance: presupuestado > 0 ? abonado / presupuestado : null,
+    porCategoria: Object.values(porCat), estado, transcurridos, restantes, diasTotal, proyeccion, confiable,
+    coberturaConfirmado: presupuestado - confirmado.total, coberturaEstimado: presupuestado - total,
+    ratioPres, ratioRitmo, nivel,
+    faltaParaEstimado: Math.max(0, total - abonado),
+    abonoPorDia: restantes > 0 ? Math.max(0, total - abonado) / restantes : null,
+  };
+}
+async function finCargarDatos(ym) {
+  const desde = `${finSumarMes(ym, -1)}-Q1`;
+  const hasta = `${ym}-Q2`;
+  const leer = async (col) => (await db.collection(col).where("periodoId", ">=", desde).where("periodoId", "<=", hasta).get()).docs.map((d) => ({ ...d.data(), id: d.id }));
+  const todo = async (q) => (await q.get()).docs.map((d) => ({ ...d.data(), id: d.id }));
+  const [fiscal, fiscalDestajo, destajo, ps, gastosDocs, cuotas, presupuestos, movimientos, recibidas] = await Promise.all([
+    leer("nomina_fiscal_liquidaciones"), leer("nomina_fiscal_destajo_liquidaciones"), leer("nomina_destajo_liquidaciones"), leer("nomina_prestacion_servicios_liquidaciones"),
+    todo(db.collection("costos_gastos_mes")), todo(db.collection("financiera_cuotas")),
+    todo(db.collection("contabilidad_presupuestos_cliente").where("mes", "==", ym)),
+    todo(db.collection("contabilidad_movimientos").where("tipo", "==", "ingreso")),
+    db.collection("contabilidad_ordenes_compra_recibidas").select().get().then((s) => new Set(s.docs.map((d) => d.id))),
+  ]);
+  return { liquidaciones: { "Fiscal": fiscal, "Fiscal Destajo": fiscalDestajo, "Destajo": destajo, "Prestación de Servicios": ps }, gastosDocs, cuotas, presupuestos, movimientos, recibidas };
+}
+// Lo que arma el correo: se calcula «a las 8 a. m.», por eso los días transcurridos son los de trabajo completos hasta AYER.
+function finCalcularCumplimiento({ hoyISO, datos, sinTrabajar }) {
+  const ym = hoyISO.slice(0, 7);
+  const base = { liquidaciones: datos.liquidaciones, gastosDocs: datos.gastosDocs, cuotas: datos.cuotas };
+  const actual = finRubrosDelMes({ ym, ...base });
+  const anterior = finRubrosDelMes({ ym: finSumarMes(ym, -1), ...base });
+  const estimado = finEstimadoDelMes(actual, anterior);
+  const ayer = sumarDiasISOCP(hoyISO, -1);
+  const diasTotal = finDiasTrabajoMes(ym, sinTrabajar);
+  const diasTranscurridos = ayer >= `${ym}-01` ? finDiasTrabajoMes(ym, sinTrabajar, ayer) : 0;
+  const cumpl = finCumplimiento({ ym, presupuestos: datos.presupuestos, movimientos: datos.movimientos, confirmado: actual, estimado, hoyISO, diasTotal, diasTranscurridos });
+  return { ym, actual, anterior, estimado, cumpl };
+}
+// Órdenes de compra pendientes (mismas reglas de Contabilidad → Órdenes de compra): sin marca de recibida y no cumplidas en Busint; las que
+// vencieron hace más de 60 días no se vigilan (quedan en el Historial). Valor con IVA 19 %.
+function finOrdenesPendientes(ordenes, recibidas, hoyISO) {
+  const dias = (a, b) => Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86400000);
+  const grupos = { vencida: [], porvencer: [], atiempo: [] };
+  (ordenes || []).forEach((o) => {
+    if (recibidas.has(String(o.n)) || o.dx || !o.ff) return;
+    const d = dias(hoyISO, o.ff);
+    if (d < 0 && o.ff < sumarDiasISOCP(hoyISO, -60)) return;
+    const base = (o.l || []).reduce((s, [, cant, costo, dsc]) => s + cant * costo * (1 - dsc / 100), 0);
+    const fila = { n: o.n, prov: o.pn || "", ff: o.ff, dias: d, valor: base * 1.19 };
+    if (d < 0) grupos.vencida.push(fila); else if (d <= 7) grupos.porvencer.push(fila); else grupos.atiempo.push(fila);
+  });
+  grupos.vencida.sort((a, b) => a.dias - b.dias);
+  grupos.porvencer.sort((a, b) => (a.ff < b.ff ? -1 : 1));
+  const suma = (l) => l.reduce((s, x) => s + x.valor, 0);
+  return { grupos, totales: { vencida: suma(grupos.vencida), porvencer: suma(grupos.porvencer), atiempo: suma(grupos.atiempo) } };
+}
+const finMoney = (n) => `${Number(n) < 0 ? "-" : ""}$${Math.round(Math.abs(Number(n) || 0)).toLocaleString("es-CO")}`;
+const finEsc = (t) => String(t ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const FIN_NIVELES = {
+  verde: { txt: "Sí cumplo", color: "#2D9E6B", bg: "#EBF7F2" }, ambar: { txt: "En riesgo", color: "#C47C1A", bg: "#FDF5E6" }, rojo: { txt: "No alcanza", color: "#E85D4A", bg: "#FDF0EE" },
+  sin_dato: { txt: "Sin datos", color: "#8A8FA8", bg: "#F7F4F0" }, sin_presupuesto: { txt: "Sin presupuesto", color: "#8A8FA8", bg: "#F7F4F0" },
+};
+function finNombreMes(ym) {
+  const meses = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+  const [a, m] = ym.split("-").map(Number);
+  return `${meses[m - 1]} ${a}`;
+}
+function finVeredicto(r) {
+  const { cumpl, estimado } = r;
+  const nv = FIN_NIVELES[cumpl.nivel];
+  if (cumpl.nivel === "sin_presupuesto") return `No hay presupuesto de clientes cargado para ${finNombreMes(r.ym)}. Cárgalo en Financiera → Presupuesto Clientes para saber si se cumple.`;
+  const razones = [];
+  if (cumpl.ratioPres !== null) razones.push(cumpl.ratioPres >= 1
+    ? `el presupuesto de clientes (${finMoney(cumpl.presupuestado)}) cubre lo estimado (${finMoney(estimado.total)}) con ${finMoney(cumpl.presupuestado - estimado.total)} de sobra`
+    : `el presupuesto de clientes (${finMoney(cumpl.presupuestado)}) queda ${finMoney(estimado.total - cumpl.presupuestado)} por debajo de lo estimado (${finMoney(estimado.total)})`);
+  if (cumpl.ratioRitmo !== null) razones.push(cumpl.ratioRitmo >= 1
+    ? `al ritmo actual los abonos cerrarían en ${finMoney(cumpl.proyeccion)}, suficiente para lo estimado`
+    : `al ritmo actual los abonos cerrarían en ${finMoney(cumpl.proyeccion)}, ${finMoney(estimado.total - cumpl.proyeccion)} por debajo de lo estimado`);
+  return razones.length ? `${nv.txt}: ${razones.join("; ")}.` : "Todavía no hay datos suficientes para comparar.";
+}
+function finHtmlSemaforo(r) {
+  const { cumpl, estimado, actual } = r;
+  const nv = FIN_NIVELES[cumpl.nivel];
+  const td = "padding:6px 10px;border-bottom:1px solid #E8E2DB;text-align:right;font-size:13px";
+  const tdl = "padding:6px 10px;border-bottom:1px solid #E8E2DB;text-align:left;font-size:13px;font-weight:700";
+  const cat = (k) => cumpl.porCategoria.find((c) => c.categoria === k) || { presupuestado: 0, abonado: 0 };
+  const nom = cat("Anticipo Nómina"), ins = cat("Anticipo Insumos"), maq = cat("Anticipo Maquinaria");
+  const filas = [
+    ["Anticipo Nómina ↔ nómina, seguridad social y provisiones", nom.presupuestado, nom.abonado, estimado.nomina + estimado.seguridad + estimado.provisiones],
+    ["Insumos y Maquinaria ↔ gastos del Excel y cuotas", ins.presupuestado + maq.presupuestado, ins.abonado + maq.abonado, estimado.gastos + estimado.cuotas],
+  ];
+  const fuentes = estimado.fuentes.length
+    ? estimado.fuentes.map((f) => `${f.tipo}: ${f.fuente === "confirmado" ? "confirmado" : f.fuente === "parcial" ? "1 quincena confirmada + el resto del mes anterior" : "mes anterior"}`).join(" · ")
+    : "sin nómina de este mes ni del anterior";
+  const origenGastos = estimado.gastosOrigen === "guardado" ? "guardados este mes" : estimado.gastosOrigen === "anterior" ? "del último mes cargado" : "sin cargar";
+  let h = `<div style="border:1.5px solid ${nv.color};border-radius:10px;padding:14px 16px;margin:12px 0">`;
+  h += `<div style="font-size:16px;font-weight:800;color:#1A1A2E">¿Cumplo con el presupuesto de clientes en ${finNombreMes(r.ym)}? <span style="background:${nv.bg};color:${nv.color};border:1px solid ${nv.color};border-radius:999px;padding:2px 10px;font-size:12px;margin-left:6px">${nv.txt}</span></div>`;
+  h += `<p style="font-size:13.5px;color:#1A1A2E;line-height:1.5;margin:10px 0">${finEsc(finVeredicto(r))}</p>`;
+  if (cumpl.nivel !== "sin_presupuesto") {
+    h += `<table style="width:100%;border-collapse:collapse;margin:8px 0">`;
+    h += `<tr><td style="${tdl}">Presupuesto de clientes (sin Anticipo Tela)</td><td style="${td}">${finMoney(cumpl.presupuestado)}</td></tr>`;
+    h += `<tr><td style="${tdl}">Abonado hasta hoy</td><td style="${td}">${finMoney(cumpl.abonado)} (${cumpl.avance === null ? "—" : Math.round(cumpl.avance * 100) + " %"}; faltan ${finMoney(cumpl.faltaAbonar)})</td></tr>`;
+    h += `<tr><td style="${tdl}">Debo pagar · confirmado</td><td style="${td}">${finMoney(actual.total)}</td></tr>`;
+    h += `<tr><td style="${tdl}">Debo pagar · estimado del mes</td><td style="${td}">${finMoney(estimado.total)}</td></tr></table>`;
+    if (cumpl.estado === "en curso") {
+      h += `<p style="font-size:12.5px;color:#5A5A7A;line-height:1.5;margin:6px 0"><b style="color:#1A1A2E">Ritmo:</b> van ${cumpl.transcurridos} de ${cumpl.diasTotal} días de trabajo del mes (sin festivos). `;
+      if (cumpl.proyeccion !== null) h += `Al ritmo actual los abonos cerrarían en <b>${finMoney(cumpl.proyeccion)}</b>${cumpl.confiable ? "" : " (pocos días transcurridos: referencia)"}. `;
+      if (cumpl.faltaParaEstimado > 0 && cumpl.abonoPorDia !== null) h += `Para cubrir lo estimado faltan <b>${finMoney(cumpl.faltaParaEstimado)}</b>, unos <b>${finMoney(cumpl.abonoPorDia)}</b> por día de trabajo que queda.`;
+      else if (cumpl.faltaParaEstimado <= 0) h += "Lo abonado ya cubre lo estimado.";
+      h += `</p>`;
+    }
+    h += `<table style="width:100%;border-collapse:collapse;margin:8px 0"><tr style="background:#F7F4F0"><th style="${tdl}">Por categoría</th><th style="${td}">Presupuesto</th><th style="${td}">Abonado</th><th style="${td}">Debo pagar (estimado)</th><th style="${td}">Presupuesto − pagar</th></tr>`;
+    filas.forEach(([n, p, a, d]) => { h += `<tr><td style="${tdl}">${finEsc(n)}</td><td style="${td}">${finMoney(p)}</td><td style="${td}">${finMoney(a)}</td><td style="${td}">${finMoney(d)}</td><td style="${td};font-weight:800;color:${p - d >= 0 ? "#2D9E6B" : "#E85D4A"}">${finMoney(p - d)}</td></tr>`; });
+    h += `</table>`;
+  }
+  h += `<p style="font-size:11.5px;color:#5A5A7A;line-height:1.5;margin:8px 0 0"><b>Cómo se estima el mes:</b> ${finEsc(fuentes)}; gastos del Excel ${origenGastos}; cuotas vigentes del mes. El semáforo toma el peor de dos controles: que el presupuesto cubra lo estimado (verde desde 100 %, en riesgo desde 85 %) y que el ritmo de abonos, con al menos 5 días de trabajo, también lo cubra.</p></div>`;
+  return h;
+}
+function finHtmlOrdenes(oc) {
+  const { grupos, totales } = oc;
+  const td = "padding:5px 8px;border-bottom:1px solid #E8E2DB;font-size:12.5px;text-align:left";
+  const tdr = `${td};text-align:right`;
+  const bloque = (titulo, lista, mostrarDias, color) => {
+    if (!lista.length) return "";
+    const max = 15;
+    let h = `<div style="font-weight:800;font-size:13px;color:${color};margin:12px 0 4px">${titulo} (${lista.length})</div><table style="width:100%;border-collapse:collapse"><tr style="background:#F7F4F0"><th style="${td}">OC</th><th style="${td}">Proveedor</th><th style="${tdr}">Entrega</th><th style="${tdr}">${mostrarDias}</th><th style="${tdr}">Valor con IVA</th></tr>`;
+    lista.slice(0, max).forEach((o) => { h += `<tr><td style="${td}">${o.n}</td><td style="${td}">${finEsc(o.prov)}</td><td style="${tdr}">${o.ff.split("-").reverse().join("/")}</td><td style="${tdr}">${mostrarDias === "Atraso" ? `${-o.dias} d` : o.dias === 0 ? "hoy" : `en ${o.dias} d`}</td><td style="${tdr}">${finMoney(o.valor)}</td></tr>`; });
+    h += `</table>`;
+    if (lista.length > max) h += `<div style="font-size:12px;color:#5A5A7A;margin-top:3px">… y ${lista.length - max} más en Contabilidad → Órdenes de compra.</div>`;
+    return h;
+  };
+  let h = `<div style="border:1px solid #E8E2DB;border-radius:10px;padding:14px 16px;margin:12px 0"><div style="font-size:16px;font-weight:800;color:#1A1A2E">Órdenes de compra pendientes</div>`;
+  h += `<p style="font-size:13px;color:#1A1A2E;line-height:1.5;margin:8px 0">Vencidas: <b>${grupos.vencida.length}</b> por ${finMoney(totales.vencida)} · Vencen en 7 días: <b>${grupos.porvencer.length}</b> por ${finMoney(totales.porvencer)} · A tiempo: <b>${grupos.atiempo.length}</b> por ${finMoney(totales.atiempo)}.</p>`;
+  h += bloque("Vencidas", grupos.vencida, "Atraso", "#E85D4A") + bloque("Vencen en los próximos 7 días", grupos.porvencer, "Faltan", "#C47C1A");
+  h += `<p style="font-size:11.5px;color:#5A5A7A;line-height:1.5;margin:10px 0 0">Busint no dice si la mercancía ya llegó: una orden sigue pendiente hasta que Contabilidad la marque como recibida o se dé por cumplida en Busint. Solo se vigilan las vencidas de los últimos 60 días; las anteriores quedan en el Historial.</p></div>`;
+  return h;
+}
+function finArmarCorreo({ r, oc, semanal }) {
+  const nv = FIN_NIVELES[r.cumpl.nivel];
+  const asunto = semanal ? `ATLAS · Presupuesto de clientes ${finNombreMes(r.ym)}: ${nv.txt}` : `ATLAS · Cambió el semáforo del presupuesto de clientes: ${nv.txt}`;
+  let html = `<div style="font-family:Arial,Helvetica,sans-serif;max-width:760px;color:#1A1A2E"><div style="font-size:11px;letter-spacing:.5px;color:#5A5A7A;font-weight:700">INDUSTRIAS YANKO · ATLAS</div><h2 style="margin:4px 0 2px">${semanal ? "Resumen financiero de la semana" : "Aviso: cambió el semáforo del presupuesto de clientes"}</h2>`;
+  html += finHtmlSemaforo(r);
+  if (semanal && oc) html += finHtmlOrdenes(oc);
+  html += `<p style="font-size:11.5px;color:#8A8FA8;margin-top:14px">Detalle completo en ATLAS → Financiera → Cuánto debo pagar.</p></div>`;
+  return { asunto, html };
+}
+// Destinatarios: Gerencia = administradores activos con correo; Tesorería = usuarios activos del área «Contabilidad y Tesorería»; + adicionales (config.notificacionesExtras.correoCumplimientoPresupuesto).
+async function finDestinatariosCumplimiento() {
+  const [usersSnap, configSnap] = await Promise.all([db.collection("users").get(), db.collection("config").doc("main").get()]);
+  const usuarios = usersSnap.docs.map((d) => d.data()).filter((u) => u.activo !== false && u.email);
+  const sinAcento = (t) => String(t || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase();
+  const gerencia = usuarios.filter((u) => u.isAdmin);
+  const tesoreria = usuarios.filter((u) => !u.isAdmin && sinAcento(u.areaNomina).includes("TESORER"));
+  const extras = (((configSnap.data() || {}).notificacionesExtras || {}).correoCumplimientoPresupuesto || []).map((e) => e.correo).filter(Boolean);
+  const correos = [...new Set([...gerencia, ...tesoreria].map((u) => u.email).concat(extras))];
+  return { gerencia, tesoreria, extras, correos };
+}
+async function finEjecutarCorreoCumplimiento({ hoyISO, forzarSemanal, soloVista, destinoPrueba }) {
+  const sinTrabajar = await diasSinTrabajarCP();
+  if (!forzarSemanal && !finEsDiaTrabajo(hoyISO, sinTrabajar)) return { enviado: false, motivo: "hoy no es día de trabajo" };
+  const dowHoy = (new Date(`${hoyISO}T12:00:00Z`).getUTCDay() + 6) % 7; // 0 = lunes
+  let primerDia = true;
+  for (let i = 1; i <= dowHoy; i++) if (finEsDiaTrabajo(sumarDiasISOCP(hoyISO, -i), sinTrabajar)) primerDia = false;
+  const semanal = !!forzarSemanal || primerDia;
+  const datos = await finCargarDatos(hoyISO.slice(0, 7));
+  const r = finCalcularCumplimiento({ hoyISO, datos, sinTrabajar });
+  const estadoRef = db.collection("financiera_cumplimiento_estado").doc("main");
+  const estado = (await estadoRef.get()).data() || null;
+  const cambio = !!estado && estado.ym === r.ym && estado.nivel !== r.cumpl.nivel && ["verde", "ambar", "rojo"].includes(r.cumpl.nivel);
+  if (!semanal && !cambio && !soloVista && !destinoPrueba) {
+    if (!estado || estado.ym !== r.ym) await estadoRef.set({ ym: r.ym, nivel: r.cumpl.nivel, actualizadoEn: new Date().toISOString() });
+    return { enviado: false, motivo: "sin cambio de semáforo", nivel: r.cumpl.nivel };
+  }
+  let oc = null;
+  if (semanal) {
+    try {
+      const ordenesBusint = await ordenesCompraBusintDatos();
+      oc = finOrdenesPendientes(ordenesBusint.ordenes, datos.recibidas, hoyISO);
+    } catch (err) {
+      logger.error("correoCumplimientoPresupuesto: no se pudieron traer las órdenes de compra", { error: String(err) });
+    }
+  }
+  const { asunto, html } = finArmarCorreo({ r, oc: oc || null, semanal });
+  const htmlFinal = semanal && !oc ? html.replace("<p style=\"font-size:11.5px;color:#8A8FA8", "<p style=\"font-size:12px;color:#C47C1A\">No se pudieron traer las órdenes de compra de Busint esta vez.</p><p style=\"font-size:11.5px;color:#8A8FA8") : html;
+  const dest = await finDestinatariosCumplimiento();
+  if (soloVista) return { vista: true, asunto, html: htmlFinal, destinatarios: dest.correos, nivel: r.cumpl.nivel, semanal };
+  const para = destinoPrueba ? [destinoPrueba] : dest.correos;
+  if (!para.length) {
+    logger.warn("correoCumplimientoPresupuesto: sin destinatarios");
+    return { enviado: false, motivo: "sin destinatarios" };
+  }
+  await mandarCorreo(crearTransporte(), para, destinoPrueba ? `[PRUEBA] ${asunto}` : asunto, htmlFinal);
+  if (!destinoPrueba) await estadoRef.set({ ym: r.ym, nivel: r.cumpl.nivel, actualizadoEn: new Date().toISOString(), ultimoEnvio: semanal ? "semanal" : "aviso" });
+  logger.info("correoCumplimientoPresupuesto enviado", { semanal, nivel: r.cumpl.nivel, destinatarios: para.length, prueba: !!destinoPrueba });
+  return { enviado: true, semanal, nivel: r.cumpl.nivel, destinatarios: para.length, prueba: !!destinoPrueba };
+}
+exports.correoCumplimientoPresupuesto = onSchedule(
+  { schedule: "every day 08:00", timeZone: "America/Bogota", secrets: [EMAIL_USER, EMAIL_APP_PASSWORD, BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY], timeoutSeconds: 540, memory: "1GiB" },
+  async () => { await finEjecutarCorreoCumplimiento({ hoyISO: fechaHoyBogota() }); }
+);
+// Prueba manual (solo admin), botón «✉ Enviarme el correo de prueba» en Financiera → Cuánto debo pagar: `vista` devuelve el HTML; `paraMi` lo manda solo al correo real del administrador.
+exports.enviarCorreoCumplimientoPrueba = onCallAuth(
+  { secrets: [EMAIL_USER, EMAIL_APP_PASSWORD, BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY], timeoutSeconds: 540, memory: "1GiB" },
+  async (request) => {
+    const adminDoc = await verificarLlamadorEsAdmin(request);
+    const correoReal = String(adminDoc.data().email || "").trim();
+    if (request.data?.paraMi && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correoReal)) throw new HttpsError("failed-precondition", "Tu usuario no tiene un correo real guardado. Agrégalo en Administración → Usuarios (campo Email) y vuelve a probar.");
+    return finEjecutarCorreoCumplimiento({ hoyISO: fechaHoyBogota(), forzarSemanal: true, soloVista: !!request.data?.vista, destinoPrueba: request.data?.paraMi ? correoReal : null });
   }
 );
 
