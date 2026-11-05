@@ -3,6 +3,7 @@ import { initializeApp, getApps } from "firebase/app";
 import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc } from "firebase/firestore";
 import { calcularEquiposCorte } from "./corte-equipos";
 import { unirPorAlias } from "./nombres-alias";
+import { esDiaDeTrabajoISO } from "./dias-habiles";
 import { AREAS_HISTORICO, claveArea, nombreAreaPorClave, normTexto, parsearHojaHistorico, unirResultados } from "./centro-costo-historico-parser";
 
 // ─── CENTRO DE COSTO — HISTÓRICO DEL AÑO POR ÁREA ───────────────────────────
@@ -74,11 +75,10 @@ function ubicarCierre(c) {
   return null;
 }
 
-// ¿El día "dd/mm/aaaa" es de lunes a viernes?
+// ¿El día "dd/mm/aaaa" es día de trabajo? (lunes a viernes sin festivo; sábado puente sí; domingo no)
 function esDiaHabil(dia) {
   const [d, m, y] = String(dia).split("/").map(Number);
-  const w = new Date(y, m - 1, d).getDay();
-  return w !== 0 && w !== 6;
+  return esDiaDeTrabajoISO(`${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`);
 }
 const DIAS_SEMANA = ["dom", "lun", "mar", "mié", "jue", "vie", "sáb"];
 function nombreDia(dia) {

@@ -5,6 +5,7 @@ import { getFunctions, httpsCallable } from "firebase/functions";
 import CentroCostoAnioPanel from "./centro-costo-historico";
 import ConsumoTelaCortePanel from "./consumo-tela-corte";
 import EquiposCorteVista from "./corte-equipos-vista";
+import { diasDeTrabajoDelMes } from "./dias-habiles";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
   authDomain: "techpack-yanko-f37b8.firebaseapp.com",
@@ -66,14 +67,8 @@ function KPI({ icon, label, value, color, bg, sub }) {
 // mismos cortes del periodo agrupados por pedido. No toca ni escribe nada
 // en pedidos_activos ni en corte_config -- solo los lee.
 function diasHabilesCC(mes, anio) {
-  let count = 0;
-  const d = new Date(anio, mes - 1, 1);
-  while (d.getMonth() === mes - 1) {
-    const dow = d.getDay();
-    if (dow !== 0 && dow !== 6) count++;
-    d.setDate(d.getDate() + 1);
-  }
-  return count;
+  // (2026-11-05) Días de trabajo reales: sin festivos, con el sábado antes de un lunes festivo (ver dias-habiles.js).
+  return diasDeTrabajoDelMes(anio, mes);
 }
 export default function CentroCostoCorteEnAreas({ areaNombre, currentUser }) {
   const hoy = today();

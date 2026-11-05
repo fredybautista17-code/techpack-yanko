@@ -20,6 +20,7 @@ import TableroCostosView from "./tablero-costos";
 import { num as numCotizador } from "./cotizador-calculo";
 import { DevolucionesCalidadView } from "./devoluciones-cliente";
 import { claveArea as claveAreaHistorico } from "./centro-costo-historico-parser";
+import { diasDeTrabajoDelMes, esDiaDeTrabajoISO, sabadoSeTrabajaISO } from "./dias-habiles";
 import { armarListaPorProgramar, estadisticasPedidos, prioridadPedido } from "./lista-programar-calculo";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
@@ -4451,14 +4452,8 @@ export function ListaPorProgramarBloque({ currentUser, incrustado = true }) {
 // sueldo cargado en Nómina se marca aparte (no se le puede calcular costo)
 // para que el balance no se lea como más positivo de lo que realmente es.
 function diasHabiles(mes, anio) {
-  let count = 0;
-  const d = new Date(anio, mes - 1, 1);
-  while (d.getMonth() === mes - 1) {
-    const dow = d.getDay();
-    if (dow !== 0 && dow !== 6) count++;
-    d.setDate(d.getDate() + 1);
-  }
-  return count;
+  // (2026-11-05) Días de trabajo reales: sin festivos, con el sábado antes de un lunes festivo (ver dias-habiles.js).
+  return diasDeTrabajoDelMes(anio, mes);
 }
 const DIAS_LABORALES_MES = 20;
 const MESES_CORTOS = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
@@ -4556,22 +4551,6 @@ const FESTIVOS_COLOMBIA_2026_CC = [
 function esFestivoColombiaCC(iso) {
   return FESTIVOS_COLOMBIA_2026_CC.includes(iso);
 }
-function lunesDeLaSemanaCC(iso) {
-  const d = new Date(iso + "T00:00:00");
-  const dow = d.getDay(); // 0=domingo..6=sabado
-  const diff = dow === 0 ? -6 : 1 - dow;
-  d.setDate(d.getDate() + diff);
-  return d.toISOString().slice(0, 10);
-}
-function semanaTuvoFestivoCC(iso) {
-  const lunes = new Date(lunesDeLaSemanaCC(iso) + "T00:00:00");
-  for (let i = 0; i < 6; i++) { // lunes a sabado
-    const d = new Date(lunes);
-    d.setDate(lunes.getDate() + i);
-    if (esFestivoColombiaCC(d.toISOString().slice(0, 10))) return true;
-  }
-  return false;
-}
 // (2026-10-01, a pedido de Fredy) Dia esperado de trabajo con el horario
 // completo por defecto -- lunes a viernes siempre (excepto festivo), sabado
 // SOLO si esa semana tuvo un festivo entre semana (para reponer), domingo
@@ -4583,7 +4562,7 @@ function diaEsperadoCC(iso) {
   const dow = new Date(iso + "T00:00:00").getDay(); // 0=domingo..6=sabado
   if (dow === 0) return false;
   if (esFestivoColombiaCC(iso)) return false;
-  if (dow === 6) return semanaTuvoFestivoCC(iso);
+  if (dow === 6) return sabadoSeTrabajaISO(iso); // (2026-11-05) incluye el sábado antes de un lunes festivo
   return true;
 }
 // (2026-09-22, a pedido de Fredy; corregido 2026-10-01 para usar festivos
@@ -4914,8 +4893,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
     let dias = 0;
     const d = new Date(ini);
     while (d <= fin) {
-      const dow = d.getDay();
-      if (dow !== 0 && dow !== 6) dias++;
+      if (esDiaDeTrabajoISO(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`)) dias++;
       d.setDate(d.getDate() + 1);
     }
     return dias;

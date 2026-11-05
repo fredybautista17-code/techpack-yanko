@@ -4,10 +4,11 @@
 //     trabajador, el saldo del día y el saldo acumulado del mes (se reinicia el día 1), del año y total.
 //   · Áreas sin costo diario todavía (Confección, Terminación, Despachos): unidades del día contra la meta diaria.
 // Reglas que ya usa Centro de Costo (se respetan igual):
-//   - El valor producido cuenta todos los días; el costo del sueldo solo cuenta de lunes a viernes.
+//   - El valor producido cuenta todos los días; el costo del sueldo solo cuenta en días de trabajo (lunes a viernes sin festivo, más el sábado antes de un lunes festivo).
 //   - Solo cuentan los trabajadores que decide `incluir` (destajo; en CORTE toda la nómina) y los que tienen sueldo.
 //   - Un trabajador «cubre su salario» cuando lo producido del día es al menos su sueldo del día.
 // Todo son funciones puras: la pantalla les pasa lo que leyó de Firestore.
+import { esDiaDeTrabajoISO, diasDeTrabajoDelMes } from "./dias-habiles";
 
 export const METAS_DEFECTO = { corte: 2000, confeccion: 2200, terminacion: 2200, despachos: 2200 };
 
@@ -23,15 +24,13 @@ export function isoDeEtiquetaDia(et) {
   const m = String(et || "").trim().match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
   return m ? `${m[3]}-${m[2]}-${m[1]}` : "";
 }
+// (2026-11-05, a pedido de Fredy) Día hábil = día de trabajo: no festivo de Colombia, domingo nunca, y el sábado antes de un
+// lunes festivo SÍ se trabaja (ver dias-habiles.js).
 export function esHabilISO(iso) {
-  const d = new Date(`${iso}T00:00:00Z`).getUTCDay();
-  return d !== 0 && d !== 6;
+  return esDiaDeTrabajoISO(iso);
 }
 export function diasHabilesDelMes(anio, mes) {
-  const ult = new Date(Date.UTC(anio, mes, 0)).getUTCDate();
-  let n = 0;
-  for (let d = 1; d <= ult; d++) if (esHabilISO(`${anio}-${pad(mes)}-${pad(d)}`)) n++;
-  return n || 20;
+  return diasDeTrabajoDelMes(anio, mes) || 20;
 }
 export function diasDelMesHasta(anio, mes, hastaISO) {
   const ult = new Date(Date.UTC(anio, mes, 0)).getUTCDate();

@@ -18,6 +18,7 @@ import { mismoNombre } from "./corte-equipos";
 import { resolverNombre } from "./nombres-alias";
 import { evaluarCorteContraTeorico } from "./consumo-tela-calculo";
 import EquiposCorteVista from "./corte-equipos-vista";
+import { diasDeTrabajoDelMes } from "./dias-habiles";
 // ─── FIREBASE ────────────────────────────────────────────────────────────────
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
@@ -318,14 +319,8 @@ function guardarUltimoMeson(planta, mesonId) {
   } catch {}
 }
 function diasHabiles(mes, anio) {
-  let count = 0;
-  const d = new Date(anio, mes - 1, 1);
-  while (d.getMonth() === mes - 1) {
-    const dow = d.getDay();
-    if (dow !== 0 && dow !== 6) count++;
-    d.setDate(d.getDate() + 1);
-  }
-  return count;
+  // (2026-11-05) Días de trabajo reales: sin festivos, con el sábado antes de un lunes festivo (ver dias-habiles.js).
+  return diasDeTrabajoDelMes(anio, mes);
 }
 // Días laborales transcurridos desde el día 1 del mes hasta una fecha
 // puntual (inclusive) — para el "ritmo acumulado": comparar lo que ya se
@@ -333,12 +328,7 @@ function diasHabiles(mes, anio) {
 // cortado a esa altura (costo diario × días laborales ya transcurridos).
 function diasLaboralesHastaFecha(fechaISO) {
   const [y, m, d] = fechaISO.split("-").map(Number);
-  let count = 0;
-  for (let dia = 1; dia <= d; dia++) {
-    const dow = new Date(y, m - 1, dia).getDay();
-    if (dow !== 0 && dow !== 6) count++;
-  }
-  return count;
+  return diasDeTrabajoDelMes(y, m, d);
 }
 // Días laborales al mes usados para estimar el costo DIARIO del centro de
 // costo (nómina / DIAS_LABORALES_MES) — el usuario indicó que trabaja 20 días

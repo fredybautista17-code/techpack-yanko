@@ -7052,7 +7052,7 @@ async function correrAuditoriaBusintVsNomina({ inmediato = false, sinNotificar =
   const areas = areasSnap.docs.map((d) => ({ ...d.data(), id: d.id }));
   const trabajadores = trabajadoresSnap.docs.map((d) => ({ ...d.data(), id: d.id }));
   const produccion = produccionSnap.docs.map((d) => d.data());
-  const usuarios = usersSnap.docs.map((d) => d.data());
+  const usuarios = usersSnap.docs.map((d) => d.data()).filter((u) => u.activo !== false); // (2026-11-05) sin usuarios inactivos
   // Destinatarios adicionales que Fredy agregó a mano desde Administración
   // -> Notificaciones (se SUMAN a quien ya le llega automáticamente, no lo
   // reemplazan).
@@ -10857,9 +10857,22 @@ function buscarCorreoPorNombre(nombreBuscado, usuarios) {
   const match = usuarios.find((u) => {
     const nombreUsuario = String(u.name || "").trim().toLowerCase();
     if (!nombreUsuario || !u.email) return false;
+    if (u.activo === false) return false; // (2026-11-05) un usuario inactivo no recibe correos
     return nombreUsuario === buscado || nombreUsuario.includes(buscado) || buscado.includes(nombreUsuario);
   });
   return match ? match.email : null;
+}
+// (2026-11-05, a pedido de Fredy) ¿El nombre corresponde a un usuario INACTIVO (y a ninguno activo)? Se usa para no felicitar ni avisar
+// de atrasos de una diseñadora que ya no está, aunque le quede algo asignado en prototipos o cápsulas.
+function nombreDeUsuarioInactivo(nombreBuscado, usuarios) {
+  const buscado = String(nombreBuscado || "").trim().toLowerCase();
+  if (!buscado) return false;
+  const coincide = (u) => {
+    const n = String(u.name || "").trim().toLowerCase();
+    return !!n && (n === buscado || n.includes(buscado) || buscado.includes(n));
+  };
+  const todos = (usuarios || []).filter(coincide);
+  return todos.length > 0 && todos.every((u) => u.activo === false);
 }
 
 function crearTransporte() {
@@ -11453,7 +11466,7 @@ exports.obtenerResumenNotificacionesProgramadas = onCallAuth({ timeoutSeconds: 6
     db.collection("config").doc("main").get(),
     db.collection("nomina_areas").get(),
   ]);
-  const usuarios = usersSnap.docs.map((d) => d.data());
+  const usuarios = usersSnap.docs.map((d) => d.data()).filter((u) => u.activo !== false); // (2026-11-05) sin usuarios inactivos
   const paraDestino = (lista) => lista.map((u) => ({ nombre: u.name || "(sin nombre)", correo: u.email }));
   const notificacionesExtras = (configSnap.data() || {}).notificacionesExtras || {};
   const extrasDe = (id) => Array.isArray(notificacionesExtras[id]) ? notificacionesExtras[id] : [];
@@ -11632,7 +11645,7 @@ exports.correoDespachosDiarios = onSchedule(
 
     const lideres = usersSnap.docs
       .map((d) => d.data())
-      .filter((u) => (u.procesosPlaneacion || []).length > 0 && u.email);
+      .filter((u) => u.activo !== false && (u.procesosPlaneacion || []).length > 0 && u.email);
     // Destinatarios adicionales agregados a mano desde Administración ->
     // Notificaciones -- se SUMAN a los líderes, no los reemplazan.
     const extras = ((configSnap.data() || {}).notificacionesExtras?.correoDespachosDiarios || [])
@@ -11726,7 +11739,7 @@ async function enviarResumenPorClienteCorreo({ inmediato = true } = {}) {
     const totalMonto = despachos.reduce((s, f) => s + (f.monto || 0), 0);
     const totalClientes = clientes.length;
 
-    const usuarios = usersSnap.docs.map((d) => d.data());
+    const usuarios = usersSnap.docs.map((d) => d.data()).filter((u) => u.activo !== false); // (2026-11-05) sin usuarios inactivos
     const lideres = usuarios.filter((u) => (u.procesosPlaneacion || []).length > 0 && u.email).map((u) => u.email);
     const admins = usuarios.filter((u) => u.isAdmin && u.email).map((u) => u.email);
     // Destinatarios adicionales agregados a mano desde Administración ->
@@ -11880,6 +11893,7 @@ async function revisarYAvisarVencidos() {
     const item = doc.data();
     if (!estaVencido(item, stagesMap)) continue;
     if (item.vencidoAvisadoEtapa === item.currentStage) continue; // ya se avisó en esta etapa
+    if (nombreDeUsuarioInactivo(item.assignedTo, usuarios)) continue; // (2026-11-05) diseñadora inactiva: no se avisa
 
     const correoDisenadora = buscarCorreoPorNombre(item.assignedTo, usuarios);
     const nombreItem = `${item.name || "Prototipo"}${item.reference ? ` (${item.reference})` : ""}`;
@@ -11913,6 +11927,7 @@ async function revisarYAvisarVencidos() {
       if (refItem.vencidoAvisadoEtapa === refItem.currentStage) continue;
 
       const asignado = refItem.assignedTo || cap.assignedTo;
+      if (nombreDeUsuarioInactivo(asignado, usuarios)) continue; // (2026-11-05) diseñadora inactiva: no se avisa
       const correoDisenadora = buscarCorreoPorNombre(asignado, usuarios);
       const nombreItem = `${refItem.name || "Referencia"}${refItem.reference ? ` (${refItem.reference})` : ""} — Cápsula ${cap.name || ""}`;
       const etapaLabel = stages.find((s) => s.id === refItem.currentStage)?.label || refItem.currentStage;
@@ -12001,6 +12016,7 @@ async function revisarYFelicitarAlDia() {
   let felicitacionesEnviadas = 0;
   for (const [key, g] of porDisenadora) {
     if (!g.tieneActivos) continue;
+    if (nombreDeUsuarioInactivo(g.nombre, usuarios)) continue; // (2026-11-05) diseñadora inactiva: no se felicita ni se avisa al equipo
     const estadoRef = db.collection("diseno_estado_felicitaciones").doc(key);
     const estadoSnap = await estadoRef.get();
     const yaFelicitada = estadoSnap.exists && estadoSnap.data().sinAtrasos === true;
@@ -12226,7 +12242,7 @@ exports.enviarAsistenciaDiaria = onSchedule(
     const areas = areasSnap.docs.map((d) => d.data());
     const todosTrabajadores = trabajadoresSnap.docs.map((d) => ({ ...d.data(), id: d.id }));
     const trabajadoresActivos = todosTrabajadores.filter((t) => t.activo !== false);
-    const usuarios = usersSnap.docs.map((d) => d.data());
+    const usuarios = usersSnap.docs.map((d) => d.data()).filter((u) => u.activo !== false); // (2026-11-05) sin usuarios inactivos
     // (2026-09-15, a pedido de Fredy) Anomalías = marcó el huellero UNA
     // sola vez ese día (entrada sin salida, o al revés), sin permiso que
     // lo explique -- ya viene calculado y guardado desde Reporte de
@@ -12442,7 +12458,7 @@ exports.revisarRetardosYAvisar = onCallAuth(
       db.collection("nomina_retardos").where("fecha", ">=", inicioMes).where("fecha", "<=", finMes).get(),
       db.collection("users").get(),
     ]);
-    const usuarios = usersSnap.docs.map((d) => d.data());
+    const usuarios = usersSnap.docs.map((d) => d.data()).filter((u) => u.activo !== false); // (2026-11-05) sin usuarios inactivos
     function contarPorNombre(snap) {
       const counts = new Map();
       snap.docs.forEach((d) => {
@@ -12593,7 +12609,7 @@ exports.avisarProcesoSinPrecioMaximo = onCallAuth(
       return { enviado: false, yaAvisado: true };
     }
     const usersSnap = await db.collection("users").get();
-    const usuarios = usersSnap.docs.map((d) => d.data());
+    const usuarios = usersSnap.docs.map((d) => d.data()).filter((u) => u.activo !== false);
     const correos = DESTINATARIOS_PRECIO_FALTANTE.map((n) => buscarCorreoPorNombre(n, usuarios)).filter(Boolean);
     if (!correos.length) {
       logger.warn("No se encontró correo de Dayana Delgado / Daniel Mejía en Usuarios — no se pudo avisar de precio faltante.", { referencia, proceso });
@@ -15628,7 +15644,7 @@ exports.resumenMananaAtlas = onSchedule(
   { schedule: "0 7 * * 1-6", timeZone: "America/Bogota", secrets: [EMAIL_USER, EMAIL_APP_PASSWORD, BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY, BUSINT_TOKEN, BUSINT_BASE_URL], timeoutSeconds: 300, memory: "1GiB" },
   async () => {
     const [usersSnap, configSnap] = await Promise.all([db.collection("users").get(), db.collection("config").doc("main").get()]);
-    const admins = usersSnap.docs.map((d) => d.data()).filter((u) => u.isAdmin && u.email);
+    const admins = usersSnap.docs.map((d) => d.data()).filter((u) => u.activo !== false && u.isAdmin && u.email);
     const extras = ((configSnap.data() || {}).notificacionesExtras?.resumenMananaAtlas || []).map((e) => e.correo).filter(Boolean);
     if (!admins.length && !extras.length) { logger.warn("resumenMananaAtlas: no hay administradores con correo cargado"); return; }
     const { hoy, html } = await asiArmarResumenManana();

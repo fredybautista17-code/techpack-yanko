@@ -196,7 +196,7 @@ function BloqueCierre({ db, currentUser }) {
     let pill = "Sin meta diaria";
     let sub = "Tu área todavía no tiene meta diaria (se define en Nómina → Áreas → «Meta diaria de unidades»).";
     if (sinCierre) { pill = "Sin cierre"; sub = "Este día todavía no tiene cierre guardado."; }
-    else if (!esHabil) { pill = "Día no hábil"; sub = "Fin de semana: cuenta lo producido, no se cobra sueldo."; }
+    else if (!esHabil) { pill = "Día no hábil"; sub = "Fin de semana o festivo: cuenta lo producido, no se cobra sueldo."; }
     else if (verMeta) {
       pill = e.nivel === "cumple" ? "✓ Cumplió la meta" : e.nivel === "cerca" ? "Casi llega a la meta" : "✗ No cumplió la meta";
       const dif = Math.round(f.meta - f.dia.unidades);
