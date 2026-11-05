@@ -38,15 +38,43 @@ function Tarjeta({ titulo, valor, sub, oscura }) {
 
 // (2026-11-05) Fuentes: Busint (solo Yanko) y TNS (Yanko e Indutex). Cada una guarda su resumen en su propio documento de caché.
 const FUENTES = {
-  busint: { etiqueta: "Busint · Yanko", docId: "main", funcion: "getIngresosClientesBusint", args: {}, nombre: "Busint" },
+  // Total Yanko = lo que entra por TNS (casi todo el ingreso) + traslados externos (consignación) que se facturan en Busint. Se arma en la pantalla con las dos funciones.
+  total_yanko: { etiqueta: "Total Yanko (TNS + traslados Busint)", docId: "total_yanko", combinada: true, nombre: "TNS y Busint" },
+  busint: { etiqueta: "Busint · Yanko (solo para cruzar)", docId: "main", funcion: "getIngresosClientesBusint", args: {}, nombre: "Busint" },
   tns_yanko: { etiqueta: "TNS · Yanko", docId: "tns_yanko", funcion: "getIngresosClientesTNS", args: { empresa: "yanko" }, nombre: "TNS (Yanko)" },
   tns_indutex: { etiqueta: "TNS · Indutex", docId: "tns_indutex", funcion: "getIngresosClientesTNS", args: { empresa: "indutex" }, nombre: "TNS (Indutex)" },
 };
 
+// Une TNS (cobros por cartera, caja y bancos) con los traslados externos de Busint (clientes que se facturan solo allá). Las llaves de cliente/medio llevan
+// prefijo para no mezclar NIT de TNS con códigos de Busint.
+function combinarTotalYanko(t, b) {
+  const trasl = b && !b.error ? b.traslados : null;
+  const porMes = {};
+  t.meses.forEach((ym) => {
+    const x = t.clientes?.porMes?.[ym] || {};
+    const y = trasl?.porMes?.[ym] || null;
+    const porCliente = {};
+    Object.entries(x.porCliente || {}).forEach(([k, v]) => { porCliente[`tns:${k}`] = v; });
+    Object.entries(y?.porCliente || {}).forEach(([k, v]) => { porCliente[`bus:${k}`] = v; });
+    const porMedio = {};
+    Object.entries(x.porMedio || {}).forEach(([k, v]) => { porMedio[`TNS · ${k}`] = v; });
+    Object.entries(y?.porMedio || {}).forEach(([k, v]) => { porMedio[`Busint (traslado) · ${k}`] = v; });
+    porMes[ym] = { ym, total: (x.total || 0) + (y?.total || 0), tnsTotal: x.total || 0, trasladosTotal: y?.total || 0, totalCajaBancos: x.totalCajaBancos || 0, porCliente, porMedio };
+  });
+  const nombres = {};
+  Object.entries(t.nombres || {}).forEach(([k, v]) => { nombres[`tns:${k}`] = v; });
+  Object.entries(b?.nombres || {}).forEach(([k, v]) => { nombres[`bus:${k}`] = `${v} (traslado externo, Busint)`; });
+  const avisos = [...(t.avisos || [])];
+  if (!b || b.error) avisos.push(`Busint no respondió, así que no se sumaron los traslados externos${b?.error ? ` (${b.error})` : ""}.`);
+  else if (!trasl) avisos.push("Busint no devolvió traslados externos (tabla «pagostras» vacía o no disponible): el total es solo TNS.");
+  return { fuente: "total_yanko", hoy: t.hoy, meses: t.meses, sucursales: t.sucursales, clientes: { porMes }, traslados: null, nombres, avisos, diagnosticoTns: t.diagnosticoTns, hayTraslados: !!trasl };
+}
+
 export function IngresosView({ db, functionsClient, isAdmin }) {
-  const [fuente, setFuente] = useState("busint");
+  const [fuente, setFuente] = useState("total_yanko");
   const F = FUENTES[fuente];
-  const esTns = fuente !== "busint";
+  const combinada = !!F.combinada;
+  const esTns = fuente === "tns_yanko" || fuente === "tns_indutex";
   const [datos, setDatos] = useState(null); // respuesta completa del servidor (en memoria)
   const [cache, setCache] = useState(null); // resumen guardado { actualizadoEn, meses: [{ ym, total, traslados }] }
   const [cargando, setCargando] = useState(false);
@@ -68,8 +96,15 @@ export function IngresosView({ db, functionsClient, isAdmin }) {
     setCargando(true);
     setError("");
     try {
-      const r = await httpsCallable(functionsClient, F.funcion, { timeout: 540000 })({ meses: 13, ...F.args });
-      const d = r.data;
+      let d;
+      if (combinada) {
+        const llamar = (fn, args) => httpsCallable(functionsClient, fn, { timeout: 540000 })({ meses: 13, ...args }).then((x) => x.data);
+        const [t, b] = await Promise.all([llamar("getIngresosClientesTNS", { empresa: "yanko" }), llamar("getIngresosClientesBusint", {}).catch((e) => ({ error: e?.message || "No respondió Busint." }))]);
+        d = combinarTotalYanko(t, b);
+      } else {
+        const r = await httpsCallable(functionsClient, F.funcion, { timeout: 540000 })({ meses: 13, ...F.args });
+        d = r.data;
+      }
       setDatos(d);
       const resumen = d.meses.map((ym) => ({ ym, total: Math.round(d.clientes?.porMes?.[ym]?.total || 0), traslados: Math.round(d.traslados?.porMes?.[ym]?.total || 0) }));
       await setDoc(doc(db, "financiera_ingresos_cache", F.docId), { actualizadoEn: new Date().toISOString(), fuente, meses: resumen });
@@ -137,7 +172,7 @@ export function IngresosView({ db, functionsClient, isAdmin }) {
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 6 }}>
         <h2 style={{ margin: 0, fontSize: 21, fontWeight: 900, color: C.ink }}>Ingresos de clientes</h2>
         <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          {!esTns ? (
+          {fuente === "busint" ? (
             <label style={{ fontSize: 12.5, color: C.slate, display: "flex", alignItems: "center", gap: 6 }}>
               <input type="checkbox" checked={incluirTras} onChange={(e) => setIncluirTras(e.target.checked)} /> Sumar traslados externos (consignación)
             </label>
@@ -149,9 +184,11 @@ export function IngresosView({ db, functionsClient, isAdmin }) {
         {Object.entries(FUENTES).map(([k, v]) => <Boton key={k} chico variante={fuente === k ? "oscuro" : "claro"} onClick={() => cambiarFuente(k)}>{v.etiqueta}</Boton>)}
       </div>
       <div style={{ fontSize: 12.5, color: C.slate, marginBottom: 14, maxWidth: 860, lineHeight: 1.5 }}>
-        {esTns
-          ? "Lo que entra a caja y bancos en TNS por cobros de clientes (Libro Auxiliar de las cuentas 1105 a 1120, solo terceros que son clientes), por mes, por cliente y por caja o banco. Si TNS no entrega el tercero en el Libro, se estima con la cartera. Indutex solo existe en TNS."
-          : "Lo que los clientes pagan (recibos de caja de cartera en Busint, solo Yanko), por mes, por cliente y por caja o banco. Sirve para comparar lo que entra con lo que debes pagar al mes."}
+        {combinada
+          ? "Todo lo que entra: los cobros de clientes en TNS (casi todo el ingreso) más los traslados externos (consignación) de los clientes que se facturan en Busint. Los cobros normales de Busint NO se suman porque ya están en TNS."
+          : esTns
+            ? "Cobros de clientes en TNS, por mes y por cliente: créditos de la cuenta de clientes (1305) más anticipos recibidos (2805) menos anticipos aplicados. Por caja o banco: lo que entra a cada cuenta (1105 a 1120), que incluye todo, no solo clientes. El Libro Auxiliar de TNS falla, por eso no se usa."
+            : "Lo que los clientes pagan en Busint (recibos de caja de cartera, solo Yanko). Sirve para cruzar contra TNS; no se suma al total porque ya está en TNS."}
         {quien ? ` Último resumen guardado: ${quien}.` : ` Todavía no hay datos: pulsa «Traer desde ${F.nombre}».`}
         {!datos && cache ? " El detalle por cliente y banco aparece al traerlo de nuevo." : ""}
       </div>
@@ -224,39 +261,48 @@ export function IngresosView({ db, functionsClient, isAdmin }) {
         </>
       ) : null}
 
-      {verDiag && datos && esTns ? (
+      {verDiag && datos && (esTns || combinada) ? (
         <div style={{ marginTop: 14, background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 16px", fontSize: 12, color: C.slate, lineHeight: 1.6 }}>
-          <div style={{ fontWeight: 800, color: C.ink, marginBottom: 4 }}>Diagnóstico de TNS (para validar contra los extractos)</div>
-          <div>Sucursales: {(datos.sucursales || []).join(", ")} · clientes detectados (1305/2805): {datos.diagnosticoTns?.clientesDetectados} · con pagos y consultados en el Libro: {datos.diagnosticoTns?.clientesConsultados} (respondieron {datos.diagnosticoTns?.consultasOk}, sin Libro {datos.diagnosticoTns?.clientesSinLibro}) · débitos leídos: {datos.diagnosticoTns?.lineasDebitoLibro} · tardó {datos.diagnosticoTns?.segundos} s · el total usa {datos.clientes?.usaLibro ? "el Libro Auxiliar por cliente (y la cartera solo para los que no respondieron)" : "la estimación por cartera"}.</div>
-          {(datos.diagnosticoTns?.erroresLibro || []).map((e, i) => <div key={i} style={{ color: C.red }}>Libro Auxiliar: {e}</div>)}
-          <div style={{ marginTop: 6 }}>Por mes: total de débitos de caja y bancos (contra tu extracto), de ahí lo que es de clientes, lo que es de otros, y la estimación por cartera:</div>
+          <div style={{ fontWeight: 800, color: C.ink, marginBottom: 4 }}>Diagnóstico (para validar contra los extractos)</div>
+          <div>Sucursales de TNS consultadas: <b>{(datos.sucursales || []).join(", ")}</b> (deben ser las de esta empresa: Nómina → Conexión TNS) · clientes con movimiento: {datos.diagnosticoTns?.clientesDetectados} · cuentas de caja/banco: {datos.diagnosticoTns?.cuentasCajaBanco} · tardó {datos.diagnosticoTns?.segundos} s.</div>
+          <div style={{ marginTop: 6 }}>{combinada ? "Por mes: lo de TNS (cobros por cartera), los traslados externos de Busint y el total; y, para cuadrar con el extracto, los débitos de caja y bancos de TNS." : "Por mes: débitos de caja y bancos (contra tu extracto), el estimado de cobros de clientes y lo que no es cobro de cliente:"}</div>
           <div style={{ overflowX: "auto" }}>
             <table style={{ borderCollapse: "collapse", marginTop: 4 }}>
-              <thead><tr><th style={thL}>Mes</th><th style={th}>Débitos caja/bancos</th><th style={th}>Clientes (Libro)</th><th style={th}>Otros ingresos</th><th style={th}>Créditos 1305</th><th style={th}>Anticipos 2805 (neto)</th><th style={th}>Estimado cartera</th></tr></thead>
+              <thead>
+                <tr>
+                  <th style={thL}>Mes</th><th style={th}>Débitos caja/bancos</th>
+                  {combinada ? <><th style={th}>TNS cobros (cartera)</th><th style={th}>Traslados Busint</th><th style={th}>Total</th><th style={th}>Caja − cobros TNS</th></> : <><th style={th}>Créditos 1305</th><th style={th}>Anticipos 2805 (neto)</th><th style={th}>Estimado clientes</th><th style={th}>Otros / sin explicar</th></>}
+                </tr>
+              </thead>
               <tbody>
-                {datos.meses.map((ym) => { const m = datos.clientes?.porMes?.[ym]; if (!m) return null; return (
-                  <tr key={ym}><td style={tdL}>{etiquetaMes(ym)}</td><td style={td}>{money(m.totalCajaBancos)}</td><td style={td}>{money(m.totalLibroClientes)}</td><td style={td}>{money(m.otrosCaja)}</td><td style={td}>{money(m.creditos1305)}</td><td style={td}>{money(m.creditos2805 - m.debitos2805)}</td><td style={td}>{money(m.estimadoCartera)}</td></tr>
+                {datos.meses.map((ym) => { const m = datos.clientes?.porMes?.[ym]; if (!m) return null; return combinada ? (
+                  <tr key={ym}><td style={tdL}>{etiquetaMes(ym)}</td><td style={td}>{money(m.totalCajaBancos)}</td><td style={td}>{money(m.tnsTotal)}</td><td style={td}>{money(m.trasladosTotal)}</td><td style={{ ...td, fontWeight: 800 }}>{money(m.total)}</td><td style={td}>{money(m.totalCajaBancos - m.tnsTotal)}</td></tr>
+                ) : (
+                  <tr key={ym}><td style={tdL}>{etiquetaMes(ym)}</td><td style={td}>{money(m.totalCajaBancos)}</td><td style={td}>{money(m.creditos1305)}</td><td style={td}>{money(m.creditos2805 - m.debitos2805)}</td><td style={td}>{money(m.estimadoCartera)}</td><td style={td}>{money(m.otrosCaja)}</td></tr>
                 ); })}
               </tbody>
             </table>
           </div>
-          <div style={{ marginTop: 6, wordBreak: "break-word" }}>Campos que acepta el Libro Auxiliar: {(datos.diagnosticoTns?.camposLibro || []).join(", ") || "no se pudieron leer"}</div>
-          <div style={{ wordBreak: "break-word" }}>Ejemplo de línea del Libro: {JSON.stringify((datos.diagnosticoTns?.muestraLibro || [])[0] || null).slice(0, 500)}</div>
+          <div style={{ marginTop: 6 }}>Si «Otros / sin explicar» es grande en un mes, entró plata que no es cobro de cliente (préstamos, traslados entre bancos) o hay un anticipo cruzado: se revisa contra el extracto de ese mes.</div>
         </div>
       ) : null}
 
-      {verDiag && datos && !esTns ? (
+      {verDiag && datos && fuente === "busint" ? (
         <div style={{ marginTop: 14, background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 16px", fontSize: 12, color: C.slate, lineHeight: 1.6 }}>
           <div style={{ fontWeight: 800, color: C.ink, marginBottom: 4 }}>Diagnóstico (para validar contra los extractos)</div>
           <div>Columnas detectadas: {Object.entries(datos.clientes?.columnas || {}).map(([k, v]) => `${k}=${v || "—"}`).join(" · ")}</div>
-          <div>Recibos leídos: {datos.clientes?.recibosCabecera} · anulados: {datos.clientes?.anuladas} · sin fecha: {datos.clientes?.sinFecha} · se usa el total de la {datos.clientes?.usaCabecera ? "cabecera del recibo" : "suma de los renglones"}.</div>
-          <div style={{ marginTop: 6 }}>Por mes, total según la cabecera vs. según los renglones aplicados a facturas (si difieren, hay pagos sin aplicar o notas):</div>
+          <div>Recibos leídos: {datos.clientes?.recibosCabecera} · anulados excluidos: {datos.clientes?.anuladas}{datos.clientes?.columnas?.cabEstado ? ` (columna «${datos.clientes.columnas.cabEstado}»)` : " (no se encontró ninguna columna de estado: no se puede saber si hay anulados)"} · sin fecha: {datos.clientes?.sinFecha} · el total sale de {datos.clientes?.usaCabecera ? "la cabecera del recibo" : "la suma de los renglones (la tabla «pagos» no tiene columna de total, por eso Cabecera y Renglones salen iguales y esa comparación no valida nada)"}.</div>
+          <div>Caja/banco tomado de: {datos.clientes?.columnas?.cabMedio ? `«${datos.clientes.columnas.cabMedio}» de pagos` : datos.clientes?.columnas?.detMedio ? `«${datos.clientes.columnas.detMedio}» de pagos detalles` : "ninguna columna con datos (todo sale en «Sin dato»)"}.</div>
+          {[["Candidatas a caja/banco en pagos", datos.clientes?.candidatas?.medioCab], ["Candidatas a caja/banco en pagos detalles", datos.clientes?.candidatas?.medioDet], ["Candidatas a estado/anulado en pagos", datos.clientes?.candidatas?.estadoCab]].map(([t, l]) => (
+            <div key={t} style={{ wordBreak: "break-word" }}>{t}: {(l || []).length ? l.map((c) => `${c.col} (${c.llenos} con dato${c.ejemplos.length ? `, ej.: ${c.ejemplos.join(" | ")}` : ""})`).join(" · ") : "ninguna"}</div>
+          ))}
+          <div style={{ marginTop: 6 }}>Por mes: cobros normales de Busint (que ya están en TNS, no se suman al total) y traslados externos (los que sí se suman). La barra y la tabla de arriba incluyen los traslados solo si el interruptor está marcado:</div>
           <div style={{ overflowX: "auto" }}>
             <table style={{ borderCollapse: "collapse", marginTop: 4 }}>
-              <thead><tr><th style={thL}>Mes</th><th style={th}>Recibos</th><th style={th}>Cabecera</th><th style={th}>Renglones</th><th style={th}>Diferencia</th></tr></thead>
+              <thead><tr><th style={thL}>Mes</th><th style={th}>Recibos</th><th style={th}>Cobros normales</th><th style={th}>Traslados externos</th><th style={th}>Total con traslados</th></tr></thead>
               <tbody>
                 {datos.meses.map((ym) => { const m = datos.clientes?.porMes?.[ym]; if (!m) return null; return (
-                  <tr key={ym}><td style={tdL}>{etiquetaMes(ym)}</td><td style={td}>{m.recibos}</td><td style={td}>{money(m.totalCabecera)}</td><td style={td}>{money(m.totalDetalles)}</td><td style={td}>{money(m.totalCabecera - m.totalDetalles)}</td></tr>
+                  <tr key={ym}><td style={tdL}>{etiquetaMes(ym)}</td><td style={td}>{m.recibos}</td><td style={td}>{money(m.total)}</td><td style={td}>{money(datos.traslados?.porMes?.[ym]?.total || 0)}</td><td style={{ ...td, fontWeight: 800 }}>{money(m.total + (datos.traslados?.porMes?.[ym]?.total || 0))}</td></tr>
                 ); })}
               </tbody>
             </table>

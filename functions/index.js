@@ -5502,15 +5502,45 @@ function ingresosColumna(filas, exactas, patron) {
   if (patron) for (const k of claves) if (patron.test(k)) return k;
   return null;
 }
+// (2026-11-05) Columna con DATOS: de las candidatas (exactas presentes + las que cumplen el patrón) elige la que más filas llenas tiene
+// (en Busint «Ctabanco» existía pero llegaba vacía). Devuelve también el resumen de candidatas para el Diagnóstico.
+function ingresosLleno(v) {
+  if (v === null || v === undefined) return false;
+  if (typeof v === "object") return false;
+  const t = String(v).trim();
+  return t !== "" && t !== "0";
+}
+function ingresosCandidatas(filas, exactas, patron) {
+  const muestra = filas || [];
+  const claves = new Set();
+  muestra.slice(0, 50).forEach((f) => Object.keys(f || {}).forEach((k) => claves.add(k)));
+  const lista = [...exactas.filter((e) => claves.has(e)), ...[...claves].filter((k) => patron && patron.test(k) && !exactas.includes(k))];
+  return lista.map((col) => {
+    let llenos = 0;
+    const ejemplos = new Set();
+    muestra.forEach((f) => { const v = f?.[col]; if (ingresosLleno(v)) { llenos += 1; if (ejemplos.size < 4) ejemplos.add(String(v).trim().slice(0, 30)); } });
+    return { col, llenos, ejemplos: [...ejemplos] };
+  });
+}
+function ingresosMejorColumna(cands) {
+  const con = cands.filter((c) => c.llenos > 0);
+  return con.length ? con[0].col : null; // el orden ya prioriza las exactas
+}
 function ingresosProcesarTabla(cab, det, nombresCliente, nombresMedio) {
   const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+  const PAT_MEDIO = /(banco|bank|caja|ctapuc|puc|cuenta|^cta|forma)/i;
+  const EXACTAS_MEDIO = ["Ctabanco", "Banco", "CodBanco", "Codbanco", "Ctapuc", "Puc", "Cuenta", "Cta", "Caja", "FormaPago", "Formapago"];
+  const candMedioCab = ingresosCandidatas(cab, EXACTAS_MEDIO, PAT_MEDIO);
+  const candMedioDet = ingresosCandidatas(det, EXACTAS_MEDIO, PAT_MEDIO);
+  const candEstadoCab = ingresosCandidatas(cab, ["Anulado", "Estado", "Mensaje", "Status"], /(anul|estado|status|elimin|activo|vigente|cancel|nulo|void|inactiv)/i);
   const cols = {
     cabFecha: ingresosColumna(cab, ["Fechaini", "Fecha", "FechaPago", "Fechapago"], /fecha/i),
     cabNpago: ingresosColumna(cab, ["Npago", "NPago", "Numero", "Ndoc", "Nrecibo"], /^n(pago|recibo|doc)/i),
     cabCliente: ingresosColumna(cab, ["Cod", "Codigo", "CODIGO", "Codcliente", "CodCliente"], /^cod/i),
     cabTotal: ingresosColumna(cab, ["Total", "Valor", "TotalP", "Totalp", "Vrtotal", "ValorTotal"], /^(total|valor)/i),
-    cabMedio: ingresosColumna(cab, ["Banco", "CodBanco", "Codbanco", "Ctabanco", "Ctapuc", "Puc", "Cuenta", "FormaPago", "Formapago"], /(banco|ctapuc|puc|cuenta|forma)/i),
-    cabEstado: ingresosColumna(cab, ["Mensaje", "Anulado", "Estado"], /(anul|mensaje|estado)/i),
+    cabMedio: ingresosMejorColumna(candMedioCab),
+    cabEstado: ingresosMejorColumna(candEstadoCab),
+    detMedio: ingresosMejorColumna(candMedioDet),
     detNpago: ingresosColumna(det, ["Npago", "NPago", "Numero", "Ndoc", "Nrecibo"], /^n(pago|recibo|doc)/i),
     detCliente: ingresosColumna(det, ["Cod", "Codigo", "CODIGO", "Codcliente", "CodCliente"], /^cod/i),
     detValor: ingresosColumna(det, ["Valor", "Total", "Vrpago"], /^valor/i),
@@ -5519,7 +5549,10 @@ function ingresosProcesarTabla(cab, det, nombresCliente, nombresMedio) {
   const anulado = (r) => {
     if (!cols.cabEstado) return false;
     const v = r[cols.cabEstado];
-    if (typeof v === "string") return /(anul|elimin)/i.test(v);
+    const nom = cols.cabEstado;
+    if (/(activo|vigente)/i.test(nom)) return v === false || /^(0|n|no|false|inactivo)$/i.test(String(v ?? "").trim());
+    if (typeof v === "string") return /(anul|elimin|cancel|inactiv|nulo|void)/i.test(v) || (/(anul|elimin|cancel|nulo)/i.test(nom) && /^(1|s|si|sí|true|x)$/i.test(v.trim()));
+    if (typeof v === "number") return /(anul|elimin|cancel|nulo)/i.test(nom) && v === 1;
     return v === true;
   };
   const llaveNpago = (v) => String(v ?? "").trim();
@@ -5534,7 +5567,7 @@ function ingresosProcesarTabla(cab, det, nombresCliente, nombresMedio) {
       fecha: cols.cabFecha ? ingresosYmdDeCampo(r[cols.cabFecha]) : null,
       cliente: cols.cabCliente ? String(r[cols.cabCliente] ?? "").trim() : "",
       total: cols.cabTotal ? num(r[cols.cabTotal]) : null,
-      medio: cols.cabMedio ? String(r[cols.cabMedio] ?? "").trim() : "",
+      medio: cols.cabMedio && ingresosLleno(r[cols.cabMedio]) ? String(r[cols.cabMedio]).trim() : "",
     });
   });
   // Detalles por recibo
@@ -5542,7 +5575,8 @@ function ingresosProcesarTabla(cab, det, nombresCliente, nombresMedio) {
   (det || []).forEach((r) => {
     const np = llaveNpago(cols.detNpago ? r[cols.detNpago] : "");
     if (!np) return;
-    if (!detPorNpago.has(np)) detPorNpago.set(np, { valor: 0, clientes: new Map(), fecha: null });
+    if (!detPorNpago.has(np)) detPorNpago.set(np, { valor: 0, clientes: new Map(), fecha: null, medio: "" });
+    if (cols.detMedio && !detPorNpago.get(np).medio && ingresosLleno(r[cols.detMedio])) detPorNpago.get(np).medio = String(r[cols.detMedio]).trim();
     const d = detPorNpago.get(np);
     const v = cols.detValor ? num(r[cols.detValor]) : 0;
     d.valor += v;
@@ -5574,10 +5608,11 @@ function ingresosProcesarTabla(cab, det, nombresCliente, nombresMedio) {
       const cod = c.cliente || "0";
       m.porCliente[cod] = (m.porCliente[cod] || 0) + monto;
     }
-    const nomMedio = nombresMedio.get(c.medio) || c.medio || "Sin dato";
+    const codMedio = c.medio || (d && d.medio) || "";
+    const nomMedio = nombresMedio.get(codMedio) || nombresMedio.get(codMedio.replace(/\D/g, "")) || codMedio || "Sin dato";
     m.porMedio[nomMedio] = (m.porMedio[nomMedio] || 0) + monto;
   });
-  return { cols, porMes, anuladas, sinFecha, recibosCabecera: cabPorNpago.size, usaCabecera };
+  return { cols, porMes, anuladas, sinFecha, recibosCabecera: cabPorNpago.size, usaCabecera, candidatas: { medioCab: candMedioCab, medioDet: candMedioDet, estadoCab: candEstadoCab } };
 }
 function ingresosMuestra(filas, n = 3) {
   return (filas || []).slice(0, n).map((f) => {
@@ -5609,7 +5644,17 @@ exports.getIngresosClientesBusint = onCallAuth(
     const nombresMedio = new Map();
     const colBancoCod = ingresosColumna(bancos, ["Puc", "Cuenta", "Codigo", "Cod", "CodBanco", "Ctapuc"], /(puc|cuenta|cod)/i);
     const colBancoNom = ingresosColumna(bancos, ["Nombre", "Descripcion", "NombreBanco", "Banco", "Detalle"], /(nombre|descr|banco)/i);
-    (bancos || []).forEach((b) => { if (colBancoCod && colBancoNom) nombresMedio.set(String(b[colBancoCod] ?? "").trim(), String(b[colBancoNom] ?? "").trim()); });
+    (bancos || []).forEach((b) => {
+      if (!colBancoNom) return;
+      const nombre = String(b[colBancoNom] ?? "").trim();
+      if (colBancoCod) nombresMedio.set(String(b[colBancoCod] ?? "").trim(), nombre);
+      // Cualquier otra columna con un valor corto tipo código también apunta al nombre (el código del recibo puede venir de otra columna).
+      Object.entries(b || {}).forEach(([k, v]) => {
+        if (k === colBancoNom || v === null || v === undefined || typeof v === "object") return;
+        const t = String(v).trim();
+        if (t && t.length <= 20 && !/\s/.test(t) && t !== "0" && !nombresMedio.has(t)) { nombresMedio.set(t, nombre); const dg = t.replace(/\D/g, ""); if (dg && dg === t) nombresMedio.set(dg, nombre); }
+      });
+    });
 
     const clientesPagos = ingresosProcesarTabla(cab, det || [], nombresCliente, nombresMedio);
     const traslados = cabTras && cabTras.length ? ingresosProcesarTabla(cabTras, detTras || [], nombresCliente, nombresMedio) : null;
@@ -5627,7 +5672,7 @@ exports.getIngresosClientesBusint = onCallAuth(
     const juntar = (res) => Object.values(res ? recorta(res) : {}).forEach((mm) => Object.keys(mm.porCliente).forEach((cod) => { nombres[cod] = nombresCliente.get(cod) || `Cliente ${cod}`; }));
     juntar(clientesPagos);
     juntar(traslados);
-    const quitarPesado = (res) => (res ? { columnas: res.cols, recibosCabecera: res.recibosCabecera, anuladas: res.anuladas, sinFecha: res.sinFecha, usaCabecera: res.usaCabecera, porMes: recorta(res) } : null);
+    const quitarPesado = (res) => (res ? { columnas: res.cols, recibosCabecera: res.recibosCabecera, anuladas: res.anuladas, sinFecha: res.sinFecha, usaCabecera: res.usaCabecera, candidatas: res.candidatas, porMes: recorta(res) } : null);
     return {
       hoy,
       meses: lista,
