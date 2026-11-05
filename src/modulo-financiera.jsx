@@ -3385,7 +3385,7 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
           {subView === "pago_nomina" && <PagoNominaView currentUser={currentUser} />}
           {subView === "cuanto_pagar" && <CuantoPagarMesView db={db} onIrEndeudamiento={() => setSubView("endeudamiento")} />}
           {subView === "endeudamiento" && <EndeudamientoView db={db} isAdmin={isAdmin} />}
-          {subView === "ingresos" && <IngresosView db={db} functionsClient={functionsClient} isAdmin={isAdmin} />}
+          {subView === "ingresos" && <IngresosView db={db} functionsClient={functionsClient} isAdmin={isAdmin} clientesNombres={[...new Set([...(clientesDiseno || []).map((c) => c.nombre), ...(presupuestosCliente || []).map((p) => p.cliente)])].filter(Boolean).sort((x, y) => x.localeCompare(y))} />}
           {subView === "proyeccion" && (
             <ProyeccionView
               compras={compras}

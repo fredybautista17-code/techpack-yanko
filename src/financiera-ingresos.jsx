@@ -5,7 +5,7 @@
 // PRIMERA VERSIÓN: el servidor detecta las columnas de las tablas de Busint; el panel «Diagnóstico» muestra qué encontró y las dos sumas
 // (cabecera del recibo vs renglones aplicados) para validar un mes contra los extractos.
 import React, { useState, useEffect, useMemo } from "react";
-import { doc, onSnapshot, setDoc } from "firebase/firestore";
+import { doc, collection, onSnapshot, setDoc, writeBatch } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 
 const C = {
@@ -70,7 +70,118 @@ function combinarTotalYanko(t, b) {
   return { fuente: "total_yanko", hoy: t.hoy, meses: t.meses, sucursales: t.sucursales, clientes: { porMes }, traslados: null, nombres, avisos, diagnosticoTns: t.diagnosticoTns, hayTraslados: !!trasl };
 }
 
-export function IngresosView({ db, functionsClient, isAdmin }) {
+// ─── Clasificar los ingresos de cada cliente por ítem del presupuesto ───────────
+// (2026-11-05, a pedido de Fredy) Cada cobro de cliente que llega de TNS/Busint se clasifica en Nómina, Insumos, Tela o Maquinaria. Cada clasificación
+// escribe/actualiza movimientos de ingreso en contabilidad_movimientos (id fijo: ing_<mes>_<cliente>_<ítem>), que es lo que suma «Presupuesto Clientes».
+const CATS_CLASIF = ["Anticipo Nómina", "Anticipo Insumos", "Anticipo Tela", "Anticipo Maquinaria"];
+const corto = (c) => c.replace("Anticipo ", "");
+const slug = (t) => String(t || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+const NO_APLICA = "__NA__";
+// Clave estable del cliente entre pantallas: así «Total Yanko» y «TNS · Yanko» comparten la misma clasificación.
+const claveClasif = (fuente, key) => {
+  if (fuente === "total_yanko") return String(key).startsWith("bus:") ? String(key) : `tns-yanko:${String(key).replace(/^tns:/, "")}`;
+  if (fuente === "tns_yanko") return `tns-yanko:${key}`;
+  if (fuente === "tns_indutex") return `tns-indutex:${key}`;
+  return null;
+};
+const finDeMes = (ym, hoy) => {
+  const f = `${ym}-${String(new Date(Date.UTC(Number(ym.slice(0, 4)), Number(ym.slice(5, 7)), 0)).getUTCDate()).padStart(2, "0")}`;
+  return hoy && f > hoy ? hoy : f;
+};
+const idMov = (ym, ck, cat) => `ing_${ym}_${slug(ck)}_${slug(cat)}`;
+const idClasif = (ym, ck) => `${ym}__${slug(ck)}`;
+
+function FilaClasificar({ fila, bloqueada, onGuardar }) {
+  const [vals, setVals] = useState(() => Object.fromEntries(CATS_CLASIF.map((c) => [c, fila.items[c] ? String(fila.items[c]) : ""])));
+  const [guardando, setGuardando] = useState(false);
+  const suma = CATS_CLASIF.reduce((s, c) => s + (Number(vals[c]) || 0), 0);
+  const resto = Math.round(fila.monto - suma);
+  const excede = resto < -1;
+  const completar = (c) => setVals((v) => ({ ...v, [c]: String(Math.max(0, Math.round((Number(v[c]) || 0) + resto))) }));
+  const yaGuardado = CATS_CLASIF.reduce((s, c) => s + (fila.items[c] || 0), 0);
+  const cambio = Math.round(suma) !== Math.round(yaGuardado);
+  async function guardar() { setGuardando(true); try { await onGuardar(fila, vals); } finally { setGuardando(false); } }
+  return (
+    <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "8px 0", borderTop: `1px solid ${C.border}`, opacity: bloqueada ? 0.5 : 1 }}>
+      <div style={{ width: 150 }}>
+        <div style={{ fontSize: 12.5, fontWeight: 800, color: C.ink }}>{etiquetaMes(fila.ym)}</div>
+        <div style={{ fontSize: 12, color: C.slate, fontVariantNumeric: "tabular-nums" }}>{money(fila.monto)}</div>
+      </div>
+      {CATS_CLASIF.map((c) => (
+        <div key={c} style={{ width: 118 }}>
+          <button type="button" disabled={bloqueada || resto <= 0} onClick={() => completar(c)} title="Poner aquí lo que falta por clasificar"
+            style={{ fontSize: 10.5, fontWeight: 800, color: C.slate, textTransform: "uppercase", letterSpacing: 0.3, background: "none", border: "none", padding: 0, cursor: bloqueada || resto <= 0 ? "default" : "pointer", textDecoration: bloqueada || resto <= 0 ? "none" : "underline dotted" }}>{corto(c)}{c === "Anticipo Tela" ? " *" : ""}</button>
+          <input type="number" min="0" disabled={bloqueada} value={vals[c]} onChange={(e) => setVals((v) => ({ ...v, [c]: e.target.value }))} placeholder="0"
+            style={{ display: "block", width: "100%", boxSizing: "border-box", padding: "5px 7px", border: `1.5px solid ${C.border}`, borderRadius: 7, fontSize: 12.5, fontFamily: "inherit", fontVariantNumeric: "tabular-nums" }} />
+        </div>
+      ))}
+      <div style={{ minWidth: 120, fontSize: 12, fontWeight: 800, color: excede ? C.red : resto > 1 ? C.amber : C.green }}>
+        {excede ? `Se pasa por ${money(-resto)}` : resto > 1 ? `Sin clasificar ${money(resto)}` : "Todo clasificado"}
+      </div>
+      <Boton chico variante="oscuro" disabled={bloqueada || excede || guardando || !cambio} onClick={guardar}>{guardando ? "Guardando…" : "Guardar"}</Boton>
+    </div>
+  );
+}
+
+function ClasificarIngresosModal({ filas, soloCk, clientesNombres, mapa, onMapa, onGuardar, onTodoA, onClose }) {
+  const [verTodas, setVerTodas] = useState(false);
+  const grupos = useMemo(() => {
+    const m = new Map();
+    filas.forEach((f) => {
+      if (soloCk && f.ck !== soloCk) return;
+      if (!verTodas && f.pendiente <= 1 && mapa[f.ck]) return;
+      if (!m.has(f.ck)) m.set(f.ck, { ck: f.ck, nombre: f.nombre, filas: [], pendiente: 0 });
+      const g = m.get(f.ck);
+      g.filas.push(f);
+      g.pendiente += Math.max(0, f.pendiente);
+    });
+    return [...m.values()].map((g) => ({ ...g, filas: g.filas.sort((a, b) => (a.ym < b.ym ? -1 : 1)) })).sort((a, b) => b.pendiente - a.pendiente);
+  }, [filas, soloCk, verTodas, mapa]);
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: C.white, borderRadius: 14, width: "min(1020px, 95vw)", height: "80vh", minWidth: 520, minHeight: 320, maxWidth: "98vw", maxHeight: "96vh", resize: "both", overflow: "auto", display: "flex", flexDirection: "column", boxShadow: "0 18px 60px rgba(0,0,0,0.3)" }}>
+        <div style={{ padding: "14px 18px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", position: "sticky", top: 0, background: C.white, zIndex: 2 }}>
+          <div style={{ fontSize: 17, fontWeight: 900, color: C.ink }}>¿Para qué fue cada ingreso?</div>
+          <label style={{ fontSize: 12, color: C.slate, display: "flex", gap: 6, alignItems: "center" }}><input type="checkbox" checked={verTodas} onChange={(e) => setVerTodas(e.target.checked)} /> Ver también los ya clasificados</label>
+          <div style={{ marginLeft: "auto" }}><Boton chico onClick={onClose}>Cerrar</Boton></div>
+        </div>
+        <div style={{ padding: "10px 18px 18px", flex: 1 }}>
+          <div style={{ fontSize: 12, color: C.slate, lineHeight: 1.5, marginBottom: 8 }}>
+            Reparte lo que entró de cada cliente entre los ítems del presupuesto. Pulsa el nombre del ítem para poner ahí lo que falta. Lo clasificado suma en «Presupuesto Clientes» (el ítem Tela * se muestra pero no cuenta para el total del presupuesto). Lo que dejes sin clasificar te lo vuelvo a preguntar.
+          </div>
+          {!grupos.length ? <div style={{ padding: 24, textAlign: "center", fontSize: 14, color: C.green, fontWeight: 800 }}>Todo está clasificado.</div> : null}
+          {grupos.map((g) => {
+            const valorMapa = mapa[g.ck] || "";
+            const ok = valorMapa && valorMapa !== NO_APLICA;
+            return (
+              <div key={g.ck} style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: "10px 14px", marginBottom: 12 }}>
+                <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 4 }}>
+                  <div style={{ fontSize: 14, fontWeight: 900, color: C.ink }}>{g.nombre}</div>
+                  <div style={{ fontSize: 11.5, color: C.slate }}>en el presupuesto es:</div>
+                  <select value={valorMapa} onChange={(e) => onMapa(g.ck, e.target.value)} style={{ padding: "5px 8px", border: `1.5px solid ${ok ? C.border : C.amber}`, borderRadius: 7, fontSize: 12.5, fontFamily: "inherit", maxWidth: 260 }}>
+                    <option value="">— elegir cliente del presupuesto —</option>
+                    {clientesNombres.map((n) => <option key={n} value={n}>{n}</option>)}
+                    <option value={NO_APLICA}>No aplica (no preguntar más)</option>
+                  </select>
+                  {ok && g.pendiente > 1 ? (
+                    <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 11.5, color: C.slate }}>Todo lo pendiente ({money(g.pendiente)}) a:</span>
+                      {CATS_CLASIF.map((c) => <Boton key={c} chico onClick={() => onTodoA(g, c)}>{corto(c)}</Boton>)}
+                    </div>
+                  ) : null}
+                </div>
+                {!ok ? <div style={{ fontSize: 12, color: C.amber, marginBottom: 4 }}>Primero elige a qué cliente del presupuesto corresponde (o «No aplica»).</div> : null}
+                {g.filas.map((f) => <FilaClasificar key={`${f.id}-${Math.round(f.monto)}-${Object.values(f.items).join("_")}`} fila={f} bloqueada={!ok} onGuardar={onGuardar} />)}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function IngresosView({ db, functionsClient, isAdmin, clientesNombres = [] }) {
   const [fuente, setFuente] = useState("total_yanko");
   const F = FUENTES[fuente];
   const combinada = !!F.combinada;
@@ -84,6 +195,13 @@ export function IngresosView({ db, functionsClient, isAdmin }) {
   const [verTodos, setVerTodos] = useState(false);
   const [busqueda, setBusqueda] = useState("");
   const [verDiag, setVerDiag] = useState(false);
+  // Clasificación por ítem del presupuesto
+  const [clasif, setClasif] = useState({}); // id -> documento de clasificación
+  const [mapa, setMapa] = useState({}); // clave de cliente -> nombre en el presupuesto | NO_APLICA
+  const [abrirClasif, setAbrirClasif] = useState(null); // null | { soloCk }
+  const [pedirClasif, setPedirClasif] = useState(false);
+  useEffect(() => onSnapshot(collection(db, "financiera_ingresos_clasificacion"), (s) => { const o = {}; s.docs.forEach((d) => { o[d.id] = d.data(); }); setClasif(o); }, () => {}), [db]);
+  useEffect(() => onSnapshot(doc(db, "financiera_ingresos_clientes", "main"), (s) => setMapa(s.exists() ? s.data().mapa || {} : {}), () => {}), [db]);
 
   useEffect(() => {
     setCache(null);
@@ -106,6 +224,7 @@ export function IngresosView({ db, functionsClient, isAdmin }) {
         d = r.data;
       }
       setDatos(d);
+      setPedirClasif(true);
       const resumen = d.meses.map((ym) => ({ ym, total: Math.round(d.clientes?.porMes?.[ym]?.total || 0), traslados: Math.round(d.traslados?.porMes?.[ym]?.total || 0) }));
       await setDoc(doc(db, "financiera_ingresos_cache", F.docId), { actualizadoEn: new Date().toISOString(), fuente, meses: resumen });
     } catch (e) {
@@ -163,6 +282,79 @@ export function IngresosView({ db, functionsClient, isAdmin }) {
   const q = busqueda.trim().toLowerCase();
   const filtradas = q ? filas.filter((f) => f.nombre.toLowerCase().includes(q)) : filas;
   const visibles = verTodos ? filtradas : filtradas.slice(0, 40);
+
+  // ── Clasificación: filas (cliente × mes con cobro) y lo que falta por clasificar ──
+  const puedeClasificar = !!isAdmin && !!datos && fuente !== "busint" && !!datos.clientes?.porMes;
+  const filasClasif = useMemo(() => {
+    if (!puedeClasificar) return [];
+    const out = [];
+    datos.meses.forEach((ym) => {
+      Object.entries(datos.clientes.porMes[ym]?.porCliente || {}).forEach(([key, monto]) => {
+        if (!(monto > 1)) return; // solo cobros positivos
+        const ck = claveClasif(fuente, key);
+        if (!ck || mapa[ck] === NO_APLICA) return;
+        const items = clasif[idClasif(ym, ck)]?.items || {};
+        const ya = CATS_CLASIF.reduce((t, c) => t + (items[c] || 0), 0);
+        out.push({ id: idClasif(ym, ck), ym, key, ck, nombre: datos.nombres?.[key] || key, monto, items, pendiente: Math.round(monto - ya) });
+      });
+    });
+    return out;
+  }, [puedeClasificar, datos, fuente, mapa, clasif]);
+  const numPendientes = filasClasif.filter((f) => f.pendiente > 1 || !mapa[f.ck]).length;
+  const pendSet = useMemo(() => new Set(filasClasif.filter((f) => f.pendiente > 1 || !mapa[f.ck]).map((f) => `${f.ym}|${f.key}`)), [filasClasif, mapa]);
+  const ckDeKey = (key) => claveClasif(fuente, key);
+  // Tras traer datos nuevos, si hay algo sin clasificar se pregunta de una vez.
+  useEffect(() => {
+    if (!pedirClasif || !datos) return;
+    setPedirClasif(false);
+    if (puedeClasificar && numPendientes > 0) setAbrirClasif({ soloCk: null });
+  }, [pedirClasif, datos, puedeClasificar, numPendientes]);
+  const movimientoDe = (fila, cat, valor, clienteP) => ({
+    id: idMov(fila.ym, fila.ck, cat), tipo: "ingreso", fecha: finDeMes(fila.ym, datos?.hoy), categoria: cat,
+    descripcion: `Ingreso automático (${F.nombre}) ${fila.ym} · ${fila.nombre}`, valor, referencia: `Ingresos ${fila.ym}`,
+    proveedor: clienteP, cliente: clienteP, distribucion: [], origen: "ingresos_auto", ingresoClave: fila.ck, creadoEn: new Date().toISOString(),
+  });
+  async function guardarClasif(fila, vals) {
+    const clienteP = mapa[fila.ck];
+    if (!clienteP || clienteP === NO_APLICA) return;
+    const items = {};
+    CATS_CLASIF.forEach((c) => { const v = Math.round(Number(vals[c]) || 0); if (v > 0) items[c] = v; });
+    const batch = writeBatch(db);
+    batch.set(doc(db, "financiera_ingresos_clasificacion", fila.id), { ym: fila.ym, ck: fila.ck, key: fila.key, nombre: fila.nombre, cliente: clienteP, monto: Math.round(fila.monto), items, actualizadoEn: new Date().toISOString() });
+    CATS_CLASIF.forEach((c) => {
+      const ref = doc(db, "contabilidad_movimientos", idMov(fila.ym, fila.ck, c));
+      if (items[c]) batch.set(ref, movimientoDe(fila, c, items[c], clienteP)); else batch.delete(ref);
+    });
+    try { await batch.commit(); setError(""); } catch (e) { setError(`No se pudo guardar la clasificación: ${e?.message || e}`); }
+  }
+  async function todoA(grupo, cat) {
+    const clienteP = mapa[grupo.ck];
+    if (!clienteP || clienteP === NO_APLICA) return;
+    for (const f of grupo.filas) {
+      if (f.pendiente <= 1) continue;
+      const vals = {};
+      CATS_CLASIF.forEach((c) => { vals[c] = String((f.items[c] || 0) + (c === cat ? f.pendiente : 0)); });
+      await guardarClasif(f, vals);
+    }
+  }
+  async function cambiarMapa(ck, valor) {
+    try {
+      await setDoc(doc(db, "financiera_ingresos_clientes", "main"), { mapa: { [ck]: valor } }, { merge: true });
+      const previas = Object.entries(clasif).filter(([, d]) => d.ck === ck);
+      if (!previas.length) return;
+      const batch = writeBatch(db);
+      previas.forEach(([id, d]) => {
+        CATS_CLASIF.forEach((c) => {
+          const ref = doc(db, "contabilidad_movimientos", idMov(d.ym, ck, c));
+          if (valor && valor !== NO_APLICA && d.items?.[c]) batch.set(ref, movimientoDe({ ym: d.ym, ck, nombre: d.nombre }, c, d.items[c], valor));
+          else batch.delete(ref);
+        });
+        if (valor === NO_APLICA) batch.delete(doc(db, "financiera_ingresos_clasificacion", id));
+        else if (valor) batch.set(doc(db, "financiera_ingresos_clasificacion", id), { ...d, cliente: valor });
+      });
+      await batch.commit();
+    } catch (e) { setError(`No se pudo cambiar el cliente del presupuesto: ${e?.message || e}`); }
+  }
 
   const maximo = Math.max(1, ...meses.map(totalMes));
   const quien = cache?.actualizadoEn ? new Date(cache.actualizadoEn).toLocaleString("es-CO") : "";
@@ -224,6 +416,7 @@ export function IngresosView({ db, functionsClient, isAdmin }) {
       {datos ? (
         <>
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
+            {puedeClasificar ? <Boton chico variante={numPendientes ? "oscuro" : "claro"} onClick={() => setAbrirClasif({ soloCk: null })}>{numPendientes ? `🏷 Clasificar ingresos (${numPendientes} sin clasificar)` : "🏷 Ingresos clasificados"}</Boton> : null}
             <Boton chico variante={vista === "cliente" ? "oscuro" : "claro"} onClick={() => setVista("cliente")}>Por cliente</Boton>
             <Boton chico variante={vista === "medio" ? "oscuro" : "claro"} onClick={() => setVista("medio")}>Por caja / banco</Boton>
             <input value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder="Buscar…" style={{ padding: "6px 10px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", width: 200 }} />
@@ -244,7 +437,16 @@ export function IngresosView({ db, functionsClient, isAdmin }) {
                   <tr key={f.cod || f.nombre}>
                     <td style={{ ...td, color: C.slate }}>{i + 1}</td>
                     <td style={tdL}>{f.nombre}</td>
-                    {datos.meses.map((ym) => <td key={ym} style={{ ...td, color: f.porMes[ym] ? C.ink : C.seam }}>{f.porMes[ym] ? money(f.porMes[ym]) : "—"}</td>)}
+                    {datos.meses.map((ym) => {
+                      const pend = vista === "cliente" && puedeClasificar && pendSet.has(`${ym}|${f.cod}`);
+                      return (
+                        <td key={ym} onClick={vista === "cliente" && puedeClasificar && f.porMes[ym] > 1 ? () => setAbrirClasif({ soloCk: ckDeKey(f.cod) }) : undefined}
+                          title={pend ? "Sin clasificar: clic para clasificar" : undefined}
+                          style={{ ...td, color: f.porMes[ym] ? C.ink : C.seam, cursor: vista === "cliente" && puedeClasificar && f.porMes[ym] > 1 ? "pointer" : "default", background: pend ? C.amberBg : undefined }}>
+                          {f.porMes[ym] ? money(f.porMes[ym]) : "—"}
+                        </td>
+                      );
+                    })}
                     <td style={{ ...td, fontWeight: 900 }}>{money(f.total)}</td>
                   </tr>
                 ))}
@@ -259,6 +461,10 @@ export function IngresosView({ db, functionsClient, isAdmin }) {
           </div>
           {filtradas.length > 40 && !verTodos ? <div style={{ marginTop: 8 }}><Boton chico onClick={() => setVerTodos(true)}>Ver los {filtradas.length}</Boton></div> : null}
         </>
+      ) : null}
+
+      {abrirClasif && puedeClasificar ? (
+        <ClasificarIngresosModal filas={filasClasif} soloCk={abrirClasif.soloCk} clientesNombres={clientesNombres} mapa={mapa} onMapa={cambiarMapa} onGuardar={guardarClasif} onTodoA={todoA} onClose={() => setAbrirClasif(null)} />
       ) : null}
 
       {verDiag && datos && (esTns || combinada) ? (
