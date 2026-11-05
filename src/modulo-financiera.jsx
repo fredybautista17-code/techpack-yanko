@@ -3110,10 +3110,11 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
       setPresupuestosCliente(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
     });
     const unsubCortesCxp = onSnapshot(collection(db, "contabilidad_cxp_cortes"), (snap) => {
-      setCortesCxp(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+      // (2026-11-05) Estrategia de Pago y Vencimientos son de Yanko: los cortes/manuales marcados Indutex se quedan en Contabilidad.
+      setCortesCxp(snap.docs.map((d) => ({ ...d.data(), id: d.id })).filter((c) => c.empresa !== "indutex"));
     });
     const unsubManualCxp = onSnapshot(collection(db, "contabilidad_cxp_manual"), (snap) => {
-      setManualCxp(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+      setManualCxp(snap.docs.map((d) => ({ ...d.data(), id: d.id })).filter((c) => c.empresa !== "indutex"));
     });
     const unsubCalendarioCxp = onSnapshot(collection(db, "contabilidad_cxp_calendario"), (snap) => {
       setCalendarioCxp(snap.docs.map((d) => ({ ...d.data(), id: d.id })));

@@ -1369,6 +1369,8 @@ async function parseCuentasPorPagar(file) {
   return { fechaCorte, proveedores };
 }
 function ImportarCXPModal({ onConfirm, onClose }) {
+  // (2026-11-05, a pedido de Fredy) El corte de TNS puede ser de Yanko o de Indutex (Busint solo trae Yanko).
+  const [empresaImp, setEmpresaImp] = useState("yanko");
   const [paso, setPaso] = useState(1);
   const [datos, setDatos] = useState(null);
   const [error, setError] = useState("");
@@ -1402,6 +1404,7 @@ function ImportarCXPModal({ onConfirm, onClose }) {
     onConfirm({
       id: uid(),
       fechaCorte: datos.fechaCorte,
+      empresa: empresaImp,
       proveedores: seleccionados,
       creadoEn: new Date().toISOString(),
     });
@@ -1467,6 +1470,14 @@ function ImportarCXPModal({ onConfirm, onClose }) {
       )}
       {paso === 2 && datos && (
         <div>
+          <div style={{ marginBottom: 12 }}>
+            <Field label="¿De qué empresa es este reporte de TNS?">
+              <select value={empresaImp} onChange={(e) => setEmpresaImp(e.target.value)} style={{ padding: "8px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, color: C.ink, background: C.white, fontFamily: "inherit", fontWeight: 700 }}>
+                <option value="yanko">Yanko</option>
+                <option value="indutex">Indutex</option>
+              </select>
+            </Field>
+          </div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, gap: 12 }}>
             <div style={{ fontSize: 13, color: C.slate }}>
               Se encontraron <strong>{datos.proveedores.length}</strong> proveedores. Desmarca los que no quieras incluir en este corte.
@@ -1556,6 +1567,7 @@ function AgregarProveedorCXPModal({ onSave, onClose }) {
   // en blanco (como quedan los que ya existian antes de este campo), esa
   // vista simplemente lo muestra aparte, en "sin fecha exacta".
   const [fechaVencimiento, setFechaVencimiento] = useState("");
+  const [empresaMan, setEmpresaMan] = useState("yanko"); // (2026-11-05) Yanko o Indutex
   const total = [porVencer, dias0a30, dias31a60, dias61a90, dias91mas].reduce((s, v) => s + (parseFloat(v) || 0), 0);
   function guardar() {
     if (!nombre || total <= 0) return;
@@ -1569,6 +1581,7 @@ function AgregarProveedorCXPModal({ onSave, onClose }) {
       dias91mas: parseFloat(dias91mas) || 0,
       total,
       fechaVencimiento: fechaVencimiento || null,
+      empresa: empresaMan,
       creadoEn: new Date().toISOString(),
     });
     onClose();
@@ -1577,6 +1590,12 @@ function AgregarProveedorCXPModal({ onSave, onClose }) {
     <Modal title="Agregar proveedor manualmente" onClose={onClose} width={480}>
       <Field label="Proveedor">
         <FInput value={nombre} onChange={setNombre} placeholder="Nombre del proveedor" />
+      </Field>
+      <Field label="Empresa">
+        <select value={empresaMan} onChange={(e) => setEmpresaMan(e.target.value)} style={{ padding: "8px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, color: C.ink, background: C.white, fontFamily: "inherit", fontWeight: 700 }}>
+          <option value="yanko">Yanko</option>
+          <option value="indutex">Indutex</option>
+        </select>
       </Field>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Por vencer">
@@ -4959,8 +4978,11 @@ function PlazosPagoCxp({ proveedores, plazos, facturasGuardadas, corteId, onGuar
     </div>
   );
 }
-function CuadreCxpView({ proveedoresBusint, corteActivo, detalleFacturas, facturasGuardadas, onTraerBusint, cargandoBusint, plazos, onGuardarPlazo }) {
-  const [empresa, setEmpresa] = useState("yanko");
+function CuadreCxpView({ proveedoresBusint: proveedoresBusintProp, corteActivo, detalleFacturas, facturasGuardadas, onTraerBusint, cargandoBusint, plazos, onGuardarPlazo, empresa, setEmpresa }) {
+  // (2026-11-05, a pedido de Fredy) La empresa la elige el selector de la pantalla. Busint solo trae a Yanko: para Indutex
+  // no hay con qué cruzar, así que se muestra solo lo que dice TNS (sin "Solo Busint", sin diferencia).
+  const soloTns = empresa === "indutex";
+  const proveedoresBusint = soloTns ? [] : proveedoresBusintProp;
   const [datos, setDatos] = useState({});
   const [cargando, setCargando] = useState("");
   const [error, setError] = useState("");
@@ -5017,10 +5039,12 @@ function CuadreCxpView({ proveedoresBusint, corteActivo, detalleFacturas, factur
   }
   async function actualizarAmbos() {
     setError("");
-    try {
-      await onTraerBusint();
-    } catch (err) {
-      /* el error de Busint ya se muestra arriba */
+    if (!soloTns) {
+      try {
+        await onTraerBusint();
+      } catch (err) {
+        /* el error de Busint ya se muestra arriba */
+      }
     }
     await traerTns(empresa);
   }
@@ -5108,14 +5132,14 @@ function CuadreCxpView({ proveedoresBusint, corteActivo, detalleFacturas, factur
     resumen.dif = resumen.totalTns - resumen.totalBusint;
   }
   let filas = todas;
-  if (filtro !== "todos") filas = filas.filter((r) => r.estado === filtro);
+  if (!soloTns && filtro !== "todos") filas = filas.filter((r) => r.estado === filtro);
   if (busqueda.trim()) {
     const q = normalizarTexto(busqueda);
     filas = filas.filter((x) => normalizarTexto(x.nombre).includes(q) || normalizarTexto(x.nombreTns).includes(q));
   }
-  filas = [...filas].sort((a, b) => Math.abs(b.dif) - Math.abs(a.dif) || b.busint - a.busint);
+  filas = [...filas].sort((a, b) => (soloTns ? b.tns - a.tns : Math.abs(b.dif) - Math.abs(a.dif) || b.busint - a.busint));
   async function guardarCuadre() {
-    if (!d || !resumen) return;
+    if (!d || !resumen || soloTns) return;
     const ahora = new Date();
     await fsSave("contabilidad_cxp_cuadres", `${empresa}_${ahora.getTime()}`, {
       empresa,
@@ -5435,7 +5459,7 @@ function CuadreCxpView({ proveedoresBusint, corteActivo, detalleFacturas, factur
     <div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
         <Btn onClick={actualizarAmbos} disabled={!!cargando || !!cargandoBusint}>
-          {cargando || cargandoBusint ? "Actualizando..." : "🔄 Actualizar ambos"}
+          {cargando || cargandoBusint ? "Actualizando..." : soloTns ? "🔄 Actualizar TNS" : "🔄 Actualizar ambos"}
         </Btn>
         <Btn small variant={empresa === "yanko" ? "primary" : "secondary"} onClick={() => (datos.yanko ? setEmpresa("yanko") : traerTns("yanko"))} disabled={!!cargando}>
           {cargando === "yanko" ? "Consultando TNS..." : "Yanko"}
@@ -5445,10 +5469,15 @@ function CuadreCxpView({ proveedoresBusint, corteActivo, detalleFacturas, factur
         </Btn>
         {d && <Btn small variant="secondary" onClick={() => traerTns(empresa)} disabled={!!cargando}>Volver a traer TNS</Btn>}
         <span style={{ fontSize: 12, color: C.slate }}>
-          Busint {fechaBusint || "sin corte"}{d ? ` · TNS ${d.corte} (sucursales ${(d.sucursales || []).join(", ")})` : ""}
+          {soloTns ? "Indutex · solo TNS (no tiene Busint)" : `Busint ${fechaBusint || "sin corte"}`}{d ? ` · TNS ${d.corte} (sucursales ${(d.sucursales || []).join(", ")})` : ""}
         </span>
       </div>
-      <div style={{ fontSize: 12, color: conNit ? C.slate : C.red, marginBottom: 12 }}>
+      {soloTns && (
+        <div style={{ fontSize: 12, color: C.slate, marginBottom: 12 }}>
+          Indutex se maneja solo en TNS: aquí ves lo que Indutex debe por proveedor (2205 + 2335 − anticipos 1330). No hay Busint de Indutex, así que no hay cuadre ni diferencia.
+        </div>
+      )}
+      <div style={{ display: soloTns ? "none" : undefined, fontSize: 12, color: conNit ? C.slate : C.red, marginBottom: 12 }}>
         {conNit
           ? `${conNit} de ${(proveedoresBusint || []).length} proveedores del corte de Busint traen NIT${corteActivo?.campoNit ? ` (columna ${corteActivo.campoNit})` : ""}; los demás se cruzan por nombre o se asocian a mano.`
           : "Este corte de Busint no trae NIT de proveedores (se cruza solo por nombre). Pulsa \"Actualizar ambos\" para actualizarlo."}
@@ -5464,18 +5493,19 @@ function CuadreCxpView({ proveedoresBusint, corteActivo, detalleFacturas, factur
       ) : (
         <>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(170px,1fr))", gap: 12, marginBottom: 18 }}>
-            <KPI icon="🧾" label="Debe según Busint" value={fmtMillCxp(resumen.totalBusint)} color={C.violet} bg={C.violetBg} />
+            {!soloTns && <KPI icon="🧾" label="Debe según Busint" value={fmtMillCxp(resumen.totalBusint)} color={C.violet} bg={C.violetBg} />}
             <KPI icon="📒" label={`Debe según TNS (2205 + 2335 − anticipos 1330)`} value={fmtMillCxp(resumen.totalTns)} color={C.blue} bg={C.blueBg} />
-            <KPI icon="⚖" label="Diferencia (TNS − Busint)" value={fmtMillCxp(resumen.dif)} color={Math.abs(resumen.dif) < 1000 ? C.green : C.red} bg={Math.abs(resumen.dif) < 1000 ? C.greenBg : C.redBg} sub={`Solo TNS ${fmtMillCxp(resumen.soloTns)} · solo Busint ${fmtMillCxp(-resumen.soloBusint)} · ambos ${fmtMillCxp(resumen.ambosDif)}`} />
+            {!soloTns && <KPI icon="⚖" label="Diferencia (TNS − Busint)" value={fmtMillCxp(resumen.dif)} color={Math.abs(resumen.dif) < 1000 ? C.green : C.red} bg={Math.abs(resumen.dif) < 1000 ? C.greenBg : C.redBg} sub={`Solo TNS ${fmtMillCxp(resumen.soloTns)} · solo Busint ${fmtMillCxp(-resumen.soloBusint)} · ambos ${fmtMillCxp(resumen.ambosDif)}`} />}
             {resumen.n.taller > 0 && <KPI icon="🧵" label="Talleres y personas (no van en TNS)" value={fmtMillCxp(resumen.talleres)} color={C.slate} bg={C.canvas} sub={`${resumen.n.taller} proveedores, fuera de la diferencia`} />}
-            <KPI icon="⚠" label="Vencido (con plazo propio donde hay)" value={fmtMillCxp(resumen.vencido)} color={C.amber} bg={C.amberBg} />
+            {soloTns && <KPI icon="🏢" label="Proveedores con saldo en TNS" value={String(resumen.n.todos)} color={C.slate} bg={C.canvas} />}
+            {!soloTns && <KPI icon="⚠" label="Vencido (con plazo propio donde hay)" value={fmtMillCxp(resumen.vencido)} color={C.amber} bg={C.amberBg} />}
           </div>
           <FranjaVencimientosCxp proveedores={proveedoresBusint} fechaCorte={corteActivo?.fechaCorte} nPlazo={(proveedoresBusint || []).filter((p) => p.plazoAplicado).length} nTotal={(proveedoresBusint || []).length} />
           <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}>
             <div style={{ width: 220 }}>
               <FInput value={busqueda} onChange={setBusqueda} placeholder="Buscar proveedor..." icon="🔍" />
             </div>
-            {[["todos", `Todos ${resumen.n.todos}`], ["revisar", `Revisar ${resumen.n.revisar}`], ["cuadra", `Cuadran ${resumen.n.cuadra}`], ["solotns", `Solo TNS ${resumen.n.solotns}`], ["solobusint", `Solo Busint ${resumen.n.solobusint}`], ["taller", `Talleres ${resumen.n.taller}`]].map(([k, label]) => (
+            {[["todos", `Todos ${resumen.n.todos}`], ["revisar", `Revisar ${resumen.n.revisar}`], ["cuadra", `Cuadran ${resumen.n.cuadra}`], ["solotns", `Solo TNS ${resumen.n.solotns}`], ["solobusint", `Solo Busint ${resumen.n.solobusint}`], ["taller", `Talleres ${resumen.n.taller}`]].filter(([k]) => !soloTns || k === "todos").map(([k, label]) => (
               <Btn key={k} small variant={filtro === k ? "primary" : "secondary"} onClick={() => setFiltro(k)}>{label}</Btn>
             ))}
             <div style={{ flex: 1 }} />
@@ -5491,18 +5521,29 @@ function CuadreCxpView({ proveedoresBusint, corteActivo, detalleFacturas, factur
                 🧵 Marcar los {filas.length} visibles como talleres
               </Btn>
             )}
-            <Btn small variant="secondary" onClick={guardarCuadre}>💾 Guardar este cuadre</Btn>
+            {!soloTns && <Btn small variant="secondary" onClick={guardarCuadre}>💾 Guardar este cuadre</Btn>}
           </div>
           <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
               <thead>
                 <tr style={{ background: C.canvas }}>
                   <th style={{ ...th, textAlign: "left" }}>Proveedor</th>
-                  <th style={th}>Busint</th>
-                  <th style={th}>Vencido</th>
-                  <th style={th}>TNS</th>
-                  <th style={th}>Diferencia</th>
-                  <th style={{ ...th, textAlign: "left" }}>Estado</th>
+                  {soloTns ? (
+                    <>
+                      <th style={th}>2205</th>
+                      <th style={th}>2335</th>
+                      <th style={th}>Anticipos (1330)</th>
+                      <th style={th}>Debe (TNS)</th>
+                    </>
+                  ) : (
+                    <>
+                      <th style={th}>Busint</th>
+                      <th style={th}>Vencido</th>
+                      <th style={th}>TNS</th>
+                      <th style={th}>Diferencia</th>
+                      <th style={{ ...th, textAlign: "left" }}>Estado</th>
+                    </>
+                  )}
                 </tr>
               </thead>
               <tbody>
@@ -5520,6 +5561,15 @@ function CuadreCxpView({ proveedoresBusint, corteActivo, detalleFacturas, factur
                           {x.nombre}
                           {x.nombreTns && x.nombreBusint && claveNombreCxpTns(x.nombreTns) !== claveNombreCxpTns(x.nombreBusint) ? <span style={{ color: C.slate, fontSize: 11, fontWeight: 400 }}> · en TNS: {x.nombreTns}</span> : null}
                         </td>
+                        {soloTns ? (
+                          <>
+                            <td style={td}>{fmtCOP(x.c2205Tns || 0)}</td>
+                            <td style={td}>{fmtCOP(x.c2335Tns || 0)}</td>
+                            <td style={td}>{fmtCOP(x.anticipoTns || 0)}</td>
+                            <td style={{ ...td, fontWeight: 700 }}>{fmtCOP(x.tns)}</td>
+                          </>
+                        ) : (
+                          <>
                         <td style={td}>{fmtCOP(x.busint)}</td>
                         <td style={{ ...td, color: x.vencido > 0 ? C.red : C.slate }}>{fmtCOP(x.vencido)}</td>
                         <td style={td}>{fmtCOP(x.tns)}</td>
@@ -5547,6 +5597,8 @@ function CuadreCxpView({ proveedoresBusint, corteActivo, detalleFacturas, factur
                             </select>
                           )}
                         </td>
+                          </>
+                        )}
                       </tr>
                       {abiertoFila && detalleDe(x)}
                     </Fragment>
@@ -5692,6 +5744,322 @@ function AnticiposCxpPanel({ filas, total, diag }) {
     </div>
   );
 }
+// (2026-11-05, a pedido de Fredy) «A pagar (30 días)»: todo lo que ya está vencido o vence en los próximos 30 días, para decidir qué pagar.
+// YANKO: sale de las facturas abiertas del último corte de Busint (contabilidad_cxp_facturas); vencimiento = emisión + plazo del
+// proveedor (⏱ Plazos de pago) y, si el proveedor no tiene plazo, la fecha de Busint. INDUTEX: no tiene Busint; sale de los cortes
+// importados desde TNS (edades: ya vencido / por vencer, sin fecha por factura) y de los proveedores manuales (con su fecha si la tienen).
+// Lo que se marca para pagar NO se guarda: es solo una suma para planear.
+const VENTANA_PAGO_DIAS = 30;
+const hoyBogotaCxp = () => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Bogota" }).format(new Date());
+function claseVencimientoCxp(dias) {
+  if (dias === null || dias === undefined) return "sinFecha";
+  if (dias < 0) return "vencido";
+  if (dias <= VENTANA_PAGO_DIAS) return "dentro";
+  return "despues";
+}
+// Arma, por proveedor, los renglones pagables: [{ key, concepto, vence, dias, clase, monto }]
+function construirPagosCxp({ empresa, filasCorte, corte, facturasGuardadas, plazos, manuales, hoy }) {
+  const salida = [];
+  const itemAgregado = (clave, p, suf) => {
+    const vencido = (Number(p.dias0a30) || 0) + (Number(p.dias31a60) || 0) + (Number(p.dias61a90) || 0) + (Number(p.dias91mas) || 0);
+    const items = [];
+    if (vencido > 0) items.push({ key: `${clave}|venc`, concepto: `Vencido (edades${suf})`, vence: null, dias: -1, clase: "vencido", monto: vencido });
+    if ((Number(p.porVencer) || 0) > 0) items.push({ key: `${clave}|por`, concepto: `Por vencer (sin fecha exacta${suf})`, vence: null, dias: null, clase: "sinFecha", monto: Number(p.porVencer) || 0 });
+    return items;
+  };
+  (filasCorte || []).forEach((p) => {
+    if (p.soloAnticipos) return;
+    const clave = `${empresa}|c|${p.nombre}`;
+    const g = facturasGuardadas?.[claveDocCxp(p.nombre)];
+    const plazo = empresa === "yanko" ? plazoDeProveedorCxp(plazos, p.nombre) : 0;
+    let items = [];
+    let conDetalle = false;
+    if (empresa === "yanko" && g && corte && g.corteId === corte.id && Array.isArray(g.facturas) && g.facturas.length) {
+      conDetalle = true;
+      g.facturas.forEach((f, i) => {
+        const saldo = Number(f.saldo) || 0;
+        if (saldo <= 0) return;
+        const vence = plazo > 0 && f.fechaEmisionISO ? sumarDiasISOCxp(f.fechaEmisionISO, plazo) : f.fechaVctoISO || null;
+        const dias = vence ? difDiasISOCxp(hoy, vence) : null;
+        items.push({ key: `${clave}|${f.nfact || i}`, concepto: `Factura ${f.nfact || "s/n"}`, emision: f.fechaEmisionISO || "", vence, dias, clase: claseVencimientoCxp(dias), monto: saldo, porPlazo: plazo > 0 && !!f.fechaEmisionISO });
+      });
+    } else {
+      items = itemAgregado(clave, p, "");
+    }
+    if (items.length) salida.push({ clave, empresa, nombre: p.nombreMostrado || p.nombre, items, conDetalle, plazo, anticipos: Number(p.anticiposTotal) || 0, origen: "corte" });
+  });
+  (manuales || []).forEach((p) => {
+    const clave = `${empresa}|m|${p.id}`;
+    let items = [];
+    if (p.fechaVencimiento) {
+      const dias = difDiasISOCxp(hoy, p.fechaVencimiento);
+      items = [{ key: `${clave}|f`, concepto: "Monto manual", vence: p.fechaVencimiento, dias, clase: claseVencimientoCxp(dias), monto: Number(p.total) || 0 }];
+    } else {
+      items = itemAgregado(clave, p, "");
+    }
+    items = items.filter((x) => x.monto > 0);
+    if (items.length) salida.push({ clave, empresa, nombre: `${p.nombreMostrado || p.nombre} (manual)`, items, conDetalle: false, plazo: 0, anticipos: 0, origen: "manual" });
+  });
+  return salida;
+}
+const sumaItemsCxp = (items, fn) => items.filter(fn).reduce((s, x) => s + x.monto, 0);
+
+function PagarTreintaDiasView({ empresaCxp, corteYanko, filasYanko, corteIndutex, filasIndutex, manuales, facturasGuardadas, plazos }) {
+  const hoy = hoyBogotaCxp();
+  const [busqueda, setBusqueda] = useState("");
+  const [filtro, setFiltro] = useState("pagar"); // pagar (vencido + 30 días) | vencido | dentro | todo
+  const [abiertos, setAbiertos] = useState({});
+  const [marcados, setMarcados] = useState({}); // key de renglón -> true
+
+  const verYanko = empresaCxp !== "indutex";
+  const verIndutex = empresaCxp !== "yanko";
+  const proveedores = useMemo(() => {
+    const lista = [];
+    if (verYanko) lista.push(...construirPagosCxp({ empresa: "yanko", filasCorte: filasYanko, corte: corteYanko, facturasGuardadas, plazos, manuales: (manuales || []).filter((m) => m.empresa !== "indutex"), hoy }));
+    if (verIndutex) lista.push(...construirPagosCxp({ empresa: "indutex", filasCorte: filasIndutex, corte: corteIndutex, facturasGuardadas: {}, plazos: {}, manuales: (manuales || []).filter((m) => m.empresa === "indutex"), hoy }));
+    return lista;
+  }, [verYanko, verIndutex, filasYanko, corteYanko, filasIndutex, corteIndutex, manuales, facturasGuardadas, plazos, hoy]);
+
+  const esPagable = (x) => x.clase === "vencido" || x.clase === "dentro";
+  const totalesDe = (lista) => {
+    const todos = lista.flatMap((p) => p.items);
+    return {
+      vencido: sumaItemsCxp(todos, (x) => x.clase === "vencido"),
+      dentro: sumaItemsCxp(todos, (x) => x.clase === "dentro"),
+      despues: sumaItemsCxp(todos, (x) => x.clase === "despues"),
+      sinFecha: sumaItemsCxp(todos, (x) => x.clase === "sinFecha"),
+    };
+  };
+  const tot = totalesDe(proveedores);
+  const totYanko = totalesDe(proveedores.filter((p) => p.empresa === "yanko"));
+  const totIndutex = totalesDe(proveedores.filter((p) => p.empresa === "indutex"));
+  const aPagar = tot.vencido + tot.dentro;
+  const todosItems = proveedores.flatMap((p) => p.items);
+  // Cuatro ventanas dentro de los 30 días (solo renglones con fecha exacta; lo vencido va aparte).
+  const ventanas = [["Hoy a 7 días", 0, 7], ["8 a 14 días", 8, 14], ["15 a 21 días", 15, 21], ["22 a 30 días", 22, 30]].map(([label, a, b]) => ({
+    label,
+    monto: sumaItemsCxp(todosItems, (x) => x.clase === "dentro" && x.dias >= a && x.dias <= b),
+  }));
+  const nSinFechaFacturas = proveedores.reduce((n, p) => n + p.items.filter((x) => x.clase === "sinFecha").length, 0);
+  const nSinPlazo = verYanko ? filasYanko.filter((p) => !p.soloAnticipos && !(plazoDeProveedorCxp(plazos, p.nombre) > 0)).length : 0;
+  const nYankoSinDetalle = proveedores.filter((p) => p.empresa === "yanko" && p.origen === "corte" && !p.conDetalle).length;
+  const totalAnticipos = proveedores.reduce((s, p) => s + p.anticipos, 0);
+
+  const q = normalizarTexto(busqueda);
+  const filtrados = proveedores
+    .map((p) => {
+      const items = p.items.filter((x) => (filtro === "pagar" ? esPagable(x) : filtro === "vencido" ? x.clase === "vencido" : filtro === "dentro" ? x.clase === "dentro" : true));
+      return { ...p, itemsVista: items };
+    })
+    .filter((p) => p.itemsVista.length > 0 && (!q || normalizarTexto(p.nombre).includes(q)))
+    .map((p) => ({
+      ...p,
+      vencido: sumaItemsCxp(p.items, (x) => x.clase === "vencido"),
+      dentro: sumaItemsCxp(p.items, (x) => x.clase === "dentro"),
+      primera: p.items.filter((x) => x.vence && esPagable(x)).map((x) => x.vence).sort()[0] || "",
+    }))
+    .sort((a, b) => (b.vencido + b.dentro) - (a.vencido + a.dentro));
+
+  const marcadosLista = todosItems.filter((x) => marcados[x.key]);
+  const totalMarcado = marcadosLista.reduce((s, x) => s + x.monto, 0);
+  function alternarItems(items) {
+    const todosOn = items.every((x) => marcados[x.key]);
+    setMarcados((m) => {
+      const n = { ...m };
+      items.forEach((x) => { if (todosOn) delete n[x.key]; else n[x.key] = true; });
+      return n;
+    });
+  }
+  function marcarClase(fn) {
+    const n = {};
+    todosItems.filter(fn).forEach((x) => { n[x.key] = true; });
+    setMarcados(n);
+  }
+
+  const th = { textAlign: "right", padding: "8px 10px", fontSize: 11, color: C.slate, fontWeight: 700, borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" };
+  const td = { textAlign: "right", padding: "8px 10px", fontSize: 12.5, borderBottom: `1px solid ${C.border}`, fontVariantNumeric: "tabular-nums" };
+  const insignia = (e) => (
+    <span style={{ display: "inline-block", marginLeft: 6, fontSize: 10, fontWeight: 800, padding: "1px 7px", borderRadius: 999, color: e === "indutex" ? C.blue : C.violet, background: e === "indutex" ? C.blueBg : C.violetBg }}>
+      {e === "indutex" ? "INDUTEX" : "YANKO"}
+    </span>
+  );
+  const fechaCorteTxt = corteYanko?.fechaCorte;
+  const corteViejo = verYanko && fechaCorteTxt && /^\d{4}-\d{2}-\d{2}$/.test(fechaCorteTxt) && difDiasISOCxp(fechaCorteTxt, hoy) >= 3;
+
+  if (!proveedores.length) {
+    return (
+      <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 14 }}>
+        {verYanko ? "No hay facturas abiertas guardadas. Pulsa «Traer desde Busint» para cargar el corte de Yanko." : ""}
+        {verYanko && verIndutex ? " " : ""}
+        {verIndutex ? "Para Indutex no hay un corte importado de TNS ni proveedores manuales: usa «Importar TNS» y elige Indutex." : ""}
+      </div>
+    );
+  }
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 12, lineHeight: 1.5 }}>
+        Hoy {hoy}. {verYanko && `Yanko: facturas abiertas del corte de Busint ${fechaCorteTxt || "—"}; vence = emisión + plazo del proveedor (${proveedores.filter((p) => p.empresa === "yanko" && p.plazo > 0).length} con plazo propio), y sin plazo usa la fecha de Busint. `}
+        {verIndutex && "Indutex: sale de los cortes de TNS importados (edades, sin fecha por factura) y de proveedores manuales."}
+      </div>
+      {corteViejo && (
+        <div style={{ padding: "10px 14px", background: C.amberBg, color: C.amber, borderRadius: 8, fontSize: 13, fontWeight: 600, marginBottom: 12 }}>
+          El corte de Busint es de hace {difDiasISOCxp(fechaCorteTxt, hoy)} días. Pulsa «Traer desde Busint» para que esto refleje lo que se pagó desde entonces.
+        </div>
+      )}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(190px,1fr))", gap: 12, marginBottom: 14 }}>
+        <KPI icon="💸" label={`Total a pagar (vencido + ${VENTANA_PAGO_DIAS} días)`} value={fmtMillCxp(aPagar)} color={C.violet} bg={C.violetBg} />
+        <KPI icon="⚠" label="Ya vencido" value={fmtMillCxp(tot.vencido)} color={C.red} bg={C.redBg} />
+        <KPI icon="🗓" label={`Vence en los próximos ${VENTANA_PAGO_DIAS} días`} value={fmtMillCxp(tot.dentro)} color={C.amber} bg={C.amberBg} />
+        <KPI icon="⏭" label={`Después de ${VENTANA_PAGO_DIAS} días`} value={fmtMillCxp(tot.despues)} color={C.slate} bg={C.canvas} sub={tot.sinFecha > 0 ? `Sin fecha exacta: ${fmtMillCxp(tot.sinFecha)} (${nSinFechaFacturas} renglones)` : undefined} />
+      </div>
+      {empresaCxp === "ambas" && (
+        <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "auto", marginBottom: 14 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 520 }}>
+            <thead>
+              <tr style={{ background: C.canvas }}>
+                <th style={{ ...th, textAlign: "left" }}>Empresa</th>
+                <th style={th}>Ya vencido</th>
+                <th style={th}>Próx. {VENTANA_PAGO_DIAS} días</th>
+                <th style={th}>A pagar</th>
+                <th style={th}>Después</th>
+                <th style={th}>Sin fecha</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[["Yanko", totYanko, "yanko"], ["Indutex", totIndutex, "indutex"]].map(([nom, t, e]) => (
+                <tr key={nom}>
+                  <td style={{ ...td, textAlign: "left", fontWeight: 700, color: C.ink }}>{nom}{insignia(e)}</td>
+                  <td style={{ ...td, color: C.red }}>{fmtCOP(t.vencido)}</td>
+                  <td style={td}>{fmtCOP(t.dentro)}</td>
+                  <td style={{ ...td, fontWeight: 800, color: C.violet }}>{fmtCOP(t.vencido + t.dentro)}</td>
+                  <td style={td}>{fmtCOP(t.despues)}</td>
+                  <td style={td}>{fmtCOP(t.sinFecha)}</td>
+                </tr>
+              ))}
+              <tr style={{ background: C.canvas }}>
+                <td style={{ ...td, textAlign: "left", fontWeight: 800 }}>Total</td>
+                <td style={{ ...td, fontWeight: 800, color: C.red }}>{fmtCOP(tot.vencido)}</td>
+                <td style={{ ...td, fontWeight: 800 }}>{fmtCOP(tot.dentro)}</td>
+                <td style={{ ...td, fontWeight: 900, color: C.violet }}>{fmtCOP(aPagar)}</td>
+                <td style={{ ...td, fontWeight: 800 }}>{fmtCOP(tot.despues)}</td>
+                <td style={{ ...td, fontWeight: 800 }}>{fmtCOP(tot.sinFecha)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      )}
+      <div style={{ fontSize: 12, color: C.slate, fontWeight: 600, marginBottom: 6 }}>Lo que vence dentro de los próximos {VENTANA_PAGO_DIAS} días (lo ya vencido va aparte)</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: 8, marginBottom: 14 }}>
+        {ventanas.map((v) => (
+          <div key={v.label} style={{ background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 10, padding: "8px 10px" }}>
+            <div style={{ fontSize: 11, color: C.slate, fontWeight: 700 }}>{v.label}</div>
+            <div style={{ fontSize: 15, fontWeight: 800, color: C.ink }}>{fmtMillCxp(v.monto)}</div>
+          </div>
+        ))}
+      </div>
+      {(nSinPlazo > 0 || nYankoSinDetalle > 0 || totalAnticipos > 0 || nSinFechaFacturas > 0) && (
+        <div style={{ padding: "10px 14px", background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12, color: C.slate, lineHeight: 1.6, marginBottom: 14 }}>
+          {nSinPlazo > 0 && <div>⏱ {nSinPlazo} proveedores de Yanko no tienen plazo definido: su vencimiento es el de Busint (que es la fecha de ingreso de la mercancía). Defínelos en «⏱ Plazos de pago».</div>}
+          {nYankoSinDetalle > 0 && <div>🧾 {nYankoSinDetalle} proveedores de Yanko no tienen el detalle de facturas guardado: se muestran con las edades del corte. Pulsa «Traer desde Busint» para cargarlo.</div>}
+          {nSinFechaFacturas > 0 && <div>❔ {nSinFechaFacturas} renglones no tienen fecha de vencimiento exacta: no entran en «a pagar» (aparecen en «Todo»).</div>}
+          {totalAnticipos > 0 && <div>💳 Hay {fmtMillCxp(totalAnticipos)} de anticipos a proveedores de Yanko que NO se restan aquí; revísalos antes de pagar.</div>}
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}>
+        <div style={{ width: 220 }}>
+          <FInput value={busqueda} onChange={setBusqueda} placeholder="Buscar proveedor..." icon="🔍" />
+        </div>
+        {[["pagar", "A pagar"], ["vencido", "Solo vencido"], ["dentro", `Solo próx. ${VENTANA_PAGO_DIAS} días`], ["todo", "Todo"]].map(([k, label]) => (
+          <Btn key={k} small variant={filtro === k ? "primary" : "secondary"} onClick={() => setFiltro(k)}>{label}</Btn>
+        ))}
+        <div style={{ flex: 1 }} />
+        <Btn small variant="secondary" onClick={() => marcarClase((x) => x.clase === "vencido")}>Marcar lo vencido</Btn>
+        <Btn small variant="secondary" onClick={() => marcarClase(esPagable)}>Marcar todo lo que toca pagar</Btn>
+        <Btn small variant="secondary" onClick={() => setMarcados({})} disabled={!marcadosLista.length}>Limpiar</Btn>
+      </div>
+      <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 720 }}>
+          <thead>
+            <tr style={{ background: C.canvas }}>
+              <th style={{ ...th, width: 34 }}></th>
+              <th style={{ ...th, textAlign: "left" }}>Proveedor</th>
+              <th style={th}>Ya vencido</th>
+              <th style={th}>Próx. {VENTANA_PAGO_DIAS} días</th>
+              <th style={th}>A pagar</th>
+              <th style={th}>Primer vencimiento</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtrados.length === 0 && <tr><td colSpan={6} style={{ ...td, textAlign: "center", color: C.slate, padding: 28 }}>No hay proveedores para este filtro.</td></tr>}
+            {filtrados.slice(0, 400).map((p) => {
+              const abierto = !!abiertos[p.clave];
+              const pagables = p.itemsVista.filter(esPagable);
+              const todosOn = pagables.length > 0 && pagables.every((x) => marcados[x.key]);
+              return (
+                <Fragment key={p.clave}>
+                  <tr style={{ background: abierto ? C.canvas : undefined }}>
+                    <td style={{ ...td, textAlign: "center" }}>
+                      <input type="checkbox" checked={todosOn} disabled={!pagables.length} onChange={() => alternarItems(pagables)} title="Marcar todo lo que toca pagar de este proveedor" />
+                    </td>
+                    <td onClick={() => setAbiertos((a) => ({ ...a, [p.clave]: !a[p.clave] }))} style={{ ...td, textAlign: "left", fontWeight: 600, color: C.ink, cursor: "pointer" }}>
+                      <span style={{ display: "inline-block", transition: "transform 0.15s", transform: abierto ? "rotate(90deg)" : "none", fontSize: 11, marginRight: 6, color: C.slate }}>›</span>
+                      {p.nombre}
+                      {empresaCxp === "ambas" && insignia(p.empresa)}
+                    </td>
+                    <td style={{ ...td, color: p.vencido > 0 ? C.red : C.slate }}>{fmtCOP(p.vencido)}</td>
+                    <td style={td}>{fmtCOP(p.dentro)}</td>
+                    <td style={{ ...td, fontWeight: 800, color: C.violet }}>{fmtCOP(p.vencido + p.dentro)}</td>
+                    <td style={{ ...td, color: C.slate }}>{p.primera || "—"}</td>
+                  </tr>
+                  {abierto && (
+                    <tr>
+                      <td colSpan={6} style={{ padding: 0, background: C.canvas }}>
+                        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                          <thead>
+                            <tr>
+                              <th style={{ ...th, width: 34 }}></th>
+                              <th style={{ ...th, textAlign: "left" }}>Detalle</th>
+                              <th style={th}>Emisión</th>
+                              <th style={th}>Vence</th>
+                              <th style={th}>Días</th>
+                              <th style={th}>Saldo</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {p.itemsVista.sort((a, b) => (a.vence || "9999").localeCompare(b.vence || "9999")).map((x) => (
+                              <tr key={x.key}>
+                                <td style={{ ...td, textAlign: "center" }}>
+                                  <input type="checkbox" checked={!!marcados[x.key]} disabled={!esPagable(x)} onChange={() => alternarItems([x])} />
+                                </td>
+                                <td style={{ ...td, textAlign: "left" }}>{x.concepto}{x.porPlazo ? <span style={{ color: C.slate, fontSize: 11 }}> · emisión + plazo</span> : null}</td>
+                                <td style={td}>{x.emision || "—"}</td>
+                                <td style={td}>{x.vence || "—"}</td>
+                                <td style={{ ...td, color: x.clase === "vencido" ? C.red : x.clase === "dentro" ? C.amber : C.slate }}>
+                                  {x.clase === "sinFecha" ? "sin fecha" : x.dias === null ? "—" : x.dias < 0 ? (x.vence ? `${Math.abs(x.dias)} d vencida` : "vencido") : x.dias === 0 ? "vence hoy" : `en ${x.dias} d`}
+                                </td>
+                                <td style={td}>{fmtCOP(x.monto)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {filtrados.length > 400 && <div style={{ fontSize: 12, color: C.slate, marginTop: 6 }}>Mostrando los 400 con mayor monto.</div>}
+      <div style={{ position: "sticky", bottom: 0, marginTop: 12, padding: "12px 16px", background: C.ink, color: C.white, borderRadius: 12, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 13, fontWeight: 600 }}>Voy a pagar ({marcadosLista.length} {marcadosLista.length === 1 ? "renglón" : "renglones"}; no se guarda)</div>
+        <div style={{ fontSize: 18, fontWeight: 900 }}>{fmtCOP(totalMarcado)}</div>
+      </div>
+    </div>
+  );
+}
+
 function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, nombresProveedor, categoriasCxp, categoriasLista, categoriasPorConcepto, onImportarCorte, onDeleteCorte, onAddManual, onDeleteManual, onDeleteProveedorCorte, onGuardarNombreConcepto, onGuardarNombreProveedor, onGuardarCategoria, isAdmin }) {
   const [showImport, setShowImport] = useState(false);
   const [showManual, setShowManual] = useState(false);
@@ -5712,6 +6080,9 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
   const [vista, setVista] = useState("tabla");
   // (2026-10-27, a pedido de Fredy) "busint" = la tabla de siempre; "comparar" = cuadre Busint vs TNS con vencimientos.
   const [vistaDatos, setVistaDatos] = useState("busint");
+  // (2026-11-05, a pedido de Fredy) Yanko / Indutex / Ambas. Busint solo trae a Yanko; los cortes importados de TNS y los
+  // proveedores manuales llevan su empresa (los que no la tienen son de Yanko).
+  const [empresaCxp, setEmpresaCxp] = useState("yanko");
   // Facturas abiertas de cada proveedor del ultimo corte (guardadas aparte porque en el corte no caben: limite de 1MB).
   const [facturasGuardadas, setFacturasGuardadas] = useState({});
   useEffect(() => {
@@ -5841,6 +6212,7 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
         fechaCorte: resp.data.fechaCorte,
         campoNit: resp.data.campoNit || "",
         campoEmision: resp.data.campoEmision || "",
+        empresa: "yanko", // Busint solo trae a Yanko
         proveedores: proveedoresSinDetalle,
         creadoEn: new Date().toISOString(),
       });
@@ -5850,7 +6222,12 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
       setCargandoBusint(false);
     }
   }
-  const cortesOrdenados = [...cortes].sort((a, b) => claveOrdenCorte(b).localeCompare(claveOrdenCorte(a)));
+  const empresaDeCxp = (x) => (x && x.empresa === "indutex" ? "indutex" : "yanko");
+  const cortesTodos = [...cortes].sort((a, b) => claveOrdenCorte(b).localeCompare(claveOrdenCorte(a)));
+  const empresaCorte = empresaCxp === "ambas" ? "yanko" : empresaCxp;
+  const cortesOrdenados = cortesTodos.filter((c) => empresaDeCxp(c) === empresaCorte);
+  // En "Ambas" se suma además el último corte de Indutex (el selector de corte elige el de Yanko).
+  const corteIndutexAmbas = empresaCxp === "ambas" ? cortesTodos.find((c) => empresaDeCxp(c) === "indutex") || null : null;
   const corteActivo = corteSeleccionado
     ? cortesOrdenados.find((c) => c.id === corteSeleccionado) || cortesOrdenados[0]
     : cortesOrdenados[0];
@@ -5867,11 +6244,13 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
     const nombreMostrado = (codigoSinNombre && nombresProveedor?.[codigoSinNombre]) || p.nombre;
     return { ...p, codigoSinNombre, nombreMostrado };
   }
-  const filasCorteBase = (corteActivo?.proveedores || []).map((p) => conNombreMostrado({ ...p, origen: "corte" }));
+  const filasCorteBase = (corteActivo?.proveedores || []).map((p) => conNombreMostrado({ ...p, origen: "corte", empresa: empresaCorte, corteId: corteActivo?.id }));
   // Con plazo definido, las edades y semanas de vencimiento salen de emisión + plazo (si el corte trae las facturas guardadas).
   const filasCorte = filasCorteBase.map((p) => aplicarPlazoCxp(p, facturasGuardadas[claveDocCxp(p.nombre)], plazoDeProveedorCxp(plazos, p.nombre), corteActivo?.fechaCorte, corteActivo?.id));
   const nPlazoAplicado = filasCorte.filter((p) => p.plazoAplicado).length;
-  const filasManual = manuales.map((p) => conNombreMostrado({ ...p, origen: "manual" }));
+  const filasCorteIndutexAmbas = (corteIndutexAmbas?.proveedores || []).map((p) => conNombreMostrado({ ...p, origen: "corte", empresa: "indutex", corteId: corteIndutexAmbas.id }));
+  const manualesEmpresa = manuales.filter((m) => empresaCxp === "ambas" || empresaDeCxp(m) === empresaCxp);
+  const filasManual = manualesEmpresa.map((p) => conNombreMostrado({ ...p, origen: "manual", empresa: empresaDeCxp(p) }));
   // (2026-09-28, a pedido de Fredy) Antes se usaba `!filas.length` para decidir
   // si mostrar el mensaje de "no has importado ningun corte" -- pero `filas`
   // ya viene filtrada por busqueda/origen, asi que en cuanto el texto buscado
@@ -5881,8 +6260,8 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
   // datos importados ("me saca" reportado por Fredy). `hayProveedores` mira
   // los datos SIN filtrar para separar "no hay nada importado" de "el filtro
   // no encontro nada".
-  const hayProveedores = filasCorte.length + filasManual.length > 0;
-  let filas = [...filasCorte, ...filasManual];
+  const hayProveedores = filasCorte.length + filasCorteIndutexAmbas.length + filasManual.length > 0;
+  let filas = [...filasCorte, ...filasCorteIndutexAmbas, ...filasManual];
   if (busquedaProveedor.trim()) {
     const q = normalizarTexto(busquedaProveedor);
     filas = filas.filter((f) => normalizarTexto(f.nombre).includes(q) || normalizarTexto(f.nombreMostrado).includes(q));
@@ -5981,6 +6360,18 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
               ? `Corte al ${corteActivo.fechaCorte}${corteActivo.creadoEn ? ` \u00b7 ${new Date(corteActivo.creadoEn).toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" })}` : ""}`
               : "Sin cortes importados aún"}
           </p>
+          <div style={{ display: "inline-flex", border: `1.5px solid ${C.border}`, borderRadius: 8, overflow: "hidden", marginTop: 8 }}>
+            {[["yanko", "Yanko"], ["indutex", "Indutex"], ["ambas", "Ambas"]].filter(([k]) => !(k === "ambas" && vistaDatos === "comparar")).map(([k, label]) => (
+              <button
+                key={k}
+                type="button"
+                onClick={() => setEmpresaCxp(k)}
+                style={{ padding: "6px 14px", border: "none", cursor: "pointer", fontSize: 13, fontFamily: "inherit", fontWeight: empresaCxp === k ? 800 : 500, background: empresaCxp === k ? C.violet : C.white, color: empresaCxp === k ? C.white : C.slate }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
           {cortesOrdenados.length > 1 && (
@@ -6008,11 +6399,11 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
           )}
           {isAdmin && vista === "tabla" && (
             <div style={{ display: "inline-flex", border: `1.5px solid ${C.border}`, borderRadius: 8, overflow: "hidden" }}>
-              {[["busint", "Busint"], ["comparar", "Comparar con TNS"]].map(([k, label]) => (
+              {[["busint", "Busint"], ["comparar", "Comparar con TNS"], ["pagar30", "A pagar (30 días)"]].map(([k, label]) => (
                 <button
                   key={k}
                   type="button"
-                  onClick={() => setVistaDatos(k)}
+                  onClick={() => { setVistaDatos(k); if (k === "comparar" && empresaCxp === "ambas") setEmpresaCxp("yanko"); }}
                   style={{ padding: "8px 14px", border: "none", cursor: "pointer", fontSize: 13, fontFamily: "inherit", fontWeight: vistaDatos === k ? 800 : 500, background: vistaDatos === k ? C.ink : C.white, color: vistaDatos === k ? C.white : C.slate }}
                 >
                   {label}
@@ -6051,8 +6442,21 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
       )}
       {vista === "estadistica" ? (
         <EstadisticaCxpView totalAdeudado={totalAdeudado} calendario={calendario} />
+      ) : isAdmin && vistaDatos === "pagar30" ? (
+        <PagarTreintaDiasView
+          empresaCxp={empresaCxp}
+          corteYanko={empresaCxp === "indutex" ? null : corteActivo}
+          filasYanko={empresaCxp === "indutex" ? [] : filasCorteBase}
+          corteIndutex={empresaCxp === "indutex" ? corteActivo : corteIndutexAmbas}
+          filasIndutex={empresaCxp === "indutex" ? filasCorteBase : filasCorteIndutexAmbas}
+          manuales={manualesEmpresa}
+          facturasGuardadas={facturasGuardadas}
+          plazos={plazos}
+        />
       ) : isAdmin && vistaDatos === "comparar" ? (
         <CuadreCxpView
+          empresa={empresaCorte}
+          setEmpresa={setEmpresaCxp}
           proveedoresBusint={filasCorte}
           corteActivo={corteActivo}
           detalleFacturas={detalleFacturasPorProveedor}
@@ -6241,7 +6645,7 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
                                 onClick={() =>
                                   f.origen === "manual"
                                     ? onDeleteManual(f.id)
-                                    : onDeleteProveedorCorte(corteActivo.id, f.nombre)
+                                    : onDeleteProveedorCorte(f.corteId || corteActivo.id, f.nombre)
                                 }
                                 title="Eliminar proveedor"
                                 style={{
@@ -8688,7 +9092,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
   // reciente (con cuántos proveedores lo tienen como concepto principal),
   // para poder asignarles categoría desde Administración sin depender de
   // volver a traer el corte desde Busint.
-  const cortesCxpOrdenados = [...cortesCxp].sort((a, b) => claveOrdenCorte(b).localeCompare(claveOrdenCorte(a)));
+  const cortesCxpOrdenados = [...cortesCxp].filter((c) => c.empresa !== "indutex").sort((a, b) => claveOrdenCorte(b).localeCompare(claveOrdenCorte(a)));
   const conteoConceptosCxp = {};
   (cortesCxpOrdenados[0]?.proveedores || []).forEach((p) => {
     if (p.conceptoPrincipal) conteoConceptosCxp[p.conceptoPrincipal] = (conteoConceptosCxp[p.conceptoPrincipal] || 0) + 1;
