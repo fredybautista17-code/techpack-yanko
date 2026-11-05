@@ -2702,13 +2702,41 @@ function VencimientosChart({ filas }) {
     </svg>
   );
 }
-function ColumnaSemana({ titulo, total, tono, tarjetas, detalleFacturasPorProveedor, tarjetaAbierta, onToggle, claveSemana }) {
+// (2026-11-05, a pedido de Fredy) Fecha de vencimiento visible en el tablero: "28 oct".
+const MESES_CORTOS_VCTO = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
+function fmtDiaMes(iso) {
+  if (!iso) return "sin fecha";
+  const [, m, d] = String(iso).slice(0, 10).split("-").map(Number);
+  return m && d ? `${d} ${MESES_CORTOS_VCTO[m - 1]}` : "sin fecha";
+}
+function ColumnaSemana({ titulo, total, tono, tarjetas, detalleFacturasPorProveedor, fechasManual, tarjetaAbierta, onToggle, claveSemana }) {
   const fondos = {
     vencido: { bg: C.redBg, border: C.red },
     "esta-semana": { bg: C.greenBg, border: C.green },
     normal: { bg: C.white, border: C.border },
   };
   const estilo = fondos[tono] || fondos.normal;
+  // Facturas de un proveedor que caen en ESTA columna, de la más próxima a vencer (o más antigua si es "Vencido") a la más lejana.
+  const facturasDe = (nombre) => {
+    const todas = detalleFacturasPorProveedor[nombre] || null;
+    if (!todas) return null;
+    return todas
+      .filter((f) => (claveSemana === "vencido" ? (f.diasVencido || 0) > 0 : f.fechaVctoISO && lunesDeSemanaISO(f.fechaVctoISO) === claveSemana))
+      .slice()
+      .sort((a, b) => String(a.fechaVctoISO || "9999").localeCompare(String(b.fechaVctoISO || "9999")));
+  };
+  const fechasDe = (nombre, fs) => {
+    const deFacturas = (fs || []).map((f) => f.fechaVctoISO).filter(Boolean);
+    return (deFacturas.length ? deFacturas : (fechasManual || {})[nombre] || []).slice().sort();
+  };
+  // Con fecha conocida, lo más urgente arriba; sin fecha (aún no se trae el detalle), por monto como antes.
+  const tarjetasOrdenadas = tarjetas
+    .map((t) => { const fs = facturasDe(t.nombre); const fechas = fechasDe(t.nombre, fs); return { t, fs, fechas }; })
+    .sort((a, b) => {
+      if (a.fechas.length && b.fechas.length) return a.fechas[0].localeCompare(b.fechas[0]) || b.t.monto - a.t.monto;
+      if (a.fechas.length !== b.fechas.length) return a.fechas.length ? -1 : 1;
+      return b.t.monto - a.t.monto;
+    });
   return (
     <div style={{ flex: "0 0 230px", background: estilo.bg, border: `1px solid ${estilo.border}`, borderRadius: 14, padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, paddingBottom: 8, borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
@@ -2720,21 +2748,23 @@ function ColumnaSemana({ titulo, total, tono, tarjetas, detalleFacturasPorProvee
           {tono === "vencido" ? "Nada vencido." : "Nada vence esta semana."}
         </div>
       ) : (
-        tarjetas.map((t) => {
+        tarjetasOrdenadas.map(({ t, fs: facturas, fechas }) => {
           const key = `${claveSemana}::${t.nombre}`;
           const abierta = tarjetaAbierta === key;
           const todas = detalleFacturasPorProveedor[t.nombre] || null;
-          const facturas = todas
-            ? todas.filter((f) =>
-                claveSemana === "vencido"
-                  ? (f.diasVencido || 0) > 0
-                  : f.fechaVctoISO && lunesDeSemanaISO(f.fechaVctoISO) === claveSemana
-              )
-            : null;
+          const primera = fechas[0] || null;
+          const ultima = fechas[fechas.length - 1] || null;
+          const diasMax = tono === "vencido" && facturas ? Math.max(0, ...facturas.map((f) => f.diasVencido || 0)) : 0;
+          const textoVcto = !primera
+            ? ""
+            : tono === "vencido"
+              ? (diasMax > 0 ? `Más antigua: hace ${diasMax} d (${fmtDiaMes(primera)})` : `Venció el ${fmtDiaMes(primera)}`)
+              : primera === ultima ? `Vence ${fmtDiaMes(primera)}` : `Vence ${fmtDiaMes(primera)} → ${fmtDiaMes(ultima)}`;
           return (
             <div key={t.nombre} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 11px", display: "flex", flexDirection: "column", gap: 6 }}>
               <div style={{ fontSize: 12.5, fontWeight: 700, color: C.ink, lineHeight: 1.25 }}>{t.nombre}</div>
               <div style={{ fontSize: 14, fontWeight: 800, color: tono === "vencido" ? C.red : C.amber }}>{fmtCOP(t.monto)}</div>
+              {textoVcto && <div style={{ fontSize: 11, fontWeight: 700, color: tono === "vencido" ? C.red : C.slate }}>🗓 {textoVcto}</div>}
               <button
                 onClick={() => onToggle(abierta ? null : key)}
                 style={{ alignSelf: "flex-start", fontSize: 11, fontWeight: 700, color: C.blue, background: "none", border: "none", padding: 0, cursor: "pointer", textDecoration: "underline" }}
@@ -2749,8 +2779,14 @@ function ColumnaSemana({ titulo, total, tono, tarjetas, detalleFacturasPorProvee
                     <div style={{ fontSize: 10.5, color: C.slate }}>No se encontró el detalle exacto (puede que el corte esté desactualizado).</div>
                   ) : (
                     facturas.map((f, i) => (
-                      <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, color: C.slate }}>
-                        <span>Fact. {f.nfact || "—"}</span>
+                      <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 6, fontSize: 10.5, color: C.slate }}>
+                        <span>
+                          Fact. {f.nfact || "—"}
+                          <br />
+                          <span style={{ color: tono === "vencido" ? C.red : C.slate, fontWeight: 600 }}>
+                            {f.fechaVctoISO ? `vence ${fmtDiaMes(f.fechaVctoISO)}` : "sin fecha"}{tono === "vencido" && (f.diasVencido || 0) > 0 ? ` · ${f.diasVencido} d vencida` : ""}
+                          </span>
+                        </span>
                         <b style={{ color: C.ink, fontWeight: 700 }}>{fmtCOP(f.saldo)}</b>
                       </div>
                     ))
@@ -2828,6 +2864,13 @@ function VencimientosView({ cortes, manuales, presupuestosCliente, presupuestos,
   function sumarProveedor(mapa, nombre, monto) {
     mapa[nombre] = (mapa[nombre] || 0) + monto;
   }
+  // (2026-11-05) Fechas de vencimiento de los proveedores manuales, por columna del tablero, para mostrarlas en la tarjeta.
+  const fechasManualPorClave = {};
+  function anotarFechaManual(clave, nombre, iso) {
+    if (!iso) return;
+    fechasManualPorClave[clave] = fechasManualPorClave[clave] || {};
+    (fechasManualPorClave[clave][nombre] = fechasManualPorClave[clave][nombre] || []).push(String(iso).slice(0, 10));
+  }
 
   // (2026-09-28) Corrección: esta vista sumaba `p.vencimientosPorSemana` de
   // cada elemento de `cortes` directamente, pero un corte es
@@ -2876,9 +2919,11 @@ function VencimientosView({ cortes, manuales, presupuestosCliente, presupuestos,
     if (semana < inicioVentana) {
       vencidoYa += total;
       sumarProveedor(provVencido, nombre, total);
+      anotarFechaManual("vencido", nombre, m.fechaVencimiento);
     } else if (semanaSet.has(semana)) {
       porSemana[semana] += total;
       sumarProveedor(provPorSemana[semana], nombre, total);
+      anotarFechaManual(semana, nombre, m.fechaVencimiento);
     } else {
       masAdelante += total;
     }
@@ -3009,6 +3054,11 @@ function VencimientosView({ cortes, manuales, presupuestosCliente, presupuestos,
           ⚠ {errorFacturas}
         </div>
       )}
+      {vistaDetalle === "tablero" && !Object.keys(detalleFacturasPorProveedor).length && (
+        <div style={{ fontSize: 12, color: C.slate, marginBottom: 10 }}>
+          Para ver la fecha de vencimiento de cada proveedor (y ordenarlos del más urgente al menos urgente) pulsa «🔄 Actualizar facturas en vivo».
+        </div>
+      )}
       {vistaDetalle === "tablero" ? (
         <div style={{ display: "flex", gap: 12, overflowX: "auto", paddingBottom: 10 }}>
           <ColumnaSemana
@@ -3017,6 +3067,7 @@ function VencimientosView({ cortes, manuales, presupuestosCliente, presupuestos,
             tono="vencido"
             tarjetas={tarjetasVencido}
             detalleFacturasPorProveedor={detalleFacturasPorProveedor}
+            fechasManual={fechasManualPorClave.vencido}
             tarjetaAbierta={tarjetaAbierta}
             onToggle={setTarjetaAbierta}
             claveSemana="vencido"
@@ -3029,6 +3080,7 @@ function VencimientosView({ cortes, manuales, presupuestosCliente, presupuestos,
               tono={i === 0 ? "esta-semana" : "normal"}
               tarjetas={aTarjetas(provPorSemana[f.semana])}
               detalleFacturasPorProveedor={detalleFacturasPorProveedor}
+              fechasManual={fechasManualPorClave[f.semana]}
               tarjetaAbierta={tarjetaAbierta}
               onToggle={setTarjetaAbierta}
               claveSemana={f.semana}

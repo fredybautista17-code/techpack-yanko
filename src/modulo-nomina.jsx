@@ -1424,7 +1424,7 @@ function TurnoModal({ turno, onSave, onClose }) {
   const [form, setForm] = useState({
     nombre: turno?.nombre || "",
     dias: turno?.dias || [...DIAS_SEMANA_TURNO],
-    sabadoSiFestivo: turno?.sabadoSiFestivo ?? true,
+    sabado: modoSabadoTurno(turno || { sabadoSiFestivo: true }),
     horarios: turno?.horarios || {},
     // (2026-10-06, a pedido de Fredy) Descansos del turno (ej. almuerzo):
     // se restan del tiempo trabajado al medir las horas perdidas por
@@ -1447,7 +1447,7 @@ function TurnoModal({ turno, onSave, onClose }) {
   function guardar() {
     if (!form.nombre.trim()) return;
     onSave({
-      nombre: form.nombre.trim(), dias: form.dias, sabadoSiFestivo: !!form.sabadoSiFestivo, horarios: form.horarios,
+      nombre: form.nombre.trim(), dias: form.dias, sabado: form.sabado, sabadoSiFestivo: form.sabado !== "nunca", horarios: form.horarios,
       descanso1Inicio: form.descanso1Inicio || "", descanso1Fin: form.descanso1Fin || "",
       descanso2Inicio: form.descanso2Inicio || "", descanso2Fin: form.descanso2Fin || "",
       descanso3Inicio: form.descanso3Inicio || "", descanso3Fin: form.descanso3Fin || "",
@@ -1500,13 +1500,16 @@ function TurnoModal({ turno, onSave, onClose }) {
         </div>
       </Field>
       <Field label="Sábado">
-        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: C.slate, cursor: "pointer" }}>
-          <input type="checkbox" checked={form.sabadoSiFestivo} onChange={(e) => set("sabadoSiFestivo")(e.target.checked)} /> Le corresponde el sábado cuando esa semana tiene un festivo entre semana, o cuando el lunes siguiente es festivo
-        </label>
+        <select value={form.sabado} onChange={(e) => set("sabado")(e.target.value)} style={{ width: "100%", padding: "8px 10px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 13, color: C.ink, background: C.white, fontFamily: "inherit" }}>
+          <option value="nunca">Nunca: el sábado no le corresponde</option>
+          <option value="festivo">Solo si hay festivo: esa semana tiene un festivo entre semana, o el lunes siguiente es festivo</option>
+          <option value="siempre">Todos los sábados</option>
+        </select>
+        <div style={{ fontSize: 11, color: C.slate, marginTop: 6 }}>Los festivos no se trabajan en ningún turno: ese día no se espera a nadie y no cuenta como falta.</div>
         {/* (2026-10-10, a pedido de Fredy) Horario propio del sábado de este
             turno (para retardos). Si se deja en blanco, en el sábado antes
             de un lunes festivo se espera 7:00 a 1:00 p.m. */}
-        {form.sabadoSiFestivo && (
+        {form.sabado !== "nunca" && (
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10 }}>
             <div style={{ width: 70, fontSize: 12, fontWeight: 700, color: C.ink }}>Sábado</div>
             <input type="time" value={form.horarios.Sab?.entrada || ""} onChange={(e) => setHorario("Sab", "entrada", e.target.value)} style={{ padding: "6px 8px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12 }} />
@@ -1514,7 +1517,7 @@ function TurnoModal({ turno, onSave, onClose }) {
             <input type="time" value={form.horarios.Sab?.salida || ""} onChange={(e) => setHorario("Sab", "salida", e.target.value)} style={{ padding: "6px 8px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12 }} />
           </div>
         )}
-        {form.sabadoSiFestivo && !form.horarios.Sab?.entrada && !form.horarios.Sab?.salida && (
+        {form.sabado === "festivo" && !form.horarios.Sab?.entrada && !form.horarios.Sab?.salida && (
           <div style={{ fontSize: 11, color: C.slate, marginTop: 6 }}>En blanco: el sábado antes de un lunes festivo se espera de 7:00 a.m. a 1:00 p.m.</div>
         )}
       </Field>
@@ -1568,7 +1571,12 @@ function TurnosView({ turnos, trabajadores, isAdmin, onSave, onDelete }) {
         columnas={[
           { key: "nombre", label: "Turno" },
           { key: "dias", label: "Días", render: (f) => (f.dias || []).map(labelDiaTurno).join(", ") || "—" },
-          { key: "sabadoSiFestivo", label: "Sábado si hay festivo", render: (f) => !f.sabadoSiFestivo ? "No" : (f.horarios?.Sab?.entrada || f.horarios?.Sab?.salida) ? `Sí (${f.horarios.Sab.entrada || "?"}–${f.horarios.Sab.salida || "?"})` : "Sí" },
+          { key: "sabado", label: "Sábado", render: (f) => {
+            const modo = modoSabadoTurno(f);
+            if (modo === "nunca") return "No";
+            const hs = (f.horarios?.Sab?.entrada || f.horarios?.Sab?.salida) ? ` (${f.horarios.Sab.entrada || "?"}–${f.horarios.Sab.salida || "?"})` : "";
+            return (modo === "siempre" ? "Todos los sábados" : "Solo si hay festivo") + hs;
+          } },
           { key: "descansos", label: "Descansos", render: (f) => {
             const d = [];
             if (f.descanso1Inicio && f.descanso1Fin) d.push(`${f.descanso1Inicio}–${f.descanso1Fin}`);
@@ -5163,12 +5171,23 @@ function semanaTuvoFestivo(iso) {
 // un Turno asignado (catálogo Turnos), se usan sus días y su regla de
 // sábado en vez de la regla completa -- así a alguien como Jimmi (solo
 // lunes/miércoles/viernes) no se le cuenta martes/jueves como falta.
+// (2026-11-05, a pedido de Fredy) El sábado del turno ahora tiene 3 modos: "nunca", "festivo" (solo si hay festivo
+// esa semana o el lunes siguiente es festivo: la regla de siempre) y "siempre" (todos los sábados, p. ej. el turno
+// de la tarde). Turnos viejos: casilla sabadoSiFestivo true → "festivo", false → "nunca". Sin turno → "festivo".
+// Un festivo (de lunes a sábado) NO es día laboral para nadie. Misma lógica en functions/index.js (diaEsperadoTurnoAsistencia).
+function modoSabadoTurno(turno) {
+  if (!turno) return "festivo";
+  if (turno.sabado === "nunca" || turno.sabado === "festivo" || turno.sabado === "siempre") return turno.sabado;
+  return turno.sabadoSiFestivo ? "festivo" : "nunca";
+}
 function diaEsperado(iso, turno) {
   const dow = new Date(iso + "T00:00:00").getDay(); // 0=domingo..6=sábado
   if (dow === 0) return false;
+  if (esFestivoColombia(iso)) return false;
   if (dow === 6) {
-    const sabadoSiFestivo = turno ? !!turno.sabadoSiFestivo : true;
-    return sabadoSiFestivo && sabadoSeTrabaja(iso);
+    const modo = modoSabadoTurno(turno);
+    if (modo === "siempre") return true;
+    return modo === "festivo" && sabadoSeTrabaja(iso);
   }
   const diaCodigo = ["Dom", "Lun", "Mar", "Mie", "Jue", "Vie", "Sab"][dow];
   const dias = turno?.dias || DIAS_SEMANA_TURNO;

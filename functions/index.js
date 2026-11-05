@@ -12204,6 +12204,40 @@ function sabadoSeTrabajaAsistencia(iso) {
   return false;
 }
 
+// (2026-11-05, a pedido de Fredy) Sábado del turno en 3 modos ("nunca" | "festivo" | "siempre") y festivo = día no
+// laboral para todos. Misma lógica que diaEsperado()/modoSabadoTurno() en src/modulo-nomina.jsx -- mantener igual.
+function modoSabadoTurnoAsistencia(turno) {
+  if (!turno) return "festivo";
+  if (turno.sabado === "nunca" || turno.sabado === "festivo" || turno.sabado === "siempre") return turno.sabado;
+  return turno.sabadoSiFestivo ? "festivo" : "nunca";
+}
+function diaEsperadoTurnoAsistencia(iso, turno) {
+  const dow = new Date(iso + "T00:00:00").getDay();
+  if (dow === 0) return false;
+  if (FESTIVOS_COLOMBIA_2026_ASISTENCIA.includes(iso)) return false;
+  if (dow === 6) {
+    const modo = modoSabadoTurnoAsistencia(turno);
+    if (modo === "siempre") return true;
+    return modo === "festivo" && sabadoSeTrabajaAsistencia(iso);
+  }
+  const codigo = ["Dom", "Lun", "Mar", "Mie", "Jue", "Vie", "Sab"][dow];
+  const dias = (turno && Array.isArray(turno.dias) && turno.dias.length) ? turno.dias : ["Lun", "Mar", "Mie", "Jue", "Vie"];
+  return dias.includes(codigo);
+}
+// Turno real de un trabajador: el de su ficha; si no, el de su Área Interna; si no, ninguno (horario completo de siempre).
+function turnoDeTrabajadorAsistencia(trabajador, areas, turnos) {
+  if (trabajador && trabajador.turnoId) {
+    const t = turnos.find((x) => x.id === trabajador.turnoId);
+    if (t) return t;
+  }
+  const area = areas.find((a) => a.nombre === (trabajador && trabajador.area));
+  if (area && area.turnoId) {
+    const t = turnos.find((x) => x.id === area.turnoId);
+    if (t) return t;
+  }
+  return null;
+}
+
 // (2026-09-14, a pedido de Fredy) Reporte diario de asistencia: todos los
 // días a las 9am (media hora después de que se sube y guarda el huellero a
 // las 8am), cruza "nomina_dias_trabajados" de HOY contra los trabajadores
@@ -12232,13 +12266,10 @@ exports.enviarAsistenciaDiaria = onSchedule(
   },
   async () => {
     const fecha = fechaHoyBogota();
-    const esSabado = new Date(fecha + "T00:00:00").getDay() === 6;
-    if (esSabado && !sabadoSeTrabajaAsistencia(fecha)) {
-      logger.info("enviarAsistenciaDiaria: sábado sin festivo esa semana, no se trabaja -- no se manda correo", { fecha });
-      return;
-    }
+    // (2026-11-05) Ya no se corta aquí por sábado/festivo: más abajo solo entran al correo los trabajadores a quienes ese
+    // día les corresponde según su turno (sábado «todos» / «solo si hay festivo» / «nunca»; festivo = nadie).
     const primerDiaMes = `${fecha.slice(0, 7)}-01`;
-    const [areasSnap, trabajadoresSnap, diasTrabajadosSnap, usersSnap, configSnap, anomaliasSnap, ausenciasSnap, retardosMesSnap] = await Promise.all([
+    const [areasSnap, trabajadoresSnap, diasTrabajadosSnap, usersSnap, configSnap, anomaliasSnap, ausenciasSnap, retardosMesSnap, turnosSnap] = await Promise.all([
       db.collection("nomina_areas").get(),
       db.collection("nomina_trabajadores").get(),
       db.collection("nomina_dias_trabajados").where("fecha", "==", fecha).get(),
@@ -12247,11 +12278,13 @@ exports.enviarAsistenciaDiaria = onSchedule(
       db.collection("nomina_anomalias_huellero").get(),
       db.collection("nomina_ausencias").get(),
       db.collection("nomina_retardos").where("fecha", ">=", primerDiaMes).where("fecha", "<=", fecha).get(),
+      db.collection("nomina_turnos").get(),
     ]);
 
     const areas = areasSnap.docs.map((d) => d.data());
+    const turnos = turnosSnap.docs.map((d) => ({ ...d.data(), id: d.id }));
     const todosTrabajadores = trabajadoresSnap.docs.map((d) => ({ ...d.data(), id: d.id }));
-    const trabajadoresActivos = todosTrabajadores.filter((t) => t.activo !== false);
+    const trabajadoresActivos = todosTrabajadores.filter((t) => t.activo !== false && diaEsperadoTurnoAsistencia(fecha, turnoDeTrabajadorAsistencia(t, areas, turnos)));
     const usuarios = usersSnap.docs.map((d) => d.data()).filter((u) => u.activo !== false); // (2026-11-05) sin usuarios inactivos
     // (2026-09-15, a pedido de Fredy) Anomalías = marcó el huellero UNA
     // sola vez ese día (entrada sin salida, o al revés), sin permiso que
@@ -12281,7 +12314,7 @@ exports.enviarAsistenciaDiaria = onSchedule(
     });
 
     if (!trabajadoresActivos.length) {
-      logger.info("enviarAsistenciaDiaria: no hay trabajadores activos, no se manda nada");
+      logger.info("enviarAsistenciaDiaria: hoy no le corresponde trabajar a nadie (festivo, sábado sin turnos, o sin trabajadores activos), no se manda nada", { fecha });
       return;
     }
 
