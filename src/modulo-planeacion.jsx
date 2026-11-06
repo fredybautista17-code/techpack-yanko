@@ -4710,7 +4710,7 @@ function causadoDestajoEnPeriodoCC(t, periodoId, hoy, produccion, causacionManua
   const ajusteDoc = (ajustesDestajoCC || []).find((a) => a.id === `${t.id}__${periodoId}`);
   const ajusteValor = (!base.salarioMinimoGarantizado && ajusteDoc) ? (Number(ajusteDoc.valor) || 0) : 0;
   const netoAPagar = base.netoBase - descuentoCobros + totalHorasExtra + bonificacionPuntual + ajusteValor;
-  return { valorProducido: netoProduccion, costo: netoAPagar + base.cesantiasPeriodo + base.primaPeriodo + base.vacacionesPeriodo };
+  return { valorProducido: netoProduccion, costo: netoAPagar + base.cesantiasPeriodo + base.primaPeriodo + base.vacacionesPeriodo, neto: netoAPagar, provisiones: base.cesantiasPeriodo + base.primaPeriodo + base.vacacionesPeriodo };
 }
 // ─── TRAER LOTES (Entradas de Planta → ventas del área) ───────────────────────
 // (2026-11-06, a pedido de Fredy) En «Costos y ventas» se escogen con casillas las entradas de la planta (lote,
@@ -4876,6 +4876,114 @@ function etiquetaOrigenCC(r) {
   return { txt: `${tipo}${r.cargadoPor ? " · " + r.cargadoPor : ""}`, titulo: r.creadoEn ? `Cargado el ${new Date(r.creadoEn).toLocaleString("es-CO")}` : "" };
 }
 const colOrigenCC = { key: "origen", label: "Cargó", render: (r) => { const o = etiquetaOrigenCC(r); return <span title={o.titulo} style={{ fontSize: 11, color: C.slate, whiteSpace: "nowrap" }}>{o.txt}</span>; } };
+// (2026-11-06, a pedido de Fredy) «¿De dónde sale la nómina?»: desglose del costo de nómina que entra al Costo total, por
+// quincena y por trabajador. Distingue lo confirmado en Nómina → Destajo de lo estimado en vivo y de las quincenas que
+// todavía no han empezado (que ya suman sus provisiones). En Planta Yanko (mostrarNombres=false) solo sale el resumen por
+// quincena, sin nombres.
+const ESTADO_QUINCENA_CC = {
+  confirmada: { txt: "✓ Confirmada", fg: "#2D9E6B", orden: 0 },
+  sin_confirmar: { txt: "🟡 Sin confirmar", fg: "#C47C1A", orden: 1 },
+  en_curso: { txt: "🟡 En curso", fg: "#C47C1A", orden: 2 },
+  futura: { txt: "⏳ No ha empezado", fg: "#7B5EA7", orden: 3 },
+  fijo: { txt: "Sueldo fijo", fg: "#5A5A7A", orden: 4 },
+};
+function DetalleCostoNominaModal({ filas, totalTarjeta, area, etiquetaPeriodo, mostrarNombres, onClose }) {
+  const resumen = useMemo(() => {
+    const m = new Map();
+    filas.forEach((f) => {
+      if (!m.has(f.pid)) m.set(f.pid, { pid: f.pid, label: f.label, n: 0, neto: 0, prov: 0, costo: 0, estados: {} });
+      const g = m.get(f.pid);
+      g.n += 1; g.neto += f.neto; g.prov += f.prov; g.costo += f.costo;
+      g.estados[f.estado] = (g.estados[f.estado] || 0) + 1;
+    });
+    return [...m.values()].sort((a, b) => a.pid.localeCompare(b.pid));
+  }, [filas]);
+  const suma = filas.reduce((a, f) => a + f.costo, 0);
+  const provFuturas = filas.filter((f) => f.estado === "futura").reduce((a, f) => a + f.prov, 0);
+  const estimado = filas.filter((f) => f.estado !== "confirmada" && f.estado !== "fijo").reduce((a, f) => a + f.costo, 0);
+  const confirmado = filas.filter((f) => f.estado === "confirmada").reduce((a, f) => a + f.costo, 0);
+  const diferencia = Math.round(suma - totalTarjeta);
+  const detalle = useMemo(() => [...filas].sort((a, b) => b.costo - a.costo || String(a.nombre).localeCompare(String(b.nombre), "es")), [filas]);
+  return (
+    <Modal title={`¿De dónde sale la nómina? — ${area}`} onClose={onClose} width={1000}>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 14, maxWidth: 780 }}>
+        Costo de nómina de {area} en {etiquetaPeriodo} que entra al Costo total. Cada línea es neto a pagar + provisiones (cesantías, prima y vacaciones).
+        Lo confirmado sale de Nómina → Destajo; lo demás es un estimado con lo registrado hasta hoy.
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 12, marginBottom: 16 }}>
+        <KPI icon="✅" label="Confirmado en Nómina" value={fmtMoney(confirmado)} color={C.green} bg={C.greenBg} />
+        <KPI icon="🟡" label="Estimado (sin confirmar)" value={fmtMoney(estimado)} color={C.amber} bg={C.amberBg} />
+        <KPI icon="⏳" label="Provisiones de quincenas que no han empezado" value={fmtMoney(provFuturas)} color={C.violet} bg={C.violetBg} sub="ya suman aunque la quincena no empiece" />
+        <KPI icon="🏦" label="Total de nómina" value={fmtMoney(suma)} color={C.ink} bg={C.canvas} />
+      </div>
+      {Math.abs(diferencia) > 1 && (
+        <div style={{ background: C.redBg, border: `1px solid ${C.red}`, borderRadius: 10, padding: "9px 13px", fontSize: 12.5, color: C.ink, marginBottom: 14 }}>
+          ⚠ Este desglose suma {fmtMoney(suma)} pero la tarjeta de Costo total usa {fmtMoney(totalTarjeta)} de nómina (diferencia {fmtMoney(diferencia)}). Avísale a soporte para revisarlo.
+        </div>
+      )}
+      <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 8 }}>Por quincena</div>
+      <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "auto", marginBottom: 18 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+          <thead>
+            <tr style={{ background: C.ink }}>
+              {["Quincena", "Estado", "Trabajadores", "Neto a pagar", "Provisiones", "Costo"].map((h, i) => (
+                <th key={h} style={{ padding: "9px 12px", color: C.seam, textAlign: i < 2 ? "left" : "right", fontWeight: 700, fontSize: 11, whiteSpace: "nowrap" }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {resumen.map((g, i) => (
+              <tr key={g.pid} style={{ background: i % 2 ? "#FAF8F5" : C.white, borderTop: `1px solid ${C.border}` }}>
+                <td style={{ padding: "8px 12px", fontWeight: 700 }}>{g.label}</td>
+                <td style={{ padding: "8px 12px", fontSize: 11.5, fontWeight: 700 }}>
+                  {Object.keys(g.estados).sort((a, b) => ESTADO_QUINCENA_CC[a].orden - ESTADO_QUINCENA_CC[b].orden).map((e) => (
+                    <span key={e} style={{ color: ESTADO_QUINCENA_CC[e].fg, marginRight: 10, whiteSpace: "nowrap" }}>{ESTADO_QUINCENA_CC[e].txt} ({g.estados[e]})</span>
+                  ))}
+                </td>
+                <td style={{ padding: "8px 12px", textAlign: "right" }}>{fmtNum(g.n)}</td>
+                <td style={{ padding: "8px 12px", textAlign: "right" }}>{fmtMoney(g.neto)}</td>
+                <td style={{ padding: "8px 12px", textAlign: "right" }}>{fmtMoney(g.prov)}</td>
+                <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 800 }}>{fmtMoney(g.costo)}</td>
+              </tr>
+            ))}
+            {!resumen.length && <tr><td colSpan={6} style={{ padding: 20, textAlign: "center", color: C.slate }}>Sin trabajadores de nómina en esta área para el período.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      {mostrarNombres && (
+        <>
+          <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 8 }}>Por trabajador y quincena</div>
+          <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "auto", maxHeight: "40vh" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 640 }}>
+              <thead>
+                <tr style={{ background: C.ink }}>
+                  {["Trabajador", "Quincena", "Estado", "Neto a pagar", "Provisiones", "Costo"].map((h, i) => (
+                    <th key={h} style={{ padding: "9px 12px", color: C.seam, textAlign: i < 3 ? "left" : "right", fontWeight: 700, fontSize: 11, whiteSpace: "nowrap", position: "sticky", top: 0, background: C.ink }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {detalle.map((f, i) => (
+                  <tr key={`${f.id}|${f.pid}`} style={{ background: i % 2 ? "#FAF8F5" : C.white, borderTop: `1px solid ${C.border}` }}>
+                    <td style={{ padding: "7px 12px", fontWeight: 600 }}>{f.nombre}</td>
+                    <td style={{ padding: "7px 12px", whiteSpace: "nowrap" }}>{f.label}</td>
+                    <td style={{ padding: "7px 12px", fontSize: 11.5, fontWeight: 700, color: ESTADO_QUINCENA_CC[f.estado].fg, whiteSpace: "nowrap" }}>{ESTADO_QUINCENA_CC[f.estado].txt}</td>
+                    <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtMoney(f.neto)}</td>
+                    <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtMoney(f.prov)}</td>
+                    <td style={{ padding: "7px 12px", textAlign: "right", fontWeight: 800 }}>{fmtMoney(f.costo)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+      <div style={{ fontSize: 11, color: C.slate, marginTop: 12, lineHeight: 1.5 }}>
+        Las provisiones de cada quincena se suman completas aunque la quincena no haya empezado; solo el salario mínimo garantizado se prorratea por los días que ya pasaron.
+      </div>
+    </Modal>
+  );
+}
 // (2026-11-06, a pedido de Fredy) Con soloCostoReal esta misma vista se monta en Planta Yanko mostrando SOLO el bloque
 // «Costo real total» (gastos, ventas, ganancia real, historial y cierre de mes) de un área fija, sin el detalle por
 // trabajador. puedeEditarCostos=false la deja de solo lectura (sin cargar, borrar ni cerrar mes).
@@ -4935,6 +5043,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
   const [gastoForm, setGastoForm] = useState({ proveedor: "", numeroFactura: "", monto: "", fecha: hoy });
   const [ventaModalAbierto, setVentaModalAbierto] = useState(false);
   const [traerLotesAbierto, setTraerLotesAbierto] = useState(false);
+  const [detalleNominaAbierto, setDetalleNominaAbierto] = useState(false);
   const [ventaForm, setVentaForm] = useState({ referencia: "", lote: "", cantidad: "", precio: "", total: "", cliente: "", fecha: hoy });
   // (2026-09-22, a pedido de Fredy) Liquidaciones YA CONFIRMADAS de Nómina
   // -> Destajo (misma colección que usa NominaDestajoView en
@@ -5385,6 +5494,42 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
   const totalUnidades = filas.reduce((s, f) => s + f.unidades, 0);
   const totalValor = filas.reduce((s, f) => s + f.valorProducido, 0);
   const totalCosto = filas.reduce((s, f) => s + (f.sinSueldo ? 0 : f.costo), 0);
+  // (2026-11-06, a pedido de Fredy) Desglose del costo de nómina por trabajador y quincena (ver DetalleCostoNominaModal).
+  const detalleCostoNomina = useMemo(() => {
+    const out = [];
+    trabajadoresArea.forEach((t) => {
+      if (t.tipoNomina !== "Destajo") return;
+      periodosDestajoSeleccionados.forEach((pid) => {
+        const [anioPid, mesPid, qLabelPid] = pid.split("-");
+        const { inicio: iniPid, fin: finPid } = rangoQuincenaCC(anioPid, mesPid, qLabelPid.replace("Q", ""));
+        const liq = (liquidacionesDestajo || []).find((l) => l.trabajadorId === t.id && l.periodoId === pid);
+        let neto;
+        let prov;
+        let estado;
+        if (liq) {
+          neto = Number(liq.netoAPagar) || 0;
+          prov = (Number(liq.cesantiasPeriodo) || 0) + (Number(liq.primaPeriodo) || 0) + (Number(liq.vacacionesPeriodo) || 0);
+          estado = "confirmada";
+        } else {
+          const c = causadoDestajoEnPeriodoCC(t, pid, hoy, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC);
+          neto = c.neto;
+          prov = c.provisiones;
+          estado = hoy < iniPid ? "futura" : hoy <= finPid ? "en_curso" : "sin_confirmar";
+        }
+        out.push({ id: t.id, nombre: t.nombre, pid, label: labelQuincenaCC(pid), estado, neto, prov, costo: neto + prov });
+      });
+    });
+    return out;
+  }, [trabajadoresArea, periodosDestajoSeleccionados, liquidacionesDestajo, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC, hoy]);
+  const detalleCostoNominaCompleto = useMemo(
+    () => [
+      ...detalleCostoNomina,
+      ...filas
+        .filter((f) => !f.esDestajoReal && !f.sinSueldo)
+        .map((f) => ({ id: f.id, nombre: f.nombre, pid: "fijo", label: "Sueldo fijo del período", estado: "fijo", neto: f.costo, prov: 0, costo: f.costo })),
+    ],
+    [detalleCostoNomina, filas]
+  );
   // (2026-11-04, a pedido de Fredy) Se quitó el KPI "Balance" (y su % cubierto): confundía al convivir con Total ayudado.
   const algunoSinSueldo = trabajadoresArea.some((t) => t.tipoNomina !== "Destajo" && !t.sueldo);
   // ── Modo apoyo: unidades movidas (Busint) en los procesos del área ──────
@@ -6269,6 +6414,11 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
                 <KPI icon="🧾" label={`Ventas (${etiquetaPeriodo})`} value={fmtMoney(totalVentasCentroCostoPeriodo)} color={C.blue} bg={C.blueBg} sub={`${ventasCentroCostoPeriodo.length} venta(s)`} />
                 <KPI icon={balanceRealConVentas >= 0 ? "✅" : "⚠️"} label="Ganancia real (Ventas − Costo total)" value={fmtMoney(balanceRealConVentas)} color={balanceRealConVentas >= 0 ? C.green : C.red} bg={balanceRealConVentas >= 0 ? C.greenBg : C.redBg} />
               </div>
+              {modoMedicion === "destajo" && (
+                <div style={{ marginBottom: 16 }}>
+                  <Btn small variant="ghost" onClick={() => setDetalleNominaAbierto(true)}>🔍 ¿De dónde sale la nómina?</Btn>
+                </div>
+              )}
               <div style={{ display: "flex", gap: 20, alignItems: "flex-start", flexWrap: "wrap" }}>
                 <div style={{ flex: "1 1 380px" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
@@ -6445,6 +6595,16 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
                 <Btn onClick={guardarGastoForm} disabled={!gastoForm.proveedor.trim() || !gastoForm.monto || subiendoArchivo}>{subiendoArchivo ? "Guardando..." : "Guardar"}</Btn>
               </div>
             </Modal>
+          )}
+          {detalleNominaAbierto && areaSel && (
+            <DetalleCostoNominaModal
+              filas={detalleCostoNominaCompleto}
+              totalTarjeta={costoNominaParaTotal}
+              area={areaSel}
+              etiquetaPeriodo={etiquetaPeriodo}
+              mostrarNombres={!soloCostoReal}
+              onClose={() => setDetalleNominaAbierto(false)}
+            />
           )}
           {traerLotesAbierto && puedeEditar && areaSel && (
             <TraerLotesVentasModal
