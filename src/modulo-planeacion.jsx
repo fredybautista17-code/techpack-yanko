@@ -4868,6 +4868,14 @@ function TraerLotesVentasModal({ area, ventasExistentes, rangoInicial, cierreDe,
     </Modal>
   );
 }
+// (2026-11-06, a pedido de Fredy) De dónde viene cada gasto o venta de Costos y ventas: lote (Traer lotes), Excel o
+// digitado a mano, y quién lo cargó. Los registros anteriores a esta columna no guardaron nada y salen «Sin registro».
+function etiquetaOrigenCC(r) {
+  if (!r.origen && !r.cargadoPor) return { txt: "Sin registro", titulo: r.creadoEn ? `Creado el ${new Date(r.creadoEn).toLocaleString("es-CO")} (no se guardó quién)` : "No se guardó quién lo cargó" };
+  const tipo = r.origen === "entrada_planta" ? "📥 Lote" : r.origen === "excel" ? "📤 Excel" : "✍️ A mano";
+  return { txt: `${tipo}${r.cargadoPor ? " · " + r.cargadoPor : ""}`, titulo: r.creadoEn ? `Cargado el ${new Date(r.creadoEn).toLocaleString("es-CO")}` : "" };
+}
+const colOrigenCC = { key: "origen", label: "Cargó", render: (r) => { const o = etiquetaOrigenCC(r); return <span title={o.titulo} style={{ fontSize: 11, color: C.slate, whiteSpace: "nowrap" }}>{o.txt}</span>; } };
 // (2026-11-06, a pedido de Fredy) Con soloCostoReal esta misma vista se monta en Planta Yanko mostrando SOLO el bloque
 // «Costo real total» (gastos, ventas, ganancia real, historial y cierre de mes) de un área fija, sin el detalle por
 // trabajador. puedeEditarCostos=false la deja de solo lectura (sin cargar, borrar ni cerrar mes).
@@ -4879,6 +4887,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
   // Nómina).
   const isAdmin = currentUser?.isAdmin;
   const puedeEditar = puedeEditarCostos !== false;
+  const quienCarga = currentUser?.name || currentUser?.username || "";
   // (2026-09-17, a pedido de Fredy) Botón "Actualizar" del modo $/Destajo
   // (default). Los datos de "produccion" ya llegan en vivo (onSnapshot),
   // así que aquí no hay nada que consultar -- el botón solo le confirma
@@ -5794,6 +5803,8 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
         fecha: gastoForm.fecha,
         facturaUrl,
         creadoEn: new Date().toISOString(),
+        origen: "manual",
+        cargadoPor: quienCarga,
       };
       await fsSave("centro_costo_gastos", nuevo.id, nuevo);
       setGastoArchivoFile(null);
@@ -5849,6 +5860,8 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
           fecha,
           facturaUrl: "",
           creadoEn: new Date().toISOString(),
+          origen: "excel",
+          cargadoPor: quienCarga,
         };
         await fsSave("centro_costo_gastos", nuevo.id, nuevo);
         importados++;
@@ -5888,6 +5901,8 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
         fecha: ventaForm.fecha,
         facturaUrl,
         creadoEn: new Date().toISOString(),
+        origen: "manual",
+        cargadoPor: quienCarga,
       };
       await fsSave("centro_costo_ventas", nuevo.id, nuevo);
       setVentaArchivoFile(null);
@@ -6280,7 +6295,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
                       { key: "numeroFactura", label: "N° Factura" },
                       { key: "monto", label: "Monto", align: "right", render: (g) => fmtMoney(g.monto) },
                       { key: "factura", label: "", render: (g) => (g.facturaUrl ? <a href={g.facturaUrl} target="_blank" rel="noreferrer" style={{ color: C.blue, fontWeight: 700, fontSize: 12 }}>📎 Ver</a> : null) },
-                      { key: "acciones", label: "", align: "right", render: (g) => (puedeEditar ? <Btn small variant="danger" onClick={() => borrarGasto(g)}>🗑</Btn> : null) },
+                      colOrigenCC, { key: "acciones", label: "", align: "right", render: (g) => (puedeEditar ? <Btn small variant="danger" onClick={() => borrarGasto(g)}>🗑</Btn> : null) },
                     ]}
                     filas={gastosPeriodo}
                   />
@@ -6304,7 +6319,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
                       { key: "precio", label: "Precio", align: "right", render: (v) => fmtMoney(v.precio) },
                       { key: "total", label: "Total", align: "right", render: (v) => <strong>{fmtMoney(v.total)}</strong> },
                       { key: "factura", label: "", render: (v) => (v.facturaUrl ? <a href={v.facturaUrl} target="_blank" rel="noreferrer" style={{ color: C.blue, fontWeight: 700, fontSize: 12 }}>📎 Ver</a> : null) },
-                      { key: "acciones", label: "", align: "right", render: (v) => (puedeEditar ? <Btn small variant="danger" onClick={() => borrarVenta(v)}>🗑</Btn> : null) },
+                      colOrigenCC, { key: "acciones", label: "", align: "right", render: (v) => (puedeEditar ? <Btn small variant="danger" onClick={() => borrarVenta(v)}>🗑</Btn> : null) },
                     ]}
                     filas={ventasCentroCostoPeriodo}
                   />
@@ -6365,7 +6380,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
                                   { key: "numeroFactura", label: "N° Factura" },
                                   { key: "monto", label: "Monto", align: "right", render: (g) => fmtMoney(g.monto) },
                                   { key: "factura", label: "", render: (g) => (g.facturaUrl ? <a href={g.facturaUrl} target="_blank" rel="noreferrer" style={{ color: C.blue, fontWeight: 700, fontSize: 12 }}>📎 Ver</a> : null) },
-                                  { key: "acciones", label: "", align: "right", render: (g) => (puedeEditar ? <Btn small variant="danger" onClick={() => borrarGasto(g)}>🗑</Btn> : null) },
+                                  colOrigenCC, { key: "acciones", label: "", align: "right", render: (g) => (puedeEditar ? <Btn small variant="danger" onClick={() => borrarGasto(g)}>🗑</Btn> : null) },
                                 ]}
                                 filas={d.gastos}
                               />
@@ -6380,7 +6395,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
                                   { key: "cliente", label: "Cliente" },
                                   { key: "total", label: "Total", align: "right", render: (v) => <strong>{fmtMoney(v.total)}</strong> },
                                   { key: "factura", label: "", render: (v) => (v.facturaUrl ? <a href={v.facturaUrl} target="_blank" rel="noreferrer" style={{ color: C.blue, fontWeight: 700, fontSize: 12 }}>📎 Ver</a> : null) },
-                                  { key: "acciones", label: "", align: "right", render: (v) => (puedeEditar ? <Btn small variant="danger" onClick={() => borrarVenta(v)}>🗑</Btn> : null) },
+                                  colOrigenCC, { key: "acciones", label: "", align: "right", render: (v) => (puedeEditar ? <Btn small variant="danger" onClick={() => borrarVenta(v)}>🗑</Btn> : null) },
                                 ]}
                                 filas={d.ventas}
                               />
