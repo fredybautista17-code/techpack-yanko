@@ -22,6 +22,7 @@ import { DevolucionesCalidadView } from "./devoluciones-cliente";
 import { claveArea as claveAreaHistorico } from "./centro-costo-historico-parser";
 import { diasDeTrabajoDelMes, esDiaDeTrabajoISO, sabadoSeTrabajaISO } from "./dias-habiles";
 import { armarListaPorProgramar, estadisticasPedidos, prioridadPedido } from "./lista-programar-calculo";
+import { PLANTA_PROPIA_VENTAS, rangoDelPeriodo, plantasDeEntradas, clientePorLoteDeCargas, candidatosVentas, ventaDeEntrada, totalLineaVenta } from "./ventas-entradas-calculo";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
   authDomain: "techpack-yanko-f37b8.firebaseapp.com",
@@ -4711,6 +4712,162 @@ function causadoDestajoEnPeriodoCC(t, periodoId, hoy, produccion, causacionManua
   const netoAPagar = base.netoBase - descuentoCobros + totalHorasExtra + bonificacionPuntual + ajusteValor;
   return { valorProducido: netoProduccion, costo: netoAPagar + base.cesantiasPeriodo + base.primaPeriodo + base.vacacionesPeriodo };
 }
+// ─── TRAER LOTES (Entradas de Planta → ventas del área) ───────────────────────
+// (2026-11-06, a pedido de Fredy) En «Costos y ventas» se escogen con casillas las entradas de la planta (lote,
+// referencia, cantidad y precio de la entrada) y se cargan como ventas del área, sin digitarlas una por una.
+// Cantidad y precio se pueden corregir antes de cargar. Cada venta guarda de qué entrada vino (claveEntrada) para
+// que no se cargue dos veces. Las de un mes cerrado no se cargan. Las devoluciones salen sin marcar (entran negativas).
+function TraerLotesVentasModal({ area, ventasExistentes, rangoInicial, cierreDe, currentUser, onClose }) {
+  const [cargasEntradas, setCargasEntradas] = useState(null);
+  const [cargasPlaneacion, setCargasPlaneacion] = useState([]);
+  const [planta, setPlanta] = useState(PLANTA_PROPIA_VENTAS);
+  const [desde, setDesde] = useState(rangoInicial[0]);
+  const [hasta, setHasta] = useState(rangoInicial[1]);
+  const [busqueda, setBusqueda] = useState("");
+  const [sel, setSel] = useState({});
+  const [ediciones, setEdiciones] = useState({});
+  const [cargando, setCargando] = useState(false);
+  const [resultado, setResultado] = useState(null);
+  useEffect(() => {
+    const u1 = onSnapshot(collection(db, "planta_entradas_cargas"), (snap) => setCargasEntradas(snap.docs.map((d) => ({ ...d.data(), id: d.id }))));
+    const u2 = onSnapshot(collection(db, "planeacion_cargas"), (snap) => setCargasPlaneacion(snap.docs.map((d) => ({ ...d.data(), id: d.id }))));
+    return () => { u1(); u2(); };
+  }, []);
+  const entradas = useMemo(() => (cargaEntradasActivaDe(cargasEntradas || []) || {}).entradas || [], [cargasEntradas]);
+  const plantas = useMemo(() => plantasDeEntradas(entradas), [entradas]);
+  const clientePorLote = useMemo(() => clientePorLoteDeCargas(cargasPlaneacion), [cargasPlaneacion]);
+  const plantaEfectiva = planta === "" || plantas.includes(planta) ? planta : "";
+  const filas = useMemo(
+    () => candidatosVentas({ entradas, planta: plantaEfectiva, desde, hasta, busqueda, ventasExistentes, clientePorLote }),
+    [entradas, plantaEfectiva, desde, hasta, busqueda, ventasExistentes, clientePorLote]
+  );
+  const valorDe = (f) => {
+    const e = ediciones[f.clave] || {};
+    return { cantidad: e.cantidad !== undefined && e.cantidad !== "" ? Number(e.cantidad) : f.cantidad, precio: e.precio !== undefined && e.precio !== "" ? Number(e.precio) : f.precio };
+  };
+  const elegibles = filas.filter((f) => !f.yaCargada);
+  const seleccionadas = elegibles.filter((f) => sel[f.clave]);
+  const totalSel = seleccionadas.reduce((a, f) => { const v = valorDe(f); return a + totalLineaVenta(v.cantidad, v.precio); }, 0);
+  const autoMarcables = elegibles.filter((f) => !f.esDevolucion && f.precio > 0);
+  const todasMarcadas = autoMarcables.length > 0 && autoMarcables.every((f) => sel[f.clave]);
+  function marcarTodas(on) {
+    setSel((s) => { const n = { ...s }; autoMarcables.forEach((f) => { n[f.clave] = on; }); return n; });
+  }
+  function editar(clave, campo, valor) {
+    setEdiciones((e) => ({ ...e, [clave]: { ...(e[clave] || {}), [campo]: valor } }));
+  }
+  async function cargar() {
+    if (!seleccionadas.length) return;
+    setCargando(true);
+    setResultado(null);
+    try {
+      const ahora = new Date().toISOString();
+      const usuario = currentUser?.name || currentUser?.username || "";
+      const aCargar = [];
+      const mesCerrado = [];
+      const sinPrecio = [];
+      seleccionadas.forEach((f) => {
+        if (cierreDe(f.fecha)) { mesCerrado.push(f.numLote); return; }
+        const v = ventaDeEntrada(f, ediciones[f.clave], { id: `${uid()}${uid()}`, area, usuario, ahora });
+        if (!v.total) { sinPrecio.push(f.numLote); return; }
+        aCargar.push(v);
+      });
+      for (let i = 0; i < aCargar.length; i += 20) {
+        await Promise.all(aCargar.slice(i, i + 20).map((v) => fsSave("centro_costo_ventas", v.id, v)));
+      }
+      setSel((s) => { const n = { ...s }; aCargar.forEach((v) => { delete n[v.claveEntrada]; }); return n; });
+      setResultado({ ok: aCargar.length, total: aCargar.reduce((a, v) => a + v.total, 0), mesCerrado, sinPrecio });
+    } catch (err) {
+      setResultado({ error: err?.message || String(err) });
+    } finally {
+      setCargando(false);
+    }
+  }
+  const inp = { padding: "5px 8px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12.5, fontFamily: "inherit" };
+  const th = (t, al) => <th key={t} style={{ padding: "9px 10px", color: C.seam, textAlign: al || "left", fontWeight: 700, fontSize: 11, whiteSpace: "nowrap", position: "sticky", top: 0, background: C.ink }}>{t}</th>;
+  return (
+    <Modal title={`Traer lotes — ventas de ${area}`} onClose={onClose} width={1150}>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 12, maxWidth: 820 }}>
+        Entradas de Planta con el precio de la entrada (lo que se pagó por unidad). Marca las que quieras cargar como venta; puedes corregir la cantidad o el precio antes de cargar. Las ya cargadas salen marcadas y no se duplican.
+      </div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 14 }}>
+        <select value={plantaEfectiva} onChange={(e) => setPlanta(e.target.value)} style={{ ...inp, fontWeight: 700 }}>
+          <option value="">Todas las plantas</option>
+          {plantas.map((p) => <option key={p} value={p}>{p}</option>)}
+        </select>
+        <input type="date" value={desde} onChange={(e) => setDesde(e.target.value)} style={inp} />
+        <span style={{ fontSize: 12, color: C.slate, fontWeight: 700 }}>a</span>
+        <input type="date" value={hasta} onChange={(e) => setHasta(e.target.value)} style={inp} />
+        <input value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder="🔍 Lote, referencia o pedido..." style={{ ...inp, minWidth: 220 }} />
+        <span style={{ fontSize: 12, color: C.slate }}>{cargasEntradas === null ? "Cargando entradas..." : `${filas.length} entrada(s)`}</span>
+      </div>
+      {cargasEntradas !== null && !entradas.length && (
+        <div style={{ padding: 16, borderRadius: 10, background: C.amberBg, color: C.amber, fontSize: 13, marginBottom: 12 }}>
+          Todavía no hay Entradas de Planta cargadas. Se suben o sincronizan en Planta Yanko → Dashboard de Entregas.
+        </div>
+      )}
+      <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "auto", maxHeight: "52vh" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 980 }}>
+          <thead>
+            <tr style={{ background: C.ink }}>
+              <th style={{ padding: "9px 10px", position: "sticky", top: 0, background: C.ink, width: 34 }}>
+                <input type="checkbox" checked={todasMarcadas} onChange={(e) => marcarTodas(e.target.checked)} title="Marcar todas (con precio, sin devoluciones)" />
+              </th>
+              {th("Fecha")}{th("Lote")}{th("Ref")}{th("Descripción")}{th("Cliente")}{th("Cant.", "right")}{th("Precio", "right")}{th("Total", "right")}{th("Estado")}
+            </tr>
+          </thead>
+          <tbody>
+            {filas.map((f, i) => {
+              const v = valorDe(f);
+              const total = totalLineaVenta(v.cantidad, v.precio);
+              return (
+                <tr key={f.clave} style={{ background: f.yaCargada ? C.canvas : f.esDevolucion ? C.violetBg : i % 2 ? "#FAF8F5" : C.white, borderTop: `1px solid ${C.border}`, opacity: f.yaCargada ? 0.6 : 1 }}>
+                  <td style={{ padding: "7px 10px", textAlign: "center" }}>
+                    <input type="checkbox" disabled={f.yaCargada} checked={!!sel[f.clave] && !f.yaCargada} onChange={(e) => setSel((s) => ({ ...s, [f.clave]: e.target.checked }))} />
+                  </td>
+                  <td style={{ padding: "7px 10px", whiteSpace: "nowrap" }}>{fmtFechaISO(f.fecha)}</td>
+                  <td style={{ padding: "7px 10px", fontWeight: 700 }}>{f.numLote || "—"}</td>
+                  <td style={{ padding: "7px 10px" }}>{f.ref || "—"}</td>
+                  <td style={{ padding: "7px 10px", color: C.slate, maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={f.descripcion}>{f.descripcion || "—"}</td>
+                  <td style={{ padding: "7px 10px", color: C.slate }}>{f.cliente || "—"}</td>
+                  <td style={{ padding: "7px 10px", textAlign: "right" }}>
+                    <input type="number" disabled={f.yaCargada} value={ediciones[f.clave]?.cantidad ?? f.cantidad} onChange={(e) => editar(f.clave, "cantidad", e.target.value)} style={{ ...inp, width: 80, textAlign: "right" }} />
+                  </td>
+                  <td style={{ padding: "7px 10px", textAlign: "right" }}>
+                    <input type="number" disabled={f.yaCargada} value={ediciones[f.clave]?.precio ?? f.precio} onChange={(e) => editar(f.clave, "precio", e.target.value)} style={{ ...inp, width: 90, textAlign: "right", borderColor: !f.yaCargada && !(v.precio > 0) ? C.red : C.border }} />
+                  </td>
+                  <td style={{ padding: "7px 10px", textAlign: "right", fontWeight: 800, color: total < 0 ? C.red : C.ink }}>{fmtMoney(total)}</td>
+                  <td style={{ padding: "7px 10px", whiteSpace: "nowrap", fontSize: 11, fontWeight: 700 }}>
+                    {f.yaCargada ? <span style={{ color: C.green }}>✓ ya cargada</span>
+                      : f.esDevolucion ? <span style={{ color: C.violet }}>↩️ devolución</span>
+                      : !(f.precio > 0) ? <span style={{ color: C.red }}>sin precio</span>
+                      : f.posibleDuplicado ? <span style={{ color: C.amber }} title="Ya hay una venta digitada a mano con este mismo lote">⚠ ya hay venta del lote</span>
+                      : ""}
+                  </td>
+                </tr>
+              );
+            })}
+            {!filas.length && cargasEntradas !== null && (
+              <tr><td colSpan={10} style={{ padding: 24, textAlign: "center", color: C.slate }}>No hay entradas con estos filtros.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      {resultado && (
+        <div style={{ fontSize: 12.5, marginTop: 12, padding: "9px 12px", borderRadius: 8, fontWeight: 600, background: resultado.error ? C.redBg : C.greenBg, color: resultado.error ? C.red : C.green, lineHeight: 1.5 }}>
+          {resultado.error
+            ? `⚠ No se pudo cargar: ${resultado.error}`
+            : `✓ ${resultado.ok} venta(s) cargada(s) por ${fmtMoney(resultado.total)}.${resultado.mesCerrado.length ? ` Sin cargar por mes cerrado (lotes ${resultado.mesCerrado.join(", ")}): pide a un administrador que reabra el mes.` : ""}${resultado.sinPrecio.length ? ` Sin cargar por no tener precio (lotes ${resultado.sinPrecio.join(", ")}).` : ""}`}
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 14, justifyContent: "flex-end", alignItems: "center", marginTop: 14, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 13, color: C.slate }}>{seleccionadas.length} seleccionada(s) · <strong style={{ color: C.ink }}>{fmtMoney(totalSel)}</strong></span>
+        <Btn variant="secondary" onClick={onClose}>Cerrar</Btn>
+        <Btn onClick={cargar} disabled={cargando || !seleccionadas.length}>{cargando ? "Cargando..." : `Cargar ${seleccionadas.length || ""} seleccionada(s)`}</Btn>
+      </div>
+    </Modal>
+  );
+}
 // (2026-11-06, a pedido de Fredy) Con soloCostoReal esta misma vista se monta en Planta Yanko mostrando SOLO el bloque
 // «Costo real total» (gastos, ventas, ganancia real, historial y cierre de mes) de un área fija, sin el detalle por
 // trabajador. puedeEditarCostos=false la deja de solo lectura (sin cargar, borrar ni cerrar mes).
@@ -4768,6 +4925,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
   const [gastoModalAbierto, setGastoModalAbierto] = useState(false);
   const [gastoForm, setGastoForm] = useState({ proveedor: "", numeroFactura: "", monto: "", fecha: hoy });
   const [ventaModalAbierto, setVentaModalAbierto] = useState(false);
+  const [traerLotesAbierto, setTraerLotesAbierto] = useState(false);
   const [ventaForm, setVentaForm] = useState({ referencia: "", lote: "", cantidad: "", precio: "", total: "", cliente: "", fecha: hoy });
   // (2026-09-22, a pedido de Fredy) Liquidaciones YA CONFIRMADAS de Nómina
   // -> Destajo (misma colección que usa NominaDestajoView en
@@ -6130,7 +6288,10 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
                 <div style={{ flex: "1 1 460px" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
                     <div style={{ fontWeight: 800, fontSize: 13, color: C.ink }}>Ventas</div>
-                    {puedeEditar && <Btn small onClick={abrirNuevaVenta}>+ Agregar venta</Btn>}
+                    <div style={{ display: "flex", gap: 8 }}>
+                      {puedeEditar && <Btn small variant="secondary" onClick={() => setTraerLotesAbierto(true)}>📥 Traer lotes</Btn>}
+                      {puedeEditar && <Btn small onClick={abrirNuevaVenta}>+ Agregar venta</Btn>}
+                    </div>
                   </div>
                   <Tabla
                     vacio="Sin ventas digitadas en este período."
@@ -6269,6 +6430,16 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
                 <Btn onClick={guardarGastoForm} disabled={!gastoForm.proveedor.trim() || !gastoForm.monto || subiendoArchivo}>{subiendoArchivo ? "Guardando..." : "Guardar"}</Btn>
               </div>
             </Modal>
+          )}
+          {traerLotesAbierto && puedeEditar && areaSel && (
+            <TraerLotesVentasModal
+              area={areaSel}
+              ventasExistentes={ventasAreaTodas}
+              rangoInicial={rangoDelPeriodo({ periodo, fechaDia, mesSel, anioSel, quincenaSel, fechaRangoInicio, fechaRangoFin })}
+              cierreDe={cierreDe}
+              currentUser={currentUser}
+              onClose={() => setTraerLotesAbierto(false)}
+            />
           )}
           {ventaModalAbierto && (
             <Modal title="Nueva venta" onClose={() => setVentaModalAbierto(false)} width={420}>
