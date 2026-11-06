@@ -4711,13 +4711,17 @@ function causadoDestajoEnPeriodoCC(t, periodoId, hoy, produccion, causacionManua
   const netoAPagar = base.netoBase - descuentoCobros + totalHorasExtra + bonificacionPuntual + ajusteValor;
   return { valorProducido: netoProduccion, costo: netoAPagar + base.cesantiasPeriodo + base.primaPeriodo + base.vacacionesPeriodo };
 }
-function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movimientos, cargandoMovimientos, onActualizarMovimientos, reclamosCalidad, areaFija, currentUser }) {
+// (2026-11-06, a pedido de Fredy) Con soloCostoReal esta misma vista se monta en Planta Yanko mostrando SOLO el bloque
+// «Costo real total» (gastos, ventas, ganancia real, historial y cierre de mes) de un área fija, sin el detalle por
+// trabajador. puedeEditarCostos=false la deja de solo lectura (sin cargar, borrar ni cerrar mes).
+export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movimientos, cargandoMovimientos, onActualizarMovimientos, reclamosCalidad, areaFija, currentUser, soloCostoReal = false, puedeEditarCostos = true }) {
   const hoy = today();
   // (2026-09-22, a pedido de Fredy) Admin -- gatea "Reabrir mes" en el
   // Historial de Facturas y Ventas más abajo (Cerrar mes lo puede hacer
   // cualquiera con acceso a Centro de Costo, igual que Cerrar Quincena en
   // Nómina).
   const isAdmin = currentUser?.isAdmin;
+  const puedeEditar = puedeEditarCostos !== false;
   // (2026-09-17, a pedido de Fredy) Botón "Actualizar" del modo $/Destajo
   // (default). Los datos de "produccion" ya llegan en vivo (onSnapshot),
   // así que aquí no hay nada que consultar -- el botón solo le confirma
@@ -4823,6 +4827,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
     return (cierresMes || []).find((c) => c.id === `${areaSel}__${fechaISO.slice(0, 7)}`) || null;
   }
   async function cerrarMes(claveYYYYMM, totales) {
+    if (!puedeEditar) return;
     const [anio, mes] = claveYYYYMM.split("-").map(Number);
     const id = `${areaSel}__${claveYYYYMM}`;
     await fsSave("centro_costo_cierres_mes", id, {
@@ -5608,6 +5613,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
     );
   }
   function abrirNuevoGasto() {
+    if (!puedeEditar) return;
     setGastoForm({ proveedor: "", numeroFactura: "", monto: "", fecha: hoy });
     setGastoArchivoFile(null);
     setGastoModalAbierto(true);
@@ -5639,6 +5645,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
     }
   }
   async function borrarGasto(g) {
+    if (!puedeEditar) return;
     if (cierreDe(g.fecha)) {
       alert("Ese mes ya está cerrado en Centro de Costo -- pídele a un admin que lo reabra en el Historial antes de borrar gastos.");
       return;
@@ -5646,6 +5653,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
     await fsDelete("centro_costo_gastos", g.id);
   }
   async function handleExcelGastos(e) {
+    if (!puedeEditar) return;
     const file = e.target.files?.[0];
     if (!file) return;
     setCargandoExcelGastos(true);
@@ -5696,6 +5704,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
     }
   }
   function abrirNuevaVenta() {
+    if (!puedeEditar) return;
     setVentaForm({ referencia: "", lote: "", cantidad: "", precio: "", total: "", cliente: "", fecha: hoy });
     setVentaArchivoFile(null);
     setVentaModalAbierto(true);
@@ -5730,6 +5739,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
     }
   }
   async function borrarVenta(v) {
+    if (!puedeEditar) return;
     if (cierreDe(v.fecha)) {
       alert("Ese mes ya está cerrado en Centro de Costo -- pídele a un admin que lo reabra en el Historial antes de borrar ventas.");
       return;
@@ -5745,6 +5755,15 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
   }
   return (
     <div>
+      {soloCostoReal && (
+        <div style={{ marginBottom: 22 }}>
+          <h2 style={{ margin: 0, fontSize: 22, fontWeight: 900, color: C.ink }}>💵 Costos y ventas — {areaFija}</h2>
+          <p style={{ margin: "6px 0 0", fontSize: 14, color: C.slate }}>
+            Carga aquí los gastos de insumos y las ventas de la planta. Se suman al costo de nómina del período para ver la ganancia real, y quedan guardados en el mismo Centro de Costo de Planeación.
+          </p>
+        </div>
+      )}
+      {!soloCostoReal && (
       <div style={{ marginBottom: 22 }}>
         <h2 style={{ margin: 0, fontSize: 22, fontWeight: 900, color: C.ink }}>💰 Centro de Costo — Planeación</h2>
         <p style={{ margin: "6px 0 0", fontSize: 14, color: C.slate }}>
@@ -5759,6 +5778,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
             : "Nómina que hay que pagar en cada área versus el valor de lo que cada trabajador está produciendo (Registrar Producción de Nómina, valorado con el precio máximo vigente por proceso)."}
         </p>
       </div>
+      )}
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 18 }}>
         {!hayDestajoReal && btnPeriodo("dia", "Día")}
         {btnPeriodo("mes", "Mes")}
@@ -5826,13 +5846,13 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
       {periodo === "anio" && ["ZONACALOR", "CONTROLCALIDAD"].includes(claveAreaHistorico(areaSel)) && (
         <CentroCostoAnioPanel key={anioSel} areaNombre={areaSel} anioInicial={anioSel} currentUser={currentUser} puedeCargar={!!currentUser?.isAdmin} />
       )}
-      {algunoSinSueldo && (
+      {!soloCostoReal && algunoSinSueldo && (
         <div style={{ background: C.amberBg, border: `1px solid ${C.amber}`, borderRadius: 10, padding: "10px 14px", fontSize: 12.5, color: C.ink, marginBottom: 16 }}>
           ⚠️ Algunos trabajadores no tienen sueldo cargado en Nómina → Trabajadores — su costo no se suma al total, así que el costo de nómina está incompleto para ellos.
         </div>
       )}
       <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
-        {mideReclamos && (
+        {!soloCostoReal && mideReclamos && (
           <div style={{ flex: "0 0 240px", padding: 16, borderRadius: 12, border: `1px solid ${C.border}`, background: C.canvas }}>
             <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 4 }}>📋 Calidad — {etiquetaPeriodo}</div>
             <div style={{ fontSize: 11, color: C.slate, marginBottom: 14 }}>Reclamos/devoluciones registrados en Control de Calidad, mismo período elegido arriba.</div>
@@ -5844,7 +5864,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
           </div>
         )}
         <div style={{ flex: 1, minWidth: 0 }}>
-          {modoMedicion === "busint_unidades" ? (
+          {soloCostoReal ? null : modoMedicion === "busint_unidades" ? (
             <>
               {!movimientos && (
                 <div style={{ fontSize: 11, color: C.amber, marginBottom: 14 }}>Todavía no has consultado los movimientos de proceso en Busint en esta sesión — dale a "Actualizar movimientos" para ver las unidades reales.</div>
@@ -6082,8 +6102,8 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
                     <div style={{ fontWeight: 800, fontSize: 13, color: C.ink }}>Gastos (facturas de insumos)</div>
                     <div style={{ display: "flex", gap: 8 }}>
                       <input ref={excelGastosInputRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }} onChange={handleExcelGastos} />
-                      <Btn small variant="secondary" onClick={() => excelGastosInputRef.current?.click()} disabled={cargandoExcelGastos}>{cargandoExcelGastos ? "Cargando..." : "📤 Cargar Excel"}</Btn>
-                      <Btn small onClick={abrirNuevoGasto}>+ Agregar gasto</Btn>
+                      {puedeEditar && <Btn small variant="secondary" onClick={() => excelGastosInputRef.current?.click()} disabled={cargandoExcelGastos}>{cargandoExcelGastos ? "Cargando..." : "📤 Cargar Excel"}</Btn>}
+                      {puedeEditar && <Btn small onClick={abrirNuevoGasto}>+ Agregar gasto</Btn>}
                     </div>
                   </div>
                   {resultadoExcelGastos && (
@@ -6102,7 +6122,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
                       { key: "numeroFactura", label: "N° Factura" },
                       { key: "monto", label: "Monto", align: "right", render: (g) => fmtMoney(g.monto) },
                       { key: "factura", label: "", render: (g) => (g.facturaUrl ? <a href={g.facturaUrl} target="_blank" rel="noreferrer" style={{ color: C.blue, fontWeight: 700, fontSize: 12 }}>📎 Ver</a> : null) },
-                      { key: "acciones", label: "", align: "right", render: (g) => <Btn small variant="danger" onClick={() => borrarGasto(g)}>🗑</Btn> },
+                      { key: "acciones", label: "", align: "right", render: (g) => (puedeEditar ? <Btn small variant="danger" onClick={() => borrarGasto(g)}>🗑</Btn> : null) },
                     ]}
                     filas={gastosPeriodo}
                   />
@@ -6110,7 +6130,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
                 <div style={{ flex: "1 1 460px" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
                     <div style={{ fontWeight: 800, fontSize: 13, color: C.ink }}>Ventas</div>
-                    <Btn small onClick={abrirNuevaVenta}>+ Agregar venta</Btn>
+                    {puedeEditar && <Btn small onClick={abrirNuevaVenta}>+ Agregar venta</Btn>}
                   </div>
                   <Tabla
                     vacio="Sin ventas digitadas en este período."
@@ -6123,7 +6143,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
                       { key: "precio", label: "Precio", align: "right", render: (v) => fmtMoney(v.precio) },
                       { key: "total", label: "Total", align: "right", render: (v) => <strong>{fmtMoney(v.total)}</strong> },
                       { key: "factura", label: "", render: (v) => (v.facturaUrl ? <a href={v.facturaUrl} target="_blank" rel="noreferrer" style={{ color: C.blue, fontWeight: 700, fontSize: 12 }}>📎 Ver</a> : null) },
-                      { key: "acciones", label: "", align: "right", render: (v) => <Btn small variant="danger" onClick={() => borrarVenta(v)}>🗑</Btn> },
+                      { key: "acciones", label: "", align: "right", render: (v) => (puedeEditar ? <Btn small variant="danger" onClick={() => borrarVenta(v)}>🗑</Btn> : null) },
                     ]}
                     filas={ventasCentroCostoPeriodo}
                   />
@@ -6165,7 +6185,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
                             {d.cierre ? (
                               isAdmin && <Btn small variant="secondary" onClick={() => reabrirMes(d.cierre.id)}>Reabrir mes</Btn>
                             ) : (
-                              <Btn small onClick={() => cerrarMes(clave, d)}>🔒 Cerrar mes</Btn>
+                              puedeEditar && <Btn small onClick={() => cerrarMes(clave, d)}>🔒 Cerrar mes</Btn>
                             )}
                           </div>
                           {d.cierre && (
@@ -6184,7 +6204,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
                                   { key: "numeroFactura", label: "N° Factura" },
                                   { key: "monto", label: "Monto", align: "right", render: (g) => fmtMoney(g.monto) },
                                   { key: "factura", label: "", render: (g) => (g.facturaUrl ? <a href={g.facturaUrl} target="_blank" rel="noreferrer" style={{ color: C.blue, fontWeight: 700, fontSize: 12 }}>📎 Ver</a> : null) },
-                                  { key: "acciones", label: "", align: "right", render: (g) => <Btn small variant="danger" onClick={() => borrarGasto(g)}>🗑</Btn> },
+                                  { key: "acciones", label: "", align: "right", render: (g) => (puedeEditar ? <Btn small variant="danger" onClick={() => borrarGasto(g)}>🗑</Btn> : null) },
                                 ]}
                                 filas={d.gastos}
                               />
@@ -6199,7 +6219,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
                                   { key: "cliente", label: "Cliente" },
                                   { key: "total", label: "Total", align: "right", render: (v) => <strong>{fmtMoney(v.total)}</strong> },
                                   { key: "factura", label: "", render: (v) => (v.facturaUrl ? <a href={v.facturaUrl} target="_blank" rel="noreferrer" style={{ color: C.blue, fontWeight: 700, fontSize: 12 }}>📎 Ver</a> : null) },
-                                  { key: "acciones", label: "", align: "right", render: (v) => <Btn small variant="danger" onClick={() => borrarVenta(v)}>🗑</Btn> },
+                                  { key: "acciones", label: "", align: "right", render: (v) => (puedeEditar ? <Btn small variant="danger" onClick={() => borrarVenta(v)}>🗑</Btn> : null) },
                                 ]}
                                 filas={d.ventas}
                               />
@@ -6213,7 +6233,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
               </div>
             </div>
           )}
-          {areaSel && areaSel !== "__lideres_base_admin__" && hayDestajoReal && (
+          {!soloCostoReal && areaSel && areaSel !== "__lideres_base_admin__" && hayDestajoReal && (
             <div style={{ marginTop: 28, paddingTop: 24, borderTop: `1.5px solid ${C.border}` }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4, flexWrap: "wrap", gap: 10 }}>
                 <div style={{ fontWeight: 900, fontSize: 16, color: C.ink }}>🆘 Ranking — Ayuda salario mínimo garantizado ({anioRanking})</div>

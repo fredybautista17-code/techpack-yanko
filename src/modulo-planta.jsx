@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from "react";
 import { initializeApp, getApps } from "firebase/app";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { cargaEntradasActivaDe } from "./entradas-planta-util";
+import { CentroCostoPlaneacionView } from "./modulo-planeacion";
 import { SelectorMotivo, pedirMotivoIncumplimiento, registrarIncumplimiento } from "./motivos-incumplimiento";
 import {
   getFirestore,
@@ -2758,6 +2759,54 @@ function HomePlanta({ onGoModulo }) {
   );
 }
 // ─── ROOT MÓDULO PLANTA ─────────────────────────────────────────────────────────
+// ─── COSTOS Y VENTAS DE LA PLANTA ─────────────────────────────────────────────
+// (2026-11-06, a pedido de Fredy) La planta carga aquí sus gastos de insumos y sus ventas, y ve la ganancia real
+// (nómina del área + insumos vs ventas) del período, con historial y cierre de mes. Es la misma pantalla de
+// «Costo real total» de Planeación → Centro de Costo (mismas colecciones centro_costo_*), montada solo para el área
+// de la planta y sin el detalle por trabajador. Solo la ven los administradores y quienes tengan el permiso
+// «Costos y ventas de planta» (campo costosPlanta del usuario).
+const AREA_COSTOS_PLANTA = "MAQUILA";
+const SIN_RECLAMOS_PLANTA = [];
+const SIN_ACCION = () => {};
+function CostosVentasPlantaView({ currentUser }) {
+  const [trabajadores, setTrabajadores] = useState([]);
+  const [produccion, setProduccion] = useState([]);
+  const [areas, setAreas] = useState(null);
+  useEffect(() => {
+    const u1 = onSnapshot(collection(db, "nomina_trabajadores"), (snap) => setTrabajadores(snap.docs.map((d) => ({ ...d.data(), id: d.id }))));
+    const u2 = onSnapshot(collection(db, "nomina_produccion"), (snap) => setProduccion(snap.docs.map((d) => ({ ...d.data(), id: d.id }))));
+    const u3 = onSnapshot(collection(db, "nomina_areas"), (snap) => setAreas(snap.docs.map((d) => ({ ...d.data(), id: d.id }))));
+    return () => { u1(); u2(); u3(); };
+  }, []);
+  const area = useMemo(
+    () => (areas || []).find((a) => String(a.nombre || "").trim().toUpperCase() === AREA_COSTOS_PLANTA),
+    [areas]
+  );
+  if (areas === null) return <div style={{ padding: 40, textAlign: "center", color: C.slate, fontSize: 13 }}>Cargando costos de la planta...</div>;
+  if (!area) {
+    return (
+      <div style={{ background: C.white, borderRadius: 14, padding: 24, border: `1px solid ${C.border}`, color: C.slate, fontSize: 13 }}>
+        No encuentro el área <b>{AREA_COSTOS_PLANTA}</b> en Nómina → Administrativo → Área Interna. Pídele a un administrador que la cree o que la renombre así.
+      </div>
+    );
+  }
+  return (
+    <CentroCostoPlaneacionView
+      trabajadores={trabajadores}
+      produccion={produccion}
+      areasNomina={areas}
+      areaFija={area.nombre}
+      movimientos={null}
+      cargandoMovimientos={false}
+      onActualizarMovimientos={SIN_ACCION}
+      reclamosCalidad={SIN_RECLAMOS_PLANTA}
+      currentUser={currentUser}
+      soloCostoReal
+      puedeEditarCostos
+    />
+  );
+}
+
 export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
   const [subView, setSubView] = useState("home");
   const [cargasPlaneacion, setCargasPlaneacion] = useState([]);
@@ -3001,6 +3050,7 @@ export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
     { id: "carga_modulos", icon: "🧵", label: "Carga por Módulos" },
     { id: "dashboard_entregas", icon: "📊", label: "Dashboard de Entregas" },
     { id: "estadisticas_planta", icon: "📈", label: "Estadísticas de Planta" },
+    ...(isAdmin || currentUser?.costosPlanta ? [{ id: "costos_ventas", icon: "💵", label: "Costos y ventas" }] : []),
   ];
   if (loading) {
     return (
@@ -3099,6 +3149,9 @@ export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
           )}
           {subView === "estadisticas_planta" && (
             <EstadisticasPlantaView cargaActiva={cargaEntradasActiva} />
+          )}
+          {subView === "costos_ventas" && (isAdmin || currentUser?.costosPlanta) && (
+            <CostosVentasPlantaView currentUser={currentUser} />
           )}
         </div>
       </div>
