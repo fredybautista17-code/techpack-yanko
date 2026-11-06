@@ -8,6 +8,7 @@ import {
   deleteDoc,
   onSnapshot,
   writeBatch,
+  runTransaction,
 } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { getStorage, ref as storageRef, uploadString, getDownloadURL } from "firebase/storage";
@@ -11464,7 +11465,55 @@ function agruparDed(lista, claveFn, etiquetaFn) {
   });
   return [...m.values()].map((g) => ({ ...g, nTrab: g.trab.size })).sort((a, b) => b.valor - a.valor);
 }
-function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobrosManual, onAgregarCobroManual, isAdmin, onBorrarCobroManual, onRevertirCobro, onMarcarCobroManual }) {
+// (2026-11-06, a pedido de Fredy) Cruza cada liquidación confirmada (su `cobrosDetalle` = los cobros que descontó) contra el
+// estado actual de los cobros: devuelve los que quedaron "Pendiente de cobrar" aunque ya se descontaron (se volverían a
+// descontar) y los que aparecen descontados en MÁS de una liquidación (posible doble descuento, solo informativo).
+function diagnosticarCobrosMarcadosMal(lotesConCobros, liquidaciones) {
+  const porLote = new Map((lotesConCobros || []).map((l) => [l.id, l]));
+  const ordenadas = [...(liquidaciones || [])].sort((a, b) => String(a.periodoId || "").localeCompare(String(b.periodoId || "")));
+  const apariciones = new Map(); // clave del cobro -> [{ periodoId }]
+  const pendientes = [];
+  ordenadas.forEach((liq) => {
+    const usadosEnLiq = new Set();
+    (liq.cobrosDetalle || []).forEach((d) => {
+      const lote = porLote.get(d.loteId);
+      if (!lote) return;
+      const cobros = lote.cobrosBodega || [];
+      const idx = cobros.findIndex((c, i) => (
+        !usadosEnLiq.has(`${lote.id}#${i}`) && c.trabajadorId === liq.trabajadorId
+        && (Number(c.valor) || 0) * (Number(c.cantidad) || 1) === (Number(d.valor) || 0)
+        && (c.fecha || "") === (d.fecha || "") && (c.tipo || "") === (d.tipo || "")
+      ));
+      if (idx === -1) return;
+      const clave = `${lote.id}#${idx}`;
+      usadosEnLiq.add(clave);
+      const lista = apariciones.get(clave) || [];
+      lista.push({ periodoId: liq.periodoId });
+      apariciones.set(clave, lista);
+      if (cobros[idx].cobrado !== true && !pendientes.some((p) => p.clave === clave)) {
+        pendientes.push({
+          clave, loteId: lote.id, idx, esManual: !!lote.esManual, cobroManualId: lote.esManual ? String(lote.id).replace(/^manual__/, "") : null,
+          trabajadorId: liq.trabajadorId, trabajadorNombre: liq.nombre || cobros[idx].trabajadorNombre || "—",
+          numLote: lote.numLote || "", referencia: lote.referencia || "", tipo: cobros[idx].tipo || "—",
+          valor: Number(d.valor) || 0, fecha: d.fecha || "", periodoId: liq.periodoId,
+        });
+      }
+    });
+  });
+  const dobles = [];
+  apariciones.forEach((lista, clave) => {
+    const periodos = [...new Set(lista.map((x) => x.periodoId))];
+    if (periodos.length < 2) return;
+    const [loteId, idxTxt] = clave.split("#");
+    const lote = porLote.get(loteId);
+    const c = lote && lote.cobrosBodega ? lote.cobrosBodega[Number(idxTxt)] : null;
+    if (!c) return;
+    dobles.push({ clave, trabajadorNombre: c.trabajadorNombre || "—", numLote: lote.numLote || "", referencia: lote.referencia || "", tipo: c.tipo || "—", valor: (Number(c.valor) || 0) * (Number(c.cantidad) || 1), periodos });
+  });
+  pendientes.sort((a, b) => String(a.trabajadorNombre).localeCompare(String(b.trabajadorNombre), "es") || String(a.periodoId).localeCompare(String(b.periodoId)));
+  return { pendientes, dobles, liquidacionesRevisadas: ordenadas.length };
+}
+function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobrosManual, onAgregarCobroManual, isAdmin, onBorrarCobroManual, onRevertirCobro, onMarcarCobroManual, liquidaciones, onRepararCobros }) {
   const [filtroEstado, setFiltroEstado] = useState("");
   // (2026-10-30) Quincena y fecha de corte (como Horas Extras): cada cobro se clasifica por su fecha.
   const hoyDed = new Date();
@@ -11542,6 +11591,30 @@ function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobro
   // liquidacion ya cerrada solo para disparar el marcado automatico. Es
   // el espejo de "Revertir a pendiente" de abajo.
   const [confirmMarcar, setConfirmMarcar] = useState(null);
+  // (2026-11-06, a pedido de Fredy) Revisar y reparar cobros que quedaron "Pendiente de cobrar" aunque una liquidación ya los descontó.
+  const [diagCobros, setDiagCobros] = useState(null);
+  const [confirmandoRep, setConfirmandoRep] = useState(false);
+  const [reparando, setReparando] = useState(false);
+  const [msgRep, setMsgRep] = useState("");
+  function revisarCobrosMarcadosMal() {
+    setMsgRep("");
+    setConfirmandoRep(false);
+    setDiagCobros(diagnosticarCobrosMarcadosMal(lotesConCobros, liquidaciones));
+  }
+  async function corregirCobrosMarcadosMal() {
+    if (!diagCobros || !diagCobros.pendientes.length) return;
+    setReparando(true);
+    try {
+      await onRepararCobros(diagCobros.pendientes);
+      setMsgRep(`Listo: ${diagCobros.pendientes.length} cobro${diagCobros.pendientes.length === 1 ? "" : "s"} quedó marcado como cobrado en la quincena que lo descontó.`);
+      setDiagCobros(null);
+    } catch (err) {
+      setMsgRep(`No se pudo corregir: ${err?.message || err}`);
+    } finally {
+      setReparando(false);
+      setConfirmandoRep(false);
+    }
+  }
   const filas = [];
   (lotesConCobros || []).forEach((l) => {
     (l.cobrosBodega || []).forEach((c, idx) => {
@@ -11734,6 +11807,71 @@ function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobro
         <KPI icon="⚠️" label="Atrasado de quincenas anteriores" value={fmtMoney(totalAtrasado)} color={totalAtrasado > 0 ? C.red : C.slate} bg={totalAtrasado > 0 ? C.redBg : C.canvas} />
         <KPI icon="✅" label="Ya cobrado en esta quincena" value={fmtMoney(totalCobradoQ)} color={C.green} bg={C.greenBg} />
       </div>
+      {isAdmin && onRepararCobros && (
+        <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 14, marginBottom: 18, background: C.white }}>
+          <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+            <div style={{ fontSize: 13, fontWeight: 800, color: C.ink }}>🛠 Revisar cobros marcados mal</div>
+            <Btn small variant="secondary" onClick={revisarCobrosMarcadosMal}>Revisar ahora</Btn>
+            <div style={{ fontSize: 11.5, color: C.slate, maxWidth: 560, lineHeight: 1.4 }}>
+              Cruza las liquidaciones ya confirmadas contra los cobros: encuentra los que una nómina ya descontó pero siguen como «Pendiente de cobrar» (se volverían a descontar). No cambia nada hasta que tú lo confirmes.
+            </div>
+          </div>
+          {msgRep && <div style={{ marginTop: 10, fontSize: 12.5, fontWeight: 700, color: msgRep.startsWith("Listo") ? C.green : C.red }}>{msgRep}</div>}
+          {diagCobros && (
+            <div style={{ marginTop: 12 }}>
+              <div style={{ fontSize: 12, color: C.slate, marginBottom: 8 }}>Se revisaron {diagCobros.liquidacionesRevisadas} liquidaciones confirmadas.</div>
+              {diagCobros.pendientes.length === 0 ? (
+                <div style={{ fontSize: 13, fontWeight: 700, color: C.green }}>✓ No hay cobros descontados que sigan pendientes.</div>
+              ) : (
+                <>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: C.red, marginBottom: 6 }}>
+                    {diagCobros.pendientes.length} cobro{diagCobros.pendientes.length === 1 ? "" : "s"} descontado{diagCobros.pendientes.length === 1 ? "" : "s"} que sigue{diagCobros.pendientes.length === 1 ? "" : "n"} «Pendiente de cobrar» ({fmtMoney(diagCobros.pendientes.reduce((sum, x) => sum + x.valor, 0))})
+                  </div>
+                  <Tabla
+                    vacio=""
+                    columnas={[
+                      { key: "trabajadorNombre", label: "Trabajador" },
+                      { key: "numLote", label: "Lote", render: (f) => `${f.numLote || "—"}${f.referencia ? ` · ${f.referencia}` : ""}` },
+                      { key: "tipo", label: "Motivo" },
+                      { key: "valor", label: "Valor", align: "right", render: (f) => fmtMoney(f.valor) },
+                      { key: "fecha", label: "Fecha del cobro", render: (f) => (f.fecha ? fmtFechaISO(f.fecha) : "—") },
+                      { key: "periodoId", label: "Se descontó en", render: (f) => f.periodoId },
+                    ]}
+                    filas={diagCobros.pendientes}
+                  />
+                  <div style={{ display: "flex", gap: 10, marginTop: 10, alignItems: "center", flexWrap: "wrap" }}>
+                    {!confirmandoRep ? (
+                      <Btn onClick={() => setConfirmandoRep(true)}>Marcar estos {diagCobros.pendientes.length} como cobrados…</Btn>
+                    ) : (
+                      <>
+                        <span style={{ fontSize: 12.5, color: C.ink }}>Cada uno quedará «Cobrado en» la quincena que lo descontó y no se volverá a descontar. ¿Confirmas?</span>
+                        <Btn onClick={corregirCobrosMarcadosMal} disabled={reparando}>{reparando ? "Corrigiendo…" : "Sí, corregir"}</Btn>
+                        <Btn variant="secondary" onClick={() => setConfirmandoRep(false)} disabled={reparando}>Cancelar</Btn>
+                      </>
+                    )}
+                  </div>
+                </>
+              )}
+              {diagCobros.dobles.length > 0 && (
+                <div style={{ marginTop: 14 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: C.amber, marginBottom: 6 }}>⚠ {diagCobros.dobles.length} cobro{diagCobros.dobles.length === 1 ? "" : "s"} aparece{diagCobros.dobles.length === 1 ? "" : "n"} descontado{diagCobros.dobles.length === 1 ? "" : "s"} en más de una liquidación (posible doble descuento; solo informativo, revísalo a mano)</div>
+                  <Tabla
+                    vacio=""
+                    columnas={[
+                      { key: "trabajadorNombre", label: "Trabajador" },
+                      { key: "numLote", label: "Lote", render: (f) => `${f.numLote || "—"}${f.referencia ? ` · ${f.referencia}` : ""}` },
+                      { key: "tipo", label: "Motivo" },
+                      { key: "valor", label: "Valor", align: "right", render: (f) => fmtMoney(f.valor) },
+                      { key: "periodos", label: "Descontado en", render: (f) => f.periodos.join(", ") },
+                    ]}
+                    filas={diagCobros.dobles}
+                  />
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 14, marginBottom: 20 }}>
         <div>
           <div style={{ fontSize: 12, fontWeight: 800, color: C.ink, marginBottom: 6 }}>Por motivo</div>
@@ -15822,30 +15960,42 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   // trabajadores o ya cobrados, quedan intactos) como cobrados con el
   // periodo que los pago, para que la siguiente liquidacion no los vuelva
   // a descontar.
+  // (2026-11-06, a pedido de Fredy) Cobros que se "volvían a activar": antes se armaba el arreglo `cobrosBodega` del lote con
+  // la copia en memoria (lotesConCobros) y se escribía completo -- si dos trabajadores compartían lote, o la copia estaba
+  // desactualizada, el segundo guardado pisaba la marca "cobrado" del primero. Ahora cada cambio lee el lote FRESCO de
+  // Firestore dentro de una transacción y cambia solo los cobros que corresponden.
+  async function actualizarCobrosLoteFresco(loteId, cambiar) {
+    await runTransaction(db, async (tx) => {
+      const ref = doc(db, "dado_por_cumplido_lotes", loteId);
+      const snap = await tx.get(ref);
+      if (!snap.exists()) return;
+      const cobros = snap.data().cobrosBodega || [];
+      let hubo = false;
+      const nuevos = cobros.map((c, i) => {
+        const n = cambiar(c, i);
+        if (n !== c) hubo = true;
+        return n;
+      });
+      if (hubo) tx.update(ref, { cobrosBodega: nuevos });
+    });
+  }
   async function marcarCobrosComoCobrados(trabajadorId, periodoId, hastaFecha) {
-    const batch = writeBatch(db);
-    let huboCambios = false;
     // (2026-09-18, a pedido de Fredy) Cierre por quincena: solo se marca
     // como cobrado lo que tiene fecha hasta el fin de ESA quincena -- lo
     // que quede fechado despues (ej. dia 17 estando en la quincena de
     // 1-15) se deja pendiente, para que se descuente en la quincena que
     // realmente le corresponde y no se marque pagado sin haberse
     // descontado de ningun neto.
-    lotesConCobros.forEach((l) => {
-      const cobros = l.cobrosBodega || [];
-      let cambio = false;
-      const nuevos = cobros.map((c) => {
-        if (c.trabajadorId === trabajadorId && c.cobrado !== true && (!hastaFecha || !c.fecha || c.fecha <= hastaFecha)) {
-          cambio = true;
-          return { ...c, cobrado: true, periodoIdCobrado: periodoId };
-        }
-        return c;
-      });
-      if (cambio) {
-        batch.set(doc(db, "dado_por_cumplido_lotes", l.id), { cobrosBodega: nuevos }, { merge: true });
-        huboCambios = true;
-      }
-    });
+    const candidatos = lotesConCobros.filter((l) => (l.cobrosBodega || []).some((c) => c.trabajadorId === trabajadorId));
+    for (const l of candidatos) {
+      await actualizarCobrosLoteFresco(l.id, (c) => (
+        c.trabajadorId === trabajadorId && c.cobrado !== true && (!hastaFecha || !c.fecha || c.fecha <= hastaFecha)
+          ? { ...c, cobrado: true, periodoIdCobrado: periodoId }
+          : c
+      ));
+    }
+    const batch = writeBatch(db);
+    let huboCambios = false;
     cobrosManuales.forEach((c) => {
       if (c.trabajadorId === trabajadorId && c.cobrado !== true && (!hastaFecha || !c.fecha || c.fecha <= hastaFecha)) {
         batch.set(doc(db, "nomina_cobros_manuales", c.id), { cobrado: true, periodoIdCobrado: periodoId }, { merge: true });
@@ -15867,23 +16017,16 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   async function abrirQuincenaParaEditar(trabajadorIds, periodoId) {
     if (!trabajadorIds || !trabajadorIds.length) return;
     const idsSet = new Set(trabajadorIds);
+    const candidatos = lotesConCobros.filter((l) => (l.cobrosBodega || []).some((c) => idsSet.has(c.trabajadorId)));
+    for (const l of candidatos) {
+      await actualizarCobrosLoteFresco(l.id, (c) => (
+        idsSet.has(c.trabajadorId) && c.cobrado === true && c.periodoIdCobrado === periodoId
+          ? { ...c, cobrado: false, periodoIdCobrado: "" }
+          : c
+      ));
+    }
     const batch = writeBatch(db);
     let huboCambios = false;
-    lotesConCobros.forEach((l) => {
-      const cobros = l.cobrosBodega || [];
-      let cambio = false;
-      const nuevos = cobros.map((c) => {
-        if (idsSet.has(c.trabajadorId) && c.cobrado === true && c.periodoIdCobrado === periodoId) {
-          cambio = true;
-          return { ...c, cobrado: false, periodoIdCobrado: "" };
-        }
-        return c;
-      });
-      if (cambio) {
-        batch.set(doc(db, "dado_por_cumplido_lotes", l.id), { cobrosBodega: nuevos }, { merge: true });
-        huboCambios = true;
-      }
-    });
     cobrosManuales.forEach((c) => {
       if (idsSet.has(c.trabajadorId) && c.cobrado === true && c.periodoIdCobrado === periodoId) {
         batch.set(doc(db, "nomina_cobros_manuales", c.id), { cobrado: false, periodoIdCobrado: "" }, { merge: true });
@@ -15938,10 +16081,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
     if (fila.esManual) {
       await fsSave("nomina_cobros_manuales", fila.cobroManualId, { cobrado: false, periodoIdCobrado: "" });
     } else {
-      const lote = (lotesConCobros || []).find((l) => l.id === fila.loteId);
-      if (!lote) return;
-      const nuevos = (lote.cobrosBodega || []).map((c, i) => (i === fila.idxEnLote ? { ...c, cobrado: false, periodoIdCobrado: "" } : c));
-      await fsSave("dado_por_cumplido_lotes", fila.loteId, { cobrosBodega: nuevos });
+      await actualizarCobrosLoteFresco(fila.loteId, (c, i) => (i === fila.idxEnLote && (c.trabajadorId || "") === (fila.trabajadorId || "") ? { ...c, cobrado: false, periodoIdCobrado: "" } : c));
     }
   }
   // (2026-09-21, a pedido de Fredy) "Marcar como Cobrado" a mano -- espejo
@@ -15955,10 +16095,20 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
     if (fila.esManual) {
       await fsSave("nomina_cobros_manuales", fila.cobroManualId, { cobrado: true, periodoIdCobrado: "Manual" });
     } else {
-      const lote = (lotesConCobros || []).find((l) => l.id === fila.loteId);
-      if (!lote) return;
-      const nuevos = (lote.cobrosBodega || []).map((c, i) => (i === fila.idxEnLote ? { ...c, cobrado: true, periodoIdCobrado: "Manual" } : c));
-      await fsSave("dado_por_cumplido_lotes", fila.loteId, { cobrosBodega: nuevos });
+      await actualizarCobrosLoteFresco(fila.loteId, (c, i) => (i === fila.idxEnLote && (c.trabajadorId || "") === (fila.trabajadorId || "") ? { ...c, cobrado: true, periodoIdCobrado: "Manual" } : c));
+    }
+  }
+  // (2026-11-06, a pedido de Fredy) Corrige los cobros que una liquidación confirmada ya descontó pero quedaron "Pendiente de
+  // cobrar" (ver diagnosticarCobrosMarcadosMal): los marca cobrados en el período de ESA liquidación.
+  async function repararCobrosMarcadosMal(items) {
+    for (const it of items || []) {
+      if (it.esManual) {
+        await fsSave("nomina_cobros_manuales", it.cobroManualId, { cobrado: true, periodoIdCobrado: it.periodoId });
+        continue;
+      }
+      await actualizarCobrosLoteFresco(it.loteId, (c, i) => (
+        i === it.idx && c.trabajadorId === it.trabajadorId && c.cobrado !== true ? { ...c, cobrado: true, periodoIdCobrado: it.periodoId } : c
+      ));
     }
   }
   async function agregarCobroManual({ trabajadorId, trabajadorNombre, tipo, valor, fecha, numLote, referencia }) {
@@ -16189,7 +16339,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "historial_prestacion_servicios" && !areaLider && !soloNovedades && <HistorialPrestacionServicioView liquidaciones={liquidacionesPS} trabajadores={trabajadores} />}
           {subView === "destajo" && !areaLider && !soloNovedades && <NominaDestajoView areasNomina={areasNomina} trabajadores={trabajadores} produccion={produccion} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionD} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} isAdmin={isAdmin} onAbrirQuincena={abrirQuincenaParaEditar} ajustesDestajo={ajustesDestajo} onGuardarAjusteDestajo={guardarAjusteDestajo} puedeAjustarDestajo={isAdmin || !!puedeAjustarDestajo} horas={horas} causacionManual={causacionManual} horasExtras={horasExtras} bonificaciones={bonificaciones} onEliminarLiquidacion={eliminarLiquidacionD} />}
           {subView === "historial_destajo" && !areaLider && !soloNovedades && <HistorialDestajoView liquidaciones={liquidacionesD} trabajadores={trabajadores} />}
-          {subView === "deducciones" && !areaLider && !soloNovedades && <DeduccionesNominaView lotesConCobros={lotesConCobrosTotal} trabajadores={trabajadores} puedeAgregarCobrosManual={isAdmin || !!puedeAgregarCobrosManual} onAgregarCobroManual={agregarCobroManual} isAdmin={isAdmin} onBorrarCobroManual={borrarCobroManual} onRevertirCobro={revertirCobroAPendiente} onMarcarCobroManual={marcarCobroComoCobradoManual} />}
+          {subView === "deducciones" && !areaLider && !soloNovedades && <DeduccionesNominaView lotesConCobros={lotesConCobrosTotal} trabajadores={trabajadores} puedeAgregarCobrosManual={isAdmin || !!puedeAgregarCobrosManual} onAgregarCobroManual={agregarCobroManual} isAdmin={isAdmin} onBorrarCobroManual={borrarCobroManual} onRevertirCobro={revertirCobroAPendiente} onMarcarCobroManual={marcarCobroComoCobradoManual} liquidaciones={[...liquidacionesF.map((l) => ({ ...l, _tipoNomina: "Fiscal" })), ...liquidacionesFD.map((l) => ({ ...l, _tipoNomina: "Fiscal destajo" })), ...liquidacionesD.map((l) => ({ ...l, _tipoNomina: "Destajo" })), ...liquidacionesPS.map((l) => ({ ...l, _tipoNomina: "Prestación de servicios" }))]} onRepararCobros={repararCobrosMarcadosMal} />}
           {subView === "causacion_manual" && !areaLider && !soloNovedades && <CausacionManualView trabajadores={trabajadores} causacionManual={causacionManual} isAdmin={isAdmin} puedeAjustarDestajo={isAdmin || !!puedeAjustarDestajo} onGuardar={guardarCausacionManual} onBorrar={borrarCausacionManual} areasNomina={areasNomina} />}
           {subView === "conceptos_deduccion" && !areaLider && !soloNovedades && <ConceptosDeduccionView conceptos={conceptosDeduccion} deduccionesTrabajador={deduccionesTrabajador} isAdmin={isAdminCatalogos} onSave={guardarConceptoDeduccion} onDelete={borrarConceptoDeduccion} />}
           {subView === "deducciones_fijas" && !areaLider && !soloNovedades && <DeduccionesFijasView trabajadores={trabajadores} conceptos={conceptosDeduccion} deducciones={deduccionesTrabajador} isAdmin={isAdminCatalogos} onGuardar={guardarDeduccionTrabajador} onCambiarEstado={cambiarEstadoDeduccionTrabajador} currentUser={currentUser} />}

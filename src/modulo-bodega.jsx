@@ -3195,6 +3195,21 @@ function DespachoYSaldoView({ currentUser, puedeAprobarDespacho, canAccessContab
 // enviado sin volver a escribirlos, se guardaban en blanco/0 encima de lo
 // que ya habia. Esta funcion siempre recupera primero lo que ya esta en
 // el lote, y solo usa el valor local si el usuario lo toco en esta sesion.
+// (2026-11-06, a pedido de Fredy) Bodega guarda el arreglo completo `cobrosBodega` con la copia que cargó al abrir el
+// formulario; si Nómina marcó un cobro como "cobrado" después de abrirlo, al guardar se borraba la marca y el cobro "se volvía
+// a activar". Ahora, al guardar, se lee el lote FRESCO y se conserva la marca de los cobros que sigan siendo los mismos.
+function conservarMarcasCobrado(cobrosNuevos, cobrosActuales) {
+  const clave = (c) => [c.trabajadorId, String(c.tipo || "").trim(), Number(c.valor) || 0, Number(c.cantidad) || 0, c.fecha || ""].join("|");
+  const usados = new Set();
+  return cobrosNuevos.map((n) => {
+    if (n.cobrado === true) return n;
+    const idx = (cobrosActuales || []).findIndex((a, i) => !usados.has(i) && a.cobrado === true && clave(a) === clave(n));
+    if (idx === -1) return n;
+    usados.add(idx);
+    const a = cobrosActuales[idx];
+    return { ...n, cobrado: true, ...(a.periodoIdCobrado ? { periodoIdCobrado: a.periodoIdCobrado } : {}) };
+  });
+}
 function datosEnvioLote(l, formEnvio) {
   const local = formEnvio[l.id] || {};
   return {
@@ -3532,10 +3547,13 @@ function EstadoDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
     }
     setGuardandoId(despachoId);
     try {
-      const batch = writeBatch(db);
-      lotesDelDespacho.forEach((l) => {
+      await runTransaction(db, async (tx) => {
+      const refsLotes = lotesDelDespacho.map((l) => doc(db, "dado_por_cumplido_lotes", l.id));
+      const snapsLotes = [];
+      for (const r of refsLotes) snapsLotes.push(await tx.get(r));
+      lotesDelDespacho.forEach((l, idxLote) => {
         const datos = datosEnvioLote(l, formEnvio);
-        const cobros = (datos.cobros || [])
+        const cobrosForm = (datos.cobros || [])
           .filter((c) => c.trabajadorId && Number(c.valor) > 0)
           .map((c) => ({
             trabajadorId: c.trabajadorId,
@@ -3547,8 +3565,9 @@ function EstadoDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
             cobrado: c.cobrado === true,
             ...(c.periodoIdCobrado ? { periodoIdCobrado: c.periodoIdCobrado } : {}),
           }));
-        batch.set(
-          doc(db, "dado_por_cumplido_lotes", l.id),
+        const cobros = conservarMarcasCobrado(cobrosForm, snapsLotes[idxLote].data()?.cobrosBodega || []);
+        tx.set(
+          refsLotes[idxLote],
           {
             transportador: despacho?.transportador || "",
             numeroGuia: despacho?.numeroGuia || "",
@@ -3563,7 +3582,7 @@ function EstadoDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
           { merge: true }
         );
       });
-      await batch.commit();
+      });
       setFormEnvio((f) => {
         const resto = { ...f };
         lotesDelDespacho.forEach((l) => delete resto[l.id]);
@@ -4361,12 +4380,16 @@ function DespachosGeneralesView({ onVolver, onLogout }) {
           cobrado: c.cobrado === true,
           ...(c.periodoIdCobrado ? { periodoIdCobrado: c.periodoIdCobrado } : {}),
         }));
-      await fsSave("dado_por_cumplido_lotes", loteEncontrado.id, {
-        cantidadDespachadaBodega: Number(form.cantidadDespachadaBodega) || 0,
-        sacrificios: Number(form.sacrificios) || 0,
-        segundas: Number(form.segundas) || 0,
-        cobroPlanta: Number(form.cobroPlanta) || 0,
-        cobrosBodega: cobros,
+      await runTransaction(db, async (tx) => {
+        const refLote = doc(db, "dado_por_cumplido_lotes", loteEncontrado.id);
+        const snapLote = await tx.get(refLote);
+        tx.set(refLote, {
+          cantidadDespachadaBodega: Number(form.cantidadDespachadaBodega) || 0,
+          sacrificios: Number(form.sacrificios) || 0,
+          segundas: Number(form.segundas) || 0,
+          cobroPlanta: Number(form.cobroPlanta) || 0,
+          cobrosBodega: conservarMarcasCobrado(cobros, snapLote.data() ? snapLote.data().cobrosBodega || [] : []),
+        }, { merge: true });
       });
       setGuardadoOk(true);
     } finally {
