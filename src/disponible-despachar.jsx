@@ -40,7 +40,7 @@ function numeroPrecio(v) {
 function valorPedidoDe(f) {
   return f.valorPedido !== undefined ? f.valorPedido : Math.round((Number(f.pedido) || 0) * (Number(f.precio) || 0));
 }
-function totalesDe(filas) {
+export function totalesDe(filas) {
   const s = (fn) => filas.reduce((a, f) => a + (Number(fn(f)) || 0), 0);
   return {
     pedido: s((f) => f.pedido),
@@ -65,7 +65,7 @@ function totalesDe(filas) {
 // real con la misma referencia y la misma cantidad (±2 %), la fila de la preorden se oculta (o se muestra marcada si se pide).
 // Con la misma referencia pero otra cantidad se deja, marcada como "posible pedido N°".
 const refNormPre = (v) => String(v ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-function filasPreordenesDe(nombreCliente, preordenes, filasReales = [], mostrarConvertidas = false) {
+export function filasPreordenesDe(nombreCliente, preordenes, filasReales = [], mostrarConvertidas = false) {
   const k = normTxt(nombreCliente);
   if (!k) return [];
   const filas = [];
@@ -113,6 +113,7 @@ function filasPreordenesDe(nombreCliente, preordenes, filasReales = [], mostrarC
         etBpt: 0,
         estado: "preorden",
         esPreorden: true,
+        tipoPre: it.tipo || "",
         _k: `${p.id}-${i}`,
       });
     });
@@ -120,7 +121,7 @@ function filasPreordenesDe(nombreCliente, preordenes, filasReales = [], mostrarC
   return filas;
 }
 
-function normTxt(v) {
+export function normTxt(v) {
   return String(v || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]/g, "");
 }
 
