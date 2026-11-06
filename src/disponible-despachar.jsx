@@ -62,8 +62,12 @@ export function totalesDe(filas) {
 // Filas de las preórdenes montadas de un cliente que todavía no son pedido
 // (2026-10-19, a pedido de Fredy) Una preorden que ya se montó como pedido en Busint se queda abierta en ATLAS y
 // duplicaba la fila ("Orden SUR-01 / DG-700 sin cortar" junto al pedido 1771 ya cortado). Si el cliente ya tiene un pedido
-// real con la misma referencia y la misma cantidad (±2 %), la fila de la preorden se oculta (o se muestra marcada si se pide).
-// Con la misma referencia pero otra cantidad se deja, marcada como "posible pedido N°".
+// real con la misma referencia y una cantidad parecida, la fila de la preorden se oculta (o se muestra marcada si se pide).
+// (2026-11-06, a pedido de Fredy) «Parecida» pasó de ±2 % a entre el 80 % y el 120 % de la preorden: la Reprogramación KC-04
+// (975100: 576 und) seguía duplicada y «sin cortar» aunque el pedido 1768 (564 und) ya estaba en planta; el cliente suele
+// ajustar la cantidad al montar el pedido. Se toma el pedido real más cercano en cantidad.
+// Con la misma referencia pero una cantidad muy distinta se deja, marcada como "posible pedido N°".
+export const RANGO_CANTIDAD_PREORDEN_CONVERTIDA = [0.8, 1.2];
 const refNormPre = (v) => String(v ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 export function filasPreordenesDe(nombreCliente, preordenes, filasReales = [], mostrarConvertidas = false) {
   const k = normTxt(nombreCliente);
@@ -88,7 +92,8 @@ export function filasPreordenesDe(nombreCliente, preordenes, filasReales = [], m
       if (cant <= 0) return;
       const precio = numeroPrecio(it.precio);
       const reales = realesPorRef.get(refNormPre(it.referencia)) || [];
-      const igual = reales.find((r) => Math.abs((Number(r.pedido) || 0) - cant) <= Math.max(2, cant * 0.02));
+      const parecidos = reales.filter((r) => { const q = Number(r.pedido) || 0; return q >= cant * RANGO_CANTIDAD_PREORDEN_CONVERTIDA[0] && q <= cant * RANGO_CANTIDAD_PREORDEN_CONVERTIDA[1]; });
+      const igual = parecidos.sort((a, b) => Math.abs((Number(a.pedido) || 0) - cant) - Math.abs((Number(b.pedido) || 0) - cant))[0];
       if (igual && !mostrarConvertidas) return;
       const distinta = !igual && reales.length ? reales[0] : null;
       filas.push({
