@@ -22,6 +22,7 @@ import { DevolucionesCalidadView } from "./devoluciones-cliente";
 import { claveArea as claveAreaHistorico } from "./centro-costo-historico-parser";
 import { diasDeTrabajoDelMes, esDiaDeTrabajoISO, sabadoSeTrabajaISO } from "./dias-habiles";
 import { armarListaPorProgramar, estadisticasPedidos, prioridadPedido } from "./lista-programar-calculo";
+import { PROVEEDORES_GASTOS_BUSINT, proveedoresDeTexto, candidatosGastos, gastoDeFactura } from "./gastos-busint-calculo";
 import { PLANTA_PROPIA_VENTAS, rangoDelPeriodo, plantasDeEntradas, clientePorLoteDeCargas, candidatosVentas, ventaDeEntrada, totalLineaVenta } from "./ventas-entradas-calculo";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
@@ -4868,11 +4869,166 @@ function TraerLotesVentasModal({ area, ventasExistentes, rangoInicial, cierreDe,
     </Modal>
   );
 }
+// (2026-11-06, a pedido de Fredy) «Traer gastos»: facturas de compra de Busint de proveedores concretos (por defecto «repuestos de
+// maquila» e «hilazas») para cargarlas como gastos del área con casillas, sin digitarlas. El gasto lleva la fecha de la factura.
+// Lee "cartera cxp-fact" por el servidor (getFacturasCompraBusint); pagadas o no, porque el gasto cuenta al facturar.
+function TraerGastosBusintModal({ area, gastosExistentes, rangoInicial, cierreDe, currentUser, onClose }) {
+  const [textoProv, setTextoProv] = useState(PROVEEDORES_GASTOS_BUSINT.join(", "));
+  const [desde, setDesde] = useState(rangoInicial[0]);
+  const [hasta, setHasta] = useState(rangoInicial[1]);
+  const [consulta, setConsulta] = useState({ n: 0, proveedores: PROVEEDORES_GASTOS_BUSINT, desde: rangoInicial[0], hasta: rangoInicial[1] });
+  const [datos, setDatos] = useState(null);
+  const [errorBusint, setErrorBusint] = useState("");
+  const [provSel, setProvSel] = useState("");
+  const [busqueda, setBusqueda] = useState("");
+  const [sel, setSel] = useState({});
+  const [cargando, setCargando] = useState(false);
+  const [resultado, setResultado] = useState(null);
+  useEffect(() => {
+    let vigente = true;
+    setDatos(null);
+    setErrorBusint("");
+    httpsCallable(functionsClient, "getFacturasCompraBusint", { timeout: 300000 })({ proveedores: consulta.proveedores, desde: consulta.desde, hasta: consulta.hasta })
+      .then((r) => { if (vigente) setDatos(r.data); })
+      .catch((err) => { if (vigente) setErrorBusint(err?.message || String(err)); });
+    return () => { vigente = false; };
+  }, [consulta]);
+  const proveedoresEncontrados = datos?.proveedoresEncontrados || [];
+  const provEfectivo = proveedoresEncontrados.some((p) => p.codigo === provSel) ? provSel : "";
+  const filas = useMemo(
+    () => candidatosGastos({ facturas: datos?.facturas || [], gastosExistentes, proveedorCodigo: provEfectivo, busqueda }),
+    [datos, gastosExistentes, provEfectivo, busqueda]
+  );
+  const patronesSinProveedor = datos ? consulta.proveedores.filter((p) => !proveedoresEncontrados.some((e) => e.patron === p)) : [];
+  const elegibles = filas.filter((f) => !f.yaCargada);
+  const seleccionadas = elegibles.filter((f) => sel[f.clave]);
+  const totalSel = seleccionadas.reduce((a, f) => a + f.monto, 0);
+  const autoMarcables = elegibles.filter((f) => !f.posibleDuplicado);
+  const todasMarcadas = autoMarcables.length > 0 && autoMarcables.every((f) => sel[f.clave]);
+  function marcarTodas(on) {
+    setSel((s) => { const n = { ...s }; autoMarcables.forEach((f) => { n[f.clave] = on; }); return n; });
+  }
+  function buscar() {
+    setSel({});
+    setResultado(null);
+    setConsulta((c) => ({ n: c.n + 1, proveedores: proveedoresDeTexto(textoProv), desde, hasta }));
+  }
+  async function cargar() {
+    if (!seleccionadas.length) return;
+    setCargando(true);
+    setResultado(null);
+    try {
+      const ahora = new Date().toISOString();
+      const usuario = currentUser?.name || currentUser?.username || "";
+      const aCargar = [];
+      const mesCerrado = [];
+      seleccionadas.forEach((f) => {
+        if (cierreDe(f.fecha)) { mesCerrado.push(f.numeroFactura); return; }
+        aCargar.push(gastoDeFactura(f, { id: `${uid()}${uid()}`, area, usuario, ahora }));
+      });
+      for (let i = 0; i < aCargar.length; i += 20) {
+        await Promise.all(aCargar.slice(i, i + 20).map((g) => fsSave("centro_costo_gastos", g.id, g)));
+      }
+      setSel((s) => { const n = { ...s }; aCargar.forEach((g) => { delete n[g.claveBusint]; }); return n; });
+      setResultado({ ok: aCargar.length, total: aCargar.reduce((a, g) => a + g.monto, 0), mesCerrado });
+    } catch (err) {
+      setResultado({ error: err?.message || String(err) });
+    } finally {
+      setCargando(false);
+    }
+  }
+  const inp = { padding: "5px 8px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12.5, fontFamily: "inherit" };
+  const th = (t, al) => <th key={t} style={{ padding: "9px 10px", color: C.seam, textAlign: al || "left", fontWeight: 700, fontSize: 11, whiteSpace: "nowrap", position: "sticky", top: 0, background: C.ink }}>{t}</th>;
+  return (
+    <Modal title={`Traer gastos desde Busint — ${area}`} onClose={onClose} width={1000}>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 12, maxWidth: 820 }}>
+        Facturas de compra de Busint de los proveedores que indiques, pagadas o no (el gasto cuenta al facturar). El gasto queda con la <strong>fecha de la factura</strong> y el valor total de la factura. Las ya cargadas salen marcadas y no se duplican.
+      </div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
+        <input value={textoProv} onChange={(e) => setTextoProv(e.target.value)} placeholder="Proveedores separados por coma" title="Nombres de proveedor de Busint, separados por coma. Basta con parte del nombre." style={{ ...inp, minWidth: 300, flex: "1 1 300px" }} />
+        <input type="date" value={desde} onChange={(e) => setDesde(e.target.value)} style={inp} />
+        <span style={{ fontSize: 12, color: C.slate, fontWeight: 700 }}>a</span>
+        <input type="date" value={hasta} onChange={(e) => setHasta(e.target.value)} style={inp} />
+        <Btn small onClick={buscar} disabled={!datos && !errorBusint}>🔄 Buscar en Busint</Btn>
+      </div>
+      {datos && (
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
+          <select value={provEfectivo} onChange={(e) => setProvSel(e.target.value)} style={{ ...inp, fontWeight: 700 }}>
+            <option value="">Todos los proveedores ({proveedoresEncontrados.length})</option>
+            {proveedoresEncontrados.map((p) => <option key={p.codigo} value={p.codigo}>{p.nombre} ({p.facturas} fact.)</option>)}
+          </select>
+          <input value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder="🔍 Proveedor o N° de factura..." style={{ ...inp, minWidth: 220 }} />
+          <span style={{ fontSize: 12, color: C.slate }}>{filas.length} factura(s)</span>
+        </div>
+      )}
+      {!datos && !errorBusint && <div style={{ padding: 16, fontSize: 13, color: C.slate }}>Consultando Busint... puede tardar un minuto.</div>}
+      {errorBusint && <div style={{ padding: 14, borderRadius: 10, background: C.redBg, color: C.red, fontSize: 13, marginBottom: 12 }}>⚠ No se pudo consultar Busint: {errorBusint}</div>}
+      {patronesSinProveedor.length > 0 && (
+        <div style={{ padding: 12, borderRadius: 10, background: C.amberBg, color: C.amber, fontSize: 12.5, marginBottom: 12, lineHeight: 1.5 }}>
+          No encontré ningún proveedor en Busint que coincida con: {patronesSinProveedor.map((p) => `«${p}»`).join(", ")}. Revisa cómo se escribe el nombre en Busint (basta con parte del nombre) y vuelve a buscar.
+        </div>
+      )}
+      {datos && (datos.sinFecha > 0 || datos.sinValor > 0) && (
+        <div style={{ fontSize: 11.5, color: C.slate, marginBottom: 10 }}>
+          Fuera de la lista: {datos.sinFecha > 0 ? `${datos.sinFecha} factura(s) sin fecha de emisión` : ""}{datos.sinFecha > 0 && datos.sinValor > 0 ? " · " : ""}{datos.sinValor > 0 ? `${datos.sinValor} con valor cero o negativo (notas)` : ""}.
+        </div>
+      )}
+      {datos && (
+        <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "auto", maxHeight: "48vh" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 760 }}>
+            <thead>
+              <tr style={{ background: C.ink }}>
+                <th style={{ padding: "9px 10px", position: "sticky", top: 0, background: C.ink, width: 34 }}>
+                  <input type="checkbox" checked={todasMarcadas} onChange={(e) => marcarTodas(e.target.checked)} title="Marcar todas las que faltan por cargar" />
+                </th>
+                {th("Fecha factura")}{th("Proveedor")}{th("N° factura")}{th("Valor", "right")}{th("Estado")}
+              </tr>
+            </thead>
+            <tbody>
+              {filas.map((f, i) => (
+                <tr key={f.clave} style={{ background: f.yaCargada ? C.canvas : i % 2 ? "#FAF8F5" : C.white, borderTop: `1px solid ${C.border}`, opacity: f.yaCargada ? 0.6 : 1 }}>
+                  <td style={{ padding: "7px 10px", textAlign: "center" }}>
+                    <input type="checkbox" disabled={f.yaCargada} checked={!!sel[f.clave] && !f.yaCargada} onChange={(e) => setSel((s) => ({ ...s, [f.clave]: e.target.checked }))} />
+                  </td>
+                  <td style={{ padding: "7px 10px", whiteSpace: "nowrap" }}>{fmtFechaISO(f.fecha)}</td>
+                  <td style={{ padding: "7px 10px", fontWeight: 700 }}>{f.proveedor}</td>
+                  <td style={{ padding: "7px 10px" }}>{f.numeroFactura}</td>
+                  <td style={{ padding: "7px 10px", textAlign: "right", fontWeight: 800 }}>{fmtMoney(f.monto)}</td>
+                  <td style={{ padding: "7px 10px", whiteSpace: "nowrap", fontSize: 11, fontWeight: 700 }}>
+                    {f.yaCargada ? <span style={{ color: C.green }}>✓ ya cargada</span>
+                      : f.posibleDuplicado ? <span style={{ color: C.amber }} title="Ya hay un gasto digitado o por Excel con este proveedor y este número de factura">⚠ ya hay un gasto igual</span>
+                      : cierreDe(f.fecha) ? <span style={{ color: C.red }} title="Ese mes está cerrado en Centro de Costo">🔒 mes cerrado</span>
+                      : ""}
+                  </td>
+                </tr>
+              ))}
+              {!filas.length && (
+                <tr><td colSpan={6} style={{ padding: 24, textAlign: "center", color: C.slate }}>No hay facturas de estos proveedores en el período.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {resultado && (
+        <div style={{ fontSize: 12.5, marginTop: 12, padding: "9px 12px", borderRadius: 8, fontWeight: 600, background: resultado.error ? C.redBg : C.greenBg, color: resultado.error ? C.red : C.green, lineHeight: 1.5 }}>
+          {resultado.error
+            ? `⚠ No se pudo cargar: ${resultado.error}`
+            : `✓ ${resultado.ok} gasto(s) cargado(s) por ${fmtMoney(resultado.total)}.${resultado.mesCerrado.length ? ` Sin cargar por mes cerrado (facturas ${resultado.mesCerrado.join(", ")}): pide a un administrador que reabra el mes.` : ""}`}
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 14, justifyContent: "flex-end", alignItems: "center", marginTop: 14, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 13, color: C.slate }}>{seleccionadas.length} seleccionada(s) · <strong style={{ color: C.ink }}>{fmtMoney(totalSel)}</strong></span>
+        <Btn variant="secondary" onClick={onClose}>Cerrar</Btn>
+        <Btn onClick={cargar} disabled={cargando || !seleccionadas.length}>{cargando ? "Cargando..." : `Cargar ${seleccionadas.length || ""} seleccionada(s)`}</Btn>
+      </div>
+    </Modal>
+  );
+}
 // (2026-11-06, a pedido de Fredy) De dónde viene cada gasto o venta de Costos y ventas: lote (Traer lotes), Excel o
 // digitado a mano, y quién lo cargó. Los registros anteriores a esta columna no guardaron nada y salen «Sin registro».
 function etiquetaOrigenCC(r) {
   if (!r.origen && !r.cargadoPor) return { txt: "Sin registro", titulo: r.creadoEn ? `Creado el ${new Date(r.creadoEn).toLocaleString("es-CO")} (no se guardó quién)` : "No se guardó quién lo cargó" };
-  const tipo = r.origen === "entrada_planta" ? "📥 Lote" : r.origen === "excel" ? "📤 Excel" : "✍️ A mano";
+  const tipo = r.origen === "entrada_planta" ? "📥 Lote" : r.origen === "busint" ? "📥 Busint" : r.origen === "excel" ? "📤 Excel" : "✍️ A mano";
   return { txt: `${tipo}${r.cargadoPor ? " · " + r.cargadoPor : ""}`, titulo: r.creadoEn ? `Cargado el ${new Date(r.creadoEn).toLocaleString("es-CO")}` : "" };
 }
 const colOrigenCC = { key: "origen", label: "Cargó", render: (r) => { const o = etiquetaOrigenCC(r); return <span title={o.titulo} style={{ fontSize: 11, color: C.slate, whiteSpace: "nowrap" }}>{o.txt}</span>; } };
@@ -5043,6 +5199,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
   const [gastoForm, setGastoForm] = useState({ proveedor: "", numeroFactura: "", monto: "", fecha: hoy });
   const [ventaModalAbierto, setVentaModalAbierto] = useState(false);
   const [traerLotesAbierto, setTraerLotesAbierto] = useState(false);
+  const [traerGastosAbierto, setTraerGastosAbierto] = useState(false);
   const [detalleNominaAbierto, setDetalleNominaAbierto] = useState(false);
   const [ventaForm, setVentaForm] = useState({ referencia: "", lote: "", cantidad: "", precio: "", total: "", cliente: "", fecha: hoy });
   // (2026-09-22, a pedido de Fredy) Liquidaciones YA CONFIRMADAS de Nómina
@@ -6426,6 +6583,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
                     <div style={{ display: "flex", gap: 8 }}>
                       <input ref={excelGastosInputRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }} onChange={handleExcelGastos} />
                       {puedeEditar && <Btn small variant="secondary" onClick={() => excelGastosInputRef.current?.click()} disabled={cargandoExcelGastos}>{cargandoExcelGastos ? "Cargando..." : "📤 Cargar Excel"}</Btn>}
+                      {puedeEditar && <Btn small variant="secondary" onClick={() => setTraerGastosAbierto(true)}>📥 Traer gastos</Btn>}
                       {puedeEditar && <Btn small onClick={abrirNuevoGasto}>+ Agregar gasto</Btn>}
                     </div>
                   </div>
@@ -6604,6 +6762,16 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
               etiquetaPeriodo={etiquetaPeriodo}
               mostrarNombres={!soloCostoReal}
               onClose={() => setDetalleNominaAbierto(false)}
+            />
+          )}
+          {traerGastosAbierto && puedeEditar && areaSel && (
+            <TraerGastosBusintModal
+              area={areaSel}
+              gastosExistentes={gastosArea}
+              rangoInicial={rangoDelPeriodo({ periodo, fechaDia, mesSel, anioSel, quincenaSel, fechaRangoInicio, fechaRangoFin })}
+              cierreDe={cierreDe}
+              currentUser={currentUser}
+              onClose={() => setTraerGastosAbierto(false)}
             />
           )}
           {traerLotesAbierto && puedeEditar && areaSel && (

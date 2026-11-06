@@ -10315,6 +10315,128 @@ async function verificarLlamadorPuedeSincronizarDadoPorCumplido(request) {
   return snap.docs[0];
 }
 
+// ─── GASTOS DE PLANTA DESDE BUSINT ("Traer gastos" en Costos y ventas) ──────────────────────────────────────────
+// (2026-11-06, a pedido de Fredy) Facturas de compra de proveedores concretos (p. ej. «repuestos de maquila» e «hilazas») para
+// cargarlas como gastos del área sin digitarlas. Un gasto cuenta cuando se FACTURA (fecha de la factura), no cuando se paga:
+// por eso se lee "cartera cxp-fact" completa (pagadas o no) y NO se calcula saldo. Se agrupa por proveedor+factura igual que
+// getCuentasPorPagarBusintGen (una factura puede venir repartida en varias filas, una con FACTOTAL=0).
+function fechaBusintBDaISO(campo) {
+  if (!campo || typeof campo !== "object" || !campo.isValidDateTime) return null;
+  const dos = (n) => String(n).padStart(2, "0");
+  return `${campo.year}-${dos(campo.month || 1)}-${dos(campo.day || 1)}`;
+}
+function normalizarTextoProveedorGasto(s) {
+  return String(s ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+const PALABRAS_VACIAS_PROVEEDOR = new Set(["de", "del", "la", "el", "los", "las", "y", "e", "sas", "s", "a", "ltda", "sa"]);
+// El nombre del proveedor coincide si contiene TODAS las palabras del patrón (sin tildes ni mayúsculas, ignorando "de", "sas"…)
+function proveedorCoincideConPatron(nombre, patron) {
+  const n = normalizarTextoProveedorGasto(nombre);
+  const palabras = normalizarTextoProveedorGasto(patron).split(" ").filter((w) => w && !PALABRAS_VACIAS_PROVEEDOR.has(w));
+  if (!palabras.length) return false;
+  return palabras.every((w) => n.includes(w));
+}
+// Puede traer gastos: admin, usuarios con «Costos y ventas de planta» (costosPlanta) o roles con Áreas → Centro de Costo.
+async function verificarLlamadorPuedeTraerGastosPlanta(request) {
+  if (!request.auth) throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+  const snap = await db.collection("users").where("authUid", "==", request.auth.uid).limit(1).get();
+  if (snap.empty) throw new HttpsError("permission-denied", "No tienes permiso para hacer esto.");
+  const u = snap.docs[0].data();
+  if (u.isAdmin || u.costosPlanta) return snap.docs[0];
+  const configSnap = await db.collection("config").doc("main").get();
+  const roles = configSnap.exists ? configSnap.data().roles || [] : [];
+  const roleData = roles.find((r) => r.name === u.role);
+  const modulos = Array.isArray(roleData?.modulos) ? roleData.modulos : [];
+  if (!modulos.includes("areas_centro_costo")) throw new HttpsError("permission-denied", "No tienes permiso para traer gastos desde Busint.");
+  return snap.docs[0];
+}
+exports.getFacturasCompraBusint = onCallAuth(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 300,
+    memory: "1GiB",
+  },
+  async (request) => {
+    await verificarLlamadorPuedeTraerGastosPlanta(request);
+    const datos = request.data || {};
+    const patrones = (Array.isArray(datos.proveedores) ? datos.proveedores : [])
+      .map((x) => String(x || "").trim().slice(0, 80))
+      .filter(Boolean)
+      .slice(0, 10);
+    if (!patrones.length) throw new HttpsError("invalid-argument", "Indica al menos un proveedor a buscar.");
+    const desde = /^\d{4}-\d{2}-\d{2}$/.test(String(datos.desde || "")) ? String(datos.desde) : null;
+    const hasta = /^\d{4}-\d{2}-\d{2}$/.test(String(datos.hasta || "")) ? String(datos.hasta) : null;
+    let facturas, proveedores;
+    try {
+      [facturas, proveedores] = await Promise.all([
+        consultarTablaBusintBDCompleta("cartera cxp-fact"),
+        consultarTablaBusintBDCompleta("maestro de proveedores"),
+      ]);
+    } catch (err) {
+      logger.error("Error consultando Busint BD (getFacturasCompraBusint)", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar Busint BD: ${err?.message || String(err)}`);
+    }
+    // Proveedores cuyo nombre coincide con algún patrón
+    const elegidos = new Map(); // codigo -> { codigo, nombre, patron }
+    proveedores.forEach((p) => {
+      const codigo = normalizarCodigoCxp(p?.Codigo);
+      const nombre = String(p?.Nombre || "").trim();
+      if (!codigo || !nombre) return;
+      const patron = patrones.find((pt) => proveedorCoincideConPatron(nombre, pt));
+      if (patron) elegidos.set(codigo, { codigo, nombre, patron });
+    });
+    // Misma detección de la columna de fecha de emisión que en Cuentas por Pagar (Fechaini, «emis», «fecha»…)
+    const clavesFecha = new Set();
+    facturas.slice(0, 500).forEach((f) => Object.keys(f || {}).forEach((k) => { if (/^fecha/i.test(k) && !/fin$|vcto|venc/i.test(k)) clavesFecha.add(k); }));
+    const listaFechas = [...clavesFecha];
+    const campoEmision = listaFechas.find((k) => k.toLowerCase() === "fechaini")
+      || listaFechas.find((k) => /emis/i.test(k))
+      || listaFechas.find((k) => k.toLowerCase() === "fecha")
+      || listaFechas.find((k) => /fechafac/i.test(k))
+      || listaFechas[0]
+      || null;
+    const grupos = new Map(); // codigo|nfact -> { codigo, nfact, total, totalMax, fecha, fechaVcto }
+    facturas.forEach((f) => {
+      const codigo = normalizarCodigoCxp(f?.CODIGO);
+      if (!elegidos.has(codigo)) return;
+      const nfact = String(f?.NFACT ?? "").trim();
+      if (!nfact) return;
+      const llave = `${codigo}|${normalizarCodigoCxp(nfact)}`;
+      const totalFila = Number(f?.FACTOTAL) || 0;
+      if (!grupos.has(llave)) grupos.set(llave, { codigo, nfact, total: 0, totalMax: -Infinity, fecha: null, fechaVcto: null });
+      const g = grupos.get(llave);
+      g.total += totalFila;
+      if (totalFila > g.totalMax) {
+        g.totalMax = totalFila;
+        g.fecha = campoEmision ? fechaBusintBDaISO(f?.[campoEmision]) : null;
+        g.fechaVcto = fechaBusintBDaISO(f?.Fechafin);
+      }
+    });
+    const porProveedor = new Map();
+    let sinFecha = 0;
+    let sinValor = 0;
+    const lista = [];
+    grupos.forEach((g) => {
+      const prov = elegidos.get(g.codigo);
+      porProveedor.set(g.codigo, (porProveedor.get(g.codigo) || 0) + 1);
+      if (!(g.total > 0)) { sinValor++; return; }
+      if (!g.fecha) { sinFecha++; return; }
+      if (desde && g.fecha < desde) return;
+      if (hasta && g.fecha > hasta) return;
+      lista.push({ codigo: g.codigo, proveedor: prov.nombre, numeroFactura: g.nfact, total: Math.round(g.total), fecha: g.fecha, fechaVcto: g.fechaVcto });
+    });
+    lista.sort((a, b) => b.fecha.localeCompare(a.fecha) || String(b.numeroFactura).localeCompare(String(a.numeroFactura), "es", { numeric: true }));
+    return {
+      consultadoEn: new Date().toISOString(),
+      campoEmision,
+      proveedoresEncontrados: [...elegidos.values()].map((p) => ({ ...p, facturas: porProveedor.get(p.codigo) || 0 })).sort((a, b) => a.nombre.localeCompare(b.nombre, "es")),
+      facturas: lista,
+      sinFecha,
+      sinValor,
+    };
+  }
+);
+
 // ─── CÓDIGOS DE AUTORIZACIÓN DE PERMISOS (Nómina) ───────────────────────
 // (2026-10-28, a pedido de Fredy) Cada trabajador puede tener hasta N permisos
 // al mes (por defecto 3, configurable en config/nomina_permisos). Desde el
