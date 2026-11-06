@@ -4,7 +4,7 @@
 // proveedores y a quiénes pagar con ese cupo (cuentas ya ordenadas por urgencia en Estrategia de Pago). Es solo lectura: no cambia el calendario de Cuentas por Pagar.
 import React, { useEffect, useMemo, useState } from "react";
 import { collection, getDocs, onSnapshot, query, where } from "firebase/firestore";
-import { cuantoPagarMes, cumplimientoPresupuesto, repartirCupo, calendarioObligaciones, sumarMes } from "./financiera-cuanto-pagar-calculo";
+import { cuantoPagarMes, cuotasConLiquidaciones, cumplimientoPresupuesto, repartirCupo, calendarioObligaciones, sumarMes } from "./financiera-cuanto-pagar-calculo";
 
 const C = { ink: "#1A1A2E", slate: "#5A5A7A", border: "#E8E2DB", canvas: "#F7F4F0", white: "#FFFFFF", green: "#2D9E6B", greenBg: "#EBF7F2", red: "#E85D4A", redBg: "#FDF0EE", amber: "#C47C1A", amberBg: "#FDF5E6", blue: "#3D6B9E" };
 const money = (n) => (Number(n) < 0 ? "-$" : "$") + Math.round(Math.abs(Number(n) || 0)).toLocaleString("es-CO");
@@ -18,12 +18,29 @@ const tdL = { ...td, textAlign: "left" };
 function useMesFinanciero(db, ym) {
   const [liq, setLiq] = useState({});
   const [gastos, setGastos] = useState([]);
-  const [cuotas, setCuotas] = useState([]);
+  const [cuotasManuales, setCuotasManuales] = useState([]);
+  const [pagosCuotas, setPagosCuotas] = useState([]); // (2026-11-06) pagos de cuotas del mes y plan de liquidaciones (contabilidad_cuotas_pagos)
   const [pres, setPres] = useState([]);
   const [movs, setMovs] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState("");
-  useEffect(() => onSnapshot(collection(db, "financiera_cuotas"), (s) => setCuotas(s.docs.map((d) => ({ ...d.data(), id: d.id }))), () => {}), [db]);
+  useEffect(() => onSnapshot(collection(db, "financiera_cuotas"), (s) => setCuotasManuales(s.docs.map((d) => ({ ...d.data(), id: d.id }))), () => {}), [db]);
+  useEffect(() => onSnapshot(collection(db, "contabilidad_cuotas_pagos"), (s) => setPagosCuotas(s.docs.map((d) => ({ ...d.data(), id: d.id }))), () => {}), [db]);
+  const cuotas = useMemo(() => cuotasConLiquidaciones(cuotasManuales, pagosCuotas), [cuotasManuales, pagosCuotas]);
+  const [liqRetiro, setLiqRetiro] = useState([]);
+  useEffect(() => onSnapshot(collection(db, "nomina_liquidaciones_retiro"), (s) => setLiqRetiro(s.docs.map((d) => ({ ...d.data(), id: d.id }))), () => {}), [db]);
+  // Mapa de pagos por «{idCuota}__{mes}». Para las liquidaciones de retiro, lo pagado = lo escrito a mano o, si no hay, lo marcado «Pagada» este mes en Nómina.
+  const pagosMapa = useMemo(() => {
+    const o = {};
+    pagosCuotas.forEach((x) => { o[x.id] = x; });
+    const plan = pagosCuotas.find((x) => x.id === `plan_liquidaciones__${ym}`);
+    if (plan) {
+      const auto = liqRetiro.filter((l) => l.estadoPago === "pagada" && String(l.pagadaEn || "").slice(0, 7) === ym).reduce((t, l) => t + (Number(l.totalAPagar) || 0), 0);
+      const manual = plan.pagadoManual !== undefined && plan.pagadoManual !== null && plan.pagadoManual !== "";
+      o[`plan_liquidaciones__${ym}__${ym}`] = { pagado: manual ? Number(plan.pagadoManual) || 0 : auto };
+    }
+    return o;
+  }, [pagosCuotas, liqRetiro, ym]);
   useEffect(() => onSnapshot(query(collection(db, "contabilidad_presupuestos_cliente"), where("mes", "==", ym)), (s) => setPres(s.docs.map((d) => ({ ...d.data(), id: d.id }))), () => {}), [db, ym]);
   useEffect(() => onSnapshot(query(collection(db, "contabilidad_movimientos"), where("tipo", "==", "ingreso")), (s) => setMovs(s.docs.map((d) => ({ ...d.data(), id: d.id }))), () => {}), [db]);
   useEffect(() => {
@@ -46,7 +63,7 @@ function useMesFinanciero(db, ym) {
   }, [db, ym]);
   const res = useMemo(() => cuantoPagarMes({ ym, liquidaciones: liq, gastosDocs: gastos, cuotas }), [ym, liq, gastos, cuotas]);
   const cumpl = useMemo(() => cumplimientoPresupuesto({ ym, presupuestos: pres, movimientos: movs, confirmado: res.actual, estimado: res.estimado, hoyISO: `${ym}-15`, diasTotal: 0, diasTranscurridos: 0 }), [ym, pres, movs, res]);
-  return { res, cumpl, cargando, error };
+  return { res, cumpl, cargando, error, pagosMapa };
 }
 
 function Dato({ titulo, valor, sub, color, fondo }) {
@@ -69,9 +86,9 @@ function Celda({ r }) {
 export default function QuePagarPrimero({ db, items }) {
   const ym = useMemo(() => new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 7), []);
   const datos = useMesFinanciero(db, ym);
-  return <QuePagarPrimeroVista items={items} ym={ym} res={datos.res} cumpl={datos.cumpl} cargando={datos.cargando} error={datos.error} />;
+  return <QuePagarPrimeroVista items={items} ym={ym} res={datos.res} cumpl={datos.cumpl} cargando={datos.cargando} error={datos.error} pagosMapa={datos.pagosMapa} />;
 }
-export function QuePagarPrimeroVista({ items, ym, res, cumpl, cargando, error }) {
+export function QuePagarPrimeroVista({ items, ym, res, cumpl, cargando, error, pagosMapa }) {
   const [verTodas, setVerTodas] = useState(false);
   const est = res.estimado;
   const salida = est.total;
@@ -82,7 +99,7 @@ export function QuePagarPrimeroVista({ items, ym, res, cumpl, cargando, error })
   const deudaTotal = (items || []).reduce((s, f) => s + f.total, 0);
   const cubreCons = repCons.reduce((s, r) => s + r.paga, 0);
   const cubrenCons = repCons.filter((r) => r.total > 0 && r.paga >= r.total).length;
-  const cal = useMemo(() => calendarioObligaciones(est, res.actual.cuotasLista, ym), [est, res, ym]);
+  const cal = useMemo(() => calendarioObligaciones(est, res.actual.cuotasLista, ym, pagosMapa), [est, res, ym, pagosMapa]);
   const mesTxt = `${MESES[Number(ym.slice(5, 7)) - 1]} ${ym.slice(0, 4)}`;
   const filas = verTodas ? repCons : repCons.slice(0, 12);
   const sinPresupuesto = cumpl.nivel === "sin_presupuesto";
@@ -138,8 +155,8 @@ export function QuePagarPrimeroVista({ items, ym, res, cumpl, cargando, error })
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead><tr style={{ background: C.canvas }}><th style={{ ...thL, width: 90 }}>Día</th><th style={thL}>Concepto</th><th style={th}>Valor</th></tr></thead>
           <tbody>
-            {cal.conFecha.map((f, i) => (<tr key={`c${i}`}><td style={tdL}>{f.dia}{f.aprox ? " (aprox.)" : ""}</td><td style={{ ...tdL, fontWeight: 700 }}>{f.concepto}</td><td style={td}>{money(f.valor)}</td></tr>))}
-            {cal.sinDia.map((f, i) => (<tr key={`s${i}`}><td style={{ ...tdL, color: C.slate }}>Sin día fijo</td><td style={{ ...tdL, fontWeight: 700 }}>{f.concepto}</td><td style={td}>{money(f.valor)}</td></tr>))}
+            {cal.conFecha.map((f, i) => (<tr key={`c${i}`} style={{ background: f.pagado >= f.valor && f.valor > 0 ? C.greenBg : undefined }}><td style={tdL}>{f.dia}{f.aprox ? " (aprox.)" : ""}</td><td style={{ ...tdL, fontWeight: 700 }}><span style={{ textDecoration: f.pagado >= f.valor && f.valor > 0 ? "line-through" : "none" }}>{f.concepto}</span>{f.pagado >= f.valor && f.valor > 0 ? <span style={{ color: C.green, fontSize: 11.5, marginLeft: 8 }}>✓ pagada</span> : f.pagado > 0 ? <span style={{ color: C.amber, fontSize: 11.5, marginLeft: 8 }}>pagado {money(f.pagado)} · falta {money(f.valor - f.pagado)}</span> : null}</td><td style={td}>{money(f.valor)}</td></tr>))}
+            {cal.sinDia.map((f, i) => (<tr key={`s${i}`} style={{ background: f.pagado >= f.valor && f.valor > 0 ? C.greenBg : undefined }}><td style={{ ...tdL, color: C.slate }}>Sin día fijo</td><td style={{ ...tdL, fontWeight: 700 }}><span style={{ textDecoration: f.pagado >= f.valor && f.valor > 0 ? "line-through" : "none" }}>{f.concepto}</span>{f.pagado >= f.valor && f.valor > 0 ? <span style={{ color: C.green, fontSize: 11.5, marginLeft: 8 }}>✓ pagada</span> : f.pagado > 0 ? <span style={{ color: C.amber, fontSize: 11.5, marginLeft: 8 }}>pagado {money(f.pagado)} · falta {money(f.valor - f.pagado)}</span> : null}</td><td style={td}>{money(f.valor)}</td></tr>))}
             <tr style={{ background: C.canvas }}><td style={tdL} /><td style={{ ...tdL, fontWeight: 900 }}>Total estimado del mes</td><td style={{ ...td, fontWeight: 900 }}>{money(salida)}</td></tr>
           </tbody>
         </table>

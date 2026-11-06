@@ -6,7 +6,8 @@
 //     (colección financiera_cuotas); lo demás se lee de Nómina (liquidaciones confirmadas) y de costos_gastos_mes.
 import React, { useState, useEffect, useMemo } from "react";
 import { collection, doc, getDocs, onSnapshot, query, setDoc, deleteDoc, where } from "firebase/firestore";
-import { cuantoPagarMes, cuotasDelMes, escalonCuotas, sumarMes, TIPOS_NOMINA, MESES_PONDERADO, cumplimientoPresupuesto } from "./financiera-cuanto-pagar-calculo";
+import { cuantoPagarMes, cuotasDelMes, cuotasConLiquidaciones, escalonCuotas, sumarMes, TIPOS_NOMINA, MESES_PONDERADO, cumplimientoPresupuesto } from "./financiera-cuanto-pagar-calculo";
+import { TablaCuotasPago, useCuotasPagos } from "./financiera-cuotas-pagos";
 import { httpsCallable } from "firebase/functions";
 import { diasDeTrabajoDelMes } from "./dias-habiles";
 
@@ -137,7 +138,10 @@ export function CuantoPagarMesView({ db, onIrEndeudamiento, functionsClient, isA
     }
     setProbando(false);
   }
-  const { cuotas, error: errorCuotas } = useCuotas(db);
+  const { cuotas: cuotasManuales, error: errorCuotas } = useCuotas(db);
+  // (2026-11-06) Pagos de cuotas del mes y plan de liquidaciones de retiro (el plan entra como una cuota más).
+  const { pagos: pagosCuotas, mapa: mapaPagos, liquidaciones: liqRetiro } = useCuotasPagos(db);
+  const cuotas = useMemo(() => cuotasConLiquidaciones(cuotasManuales, pagosCuotas), [cuotasManuales, pagosCuotas]);
   // (2026-11-05) Resumen mensual de ingresos de clientes (lo guarda la pantalla «Ingresos» al traer de Busint).
   // Se prefiere el «Total Yanko» (TNS + traslados externos de Busint); si no existe, el de Busint.
   const [cacheBusint, setCacheBusint] = useState(null);
@@ -274,16 +278,7 @@ export function CuantoPagarMesView({ db, onIrEndeudamiento, functionsClient, isA
             <div style={{ flex: 1 }} />
             {onIrEndeudamiento ? <Boton chico onClick={onIrEndeudamiento}>Administrar cuotas →</Boton> : null}
           </div>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead><tr><th style={thL}>Cuota</th><th style={th}>Valor mensual</th><th style={th}>Se paga</th><th style={th}>Termina</th></tr></thead>
-            <tbody>
-              {actual.cuotasLista.map((c) => (
-                <tr key={c.id}><td style={tdL}>{c.nombre}{c.acreedor ? <div style={{ fontSize: 11, fontWeight: 500, color: C.slate }}>{c.acreedor}</div> : null}</td><td style={td}>{money(c.valorMensual)}</td><td style={td}>{c.diaPago ? `día ${c.diaPago}` : "—"}</td><td style={td}>{c.hasta ? `${mesCorto(c.hasta)} ${c.hasta.slice(0, 4)}` : "Sin fecha"}</td></tr>
-              ))}
-              {!actual.cuotasLista.length && <tr><td colSpan={4} style={{ ...td, textAlign: "left", color: C.slate }}>No hay cuotas vigentes en este mes. Agrégalas en «Endeudamiento».</td></tr>}
-              {actual.cuotasLista.length > 0 && <tr style={{ background: C.canvas }}><td style={{ ...tdL, fontWeight: 900, borderBottom: "none" }}>Total cuotas</td><td style={{ ...td, fontWeight: 900, borderBottom: "none" }}>{money(actual.cuotas)}</td><td style={{ ...td, borderBottom: "none" }} /><td style={{ ...td, borderBottom: "none" }} /></tr>}
-            </tbody>
-          </table>
+          <TablaCuotasPago db={db} ym={ym} cuotasLista={actual.cuotasLista} mapa={mapaPagos} liquidaciones={liqRetiro} puedeEditar={!!isAdmin} />
         </div>
         <div style={{ ...caja, flex: "1 1 340px" }}>
           <div style={{ fontSize: 13.5, fontWeight: 800, marginBottom: 8 }}>Cuánto baja lo que pago por cuotas</div>
@@ -363,14 +358,7 @@ export function CuantoPagarMesView({ db, onIrEndeudamiento, functionsClient, isA
               </tbody>
             </table>
           ) : (
-            <table style={{ width: "100%", borderCollapse: "collapse", background: C.white }}>
-              <thead><tr><th style={thL}>Cuota</th><th style={th}>Valor mensual</th><th style={th}>Se paga</th><th style={th}>Termina</th></tr></thead>
-              <tbody>
-                {actual.cuotasLista.map((c) => <tr key={c.id}><td style={tdL}>{c.nombre}</td><td style={td}>{money(c.valorMensual)}</td><td style={td}>{c.diaPago ? `día ${c.diaPago}` : "—"}</td><td style={td}>{c.hasta ? nombreMes(c.hasta) : "Sin fecha"}</td></tr>)}
-                {!actual.cuotasLista.length && <tr><td colSpan={4} style={{ ...td, textAlign: "left", color: C.slate }}>No hay cuotas vigentes este mes.</td></tr>}
-                <tr style={{ background: C.canvas }}><td style={tdL}>Total</td><td style={{ ...td, fontWeight: 900 }}>{money(actual.cuotas)}</td><td style={td} /><td style={td} /></tr>
-              </tbody>
-            </table>
+            <TablaCuotasPago db={db} ym={ym} cuotasLista={actual.cuotasLista} mapa={mapaPagos} liquidaciones={liqRetiro} puedeEditar={!!isAdmin} compacto />
           )}
         </Ventana>
       ) : null}

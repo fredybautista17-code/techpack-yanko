@@ -15942,7 +15942,8 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   // (2026-09-26, a pedido de Fredy) Cambiar una liquidacion de retiro de
   // "No pagada" a "Pagada" (o viceversa, por si se equivoca) desde el
   // Historial -- ver LiquidacionRetiroView.
-  async function cambiarEstadoPagoLiquidacion(id, estadoPago) { await fsSave("nomina_liquidaciones_retiro", id, { estadoPago }); }
+  // (2026-11-06, a pedido de Fredy) Al marcar «Pagada» se guarda la fecha (`pagadaEn`): Financiera la usa para saber cuánto de las liquidaciones se pagó en cada mes.
+  async function cambiarEstadoPagoLiquidacion(id, estadoPago) { await fsSave("nomina_liquidaciones_retiro", id, { estadoPago, pagadaEn: estadoPago === "pagada" ? today() : "" }); }
   // (2026-09-26, a pedido de Fredy) Corregir/asignar el Empleador (Yanko/
   // Indutex) de una liquidacion ya guardada -- pensado para gente como
   // Andreina Vargas, que trabajo una etapa por cada empresa: la carga

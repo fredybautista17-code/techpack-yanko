@@ -54,6 +54,14 @@ export function cuotaVigente(c, ym) {
   if (!c || !c.desde) return false;
   return c.desde <= ym && (!c.hasta || ym <= c.hasta);
 }
+// (2026-11-06, a pedido de Fredy) Plan mensual de liquidaciones de retiro como una cuota más: por cada mes con plan (> 0) se agrega una cuota
+// automática de ese solo mes (día 25). pagosDocs = docs de contabilidad_cuotas_pagos; el plan es { kind: "plan_liquidaciones", ym, plan }.
+export function cuotasConLiquidaciones(cuotas, pagosDocs) {
+  const sinteticas = (pagosDocs || [])
+    .filter((d) => d && d.kind === "plan_liquidaciones" && d.ym && num(d.plan) > 0)
+    .map((d) => ({ id: `plan_liquidaciones__${d.ym}`, nombre: "Liquidaciones de retiro", acreedor: "Plan del mes (pendientes en Nómina)", valorMensual: num(d.plan), diaPago: 25, desde: d.ym, hasta: d.ym, auto: true }));
+  return [...(cuotas || []), ...sinteticas];
+}
 export function cuotasDelMes(cuotas, ym) {
   const lista = (cuotas || []).filter((c) => cuotaVigente(c, ym));
   return { total: lista.reduce((s, c) => s + num(c.valorMensual), 0), lista };
@@ -237,7 +245,7 @@ export function repartirCupo(items, cupo) {
   });
 }
 // Qué sale en el mes y cuándo: las cuotas con su día de pago, la nómina por quincena (fechas aproximadas: 15 y fin de mes) y lo que no tiene fecha.
-export function calendarioObligaciones(estimado, cuotasLista, ym) {
+export function calendarioObligaciones(estimado, cuotasLista, ym, pagosMapa) {
   const [a, m] = String(ym).split("-").map(Number);
   const ult = new Date(Date.UTC(a, m, 0)).getUTCDate();
   const conFecha = [
@@ -246,7 +254,8 @@ export function calendarioObligaciones(estimado, cuotasLista, ym) {
   ];
   const sinDia = [];
   (cuotasLista || []).forEach((c) => {
-    const fila = { dia: c.diaPago ? Math.min(Math.max(1, Number(c.diaPago) || 1), ult) : null, concepto: `Cuota · ${c.nombre}`, valor: num(c.valorMensual) };
+    const pagado = num(pagosMapa && pagosMapa[`${c.id}__${ym}`] && pagosMapa[`${c.id}__${ym}`].pagado);
+    const fila = { dia: c.diaPago ? Math.min(Math.max(1, Number(c.diaPago) || 1), ult) : null, concepto: `Cuota · ${c.nombre}`, valor: num(c.valorMensual), pagado };
     if (fila.dia) conFecha.push(fila); else sinDia.push(fila);
   });
   [["Seguridad social", estimado.seguridad], ["Provisiones", estimado.provisiones], ["Gastos del Excel", estimado.gastos]].forEach(([concepto, valor]) => { if (valor > 0) sinDia.push({ dia: null, concepto, valor }); });

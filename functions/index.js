@@ -15819,13 +15819,21 @@ async function finCargarDatos(ym) {
   const hasta = `${ym}-Q2`;
   const leer = async (col) => (await db.collection(col).where("periodoId", ">=", desde).where("periodoId", "<=", hasta).get()).docs.map((d) => ({ ...d.data(), id: d.id }));
   const todo = async (q) => (await q.get()).docs.map((d) => ({ ...d.data(), id: d.id }));
-  const [fiscal, fiscalDestajo, destajo, ps, gastosDocs, cuotas, presupuestos, movimientos, recibidas] = await Promise.all([
+  const [fiscal, fiscalDestajo, destajo, ps, gastosDocs, cuotasManuales, presupuestos, movimientos, recibidas, pagosCuotas] = await Promise.all([
     leer("nomina_fiscal_liquidaciones"), leer("nomina_fiscal_destajo_liquidaciones"), leer("nomina_destajo_liquidaciones"), leer("nomina_prestacion_servicios_liquidaciones"),
     todo(db.collection("costos_gastos_mes")), todo(db.collection("financiera_cuotas")),
     todo(db.collection("contabilidad_presupuestos_cliente").where("mes", "==", ym)),
     todo(db.collection("contabilidad_movimientos").where("tipo", "==", "ingreso")),
     db.collection("contabilidad_ordenes_compra_recibidas").select().get().then((s) => new Set(s.docs.map((d) => d.id))),
+    todo(db.collection("contabilidad_cuotas_pagos")),
   ]);
+  // (2026-11-06) El plan mensual de liquidaciones de retiro entra como una cuota más (misma regla que cuotasConLiquidaciones en src/financiera-cuanto-pagar-calculo.js).
+  const cuotas = [
+    ...cuotasManuales,
+    ...pagosCuotas
+      .filter((d) => d && d.kind === "plan_liquidaciones" && d.ym && Number(d.plan) > 0)
+      .map((d) => ({ id: `plan_liquidaciones__${d.ym}`, nombre: "Liquidaciones de retiro", valorMensual: Number(d.plan), diaPago: 25, desde: d.ym, hasta: d.ym, auto: true })),
+  ];
   return { liquidaciones: { "Fiscal": fiscal, "Fiscal Destajo": fiscalDestajo, "Destajo": destajo, "Prestación de Servicios": ps }, gastosDocs, cuotas, presupuestos, movimientos, recibidas };
 }
 // Lo que arma el correo: se calcula «a las 8 a. m.», por eso los días transcurridos son los de trabajo completos hasta AYER.
