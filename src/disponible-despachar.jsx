@@ -8,6 +8,7 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { collection, onSnapshot } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
+import { programacionDePreorden, etiquetaPreorden, filasLotesPorDespachar, SITUACION_PRODUCIDO, SITUACION_SIN_CORTAR, SITUACION_SIN_LOTE } from "./despacho-lotes-calculo";
 
 const fmt = (n) => Math.round(Number(n) || 0).toLocaleString("es-CO");
 const money = (n) => "$" + fmt(n);
@@ -83,9 +84,9 @@ export function filasPreordenesDe(nombreCliente, preordenes, filasReales = [], m
     const kp = normTxt(p.cliente);
     if (!kp || p.estado === "cerrada" || p.numPedido) return;
     if (!(kp.includes(k) || k.includes(kp))) return;
-    const etiqueta = p.numeroOrden
-      ? `${p.origenPantalla === "reprogramacion" ? "Reprogramación" : "Orden"} ${p.siglasMarca ? p.siglasMarca + "-" : "N°-"}${String(p.numeroOrden).padStart(2, "0")}`
-      : p.nombre || "Preorden";
+    // (2026-11-07) «Orden KC-04» parecía una orden real: ahora siempre dice «Preorden · Nueva orden KC-04» / «Preorden · Reprogramación KC-03».
+    const prog = programacionDePreorden(p);
+    const etiqueta = etiquetaPreorden(p);
     (p.items || []).forEach((it, i) => {
       if (it.pedidoVinculado) return;
       const cant = (Number(it.colombiaCantidad) || 0) + (Number(it.venezuelaCantidad) || 0);
@@ -98,6 +99,9 @@ export function filasPreordenesDe(nombreCliente, preordenes, filasReales = [], m
       const distinta = !igual && reales.length ? reales[0] : null;
       filas.push({
         numPed: etiqueta,
+        origen: "Preorden",
+        tipoOrden: prog.tipoOrden,
+        programacion: prog.programacion,
         ref: it.referencia || "(sin referencia)",
         descripcion: (it.nombre || "") + (igual ? ` (ya es el pedido N° ${igual.numPed})` : distinta ? ` (posible pedido N° ${distinta.numPed}: ${distinta.pedido} und)` : ""),
         pedido: cant,
@@ -123,7 +127,61 @@ export function filasPreordenesDe(nombreCliente, preordenes, filasReales = [], m
       });
     });
   });
+  // Marcas de calidad: la misma referencia repetida en la misma preorden y preórdenes sin precio.
+  const veces = new Map();
+  filas.forEach((f) => { const kk = `${refNormPre(f.ref)}|${f.numPed}`; veces.set(kk, (veces.get(kk) || 0) + 1); });
+  filas.forEach((f) => {
+    const obs = [];
+    const n = veces.get(`${refNormPre(f.ref)}|${f.numPed}`) || 0;
+    if (n > 1) obs.push(`Repetida ${n} veces en esta preorden`);
+    if (!(f.precio > 0)) obs.push("Sin precio");
+    if (obs.length) f.observacion = obs.join(" · ");
+  });
   return filas;
+}
+
+// (2026-11-07, a pedido de Fredy) Pedido real que nació de una preorden: una sola fila con las dos etiquetas («Pedido 1768 · viene de Nueva orden KC-04»).
+// Primero manda el vínculo explícito de la preorden (pedidoVinculado / numPedido); si no hay, la misma regla de filasPreordenesDe (misma referencia,
+// cantidad entre el 80 % y el 120 %, solo preórdenes abiertas). Devuelve las filas reales con vieneDe / tipoOrden / programacion cuando corresponde.
+export function anotarOrigenPedidos(nombreCliente, preordenes, filasReales) {
+  const k = normTxt(nombreCliente);
+  const reales = (filasReales || []).filter((r) => !r.esPreorden);
+  if (!k || !reales.length) return filasReales || [];
+  const porPedidoRef = new Map();
+  const porRef = new Map();
+  reales.forEach((r) => {
+    const rk = refNormPre(r.ref);
+    if (!rk) return;
+    porPedidoRef.set(`${String(r.numPed).trim()}|${rk}`, r);
+    porRef.set(rk, [...(porRef.get(rk) || []), r]);
+  });
+  const origen = new Map(); // fila real -> { tipoOrden, programacion }
+  (preordenes || []).forEach((p) => {
+    const kp = normTxt(p.cliente);
+    if (!kp || !(kp.includes(k) || k.includes(kp))) return;
+    const prog = programacionDePreorden(p);
+    if (!prog.programacion) return;
+    (p.items || []).forEach((it) => {
+      const rk = refNormPre(it.referencia);
+      if (!rk) return;
+      const vinc = String(it.pedidoVinculado || p.numPedido || "").trim();
+      let destino = null;
+      if (vinc) destino = porPedidoRef.get(`${vinc}|${rk}`) || null;
+      else if (p.estado !== "cerrada") {
+        const cant = (Number(it.colombiaCantidad) || 0) + (Number(it.venezuelaCantidad) || 0);
+        if (cant > 0) {
+          destino = (porRef.get(rk) || [])
+            .filter((r) => { const q = Number(r.pedido) || 0; return q >= cant * RANGO_CANTIDAD_PREORDEN_CONVERTIDA[0] && q <= cant * RANGO_CANTIDAD_PREORDEN_CONVERTIDA[1]; })
+            .sort((a, b) => Math.abs((Number(a.pedido) || 0) - cant) - Math.abs((Number(b.pedido) || 0) - cant))[0] || null;
+        }
+      }
+      if (destino && !origen.has(destino)) origen.set(destino, prog);
+    });
+  });
+  return (filasReales || []).map((r) => {
+    const o = origen.get(r);
+    return o ? { ...r, tipoOrden: o.tipoOrden, programacion: o.programacion, vieneDe: o.etiqueta } : r;
+  });
 }
 
 export function normTxt(v) {
@@ -132,7 +190,10 @@ export function normTxt(v) {
 
 // ── Excel con colores ─────────────────────────────────────────────────────────
 const COLUMNAS_EXCEL = [
-  { h: "Pedido N°", w: 22, k: "numPed", al: "center" },
+  { h: "Pedido N°", w: 13, k: "xPedido", al: "center" },
+  { h: "Origen", w: 11, k: "xOrigen", al: "center" },
+  { h: "Tipo", w: 15, k: "xTipo", al: "center" },
+  { h: "Viene de", w: 10, k: "xViene", al: "center" },
   { h: "Referencia", w: 14, k: "ref", al: "left" },
   { h: "Descripción", w: 40, k: "descripcion", al: "left" },
   { h: "Pedido", w: 11, k: "pedido", al: "right", num: true },
@@ -151,6 +212,7 @@ const COLUMNAS_EXCEL = [
   { h: "Semiterm.", w: 11, k: "etSemi", al: "right", num: true },
   { h: "En BPT", w: 10, k: "etBpt", al: "right", num: true },
   { h: "Estado", w: 21, k: "estado", al: "center" },
+  { h: "Observaciones", w: 34, k: "xObs", al: "left" },
 ];
 const colDe = (k) => COLUMNAS_EXCEL.findIndex((c) => c.k === k) + 1;
 const AZUL_OSCURO = "FF1A1A2E";
@@ -166,6 +228,23 @@ function nombreHoja(base, usados) {
   while (usados.has(cand.toLowerCase())) { cand = `${limpio.slice(0, 25)} ${k}`; k += 1; }
   usados.add(cand.toLowerCase());
   return cand;
+}
+
+// Texto de cada celda. «Pedido N°» solo lleva el número real (vacío en las preórdenes); Origen/Tipo/Viene de separan pedido, preorden y su orden o reprogramación.
+function observacionDe(f) {
+  return f.observacion || (!f.esPreorden && f.estado !== "lote_sin_linea" && !(f.precio > 0) && (Number(f.faltaDespachar) || 0) > 0 ? "Sin precio matriculado" : "");
+}
+function valorCeldaExcel(f, c) {
+  switch (c.k) {
+    case "xPedido": return f.esPreorden ? "" : f.numPed;
+    case "xOrigen": return f.esPreorden ? "Preorden" : f.estado === "lote_sin_linea" ? "Lote sin pedido" : "Pedido";
+    case "xTipo": return f.tipoOrden || "";
+    case "xViene": return f.programacion || "";
+    case "xObs": return observacionDe(f);
+    case "estado": return ESTADOS[f.estado]?.txt || "";
+    case "valorPedido": return valorPedidoDe(f);
+    default: return c.num || c.money ? Number(f[c.k]) || 0 : f[c.k] ?? "";
+  }
 }
 
 function hojaCliente(wb, grupo, filas, usados, generadoEn) {
@@ -196,7 +275,7 @@ function hojaCliente(wb, grupo, filas, usados, generadoEn) {
     const row = ws.getRow(5 + idx);
     COLUMNAS_EXCEL.forEach((c, i) => {
       const cell = row.getCell(i + 1);
-      cell.value = c.k === "estado" ? (ESTADOS[f.estado]?.txt || "") : c.k === "valorPedido" ? valorPedidoDe(f) : c.num || c.money ? Number(f[c.k]) || 0 : f[c.k] ?? "";
+      cell.value = valorCeldaExcel(f, c);
       cell.alignment = { horizontal: c.al, vertical: "middle" };
       cell.border = BORDES;
       cell.font = { size: 10.5 };
@@ -224,22 +303,25 @@ function hojaCliente(wb, grupo, filas, usados, generadoEn) {
     row.height = 19;
   });
   const fin = 5 + filas.length;
-  const tot = ws.getRow(fin);
-  const totF = totalesDe(filas);
-  tot.getCell(1).value = "TOTAL";
-  ["pedido", "producido", "despachado", "faltaProducir", "disponible", "valorPedido", "valorDisponible", "faltaDespachar", "valorFaltaDespachar", "etSinCortar", "etCorte", "etPlanta", "etSemi", "etBpt"].forEach((k) => {
-    const col = colDe(k);
-    tot.getCell(col).value = totF[k];
-    tot.getCell(col).numFmt = k.startsWith("valor") ? '"$"#,##0' : "#,##0";
+  // Totales separados: pedidos en firme, preórdenes y total general.
+  [["Pedidos en firme", filas.filter((f) => !f.esPreorden), false], ["Preórdenes", filas.filter((f) => f.esPreorden), false], ["TOTAL", filas, true]].forEach(([titulo, lista, oscuro], bi) => {
+    const tot = ws.getRow(fin + bi);
+    const totF = totalesDe(lista);
+    tot.getCell(1).value = titulo;
+    ["pedido", "producido", "despachado", "faltaProducir", "disponible", "valorPedido", "valorDisponible", "faltaDespachar", "valorFaltaDespachar", "etSinCortar", "etCorte", "etPlanta", "etSemi", "etBpt"].forEach((k) => {
+      const col = colDe(k);
+      tot.getCell(col).value = totF[k];
+      tot.getCell(col).numFmt = k.startsWith("valor") ? '"$"#,##0' : "#,##0";
+    });
+    for (let c = 1; c <= n; c++) {
+      const cell = tot.getCell(c);
+      cell.font = { bold: true, size: oscuro ? 11 : 10.5, color: { argb: oscuro ? BLANCO : AZUL_OSCURO } };
+      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: oscuro ? AZUL_OSCURO : titulo === "Preórdenes" ? VIOLETA_FILA : CEBRA } };
+      cell.border = BORDES;
+      cell.alignment = { horizontal: c === 1 ? "left" : "right", vertical: "middle" };
+    }
+    tot.height = oscuro ? 24 : 20;
   });
-  for (let c = 1; c <= n; c++) {
-    const cell = tot.getCell(c);
-    cell.font = { bold: true, size: 11, color: { argb: BLANCO } };
-    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: AZUL_OSCURO } };
-    cell.border = BORDES;
-    cell.alignment = { horizontal: c === 1 ? "left" : "right", vertical: "middle" };
-  }
-  tot.height = 24;
   ws.autoFilter = { from: { row: 4, column: 1 }, to: { row: 4 + Math.max(filas.length, 1), column: n } };
   ws.pageSetup = { orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0 };
   return ws;
@@ -300,15 +382,122 @@ function hojaResumen(wb, grupos, generadoEn) {
   return ws;
 }
 
+// Hoja «Lotes por despachar»: por pedido, cada lote con su situación, unidades y valor a facturar (ver filasLotesPorDespachar).
+function hojaLotes(wb, grupos, generadoEn) {
+  const filas = filasLotesPorDespachar(grupos);
+  const ws = wb.addWorksheet("Lotes por despachar", { views: [{ state: "frozen", ySplit: 4, showGridLines: false }] });
+  const cols = [["Cliente", 26, "left"], ["Pedido N°", 11, "center"], ["Referencia", 14, "left"], ["Descripción", 36, "left"], ["Lote", 10, "center"], ["Situación", 33, "left"], ["Unidades", 11, "right"], ["Precio sin IVA", 14, "right"], ["Valor listo para facturar ya", 22, "right"], ["Valor total pendiente por despachar", 24, "right"]];
+  ws.columns = cols.map(([, w]) => ({ width: w }));
+  ws.mergeCells(1, 1, 1, cols.length);
+  ws.getCell(1, 1).value = `LOTES POR DESPACHAR — ${grupos.length === 1 ? grupos[0].cliente : "TODOS LOS CLIENTES"}`;
+  ws.getCell(1, 1).font = { bold: true, size: 15, color: { argb: AZUL_OSCURO } };
+  ws.getRow(1).height = 26;
+  ws.mergeCells(2, 1, 2, cols.length);
+  ws.getCell(2, 1).value = `Industrias Yanko · Generado el ${generadoEn} · precios antes de IVA`;
+  ws.getCell(2, 1).font = { italic: true, size: 10, color: { argb: "FF5A5A7A" } };
+  cols.forEach(([h], i) => {
+    const c = ws.getRow(4).getCell(i + 1);
+    c.value = h;
+    c.font = { bold: true, color: { argb: BLANCO }, size: 11 };
+    c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: AZUL_OSCURO } };
+    c.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+    c.border = BORDES;
+  });
+  ws.getRow(4).height = 30;
+  let r = 5;
+  const estiloSit = (situacion) => (situacion === SITUACION_PRODUCIDO || situacion === SITUACION_SIN_LOTE ? ["FFE3F5EC", "FF1E7A52"] : situacion === SITUACION_SIN_CORTAR ? ["FFFBE9E6", "FF9A3A2D"] : ["FFFDF1DA", "FFA8660B"]);
+  const filaTotal = (row, rotulo, uni, listo, total, oscuro) => {
+    row.getCell(oscuro ? 1 : 2).value = rotulo;
+    row.getCell(7).value = uni;
+    row.getCell(9).value = listo;
+    row.getCell(10).value = total;
+    for (let c = 1; c <= cols.length; c++) {
+      const cell = row.getCell(c);
+      cell.font = { bold: true, size: oscuro ? 11 : 10.5, color: { argb: oscuro ? BLANCO : AZUL_OSCURO } };
+      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: oscuro ? AZUL_OSCURO : CEBRA } };
+      cell.border = BORDES;
+      cell.alignment = { horizontal: c <= 2 ? "left" : "right", vertical: "middle" };
+      if (c === 7) cell.numFmt = "#,##0";
+      if (c >= 9) cell.numFmt = '"$"#,##0';
+    }
+    row.height = oscuro ? 24 : 20;
+  };
+  let acum = null;
+  const cerrarPedido = () => {
+    if (!acum) return;
+    filaTotal(ws.getRow(r), `Total pedido ${acum.numPed}`, acum.uni, acum.listo, acum.total, false);
+    r += 1;
+    acum = null;
+  };
+  let gUni = 0, gListo = 0, gTotal = 0;
+  filas.forEach((f) => {
+    const clavePed = `${f.cliente}|${f.numPed}`;
+    if (acum && acum.clave !== clavePed) cerrarPedido();
+    if (!acum) acum = { clave: clavePed, numPed: f.numPed, uni: 0, listo: 0, total: 0 };
+    const row = ws.getRow(r);
+    const vals = [f.cliente, f.numPed, f.ref, f.descripcion, f.lote || "—", f.situacion, f.unidades, f.precio, f.listo ? f.valor : 0, f.valor];
+    vals.forEach((v, i) => {
+      const cell = row.getCell(i + 1);
+      cell.value = v;
+      cell.alignment = { horizontal: cols[i][2], vertical: "middle" };
+      cell.border = BORDES;
+      cell.font = { size: 10.5 };
+      if (i === 6) cell.numFmt = "#,##0";
+      if (i === 7) cell.numFmt = '"$"#,##0';
+      if (i === 8) cell.numFmt = '"$"#,##0;-"$"#,##0;""';
+      if (i === 9) cell.numFmt = '"$"#,##0';
+    });
+    const [bg, fg] = estiloSit(f.situacion);
+    const cs = row.getCell(6);
+    cs.fill = { type: "pattern", pattern: "solid", fgColor: { argb: bg } };
+    cs.font = { bold: true, size: 10, color: { argb: fg } };
+    if (f.listo) row.getCell(9).font = { bold: true, size: 11, color: { argb: "FF1E7A52" } };
+    row.height = 19;
+    acum.uni += f.unidades; acum.listo += f.listo ? f.valor : 0; acum.total += f.valor;
+    gUni += f.unidades; gListo += f.listo ? f.valor : 0; gTotal += f.valor;
+    r += 1;
+  });
+  cerrarPedido();
+  if (!filas.length) {
+    ws.mergeCells(r, 1, r, cols.length);
+    ws.getCell(r, 1).value = "No hay lotes por despachar con estos filtros.";
+    ws.getCell(r, 1).alignment = { horizontal: "center" };
+    r += 1;
+  } else {
+    filaTotal(ws.getRow(r), "TOTAL", gUni, gListo, gTotal, true);
+    r += 1;
+  }
+  [
+    "Producido: unidades de cada lote en las Entradas de Planta menos lo ya despachado. Busint no dice de qué lote sale cada factura: el despacho se asigna a los lotes más antiguos primero. «Sin lote identificado» = unidades producidas que no traen número de lote.",
+    "En corte / En planta / Semiterminado: Panel de Flujo de Busint por lote; puede no coincidir al 100 % con «Falta producir» del cuadro porque se actualizan por separado. Sin cortar: todavía no tiene lote.",
+    "Valor listo para facturar ya = solo lo producido. Las preórdenes no aparecen aquí: todavía no son pedido ni tienen lote.",
+  ].forEach((t, i) => {
+    ws.mergeCells(r + 1 + i, 1, r + 1 + i, cols.length);
+    const c = ws.getCell(r + 1 + i, 1);
+    c.value = t;
+    c.font = { italic: true, size: 9.5, color: { argb: "FF5A5A7A" } };
+    c.alignment = { wrapText: true, vertical: "top" };
+    ws.getRow(r + 1 + i).height = 28;
+  });
+  ws.pageSetup = { orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0 };
+  return ws;
+}
+
 async function descargarExcel(grupos, nombreArchivo, conResumen) {
   const m = await import("exceljs/dist/exceljs.min.js");
   const ExcelJS = m.default || m;
   const wb = new ExcelJS.Workbook();
   wb.creator = "Industrias Yanko";
   const generadoEn = new Date().toLocaleDateString("es-CO", { day: "2-digit", month: "long", year: "numeric" });
-  const usados = new Set(["resumen"]);
-  if (conResumen) hojaResumen(wb, grupos, generadoEn);
-  grupos.forEach((g) => hojaCliente(wb, g, g.filas, usados, generadoEn));
+  const usados = new Set(["resumen", "lotes por despachar"]);
+  if (conResumen) {
+    hojaResumen(wb, grupos, generadoEn);
+    hojaLotes(wb, grupos, generadoEn);
+    grupos.forEach((g) => hojaCliente(wb, g, g.filas, usados, generadoEn));
+  } else {
+    grupos.forEach((g) => hojaCliente(wb, g, g.filas, usados, generadoEn));
+    hojaLotes(wb, grupos, generadoEn);
+  }
   const buf = await wb.xlsx.writeBuffer();
   const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
   const url = URL.createObjectURL(blob);
@@ -366,7 +555,9 @@ export default function DisponibleDespacharView({ db, functionsClient, T }) {
   // Preórdenes montadas sin pedido: van al final de la tabla del cliente
   const filasPre = useMemo(() => (grupo ? filasPreordenesDe(grupo.cliente, preordenes, grupo.filas, verConvertidas) : []), [grupo, preordenes, verConvertidas]);
   const nConvertidas = useMemo(() => (grupo ? filasPreordenesDe(grupo.cliente, preordenes, [], false).length - filasPreordenesDe(grupo.cliente, preordenes, grupo.filas, false).length : 0), [grupo, preordenes]);
-  const filas = grupo ? [...filtrarFilas(grupo.filas), ...(incluirPre && !soloDisponible ? filasPre : [])] : [];
+  // Pedidos reales con «viene de» (la orden o reprogramación de la que nacieron)
+  const filasReales = useMemo(() => (grupo ? anotarOrigenPedidos(grupo.cliente, preordenes, grupo.filas) : []), [grupo, preordenes]);
+  const filas = grupo ? [...filtrarFilas(filasReales), ...(incluirPre && !soloDisponible ? filasPre : [])] : [];
   const tot = totalesDe(filas);
 
   async function bajarUno() {
@@ -382,7 +573,7 @@ export default function DisponibleDespacharView({ db, functionsClient, T }) {
     try {
       const lista = grupos
         .map((g) => {
-          const f = [...filtrarFilas(g.filas), ...(incluirPre && !soloDisponible ? filasPreordenesDe(g.cliente, preordenes, g.filas, verConvertidas) : [])];
+          const f = [...filtrarFilas(anotarOrigenPedidos(g.cliente, preordenes, g.filas)), ...(incluirPre && !soloDisponible ? filasPreordenesDe(g.cliente, preordenes, g.filas, verConvertidas) : [])];
           return { ...g, filas: f, totales: totalesDe(f) };
         })
         .filter((g) => g.filas.length);
@@ -484,7 +675,12 @@ export default function DisponibleDespacharView({ db, functionsClient, T }) {
                   return (
                     <tr key={f._k || f.numPed + f.ref} style={{ background: f.esPreorden ? "#FAF7FD" : i % 2 ? "#FAF8F5" : T.white, borderTop: `1px solid ${T.border}` }}>
                       <td style={{ padding: "9px 12px", textAlign: "center", color: T.slate, fontVariantNumeric: "tabular-nums" }}>
-                        {f.esPreorden ? <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 10, fontWeight: 800, background: T.violetBg, color: T.violet, whiteSpace: "nowrap" }}>📝 {f.numPed}</span> : f.numPed}
+                        {f.esPreorden ? <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 10, fontWeight: 800, background: T.violetBg, color: T.violet, whiteSpace: "nowrap" }}>📝 {f.numPed}</span> : (
+                          <>
+                            {f.numPed}
+                            {f.vieneDe && <div title="Este pedido nació de esa preorden" style={{ fontSize: 9.5, fontWeight: 700, color: T.violet, whiteSpace: "nowrap" }}>viene de {f.vieneDe}</div>}
+                          </>
+                        )}
                       </td>
                       <td style={{ padding: "9px 12px", fontWeight: 700 }}>{f.ref}</td>
                       <td style={{ padding: "9px 12px", color: T.slate, maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={f.descripcion}>{f.descripcion || "—"}</td>

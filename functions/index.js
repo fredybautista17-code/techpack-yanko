@@ -3444,6 +3444,7 @@ exports.getDisponibleParaDespachar = onCallAuth(
           despachado: 0,
           precio: 0,
           precioFuente: "",
+          lotesProd: new Map(), // (2026-11-07) numLote -> { cantidad, fecha } de las Entradas de Planta, para la hoja «Lotes por despachar»
         });
         numPedsSet.add(numPed);
         porPedidoCliente.set(numPed, String(f.cliente || "").trim() || "Sin cliente");
@@ -3520,6 +3521,13 @@ exports.getDisponibleParaDespachar = onCallAuth(
         if (l) {
           l.producido += cant;
           if (!l.descripcion && e.descripcion) l.descripcion = e.descripcion;
+          const nl = String(e.numLote ?? "").trim();
+          if (nl) {
+            const pl = l.lotesProd.get(nl) || { cantidad: 0, fecha: e.fecha || "" };
+            pl.cantidad += cant;
+            if (e.fecha && (!pl.fecha || e.fecha < pl.fecha)) pl.fecha = e.fecha;
+            l.lotesProd.set(nl, pl);
+          }
         }
       }
     } catch (err) {
@@ -3674,8 +3682,9 @@ exports.getDisponibleParaDespachar = onCallAuth(
         if (e.corte + e.planta + e.semi + e.pt <= 0) continue;
         const numPed = lt.numPedido ? String(lt.numPedido) : "";
         const clave = `${numPed}|${refNorm}`;
-        const prev = lotesPorClave.get(clave) || { numPed, ref: lt.referencia, refNorm, cliente: lt.nombreCliente, e: { corte: 0, planta: 0, semi: 0, pt: 0 }, usado: false };
+        const prev = lotesPorClave.get(clave) || { numPed, ref: lt.referencia, refNorm, cliente: lt.nombreCliente, e: { corte: 0, planta: 0, semi: 0, pt: 0 }, usado: false, lotes: [] };
         prev.e.corte += e.corte; prev.e.planta += e.planta; prev.e.semi += e.semi; prev.e.pt += e.pt;
+        prev.lotes.push({ numLote: lt.numLote, corte: e.corte, planta: e.planta, semi: e.semi, pt: e.pt });
         lotesPorClave.set(clave, prev);
       }
     } catch (err) {
@@ -3791,6 +3800,8 @@ exports.getDisponibleParaDespachar = onCallAuth(
       porClienteMap.get(l.cliente).push({
         faltaDespachar,
         valorFaltaDespachar: Math.round(faltaDespachar * l.precio),
+        lotesProducidos: [...l.lotesProd.entries()].map(([numLote, v]) => ({ numLote, fecha: v.fecha, cantidad: v.cantidad })).filter((x) => x.cantidad > 0),
+        lotesPanel: lot ? lot.lotes : [],
         etSinCortar,
         cortadoBusint: cortadoBus,
         etCorte: eC,
@@ -3846,6 +3857,8 @@ exports.getDisponibleParaDespachar = onCallAuth(
         valorDisponible: 0,
         faltaDespachar: unid,
         valorFaltaDespachar: Math.round(unid * precioLote),
+        lotesProducidos: [],
+        lotesPanel: lt.lotes || [],
         etSinCortar: 0,
         etCorte: lt.e.corte,
         etPlanta: lt.e.planta,
