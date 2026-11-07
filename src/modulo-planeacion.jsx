@@ -167,6 +167,108 @@ function Modal({ title, onClose, children, width = 560 }) {
     </div>
   );
 }
+// ─── PANEL LATERAL Y PIEZAS PARA INGRESAR GASTOS Y VENTAS ──────────────────────────────────────────────
+// (2026-11-07, a pedido de Fredy) Gastos y Ventas de «Costo real total» en tarjetas separadas, con acciones grandes, y el ingreso a mano
+// en un panel lateral cómodo (valor grande, sugerencias de proveedor, soporte arrastrable, «Guardar y agregar otro»).
+const quitarTildesProv = (s) => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
+const estiloInputPanel = { width: "100%", padding: "10px 12px", border: `1.5px solid ${C.border}`, borderRadius: 10, fontSize: 14, fontFamily: "inherit", boxSizing: "border-box", background: C.white, color: C.ink };
+function PanelLateral({ titulo, subtitulo, onClose, pie, children }) {
+  // Solo se cierra con ✕, Cancelar o Esc (no al tocar afuera) para no perder lo digitado por accidente.
+  useEffect(() => {
+    const h = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [onClose]);
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(26,26,46,0.4)", display: "flex", justifyContent: "flex-end" }}>
+      <div role="dialog" aria-label={titulo} style={{ width: "min(460px, 100vw)", height: "100%", background: C.white, boxShadow: "-12px 0 32px rgba(26,26,46,0.18)", display: "flex", flexDirection: "column" }}>
+        <div style={{ padding: "18px 20px", borderBottom: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 16, color: C.ink }}>{titulo}</div>
+            {subtitulo && <div style={{ fontSize: 12, color: C.slate, marginTop: 3 }}>{subtitulo}</div>}
+          </div>
+          <button onClick={onClose} aria-label="Cerrar" style={{ background: "none", border: "none", fontSize: 22, cursor: "pointer", color: C.slate, lineHeight: 1 }}>×</button>
+        </div>
+        <div style={{ padding: "18px 20px", overflowY: "auto", flex: 1, display: "flex", flexDirection: "column", gap: 16 }}>{children}</div>
+        {pie && <div style={{ padding: "14px 20px", borderTop: `1px solid ${C.border}`, background: C.canvas, display: "flex", gap: 10, justifyContent: "space-between", alignItems: "center", flexWrap: "wrap" }}>{pie}</div>}
+      </div>
+    </div>
+  );
+}
+function SeccionPanel({ children }) {
+  return <div style={{ fontSize: 11, letterSpacing: "0.06em", textTransform: "uppercase", color: C.slate, fontWeight: 800, marginBottom: -6 }}>{children}</div>;
+}
+function CampoPanel({ label, hint, children }) {
+  return (
+    <div>
+      <label style={{ display: "block", fontSize: 11.5, fontWeight: 700, color: C.slate, marginBottom: 5 }}>{label}</label>
+      {children}
+      {hint && <div style={{ fontSize: 11.5, color: C.slate, marginTop: 4, lineHeight: 1.4 }}>{hint}</div>}
+    </div>
+  );
+}
+// Valor en pesos grande: se escribe solo con números y se muestra con puntos de miles; el estado guarda solo los dígitos.
+function InputValorPanel({ value, onChange }) {
+  const n = Number(value);
+  const texto = value === "" || !Number.isFinite(n) ? "" : n.toLocaleString("es-CO");
+  return (
+    <input
+      inputMode="numeric"
+      value={texto ? `$ ${texto}` : ""}
+      placeholder="$ 0"
+      onChange={(e) => onChange(e.target.value.replace(/\D/g, ""))}
+      style={{ ...estiloInputPanel, fontSize: 22, fontWeight: 800, padding: "12px 14px" }}
+    />
+  );
+}
+function ZonaArchivoPanel({ archivo, onChange }) {
+  const [encima, setEncima] = useState(false);
+  const tomar = (f) => { if (f && (f.type === "application/pdf" || String(f.type).startsWith("image/"))) onChange(f); };
+  return (
+    <label
+      onDragOver={(e) => { e.preventDefault(); setEncima(true); }}
+      onDragLeave={() => setEncima(false)}
+      onDrop={(e) => { e.preventDefault(); setEncima(false); tomar(e.dataTransfer.files?.[0]); }}
+      style={{ display: "block", border: `2px dashed ${encima ? C.blue : C.seam}`, borderRadius: 12, padding: 14, textAlign: "center", fontSize: 12.5, color: C.slate, background: encima ? C.blueBg : C.canvas, cursor: "pointer" }}
+    >
+      {archivo ? (
+        <span>📎 <strong style={{ color: C.ink }}>{archivo.name}</strong> <button type="button" onClick={(e) => { e.preventDefault(); onChange(null); }} style={{ border: "none", background: "none", color: C.red, fontWeight: 700, cursor: "pointer" }}>✕ quitar</button></span>
+      ) : "📎 Arrastra la foto o el PDF aquí, o toca para elegir"}
+      <input type="file" accept="application/pdf,image/*" style={{ display: "none" }} onChange={(e) => { tomar(e.target.files?.[0]); e.target.value = ""; }} />
+    </label>
+  );
+}
+function AccionGrande({ icono, titulo, detalle, onClick, principal, disabled }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      style={{ display: "flex", gap: 12, alignItems: "flex-start", textAlign: "left", padding: "13px 14px", borderRadius: 12, border: `1.5px solid ${principal ? C.ink : C.border}`, background: principal ? C.ink : C.white, color: principal ? C.white : C.ink, fontFamily: "inherit", cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.6 : 1 }}
+    >
+      <span style={{ fontSize: 22, lineHeight: 1 }}>{icono}</span>
+      <span>
+        <span style={{ display: "block", fontWeight: 800, fontSize: 13.5 }}>{titulo}</span>
+        <span style={{ display: "block", fontSize: 11.5, lineHeight: 1.4, marginTop: 2, color: principal ? "#CFCFE0" : C.slate }}>{detalle}</span>
+      </span>
+    </button>
+  );
+}
+function TarjetaCC({ icono, titulo, subtitulo, chip, chipBg, chipColor, acciones, children }) {
+  return (
+    <div style={{ border: `1px solid ${C.border}`, borderRadius: 14, background: C.white }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", padding: "16px 20px", borderBottom: `1px solid ${C.border}` }}>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 15, color: C.ink }}>{icono} {titulo}</div>
+          {subtitulo && <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>{subtitulo}</div>}
+        </div>
+        {chip && <span style={{ fontSize: 12, fontWeight: 700, borderRadius: 99, padding: "4px 11px", background: chipBg, color: chipColor }}>{chip}</span>}
+      </div>
+      {acciones && <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 12, padding: "16px 20px 6px" }}>{acciones}</div>}
+      <div style={{ padding: "12px 20px 18px" }}>{children}</div>
+    </div>
+  );
+}
 function KPI({ icon, label, value, color, bg, sub, onClick }) {
   // `onClick` es opcional — si se pasa, la tarjeta se vuelve clicable (cursor,
   // hover, "Ver detalle →") sin afectar los usos existentes que no lo pasan.
@@ -5802,12 +5904,13 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
     return () => unsub();
   }, []);
   const [gastoModalAbierto, setGastoModalAbierto] = useState(false);
+  const [avisoPanel, setAvisoPanel] = useState(""); // «Guardado: …» dentro del panel después de «Guardar y agregar otro»
   const [gastoForm, setGastoForm] = useState({ proveedor: "", numeroFactura: "", monto: "", fecha: hoy });
   const [ventaModalAbierto, setVentaModalAbierto] = useState(false);
   const [traerLotesAbierto, setTraerLotesAbierto] = useState(false);
   const [traerGastosAbierto, setTraerGastosAbierto] = useState(false);
   const [detalleNominaAbierto, setDetalleNominaAbierto] = useState(false);
-  const [ventaForm, setVentaForm] = useState({ referencia: "", lote: "", cantidad: "", precio: "", total: "", cliente: "", servicio: "", fecha: hoy });
+  const [ventaForm, setVentaForm] = useState({ referencia: "", lote: "", cantidad: "", precio: "", total: "", cliente: "", servicio: "", totalManual: false, fecha: hoy });
   // (2026-09-22, a pedido de Fredy) Liquidaciones YA CONFIRMADAS de Nómina
   // -> Destajo (misma colección que usa NominaDestajoView en
   // modulo-nomina.jsx) -- para sacar el costo/valor REAL de los
@@ -6668,6 +6771,18 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
   const totalVentasCentroCostoPeriodo = ventasCentroCostoPeriodo.reduce((s, v) => s + (Number(v.total) || 0), 0);
   // (2026-11-07) Ventas y unidades por tipo de servicio (maquila, ojal, presilla, encauchado…) del período.
   const ventasPorServicio = useMemo(() => resumenPorServicio(ventasCentroCostoPeriodo), [ventasCentroCostoPeriodo]);
+  // Proveedores que ya usaste en esta área, los más frecuentes primero, para sugerirlos al digitar un gasto.
+  const proveedoresSugeridos = useMemo(() => {
+    const m = new Map();
+    (gastosCentroCosto || []).forEach((g) => {
+      if (g.area !== areaSel || !String(g.proveedor || "").trim()) return;
+      const k = quitarTildesProv(g.proveedor);
+      const e = m.get(k) || { nombre: String(g.proveedor).trim(), n: 0 };
+      e.n += 1;
+      m.set(k, e);
+    });
+    return [...m.values()].sort((a, b) => b.n - a.n).map((e) => e.nombre);
+  }, [gastosCentroCosto, areaSel]);
   // (2026-09-22, a pedido de Fredy) "Historial de Facturas y Ventas" -- a
   // diferencia de gastosPeriodo/ventasCentroCostoPeriodo (que dependen del
   // selector de período de arriba), esto agrupa TODOS los gastos/ventas del
@@ -6697,27 +6812,14 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
   const costoNominaParaTotal = modoMedicion === "destajo" ? totalCosto : costoAreaApoyo;
   const costoTotalConInsumos = costoNominaParaTotal + totalGastosPeriodo;
   const balanceRealConVentas = totalVentasCentroCostoPeriodo - costoTotalConInsumos;
-  function campoTexto(label, value, onChange, opts = {}) {
-    return (
-      <div style={{ marginBottom: 14 }}>
-        <label style={{ fontSize: 12, fontWeight: 700, color: C.ink, display: "block", marginBottom: 6 }}>{label}</label>
-        <input
-          type={opts.type || "text"}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder={opts.placeholder || ""}
-          style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }}
-        />
-      </div>
-    );
-  }
   function abrirNuevoGasto() {
     if (!puedeEditar) return;
     setGastoForm({ proveedor: "", numeroFactura: "", monto: "", fecha: hoy });
     setGastoArchivoFile(null);
+    setAvisoPanel("");
     setGastoModalAbierto(true);
   }
-  async function guardarGastoForm() {
+  async function guardarGastoForm(otro = false) {
     if (!gastoForm.proveedor.trim() || !gastoForm.monto) return;
     if (cierreDe(gastoForm.fecha)) {
       alert("Ese mes ya está cerrado en Centro de Costo -- pídele a un admin que lo reabra en el Historial antes de agregar gastos.");
@@ -6740,7 +6842,12 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
       };
       await fsSave("centro_costo_gastos", nuevo.id, nuevo);
       setGastoArchivoFile(null);
-      setGastoModalAbierto(false);
+      if (otro) {
+        setGastoForm((f) => ({ proveedor: "", numeroFactura: "", monto: "", fecha: f.fecha }));
+        setAvisoPanel(`Guardado: ${nuevo.proveedor} · ${fmtMoney(nuevo.monto)}`);
+      } else {
+        setGastoModalAbierto(false);
+      }
     } finally {
       setSubiendoArchivo(false);
     }
@@ -6808,11 +6915,12 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
   }
   function abrirNuevaVenta() {
     if (!puedeEditar) return;
-    setVentaForm({ referencia: "", lote: "", cantidad: "", precio: "", total: "", cliente: "", servicio: "", fecha: hoy });
+    setVentaForm({ referencia: "", lote: "", cantidad: "", precio: "", total: "", cliente: "", servicio: "", totalManual: false, fecha: hoy });
     setVentaArchivoFile(null);
+    setAvisoPanel("");
     setVentaModalAbierto(true);
   }
-  async function guardarVentaForm() {
+  async function guardarVentaForm(otro = false) {
     if (!ventaForm.referencia.trim() || !ventaForm.total || !servicioValido(ventaForm.servicio)) return;
     if (cierreDe(ventaForm.fecha)) {
       alert("Ese mes ya está cerrado en Centro de Costo -- pídele a un admin que lo reabra en el Historial antes de agregar ventas.");
@@ -6839,7 +6947,12 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
       };
       await fsSave("centro_costo_ventas", nuevo.id, nuevo);
       setVentaArchivoFile(null);
-      setVentaModalAbierto(false);
+      if (otro) {
+        setVentaForm((f) => ({ referencia: "", lote: "", cantidad: "", precio: "", total: "", cliente: "", servicio: "", totalManual: false, fecha: f.fecha }));
+        setAvisoPanel(`Guardado: ${nuevo.referencia} · ${etiquetaServicio(nuevo.servicio)} · ${fmtMoney(nuevo.total)}`);
+      } else {
+        setVentaModalAbierto(false);
+      }
     } finally {
       setSubiendoArchivo(false);
     }
@@ -7230,17 +7343,23 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
                   <Btn small variant="ghost" onClick={() => setDetalleNominaAbierto(true)}>🔍 ¿De dónde sale la nómina?</Btn>
                 </div>
               )}
-              <div style={{ display: "flex", gap: 20, alignItems: "flex-start", flexWrap: "wrap" }}>
-                <div style={{ flex: "1 1 380px" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
-                    <div style={{ fontWeight: 800, fontSize: 13, color: C.ink }}>Gastos (facturas de insumos)</div>
-                    <div style={{ display: "flex", gap: 8 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
+                <TarjetaCC
+                  icono="🧵"
+                  titulo="Gastos — facturas de insumos"
+                  subtitulo={`Lo que se compró en el período (${etiquetaPeriodo}) para producir`}
+                  chip={`${fmtMoney(totalGastosPeriodo)} · ${gastosPeriodo.length} factura(s)`}
+                  chipBg={C.amberBg}
+                  chipColor={C.amber}
+                  acciones={puedeEditar ? (
+                    <>
                       <input ref={excelGastosInputRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }} onChange={handleExcelGastos} />
-                      {puedeEditar && <Btn small variant="secondary" onClick={() => excelGastosInputRef.current?.click()} disabled={cargandoExcelGastos}>{cargandoExcelGastos ? "Cargando..." : "📤 Cargar Excel"}</Btn>}
-                      {puedeEditar && <Btn small variant="secondary" onClick={() => setTraerGastosAbierto(true)}>📥 Traer gastos</Btn>}
-                      {puedeEditar && <Btn small onClick={abrirNuevoGasto}>+ Agregar gasto</Btn>}
-                    </div>
-                  </div>
+                      <AccionGrande principal icono="✍️" titulo="Agregar gasto" detalle="Escribir una factura a mano" onClick={abrirNuevoGasto} />
+                      <AccionGrande icono="📥" titulo="Traer de Busint" detalle="Repuestos de maquila e hilazas, con casillas" onClick={() => setTraerGastosAbierto(true)} />
+                      <AccionGrande icono="📤" titulo={cargandoExcelGastos ? "Cargando..." : "Cargar Excel"} detalle="Columnas: Proveedor, N° Factura, Monto, Fecha" onClick={() => excelGastosInputRef.current?.click()} disabled={cargandoExcelGastos} />
+                    </>
+                  ) : null}
+                >
                   {resultadoExcelGastos && (
                     <div style={{ fontSize: 11.5, marginBottom: 10, padding: "8px 12px", borderRadius: 8, background: resultadoExcelGastos.error ? C.redBg : C.greenBg, color: resultadoExcelGastos.error ? C.red : C.green, fontWeight: 600 }}>
                       {resultadoExcelGastos.error
@@ -7248,7 +7367,6 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
                         : `✓ ${resultadoExcelGastos.importados} gasto(s) importado(s) de ${resultadoExcelGastos.total} fila(s)${resultadoExcelGastos.saltados ? ` -- ${resultadoExcelGastos.saltados} se saltaron (fila incompleta o mes ya cerrado)` : ""}.`}
                     </div>
                   )}
-                  <div style={{ fontSize: 10.5, color: C.slate, marginBottom: 10 }}>El Excel debe tener columnas: Proveedor, N° Factura, Monto, Fecha.</div>
                   <Tabla
                     vacio="Sin gastos digitados en este período."
                     columnas={[
@@ -7261,15 +7379,21 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
                     ]}
                     filas={gastosPeriodo}
                   />
-                </div>
-                <div style={{ flex: "1 1 460px" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                    <div style={{ fontWeight: 800, fontSize: 13, color: C.ink }}>Ventas</div>
-                    <div style={{ display: "flex", gap: 8 }}>
-                      {puedeEditar && <Btn small variant="secondary" onClick={() => setTraerLotesAbierto(true)}>📥 Traer lotes</Btn>}
-                      {puedeEditar && <Btn small onClick={abrirNuevaVenta}>+ Agregar venta</Btn>}
-                    </div>
-                  </div>
+                </TarjetaCC>
+                <TarjetaCC
+                  icono="🧾"
+                  titulo="Ventas — servicios entregados"
+                  subtitulo={`Lo que se cobró en el período (${etiquetaPeriodo}), por tipo de servicio`}
+                  chip={`${fmtMoney(totalVentasCentroCostoPeriodo)} · ${ventasCentroCostoPeriodo.length} venta(s)`}
+                  chipBg={C.blueBg}
+                  chipColor={C.blue}
+                  acciones={puedeEditar ? (
+                    <>
+                      <AccionGrande principal icono="✍️" titulo="Agregar venta" detalle="Escribir una venta a mano" onClick={abrirNuevaVenta} />
+                      <AccionGrande icono="📥" titulo="Traer lotes" detalle="Entradas de Planta, con el servicio de cada lote" onClick={() => setTraerLotesAbierto(true)} />
+                    </>
+                  ) : null}
+                >
                   {ventasPorServicio.length > 0 && (
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
                       {ventasPorServicio.map((g) => (
@@ -7299,7 +7423,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
                     ]}
                     filas={ventasCentroCostoPeriodo}
                   />
-                </div>
+                </TarjetaCC>
               </div>
             </div>
           )}
@@ -7410,22 +7534,52 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
               />
             </div>
           )}
-          {gastoModalAbierto && (
-            <Modal title="Nuevo gasto (factura de insumos)" onClose={() => setGastoModalAbierto(false)} width={420}>
-              {campoTexto("Proveedor", gastoForm.proveedor, (v) => setGastoForm((f) => ({ ...f, proveedor: v })), { placeholder: "Ej: Coats, Hilos XYZ..." })}
-              {campoTexto("N° de Factura", gastoForm.numeroFactura, (v) => setGastoForm((f) => ({ ...f, numeroFactura: v })))}
-              {campoTexto("Monto", gastoForm.monto, (v) => setGastoForm((f) => ({ ...f, monto: v })), { type: "number", placeholder: "Ej: 850000" })}
-              {campoTexto("Fecha", gastoForm.fecha, (v) => setGastoForm((f) => ({ ...f, fecha: v })), { type: "date" })}
-              <div style={{ marginBottom: 14 }}>
-                <label style={{ fontSize: 12, fontWeight: 700, color: C.ink, display: "block", marginBottom: 6 }}>Factura (foto o PDF, opcional)</label>
-                <input type="file" accept="application/pdf,image/*" onChange={(e) => setGastoArchivoFile(e.target.files?.[0] || null)} style={{ fontSize: 12 }} />
-              </div>
-              <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
-                <Btn variant="secondary" onClick={() => setGastoModalAbierto(false)}>Cancelar</Btn>
-                <Btn onClick={guardarGastoForm} disabled={!gastoForm.proveedor.trim() || !gastoForm.monto || subiendoArchivo}>{subiendoArchivo ? "Guardando..." : "Guardar"}</Btn>
-              </div>
-            </Modal>
-          )}
+          {gastoModalAbierto && (() => {
+            const txtProv = quitarTildesProv(gastoForm.proveedor);
+            const sugeridos = proveedoresSugeridos.filter((n) => quitarTildesProv(n) !== txtProv && quitarTildesProv(n).includes(txtProv)).slice(0, 6);
+            const mesCerrado = !!cierreDe(gastoForm.fecha);
+            const duplicado = !!gastoForm.numeroFactura.trim() && (gastosCentroCosto || []).some((g) => g.area === areaSel && quitarTildesProv(g.proveedor) === txtProv && quitarTildesProv(g.numeroFactura) === quitarTildesProv(gastoForm.numeroFactura));
+            const valido = !!gastoForm.proveedor.trim() && !!Number(gastoForm.monto) && !mesCerrado;
+            return (
+              <PanelLateral
+                titulo="✍️ Nuevo gasto"
+                subtitulo={`Se guarda en ${areaSel} · factura de insumos`}
+                onClose={() => setGastoModalAbierto(false)}
+                pie={(
+                  <>
+                    <Btn variant="secondary" onClick={() => setGastoModalAbierto(false)}>Cancelar</Btn>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      <Btn variant="secondary" onClick={() => guardarGastoForm(true)} disabled={!valido || subiendoArchivo}>Guardar y agregar otro</Btn>
+                      <Btn variant="success" onClick={() => guardarGastoForm(false)} disabled={!valido || subiendoArchivo}>{subiendoArchivo ? "Guardando..." : "Guardar"}</Btn>
+                    </div>
+                  </>
+                )}
+              >
+                {avisoPanel && <div style={{ padding: "9px 12px", borderRadius: 8, background: C.greenBg, color: C.green, fontSize: 12.5, fontWeight: 700 }}>✓ {avisoPanel}</div>}
+                <SeccionPanel>1 · ¿A quién se le compró?</SeccionPanel>
+                <CampoPanel label="Proveedor" hint={sugeridos.length ? "Toca un proveedor que ya usaste para llenarlo." : undefined}>
+                  <input autoFocus value={gastoForm.proveedor} onChange={(e) => setGastoForm((f) => ({ ...f, proveedor: e.target.value }))} placeholder="Ej: Coats, Hilos XYZ..." style={estiloInputPanel} />
+                  {sugeridos.length > 0 && (
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 7 }}>
+                      {sugeridos.map((n) => <button key={n} type="button" onClick={() => setGastoForm((f) => ({ ...f, proveedor: n }))} style={{ border: `1px solid ${C.border}`, background: C.canvas, borderRadius: 99, padding: "4px 10px", fontSize: 11.5, fontWeight: 600, cursor: "pointer", fontFamily: "inherit", color: C.ink }}>{n}</button>)}
+                    </div>
+                  )}
+                </CampoPanel>
+                <SeccionPanel>2 · La factura</SeccionPanel>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                  <CampoPanel label="N° de factura"><input value={gastoForm.numeroFactura} onChange={(e) => setGastoForm((f) => ({ ...f, numeroFactura: e.target.value }))} placeholder="Ej: FV-20418" style={estiloInputPanel} /></CampoPanel>
+                  <CampoPanel label="Fecha de la factura"><input type="date" value={gastoForm.fecha} onChange={(e) => setGastoForm((f) => ({ ...f, fecha: e.target.value }))} style={estiloInputPanel} /></CampoPanel>
+                </div>
+                {duplicado && <div style={{ padding: "8px 12px", borderRadius: 8, background: C.amberBg, color: C.amber, fontSize: 12, fontWeight: 600 }}>⚠ Ya hay un gasto con este proveedor y este N° de factura.</div>}
+                {mesCerrado && <div style={{ padding: "8px 12px", borderRadius: 8, background: C.redBg, color: C.red, fontSize: 12, fontWeight: 600 }}>🔒 Ese mes ya está cerrado en Centro de Costo: pide a un administrador que lo reabra en el Historial.</div>}
+                <CampoPanel label="Valor total" hint="Con el IVA incluido, tal como sale en la factura.">
+                  <InputValorPanel value={gastoForm.monto} onChange={(v) => setGastoForm((f) => ({ ...f, monto: v }))} />
+                </CampoPanel>
+                <SeccionPanel>3 · Soporte (opcional)</SeccionPanel>
+                <ZonaArchivoPanel archivo={gastoArchivoFile} onChange={setGastoArchivoFile} />
+              </PanelLateral>
+            );
+          })()}
           {detalleNominaAbierto && areaSel && (
             <DetalleCostoNominaModal
               filas={detalleCostoNominaCompleto}
@@ -7456,33 +7610,60 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
               onClose={() => setTraerLotesAbierto(false)}
             />
           )}
-          {ventaModalAbierto && (
-            <Modal title="Nueva venta" onClose={() => setVentaModalAbierto(false)} width={420}>
-              {campoTexto("Referencia", ventaForm.referencia, (v) => setVentaForm((f) => ({ ...f, referencia: v })))}
-              {campoTexto("Lote", ventaForm.lote, (v) => setVentaForm((f) => ({ ...f, lote: v })))}
-              {campoTexto("Cliente", ventaForm.cliente, (v) => setVentaForm((f) => ({ ...f, cliente: v })))}
-              <div style={{ marginBottom: 14 }}>
-                <label style={{ fontSize: 12, fontWeight: 700, color: C.ink, display: "block", marginBottom: 6 }}>Servicio</label>
-                <select value={ventaForm.servicio} onChange={(e) => setVentaForm((f) => ({ ...f, servicio: e.target.value }))} style={{ width: "100%", padding: "8px 10px", border: `1px solid ${servicioValido(ventaForm.servicio) ? C.border : C.red}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", fontWeight: 700 }}>
-                  <option value="">Elegir servicio…</option>
-                  {SERVICIOS_VENTA.map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}
-                </select>
-                <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>Si el lote lleva más de un servicio, agrega una venta por cada servicio.</div>
-              </div>
-              {campoTexto("Cantidad", ventaForm.cantidad, (v) => setVentaForm((f) => ({ ...f, cantidad: v })), { type: "number" })}
-              {campoTexto("Precio", ventaForm.precio, (v) => setVentaForm((f) => ({ ...f, precio: v })), { type: "number" })}
-              {campoTexto("Total", ventaForm.total, (v) => setVentaForm((f) => ({ ...f, total: v })), { type: "number" })}
-              {campoTexto("Fecha", ventaForm.fecha, (v) => setVentaForm((f) => ({ ...f, fecha: v })), { type: "date" })}
-              <div style={{ marginBottom: 14 }}>
-                <label style={{ fontSize: 12, fontWeight: 700, color: C.ink, display: "block", marginBottom: 6 }}>Factura (foto o PDF, opcional)</label>
-                <input type="file" accept="application/pdf,image/*" onChange={(e) => setVentaArchivoFile(e.target.files?.[0] || null)} style={{ fontSize: 12 }} />
-              </div>
-              <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
-                <Btn variant="secondary" onClick={() => setVentaModalAbierto(false)}>Cancelar</Btn>
-                <Btn onClick={guardarVentaForm} disabled={!ventaForm.referencia.trim() || !ventaForm.total || !servicioValido(ventaForm.servicio) || subiendoArchivo}>{subiendoArchivo ? "Guardando..." : "Guardar"}</Btn>
-              </div>
-            </Modal>
-          )}
+          {ventaModalAbierto && (() => {
+            const mesCerrado = !!cierreDe(ventaForm.fecha);
+            const valido = !!ventaForm.referencia.trim() && !!Number(ventaForm.total) && servicioValido(ventaForm.servicio) && !mesCerrado;
+            const recalcular = (f, campo, v) => {
+              const n = { ...f, [campo]: v };
+              if (!n.totalManual) { const t = Math.round((Number(n.cantidad) || 0) * (Number(n.precio) || 0)); n.total = t ? String(t) : ""; }
+              return n;
+            };
+            return (
+              <PanelLateral
+                titulo="✍️ Nueva venta"
+                subtitulo={`Se guarda en ${areaSel} · una venta por cada servicio del lote`}
+                onClose={() => setVentaModalAbierto(false)}
+                pie={(
+                  <>
+                    <Btn variant="secondary" onClick={() => setVentaModalAbierto(false)}>Cancelar</Btn>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      <Btn variant="secondary" onClick={() => guardarVentaForm(true)} disabled={!valido || subiendoArchivo}>Guardar y agregar otra</Btn>
+                      <Btn variant="success" onClick={() => guardarVentaForm(false)} disabled={!valido || subiendoArchivo}>{subiendoArchivo ? "Guardando..." : "Guardar"}</Btn>
+                    </div>
+                  </>
+                )}
+              >
+                {avisoPanel && <div style={{ padding: "9px 12px", borderRadius: 8, background: C.greenBg, color: C.green, fontSize: 12.5, fontWeight: 700 }}>✓ {avisoPanel}</div>}
+                <SeccionPanel>1 · ¿Qué servicio es?</SeccionPanel>
+                <CampoPanel label="Servicio" hint="Si el lote lleva más de un servicio, agrega una venta por cada uno.">
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    {SERVICIOS_VENTA.map((x) => {
+                      const on = ventaForm.servicio === x.id;
+                      return <button key={x.id} type="button" onClick={() => setVentaForm((f) => ({ ...f, servicio: x.id }))} style={{ padding: "8px 14px", borderRadius: 10, border: `1.5px solid ${on ? C.ink : C.border}`, background: on ? C.ink : C.white, color: on ? C.white : C.ink, fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>{x.label}</button>;
+                    })}
+                  </div>
+                </CampoPanel>
+                <SeccionPanel>2 · El lote</SeccionPanel>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                  <CampoPanel label="Referencia"><input autoFocus value={ventaForm.referencia} onChange={(e) => setVentaForm((f) => ({ ...f, referencia: e.target.value }))} style={estiloInputPanel} /></CampoPanel>
+                  <CampoPanel label="Lote"><input value={ventaForm.lote} onChange={(e) => setVentaForm((f) => ({ ...f, lote: e.target.value }))} style={estiloInputPanel} /></CampoPanel>
+                  <CampoPanel label="Cliente"><input value={ventaForm.cliente} onChange={(e) => setVentaForm((f) => ({ ...f, cliente: e.target.value }))} style={estiloInputPanel} /></CampoPanel>
+                  <CampoPanel label="Fecha"><input type="date" value={ventaForm.fecha} onChange={(e) => setVentaForm((f) => ({ ...f, fecha: e.target.value }))} style={estiloInputPanel} /></CampoPanel>
+                </div>
+                {mesCerrado && <div style={{ padding: "8px 12px", borderRadius: 8, background: C.redBg, color: C.red, fontSize: 12, fontWeight: 600 }}>🔒 Ese mes ya está cerrado en Centro de Costo: pide a un administrador que lo reabra en el Historial.</div>}
+                <SeccionPanel>3 · Cantidad y precio</SeccionPanel>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                  <CampoPanel label="Cantidad (unidades)"><input type="number" value={ventaForm.cantidad} onChange={(e) => setVentaForm((f) => recalcular(f, "cantidad", e.target.value))} style={estiloInputPanel} /></CampoPanel>
+                  <CampoPanel label="Precio por unidad"><input inputMode="numeric" value={ventaForm.precio ? `$ ${Number(ventaForm.precio).toLocaleString("es-CO")}` : ""} placeholder="$ 0" onChange={(e) => setVentaForm((f) => recalcular(f, "precio", e.target.value.replace(/\D/g, "")))} style={estiloInputPanel} /></CampoPanel>
+                </div>
+                <CampoPanel label="Valor total" hint={ventaForm.totalManual ? "Valor escrito a mano." : "Se calcula con cantidad × precio; puedes corregirlo."}>
+                  <InputValorPanel value={ventaForm.total} onChange={(v) => setVentaForm((f) => (v === "" ? recalcular({ ...f, totalManual: false }, "total", "") : { ...f, total: v, totalManual: true }))} />
+                </CampoPanel>
+                <SeccionPanel>4 · Soporte (opcional)</SeccionPanel>
+                <ZonaArchivoPanel archivo={ventaArchivoFile} onChange={setVentaArchivoFile} />
+              </PanelLateral>
+            );
+          })()}
         </div>
       </div>
     </div>
