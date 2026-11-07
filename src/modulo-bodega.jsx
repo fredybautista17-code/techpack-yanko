@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, Fragment } from "react";
+import { useState, useEffect, useMemo, useRef, Fragment } from "react";
 import { initializeApp, getApps } from "firebase/app";
 import {
   getFirestore,
@@ -2799,34 +2799,51 @@ async function exportarCuadreKamilaExcel(cuadre) {
     g1.push([celda(`Kamila ${pais}`, ESTILO_DATO), ...ETAPAS_CUADRE.map((e) => celda(d.porEtapa[e.k].valor, ESTILO_DATO, FORMATO_MONEDA)), celda(d.total, ESTILO_SUBTOTAL, FORMATO_MONEDA)]);
   });
   g1.push([]);
-  // Tabla del cuadre con fórmulas vivas: signos como vienen (negativo = a favor de Kamila), IVA = valor × tasa, resultado = suma de los totales.
+  // Cuadre general con fórmulas vivas: signos como vienen (negativo = lo que debemos), IVA = valor × tasa, TOTAL de cada bloque y SALDO = TOTAL 1 + TOTAL 2.
   const ESTILO_TASA = { font: { bold: true }, fill: { fgColor: { rgb: "FFF2CC" } }, border: TODOS_LOS_BORDES, alignment: { horizontal: "center" } };
   const ESTILO_NUM = { fill: { fgColor: { rgb: "D9E6F5" } }, border: TODOS_LOS_BORDES, alignment: { vertical: "center" } };
   const ESTILO_NUM_EDIT = { fill: { fgColor: { rgb: "FFF2CC" } }, border: TODOS_LOS_BORDES, alignment: { vertical: "center" } };
+  const ESTILO_BLOQUE = { font: { bold: true, color: { rgb: "1F4E78" } }, fill: { fgColor: { rgb: "DDEBF7" } }, border: TODOS_LOS_BORDES };
   const ESTILO_RESULT = { font: { bold: true, color: { rgb: "FFFFFF" }, sz: 12 }, fill: { fgColor: { rgb: "1F4E78" } }, border: TODOS_LOS_BORDES, alignment: { horizontal: "center", vertical: "center" } };
-  g1.push([celda("CUADRE KAMILA", ESTILO_HEADER), celda("VALOR (como viene)", ESTILO_HEADER), celda("IVA", ESTILO_HEADER), celda("TOTAL", ESTILO_HEADER)]);
+  g1.push([celda("CUADRE GENERAL KAMILA", ESTILO_HEADER), celda("VALOR (como viene)", ESTILO_HEADER), celda("IVA", ESTILO_HEADER), celda("TOTAL", ESTILO_HEADER)]);
   const filaTasa = g1.length + 1; // número de fila en Excel
   g1.push([celda("Tasa de IVA (cámbiala y se recalcula todo)", ESTILO_DATO), celda(cuadre.tasa, ESTILO_TASA, "0%")]);
-  const primera = g1.length + 1;
-  cuadre.filas.forEach((f) => {
-    const r = g1.length + 1;
+  const bloque = (titulo, b) => {
+    g1.push([celda(titulo, ESTILO_BLOQUE), celda("", ESTILO_BLOQUE), celda("", ESTILO_BLOQUE), celda("", ESTILO_BLOQUE)]);
+    const primera = g1.length + 1;
+    b.filas.forEach((f) => {
+      const r = g1.length + 1;
+      const manual = f.k.startsWith("cxp") || f.k === "tela" || f.k === "insumos";
+      g1.push([
+        celda(f.k.startsWith("cxp") ? `Cuenta por pagar — ${f.concepto}` : f.concepto, ESTILO_DATO),
+        celda(f.valor, manual ? ESTILO_NUM_EDIT : ESTILO_NUM, FORMATO_MONEDA),
+        f.conIva ? { t: "n", f: `ROUND(B${r}*$B$${filaTasa},0)`, v: f.iva, s: ESTILO_NUM, z: FORMATO_MONEDA } : celda(0, ESTILO_NUM_EDIT, FORMATO_MONEDA),
+        { t: "n", f: `B${r}+C${r}`, v: f.total, s: ESTILO_NUM, z: FORMATO_MONEDA },
+      ]);
+    });
+    const ultima = g1.length;
+    const rt = g1.length + 1;
     g1.push([
-      celda(f.concepto, ESTILO_DATO),
-      celda(f.valor, ESTILO_NUM, FORMATO_MONEDA),
-      f.conIva ? { t: "n", f: `ROUND(B${r}*$B$${filaTasa},0)`, v: f.iva, s: ESTILO_NUM, z: FORMATO_MONEDA } : celda(0, ESTILO_NUM_EDIT, FORMATO_MONEDA),
-      { t: "n", f: `B${r}+C${r}`, v: f.total, s: ESTILO_NUM, z: FORMATO_MONEDA },
+      celda("TOTAL", ESTILO_SUBTOTAL),
+      { t: "n", f: `SUM(B${primera}:B${ultima})`, v: b.valor, s: ESTILO_SUBTOTAL, z: FORMATO_MONEDA },
+      { t: "n", f: `SUM(C${primera}:C${ultima})`, v: b.iva, s: ESTILO_SUBTOTAL, z: FORMATO_MONEDA },
+      { t: "n", f: `SUM(D${primera}:D${ultima})`, v: b.total, s: ESTILO_SUBTOTAL, z: FORMATO_MONEDA },
     ]);
-  });
-  const ultima = g1.length;
-  const filaRes = g1.length + 1;
+    return rt;
+  };
+  const rTotal1 = bloque("1 · SALDOS Y CUENTAS POR PAGAR (negativo = lo que debemos)", cuadre.bloque1);
+  g1.push([]);
+  const rTotal2 = bloque("2 · LO QUE TENEMOS (por entregar, remisiones e inventarios)", cuadre.bloque2);
+  g1.push([]);
+  const filaSaldo = g1.length + 1;
   g1.push([
-    { t: "s", f: `IF(D${filaRes}<0,"QUEDA A FAVOR (alcanza para todo)","FALTA POR COBRAR (no alcanza)")`, v: cuadre.resultado < 0 ? "QUEDA A FAVOR (alcanza para todo)" : "FALTA POR COBRAR (no alcanza)", s: ESTILO_RESULT },
-    celda("", ESTILO_RESULT),
-    { t: "n", f: `SUM(C${primera}:C${ultima})`, v: cuadre.ivaTotal, s: ESTILO_RESULT, z: FORMATO_MONEDA },
-    { t: "n", f: `SUM(D${primera}:D${ultima})`, v: cuadre.resultado, s: ESTILO_RESULT, z: FORMATO_MONEDA },
+    { t: "s", f: `IF(D${filaSaldo}<0,"SALDO — lo que debemos supera lo que tenemos","SALDO — lo que tenemos supera lo que debemos")`, v: cuadre.saldo < 0 ? "SALDO — lo que debemos supera lo que tenemos" : "SALDO — lo que tenemos supera lo que debemos", s: ESTILO_RESULT },
+    { t: "n", f: `B${rTotal1}+B${rTotal2}`, v: cuadre.bloque1.valor + cuadre.bloque2.valor, s: ESTILO_RESULT, z: FORMATO_MONEDA },
+    { t: "n", f: `C${rTotal1}+C${rTotal2}`, v: cuadre.ivaTotal, s: ESTILO_RESULT, z: FORMATO_MONEDA },
+    { t: "n", f: `D${rTotal1}+D${rTotal2}`, v: cuadre.saldo, s: ESTILO_RESULT, z: FORMATO_MONEDA },
   ]);
   g1.push([]);
-  g1.push([celda("Negativo = a favor de Kamila (Estado de Cuenta y TNS). Positivo = lo que Kamila debe o va a deber. El IVA solo se suma a lo de Kamila Colombia (por despachar y remisionado); las celdas amarillas se pueden editar.", { font: { italic: true, color: { rgb: "5A5A7A" } } })]);
+  g1.push([celda("Todo suma «como viene»: el Estado de Cuenta, TNS y las cuentas por pagar van negativos (lo que debemos); lo por entregar y los inventarios, positivos. SALDO = TOTAL 1 + TOTAL 2. El IVA solo se suma a lo de Kamila Colombia (por despachar y remisiones). Las celdas amarillas se pueden editar y todo se recalcula.", { font: { italic: true, color: { rgb: "5A5A7A" } } })]);
   const ws1 = XLSX.utils.aoa_to_sheet(g1);
   ws1["!cols"] = [{ wch: 70 }, { wch: 22 }, { wch: 18 }, { wch: 20 }, { wch: 18 }, { wch: 24 }, { wch: 20 }];
   // Hoja 2: Lotes
@@ -2854,22 +2871,64 @@ async function exportarCuadreKamilaExcel(cuadre) {
   XLSX.utils.book_append_sheet(wb, ws2, "Lotes");
   XLSX.writeFile(wb, `Cuadre KAMILA por despachar ${today()}.xlsx`);
 }
+function InputMonto({ valor, onChange, ancho = 150, etiqueta }) {
+  return (
+    <input
+      value={valor ? Math.round(valor).toLocaleString("es-CO") : ""}
+      onChange={(e) => onChange(Number(String(e.target.value).replace(/\D/g, "")) || 0)}
+      inputMode="numeric"
+      placeholder="0"
+      aria-label={etiqueta}
+      style={{ width: ancho, textAlign: "right", fontFamily: "inherit", fontWeight: 700, fontSize: 13, padding: "6px 9px", borderRadius: 8, border: `1px solid ${C.border}`, background: "#FFFBEF", fontVariantNumeric: "tabular-nums" }}
+    />
+  );
+}
 function CuadreKamilaModal({ saldoTotal, onClose }) {
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState("");
   const [datos, setDatos] = useState(null);
   const [vista, setVista] = useState("Todos");
   const [bajando, setBajando] = useState(false);
+  const [conIva, setConIva] = useState(true);
   // Saldo y remisionado de Kamila Colombia: los Excel de TNS que se suben en Contabilidad → Cuadre por cliente
   const [tnsCartera, setTnsCartera] = useState(null);
   const [tnsRemisiones, setTnsRemisiones] = useState(null);
   const [quitadas, setQuitadas] = useState(null);
+  // Lo que se escribe a mano (cuentas por pagar por nombre e inventarios de tela e insumos) se guarda solo en contabilidad_cuadre_kamila_manual/main
+  const [manual, setManual] = useState(null);
+  const [guardado, setGuardado] = useState("");
+  const cargadoManual = useRef(false);
+  const temporizador = useRef(null);
   useEffect(() => {
     const u1 = onSnapshot(collection(db, "contabilidad_saldos_tns"), (snap) => setTnsCartera(mezclarCarteraTnsDocs(snap.docs)), () => setTnsCartera({}));
     const u2 = onSnapshot(collection(db, "contabilidad_remisiones_tns"), (snap) => { const m = {}; snap.docs.forEach((d) => { m[d.id] = d.data(); }); setTnsRemisiones(m); }, () => setTnsRemisiones({}));
     const u3 = onSnapshot(doc(db, "contabilidad_cuadre_config", "main"), (snap) => setQuitadas(snap.exists() ? snap.data().quitadas || {} : {}), () => setQuitadas({}));
-    return () => { u1(); u2(); u3(); };
+    const vacio = { cxp: [], tela: 0, insumos: 0 };
+    const u4 = onSnapshot(
+      doc(db, "contabilidad_cuadre_kamila_manual", "main"),
+      (snap) => {
+        if (cargadoManual.current) return; // solo la primera lectura: después manda lo que se escribe en pantalla
+        cargadoManual.current = true;
+        const d = snap.exists() ? snap.data() : {};
+        setManual({ cxp: Array.isArray(d.cxp) ? d.cxp.map((c) => ({ nombre: String(c.nombre || ""), valor: Number(c.valor) || 0 })) : [], tela: Number(d.tela) || 0, insumos: Number(d.insumos) || 0 });
+      },
+      () => { cargadoManual.current = true; setManual(vacio); }
+    );
+    return () => { u1(); u2(); u3(); u4(); if (temporizador.current) clearTimeout(temporizador.current); };
   }, []);
+  function cambiarManual(siguiente) {
+    setManual(siguiente);
+    setGuardado("Guardando…");
+    if (temporizador.current) clearTimeout(temporizador.current);
+    temporizador.current = setTimeout(async () => {
+      try {
+        await setDoc(doc(db, "contabilidad_cuadre_kamila_manual", "main"), { cxp: siguiente.cxp, tela: siguiente.tela, insumos: siguiente.insumos, actualizadoEn: new Date().toISOString() });
+        setGuardado("✓ Guardado");
+      } catch (err) {
+        setGuardado("No se pudo guardar: " + (err?.message || err));
+      }
+    }, 700);
+  }
   async function consultar() {
     setCargando(true);
     setError("");
@@ -2883,16 +2942,16 @@ function CuadreKamilaModal({ saldoTotal, onClose }) {
   }
   useEffect(() => { consultar(); /* eslint-disable-next-line */ }, []);
   const tns = useMemo(() => (tnsCartera && tnsRemisiones && quitadas ? kamilaColombiaTns(tnsCartera, tnsRemisiones, quitadas) : null), [tnsCartera, tnsRemisiones, quitadas]);
-  const cuadre = useMemo(() => (datos && tns ? armarCuadreKamila(datos.porCliente || [], saldoTotal, { saldo: tns.saldo, remisionadoSinIva: tns.remisionadoSinIva }) : null), [datos, tns, saldoTotal]);
+  const cuadre = useMemo(() => (datos && tns && manual ? armarCuadreKamila(datos.porCliente || [], saldoTotal, { saldo: tns.saldo, remisionadoSinIva: tns.remisionadoSinIva }, manual, conIva ? TASA_IVA_CUADRE : 0) : null), [datos, tns, manual, saldoTotal, conIva]);
   const nombresKamila = useMemo(() => (datos?.porCliente || []).map((g) => g.cliente).filter((n) => /KAMILA/i.test(n)), [datos]);
-  const falta = cuadre ? cuadre.faltaCobrar > 0 : false;
+  const saldoNegativo = cuadre ? cuadre.saldo < 0 : false;
   const celdaTh = (t, al) => <th key={t} style={{ padding: "8px 8px", textAlign: al || "right", fontSize: 10.5, fontWeight: 800, color: C.slate, textTransform: "uppercase", letterSpacing: "0.04em", borderBottom: `2px solid ${C.border}`, whiteSpace: "nowrap" }}>{t}</th>;
   const celdaTd = (v, al, extra) => <td style={{ padding: "7px 8px", textAlign: al || "right", fontSize: 12, borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap", ...extra }}>{v}</td>;
   const paisesVista = vista === "Todos" ? PAISES_KAMILA : [vista];
   return (
     <Modal title="⚖️ Cuadre por cortar y por despachar — KAMILA" onClose={onClose} width={1600} alto="96vh">
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 14 }}>Solo pedidos reales (sin preórdenes) · valores sin IVA · {fmtFechaISO(today())}</div>
-      {(cargando || (datos && !tns)) && <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>Consultando Busint… puede tardar un par de minutos.</div>}
+      {(cargando || (datos && (!tns || !manual))) && <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>Consultando Busint… puede tardar un par de minutos.</div>}
       {error && (
         <div style={{ padding: "10px 14px", background: C.redBg, color: C.red, borderRadius: 8, fontSize: 12, fontWeight: 600, marginBottom: 12 }}>
           {error} <button onClick={consultar} style={{ marginLeft: 8, fontWeight: 700, cursor: "pointer" }}>Reintentar</button>
@@ -2930,36 +2989,97 @@ function CuadreKamilaModal({ saldoTotal, onClose }) {
           </div>
 
           <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 18px" }}>
-            <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 8 }}>Cuadre Kamila <span style={{ fontWeight: 600, fontSize: 12, color: C.slate }}>· negativo = a favor de Kamila · positivo = lo que debe o va a deber · IVA {Math.round(TASA_IVA_CUADRE * 100)} % solo en Colombia</span></div>
-            <div style={{ overflowX: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 640, fontVariantNumeric: "tabular-nums" }}>
-                <thead><tr>{celdaTh("Concepto", "left")}{celdaTh("Valor (como viene)")}{celdaTh("IVA")}{celdaTh("Total")}</tr></thead>
-                <tbody>
-                  {cuadre.filas.map((f) => {
-                    const detalle = {
-                      estado: `${cuadre.filas[0].valor < 0 ? "Kamila ha abonado de más" : cuadre.filas[0].valor > 0 ? "Kamila debe" : "en cero"}`,
-                      colombiaSaldo: tns.clientesTomados.length ? tns.clientesTomados.join(" · ") : "",
-                      pendCol: `${Math.round(cuadre.paises.Colombia.unidades).toLocaleString("es-CO")} unidades · pedidos reales, sin preórdenes`,
-                      pendVen: `${Math.round(cuadre.paises.Venezuela.unidades).toLocaleString("es-CO")} unidades · pedidos reales, sin preórdenes`,
-                      remis: `${Math.round(tns.unidadesRemisionadas).toLocaleString("es-CO")} unidades por facturar · ${fmtMoney(tns.remisionadoConIva)} con IVA en TNS${tns.remisionesQuitadas ? ` · ${tns.remisionesQuitadas} remisión(es) quitada(s) en Contabilidad` : ""}`,
-                    }[f.k];
-                    return (
-                      <tr key={f.k}>
-                        {celdaTd(<span>{f.concepto}{detalle ? <div style={{ color: C.slate, fontSize: 11 }}>{detalle}</div> : null}</span>, "left", { whiteSpace: "normal" })}
-                        {celdaTd(fmtMoney(f.valor), "right", { color: f.valor < 0 ? C.green : C.ink, fontWeight: 700 })}
-                        {celdaTd(f.conIva ? fmtMoney(f.iva) : "—", "right", { color: C.slate })}
-                        {celdaTd(fmtMoney(f.total), "right", { color: f.total < 0 ? C.green : C.ink, fontWeight: 800 })}
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
+              <div style={{ fontWeight: 800, fontSize: 14 }}>Cuadre general Kamila <span style={{ fontWeight: 600, fontSize: 12, color: C.slate }}>· negativo = lo que debemos · positivo = lo que tenemos</span></div>
+              <label style={{ fontSize: 12.5, fontWeight: 600, color: C.slate, display: "flex", alignItems: "center", gap: 7, cursor: "pointer" }}>
+                <input type="checkbox" checked={conIva} onChange={(e) => setConIva(e.target.checked)} /> Sumar IVA {Math.round(TASA_IVA_CUADRE * 100)} % a lo de Colombia
+              </label>
             </div>
-            <div style={{ marginTop: 8, borderRadius: 10, padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", background: falta ? C.redBg : C.greenBg, color: falta ? C.red : C.green }}>
-              <div style={{ fontWeight: 700, fontSize: 13, maxWidth: 560, lineHeight: 1.35 }}>
-                {falta ? "FALTA POR COBRAR: lo que debe o va a deber Kamila supera lo que tiene a favor." : "QUEDA A FAVOR: lo que Kamila tiene a favor alcanza para todo lo que debe o va a deber."}
+            {(() => {
+              const GRID = "minmax(250px,1fr) 150px 120px 150px";
+              const rojoSiNeg = (v) => (v < 0 ? C.red : C.ink);
+              const encabezado = (
+                <div style={{ display: "grid", gridTemplateColumns: GRID, gap: 10, padding: "6px 0", fontSize: 10.5, fontWeight: 800, color: C.slate, textTransform: "uppercase", letterSpacing: "0.04em", borderBottom: `2px solid ${C.border}` }}>
+                  <div>Concepto</div><div style={{ textAlign: "right" }}>Valor (como viene)</div><div style={{ textAlign: "right" }}>IVA</div><div style={{ textAlign: "right" }}>Total</div>
+                </div>
+              );
+              const filaFija = (f, detalle) => (
+                <div key={f.k} style={{ display: "grid", gridTemplateColumns: GRID, gap: 10, alignItems: "center", padding: "8px 0", borderTop: `1px solid ${C.border}`, fontVariantNumeric: "tabular-nums" }}>
+                  <div><div style={{ fontWeight: 700, fontSize: 13 }}>{f.concepto.toUpperCase()}</div>{detalle && <div style={{ color: C.slate, fontSize: 11, lineHeight: 1.4 }}>{detalle}</div>}</div>
+                  <div style={{ textAlign: "right", fontWeight: 700, color: rojoSiNeg(f.valor) }}>{fmtMoney(f.valor)}</div>
+                  <div style={{ textAlign: "right", color: C.slate }}>{f.conIva && conIva ? fmtMoney(f.iva) : "—"}</div>
+                  <div style={{ textAlign: "right", fontWeight: 800, color: rojoSiNeg(f.total) }}>{fmtMoney(f.total)}</div>
+                </div>
+              );
+              const filaTotal = (titulo, b) => (
+                <div style={{ display: "grid", gridTemplateColumns: GRID, gap: 10, padding: "10px 8px", marginTop: 4, background: C.canvas, borderRadius: 8, fontWeight: 800, fontVariantNumeric: "tabular-nums" }}>
+                  <div>{titulo}</div><div style={{ textAlign: "right", color: rojoSiNeg(b.valor) }}>{fmtMoney(b.valor)}</div><div style={{ textAlign: "right", color: C.slate }}>{conIva ? fmtMoney(b.iva) : "—"}</div><div style={{ textAlign: "right", color: rojoSiNeg(b.total) }}>{fmtMoney(b.total)}</div>
+                </div>
+              );
+              const f1 = cuadre.bloque1.filas;
+              const f2 = cuadre.bloque2.filas;
+              const un = (n) => Math.round(n).toLocaleString("es-CO");
+              const dEstado = saldoTotal < 0 ? "Saldo Total del Estado de Cuenta: Kamila ha abonado de más" : saldoTotal > 0 ? "Saldo Total del Estado de Cuenta: Kamila debe" : "Saldo Total del Estado de Cuenta: en cero";
+              return (
+                <div style={{ overflowX: "auto" }}>
+                  <div style={{ minWidth: 700 }}>
+                    <div style={{ fontWeight: 800, fontSize: 12, color: C.blue, margin: "4px 0" }}>1 · SALDOS Y CUENTAS POR PAGAR</div>
+                    {encabezado}
+                    {filaFija(f1[0], `Cartera en TNS (Yanko + Indutex)${tns.clientesTomados.length ? ` · ${tns.clientesTomados.join(" · ")}` : ""}`)}
+                    {filaFija(f1[1], dEstado)}
+                    <div style={{ padding: "8px 0 2px", borderTop: `1px solid ${C.border}` }}>
+                      <div style={{ fontWeight: 700, fontSize: 13 }}>CUENTA POR PAGAR</div>
+                      <div style={{ color: C.slate, fontSize: 11 }}>Una línea por nombre: escribe lo que debemos (se guarda solo y se resta).</div>
+                    </div>
+                    {manual.cxp.map((c, i) => (
+                      <div key={i} style={{ display: "grid", gridTemplateColumns: GRID, gap: 10, alignItems: "center", padding: "5px 0 5px 22px", fontVariantNumeric: "tabular-nums" }}>
+                        <input
+                          value={c.nombre}
+                          onChange={(e) => cambiarManual({ ...manual, cxp: manual.cxp.map((x, j) => (j === i ? { ...x, nombre: e.target.value } : x)) })}
+                          placeholder={`Nombre ${i + 1}`}
+                          aria-label="Nombre de la cuenta por pagar"
+                          style={{ fontFamily: "inherit", fontWeight: 600, fontSize: 13, padding: "6px 9px", borderRadius: 8, border: `1px solid ${C.border}`, background: "#FFFBEF", minWidth: 0 }}
+                        />
+                        <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 6 }}>
+                          <InputMonto valor={c.valor} etiqueta={`Lo que debemos a ${c.nombre || `nombre ${i + 1}`}`} onChange={(v) => cambiarManual({ ...manual, cxp: manual.cxp.map((x, j) => (j === i ? { ...x, valor: v } : x)) })} />
+                        </div>
+                        <div style={{ textAlign: "right", color: C.slate }}>—</div>
+                        <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 6, fontWeight: 800, color: rojoSiNeg(-c.valor) }}>
+                          {fmtMoney(-c.valor)}
+                          <button onClick={() => cambiarManual({ ...manual, cxp: manual.cxp.filter((_, j) => j !== i) })} aria-label="Quitar" style={{ border: "none", background: "none", color: C.slate, fontSize: 18, cursor: "pointer", lineHeight: 1 }}>×</button>
+                        </div>
+                      </div>
+                    ))}
+                    <button onClick={() => cambiarManual({ ...manual, cxp: [...manual.cxp, { nombre: "", valor: 0 }] })} style={{ margin: "6px 0 8px 22px", border: `1px dashed ${C.seam}`, background: C.white, color: C.blue, fontFamily: "inherit", fontWeight: 700, fontSize: 12.5, borderRadius: 8, padding: "5px 12px", cursor: "pointer" }}>+ Agregar nombre</button>
+                    {filaTotal("TOTAL", cuadre.bloque1)}
+
+                    <div style={{ fontWeight: 800, fontSize: 12, color: C.blue, margin: "16px 0 4px" }}>2 · LO QUE TENEMOS</div>
+                    {encabezado}
+                    {filaFija(f2[0], `${un(cuadre.paises.Colombia.unidades)} unidades por cortar y despachar · pedidos reales, sin preórdenes`)}
+                    {filaFija(f2[1], `${un(cuadre.paises.Venezuela.unidades)} unidades por cortar y despachar · pedidos reales, sin IVA`)}
+                    {filaFija(f2[2], `${un(tns.unidadesRemisionadas)} unidades por facturar · ${fmtMoney(tns.remisionadoConIva)} con IVA en TNS${tns.remisionesQuitadas ? ` · ${tns.remisionesQuitadas} remisión(es) quitada(s) en Contabilidad` : ""}`)}
+                    {[["tela", f2[3], "Valor de la tela en inventario para Kamila (lo escribes tú)"], ["insumos", f2[4], "Valor de los insumos en inventario para Kamila (lo escribes tú)"]].map(([k, f, d]) => (
+                      <div key={k} style={{ display: "grid", gridTemplateColumns: GRID, gap: 10, alignItems: "center", padding: "6px 0", borderTop: `1px solid ${C.border}`, fontVariantNumeric: "tabular-nums" }}>
+                        <div><div style={{ fontWeight: 700, fontSize: 13 }}>{f.concepto.toUpperCase()}</div><div style={{ color: C.slate, fontSize: 11 }}>{d}</div></div>
+                        <div style={{ display: "flex", justifyContent: "flex-end" }}><InputMonto valor={manual[k]} etiqueta={f.concepto} onChange={(v) => cambiarManual({ ...manual, [k]: v })} /></div>
+                        <div style={{ textAlign: "right", color: C.slate }}>—</div>
+                        <div style={{ textAlign: "right", fontWeight: 800 }}>{fmtMoney(f.total)}</div>
+                      </div>
+                    ))}
+                    {filaTotal("TOTAL", cuadre.bloque2)}
+                    <div style={{ fontSize: 11.5, color: C.slate, marginTop: 6, minHeight: 16 }}>{guardado}</div>
+                  </div>
+                </div>
+              );
+            })()}
+            <div style={{ marginTop: 6, borderRadius: 10, padding: "14px 18px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", background: saldoNegativo ? C.redBg : C.greenBg, color: saldoNegativo ? C.red : C.green }}>
+              <div>
+                <div style={{ fontWeight: 800, fontSize: 12.5, letterSpacing: "0.06em" }}>SALDO = TOTAL 1 + TOTAL 2</div>
+                <div style={{ fontWeight: 700, fontSize: 13, maxWidth: 520, lineHeight: 1.35, marginTop: 2 }}>
+                  {saldoNegativo ? "Lo que debemos supera lo que tenemos." : "Lo que tenemos supera lo que debemos."}
+                </div>
               </div>
-              <div style={{ fontSize: 24, fontWeight: 800 }}>{fmtMoney(cuadre.resultado)}</div>
+              <div style={{ fontSize: 28, fontWeight: 800, fontVariantNumeric: "tabular-nums" }}>{fmtMoney(cuadre.saldo)}</div>
             </div>
             {tns.avisos.length > 0 && <div style={{ marginTop: 8, padding: "8px 12px", background: C.amberBg, color: C.amber, borderRadius: 8, fontSize: 12 }}>{tns.avisos.map((a, i) => <div key={i}>⚠️ {a}</div>)}</div>}
             {tns.clientesExcluidos.length > 0 && <div style={{ marginTop: 6, fontSize: 11.5, color: C.slate }}>No se cuentan en Colombia (son Venezuela): {tns.clientesExcluidos.join(" · ")}.</div>}
