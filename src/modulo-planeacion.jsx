@@ -4711,7 +4711,32 @@ function causadoDestajoEnPeriodoCC(t, periodoId, hoy, produccion, causacionManua
   const ajusteDoc = (ajustesDestajoCC || []).find((a) => a.id === `${t.id}__${periodoId}`);
   const ajusteValor = (!base.salarioMinimoGarantizado && ajusteDoc) ? (Number(ajusteDoc.valor) || 0) : 0;
   const netoAPagar = base.netoBase - descuentoCobros + totalHorasExtra + bonificacionPuntual + ajusteValor;
-  return { valorProducido: netoProduccion, costo: netoAPagar + base.cesantiasPeriodo + base.primaPeriodo + base.vacacionesPeriodo, neto: netoAPagar, provisiones: base.cesantiasPeriodo + base.primaPeriodo + base.vacacionesPeriodo, cesantias: base.cesantiasPeriodo, prima: base.primaPeriodo, vacaciones: base.vacacionesPeriodo };
+  // (2026-11-07, a pedido de Fredy) Los Dctos TNS (cesantías, prima y vacaciones) se CAUSAN día a día, igual que el salario mínimo
+  // garantizado: una quincena que no ha empezado causa $0 y la que va en curso causa la parte de los días hábiles que ya pasaron.
+  // Antes se sumaban completos aunque la quincena no hubiera empezado (inflaba el Costo total en mitad de mes). Una quincena ya
+  // terminada o confirmada no cambia. «...Completas» es lo que serán al terminar la quincena (solo informativo, no suma al costo).
+  const diasHabilesPasados = hoy < inicio ? 0 : hoy < fin ? diasHabilesEnRangoCC(inicio, hoy) : diasHabilesTotales;
+  const cesCausada = base.cesantiasPeriodo * proporcionMinimo;
+  const primaCausada = base.primaPeriodo * proporcionMinimo;
+  const vacCausada = base.vacacionesPeriodo * proporcionMinimo;
+  return {
+    valorProducido: netoProduccion,
+    costo: netoAPagar + cesCausada + primaCausada + vacCausada,
+    neto: netoAPagar,
+    provisiones: cesCausada + primaCausada + vacCausada,
+    cesantias: cesCausada,
+    prima: primaCausada,
+    vacaciones: vacCausada,
+    provisionesCompletas: base.cesantiasPeriodo + base.primaPeriodo + base.vacacionesPeriodo,
+    cesantiasCompletas: base.cesantiasPeriodo,
+    primaCompleta: base.primaPeriodo,
+    vacacionesCompletas: base.vacacionesPeriodo,
+    proporcion: proporcionMinimo,
+    diasHabilesPasados,
+    diasHabilesTotales,
+    inicio,
+    fin,
+  };;
 }
 // ─── TRAER LOTES (Entradas de Planta → ventas del área) ───────────────────────
 // (2026-11-06, a pedido de Fredy) En «Costos y ventas» se escogen con casillas las entradas de la planta (lote,
@@ -5034,7 +5059,7 @@ function etiquetaOrigenCC(r) {
 const colOrigenCC = { key: "origen", label: "Cargó", render: (r) => { const o = etiquetaOrigenCC(r); return <span title={o.titulo} style={{ fontSize: 11, color: C.slate, whiteSpace: "nowrap" }}>{o.txt}</span>; } };
 // (2026-11-06, a pedido de Fredy) «¿De dónde sale la nómina?»: desglose del costo de nómina que entra al Costo total, por
 // quincena y por trabajador. Distingue lo confirmado en Nómina → Destajo de lo estimado en vivo y de las quincenas que
-// todavía no han empezado (que ya suman sus Dctos TNS). En Planta Yanko (mostrarNombres=false) solo sale el resumen por
+// todavía no han empezado (que causan $0 de Dctos TNS hasta que empiezan). En Planta Yanko (mostrarNombres=false) solo sale el resumen por
 // quincena, sin nombres.
 const ESTADO_QUINCENA_CC = {
   confirmada: { txt: "✓ Confirmada", fg: "#2D9E6B", orden: 0 },
@@ -5043,24 +5068,67 @@ const ESTADO_QUINCENA_CC = {
   futura: { txt: "⏳ No ha empezado", fg: "#7B5EA7", orden: 3 },
   fijo: { txt: "Sueldo fijo", fg: "#5A5A7A", orden: 4 },
 };
+// (2026-11-07, a pedido de Fredy) Qué es una cifra de «Dctos TNS»: explicación en palabras de una quincena (o de un trabajador).
+function ExplicacionDctosTnsModal({ datos, onClose }) {
+  const esQ = datos.tipo === "q";
+  const x = esQ ? datos.g : datos.f;
+  const label = x.label;
+  const causado = x.prov;
+  const total = x.provT;
+  const ces = x.cesT;
+  const prima = x.primaT;
+  const vac = x.vacT;
+  const estados = esQ ? Object.keys(x.estados) : [x.estado];
+  const soloConfirmada = estados.every((e) => e === "confirmada");
+  const hayFutura = estados.includes("futura");
+  const hayCurso = estados.includes("en_curso");
+  const pct = x.diasT ? Math.round(((x.diasP || 0) / x.diasT) * 100) : null;
+  let situacion;
+  if (soloConfirmada) situacion = "Esta quincena ya está confirmada en Nómina → Destajo: estos son los valores reales liquidados.";
+  else if (hayFutura && !hayCurso) situacion = `Esta quincena todavía no ha empezado${x.inicio ? ` (arranca el ${fmtFechaISO(x.inicio)})` : ""}. Todavía no se ha causado nada, por eso hoy cuenta $0.`;
+  else if (hayCurso) situacion = `Esta quincena va en curso: han pasado ${x.diasP ?? "—"} de ${x.diasT ?? "—"} días hábiles${pct != null ? ` (${pct} %)` : ""}. Hoy se causa esa parte del total.`;
+  else situacion = "Esta quincena ya terminó pero todavía no se confirma en Nómina → Destajo: se cuenta completa como estimado.";
+  return (
+    <Modal title={`Dctos TNS — ${label}${esQ ? "" : ` · ${x.nombre}`}`} onClose={onClose} width={560}>
+      <div style={{ fontSize: 13, color: C.ink, lineHeight: 1.6 }}>
+        <div style={{ marginBottom: 12 }}>
+          Son lo que se aparta de cada pago para cesantías, prima y vacaciones. No se pagan hoy: se van acumulando mientras se trabaja.
+        </div>
+        <div style={{ background: C.violetBg, borderRadius: 10, padding: "12px 14px", marginBottom: 12 }}>
+          <div style={{ fontWeight: 800, color: C.violet }}>Causado hoy: {fmtMoney(causado)}</div>
+          <div style={{ fontSize: 12.5, color: C.slate }}>Al terminar la quincena serán {fmtMoney(total)}: cesantías {fmtMoney(ces)}, prima {fmtMoney(prima)} y vacaciones {fmtMoney(vac)}.</div>
+        </div>
+        <div style={{ marginBottom: 12 }}>{situacion}</div>
+        <div style={{ fontSize: 11.5, color: C.slate }}>
+          Cómo se calcula: cesantías {(TASA_CESANTIAS_MENSUAL_CC * 100).toFixed(2).replace(".", ",")} % y prima {(TASA_PRIMA_MENSUAL_CC * 100).toFixed(2).replace(".", ",")} % sobre la mitad del sueldo más el auxilio de la ficha; vacaciones {(TASA_VACACIONES_MENSUAL_CC * 100).toFixed(2).replace(".", ",")} % sobre la mitad del sueldo. En quincenas sin confirmar se multiplican por la proporción de días hábiles que ya pasaron.
+        </div>
+      </div>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 14 }}>
+        <Btn variant="secondary" onClick={onClose}>Cerrar</Btn>
+      </div>
+    </Modal>
+  );
+}
 function DetalleCostoNominaModal({ filas, totalTarjeta, area, etiquetaPeriodo, mostrarNombres, onClose }) {
   const [verDctos, setVerDctos] = useState(true);
   const [verDctosTrab, setVerDctosTrab] = useState(false);
+  const [explicar, setExplicar] = useState(null);
   const resumen = useMemo(() => {
     const m = new Map();
     filas.forEach((f) => {
-      if (!m.has(f.pid)) m.set(f.pid, { pid: f.pid, label: f.label, n: 0, neto: 0, prov: 0, ces: 0, prima: 0, vac: 0, costo: 0, estados: {} });
+      if (!m.has(f.pid)) m.set(f.pid, { pid: f.pid, label: f.label, n: 0, neto: 0, prov: 0, provT: 0, ces: 0, prima: 0, vac: 0, cesT: 0, primaT: 0, vacT: 0, costo: 0, estados: {}, diasP: f.diasP, diasT: f.diasT, inicio: f.inicio });
       const g = m.get(f.pid);
-      g.n += 1; g.neto += f.neto; g.prov += f.prov; g.ces += f.ces || 0; g.prima += f.prima || 0; g.vac += f.vac || 0; g.costo += f.costo;
+      g.n += 1; g.neto += f.neto; g.prov += f.prov; g.provT += f.provT || 0; g.ces += f.ces || 0; g.prima += f.prima || 0; g.vac += f.vac || 0; g.cesT += f.cesT || 0; g.primaT += f.primaT || 0; g.vacT += f.vacT || 0; g.costo += f.costo;
+      if (g.diasT == null && f.diasT != null) { g.diasP = f.diasP; g.diasT = f.diasT; g.inicio = f.inicio; }
       g.estados[f.estado] = (g.estados[f.estado] || 0) + 1;
     });
     return [...m.values()].sort((a, b) => a.pid.localeCompare(b.pid));
   }, [filas]);
   const suma = filas.reduce((a, f) => a + f.costo, 0);
-  const provFuturas = filas.filter((f) => f.estado === "futura").reduce((a, f) => a + f.prov, 0);
   const dctosTotal = filas.reduce((a, f) => a + f.prov, 0);
-  const dctosPorQuincena = resumen.filter((g) => g.prov > 0);
-  const dctosTrabajadores = useMemo(() => [...filas].filter((f) => f.prov > 0).sort((a, b) => b.prov - a.prov || String(a.nombre).localeCompare(String(b.nombre), "es") || a.pid.localeCompare(b.pid)), [filas]);
+  const dctosAlTerminar = filas.reduce((a, f) => a + (f.provT || 0), 0);
+  const dctosPorQuincena = resumen.filter((g) => g.provT > 0);
+  const dctosTrabajadores = useMemo(() => [...filas].filter((f) => f.provT > 0).sort((a, b) => b.prov - a.prov || String(a.nombre).localeCompare(String(b.nombre), "es") || a.pid.localeCompare(b.pid)), [filas]);
   const estimado = filas.filter((f) => f.estado !== "confirmada" && f.estado !== "fijo").reduce((a, f) => a + f.costo, 0);
   const confirmado = filas.filter((f) => f.estado === "confirmada").reduce((a, f) => a + f.costo, 0);
   const diferencia = Math.round(suma - totalTarjeta);
@@ -5074,7 +5142,7 @@ function DetalleCostoNominaModal({ filas, totalTarjeta, area, etiquetaPeriodo, m
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 12, marginBottom: 16 }}>
         <KPI icon="✅" label="Confirmado en Nómina" value={fmtMoney(confirmado)} color={C.green} bg={C.greenBg} />
         <KPI icon="🟡" label="Estimado (sin confirmar)" value={fmtMoney(estimado)} color={C.amber} bg={C.amberBg} />
-        <KPI icon="🧾" label="Dctos TNS" value={fmtMoney(dctosTotal)} color={C.violet} bg={C.violetBg} sub={`Incluidos arriba${provFuturas > 0 ? ` · ${fmtMoney(provFuturas)} son de quincenas que no han empezado` : ""} · clic para ${verDctos ? "ocultar" : "ver"} el detalle`} onClick={() => setVerDctos((v) => !v)} />
+        <KPI icon="🧾" label="Dctos TNS" value={fmtMoney(dctosTotal)} color={C.violet} bg={C.violetBg} sub={`Causado hasta hoy, ya incluido arriba${dctosAlTerminar - dctosTotal > 1 ? ` · al terminar el período serán ${fmtMoney(dctosAlTerminar)}` : ""} · clic para ${verDctos ? "ocultar" : "ver"} el detalle`} onClick={() => setVerDctos((v) => !v)} />
         <KPI icon="🏦" label="Total de nómina" value={fmtMoney(suma)} color={C.ink} bg={C.canvas} />
       </div>
       {Math.abs(diferencia) > 1 && (
@@ -5086,13 +5154,13 @@ function DetalleCostoNominaModal({ filas, totalTarjeta, area, etiquetaPeriodo, m
         <div style={{ border: `2px solid ${C.violet}55`, borderRadius: 12, padding: "14px 16px", marginBottom: 18, background: C.violetBg }}>
           <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 4 }}>Dctos TNS — qué incluye</div>
           <div style={{ fontSize: 12, color: C.slate, marginBottom: 12, lineHeight: 1.5, maxWidth: 820 }}>
-            Lo que se aparta de cada pago: cesantías ({(TASA_CESANTIAS_MENSUAL_CC * 100).toFixed(2).replace(".", ",")} %) y prima ({(TASA_PRIMA_MENSUAL_CC * 100).toFixed(2).replace(".", ",")} %) sobre la mitad del sueldo más el auxilio de la ficha, y vacaciones ({(TASA_VACACIONES_MENSUAL_CC * 100).toFixed(2).replace(".", ",")} %) sobre la mitad del sueldo. En las quincenas ya confirmadas salen de Nómina → Destajo. Se suman completos aunque la quincena no haya empezado.
+            Lo que se aparta de cada pago: cesantías ({(TASA_CESANTIAS_MENSUAL_CC * 100).toFixed(2).replace(".", ",")} %) y prima ({(TASA_PRIMA_MENSUAL_CC * 100).toFixed(2).replace(".", ",")} %) sobre la mitad del sueldo más el auxilio de la ficha, y vacaciones ({(TASA_VACACIONES_MENSUAL_CC * 100).toFixed(2).replace(".", ",")} %) sobre la mitad del sueldo. Se causan día a día: una quincena que no ha empezado causa $0 y la que va en curso causa la parte de los días hábiles que ya pasaron. En las quincenas ya confirmadas salen de Nómina → Destajo. Toca una cifra de «Causado hoy» para ver qué es.
           </div>
           <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "auto", background: C.white }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 560 }}>
               <thead>
                 <tr style={{ background: C.ink }}>
-                  {["Quincena", "Personas", "Cesantías", "Prima", "Vacaciones", "Total Dctos"].map((h, i) => (
+                  {["Quincena", "Personas", "Cesantías", "Prima", "Vacaciones", "Causado hoy", "Al terminar"].map((h, i) => (
                     <th key={h} style={{ padding: "9px 12px", color: C.seam, textAlign: i < 1 ? "left" : "right", fontWeight: 700, fontSize: 11, whiteSpace: "nowrap" }}>{h}</th>
                   ))}
                 </tr>
@@ -5110,10 +5178,13 @@ function DetalleCostoNominaModal({ filas, totalTarjeta, area, etiquetaPeriodo, m
                     <td style={{ padding: "8px 12px", textAlign: "right" }}>{fmtMoney(g.ces)}</td>
                     <td style={{ padding: "8px 12px", textAlign: "right" }}>{fmtMoney(g.prima)}</td>
                     <td style={{ padding: "8px 12px", textAlign: "right" }}>{fmtMoney(g.vac)}</td>
-                    <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 800 }}>{fmtMoney(g.prov)}</td>
+                    <td style={{ padding: "8px 12px", textAlign: "right" }}>
+                      <button type="button" onClick={() => setExplicar({ tipo: "q", g })} title="Toca para saber qué es" style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontWeight: 800, fontSize: 12.5, color: C.violet, textDecoration: "underline", fontFamily: "inherit" }}>{fmtMoney(g.prov)}</button>
+                    </td>
+                    <td style={{ padding: "8px 12px", textAlign: "right", color: C.slate }}>{fmtMoney(g.provT)}</td>
                   </tr>
                 ))}
-                {!dctosPorQuincena.length && <tr><td colSpan={6} style={{ padding: 18, textAlign: "center", color: C.slate }}>No hay Dctos TNS en este período.</td></tr>}
+                {!dctosPorQuincena.length && <tr><td colSpan={7} style={{ padding: 18, textAlign: "center", color: C.slate }}>No hay Dctos TNS en este período.</td></tr>}
                 {dctosPorQuincena.length > 0 && (
                   <tr style={{ borderTop: `2px solid ${C.ink}` }}>
                     <td style={{ padding: "8px 12px", fontWeight: 800 }}>Total</td>
@@ -5122,6 +5193,7 @@ function DetalleCostoNominaModal({ filas, totalTarjeta, area, etiquetaPeriodo, m
                     <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 800 }}>{fmtMoney(dctosPorQuincena.reduce((a, g) => a + g.prima, 0))}</td>
                     <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 800 }}>{fmtMoney(dctosPorQuincena.reduce((a, g) => a + g.vac, 0))}</td>
                     <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 800 }}>{fmtMoney(dctosTotal)}</td>
+                    <td style={{ padding: "8px 12px", textAlign: "right", color: C.slate, fontWeight: 700 }}>{fmtMoney(dctosAlTerminar)}</td>
                   </tr>
                 )}
               </tbody>
@@ -5137,7 +5209,7 @@ function DetalleCostoNominaModal({ filas, totalTarjeta, area, etiquetaPeriodo, m
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 560 }}>
                     <thead>
                       <tr style={{ background: C.ink }}>
-                        {["Trabajador", "Quincena", "Cesantías", "Prima", "Vacaciones", "Total"].map((h, i) => (
+                        {["Trabajador", "Quincena", "Cesantías", "Prima", "Vacaciones", "Causado hoy", "Al terminar"].map((h, i) => (
                           <th key={h} style={{ padding: "9px 12px", color: C.seam, textAlign: i < 2 ? "left" : "right", fontWeight: 700, fontSize: 11, whiteSpace: "nowrap", position: "sticky", top: 0, background: C.ink }}>{h}</th>
                         ))}
                       </tr>
@@ -5150,7 +5222,10 @@ function DetalleCostoNominaModal({ filas, totalTarjeta, area, etiquetaPeriodo, m
                           <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtMoney(f.ces)}</td>
                           <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtMoney(f.prima)}</td>
                           <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtMoney(f.vac)}</td>
-                          <td style={{ padding: "7px 12px", textAlign: "right", fontWeight: 800 }}>{fmtMoney(f.prov)}</td>
+                          <td style={{ padding: "7px 12px", textAlign: "right" }}>
+                            <button type="button" onClick={() => setExplicar({ tipo: "t", f })} title="Toca para saber qué es" style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontWeight: 800, fontSize: 12.5, color: C.violet, textDecoration: "underline", fontFamily: "inherit" }}>{fmtMoney(f.prov)}</button>
+                          </td>
+                          <td style={{ padding: "7px 12px", textAlign: "right", color: C.slate }}>{fmtMoney(f.provT)}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -5182,7 +5257,11 @@ function DetalleCostoNominaModal({ filas, totalTarjeta, area, etiquetaPeriodo, m
                 </td>
                 <td style={{ padding: "8px 12px", textAlign: "right" }}>{fmtNum(g.n)}</td>
                 <td style={{ padding: "8px 12px", textAlign: "right" }}>{fmtMoney(g.neto)}</td>
-                <td style={{ padding: "8px 12px", textAlign: "right" }}>{fmtMoney(g.prov)}</td>
+                <td style={{ padding: "8px 12px", textAlign: "right" }}>
+                  {g.provT > 0
+                    ? <button type="button" onClick={() => setExplicar({ tipo: "q", g })} title="Toca para saber qué es" style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: 12.5, color: C.violet, textDecoration: "underline", fontFamily: "inherit" }}>{fmtMoney(g.prov)}</button>
+                    : fmtMoney(g.prov)}
+                </td>
                 <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 800 }}>{fmtMoney(g.costo)}</td>
               </tr>
             ))}
@@ -5219,8 +5298,9 @@ function DetalleCostoNominaModal({ filas, totalTarjeta, area, etiquetaPeriodo, m
         </>
       )}
       <div style={{ fontSize: 11, color: C.slate, marginTop: 12, lineHeight: 1.5 }}>
-        Los Dctos TNS (provisiones de cesantías, prima y vacaciones) de cada quincena se suman completos aunque la quincena no haya empezado; solo el salario mínimo garantizado se prorratea por los días que ya pasaron.
+        Los Dctos TNS (provisiones de cesantías, prima y vacaciones) y el salario mínimo garantizado se causan con los días hábiles que ya pasaron de cada quincena: la que no ha empezado causa $0 y, al terminar el mes, el total es el mismo de siempre.
       </div>
+      {explicar && <ExplicacionDctosTnsModal datos={explicar} onClose={() => setExplicar(null)} />}
     </Modal>
   );
 }
@@ -5750,12 +5830,17 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
         let ces;
         let prima;
         let vac;
+        let completas = null;
+        let proporcion = 1;
+        let diasP = null;
+        let diasT = null;
         if (liq) {
           neto = Number(liq.netoAPagar) || 0;
           ces = Number(liq.cesantiasPeriodo) || 0;
           prima = Number(liq.primaPeriodo) || 0;
           vac = Number(liq.vacacionesPeriodo) || 0;
           prov = ces + prima + vac;
+          completas = { ces, prima, vac };
           estado = "confirmada";
         } else {
           const c = causadoDestajoEnPeriodoCC(t, pid, hoy, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC);
@@ -5764,9 +5849,13 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
           ces = c.cesantias;
           prima = c.prima;
           vac = c.vacaciones;
+          completas = { ces: c.cesantiasCompletas, prima: c.primaCompleta, vac: c.vacacionesCompletas };
+          proporcion = c.proporcion;
+          diasP = c.diasHabilesPasados;
+          diasT = c.diasHabilesTotales;
           estado = hoy < iniPid ? "futura" : hoy <= finPid ? "en_curso" : "sin_confirmar";
         }
-        out.push({ id: t.id, nombre: t.nombre, pid, label: labelQuincenaCC(pid), estado, neto, prov, ces, prima, vac, costo: neto + prov });
+        out.push({ id: t.id, nombre: t.nombre, pid, label: labelQuincenaCC(pid), estado, neto, prov, ces, prima, vac, provT: completas.ces + completas.prima + completas.vac, cesT: completas.ces, primaT: completas.prima, vacT: completas.vac, proporcion, diasP, diasT, inicio: iniPid, fin: finPid, costo: neto + prov });
       });
     });
     return out;
@@ -5776,7 +5865,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
       ...detalleCostoNomina,
       ...filas
         .filter((f) => !f.esDestajoReal && !f.sinSueldo)
-        .map((f) => ({ id: f.id, nombre: f.nombre, pid: "fijo", label: "Sueldo fijo del período", estado: "fijo", neto: f.costo, prov: 0, ces: 0, prima: 0, vac: 0, costo: f.costo })),
+        .map((f) => ({ id: f.id, nombre: f.nombre, pid: "fijo", label: "Sueldo fijo del período", estado: "fijo", neto: f.costo, prov: 0, ces: 0, prima: 0, vac: 0, provT: 0, cesT: 0, primaT: 0, vacT: 0, proporcion: 1, diasP: null, diasT: null, costo: f.costo })),
     ],
     [detalleCostoNomina, filas]
   );
