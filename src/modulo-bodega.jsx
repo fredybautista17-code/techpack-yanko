@@ -2899,10 +2899,15 @@ function CuadreKamilaModal({ saldoTotal, onClose }) {
   const [guardado, setGuardado] = useState("");
   const cargadoManual = useRef(false);
   const temporizador = useRef(null);
+  // Proveedores del último corte de Cuentas por Pagar de Busint (Yanko) que ya guardó Contabilidad: para «Traer proveedor»
+  const [cortesCxp, setCortesCxp] = useState(null);
+  const [verProveedores, setVerProveedores] = useState(false);
+  const [buscaProv, setBuscaProv] = useState("");
   useEffect(() => {
     const u1 = onSnapshot(collection(db, "contabilidad_saldos_tns"), (snap) => setTnsCartera(mezclarCarteraTnsDocs(snap.docs)), () => setTnsCartera({}));
     const u2 = onSnapshot(collection(db, "contabilidad_remisiones_tns"), (snap) => { const m = {}; snap.docs.forEach((d) => { m[d.id] = d.data(); }); setTnsRemisiones(m); }, () => setTnsRemisiones({}));
     const u3 = onSnapshot(doc(db, "contabilidad_cuadre_config", "main"), (snap) => setQuitadas(snap.exists() ? snap.data().quitadas || {} : {}), () => setQuitadas({}));
+    const u5 = onSnapshot(collection(db, "contabilidad_cxp_cortes"), (snap) => setCortesCxp(snap.docs.map((d) => ({ ...d.data(), id: d.id }))), () => setCortesCxp([]));
     const vacio = { cxp: [], tela: 0, insumos: 0 };
     const u4 = onSnapshot(
       doc(db, "contabilidad_cuadre_kamila_manual", "main"),
@@ -2910,11 +2915,11 @@ function CuadreKamilaModal({ saldoTotal, onClose }) {
         if (cargadoManual.current) return; // solo la primera lectura: después manda lo que se escribe en pantalla
         cargadoManual.current = true;
         const d = snap.exists() ? snap.data() : {};
-        setManual({ cxp: Array.isArray(d.cxp) ? d.cxp.map((c) => ({ nombre: String(c.nombre || ""), valor: Number(c.valor) || 0 })) : [], tela: Number(d.tela) || 0, insumos: Number(d.insumos) || 0 });
+        setManual({ cxp: Array.isArray(d.cxp) ? d.cxp.map((c) => ({ nombre: String(c.nombre || ""), valor: Number(c.valor) || 0, auto: !!c.auto, proveedor: String(c.proveedor || "") })) : [], tela: Number(d.tela) || 0, insumos: Number(d.insumos) || 0 });
       },
       () => { cargadoManual.current = true; setManual(vacio); }
     );
-    return () => { u1(); u2(); u3(); u4(); if (temporizador.current) clearTimeout(temporizador.current); };
+    return () => { u1(); u2(); u3(); u4(); u5(); if (temporizador.current) clearTimeout(temporizador.current); };
   }, []);
   function cambiarManual(siguiente) {
     setManual(siguiente);
@@ -2942,7 +2947,26 @@ function CuadreKamilaModal({ saldoTotal, onClose }) {
   }
   useEffect(() => { consultar(); /* eslint-disable-next-line */ }, []);
   const tns = useMemo(() => (tnsCartera && tnsRemisiones && quitadas ? kamilaColombiaTns(tnsCartera, tnsRemisiones, quitadas) : null), [tnsCartera, tnsRemisiones, quitadas]);
-  const cuadre = useMemo(() => (datos && tns && manual ? armarCuadreKamila(datos.porCliente || [], saldoTotal, { saldo: tns.saldo, remisionadoSinIva: tns.remisionadoSinIva }, manual, conIva ? TASA_IVA_CUADRE : 0) : null), [datos, tns, manual, saldoTotal, conIva]);
+  // Último corte de Busint (Yanko): lo que le debemos a cada proveedor = facturas pendientes − anticipos (como el «Gran TOTAL» de Busint)
+  const corteBusint = useMemo(() => {
+    const lista = (cortesCxp || []).filter((c) => c.empresa !== "indutex").sort((a, b) => String(b.creadoEn || b.fechaCorte || "").localeCompare(String(a.creadoEn || a.fechaCorte || "")));
+    const c = lista[0];
+    if (!c) return null;
+    const mapa = new Map();
+    (c.proveedores || []).forEach((p) => {
+      const total = Math.round(Number(p.total) || 0);
+      const anticipos = Math.round(Number(p.anticiposTotal) || 0);
+      mapa.set(p.nombre, { nombre: p.nombre, total, anticipos, neto: total - anticipos });
+    });
+    const f = String(c.fechaCorte || c.creadoEn || "").slice(0, 10);
+    return { fecha: /^\d{4}-\d{2}-\d{2}$/.test(f) ? fmtFechaISO(f) : f, mapa, proveedores: [...mapa.values()] };
+  }, [cortesCxp]);
+  // Las líneas «automáticas» toman su valor del último corte; si el proveedor ya no aparece en él, cuentan $0 (ya se pagó o cambió de nombre)
+  const manualEfectivo = useMemo(() => {
+    if (!manual) return null;
+    return { ...manual, cxp: manual.cxp.map((c) => (c.auto && corteBusint ? { ...c, valor: corteBusint.mapa.get(c.proveedor)?.neto ?? 0 } : c)) };
+  }, [manual, corteBusint]);
+  const cuadre = useMemo(() => (datos && tns && manualEfectivo ? armarCuadreKamila(datos.porCliente || [], saldoTotal, { saldo: tns.saldo, remisionadoSinIva: tns.remisionadoSinIva }, manualEfectivo, conIva ? TASA_IVA_CUADRE : 0) : null), [datos, tns, manualEfectivo, saldoTotal, conIva]);
   const nombresKamila = useMemo(() => (datos?.porCliente || []).map((g) => g.cliente).filter((n) => /KAMILA/i.test(n)), [datos]);
   const saldoNegativo = cuadre ? cuadre.saldo < 0 : false;
   const celdaTh = (t, al) => <th key={t} style={{ padding: "8px 8px", textAlign: al || "right", fontSize: 10.5, fontWeight: 800, color: C.slate, textTransform: "uppercase", letterSpacing: "0.04em", borderBottom: `2px solid ${C.border}`, whiteSpace: "nowrap" }}>{t}</th>;
@@ -3029,28 +3053,91 @@ function CuadreKamilaModal({ saldoTotal, onClose }) {
                     {filaFija(f1[1], dEstado)}
                     <div style={{ padding: "8px 0 2px", borderTop: `1px solid ${C.border}` }}>
                       <div style={{ fontWeight: 700, fontSize: 13 }}>CUENTA POR PAGAR</div>
-                      <div style={{ color: C.slate, fontSize: 11 }}>Una línea por nombre: escribe lo que debemos (se guarda solo y se resta).</div>
+                      <div style={{ color: C.slate, fontSize: 11 }}>Una línea por nombre: escribe lo que debemos o trae un proveedor de Busint (se guarda solo y se resta).</div>
                     </div>
-                    {manual.cxp.map((c, i) => (
-                      <div key={i} style={{ display: "grid", gridTemplateColumns: GRID, gap: 10, alignItems: "center", padding: "5px 0 5px 22px", fontVariantNumeric: "tabular-nums" }}>
-                        <input
-                          value={c.nombre}
-                          onChange={(e) => cambiarManual({ ...manual, cxp: manual.cxp.map((x, j) => (j === i ? { ...x, nombre: e.target.value } : x)) })}
-                          placeholder={`Nombre ${i + 1}`}
-                          aria-label="Nombre de la cuenta por pagar"
-                          style={{ fontFamily: "inherit", fontWeight: 600, fontSize: 13, padding: "6px 9px", borderRadius: 8, border: `1px solid ${C.border}`, background: "#FFFBEF", minWidth: 0 }}
-                        />
-                        <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 6 }}>
-                          <InputMonto valor={c.valor} etiqueta={`Lo que debemos a ${c.nombre || `nombre ${i + 1}`}`} onChange={(v) => cambiarManual({ ...manual, cxp: manual.cxp.map((x, j) => (j === i ? { ...x, valor: v } : x)) })} />
+                    {manual.cxp.map((c, i) => {
+                      const ef = manualEfectivo.cxp[i];
+                      const auto = !!c.auto && !!corteBusint;
+                      const dp = auto ? corteBusint.mapa.get(c.proveedor) : null;
+                      return (
+                        <div key={i} style={{ display: "grid", gridTemplateColumns: GRID, gap: 10, alignItems: "center", padding: "5px 0 5px 22px", fontVariantNumeric: "tabular-nums" }}>
+                          {auto ? (
+                            <div style={{ minWidth: 0 }}>
+                              <div style={{ fontWeight: 700, fontSize: 13 }}>{c.nombre}<span style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, padding: "1px 8px", borderRadius: 20, background: C.blueBg, color: C.blue }}>automático · corte {corteBusint.fecha}</span></div>
+                              <div style={{ color: dp ? C.slate : C.amber, fontSize: 11 }}>
+                                {dp ? `Facturas ${fmtMoney(dp.total)} − anticipos ${fmtMoney(dp.anticipos)}` : "No aparece en el último corte (¿ya se pagó?): cuenta como $0"}
+                                {" · "}
+                                <button onClick={() => cambiarManual({ ...manual, cxp: manual.cxp.map((x, j) => (j === i ? { ...x, auto: false, valor: Math.max(0, ef.valor) } : x)) })} style={{ border: "none", background: "none", color: C.blue, fontFamily: "inherit", fontSize: 11, fontWeight: 700, cursor: "pointer", padding: 0 }}>pasar a manual</button>
+                              </div>
+                            </div>
+                          ) : (
+                            <input
+                              value={c.nombre}
+                              onChange={(e) => cambiarManual({ ...manual, cxp: manual.cxp.map((x, j) => (j === i ? { ...x, nombre: e.target.value } : x)) })}
+                              placeholder={`Nombre ${i + 1}`}
+                              aria-label="Nombre de la cuenta por pagar"
+                              style={{ fontFamily: "inherit", fontWeight: 600, fontSize: 13, padding: "6px 9px", borderRadius: 8, border: `1px solid ${C.border}`, background: "#FFFBEF", minWidth: 0 }}
+                            />
+                          )}
+                          <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 6 }}>
+                            {auto ? (
+                              <span style={{ fontWeight: 700, fontSize: 13 }}>{fmtMoney(ef.valor)}</span>
+                            ) : (
+                              <InputMonto valor={c.valor} etiqueta={`Lo que debemos a ${c.nombre || `nombre ${i + 1}`}`} onChange={(v) => cambiarManual({ ...manual, cxp: manual.cxp.map((x, j) => (j === i ? { ...x, valor: v } : x)) })} />
+                            )}
+                          </div>
+                          <div style={{ textAlign: "right", color: C.slate }}>—</div>
+                          <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 6, fontWeight: 800, color: rojoSiNeg(-ef.valor) }}>
+                            {fmtMoney(-ef.valor)}
+                            <button onClick={() => cambiarManual({ ...manual, cxp: manual.cxp.filter((_, j) => j !== i) })} aria-label="Quitar" style={{ border: "none", background: "none", color: C.slate, fontSize: 18, cursor: "pointer", lineHeight: 1 }}>×</button>
+                          </div>
                         </div>
-                        <div style={{ textAlign: "right", color: C.slate }}>—</div>
-                        <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 6, fontWeight: 800, color: rojoSiNeg(-c.valor) }}>
-                          {fmtMoney(-c.valor)}
-                          <button onClick={() => cambiarManual({ ...manual, cxp: manual.cxp.filter((_, j) => j !== i) })} aria-label="Quitar" style={{ border: "none", background: "none", color: C.slate, fontSize: 18, cursor: "pointer", lineHeight: 1 }}>×</button>
+                      );
+                    })}
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", margin: "6px 0 8px 22px" }}>
+                      <button onClick={() => setVerProveedores((v) => !v)} style={{ border: `1px solid ${C.blue}`, background: verProveedores ? C.blueBg : C.white, color: C.blue, fontFamily: "inherit", fontWeight: 700, fontSize: 12.5, borderRadius: 8, padding: "5px 12px", cursor: "pointer" }}>🔎 Traer proveedor</button>
+                      <button onClick={() => cambiarManual({ ...manual, cxp: [...manual.cxp, { nombre: "", valor: 0, auto: false, proveedor: "" }] })} style={{ border: `1px dashed ${C.seam}`, background: C.white, color: C.blue, fontFamily: "inherit", fontWeight: 700, fontSize: 12.5, borderRadius: 8, padding: "5px 12px", cursor: "pointer" }}>+ Agregar nombre</button>
+                    </div>
+                    {verProveedores && (() => {
+                      const norm = (t) => String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+                      const q = norm(buscaProv).trim();
+                      const yaAgregados = new Set(manual.cxp.filter((x) => x.auto).map((x) => x.proveedor));
+                      const lista = corteBusint
+                        ? corteBusint.proveedores.filter((p) => (q ? norm(p.nombre).includes(q) : p.neto !== 0)).sort((a, b) => b.neto - a.neto).slice(0, 200)
+                        : [];
+                      return (
+                        <div style={{ margin: "0 0 12px 22px", border: `1px solid ${C.border}`, borderRadius: 10, padding: 12, background: C.canvas }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                            <div style={{ fontWeight: 800, fontSize: 12.5 }}>Proveedores de Busint (Yanko){corteBusint ? ` · corte del ${corteBusint.fecha}` : ""}</div>
+                            <button onClick={() => setVerProveedores(false)} aria-label="Cerrar" style={{ border: "none", background: "none", fontSize: 18, cursor: "pointer", color: C.slate }}>×</button>
+                          </div>
+                          {!corteBusint ? (
+                            <div style={{ fontSize: 12, color: C.amber }}>Todavía no hay un corte de Cuentas por Pagar de Busint. Trae uno en Contabilidad → Cuentas por pagar → «Traer desde Busint» y vuelve aquí.</div>
+                          ) : (
+                            <>
+                              <input value={buscaProv} onChange={(e) => setBuscaProv(e.target.value)} placeholder="Buscar proveedor…" aria-label="Buscar proveedor" style={{ width: "100%", boxSizing: "border-box", fontFamily: "inherit", fontSize: 13, padding: "7px 10px", borderRadius: 8, border: `1px solid ${C.border}`, marginBottom: 8 }} />
+                              <div style={{ maxHeight: 260, overflowY: "auto", background: C.white, borderRadius: 8, border: `1px solid ${C.border}` }}>
+                                {!lista.length && <div style={{ padding: 14, fontSize: 12, color: C.slate, textAlign: "center" }}>{q ? "Ningún proveedor coincide." : "No hay proveedores con saldo en este corte."}</div>}
+                                {lista.map((p) => (
+                                  <div key={p.nombre} style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 150px 96px", gap: 10, alignItems: "center", padding: "7px 10px", borderTop: `1px solid ${C.border}`, fontSize: 12.5, fontVariantNumeric: "tabular-nums" }}>
+                                    <div style={{ minWidth: 0 }}>
+                                      <div style={{ fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.nombre}</div>
+                                      <div style={{ color: C.slate, fontSize: 11 }}>Facturas {fmtMoney(p.total)} − anticipos {fmtMoney(p.anticipos)}</div>
+                                    </div>
+                                    <div style={{ textAlign: "right", fontWeight: 800 }}>{fmtMoney(p.neto)}</div>
+                                    {yaAgregados.has(p.nombre) ? (
+                                      <span style={{ textAlign: "center", fontSize: 11.5, fontWeight: 700, color: C.green }}>✓ agregado</span>
+                                    ) : (
+                                      <button onClick={() => cambiarManual({ ...manual, cxp: [...manual.cxp, { nombre: p.nombre, valor: p.neto, auto: true, proveedor: p.nombre }] })} style={{ border: "none", background: C.ink, color: C.white, fontFamily: "inherit", fontWeight: 700, fontSize: 12, borderRadius: 7, padding: "5px 10px", cursor: "pointer" }}>Agregar</button>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            </>
+                          )}
                         </div>
-                      </div>
-                    ))}
-                    <button onClick={() => cambiarManual({ ...manual, cxp: [...manual.cxp, { nombre: "", valor: 0 }] })} style={{ margin: "6px 0 8px 22px", border: `1px dashed ${C.seam}`, background: C.white, color: C.blue, fontFamily: "inherit", fontWeight: 700, fontSize: 12.5, borderRadius: 8, padding: "5px 12px", cursor: "pointer" }}>+ Agregar nombre</button>
+                      );
+                    })()}
                     {filaTotal("TOTAL", cuadre.bloque1)}
 
                     <div style={{ fontWeight: 800, fontSize: 12, color: C.blue, margin: "16px 0 4px" }}>2 · LO QUE TENEMOS</div>
