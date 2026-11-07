@@ -32,9 +32,11 @@ export function etapaDeSituacion(situacion) {
   return "producido";
 }
 
-// grupos = porCliente de getDisponibleParaDespachar ([{ cliente, filas }]); saldoTotal = Saldo Total del Estado de Cuenta
-// (positivo = Kamila debe; negativo = Kamila ha abonado más de lo despachado, a favor).
-export function armarCuadreKamila(grupos, saldoTotal) {
+// grupos = porCliente de getDisponibleParaDespachar ([{ cliente, filas }]); saldoEstado = Saldo Total del Estado de Cuenta (positivo = Kamila debe; negativo =
+// Kamila ha abonado más de lo despachado, a favor); colombia = { saldo, remisionadoSinIva } de cuadre-kamila-tns (saldo positivo = Kamila Colombia debe).
+// Resultado = a favor del Estado de Cuenta − saldo de Kamila Colombia − por cortar y despachar (Colombia + Venezuela) − remisionado de Colombia.
+// Positivo = queda a favor de Kamila; negativo = falta por cobrar.
+export function armarCuadreKamila(grupos, saldoEstado, colombia) {
   const porPais = { Colombia: [], Venezuela: [] };
   (grupos || []).forEach((g) => {
     const pais = paisKamila(g.cliente);
@@ -59,9 +61,10 @@ export function armarCuadreKamila(grupos, saldoTotal) {
       sinPrecio: lotes.filter((l) => !(l.precio > 0)).length,
     };
   });
-  const saldo = Number(saldoTotal) || 0;
-  const pendienteVenezuela = paises.Venezuela.total;
-  // Positivo = falta cobrar; negativo = lo abonado cubre todo y sobra.
-  const faltaCobrar = pendienteVenezuela + saldo;
-  return { paises, saldo, aFavor: saldo < 0 ? -saldo : 0, pendienteVenezuela, faltaCobrar };
+  const saldo = Number(saldoEstado) || 0;
+  const saldoColombia = Number(colombia?.saldo) || 0;
+  const remisionado = Number(colombia?.remisionadoSinIva) || 0;
+  const aFavorEstado = -saldo;
+  const resultado = aFavorEstado - saldoColombia - paises.Colombia.total - paises.Venezuela.total - remisionado;
+  return { paises, saldo, aFavorEstado, saldoColombia, remisionado, pendienteColombia: paises.Colombia.total, pendienteVenezuela: paises.Venezuela.total, resultado, faltaCobrar: -resultado };
 }

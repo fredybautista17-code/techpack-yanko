@@ -14,6 +14,7 @@ import {
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { DevolucionesBodegaView } from "./devoluciones-cliente";
 import { armarCuadreKamila, ETAPAS_CUADRE, PAISES_KAMILA } from "./cuadre-kamila-calculo";
+import { kamilaColombiaTns, mezclarCarteraTnsDocs } from "./cuadre-kamila-tns";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
   authDomain: "techpack-yanko-f37b8.firebaseapp.com",
@@ -197,14 +198,14 @@ const CURVA_TALLAS_ESTANDAR = [
 function normTalla(s) {
   return String(s || "").replace(/\s+/g, " ").trim().toUpperCase();
 }
-function Modal({ title, onClose, children, width = 560 }) {
+function Modal({ title, onClose, children, width = 560, alto = "90vh" }) {
   return (
     <div
       style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
       onClick={onClose}
     >
       <div
-        style={{ background: C.white, borderRadius: 14, width: "100%", maxWidth: width, maxHeight: "90vh", overflow: "hidden", display: "flex", flexDirection: "column", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}
+        style={{ background: C.white, borderRadius: 14, width: "100%", maxWidth: width, maxHeight: alto, overflow: "hidden", display: "flex", flexDirection: "column", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}
         onClick={(e) => e.stopPropagation()}
       >
         <div style={{ padding: "18px 24px", borderBottom: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
@@ -2799,13 +2800,16 @@ async function exportarCuadreKamilaExcel(cuadre) {
     g1.push([celda(`Kamila ${pais}`, ESTILO_DATO), ...ETAPAS_CUADRE.map((e) => celda(d.porEtapa[e.k].valor, ESTILO_DATO, FORMATO_MONEDA)), celda(d.total, ESTILO_SUBTOTAL, FORMATO_MONEDA)]);
   });
   g1.push([]);
-  g1.push([celda("CUADRE VENEZUELA", ESTILO_HEADER), celda("", ESTILO_HEADER)]);
-  g1.push([celda("Saldo Total del Estado de Cuenta (negativo = a favor de Kamila)", ESTILO_DATO), celda(cuadre.saldo, ESTILO_DATO, FORMATO_MONEDA)]);
-  g1.push([celda("Pendiente por cortar y despachar — Venezuela", ESTILO_DATO), celda(cuadre.pendienteVenezuela, ESTILO_DATO, FORMATO_MONEDA)]);
+  g1.push([celda("CUADRE KAMILA — LO QUE QUEDA A FAVOR", ESTILO_HEADER), celda("", ESTILO_HEADER)]);
+  g1.push([celda("Saldo a favor de Kamila (Saldo Total del Estado de Cuenta, signo cambiado)", ESTILO_DATO), celda(cuadre.aFavorEstado, ESTILO_DATO, FORMATO_MONEDA)]);
+  g1.push([celda("− Saldo de Kamila Colombia en TNS (lo que debe por facturas)", ESTILO_DATO), celda(-cuadre.saldoColombia, ESTILO_DATO, FORMATO_MONEDA)]);
+  g1.push([celda("− Por cortar y despachar — Kamila Colombia", ESTILO_DATO), celda(-cuadre.pendienteColombia, ESTILO_DATO, FORMATO_MONEDA)]);
+  g1.push([celda("− Por cortar y despachar — Kamila Venezuela", ESTILO_DATO), celda(-cuadre.pendienteVenezuela, ESTILO_DATO, FORMATO_MONEDA)]);
+  g1.push([celda("− Remisionado sin facturar — Kamila Colombia (sin IVA)", ESTILO_DATO), celda(-cuadre.remisionado, ESTILO_DATO, FORMATO_MONEDA)]);
   const falta = cuadre.faltaCobrar > 0;
-  g1.push([celda(falta ? "FALTA POR COBRAR (lo abonado no alcanza)" : "QUEDA A FAVOR (lo abonado alcanza)", ESTILO_RES(falta)), celda(Math.abs(cuadre.faltaCobrar), ESTILO_RES(falta), FORMATO_MONEDA)]);
+  g1.push([celda(falta ? "FALTA POR COBRAR (lo que hay a favor no alcanza)" : "QUEDA A FAVOR (alcanza para todo)", ESTILO_RES(falta)), celda(Math.abs(cuadre.faltaCobrar), ESTILO_RES(falta), FORMATO_MONEDA)]);
   const ws1 = XLSX.utils.aoa_to_sheet(g1);
-  ws1["!cols"] = [{ wch: 58 }, { wch: 18 }, { wch: 18 }, { wch: 18 }, { wch: 18 }, { wch: 24 }, { wch: 20 }];
+  ws1["!cols"] = [{ wch: 70 }, { wch: 18 }, { wch: 18 }, { wch: 18 }, { wch: 18 }, { wch: 24 }, { wch: 20 }];
   // Hoja 2: Lotes
   const heads = ["PAÍS", "CLIENTE", "PEDIDO", "REFERENCIA", "DESCRIPCIÓN", "LOTE", "SITUACIÓN", "UNIDADES", "PRECIO SIN IVA", "VALOR LISTO PARA FACTURAR", "VALOR PENDIENTE"];
   const g2 = [heads.map((h) => celda(h, ESTILO_HEADER))];
@@ -2836,6 +2840,16 @@ function CuadreKamilaModal({ saldoTotal, onClose }) {
   const [datos, setDatos] = useState(null);
   const [vista, setVista] = useState("Todos");
   const [bajando, setBajando] = useState(false);
+  // Saldo y remisionado de Kamila Colombia: los Excel de TNS que se suben en Contabilidad → Cuadre por cliente
+  const [tnsCartera, setTnsCartera] = useState(null);
+  const [tnsRemisiones, setTnsRemisiones] = useState(null);
+  const [quitadas, setQuitadas] = useState(null);
+  useEffect(() => {
+    const u1 = onSnapshot(collection(db, "contabilidad_saldos_tns"), (snap) => setTnsCartera(mezclarCarteraTnsDocs(snap.docs)), () => setTnsCartera({}));
+    const u2 = onSnapshot(collection(db, "contabilidad_remisiones_tns"), (snap) => { const m = {}; snap.docs.forEach((d) => { m[d.id] = d.data(); }); setTnsRemisiones(m); }, () => setTnsRemisiones({}));
+    const u3 = onSnapshot(doc(db, "contabilidad_cuadre_config", "main"), (snap) => setQuitadas(snap.exists() ? snap.data().quitadas || {} : {}), () => setQuitadas({}));
+    return () => { u1(); u2(); u3(); };
+  }, []);
   async function consultar() {
     setCargando(true);
     setError("");
@@ -2848,16 +2862,17 @@ function CuadreKamilaModal({ saldoTotal, onClose }) {
     setCargando(false);
   }
   useEffect(() => { consultar(); /* eslint-disable-next-line */ }, []);
-  const cuadre = useMemo(() => (datos ? armarCuadreKamila(datos.porCliente || [], saldoTotal) : null), [datos, saldoTotal]);
+  const tns = useMemo(() => (tnsCartera && tnsRemisiones && quitadas ? kamilaColombiaTns(tnsCartera, tnsRemisiones, quitadas) : null), [tnsCartera, tnsRemisiones, quitadas]);
+  const cuadre = useMemo(() => (datos && tns ? armarCuadreKamila(datos.porCliente || [], saldoTotal, { saldo: tns.saldo, remisionadoSinIva: tns.remisionadoSinIva }) : null), [datos, tns, saldoTotal]);
   const nombresKamila = useMemo(() => (datos?.porCliente || []).map((g) => g.cliente).filter((n) => /KAMILA/i.test(n)), [datos]);
   const falta = cuadre ? cuadre.faltaCobrar > 0 : false;
   const celdaTh = (t, al) => <th key={t} style={{ padding: "8px 8px", textAlign: al || "right", fontSize: 10.5, fontWeight: 800, color: C.slate, textTransform: "uppercase", letterSpacing: "0.04em", borderBottom: `2px solid ${C.border}`, whiteSpace: "nowrap" }}>{t}</th>;
   const celdaTd = (v, al, extra) => <td style={{ padding: "7px 8px", textAlign: al || "right", fontSize: 12, borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap", ...extra }}>{v}</td>;
   const paisesVista = vista === "Todos" ? PAISES_KAMILA : [vista];
   return (
-    <Modal title="⚖️ Cuadre por cortar y por despachar — KAMILA" onClose={onClose} width={1000}>
+    <Modal title="⚖️ Cuadre por cortar y por despachar — KAMILA" onClose={onClose} width={1600} alto="96vh">
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 14 }}>Solo pedidos reales (sin preórdenes) · valores sin IVA · {fmtFechaISO(today())}</div>
-      {cargando && <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>Consultando Busint… puede tardar un par de minutos.</div>}
+      {(cargando || (datos && !tns)) && <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>Consultando Busint… puede tardar un par de minutos.</div>}
       {error && (
         <div style={{ padding: "10px 14px", background: C.redBg, color: C.red, borderRadius: 8, fontSize: 12, fontWeight: 600, marginBottom: 12 }}>
           {error} <button onClick={consultar} style={{ marginLeft: 8, fontWeight: 700, cursor: "pointer" }}>Reintentar</button>
@@ -2895,21 +2910,27 @@ function CuadreKamilaModal({ saldoTotal, onClose }) {
           </div>
 
           <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 18px" }}>
-            <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 8 }}>Cuadre Venezuela</div>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "7px 0", borderTop: `1px solid ${C.border}`, fontVariantNumeric: "tabular-nums" }}>
-              <span>Saldo Total del Estado de Cuenta <span style={{ color: C.slate, fontSize: 12 }}>({cuadre.saldo < 0 ? "a favor de Kamila" : cuadre.saldo > 0 ? "Kamila debe" : "en cero"})</span></span>
-              <b style={{ color: cuadre.saldo > 0 ? C.red : C.green }}>{fmtMoney(cuadre.saldo)}</b>
-            </div>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "7px 0", borderTop: `1px solid ${C.border}`, fontVariantNumeric: "tabular-nums" }}>
-              <span>Pendiente por cortar y despachar — Venezuela</span>
-              <b>{fmtMoney(cuadre.pendienteVenezuela)}</b>
-            </div>
+            <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 8 }}>Cuadre Kamila: lo que queda a favor</div>
+            {[
+              { t: "Saldo a favor de Kamila", d: `Saldo Total del Estado de Cuenta (${cuadre.saldo < 0 ? "Kamila ha abonado de más" : cuadre.saldo > 0 ? "Kamila debe" : "en cero"}): ${fmtMoney(cuadre.saldo)}`, v: cuadre.aFavorEstado },
+              { t: "− Saldo de Kamila Colombia", d: `Lo que debe por facturas en TNS (Yanko + Indutex)${tns.clientesTomados.length ? ` · ${tns.clientesTomados.join(" · ")}` : ""}`, v: -cuadre.saldoColombia },
+              { t: "− Por cortar y despachar — Kamila Colombia", d: `${Math.round(cuadre.paises.Colombia.unidades).toLocaleString("es-CO")} unidades · pedidos reales, sin IVA`, v: -cuadre.pendienteColombia },
+              { t: "− Por cortar y despachar — Kamila Venezuela", d: `${Math.round(cuadre.paises.Venezuela.unidades).toLocaleString("es-CO")} unidades · pedidos reales, sin IVA`, v: -cuadre.pendienteVenezuela },
+              { t: "− Remisionado sin facturar — Kamila Colombia", d: `${Math.round(tns.unidadesRemisionadas).toLocaleString("es-CO")} unidades por facturar · ${fmtMoney(tns.remisionadoConIva)} con IVA ÷ 1,19${tns.remisionesQuitadas ? ` · ${tns.remisionesQuitadas} remisión(es) quitada(s) en Contabilidad` : ""}`, v: -cuadre.remisionado },
+            ].map((f) => (
+              <div key={f.t} style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "7px 0", borderTop: `1px solid ${C.border}`, fontVariantNumeric: "tabular-nums" }}>
+                <span>{f.t}<div style={{ color: C.slate, fontSize: 11.5 }}>{f.d}</div></span>
+                <b style={{ color: f.v < 0 ? C.red : C.green, whiteSpace: "nowrap" }}>{fmtMoney(f.v)}</b>
+              </div>
+            ))}
             <div style={{ marginTop: 6, borderRadius: 10, padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", background: falta ? C.redBg : C.greenBg, color: falta ? C.red : C.green }}>
-              <div style={{ fontWeight: 700, fontSize: 13, maxWidth: 440, lineHeight: 1.35 }}>
-                {falta ? "Lo abonado no alcanza para cubrir lo pendiente de Venezuela: faltaría cobrar." : "Lo abonado alcanza para todo lo pendiente de Venezuela y todavía queda a favor."}
+              <div style={{ fontWeight: 700, fontSize: 13, maxWidth: 520, lineHeight: 1.35 }}>
+                {falta ? "Lo que Kamila tiene a favor no alcanza para cubrir su saldo, lo remisionado y lo que falta por despachar: faltaría cobrar." : "Lo que Kamila tiene a favor alcanza para cubrir su saldo, lo remisionado y lo que falta por despachar, y todavía queda a favor."}
               </div>
               <div style={{ fontSize: 24, fontWeight: 800, fontVariantNumeric: "tabular-nums" }}>{fmtMoney(Math.abs(cuadre.faltaCobrar))}</div>
             </div>
+            {tns.avisos.length > 0 && <div style={{ marginTop: 8, padding: "8px 12px", background: C.amberBg, color: C.amber, borderRadius: 8, fontSize: 12 }}>{tns.avisos.map((a, i) => <div key={i}>⚠️ {a}</div>)}</div>}
+            {tns.clientesExcluidos.length > 0 && <div style={{ marginTop: 6, fontSize: 11.5, color: C.slate }}>No se cuentan en Colombia (son Venezuela): {tns.clientesExcluidos.join(" · ")}.</div>}
           </div>
 
           <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 18px" }}>
@@ -2921,8 +2942,8 @@ function CuadreKamilaModal({ saldoTotal, onClose }) {
                 </button>
               ))}
             </div>
-            <div style={{ overflowX: "auto", maxHeight: "42vh", overflowY: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 820, fontVariantNumeric: "tabular-nums" }}>
+            <div style={{ overflowX: "auto", maxHeight: "62vh", overflowY: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900, fontVariantNumeric: "tabular-nums" }}>
                 <thead style={{ position: "sticky", top: 0, background: C.white }}>
                   <tr>{celdaTh("Pedido", "left")}{celdaTh("Referencia", "left")}{celdaTh("Descripción", "left")}{celdaTh("Lote", "center")}{celdaTh("Situación", "center")}{celdaTh("Unidades")}{celdaTh("Precio")}{celdaTh("Valor listo para facturar")}{celdaTh("Valor pendiente")}</tr>
                 </thead>
@@ -2970,8 +2991,8 @@ function CuadreKamilaModal({ saldoTotal, onClose }) {
           </div>
 
           <div style={{ fontSize: 11.5, color: C.slate, lineHeight: 1.5 }}>
-            Colombia se muestra como información: no entra en el cuadre porque el Estado de Cuenta no la incluye. «Valor listo para facturar» es lo ya producido; lo demás sigue en producción o sin cortar (sin lote).
-            Lo despachado se descuenta de los lotes más antiguos primero (Busint no dice de qué lote sale cada factura).
+            El saldo a favor sale del Estado de Cuenta (Venezuela + Segundas Reprogramación); el saldo y lo remisionado de Kamila Colombia, de los Excel de TNS de Contabilidad (cartera y remisiones), así que están al día solo si esos Excel lo están.
+            «Valor listo para facturar» es lo ya producido; lo demás sigue en producción o sin cortar (sin lote). Lo despachado se descuenta de los lotes más antiguos primero (Busint no dice de qué lote sale cada factura).
           </div>
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, flexWrap: "wrap" }}>
             <Btn variant="secondary" onClick={consultar} disabled={cargando}>🔄 Actualizar</Btn>
