@@ -32,11 +32,28 @@ export function etapaDeSituacion(situacion) {
   return "producido";
 }
 
-// grupos = porCliente de getDisponibleParaDespachar ([{ cliente, filas }]); saldoEstado = Saldo Total del Estado de Cuenta (positivo = Kamila debe; negativo =
-// Kamila ha abonado más de lo despachado, a favor); colombia = { saldo, remisionadoSinIva } de cuadre-kamila-tns (saldo positivo = Kamila Colombia debe).
-// Resultado = a favor del Estado de Cuenta − saldo de Kamila Colombia − por cortar y despachar (Colombia + Venezuela) − remisionado de Colombia.
-// Positivo = queda a favor de Kamila; negativo = falta por cobrar.
-export function armarCuadreKamila(grupos, saldoEstado, colombia) {
+// (2026-11-07) Tasa de IVA que se suma a lo de Colombia por despachar y a lo remisionado de Colombia (Venezuela no lleva IVA).
+export const TASA_IVA_CUADRE = 0.19;
+
+// Filas del cuadre con los signos COMO VIENEN: negativo = a favor de Kamila (Estado de Cuenta y TNS); positivo = lo que Kamila debe o va a deber.
+// Cada fila: valor (sin IVA), iva (valor × tasa si aplica) y total (valor + iva). Resultado = suma de los totales: negativo = queda a favor; positivo = falta por cobrar.
+export function filasCuadre({ saldoEstado, saldoColombia, pendienteColombia, pendienteVenezuela, remisionadoSinIva }, tasa = TASA_IVA_CUADRE) {
+  const base = [
+    { k: "estado", concepto: "Saldo Total del Estado de Cuenta (Venezuela + Segundas Reprogramación)", valor: Number(saldoEstado) || 0, conIva: false },
+    { k: "colombiaSaldo", concepto: "Saldo de Kamila Colombia en TNS (Yanko + Indutex; ya trae IVA)", valor: Number(saldoColombia) || 0, conIva: false },
+    { k: "pendCol", concepto: "Por cortar y despachar — Kamila Colombia", valor: Number(pendienteColombia) || 0, conIva: true },
+    { k: "pendVen", concepto: "Por cortar y despachar — Kamila Venezuela", valor: Number(pendienteVenezuela) || 0, conIva: false },
+    { k: "remis", concepto: "Remisionado sin facturar — Kamila Colombia", valor: Number(remisionadoSinIva) || 0, conIva: true },
+  ];
+  return base.map((f) => {
+    const iva = f.conIva ? Math.round(f.valor * tasa) : 0;
+    return { ...f, iva, total: f.valor + iva };
+  });
+}
+
+// grupos = porCliente de getDisponibleParaDespachar ([{ cliente, filas }]); saldoEstado = Saldo Total del Estado de Cuenta (negativo = a favor de Kamila);
+// colombia = { saldo, remisionadoSinIva } de cuadre-kamila-tns (saldo negativo = a favor).
+export function armarCuadreKamila(grupos, saldoEstado, colombia, tasa = TASA_IVA_CUADRE) {
   const porPais = { Colombia: [], Venezuela: [] };
   (grupos || []).forEach((g) => {
     const pais = paisKamila(g.cliente);
@@ -61,10 +78,13 @@ export function armarCuadreKamila(grupos, saldoEstado, colombia) {
       sinPrecio: lotes.filter((l) => !(l.precio > 0)).length,
     };
   });
-  const saldo = Number(saldoEstado) || 0;
-  const saldoColombia = Number(colombia?.saldo) || 0;
-  const remisionado = Number(colombia?.remisionadoSinIva) || 0;
-  const aFavorEstado = -saldo;
-  const resultado = aFavorEstado - saldoColombia - paises.Colombia.total - paises.Venezuela.total - remisionado;
-  return { paises, saldo, aFavorEstado, saldoColombia, remisionado, pendienteColombia: paises.Colombia.total, pendienteVenezuela: paises.Venezuela.total, resultado, faltaCobrar: -resultado };
+  const filas = filasCuadre({
+    saldoEstado,
+    saldoColombia: colombia?.saldo,
+    pendienteColombia: paises.Colombia.total,
+    pendienteVenezuela: paises.Venezuela.total,
+    remisionadoSinIva: colombia?.remisionadoSinIva,
+  }, tasa);
+  const resultado = filas.reduce((a, f) => a + f.total, 0);
+  return { paises, filas, tasa, resultado, faltaCobrar: resultado, ivaTotal: filas.reduce((a, f) => a + f.iva, 0) };
 }

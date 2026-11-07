@@ -13,7 +13,7 @@ import {
 } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { DevolucionesBodegaView } from "./devoluciones-cliente";
-import { armarCuadreKamila, ETAPAS_CUADRE, PAISES_KAMILA } from "./cuadre-kamila-calculo";
+import { armarCuadreKamila, ETAPAS_CUADRE, PAISES_KAMILA, TASA_IVA_CUADRE } from "./cuadre-kamila-calculo";
 import { kamilaColombiaTns, mezclarCarteraTnsDocs } from "./cuadre-kamila-tns";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
@@ -2787,7 +2787,6 @@ async function exportarEstadoCuentaKamilaExcel(movimientos, desglose) {
 const COLOR_ETAPA_CUADRE = { sinCortar: C.red, corte: C.amber, planta: C.blue, semi: C.violet, producido: C.green };
 async function exportarCuadreKamilaExcel(cuadre) {
   const XLSX = await import("xlsx-js-style");
-  const ESTILO_RES = (rojo) => (rojo ? ESTILO_SALDO_ROJO : ESTILO_SALDO_VERDE);
   // Hoja 1: Cuadre
   const g1 = [];
   const vacias = (n) => new Array(n).fill(null).map(() => celda("", ESTILO_TOTAL_VACIA));
@@ -2800,16 +2799,36 @@ async function exportarCuadreKamilaExcel(cuadre) {
     g1.push([celda(`Kamila ${pais}`, ESTILO_DATO), ...ETAPAS_CUADRE.map((e) => celda(d.porEtapa[e.k].valor, ESTILO_DATO, FORMATO_MONEDA)), celda(d.total, ESTILO_SUBTOTAL, FORMATO_MONEDA)]);
   });
   g1.push([]);
-  g1.push([celda("CUADRE KAMILA — LO QUE QUEDA A FAVOR", ESTILO_HEADER), celda("", ESTILO_HEADER)]);
-  g1.push([celda("Saldo a favor de Kamila (Saldo Total del Estado de Cuenta, signo cambiado)", ESTILO_DATO), celda(cuadre.aFavorEstado, ESTILO_DATO, FORMATO_MONEDA)]);
-  g1.push([celda("− Saldo de Kamila Colombia en TNS (lo que debe por facturas)", ESTILO_DATO), celda(-cuadre.saldoColombia, ESTILO_DATO, FORMATO_MONEDA)]);
-  g1.push([celda("− Por cortar y despachar — Kamila Colombia", ESTILO_DATO), celda(-cuadre.pendienteColombia, ESTILO_DATO, FORMATO_MONEDA)]);
-  g1.push([celda("− Por cortar y despachar — Kamila Venezuela", ESTILO_DATO), celda(-cuadre.pendienteVenezuela, ESTILO_DATO, FORMATO_MONEDA)]);
-  g1.push([celda("− Remisionado sin facturar — Kamila Colombia (sin IVA)", ESTILO_DATO), celda(-cuadre.remisionado, ESTILO_DATO, FORMATO_MONEDA)]);
-  const falta = cuadre.faltaCobrar > 0;
-  g1.push([celda(falta ? "FALTA POR COBRAR (lo que hay a favor no alcanza)" : "QUEDA A FAVOR (alcanza para todo)", ESTILO_RES(falta)), celda(Math.abs(cuadre.faltaCobrar), ESTILO_RES(falta), FORMATO_MONEDA)]);
+  // Tabla del cuadre con fórmulas vivas: signos como vienen (negativo = a favor de Kamila), IVA = valor × tasa, resultado = suma de los totales.
+  const ESTILO_TASA = { font: { bold: true }, fill: { fgColor: { rgb: "FFF2CC" } }, border: TODOS_LOS_BORDES, alignment: { horizontal: "center" } };
+  const ESTILO_NUM = { fill: { fgColor: { rgb: "D9E6F5" } }, border: TODOS_LOS_BORDES, alignment: { vertical: "center" } };
+  const ESTILO_NUM_EDIT = { fill: { fgColor: { rgb: "FFF2CC" } }, border: TODOS_LOS_BORDES, alignment: { vertical: "center" } };
+  const ESTILO_RESULT = { font: { bold: true, color: { rgb: "FFFFFF" }, sz: 12 }, fill: { fgColor: { rgb: "1F4E78" } }, border: TODOS_LOS_BORDES, alignment: { horizontal: "center", vertical: "center" } };
+  g1.push([celda("CUADRE KAMILA", ESTILO_HEADER), celda("VALOR (como viene)", ESTILO_HEADER), celda("IVA", ESTILO_HEADER), celda("TOTAL", ESTILO_HEADER)]);
+  const filaTasa = g1.length + 1; // número de fila en Excel
+  g1.push([celda("Tasa de IVA (cámbiala y se recalcula todo)", ESTILO_DATO), celda(cuadre.tasa, ESTILO_TASA, "0%")]);
+  const primera = g1.length + 1;
+  cuadre.filas.forEach((f) => {
+    const r = g1.length + 1;
+    g1.push([
+      celda(f.concepto, ESTILO_DATO),
+      celda(f.valor, ESTILO_NUM, FORMATO_MONEDA),
+      f.conIva ? { t: "n", f: `ROUND(B${r}*$B$${filaTasa},0)`, v: f.iva, s: ESTILO_NUM, z: FORMATO_MONEDA } : celda(0, ESTILO_NUM_EDIT, FORMATO_MONEDA),
+      { t: "n", f: `B${r}+C${r}`, v: f.total, s: ESTILO_NUM, z: FORMATO_MONEDA },
+    ]);
+  });
+  const ultima = g1.length;
+  const filaRes = g1.length + 1;
+  g1.push([
+    { t: "s", f: `IF(D${filaRes}<0,"QUEDA A FAVOR (alcanza para todo)","FALTA POR COBRAR (no alcanza)")`, v: cuadre.resultado < 0 ? "QUEDA A FAVOR (alcanza para todo)" : "FALTA POR COBRAR (no alcanza)", s: ESTILO_RESULT },
+    celda("", ESTILO_RESULT),
+    { t: "n", f: `SUM(C${primera}:C${ultima})`, v: cuadre.ivaTotal, s: ESTILO_RESULT, z: FORMATO_MONEDA },
+    { t: "n", f: `SUM(D${primera}:D${ultima})`, v: cuadre.resultado, s: ESTILO_RESULT, z: FORMATO_MONEDA },
+  ]);
+  g1.push([]);
+  g1.push([celda("Negativo = a favor de Kamila (Estado de Cuenta y TNS). Positivo = lo que Kamila debe o va a deber. El IVA solo se suma a lo de Kamila Colombia (por despachar y remisionado); las celdas amarillas se pueden editar.", { font: { italic: true, color: { rgb: "5A5A7A" } } })]);
   const ws1 = XLSX.utils.aoa_to_sheet(g1);
-  ws1["!cols"] = [{ wch: 70 }, { wch: 18 }, { wch: 18 }, { wch: 18 }, { wch: 18 }, { wch: 24 }, { wch: 20 }];
+  ws1["!cols"] = [{ wch: 70 }, { wch: 22 }, { wch: 18 }, { wch: 20 }, { wch: 18 }, { wch: 24 }, { wch: 20 }];
   // Hoja 2: Lotes
   const heads = ["PAÍS", "CLIENTE", "PEDIDO", "REFERENCIA", "DESCRIPCIÓN", "LOTE", "SITUACIÓN", "UNIDADES", "PRECIO SIN IVA", "VALOR LISTO PARA FACTURAR", "VALOR PENDIENTE"];
   const g2 = [heads.map((h) => celda(h, ESTILO_HEADER))];
@@ -2830,6 +2849,7 @@ async function exportarCuadreKamilaExcel(cuadre) {
   ws2["!cols"] = [{ wch: 12 }, { wch: 34 }, { wch: 10 }, { wch: 14 }, { wch: 32 }, { wch: 10 }, { wch: 32 }, { wch: 11 }, { wch: 15 }, { wch: 22 }, { wch: 18 }];
   ws2["!autofilter"] = { ref: `A1:K${Math.max(1, g2.length - 1)}` };
   const wb = XLSX.utils.book_new();
+  wb.Workbook = { CalcPr: { fullCalcOnLoad: true } };
   XLSX.utils.book_append_sheet(wb, ws1, "Cuadre");
   XLSX.utils.book_append_sheet(wb, ws2, "Lotes");
   XLSX.writeFile(wb, `Cuadre KAMILA por despachar ${today()}.xlsx`);
@@ -2910,24 +2930,36 @@ function CuadreKamilaModal({ saldoTotal, onClose }) {
           </div>
 
           <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 18px" }}>
-            <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 8 }}>Cuadre Kamila: lo que queda a favor</div>
-            {[
-              { t: "Saldo a favor de Kamila", d: `Saldo Total del Estado de Cuenta (${cuadre.saldo < 0 ? "Kamila ha abonado de más" : cuadre.saldo > 0 ? "Kamila debe" : "en cero"}): ${fmtMoney(cuadre.saldo)}`, v: cuadre.aFavorEstado },
-              { t: "− Saldo de Kamila Colombia", d: `Lo que debe por facturas en TNS (Yanko + Indutex)${tns.clientesTomados.length ? ` · ${tns.clientesTomados.join(" · ")}` : ""}`, v: -cuadre.saldoColombia },
-              { t: "− Por cortar y despachar — Kamila Colombia", d: `${Math.round(cuadre.paises.Colombia.unidades).toLocaleString("es-CO")} unidades · pedidos reales, sin IVA`, v: -cuadre.pendienteColombia },
-              { t: "− Por cortar y despachar — Kamila Venezuela", d: `${Math.round(cuadre.paises.Venezuela.unidades).toLocaleString("es-CO")} unidades · pedidos reales, sin IVA`, v: -cuadre.pendienteVenezuela },
-              { t: "− Remisionado sin facturar — Kamila Colombia", d: `${Math.round(tns.unidadesRemisionadas).toLocaleString("es-CO")} unidades por facturar · ${fmtMoney(tns.remisionadoConIva)} con IVA ÷ 1,19${tns.remisionesQuitadas ? ` · ${tns.remisionesQuitadas} remisión(es) quitada(s) en Contabilidad` : ""}`, v: -cuadre.remisionado },
-            ].map((f) => (
-              <div key={f.t} style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "7px 0", borderTop: `1px solid ${C.border}`, fontVariantNumeric: "tabular-nums" }}>
-                <span>{f.t}<div style={{ color: C.slate, fontSize: 11.5 }}>{f.d}</div></span>
-                <b style={{ color: f.v < 0 ? C.red : C.green, whiteSpace: "nowrap" }}>{fmtMoney(f.v)}</b>
+            <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 8 }}>Cuadre Kamila <span style={{ fontWeight: 600, fontSize: 12, color: C.slate }}>· negativo = a favor de Kamila · positivo = lo que debe o va a deber · IVA {Math.round(TASA_IVA_CUADRE * 100)} % solo en Colombia</span></div>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 640, fontVariantNumeric: "tabular-nums" }}>
+                <thead><tr>{celdaTh("Concepto", "left")}{celdaTh("Valor (como viene)")}{celdaTh("IVA")}{celdaTh("Total")}</tr></thead>
+                <tbody>
+                  {cuadre.filas.map((f) => {
+                    const detalle = {
+                      estado: `${cuadre.filas[0].valor < 0 ? "Kamila ha abonado de más" : cuadre.filas[0].valor > 0 ? "Kamila debe" : "en cero"}`,
+                      colombiaSaldo: tns.clientesTomados.length ? tns.clientesTomados.join(" · ") : "",
+                      pendCol: `${Math.round(cuadre.paises.Colombia.unidades).toLocaleString("es-CO")} unidades · pedidos reales, sin preórdenes`,
+                      pendVen: `${Math.round(cuadre.paises.Venezuela.unidades).toLocaleString("es-CO")} unidades · pedidos reales, sin preórdenes`,
+                      remis: `${Math.round(tns.unidadesRemisionadas).toLocaleString("es-CO")} unidades por facturar · ${fmtMoney(tns.remisionadoConIva)} con IVA en TNS${tns.remisionesQuitadas ? ` · ${tns.remisionesQuitadas} remisión(es) quitada(s) en Contabilidad` : ""}`,
+                    }[f.k];
+                    return (
+                      <tr key={f.k}>
+                        {celdaTd(<span>{f.concepto}{detalle ? <div style={{ color: C.slate, fontSize: 11 }}>{detalle}</div> : null}</span>, "left", { whiteSpace: "normal" })}
+                        {celdaTd(fmtMoney(f.valor), "right", { color: f.valor < 0 ? C.green : C.ink, fontWeight: 700 })}
+                        {celdaTd(f.conIva ? fmtMoney(f.iva) : "—", "right", { color: C.slate })}
+                        {celdaTd(fmtMoney(f.total), "right", { color: f.total < 0 ? C.green : C.ink, fontWeight: 800 })}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ marginTop: 8, borderRadius: 10, padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", background: falta ? C.redBg : C.greenBg, color: falta ? C.red : C.green }}>
+              <div style={{ fontWeight: 700, fontSize: 13, maxWidth: 560, lineHeight: 1.35 }}>
+                {falta ? "FALTA POR COBRAR: lo que debe o va a deber Kamila supera lo que tiene a favor." : "QUEDA A FAVOR: lo que Kamila tiene a favor alcanza para todo lo que debe o va a deber."}
               </div>
-            ))}
-            <div style={{ marginTop: 6, borderRadius: 10, padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", background: falta ? C.redBg : C.greenBg, color: falta ? C.red : C.green }}>
-              <div style={{ fontWeight: 700, fontSize: 13, maxWidth: 520, lineHeight: 1.35 }}>
-                {falta ? "Lo que Kamila tiene a favor no alcanza para cubrir su saldo, lo remisionado y lo que falta por despachar: faltaría cobrar." : "Lo que Kamila tiene a favor alcanza para cubrir su saldo, lo remisionado y lo que falta por despachar, y todavía queda a favor."}
-              </div>
-              <div style={{ fontSize: 24, fontWeight: 800, fontVariantNumeric: "tabular-nums" }}>{fmtMoney(Math.abs(cuadre.faltaCobrar))}</div>
+              <div style={{ fontSize: 24, fontWeight: 800 }}>{fmtMoney(cuadre.resultado)}</div>
             </div>
             {tns.avisos.length > 0 && <div style={{ marginTop: 8, padding: "8px 12px", background: C.amberBg, color: C.amber, borderRadius: 8, fontSize: 12 }}>{tns.avisos.map((a, i) => <div key={i}>⚠️ {a}</div>)}</div>}
             {tns.clientesExcluidos.length > 0 && <div style={{ marginTop: 6, fontSize: 11.5, color: C.slate }}>No se cuentan en Colombia (son Venezuela): {tns.clientesExcluidos.join(" · ")}.</div>}
