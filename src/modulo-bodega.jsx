@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, Fragment } from "react";
 import { initializeApp, getApps } from "firebase/app";
 import {
   getFirestore,
@@ -13,6 +13,7 @@ import {
 } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { DevolucionesBodegaView } from "./devoluciones-cliente";
+import { armarCuadreKamila, ETAPAS_CUADRE, PAISES_KAMILA } from "./cuadre-kamila-calculo";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
   authDomain: "techpack-yanko-f37b8.firebaseapp.com",
@@ -2778,6 +2779,209 @@ async function exportarEstadoCuentaKamilaExcel(movimientos, desglose) {
   const hoy = today();
   XLSX.writeFile(wb, `Estado de Cuenta KAMILA GROUP ${hoy}.xlsx`);
 }
+// ─── CUADRE KAMILA (por cortar y despachar vs. saldo) ───────────────────────
+// (2026-11-07, a pedido de Fredy) Botón «Cuadre por despachar» del Estado de Cuenta: lo que falta por cortar y despachar de Kamila Colombia y
+// Kamila Venezuela (pedidos reales, sin preórdenes, precios sin IVA, mismo cálculo de «Disponible para despachar») y, para Venezuela, cuánto
+// alcanza a cubrir el saldo del Estado de Cuenta. Solo usuarios internos: el cliente no debe ver lo que aún no se corta ni se despacha.
+const COLOR_ETAPA_CUADRE = { sinCortar: C.red, corte: C.amber, planta: C.blue, semi: C.violet, producido: C.green };
+async function exportarCuadreKamilaExcel(cuadre) {
+  const XLSX = await import("xlsx-js-style");
+  const ESTILO_RES = (rojo) => (rojo ? ESTILO_SALDO_ROJO : ESTILO_SALDO_VERDE);
+  // Hoja 1: Cuadre
+  const g1 = [];
+  const vacias = (n) => new Array(n).fill(null).map(() => celda("", ESTILO_TOTAL_VACIA));
+  g1.push([celda("CUADRE KAMILA — POR CORTAR Y POR DESPACHAR", { font: { bold: true, sz: 14 } })]);
+  g1.push([celda(`Generado el ${today()} · solo pedidos reales (sin preórdenes) · valores sin IVA`, { font: { italic: true, color: { rgb: "5A5A7A" } } })]);
+  g1.push([]);
+  g1.push(["PAÍS", ...ETAPAS_CUADRE.map((e) => e.txt.toUpperCase()), "TOTAL PENDIENTE"].map((h) => celda(h, ESTILO_HEADER)));
+  PAISES_KAMILA.forEach((pais) => {
+    const d = cuadre.paises[pais];
+    g1.push([celda(`Kamila ${pais}`, ESTILO_DATO), ...ETAPAS_CUADRE.map((e) => celda(d.porEtapa[e.k].valor, ESTILO_DATO, FORMATO_MONEDA)), celda(d.total, ESTILO_SUBTOTAL, FORMATO_MONEDA)]);
+  });
+  g1.push([]);
+  g1.push([celda("CUADRE VENEZUELA", ESTILO_HEADER), celda("", ESTILO_HEADER)]);
+  g1.push([celda("Saldo Total del Estado de Cuenta (negativo = a favor de Kamila)", ESTILO_DATO), celda(cuadre.saldo, ESTILO_DATO, FORMATO_MONEDA)]);
+  g1.push([celda("Pendiente por cortar y despachar — Venezuela", ESTILO_DATO), celda(cuadre.pendienteVenezuela, ESTILO_DATO, FORMATO_MONEDA)]);
+  const falta = cuadre.faltaCobrar > 0;
+  g1.push([celda(falta ? "FALTA POR COBRAR (lo abonado no alcanza)" : "QUEDA A FAVOR (lo abonado alcanza)", ESTILO_RES(falta)), celda(Math.abs(cuadre.faltaCobrar), ESTILO_RES(falta), FORMATO_MONEDA)]);
+  const ws1 = XLSX.utils.aoa_to_sheet(g1);
+  ws1["!cols"] = [{ wch: 58 }, { wch: 18 }, { wch: 18 }, { wch: 18 }, { wch: 18 }, { wch: 24 }, { wch: 20 }];
+  // Hoja 2: Lotes
+  const heads = ["PAÍS", "CLIENTE", "PEDIDO", "REFERENCIA", "DESCRIPCIÓN", "LOTE", "SITUACIÓN", "UNIDADES", "PRECIO SIN IVA", "VALOR LISTO PARA FACTURAR", "VALOR PENDIENTE"];
+  const g2 = [heads.map((h) => celda(h, ESTILO_HEADER))];
+  PAISES_KAMILA.forEach((pais) => {
+    const d = cuadre.paises[pais];
+    d.lotes.forEach((l) => {
+      const est = l.listo ? ESTILO_ABONO : ESTILO_DATO;
+      g2.push([pais, l.cliente, l.numPed, l.ref, l.descripcion, l.lote || "", l.situacion, l.unidades, l.precio, l.listo ? l.valor : 0, l.valor].map((v, i) => celda(v, est, i === 7 ? "#,##0" : i >= 8 ? FORMATO_MONEDA : undefined)));
+    });
+    const fila = vacias(heads.length);
+    fila[0] = celda(`TOTAL KAMILA ${pais.toUpperCase()}`, ESTILO_SUBTOTAL);
+    fila[7] = celda(d.unidades, ESTILO_SUBTOTAL, "#,##0");
+    fila[9] = celda(d.listo, ESTILO_SUBTOTAL, FORMATO_MONEDA);
+    fila[10] = celda(d.total, ESTILO_SUBTOTAL, FORMATO_MONEDA);
+    g2.push(fila);
+  });
+  const ws2 = XLSX.utils.aoa_to_sheet(g2);
+  ws2["!cols"] = [{ wch: 12 }, { wch: 34 }, { wch: 10 }, { wch: 14 }, { wch: 32 }, { wch: 10 }, { wch: 32 }, { wch: 11 }, { wch: 15 }, { wch: 22 }, { wch: 18 }];
+  ws2["!autofilter"] = { ref: `A1:K${Math.max(1, g2.length - 1)}` };
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws1, "Cuadre");
+  XLSX.utils.book_append_sheet(wb, ws2, "Lotes");
+  XLSX.writeFile(wb, `Cuadre KAMILA por despachar ${today()}.xlsx`);
+}
+function CuadreKamilaModal({ saldoTotal, onClose }) {
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState("");
+  const [datos, setDatos] = useState(null);
+  const [vista, setVista] = useState("Todos");
+  const [bajando, setBajando] = useState(false);
+  async function consultar() {
+    setCargando(true);
+    setError("");
+    try {
+      const resp = await httpsCallable(functionsClient, "getDisponibleParaDespachar", { timeout: 540000 })({});
+      setDatos(resp.data);
+    } catch (err) {
+      setError(err?.message || "No se pudo consultar Busint. Verifica que la función getDisponibleParaDespachar esté publicada.");
+    }
+    setCargando(false);
+  }
+  useEffect(() => { consultar(); /* eslint-disable-next-line */ }, []);
+  const cuadre = useMemo(() => (datos ? armarCuadreKamila(datos.porCliente || [], saldoTotal) : null), [datos, saldoTotal]);
+  const nombresKamila = useMemo(() => (datos?.porCliente || []).map((g) => g.cliente).filter((n) => /KAMILA/i.test(n)), [datos]);
+  const falta = cuadre ? cuadre.faltaCobrar > 0 : false;
+  const celdaTh = (t, al) => <th key={t} style={{ padding: "8px 8px", textAlign: al || "right", fontSize: 10.5, fontWeight: 800, color: C.slate, textTransform: "uppercase", letterSpacing: "0.04em", borderBottom: `2px solid ${C.border}`, whiteSpace: "nowrap" }}>{t}</th>;
+  const celdaTd = (v, al, extra) => <td style={{ padding: "7px 8px", textAlign: al || "right", fontSize: 12, borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap", ...extra }}>{v}</td>;
+  const paisesVista = vista === "Todos" ? PAISES_KAMILA : [vista];
+  return (
+    <Modal title="⚖️ Cuadre por cortar y por despachar — KAMILA" onClose={onClose} width={1000}>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 14 }}>Solo pedidos reales (sin preórdenes) · valores sin IVA · {fmtFechaISO(today())}</div>
+      {cargando && <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>Consultando Busint… puede tardar un par de minutos.</div>}
+      {error && (
+        <div style={{ padding: "10px 14px", background: C.redBg, color: C.red, borderRadius: 8, fontSize: 12, fontWeight: 600, marginBottom: 12 }}>
+          {error} <button onClick={consultar} style={{ marginLeft: 8, fontWeight: 700, cursor: "pointer" }}>Reintentar</button>
+        </div>
+      )}
+      {cuadre && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {datos?.avisos?.length > 0 && (
+            <div style={{ padding: "8px 12px", background: C.amberBg, color: C.amber, borderRadius: 8, fontSize: 12 }}>{datos.avisos.map((a, i) => <div key={i}>⚠️ {a}</div>)}</div>
+          )}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(300px,1fr))", gap: 12 }}>
+            {PAISES_KAMILA.map((pais) => {
+              const d = cuadre.paises[pais];
+              return (
+                <div key={pais} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 16px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                    <div style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>Kamila {pais}</div>
+                    <span style={{ fontSize: 10.5, fontWeight: 700, padding: "2px 8px", borderRadius: 20, background: C.blueBg, color: C.blue }}>sin IVA</span>
+                  </div>
+                  <div style={{ fontSize: 24, fontWeight: 800, margin: "6px 0 8px", fontVariantNumeric: "tabular-nums" }}>{fmtMoney(d.total)}</div>
+                  <div style={{ display: "flex", height: 8, borderRadius: 6, overflow: "hidden", background: C.border, marginBottom: 8 }}>
+                    {d.total > 0 && ETAPAS_CUADRE.map((e) => <span key={e.k} style={{ width: `${(d.porEtapa[e.k].valor / d.total) * 100}%`, background: COLOR_ETAPA_CUADRE[e.k] }} />)}
+                  </div>
+                  {ETAPAS_CUADRE.map((e) => (
+                    <div key={e.k} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12, padding: "1px 0", fontVariantNumeric: "tabular-nums" }}>
+                      <span><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: "50%", background: COLOR_ETAPA_CUADRE[e.k], marginRight: 7 }} />{e.txt} <span style={{ color: C.slate }}>({Math.round(d.porEtapa[e.k].unidades).toLocaleString("es-CO")} und)</span></span>
+                      <span>{fmtMoney(d.porEtapa[e.k].valor)}</span>
+                    </div>
+                  ))}
+                  {!d.encontrado && <div style={{ marginTop: 8, fontSize: 11.5, color: C.red, fontWeight: 600 }}>No encontré a Kamila {pais} entre los clientes de Busint{nombresKamila.length ? ` (veo: ${nombresKamila.join(" · ")})` : ""}.</div>}
+                  {d.sinPrecio > 0 && <div style={{ marginTop: 8, fontSize: 11.5, color: C.amber, fontWeight: 600 }}>⚠️ {d.sinPrecio} línea(s) sin precio matriculado: valen $0 en este cuadre.</div>}
+                </div>
+              );
+            })}
+          </div>
+
+          <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 18px" }}>
+            <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 8 }}>Cuadre Venezuela</div>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "7px 0", borderTop: `1px solid ${C.border}`, fontVariantNumeric: "tabular-nums" }}>
+              <span>Saldo Total del Estado de Cuenta <span style={{ color: C.slate, fontSize: 12 }}>({cuadre.saldo < 0 ? "a favor de Kamila" : cuadre.saldo > 0 ? "Kamila debe" : "en cero"})</span></span>
+              <b style={{ color: cuadre.saldo > 0 ? C.red : C.green }}>{fmtMoney(cuadre.saldo)}</b>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "7px 0", borderTop: `1px solid ${C.border}`, fontVariantNumeric: "tabular-nums" }}>
+              <span>Pendiente por cortar y despachar — Venezuela</span>
+              <b>{fmtMoney(cuadre.pendienteVenezuela)}</b>
+            </div>
+            <div style={{ marginTop: 6, borderRadius: 10, padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", background: falta ? C.redBg : C.greenBg, color: falta ? C.red : C.green }}>
+              <div style={{ fontWeight: 700, fontSize: 13, maxWidth: 440, lineHeight: 1.35 }}>
+                {falta ? "Lo abonado no alcanza para cubrir lo pendiente de Venezuela: faltaría cobrar." : "Lo abonado alcanza para todo lo pendiente de Venezuela y todavía queda a favor."}
+              </div>
+              <div style={{ fontSize: 24, fontWeight: 800, fontVariantNumeric: "tabular-nums" }}>{fmtMoney(Math.abs(cuadre.faltaCobrar))}</div>
+            </div>
+          </div>
+
+          <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 18px" }}>
+            <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 10 }}>Listado de lotes por cliente</div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+              {["Todos", ...PAISES_KAMILA].map((v) => (
+                <button key={v} onClick={() => setVista(v)} style={{ border: `1px solid ${vista === v ? C.ink : C.border}`, background: vista === v ? C.ink : C.white, color: vista === v ? C.white : C.slate, borderRadius: 20, padding: "5px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                  {v === "Todos" ? "Todos" : `Kamila ${v}`}
+                </button>
+              ))}
+            </div>
+            <div style={{ overflowX: "auto", maxHeight: "42vh", overflowY: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 820, fontVariantNumeric: "tabular-nums" }}>
+                <thead style={{ position: "sticky", top: 0, background: C.white }}>
+                  <tr>{celdaTh("Pedido", "left")}{celdaTh("Referencia", "left")}{celdaTh("Descripción", "left")}{celdaTh("Lote", "center")}{celdaTh("Situación", "center")}{celdaTh("Unidades")}{celdaTh("Precio")}{celdaTh("Valor listo para facturar")}{celdaTh("Valor pendiente")}</tr>
+                </thead>
+                <tbody>
+                  {paisesVista.map((pais) => {
+                    const d = cuadre.paises[pais];
+                    const peds = [];
+                    d.lotes.forEach((l) => { if (!peds.includes(l.numPed)) peds.push(l.numPed); });
+                    return (
+                      <Fragment key={pais}>
+                        <tr><td colSpan={9} style={{ background: C.ink, color: C.white, fontWeight: 800, fontSize: 12, padding: "8px" }}>Kamila {pais} · {d.lotes.length} lotes · {Math.round(d.unidades).toLocaleString("es-CO")} unidades · {fmtMoney(d.total)} por cortar y despachar</td></tr>
+                        {!d.lotes.length && <tr><td colSpan={9} style={{ padding: 14, textAlign: "center", color: C.slate, fontSize: 12 }}>Sin lotes pendientes.</td></tr>}
+                        {peds.map((ped) => {
+                          const ls = d.lotes.filter((l) => l.numPed === ped);
+                          return (
+                            <Fragment key={ped}>
+                              {ls.map((l, i) => {
+                                const et = COLOR_ETAPA_CUADRE[l.etapa];
+                                return (
+                                  <tr key={i}>
+                                    {celdaTd(l.numPed, "left")}{celdaTd(l.ref, "left")}{celdaTd(l.descripcion, "left", { maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis" })}
+                                    {celdaTd(l.lote || <span style={{ color: C.slate }}>sin lote</span>, "center")}
+                                    {celdaTd(<span style={{ padding: "2px 9px", borderRadius: 20, fontSize: 11, fontWeight: 700, color: et, background: `${et}1f` }}>{l.situacion}</span>, "center")}
+                                    {celdaTd(Math.round(l.unidades).toLocaleString("es-CO"))}{celdaTd(fmtMoney(l.precio))}
+                                    {celdaTd(l.listo ? fmtMoney(l.valor) : "", "right", { color: C.green, fontWeight: 800 })}{celdaTd(fmtMoney(l.valor))}
+                                  </tr>
+                                );
+                              })}
+                              <tr style={{ background: C.canvas, fontWeight: 800 }}>
+                                <td colSpan={5} style={{ padding: "7px 8px", fontSize: 12, borderBottom: `1px solid ${C.border}` }}>Total pedido {ped}</td>
+                                {celdaTd(Math.round(ls.reduce((a, l) => a + l.unidades, 0)).toLocaleString("es-CO"), "right", { fontWeight: 800 })}
+                                {celdaTd("")}
+                                {celdaTd(fmtMoney(ls.filter((l) => l.listo).reduce((a, l) => a + l.valor, 0)), "right", { color: C.green, fontWeight: 800 })}
+                                {celdaTd(fmtMoney(ls.reduce((a, l) => a + l.valor, 0)), "right", { fontWeight: 800 })}
+                              </tr>
+                            </Fragment>
+                          );
+                        })}
+                      </Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div style={{ fontSize: 11.5, color: C.slate, lineHeight: 1.5 }}>
+            Colombia se muestra como información: no entra en el cuadre porque el Estado de Cuenta no la incluye. «Valor listo para facturar» es lo ya producido; lo demás sigue en producción o sin cortar (sin lote).
+            Lo despachado se descuenta de los lotes más antiguos primero (Busint no dice de qué lote sale cada factura).
+          </div>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, flexWrap: "wrap" }}>
+            <Btn variant="secondary" onClick={consultar} disabled={cargando}>🔄 Actualizar</Btn>
+            <Btn disabled={bajando} onClick={async () => { setBajando(true); try { await exportarCuadreKamilaExcel(cuadre); } catch (e) { setError("No se pudo generar el Excel: " + (e?.message || e)); } setBajando(false); }}>⬇ Descargar Excel</Btn>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
 // ─── ESTADO DE CUENTA KAMILA GROUP ──────────────────────────────────────────
 // KAMILA GROUP despacha por dos destinos (Venezuela y Dubo) que en Bodega
 // viven en colecciones totalmente separadas — esta vista los junta en un
@@ -2786,7 +2990,8 @@ async function exportarEstadoCuentaKamilaExcel(movimientos, desglose) {
 // Saldo = Total Despachado (Venezuela + Dubo) − (Abonos Venezuela + Saldo
 // Yuliana). Yuliana es la cuenta que de verdad mueve la plata de Dubo — los
 // Abonos Dubo (la pestaña "Abonos" dentro del destino Dubo) NO entran acá.
-function EstadoCuentaKamilaView({ data }) {
+function EstadoCuentaKamilaView({ data, puedeCuadre }) {
+  const [verCuadre, setVerCuadre] = useState(false);
   const { despachosVenezuela, despachosDubo, abonosVenezuela, yulianaVenezuela, loading } = data;
   const movimientos = useMemo(() => {
     if (loading) return [];
@@ -2860,8 +3065,12 @@ function EstadoCuentaKamilaView({ data }) {
           <div style={{ fontWeight: 800, fontSize: 16, color: C.ink }}>🧾 Estado de Cuenta — KAMILA GROUP</div>
           <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>Consolidado {etiquetaDestino("Venezuela")} + {etiquetaDestino("Dubo")} (Colombia no se incluye)</div>
         </div>
-        <Btn onClick={() => exportarEstadoCuentaKamilaExcel(movimientos, { saldoVenezuela: ve.saldo, saldoDubo: du.saldo, saldoTotal: saldo })}>⬇ Descargar Excel</Btn>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {puedeCuadre && <Btn variant="ghost" onClick={() => setVerCuadre(true)}>⚖️ Cuadre por despachar</Btn>}
+          <Btn onClick={() => exportarEstadoCuentaKamilaExcel(movimientos, { saldoVenezuela: ve.saldo, saldoDubo: du.saldo, saldoTotal: saldo })}>⬇ Descargar Excel</Btn>
+        </div>
       </div>
+      {verCuadre && <CuadreKamilaModal saldoTotal={saldo} onClose={() => setVerCuadre(false)} />}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12, marginBottom: 12 }}>
         <KPI icon="🚚" label="Total Despachado" value={fmtMoney(totalDespachado)} color={C.blue} bg={C.blueBg} sub={`${etiquetaDestino("Venezuela")} + ${etiquetaDestino("Dubo")}`} />
         <KPI icon="💵" label="Total Abonado" value={fmtMoney(totalAbonado)} color={C.green} bg={C.greenBg} sub={`Abonos ${etiquetaDestino("Venezuela")} + Yuliana`} />
@@ -3158,7 +3367,7 @@ function DespachoYSaldoView({ currentUser, puedeAprobarDespacho, canAccessContab
           {subView === "saldoYuliana" && (
             <SaldoYulianaView entradas={saldoYuliana} currentUser={currentUser} puedeEditar={puedeEditarAbonos} coleccionSaldoYuliana={coleccionSaldoYuliana} />
           )}
-          {subView === "estadoCuentaKamila" && (isAdmin || puedeEditarAbonos || soloLectura) && <EstadoCuentaKamilaView data={estadoKamila} />}
+          {subView === "estadoCuentaKamila" && (isAdmin || puedeEditarAbonos || soloLectura) && <EstadoCuentaKamilaView data={estadoKamila} puedeCuadre={!soloLectura} />}
           {subView === "importar" && isAdmin && (
             <ImportarHistoricoView
               currentUser={currentUser}
