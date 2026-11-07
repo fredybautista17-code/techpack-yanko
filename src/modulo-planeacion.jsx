@@ -23,6 +23,7 @@ import { claveArea as claveAreaHistorico } from "./centro-costo-historico-parser
 import { diasDeTrabajoDelMes, esDiaDeTrabajoISO, sabadoSeTrabajaISO } from "./dias-habiles";
 import { armarListaPorProgramar, estadisticasPedidos, prioridadPedido } from "./lista-programar-calculo";
 import { PROVEEDORES_GASTOS_BUSINT, proveedoresDeTexto, candidatosGastos, gastoDeFactura } from "./gastos-busint-calculo";
+import { MESES_HIST, COLECCION_HISTORICO_MAQUILA, textoAFilas, parsearHistorial, docHistoricoMes, resumenAnual } from "./historial-maquila-calculo";
 import { PLANTA_PROPIA_VENTAS, rangoDelPeriodo, plantasDeEntradas, clientePorLoteDeCargas, candidatosVentas, ventaDeEntrada, totalLineaVenta, SERVICIOS_VENTA, SIN_SERVICIO, servicioValido, etiquetaServicio, sugerirServicio, resumenPorServicio, bloqueoLinea, servicioDeVenta } from "./ventas-entradas-calculo";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
@@ -5509,6 +5510,242 @@ function DetalleCostoNominaModal({ filas, totalTarjeta, area, etiquetaPeriodo, m
     </Modal>
   );
 }
+// (2026-11-07, a pedido de Fredy) «Historial del año» de MAQUILA: resumen mes a mes con las cifras históricas que se cargan (pegando la
+// tabla de Excel) y, para los meses sin histórico, lo que se vaya cargando en ATLAS. Cálculos puros en historial-maquila-calculo.js.
+function CargarHistorialMaquilaModal({ area, anioInicial, historico, currentUser, onClose }) {
+  const [anio, setAnio] = useState(anioInicial);
+  const [texto, setTexto] = useState("");
+  const [archivo, setArchivo] = useState(null); // { nombre, filas }
+  const [leyendo, setLeyendo] = useState(false);
+  const [guardando, setGuardando] = useState(false);
+  const [resultado, setResultado] = useState(null);
+  const filas = useMemo(() => parsearHistorial(archivo ? archivo.filas : textoAFilas(texto)), [archivo, texto]);
+  const existentes = useMemo(() => {
+    const s = new Set();
+    (historico || []).forEach((h) => { if (String(h.area).toUpperCase() === String(area).toUpperCase() && Number(h.anio) === Number(anio)) s.add(Number(h.mes)); });
+    return s;
+  }, [historico, area, anio]);
+  const guardables = filas.filter((f) => !f.vacio && !f.invalida);
+  async function leerArchivo(file) {
+    if (!file) return;
+    setLeyendo(true);
+    setResultado(null);
+    try {
+      const XLSX = await import("xlsx");
+      const wb = XLSX.read(await file.arrayBuffer(), { type: "array" });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null });
+      setArchivo({ nombre: file.name, filas: rows });
+    } catch (err) {
+      setResultado({ error: `No pude leer el archivo: ${err?.message || err}` });
+    } finally {
+      setLeyendo(false);
+    }
+  }
+  async function guardar() {
+    if (!guardables.length) return;
+    setGuardando(true);
+    setResultado(null);
+    try {
+      const ahora = new Date().toISOString();
+      const usuario = currentUser?.name || currentUser?.username || "";
+      const docs = guardables.map((f) => docHistoricoMes(f, { area, anio, usuario, ahora }));
+      await Promise.all(docs.map((d) => fsSave(COLECCION_HISTORICO_MAQUILA, d.id, d)));
+      setResultado({ ok: docs.length });
+    } catch (err) {
+      setResultado({ error: err?.message || String(err) });
+    } finally {
+      setGuardando(false);
+    }
+  }
+  const inp = { padding: "5px 8px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12.5, fontFamily: "inherit" };
+  const th = (t, al) => <th key={t} style={{ padding: "8px 10px", color: C.seam, textAlign: al || "left", fontWeight: 700, fontSize: 11, whiteSpace: "nowrap", background: C.ink }}>{t}</th>;
+  return (
+    <Modal title={`Cargar historial — ${area}`} onClose={onClose} width={980}>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 12, maxWidth: 780, lineHeight: 1.5 }}>
+        En Excel selecciona la tabla con sus títulos (MESES, VENTAS, GASTOS, RESULTADO, AHORRO DE LIQUIDACIONES, UNIDADES SERVICIO, UNIDADES DE MAQUILA), cópiala y pégala aquí. También puedes subir el archivo. Antes de guardar ves cada mes; los meses con todo en cero se ignoran.
+      </div>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
+        <label style={{ fontSize: 12, fontWeight: 700, color: C.ink }}>Año</label>
+        <input type="number" value={anio} onChange={(e) => setAnio(Number(e.target.value) || anioInicial)} style={{ ...inp, width: 86, fontWeight: 700 }} />
+        <label style={{ ...inp, cursor: "pointer", fontWeight: 700, background: C.white }}>
+          {leyendo ? "Leyendo..." : "📤 Subir Excel en vez de pegar"}
+          <input type="file" accept=".xlsx,.xls,.csv" style={{ display: "none" }} onChange={(e) => { leerArchivo(e.target.files?.[0]); e.target.value = ""; }} />
+        </label>
+        {archivo && <span style={{ fontSize: 12, color: C.slate }}>{archivo.nombre} <button type="button" onClick={() => setArchivo(null)} style={{ border: "none", background: "none", color: C.red, cursor: "pointer", fontWeight: 700 }}>✕ quitar</button></span>}
+      </div>
+      {!archivo && (
+        <textarea value={texto} onChange={(e) => { setTexto(e.target.value); setResultado(null); }} placeholder="Pega aquí la tabla (Ctrl+V)..." rows={7} style={{ ...inp, width: "100%", boxSizing: "border-box", fontFamily: "monospace", fontSize: 12, marginBottom: 12 }} />
+      )}
+      {filas.length > 0 && (
+        <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "auto", maxHeight: "40vh" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 820 }}>
+            <thead><tr>{th("Mes")}{th("Ventas", "right")}{th("Gastos", "right")}{th("Resultado", "right")}{th("Ahorro liq.", "right")}{th("Und. servicio", "right")}{th("Und. maquila", "right")}{th("Estado")}</tr></thead>
+            <tbody>
+              {filas.map((f, i) => (
+                <tr key={f.mes} style={{ borderTop: `1px solid ${C.border}`, background: f.vacio ? C.canvas : i % 2 ? "#FAF8F5" : C.white, opacity: f.vacio ? 0.55 : 1 }}>
+                  <td style={{ padding: "7px 10px", fontWeight: 700 }}>{f.nombre}</td>
+                  <td style={{ padding: "7px 10px", textAlign: "right" }}>{fmtMoney(f.ventas)}</td>
+                  <td style={{ padding: "7px 10px", textAlign: "right" }}>{fmtMoney(f.gastos)}</td>
+                  <td style={{ padding: "7px 10px", textAlign: "right", fontWeight: 800, color: f.resultado < 0 ? C.red : C.green }}>{fmtMoney(f.resultado)}</td>
+                  <td style={{ padding: "7px 10px", textAlign: "right" }}>{fmtMoney(f.ahorro)}</td>
+                  <td style={{ padding: "7px 10px", textAlign: "right" }}>{fmtNum(f.unidadesServicio)}</td>
+                  <td style={{ padding: "7px 10px", textAlign: "right" }}>{fmtNum(f.unidadesMaquila)}</td>
+                  <td style={{ padding: "7px 10px", fontSize: 11.5, fontWeight: 700, minWidth: 200 }}>
+                    {f.vacio ? <span style={{ color: C.slate }}>sin datos (se ignora)</span>
+                      : f.invalida ? <span style={{ color: C.red }}>✕ {f.avisos.join(" ")}</span>
+                      : <>
+                          {f.avisos.length ? <span style={{ color: C.amber }}>⚠ {f.avisos.join(" ")}</span> : <span style={{ color: C.green }}>✓ listo</span>}
+                          {existentes.has(f.mes) && <span style={{ color: C.amber }}> · reemplaza lo ya cargado</span>}
+                        </>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {!filas.length && (texto.trim() || archivo) && <div style={{ fontSize: 12.5, color: C.amber, marginTop: 8 }}>No encontré filas de meses (ENERO, FEBRERO…). Revisa que copiaste la tabla completa.</div>}
+      {resultado && (
+        <div style={{ fontSize: 12.5, marginTop: 12, padding: "9px 12px", borderRadius: 8, fontWeight: 600, background: resultado.error ? C.redBg : C.greenBg, color: resultado.error ? C.red : C.green }}>
+          {resultado.error ? `⚠ No se pudo guardar: ${resultado.error}` : `✓ Historial guardado: ${resultado.ok} mes(es) de ${anio}.`}
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", alignItems: "center", marginTop: 14 }}>
+        <Btn variant="secondary" onClick={onClose}>Cerrar</Btn>
+        <Btn onClick={guardar} disabled={guardando || !guardables.length}>{guardando ? "Guardando..." : `Guardar historial (${guardables.length} mes${guardables.length === 1 ? "" : "es"})`}</Btn>
+      </div>
+    </Modal>
+  );
+}
+function GraficoVentasGastosMeses({ meses }) {
+  const W = 720, H = 250, ml = 52, mr = 10, mt = 12, mb = 28;
+  const pw = W - ml - mr, ph = H - mt - mb;
+  const raw = Math.max(0, ...meses.map((m) => Math.max(m.ventas, m.gastos)));
+  if (!raw) return null;
+  const paso = [5e6, 10e6, 20e6, 25e6, 50e6, 100e6, 200e6].find((p) => raw / p <= 5) || 500e6;
+  const tope = Math.ceil(raw / paso) * paso;
+  const ticks = [];
+  for (let v = 0; v <= tope; v += paso) ticks.push(v);
+  const y = (v) => mt + ph - (v / tope) * ph;
+  const gw = pw / 12, bw = Math.min(16, gw / 2 - 3);
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Ventas contra gastos por mes" style={{ width: "100%", maxWidth: 760, height: "auto", display: "block" }}>
+      {ticks.map((v) => (
+        <g key={v}>
+          <line x1={ml} x2={W - mr} y1={y(v)} y2={y(v)} stroke={C.border} strokeWidth="1" />
+          <text x={ml - 6} y={y(v) + 4} textAnchor="end" fontSize="10.5" fill={C.slate}>{`$${Math.round(v / 1e6)}M`}</text>
+        </g>
+      ))}
+      {meses.map((m, i) => {
+        const cx = ml + gw * i + gw / 2;
+        return (
+          <g key={m.mes}>
+            {m.fuente && <rect x={cx - bw - 1} y={y(m.ventas)} width={bw} height={Math.max(0, mt + ph - y(m.ventas))} fill={C.blue} rx="2"><title>{`${MESES_CORTOS[i]} · Ventas ${fmtMoney(m.ventas)}`}</title></rect>}
+            {m.fuente && <rect x={cx + 1} y={y(m.gastos)} width={bw} height={Math.max(0, mt + ph - y(m.gastos))} fill={C.amber} rx="2"><title>{`${MESES_CORTOS[i]} · Gastos ${fmtMoney(m.gastos)}`}</title></rect>}
+            <text x={cx} y={H - 9} textAnchor="middle" fontSize="11" fill={C.slate}>{MESES_CORTOS[i]}</text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+function HistorialAnualMaquila({ area, ventasCC, gastosCC, puedeCargar, currentUser }) {
+  const anioActual = new Date().getFullYear();
+  const [anio, setAnio] = useState(anioActual);
+  const [historico, setHistorico] = useState([]);
+  const [cargaAbierta, setCargaAbierta] = useState(false);
+  useEffect(() => {
+    const u = onSnapshot(collection(db, COLECCION_HISTORICO_MAQUILA), (snap) => setHistorico(snap.docs.map((d) => ({ ...d.data(), id: d.id }))));
+    return () => u();
+  }, []);
+  const resumen = useMemo(() => resumenAnual({ anio, area, historico, ventas: ventasCC, gastos: gastosCC }), [anio, area, historico, ventasCC, gastosCC]);
+  const t = resumen.totales;
+  const hayVivo = resumen.meses.some((m) => m.fuente === "vivo");
+  const hayHistorico = resumen.meses.some((m) => m.fuente === "historico");
+  const celda = (m, v, fmt) => (m.fuente ? fmt(v) : "—");
+  const td = { padding: "8px 10px", textAlign: "right", borderTop: `1px solid ${C.border}`, whiteSpace: "nowrap" };
+  const th = (txt, al) => <th key={txt} style={{ padding: "9px 10px", color: C.seam, textAlign: al || "right", fontWeight: 700, fontSize: 11, whiteSpace: "nowrap", background: C.ink }}>{txt}</th>;
+  return (
+    <div style={{ marginTop: 28, paddingTop: 24, borderTop: `1.5px solid ${C.border}` }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap", marginBottom: 6 }}>
+        <div>
+          <div style={{ fontWeight: 900, fontSize: 16, color: C.ink }}>📅 Historial del año — {area}</div>
+          <div style={{ fontSize: 12, color: C.slate, marginTop: 4, maxWidth: 700, lineHeight: 1.5 }}>
+            Mes a mes: lo histórico que se cargó y, en los meses sin histórico, lo que se va cargando en ATLAS. El resultado es ventas menos gastos.
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <select value={anio} onChange={(e) => setAnio(Number(e.target.value))} style={{ padding: "5px 8px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12.5, fontWeight: 700, fontFamily: "inherit" }}>
+            {[anioActual - 2, anioActual - 1, anioActual].map((a) => <option key={a} value={a}>{a}</option>)}
+          </select>
+          {puedeCargar && <Btn small variant="secondary" onClick={() => setCargaAbierta(true)}>📥 Cargar historial</Btn>}
+        </div>
+      </div>
+      {t.mesesConDatos === 0 ? (
+        <div style={{ fontSize: 13, color: C.slate, padding: "14px 0" }}>Todavía no hay datos de {anio}.{puedeCargar ? " Usa «Cargar historial» para pegar la tabla del año." : ""}</div>
+      ) : (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12, margin: "14px 0 18px" }}>
+            <KPI icon="🧾" label={`Ventas ${anio}`} value={fmtMoney(t.ventas)} color={C.blue} bg={C.blueBg} sub={`${t.mesesConDatos} mes(es) con datos`} />
+            <KPI icon="🧵" label={`Gastos ${anio}`} value={fmtMoney(t.gastos)} color={C.amber} bg={C.amberBg} />
+            <KPI icon={t.resultado >= 0 ? "✅" : "⚠️"} label="Resultado (ventas − gastos)" value={fmtMoney(t.resultado)} color={t.resultado >= 0 ? C.green : C.red} bg={t.resultado >= 0 ? C.greenBg : C.redBg} />
+            {resumen.ahorroSaldo > 0 && <KPI icon="💰" label="Ahorro de liquidaciones" value={fmtMoney(resumen.ahorroSaldo)} color={C.violet} bg={C.violetBg} sub={`saldo a ${MESES_CORTOS[resumen.ahorroMes - 1]}`} />}
+            <KPI icon="🧵" label="Unidades de maquila" value={fmtNum(t.unidadesMaquila)} color={C.ink} bg={C.canvas} />
+            <KPI icon="🔧" label="Unidades de servicio" value={fmtNum(t.unidadesServicio)} color={C.ink} bg={C.canvas} />
+          </div>
+          <div style={{ fontWeight: 800, fontSize: 12.5, color: C.ink, marginBottom: 6 }}>Ventas contra gastos por mes</div>
+          <div style={{ display: "flex", gap: 14, fontSize: 11.5, color: C.slate, marginBottom: 6 }}>
+            <span><span style={{ display: "inline-block", width: 10, height: 10, background: C.blue, borderRadius: 2, marginRight: 5 }} />Ventas</span>
+            <span><span style={{ display: "inline-block", width: 10, height: 10, background: C.amber, borderRadius: 2, marginRight: 5 }} />Gastos</span>
+          </div>
+          <GraficoVentasGastosMeses meses={resumen.meses} />
+          <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "auto", marginTop: 16 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 820 }}>
+              <thead><tr>{th("Mes", "left")}{th("Ventas")}{th("Gastos")}{th("Resultado")}{th("Ahorro liq.")}{th("Und. servicio")}{th("Und. maquila")}{th("Fuente", "left")}</tr></thead>
+              <tbody>
+                {resumen.meses.map((m, i) => (
+                  <tr key={m.mes} style={{ opacity: m.fuente ? 1 : 0.45 }}>
+                    <td style={{ ...td, textAlign: "left", fontWeight: 700 }}>{MESES_HIST[i].charAt(0) + MESES_HIST[i].slice(1).toLowerCase()}</td>
+                    <td style={td}>{celda(m, m.ventas, fmtMoney)}</td>
+                    <td style={td}>{celda(m, m.gastos, fmtMoney)}</td>
+                    <td style={{ ...td, fontWeight: 800, color: !m.fuente ? C.slate : m.resultado < 0 ? C.red : C.green }}>{celda(m, m.resultado, fmtMoney)}</td>
+                    <td style={td}>{m.fuente === "historico" ? fmtMoney(m.ahorro) : "—"}</td>
+                    <td style={td}>{celda(m, m.unidadesServicio, fmtNum)}</td>
+                    <td style={td}>{celda(m, m.unidadesMaquila, fmtNum)}</td>
+                    <td style={{ ...td, textAlign: "left", fontSize: 11.5, fontWeight: 700 }}>
+                      {m.fuente === "historico" ? <span style={{ color: C.slate }}>📜 Histórico</span>
+                        : m.fuente === "vivo" ? <span style={{ color: C.green }} title="Ventas y gastos cargados en ATLAS este mes (insumos); no incluye el costo de nómina">🟢 En vivo{m.sinTipo > 0 ? <span style={{ color: C.amber }}> · {fmtNum(m.sinTipo)} und sin tipo</span> : null}</span>
+                        : ""}
+                    </td>
+                  </tr>
+                ))}
+                <tr style={{ background: C.canvas }}>
+                  <td style={{ ...td, textAlign: "left", fontWeight: 900, borderTop: `2px solid ${C.ink}` }}>Total {anio}</td>
+                  <td style={{ ...td, fontWeight: 900, borderTop: `2px solid ${C.ink}` }}>{fmtMoney(t.ventas)}</td>
+                  <td style={{ ...td, fontWeight: 900, borderTop: `2px solid ${C.ink}` }}>{fmtMoney(t.gastos)}</td>
+                  <td style={{ ...td, fontWeight: 900, borderTop: `2px solid ${C.ink}`, color: t.resultado < 0 ? C.red : C.green }}>{fmtMoney(t.resultado)}</td>
+                  <td style={{ ...td, borderTop: `2px solid ${C.ink}`, color: C.slate }} title="Es un saldo, no se suma">{resumen.ahorroSaldo > 0 ? fmtMoney(resumen.ahorroSaldo) : "—"}</td>
+                  <td style={{ ...td, fontWeight: 900, borderTop: `2px solid ${C.ink}` }}>{fmtNum(t.unidadesServicio)}</td>
+                  <td style={{ ...td, fontWeight: 900, borderTop: `2px solid ${C.ink}` }}>{fmtNum(t.unidadesMaquila)}</td>
+                  <td style={{ ...td, borderTop: `2px solid ${C.ink}` }} />
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div style={{ fontSize: 11.5, color: C.slate, marginTop: 8, lineHeight: 1.5, maxWidth: 780 }}>
+            {resumen.ahorroSaldo > 0 && "El ahorro de liquidaciones es un saldo (sube y baja), por eso no se suma: se muestra el del último mes cargado y no se resta del resultado. "}
+            {hayVivo && hayHistorico && "Los meses «En vivo» solo tienen las ventas y gastos que se cargaron en ATLAS (insumos): no incluyen el costo de nómina, así que no son comparables con el histórico. "}
+            {hayVivo && "Las unidades en vivo salen del tipo de servicio de cada venta: maquila contra los demás servicios."}
+          </div>
+        </>
+      )}
+      {cargaAbierta && puedeCargar && (
+        <CargarHistorialMaquilaModal area={area} anioInicial={anio} historico={historico} currentUser={currentUser} onClose={() => setCargaAbierta(false)} />
+      )}
+    </div>
+  );
+}
 // (2026-11-06, a pedido de Fredy) Con soloCostoReal esta misma vista se monta en Planta Yanko mostrando SOLO el bloque
 // «Costo real total» (gastos, ventas, ganancia real, historial y cierre de mes) de un área fija, sin el detalle por
 // trabajador. puedeEditarCostos=false la deja de solo lectura (sin cargar, borrar ni cerrar mes).
@@ -7065,6 +7302,9 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
                 </div>
               </div>
             </div>
+          )}
+          {areaSel && String(areaSel).trim().toUpperCase() === "MAQUILA" && (
+            <HistorialAnualMaquila area={areaSel} ventasCC={ventasCentroCosto} gastosCC={gastosCentroCosto} puedeCargar={!!isAdmin && puedeEditar} currentUser={currentUser} />
           )}
           {areaSel && areaSel !== "__lideres_base_admin__" && (
             <div style={{ marginTop: 28, paddingTop: 24, borderTop: `1.5px solid ${C.border}` }}>
