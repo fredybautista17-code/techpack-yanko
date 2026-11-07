@@ -5,8 +5,65 @@
 
 export const PLANTA_PROPIA_VENTAS = "INDUSTRIAS YANKO MODULO CENTRO";
 
+// ─── TIPO DE SERVICIO DE CADA VENTA ───────────────────────────────────────────
+// (2026-11-07, a pedido de Fredy) Al ingresar un lote hay que saber si es MAQUILA (confección completa) o un servicio suelto
+// (ojal, presilla, encauchado…). Un mismo lote puede llevar varios servicios: cada servicio es una venta (línea) aparte, con su
+// propio precio y cantidad, y la misma entrada de planta (claveEntrada) puede tener una línea por servicio.
+export const SERVICIOS_VENTA = [
+  { id: "MAQUILA", label: "Maquila" },
+  { id: "OJAL", label: "Ojal" },
+  { id: "PRESILLA", label: "Presilla" },
+  { id: "ENCAUCHADO", label: "Encauchado" },
+  { id: "OTRO", label: "Otro" },
+];
+export const SIN_SERVICIO = "SIN_TIPO";
+export const servicioValido = (id) => SERVICIOS_VENTA.some((s) => s.id === id);
+export const etiquetaServicio = (id) => (SERVICIOS_VENTA.find((s) => s.id === id) || { label: "Sin tipo" }).label;
+export const servicioDeVenta = (v) => (servicioValido(v && v.servicio) ? v.servicio : SIN_SERVICIO);
+
 const dosDig = (n) => String(n).padStart(2, "0");
 const norm = (v) => String(v ?? "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]/g, "");
+
+// Servicio que se sugiere para una entrada: el más usado antes con la misma referencia; si no hay, lo que diga la descripción
+// (ojal / presilla / encauchado). Sin pista devuelve "" (hay que escogerlo). Es solo una sugerencia: se confirma al cargar.
+export function sugerirServicio({ ref, descripcion, ventasExistentes }) {
+  const rk = norm(ref);
+  if (rk) {
+    const cuenta = {};
+    (ventasExistentes || []).forEach((v) => {
+      if (servicioValido(v.servicio) && norm(v.referencia) === rk) cuenta[v.servicio] = (cuenta[v.servicio] || 0) + 1;
+    });
+    const mejor = Object.entries(cuenta).sort((a, b) => b[1] - a[1])[0];
+    if (mejor) return mejor[0];
+  }
+  const d = norm(descripcion);
+  if (d.includes("ojal")) return "OJAL";
+  if (d.includes("presill")) return "PRESILLA";
+  if (d.includes("encauch")) return "ENCAUCHADO";
+  return "";
+}
+
+// Ventas y unidades por servicio (las sin tipo aparte). Solo trae los servicios que tienen líneas.
+export function resumenPorServicio(ventas) {
+  const m = new Map();
+  (ventas || []).forEach((v) => {
+    const k = servicioDeVenta(v);
+    if (!m.has(k)) m.set(k, { servicio: k, etiqueta: etiquetaServicio(k), ventas: 0, unidades: 0, lineas: 0 });
+    const g = m.get(k);
+    g.ventas += Number(v.total) || 0;
+    g.unidades += Number(v.cantidad) || 0;
+    g.lineas += 1;
+  });
+  const orden = [...SERVICIOS_VENTA.map((s) => s.id), SIN_SERVICIO];
+  return orden.filter((k) => m.has(k)).map((k) => m.get(k));
+}
+
+// Por qué una línea (entrada + servicio) no se puede cargar: "" = se puede.
+export function bloqueoLinea(fila, servicio) {
+  if ((fila.cargados || []).includes(SIN_SERVICIO)) return "sin_tipo_cargada";
+  if (servicioValido(servicio) && (fila.cargados || []).includes(servicio)) return "ya_cargada";
+  return "";
+}
 
 // Misma clave que usa Entradas de Planta para no duplicar una entrada
 export const claveVentaEntrada = (e) => `${e.numEnt}|${e.fecha}|${e.esDevolucion ? "D" : "E"}`;
@@ -48,11 +105,13 @@ export function clientePorLoteDeCargas(cargas, maxCargas = 3) {
 
 // Filas candidatas para cargar como venta
 export function candidatosVentas({ entradas, planta, desde, hasta, busqueda, ventasExistentes, clientePorLote }) {
-  const cargadas = new Set();
+  const cargadasPor = new Map(); // claveEntrada -> servicios ya cargados de esa entrada (SIN_TIPO si la venta no lo tiene)
   const lotesConVenta = new Set();
   (ventasExistentes || []).forEach((v) => {
-    if (v.claveEntrada) cargadas.add(v.claveEntrada);
-    else if (v.lote) lotesConVenta.add(String(v.lote).trim());
+    if (v.claveEntrada) {
+      if (!cargadasPor.has(v.claveEntrada)) cargadasPor.set(v.claveEntrada, new Set());
+      cargadasPor.get(v.claveEntrada).add(servicioDeVenta(v));
+    } else if (v.lote) lotesConVenta.add(String(v.lote).trim());
   });
   const q = norm(busqueda);
   return (entradas || [])
@@ -79,15 +138,16 @@ export function candidatosVentas({ entradas, planta, desde, hasta, busqueda, ven
         cantidad: Number(e.cantidad) || 0,
         precio: Number(e.precioEntrada) || 0,
         esDevolucion: !!e.esDevolucion || Number(e.cantidad) < 0,
-        yaCargada: cargadas.has(clave),
-        posibleDuplicado: !cargadas.has(clave) && !!lote && lotesConVenta.has(lote),
+        cargados: cargadasPor.has(clave) ? [...cargadasPor.get(clave)] : [],
+        yaCargada: cargadasPor.has(clave),
+        posibleDuplicado: !cargadasPor.has(clave) && !!lote && lotesConVenta.has(lote),
       };
     })
     .sort((a, b) => (b.fecha || "").localeCompare(a.fecha || "") || String(b.numLote).localeCompare(String(a.numLote), "es", { numeric: true }));
 }
 
 // Venta (centro_costo_ventas) a partir de una fila ya revisada. `edit` trae cantidad/precio corregidos (opcional).
-export function ventaDeEntrada(fila, edit, { id, area, usuario, ahora }) {
+export function ventaDeEntrada(fila, edit, { id, area, usuario, ahora, servicio }) {
   const cantidad = edit && edit.cantidad !== undefined && edit.cantidad !== "" ? Number(edit.cantidad) : fila.cantidad;
   const precio = edit && edit.precio !== undefined && edit.precio !== "" ? Number(edit.precio) : fila.precio;
   return {
@@ -99,6 +159,7 @@ export function ventaDeEntrada(fila, edit, { id, area, usuario, ahora }) {
     precio,
     total: totalLineaVenta(cantidad, precio),
     cliente: fila.cliente || "",
+    servicio: servicioValido(servicio) ? servicio : "",
     fecha: fila.fecha,
     facturaUrl: "",
     creadoEn: ahora,

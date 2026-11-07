@@ -23,7 +23,7 @@ import { claveArea as claveAreaHistorico } from "./centro-costo-historico-parser
 import { diasDeTrabajoDelMes, esDiaDeTrabajoISO, sabadoSeTrabajaISO } from "./dias-habiles";
 import { armarListaPorProgramar, estadisticasPedidos, prioridadPedido } from "./lista-programar-calculo";
 import { PROVEEDORES_GASTOS_BUSINT, proveedoresDeTexto, candidatosGastos, gastoDeFactura } from "./gastos-busint-calculo";
-import { PLANTA_PROPIA_VENTAS, rangoDelPeriodo, plantasDeEntradas, clientePorLoteDeCargas, candidatosVentas, ventaDeEntrada, totalLineaVenta } from "./ventas-entradas-calculo";
+import { PLANTA_PROPIA_VENTAS, rangoDelPeriodo, plantasDeEntradas, clientePorLoteDeCargas, candidatosVentas, ventaDeEntrada, totalLineaVenta, SERVICIOS_VENTA, SIN_SERVICIO, servicioValido, etiquetaServicio, sugerirServicio, resumenPorServicio, bloqueoLinea, servicioDeVenta } from "./ventas-entradas-calculo";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
   authDomain: "techpack-yanko-f37b8.firebaseapp.com",
@@ -4777,8 +4777,10 @@ function TraerLotesVentasModal({ area, ventasExistentes, rangoInicial, cierreDe,
   const [desde, setDesde] = useState(rangoInicial[0]);
   const [hasta, setHasta] = useState(rangoInicial[1]);
   const [busqueda, setBusqueda] = useState("");
-  const [sel, setSel] = useState({});
-  const [ediciones, setEdiciones] = useState({});
+  // (2026-11-07) Cada entrada puede llevar varias líneas, una por servicio (maquila, ojal, presilla, encauchado…), cada una con su
+  // cantidad y precio. `lineas[clave]` guarda las líneas que el usuario tocó; si no hay, se usa una línea con el servicio sugerido.
+  const [lineas, setLineas] = useState({});
+  const [sel, setSel] = useState({}); // `${clave}#${idx}` -> true
   const [cargando, setCargando] = useState(false);
   const [resultado, setResultado] = useState(null);
   useEffect(() => {
@@ -4794,23 +4796,66 @@ function TraerLotesVentasModal({ area, ventasExistentes, rangoInicial, cierreDe,
     () => candidatosVentas({ entradas, planta: plantaEfectiva, desde, hasta, busqueda, ventasExistentes, clientePorLote }),
     [entradas, plantaEfectiva, desde, hasta, busqueda, ventasExistentes, clientePorLote]
   );
-  const valorDe = (f) => {
-    const e = ediciones[f.clave] || {};
-    return { cantidad: e.cantidad !== undefined && e.cantidad !== "" ? Number(e.cantidad) : f.cantidad, precio: e.precio !== undefined && e.precio !== "" ? Number(e.precio) : f.precio };
-  };
-  const elegibles = filas.filter((f) => !f.yaCargada);
-  const seleccionadas = elegibles.filter((f) => sel[f.clave]);
-  const totalSel = seleccionadas.reduce((a, f) => { const v = valorDe(f); return a + totalLineaVenta(v.cantidad, v.precio); }, 0);
-  const autoMarcables = elegibles.filter((f) => !f.esDevolucion && f.precio > 0);
-  const todasMarcadas = autoMarcables.length > 0 && autoMarcables.every((f) => sel[f.clave]);
+  const sugerencias = useMemo(() => {
+    const m = {};
+    filas.forEach((f) => { m[f.clave] = sugerirServicio({ ref: f.ref, descripcion: f.descripcion, ventasExistentes }); });
+    return m;
+  }, [filas, ventasExistentes]);
+  const lineasDe = (f) => lineas[f.clave] || (f.cargados.length ? [] : [{ servicio: sugerencias[f.clave] || "", cantidad: "", precio: "", propio: false }]);
+  // Una fila por línea; cada una sabe su cantidad y precio efectivos y si se puede cargar.
+  const items = useMemo(() => {
+    const out = [];
+    filas.forEach((f) => {
+      const ls = lineas[f.clave] || (f.cargados.length ? [] : [{ servicio: sugerencias[f.clave] || "", cantidad: "", precio: "", propio: false }]);
+      ls.forEach((l, idx) => {
+        const cantidad = l.cantidad !== "" ? Number(l.cantidad) : f.cantidad;
+        const precio = l.precio !== "" ? Number(l.precio) : l.propio ? 0 : f.precio;
+        out.push({ f, l, idx, key: `${f.clave}#${idx}`, cantidad, precio, total: totalLineaVenta(cantidad, precio), bloqueo: bloqueoLinea(f, l.servicio) });
+      });
+    });
+    return out;
+  }, [filas, lineas, sugerencias]);
+  const cargables = items.filter((it) => !it.bloqueo);
+  const seleccionadas = cargables.filter((it) => sel[it.key]);
+  const sinServicio = seleccionadas.filter((it) => !servicioValido(it.l.servicio));
+  const totalSel = seleccionadas.reduce((a, it) => a + it.total, 0);
+  const autoMarcables = cargables.filter((it) => !it.f.esDevolucion && it.precio > 0);
+  const todasMarcadas = autoMarcables.length > 0 && autoMarcables.every((it) => sel[it.key]);
   function marcarTodas(on) {
-    setSel((s) => { const n = { ...s }; autoMarcables.forEach((f) => { n[f.clave] = on; }); return n; });
+    setSel((s) => { const n = { ...s }; autoMarcables.forEach((it) => { n[it.key] = on; }); return n; });
   }
-  function editar(clave, campo, valor) {
-    setEdiciones((e) => ({ ...e, [clave]: { ...(e[clave] || {}), [campo]: valor } }));
+  function setLinea(f, idx, campo, valor) {
+    setLineas((prev) => {
+      const base = prev[f.clave] || lineasDe(f);
+      return { ...prev, [f.clave]: base.map((l, i) => (i === idx ? { ...l, [campo]: valor } : l)) };
+    });
+  }
+  function agregarLinea(f) {
+    setLineas((prev) => {
+      const base = prev[f.clave] || lineasDe(f);
+      return { ...prev, [f.clave]: [...base, { servicio: "", cantidad: "", precio: "", propio: true }] };
+    });
+  }
+  function quitarLinea(f, idx) {
+    setLineas((prev) => {
+      const base = prev[f.clave] || lineasDe(f);
+      return { ...prev, [f.clave]: base.filter((_, i) => i !== idx) };
+    });
+    setSel((s) => { const n = { ...s }; Object.keys(n).forEach((k) => { if (k.startsWith(`${f.clave}#`)) delete n[k]; }); return n; });
+  }
+  function servicioAMarcadas(servicio) {
+    if (!servicio) return;
+    setLineas((prev) => {
+      const n = { ...prev };
+      seleccionadas.forEach((it) => {
+        const base = n[it.f.clave] || lineasDe(it.f);
+        n[it.f.clave] = base.map((l, i) => (i === it.idx ? { ...l, servicio } : l));
+      });
+      return n;
+    });
   }
   async function cargar() {
-    if (!seleccionadas.length) return;
+    if (!seleccionadas.length || sinServicio.length) return;
     setCargando(true);
     setResultado(null);
     try {
@@ -4819,17 +4864,28 @@ function TraerLotesVentasModal({ area, ventasExistentes, rangoInicial, cierreDe,
       const aCargar = [];
       const mesCerrado = [];
       const sinPrecio = [];
-      seleccionadas.forEach((f) => {
-        if (cierreDe(f.fecha)) { mesCerrado.push(f.numLote); return; }
-        const v = ventaDeEntrada(f, ediciones[f.clave], { id: `${uid()}${uid()}`, area, usuario, ahora });
-        if (!v.total) { sinPrecio.push(f.numLote); return; }
-        aCargar.push(v);
+      seleccionadas.forEach((it) => {
+        if (cierreDe(it.f.fecha)) { mesCerrado.push(it.f.numLote); return; }
+        const v = ventaDeEntrada(it.f, { cantidad: it.cantidad, precio: it.precio }, { id: `${uid()}${uid()}`, area, usuario, ahora, servicio: it.l.servicio });
+        if (!v.total) { sinPrecio.push(it.f.numLote); return; }
+        aCargar.push({ v, it });
       });
       for (let i = 0; i < aCargar.length; i += 20) {
-        await Promise.all(aCargar.slice(i, i + 20).map((v) => fsSave("centro_costo_ventas", v.id, v)));
+        await Promise.all(aCargar.slice(i, i + 20).map(({ v }) => fsSave("centro_costo_ventas", v.id, v)));
       }
-      setSel((s) => { const n = { ...s }; aCargar.forEach((v) => { delete n[v.claveEntrada]; }); return n; });
-      setResultado({ ok: aCargar.length, total: aCargar.reduce((a, v) => a + v.total, 0), mesCerrado, sinPrecio });
+      // Las líneas cargadas salen de la lista de edición; las que no se cargaron quedan para corregirlas.
+      const cargadasKeys = new Set(aCargar.map(({ it }) => it.key));
+      setLineas((prev) => {
+        const n = { ...prev };
+        aCargar.forEach(({ it }) => {
+          const base = n[it.f.clave] || lineasDe(it.f);
+          n[it.f.clave] = base.filter((_, i) => !cargadasKeys.has(`${it.f.clave}#${i}`));
+        });
+        return n;
+      });
+      setSel((s) => { const n = { ...s }; Object.keys(n).forEach((k) => { if (cargadasKeys.has(k)) delete n[k]; }); return n; });
+      const porServicio = resumenPorServicio(aCargar.map(({ v }) => v));
+      setResultado({ ok: aCargar.length, total: aCargar.reduce((a, { v }) => a + v.total, 0), porServicio, mesCerrado, sinPrecio });
     } catch (err) {
       setResultado({ error: err?.message || String(err) });
     } finally {
@@ -4838,10 +4894,19 @@ function TraerLotesVentasModal({ area, ventasExistentes, rangoInicial, cierreDe,
   }
   const inp = { padding: "5px 8px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12.5, fontFamily: "inherit" };
   const th = (t, al) => <th key={t} style={{ padding: "9px 10px", color: C.seam, textAlign: al || "left", fontWeight: 700, fontSize: 11, whiteSpace: "nowrap", position: "sticky", top: 0, background: C.ink }}>{t}</th>;
+  const infoFila = (f, esExtra) => (
+    <>
+      <td style={{ padding: "7px 10px", whiteSpace: "nowrap", color: esExtra ? C.slate : C.ink }}>{esExtra ? "↳" : fmtFechaISO(f.fecha)}</td>
+      <td style={{ padding: "7px 10px", fontWeight: 700 }}>{esExtra ? "" : f.numLote || "—"}</td>
+      <td style={{ padding: "7px 10px" }}>{esExtra ? "" : f.ref || "—"}</td>
+      <td style={{ padding: "7px 10px", color: C.slate, maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={f.descripcion}>{esExtra ? "" : f.descripcion || "—"}</td>
+      <td style={{ padding: "7px 10px", color: C.slate }}>{esExtra ? "" : f.cliente || "—"}</td>
+    </>
+  );
   return (
-    <Modal title={`Traer lotes — ventas de ${area}`} onClose={onClose} width={1150}>
-      <div style={{ fontSize: 12, color: C.slate, marginBottom: 12, maxWidth: 820 }}>
-        Entradas de Planta con el precio de la entrada (lo que se pagó por unidad). Marca las que quieras cargar como venta; puedes corregir la cantidad o el precio antes de cargar. Las ya cargadas salen marcadas y no se duplican.
+    <Modal title={`Traer lotes — ventas de ${area}`} onClose={onClose} width={1250}>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 12, maxWidth: 860, lineHeight: 1.5 }}>
+        Entradas de Planta con el precio de la entrada (lo que se pagó por unidad). <strong>Escoge el servicio de cada lote</strong> (maquila, ojal, presilla, encauchado…). Si el lote lleva más de un servicio, usa «+ servicio» para agregar otra línea con su propia cantidad y precio. Las ya cargadas salen marcadas y no se duplican.
       </div>
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 14 }}>
         <select value={plantaEfectiva} onChange={(e) => setPlanta(e.target.value)} style={{ ...inp, fontWeight: 700 }}>
@@ -4853,6 +4918,11 @@ function TraerLotesVentasModal({ area, ventasExistentes, rangoInicial, cierreDe,
         <input type="date" value={hasta} onChange={(e) => setHasta(e.target.value)} style={inp} />
         <input value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder="🔍 Lote, referencia o pedido..." style={{ ...inp, minWidth: 220 }} />
         <span style={{ fontSize: 12, color: C.slate }}>{cargasEntradas === null ? "Cargando entradas..." : `${filas.length} entrada(s)`}</span>
+        <span style={{ flex: 1 }} />
+        <select value="" disabled={!seleccionadas.length} onChange={(e) => servicioAMarcadas(e.target.value)} style={{ ...inp, fontWeight: 700 }} title="Pone el mismo servicio a todas las líneas marcadas">
+          <option value="">Servicio a las marcadas…</option>
+          {SERVICIOS_VENTA.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+        </select>
       </div>
       {cargasEntradas !== null && !entradas.length && (
         <div style={{ padding: 16, borderRadius: 10, background: C.amberBg, color: C.amber, fontSize: 13, marginBottom: 12 }}>
@@ -4860,48 +4930,69 @@ function TraerLotesVentasModal({ area, ventasExistentes, rangoInicial, cierreDe,
         </div>
       )}
       <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "auto", maxHeight: "52vh" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 980 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 1100 }}>
           <thead>
             <tr style={{ background: C.ink }}>
               <th style={{ padding: "9px 10px", position: "sticky", top: 0, background: C.ink, width: 34 }}>
                 <input type="checkbox" checked={todasMarcadas} onChange={(e) => marcarTodas(e.target.checked)} title="Marcar todas (con precio, sin devoluciones)" />
               </th>
-              {th("Fecha")}{th("Lote")}{th("Ref")}{th("Descripción")}{th("Cliente")}{th("Cant.", "right")}{th("Precio", "right")}{th("Total", "right")}{th("Estado")}
+              {th("Fecha")}{th("Lote")}{th("Ref")}{th("Descripción")}{th("Cliente")}{th("Servicio")}{th("Cant.", "right")}{th("Precio", "right")}{th("Total", "right")}{th("Estado")}
             </tr>
           </thead>
           <tbody>
             {filas.map((f, i) => {
-              const v = valorDe(f);
-              const total = totalLineaVenta(v.cantidad, v.precio);
-              return (
-                <tr key={f.clave} style={{ background: f.yaCargada ? C.canvas : f.esDevolucion ? C.violetBg : i % 2 ? "#FAF8F5" : C.white, borderTop: `1px solid ${C.border}`, opacity: f.yaCargada ? 0.6 : 1 }}>
-                  <td style={{ padding: "7px 10px", textAlign: "center" }}>
-                    <input type="checkbox" disabled={f.yaCargada} checked={!!sel[f.clave] && !f.yaCargada} onChange={(e) => setSel((s) => ({ ...s, [f.clave]: e.target.checked }))} />
-                  </td>
-                  <td style={{ padding: "7px 10px", whiteSpace: "nowrap" }}>{fmtFechaISO(f.fecha)}</td>
-                  <td style={{ padding: "7px 10px", fontWeight: 700 }}>{f.numLote || "—"}</td>
-                  <td style={{ padding: "7px 10px" }}>{f.ref || "—"}</td>
-                  <td style={{ padding: "7px 10px", color: C.slate, maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={f.descripcion}>{f.descripcion || "—"}</td>
-                  <td style={{ padding: "7px 10px", color: C.slate }}>{f.cliente || "—"}</td>
-                  <td style={{ padding: "7px 10px", textAlign: "right" }}>
-                    <input type="number" disabled={f.yaCargada} value={ediciones[f.clave]?.cantidad ?? f.cantidad} onChange={(e) => editar(f.clave, "cantidad", e.target.value)} style={{ ...inp, width: 80, textAlign: "right" }} />
-                  </td>
-                  <td style={{ padding: "7px 10px", textAlign: "right" }}>
-                    <input type="number" disabled={f.yaCargada} value={ediciones[f.clave]?.precio ?? f.precio} onChange={(e) => editar(f.clave, "precio", e.target.value)} style={{ ...inp, width: 90, textAlign: "right", borderColor: !f.yaCargada && !(v.precio > 0) ? C.red : C.border }} />
-                  </td>
-                  <td style={{ padding: "7px 10px", textAlign: "right", fontWeight: 800, color: total < 0 ? C.red : C.ink }}>{fmtMoney(total)}</td>
-                  <td style={{ padding: "7px 10px", whiteSpace: "nowrap", fontSize: 11, fontWeight: 700 }}>
-                    {f.yaCargada ? <span style={{ color: C.green }}>✓ ya cargada</span>
-                      : f.esDevolucion ? <span style={{ color: C.violet }}>↩️ devolución</span>
-                      : !(f.precio > 0) ? <span style={{ color: C.red }}>sin precio</span>
-                      : f.posibleDuplicado ? <span style={{ color: C.amber }} title="Ya hay una venta digitada a mano con este mismo lote">⚠ ya hay venta del lote</span>
-                      : ""}
-                  </td>
-                </tr>
-              );
+              const fondo = f.yaCargada ? C.canvas : f.esDevolucion ? C.violetBg : i % 2 ? "#FAF8F5" : C.white;
+              const its = items.filter((it) => it.f.clave === f.clave);
+              const puedeAgregar = !f.cargados.includes(SIN_SERVICIO) && !f.esDevolucion;
+              const nombresCargados = f.cargados.map((k) => etiquetaServicio(k)).join(", ");
+              const botonAgregar = puedeAgregar ? <button type="button" onClick={() => agregarLinea(f)} style={{ marginLeft: 6, padding: "3px 8px", fontSize: 11, fontWeight: 700, border: `1px solid ${C.border}`, borderRadius: 6, background: C.white, cursor: "pointer", fontFamily: "inherit" }} title="El lote lleva otro servicio: agrega una línea con su propio precio">+ servicio</button> : null;
+              if (!its.length) {
+                return (
+                  <tr key={f.clave} style={{ background: fondo, borderTop: `1px solid ${C.border}` }}>
+                    <td />
+                    {infoFila(f, false)}
+                    <td colSpan={5} style={{ padding: "7px 10px", fontSize: 11.5, fontWeight: 700, color: C.green }}>✓ ya cargada: {nombresCargados}{botonAgregar}</td>
+                  </tr>
+                );
+              }
+              return its.map((it) => {
+                const bloqueada = !!it.bloqueo;
+                const falta = !bloqueada && !servicioValido(it.l.servicio);
+                return (
+                  <tr key={it.key} style={{ background: fondo, borderTop: `1px solid ${C.border}`, opacity: bloqueada ? 0.6 : 1 }}>
+                    <td style={{ padding: "7px 10px", textAlign: "center" }}>
+                      <input type="checkbox" disabled={bloqueada} checked={!!sel[it.key] && !bloqueada} onChange={(e) => setSel((s) => ({ ...s, [it.key]: e.target.checked }))} />
+                    </td>
+                    {infoFila(f, it.idx > 0)}
+                    <td style={{ padding: "7px 10px", whiteSpace: "nowrap" }}>
+                      <select value={servicioValido(it.l.servicio) ? it.l.servicio : ""} onChange={(e) => setLinea(f, it.idx, "servicio", e.target.value)} style={{ ...inp, fontWeight: 700, borderColor: falta && sel[it.key] ? C.red : C.border }}>
+                        <option value="">Elegir…</option>
+                        {SERVICIOS_VENTA.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+                      </select>
+                    </td>
+                    <td style={{ padding: "7px 10px", textAlign: "right" }}>
+                      <input type="number" disabled={bloqueada} value={it.l.cantidad !== "" ? it.l.cantidad : f.cantidad} onChange={(e) => setLinea(f, it.idx, "cantidad", e.target.value)} style={{ ...inp, width: 80, textAlign: "right" }} />
+                    </td>
+                    <td style={{ padding: "7px 10px", textAlign: "right" }}>
+                      <input type="number" disabled={bloqueada} value={it.l.precio !== "" ? it.l.precio : it.l.propio ? "" : f.precio} placeholder={it.l.propio ? "precio" : ""} onChange={(e) => setLinea(f, it.idx, "precio", e.target.value)} style={{ ...inp, width: 90, textAlign: "right", borderColor: !bloqueada && !(it.precio > 0) ? C.red : C.border }} />
+                    </td>
+                    <td style={{ padding: "7px 10px", textAlign: "right", fontWeight: 800, color: it.total < 0 ? C.red : C.ink }}>{fmtMoney(it.total)}</td>
+                    <td style={{ padding: "7px 10px", whiteSpace: "nowrap", fontSize: 11, fontWeight: 700 }}>
+                      {it.bloqueo === "sin_tipo_cargada" ? <span style={{ color: C.amber }} title="Ya hay una venta de esta entrada sin tipo de servicio. Ponle su tipo en la tabla de ventas para poder agregar otros servicios.">⚠ cargada sin tipo</span>
+                        : it.bloqueo === "ya_cargada" ? <span style={{ color: C.green }}>✓ ya cargada</span>
+                        : f.esDevolucion ? <span style={{ color: C.violet }}>↩️ devolución</span>
+                        : !(it.precio > 0) ? <span style={{ color: C.red }}>sin precio</span>
+                        : f.posibleDuplicado ? <span style={{ color: C.amber }} title="Ya hay una venta digitada a mano con este mismo lote">⚠ ya hay venta del lote</span>
+                        : null}
+                      {it.idx === its.length - 1 && botonAgregar}
+                      {it.idx > 0 && <button type="button" onClick={() => quitarLinea(f, it.idx)} style={{ marginLeft: 6, padding: "3px 7px", fontSize: 11, border: `1px solid ${C.border}`, borderRadius: 6, background: C.white, cursor: "pointer", color: C.red, fontFamily: "inherit" }} title="Quitar esta línea">✕</button>}
+                    </td>
+                  </tr>
+                );
+              });
             })}
             {!filas.length && cargasEntradas !== null && (
-              <tr><td colSpan={10} style={{ padding: 24, textAlign: "center", color: C.slate }}>No hay entradas con estos filtros.</td></tr>
+              <tr><td colSpan={11} style={{ padding: 24, textAlign: "center", color: C.slate }}>No hay entradas con estos filtros.</td></tr>
             )}
           </tbody>
         </table>
@@ -4910,13 +5001,14 @@ function TraerLotesVentasModal({ area, ventasExistentes, rangoInicial, cierreDe,
         <div style={{ fontSize: 12.5, marginTop: 12, padding: "9px 12px", borderRadius: 8, fontWeight: 600, background: resultado.error ? C.redBg : C.greenBg, color: resultado.error ? C.red : C.green, lineHeight: 1.5 }}>
           {resultado.error
             ? `⚠ No se pudo cargar: ${resultado.error}`
-            : `✓ ${resultado.ok} venta(s) cargada(s) por ${fmtMoney(resultado.total)}.${resultado.mesCerrado.length ? ` Sin cargar por mes cerrado (lotes ${resultado.mesCerrado.join(", ")}): pide a un administrador que reabra el mes.` : ""}${resultado.sinPrecio.length ? ` Sin cargar por no tener precio (lotes ${resultado.sinPrecio.join(", ")}).` : ""}`}
+            : `✓ ${resultado.ok} venta(s) cargada(s) por ${fmtMoney(resultado.total)}${resultado.porServicio.length ? ` (${resultado.porServicio.map((g) => `${g.etiqueta} ${fmtMoney(g.ventas)}`).join(" · ")})` : ""}.${resultado.mesCerrado.length ? ` Sin cargar por mes cerrado (lotes ${resultado.mesCerrado.join(", ")}): pide a un administrador que reabra el mes.` : ""}${resultado.sinPrecio.length ? ` Sin cargar por no tener precio (lotes ${resultado.sinPrecio.join(", ")}).` : ""}`}
         </div>
       )}
       <div style={{ display: "flex", gap: 14, justifyContent: "flex-end", alignItems: "center", marginTop: 14, flexWrap: "wrap" }}>
+        {sinServicio.length > 0 && <span style={{ fontSize: 12, color: C.red, fontWeight: 700 }}>Falta escoger el servicio de {sinServicio.length} línea(s) marcada(s)</span>}
         <span style={{ fontSize: 13, color: C.slate }}>{seleccionadas.length} seleccionada(s) · <strong style={{ color: C.ink }}>{fmtMoney(totalSel)}</strong></span>
         <Btn variant="secondary" onClick={onClose}>Cerrar</Btn>
-        <Btn onClick={cargar} disabled={cargando || !seleccionadas.length}>{cargando ? "Cargando..." : `Cargar ${seleccionadas.length || ""} seleccionada(s)`}</Btn>
+        <Btn onClick={cargar} disabled={cargando || !seleccionadas.length || sinServicio.length > 0}>{cargando ? "Cargando..." : `Cargar ${seleccionadas.length || ""} seleccionada(s)`}</Btn>
       </div>
     </Modal>
   );
@@ -5478,7 +5570,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
   const [traerLotesAbierto, setTraerLotesAbierto] = useState(false);
   const [traerGastosAbierto, setTraerGastosAbierto] = useState(false);
   const [detalleNominaAbierto, setDetalleNominaAbierto] = useState(false);
-  const [ventaForm, setVentaForm] = useState({ referencia: "", lote: "", cantidad: "", precio: "", total: "", cliente: "", fecha: hoy });
+  const [ventaForm, setVentaForm] = useState({ referencia: "", lote: "", cantidad: "", precio: "", total: "", cliente: "", servicio: "", fecha: hoy });
   // (2026-09-22, a pedido de Fredy) Liquidaciones YA CONFIRMADAS de Nómina
   // -> Destajo (misma colección que usa NominaDestajoView en
   // modulo-nomina.jsx) -- para sacar el costo/valor REAL de los
@@ -6337,6 +6429,8 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
   );
   const totalGastosPeriodo = gastosPeriodo.reduce((s, g) => s + (Number(g.monto) || 0), 0);
   const totalVentasCentroCostoPeriodo = ventasCentroCostoPeriodo.reduce((s, v) => s + (Number(v.total) || 0), 0);
+  // (2026-11-07) Ventas y unidades por tipo de servicio (maquila, ojal, presilla, encauchado…) del período.
+  const ventasPorServicio = useMemo(() => resumenPorServicio(ventasCentroCostoPeriodo), [ventasCentroCostoPeriodo]);
   // (2026-09-22, a pedido de Fredy) "Historial de Facturas y Ventas" -- a
   // diferencia de gastosPeriodo/ventasCentroCostoPeriodo (que dependen del
   // selector de período de arriba), esto agrupa TODOS los gastos/ventas del
@@ -6477,12 +6571,12 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
   }
   function abrirNuevaVenta() {
     if (!puedeEditar) return;
-    setVentaForm({ referencia: "", lote: "", cantidad: "", precio: "", total: "", cliente: "", fecha: hoy });
+    setVentaForm({ referencia: "", lote: "", cantidad: "", precio: "", total: "", cliente: "", servicio: "", fecha: hoy });
     setVentaArchivoFile(null);
     setVentaModalAbierto(true);
   }
   async function guardarVentaForm() {
-    if (!ventaForm.referencia.trim() || !ventaForm.total) return;
+    if (!ventaForm.referencia.trim() || !ventaForm.total || !servicioValido(ventaForm.servicio)) return;
     if (cierreDe(ventaForm.fecha)) {
       alert("Ese mes ya está cerrado en Centro de Costo -- pídele a un admin que lo reabra en el Historial antes de agregar ventas.");
       return;
@@ -6499,6 +6593,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
         precio: Number(ventaForm.precio) || 0,
         total: Number(ventaForm.total) || 0,
         cliente: ventaForm.cliente.trim(),
+        servicio: ventaForm.servicio,
         fecha: ventaForm.fecha,
         facturaUrl,
         creadoEn: new Date().toISOString(),
@@ -6512,6 +6607,29 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
       setSubiendoArchivo(false);
     }
   }
+  // (2026-11-07) Cambiar el tipo de servicio de una venta ya cargada (las anteriores a este cambio salen «Sin tipo»).
+  async function cambiarServicioVenta(v, servicio) {
+    if (!puedeEditar || !servicioValido(servicio)) return;
+    if (cierreDe(v.fecha)) {
+      alert("Ese mes ya está cerrado en Centro de Costo -- pídele a un admin que lo reabra en el Historial antes de cambiar el servicio.");
+      return;
+    }
+    await fsSave("centro_costo_ventas", v.id, { servicio });
+  }
+  const colServicioVenta = {
+    key: "servicio",
+    label: "Servicio",
+    render: (v) => {
+      const sv = servicioDeVenta(v);
+      if (!puedeEditar) return <span style={{ fontSize: 12, fontWeight: 700, color: sv === SIN_SERVICIO ? C.amber : C.ink }}>{etiquetaServicio(sv)}</span>;
+      return (
+        <select value={sv === SIN_SERVICIO ? "" : sv} onChange={(e) => cambiarServicioVenta(v, e.target.value)} title={sv === SIN_SERVICIO ? "Esta venta es anterior al tipo de servicio: escoge cuál es" : "Cambiar el servicio"} style={{ padding: "3px 6px", fontSize: 12, fontWeight: 700, borderRadius: 6, fontFamily: "inherit", border: `1px solid ${sv === SIN_SERVICIO ? C.amber : C.border}`, background: sv === SIN_SERVICIO ? C.amberBg : C.white }}>
+          <option value="">Sin tipo</option>
+          {SERVICIOS_VENTA.map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}
+        </select>
+      );
+    },
+  };
   async function borrarVenta(v) {
     if (!puedeEditar) return;
     if (cierreDe(v.fecha)) {
@@ -6915,6 +7033,19 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
                       {puedeEditar && <Btn small onClick={abrirNuevaVenta}>+ Agregar venta</Btn>}
                     </div>
                   </div>
+                  {ventasPorServicio.length > 0 && (
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+                      {ventasPorServicio.map((g) => (
+                        <div key={g.servicio} title={`${g.lineas} línea(s) de venta`} style={{ padding: "6px 10px", borderRadius: 8, border: `1px solid ${g.servicio === SIN_SERVICIO ? C.amber : C.border}`, background: g.servicio === SIN_SERVICIO ? C.amberBg : C.white, fontSize: 12, lineHeight: 1.35 }}>
+                          <div style={{ fontWeight: 800, color: g.servicio === SIN_SERVICIO ? C.amber : C.ink }}>{g.etiqueta}</div>
+                          <div style={{ color: C.slate }}><strong style={{ color: C.ink }}>{fmtMoney(g.ventas)}</strong> · {fmtNum(g.unidades)} und</div>
+                        </div>
+                      ))}
+                      {ventasPorServicio.some((g) => g.servicio === SIN_SERVICIO) && (
+                        <div style={{ fontSize: 11.5, color: C.amber, alignSelf: "center", maxWidth: 260 }}>Hay ventas «Sin tipo»: escoge su servicio en la tabla.</div>
+                      )}
+                    </div>
+                  )}
                   <Tabla
                     vacio="Sin ventas digitadas en este período."
                     columnas={[
@@ -6922,6 +7053,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
                       { key: "referencia", label: "Ref" },
                       { key: "lote", label: "Lote" },
                       { key: "cliente", label: "Cliente" },
+                      colServicioVenta,
                       { key: "cantidad", label: "Cant.", align: "right", render: (v) => fmtNum(v.cantidad) },
                       { key: "precio", label: "Precio", align: "right", render: (v) => fmtMoney(v.precio) },
                       { key: "total", label: "Total", align: "right", render: (v) => <strong>{fmtMoney(v.total)}</strong> },
@@ -7000,6 +7132,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
                                   { key: "fecha", label: "Fecha", render: (v) => fmtFechaISO(v.fecha) },
                                   { key: "referencia", label: "Ref" },
                                   { key: "cliente", label: "Cliente" },
+                                  colServicioVenta,
                                   { key: "total", label: "Total", align: "right", render: (v) => <strong>{fmtMoney(v.total)}</strong> },
                                   { key: "factura", label: "", render: (v) => (v.facturaUrl ? <a href={v.facturaUrl} target="_blank" rel="noreferrer" style={{ color: C.blue, fontWeight: 700, fontSize: 12 }}>📎 Ver</a> : null) },
                                   colOrigenCC, { key: "acciones", label: "", align: "right", render: (v) => (puedeEditar ? <Btn small variant="danger" onClick={() => borrarVenta(v)}>🗑</Btn> : null) },
@@ -7088,6 +7221,14 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
               {campoTexto("Referencia", ventaForm.referencia, (v) => setVentaForm((f) => ({ ...f, referencia: v })))}
               {campoTexto("Lote", ventaForm.lote, (v) => setVentaForm((f) => ({ ...f, lote: v })))}
               {campoTexto("Cliente", ventaForm.cliente, (v) => setVentaForm((f) => ({ ...f, cliente: v })))}
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ fontSize: 12, fontWeight: 700, color: C.ink, display: "block", marginBottom: 6 }}>Servicio</label>
+                <select value={ventaForm.servicio} onChange={(e) => setVentaForm((f) => ({ ...f, servicio: e.target.value }))} style={{ width: "100%", padding: "8px 10px", border: `1px solid ${servicioValido(ventaForm.servicio) ? C.border : C.red}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", fontWeight: 700 }}>
+                  <option value="">Elegir servicio…</option>
+                  {SERVICIOS_VENTA.map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}
+                </select>
+                <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>Si el lote lleva más de un servicio, agrega una venta por cada servicio.</div>
+              </div>
               {campoTexto("Cantidad", ventaForm.cantidad, (v) => setVentaForm((f) => ({ ...f, cantidad: v })), { type: "number" })}
               {campoTexto("Precio", ventaForm.precio, (v) => setVentaForm((f) => ({ ...f, precio: v })), { type: "number" })}
               {campoTexto("Total", ventaForm.total, (v) => setVentaForm((f) => ({ ...f, total: v })), { type: "number" })}
@@ -7098,7 +7239,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
               </div>
               <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
                 <Btn variant="secondary" onClick={() => setVentaModalAbierto(false)}>Cancelar</Btn>
-                <Btn onClick={guardarVentaForm} disabled={!ventaForm.referencia.trim() || !ventaForm.total || subiendoArchivo}>{subiendoArchivo ? "Guardando..." : "Guardar"}</Btn>
+                <Btn onClick={guardarVentaForm} disabled={!ventaForm.referencia.trim() || !ventaForm.total || !servicioValido(ventaForm.servicio) || subiendoArchivo}>{subiendoArchivo ? "Guardando..." : "Guardar"}</Btn>
               </div>
             </Modal>
           )}
