@@ -4711,7 +4711,7 @@ function causadoDestajoEnPeriodoCC(t, periodoId, hoy, produccion, causacionManua
   const ajusteDoc = (ajustesDestajoCC || []).find((a) => a.id === `${t.id}__${periodoId}`);
   const ajusteValor = (!base.salarioMinimoGarantizado && ajusteDoc) ? (Number(ajusteDoc.valor) || 0) : 0;
   const netoAPagar = base.netoBase - descuentoCobros + totalHorasExtra + bonificacionPuntual + ajusteValor;
-  return { valorProducido: netoProduccion, costo: netoAPagar + base.cesantiasPeriodo + base.primaPeriodo + base.vacacionesPeriodo, neto: netoAPagar, provisiones: base.cesantiasPeriodo + base.primaPeriodo + base.vacacionesPeriodo };
+  return { valorProducido: netoProduccion, costo: netoAPagar + base.cesantiasPeriodo + base.primaPeriodo + base.vacacionesPeriodo, neto: netoAPagar, provisiones: base.cesantiasPeriodo + base.primaPeriodo + base.vacacionesPeriodo, cesantias: base.cesantiasPeriodo, prima: base.primaPeriodo, vacaciones: base.vacacionesPeriodo };
 }
 // ─── TRAER LOTES (Entradas de Planta → ventas del área) ───────────────────────
 // (2026-11-06, a pedido de Fredy) En «Costos y ventas» se escogen con casillas las entradas de la planta (lote,
@@ -5034,7 +5034,7 @@ function etiquetaOrigenCC(r) {
 const colOrigenCC = { key: "origen", label: "Cargó", render: (r) => { const o = etiquetaOrigenCC(r); return <span title={o.titulo} style={{ fontSize: 11, color: C.slate, whiteSpace: "nowrap" }}>{o.txt}</span>; } };
 // (2026-11-06, a pedido de Fredy) «¿De dónde sale la nómina?»: desglose del costo de nómina que entra al Costo total, por
 // quincena y por trabajador. Distingue lo confirmado en Nómina → Destajo de lo estimado en vivo y de las quincenas que
-// todavía no han empezado (que ya suman sus provisiones). En Planta Yanko (mostrarNombres=false) solo sale el resumen por
+// todavía no han empezado (que ya suman sus Dctos TNS). En Planta Yanko (mostrarNombres=false) solo sale el resumen por
 // quincena, sin nombres.
 const ESTADO_QUINCENA_CC = {
   confirmada: { txt: "✓ Confirmada", fg: "#2D9E6B", orden: 0 },
@@ -5044,18 +5044,23 @@ const ESTADO_QUINCENA_CC = {
   fijo: { txt: "Sueldo fijo", fg: "#5A5A7A", orden: 4 },
 };
 function DetalleCostoNominaModal({ filas, totalTarjeta, area, etiquetaPeriodo, mostrarNombres, onClose }) {
+  const [verDctos, setVerDctos] = useState(true);
+  const [verDctosTrab, setVerDctosTrab] = useState(false);
   const resumen = useMemo(() => {
     const m = new Map();
     filas.forEach((f) => {
-      if (!m.has(f.pid)) m.set(f.pid, { pid: f.pid, label: f.label, n: 0, neto: 0, prov: 0, costo: 0, estados: {} });
+      if (!m.has(f.pid)) m.set(f.pid, { pid: f.pid, label: f.label, n: 0, neto: 0, prov: 0, ces: 0, prima: 0, vac: 0, costo: 0, estados: {} });
       const g = m.get(f.pid);
-      g.n += 1; g.neto += f.neto; g.prov += f.prov; g.costo += f.costo;
+      g.n += 1; g.neto += f.neto; g.prov += f.prov; g.ces += f.ces || 0; g.prima += f.prima || 0; g.vac += f.vac || 0; g.costo += f.costo;
       g.estados[f.estado] = (g.estados[f.estado] || 0) + 1;
     });
     return [...m.values()].sort((a, b) => a.pid.localeCompare(b.pid));
   }, [filas]);
   const suma = filas.reduce((a, f) => a + f.costo, 0);
   const provFuturas = filas.filter((f) => f.estado === "futura").reduce((a, f) => a + f.prov, 0);
+  const dctosTotal = filas.reduce((a, f) => a + f.prov, 0);
+  const dctosPorQuincena = resumen.filter((g) => g.prov > 0);
+  const dctosTrabajadores = useMemo(() => [...filas].filter((f) => f.prov > 0).sort((a, b) => b.prov - a.prov || String(a.nombre).localeCompare(String(b.nombre), "es") || a.pid.localeCompare(b.pid)), [filas]);
   const estimado = filas.filter((f) => f.estado !== "confirmada" && f.estado !== "fijo").reduce((a, f) => a + f.costo, 0);
   const confirmado = filas.filter((f) => f.estado === "confirmada").reduce((a, f) => a + f.costo, 0);
   const diferencia = Math.round(suma - totalTarjeta);
@@ -5063,13 +5068,13 @@ function DetalleCostoNominaModal({ filas, totalTarjeta, area, etiquetaPeriodo, m
   return (
     <Modal title={`¿De dónde sale la nómina? — ${area}`} onClose={onClose} width={1000}>
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 14, maxWidth: 780 }}>
-        Costo de nómina de {area} en {etiquetaPeriodo} que entra al Costo total. Cada línea es neto a pagar + provisiones (cesantías, prima y vacaciones).
+        Costo de nómina de {area} en {etiquetaPeriodo} que entra al Costo total. Cada línea es neto a pagar + Dctos TNS (cesantías, prima y vacaciones).
         Lo confirmado sale de Nómina → Destajo; lo demás es un estimado con lo registrado hasta hoy.
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 12, marginBottom: 16 }}>
         <KPI icon="✅" label="Confirmado en Nómina" value={fmtMoney(confirmado)} color={C.green} bg={C.greenBg} />
         <KPI icon="🟡" label="Estimado (sin confirmar)" value={fmtMoney(estimado)} color={C.amber} bg={C.amberBg} />
-        <KPI icon="⏳" label="Provisiones de quincenas que no han empezado" value={fmtMoney(provFuturas)} color={C.violet} bg={C.violetBg} sub="ya suman aunque la quincena no empiece" />
+        <KPI icon="🧾" label="Dctos TNS" value={fmtMoney(dctosTotal)} color={C.violet} bg={C.violetBg} sub={`Incluidos arriba${provFuturas > 0 ? ` · ${fmtMoney(provFuturas)} son de quincenas que no han empezado` : ""} · clic para ${verDctos ? "ocultar" : "ver"} el detalle`} onClick={() => setVerDctos((v) => !v)} />
         <KPI icon="🏦" label="Total de nómina" value={fmtMoney(suma)} color={C.ink} bg={C.canvas} />
       </div>
       {Math.abs(diferencia) > 1 && (
@@ -5077,12 +5082,91 @@ function DetalleCostoNominaModal({ filas, totalTarjeta, area, etiquetaPeriodo, m
           ⚠ Este desglose suma {fmtMoney(suma)} pero la tarjeta de Costo total usa {fmtMoney(totalTarjeta)} de nómina (diferencia {fmtMoney(diferencia)}). Avísale a soporte para revisarlo.
         </div>
       )}
+      {verDctos && (
+        <div style={{ border: `2px solid ${C.violet}55`, borderRadius: 12, padding: "14px 16px", marginBottom: 18, background: C.violetBg }}>
+          <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 4 }}>Dctos TNS — qué incluye</div>
+          <div style={{ fontSize: 12, color: C.slate, marginBottom: 12, lineHeight: 1.5, maxWidth: 820 }}>
+            Lo que se aparta de cada pago: cesantías ({(TASA_CESANTIAS_MENSUAL_CC * 100).toFixed(2).replace(".", ",")} %) y prima ({(TASA_PRIMA_MENSUAL_CC * 100).toFixed(2).replace(".", ",")} %) sobre la mitad del sueldo más el auxilio de la ficha, y vacaciones ({(TASA_VACACIONES_MENSUAL_CC * 100).toFixed(2).replace(".", ",")} %) sobre la mitad del sueldo. En las quincenas ya confirmadas salen de Nómina → Destajo. Se suman completos aunque la quincena no haya empezado.
+          </div>
+          <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "auto", background: C.white }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 560 }}>
+              <thead>
+                <tr style={{ background: C.ink }}>
+                  {["Quincena", "Personas", "Cesantías", "Prima", "Vacaciones", "Total Dctos"].map((h, i) => (
+                    <th key={h} style={{ padding: "9px 12px", color: C.seam, textAlign: i < 1 ? "left" : "right", fontWeight: 700, fontSize: 11, whiteSpace: "nowrap" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {dctosPorQuincena.map((g, i) => (
+                  <tr key={g.pid} style={{ background: i % 2 ? "#FAF8F5" : C.white, borderTop: `1px solid ${C.border}` }}>
+                    <td style={{ padding: "8px 12px", fontWeight: 700, whiteSpace: "nowrap" }}>
+                      {g.label}
+                      {Object.keys(g.estados).sort((a, b) => ESTADO_QUINCENA_CC[a].orden - ESTADO_QUINCENA_CC[b].orden).map((e) => (
+                        <span key={e} style={{ color: ESTADO_QUINCENA_CC[e].fg, marginLeft: 8, fontSize: 11 }}>{ESTADO_QUINCENA_CC[e].txt}</span>
+                      ))}
+                    </td>
+                    <td style={{ padding: "8px 12px", textAlign: "right" }}>{fmtNum(g.n)}</td>
+                    <td style={{ padding: "8px 12px", textAlign: "right" }}>{fmtMoney(g.ces)}</td>
+                    <td style={{ padding: "8px 12px", textAlign: "right" }}>{fmtMoney(g.prima)}</td>
+                    <td style={{ padding: "8px 12px", textAlign: "right" }}>{fmtMoney(g.vac)}</td>
+                    <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 800 }}>{fmtMoney(g.prov)}</td>
+                  </tr>
+                ))}
+                {!dctosPorQuincena.length && <tr><td colSpan={6} style={{ padding: 18, textAlign: "center", color: C.slate }}>No hay Dctos TNS en este período.</td></tr>}
+                {dctosPorQuincena.length > 0 && (
+                  <tr style={{ borderTop: `2px solid ${C.ink}` }}>
+                    <td style={{ padding: "8px 12px", fontWeight: 800 }}>Total</td>
+                    <td style={{ padding: "8px 12px" }}></td>
+                    <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 800 }}>{fmtMoney(dctosPorQuincena.reduce((a, g) => a + g.ces, 0))}</td>
+                    <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 800 }}>{fmtMoney(dctosPorQuincena.reduce((a, g) => a + g.prima, 0))}</td>
+                    <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 800 }}>{fmtMoney(dctosPorQuincena.reduce((a, g) => a + g.vac, 0))}</td>
+                    <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 800 }}>{fmtMoney(dctosTotal)}</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          {mostrarNombres && dctosTrabajadores.length > 0 && (
+            <>
+              <div style={{ marginTop: 12 }}>
+                <Btn small variant="secondary" onClick={() => setVerDctosTrab((v) => !v)}>{verDctosTrab ? "Ocultar" : "Ver"} por trabajador (solo administrador)</Btn>
+              </div>
+              {verDctosTrab && (
+                <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "auto", maxHeight: "36vh", marginTop: 10, background: C.white }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 560 }}>
+                    <thead>
+                      <tr style={{ background: C.ink }}>
+                        {["Trabajador", "Quincena", "Cesantías", "Prima", "Vacaciones", "Total"].map((h, i) => (
+                          <th key={h} style={{ padding: "9px 12px", color: C.seam, textAlign: i < 2 ? "left" : "right", fontWeight: 700, fontSize: 11, whiteSpace: "nowrap", position: "sticky", top: 0, background: C.ink }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {dctosTrabajadores.map((f, i) => (
+                        <tr key={`d|${f.id}|${f.pid}`} style={{ background: i % 2 ? "#FAF8F5" : C.white, borderTop: `1px solid ${C.border}` }}>
+                          <td style={{ padding: "7px 12px", fontWeight: 600 }}>{f.nombre}</td>
+                          <td style={{ padding: "7px 12px", whiteSpace: "nowrap" }}>{f.label}</td>
+                          <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtMoney(f.ces)}</td>
+                          <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtMoney(f.prima)}</td>
+                          <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtMoney(f.vac)}</td>
+                          <td style={{ padding: "7px 12px", textAlign: "right", fontWeight: 800 }}>{fmtMoney(f.prov)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
       <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 8 }}>Por quincena</div>
       <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "auto", marginBottom: 18 }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
           <thead>
             <tr style={{ background: C.ink }}>
-              {["Quincena", "Estado", "Trabajadores", "Neto a pagar", "Provisiones", "Costo"].map((h, i) => (
+              {["Quincena", "Estado", "Trabajadores", "Neto a pagar", "Dctos TNS", "Costo"].map((h, i) => (
                 <th key={h} style={{ padding: "9px 12px", color: C.seam, textAlign: i < 2 ? "left" : "right", fontWeight: 700, fontSize: 11, whiteSpace: "nowrap" }}>{h}</th>
               ))}
             </tr>
@@ -5113,7 +5197,7 @@ function DetalleCostoNominaModal({ filas, totalTarjeta, area, etiquetaPeriodo, m
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 640 }}>
               <thead>
                 <tr style={{ background: C.ink }}>
-                  {["Trabajador", "Quincena", "Estado", "Neto a pagar", "Provisiones", "Costo"].map((h, i) => (
+                  {["Trabajador", "Quincena", "Estado", "Neto a pagar", "Dctos TNS", "Costo"].map((h, i) => (
                     <th key={h} style={{ padding: "9px 12px", color: C.seam, textAlign: i < 3 ? "left" : "right", fontWeight: 700, fontSize: 11, whiteSpace: "nowrap", position: "sticky", top: 0, background: C.ink }}>{h}</th>
                   ))}
                 </tr>
@@ -5135,7 +5219,7 @@ function DetalleCostoNominaModal({ filas, totalTarjeta, area, etiquetaPeriodo, m
         </>
       )}
       <div style={{ fontSize: 11, color: C.slate, marginTop: 12, lineHeight: 1.5 }}>
-        Las provisiones de cada quincena se suman completas aunque la quincena no haya empezado; solo el salario mínimo garantizado se prorratea por los días que ya pasaron.
+        Los Dctos TNS (provisiones de cesantías, prima y vacaciones) de cada quincena se suman completos aunque la quincena no haya empezado; solo el salario mínimo garantizado se prorratea por los días que ya pasaron.
       </div>
     </Modal>
   );
@@ -5663,17 +5747,26 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
         let neto;
         let prov;
         let estado;
+        let ces;
+        let prima;
+        let vac;
         if (liq) {
           neto = Number(liq.netoAPagar) || 0;
-          prov = (Number(liq.cesantiasPeriodo) || 0) + (Number(liq.primaPeriodo) || 0) + (Number(liq.vacacionesPeriodo) || 0);
+          ces = Number(liq.cesantiasPeriodo) || 0;
+          prima = Number(liq.primaPeriodo) || 0;
+          vac = Number(liq.vacacionesPeriodo) || 0;
+          prov = ces + prima + vac;
           estado = "confirmada";
         } else {
           const c = causadoDestajoEnPeriodoCC(t, pid, hoy, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC);
           neto = c.neto;
           prov = c.provisiones;
+          ces = c.cesantias;
+          prima = c.prima;
+          vac = c.vacaciones;
           estado = hoy < iniPid ? "futura" : hoy <= finPid ? "en_curso" : "sin_confirmar";
         }
-        out.push({ id: t.id, nombre: t.nombre, pid, label: labelQuincenaCC(pid), estado, neto, prov, costo: neto + prov });
+        out.push({ id: t.id, nombre: t.nombre, pid, label: labelQuincenaCC(pid), estado, neto, prov, ces, prima, vac, costo: neto + prov });
       });
     });
     return out;
@@ -5683,7 +5776,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
       ...detalleCostoNomina,
       ...filas
         .filter((f) => !f.esDestajoReal && !f.sinSueldo)
-        .map((f) => ({ id: f.id, nombre: f.nombre, pid: "fijo", label: "Sueldo fijo del período", estado: "fijo", neto: f.costo, prov: 0, costo: f.costo })),
+        .map((f) => ({ id: f.id, nombre: f.nombre, pid: "fijo", label: "Sueldo fijo del período", estado: "fijo", neto: f.costo, prov: 0, ces: 0, prima: 0, vac: 0, costo: f.costo })),
     ],
     [detalleCostoNomina, filas]
   );
