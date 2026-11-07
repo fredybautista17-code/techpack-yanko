@@ -4666,16 +4666,40 @@ function valorBonificacionCC(bonificaciones, trabajadorId, periodoId) {
   const base = `${trabajadorId}__${periodoId}`;
   return (bonificaciones || []).filter((b) => b.id === base || b.id.startsWith(`${base}__`)).reduce((s, b) => s + (Number(b.valor) || 0), 0);
 }
-function cobrosPendientesDeTrabajadorCC(lotesConCobros, trabajadorId, hastaFecha) {
-  const pendientes = [];
+// (2026-11-07, a pedido de Fredy) Cobros de bodega pendientes que se descuentan en UNA quincena. Antes se restaban en TODAS las
+// quincenas mientras siguieran pendientes (la Q1 y la Q2 descontaban lo mismo, y la Q2 sin empezar salía negativa). En Nómina
+// → Destajo el cobro se descuenta una sola vez, en la primera quincena que se confirma desde su fecha (y luego queda cobrado), así
+// que aquí cada cobro pendiente se asigna a la primera quincena sin confirmar desde su fecha. Una quincena que no ha empezado no
+// descuenta nada; un cobro sin fecha va a la quincena de hoy.
+function quincenaSiguienteCC(pid) {
+  const [a, m, q] = pid.split("-");
+  if (q === "Q1") return `${a}-${m}-Q2`;
+  return Number(m) === 12 ? `${Number(a) + 1}-01-Q1` : `${a}-${String(Number(m) + 1).padStart(2, "0")}-Q1`;
+}
+function cobrosDeQuincenaCC(lotesConCobros, trabajadorId, periodoId, inicio, fin, hoy, liquidaciones) {
+  if (hoy < inicio) return [];
+  const out = [];
   (lotesConCobros || []).forEach((l) => {
     (l.cobrosBodega || []).forEach((c) => {
-      if (c.trabajadorId === trabajadorId && c.cobrado !== true && (!hastaFecha || !c.fecha || c.fecha <= hastaFecha)) {
-        pendientes.push((Number(c.valor) || 0) * (Number(c.cantidad) || 1));
+      if (c.trabajadorId !== trabajadorId || c.cobrado === true) return;
+      if (c.fecha && c.fecha > fin) return;
+      if (!c.fecha && !(hoy >= inicio && hoy <= fin)) return;
+      if (c.fecha && c.fecha < inicio) {
+        const [a, m, d] = c.fecha.split("-");
+        let pid = `${a}-${m}-Q${Number(d) <= 15 ? 1 : 2}`;
+        let pasos = 0;
+        let leToca = true;
+        while (pid < periodoId && pasos < 48) {
+          if (!(liquidaciones || []).some((x) => x.trabajadorId === trabajadorId && x.periodoId === pid)) { leToca = false; break; }
+          pid = quincenaSiguienteCC(pid);
+          pasos++;
+        }
+        if (!leToca) return;
       }
+      out.push({ numLote: l.numLote ?? "", tipo: c.tipo || "cobro", valor: (Number(c.valor) || 0) * (Number(c.cantidad) || 1), fecha: c.fecha || "" });
     });
   });
-  return pendientes.reduce((s, v) => s + v, 0);
+  return out;
 }
 // Calcula lo causado de UN trabajador para UN periodoId puntual (una
 // quincena que todavia no tiene liquidacion confirmada) -- se usa desde
@@ -4683,7 +4707,7 @@ function cobrosPendientesDeTrabajadorCC(lotesConCobros, trabajadorId, hastaFecha
 // periodoId de periodosDestajoSeleccionados que no tenga ya un registro
 // real. Devuelve la misma forma (valorProducido/costo) que ya arma el
 // useMemo para las liquidaciones SI confirmadas, para poder sumarlos igual.
-function causadoDestajoEnPeriodoCC(t, periodoId, hoy, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosCC) {
+function causadoDestajoEnPeriodoCC(t, periodoId, hoy, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosCC, liquidacionesCC) {
   const [anio, mes, qLabel] = periodoId.split("-");
   const quincena = qLabel.replace("Q", "");
   const { inicio, fin } = rangoQuincenaCC(anio, mes, quincena);
@@ -4707,7 +4731,8 @@ function causadoDestajoEnPeriodoCC(t, periodoId, hoy, produccion, causacionManua
   const base = calcularCausadoDestajoCC(t, netoProduccion, totalHorasQuincena, proporcionMinimo);
   const totalHorasExtra = sumaHorasExtraTrabajadorCC(horasExtrasCC, t.id, inicio, fin);
   const bonificacionPuntual = valorBonificacionCC(bonificacionesCC, t.id, periodoId);
-  const descuentoCobros = cobrosPendientesDeTrabajadorCC(lotesConCobrosCC, t.id, fin);
+  const cobrosDetalle = cobrosDeQuincenaCC(lotesConCobrosCC, t.id, periodoId, inicio, fin, hoy, liquidacionesCC);
+  const descuentoCobros = cobrosDetalle.reduce((a, c) => a + c.valor, 0);
   const ajusteDoc = (ajustesDestajoCC || []).find((a) => a.id === `${t.id}__${periodoId}`);
   const ajusteValor = (!base.salarioMinimoGarantizado && ajusteDoc) ? (Number(ajusteDoc.valor) || 0) : 0;
   const netoAPagar = base.netoBase - descuentoCobros + totalHorasExtra + bonificacionPuntual + ajusteValor;
@@ -4736,6 +4761,8 @@ function causadoDestajoEnPeriodoCC(t, periodoId, hoy, produccion, causacionManua
     diasHabilesTotales,
     inicio,
     fin,
+    partes: { base: base.netoBase, produccion: netoProduccion, horas: totalHorasQuincena, horasExtra: totalHorasExtra, bonificacion: bonificacionPuntual, ajuste: ajusteValor, cobros: descuentoCobros },
+    cobrosDetalle,
   };;
 }
 // ─── TRAER LOTES (Entradas de Planta → ventas del área) ───────────────────────
@@ -5109,6 +5136,74 @@ function ExplicacionDctosTnsModal({ datos, onClose }) {
     </Modal>
   );
 }
+// (2026-11-07, a pedido de Fredy) De dónde sale el «Neto a pagar» de una quincena (o de un trabajador), incluido cuando sale negativo.
+function ExplicacionNetoModal({ datos, mostrarNombres, onClose }) {
+  const esQ = datos.tipo === "nq";
+  const x = esQ ? datos.g : datos.f;
+  const p = x.partes || { base: 0, produccion: 0, horas: 0, horasExtra: 0, bonificacion: 0, ajuste: 0, cobros: 0 };
+  const lista = esQ ? x.cobrosLista : (x.cobrosDetalle || []).map((c) => ({ ...c, nombre: x.nombre }));
+  const confirmadoNeto = esQ ? x.netoConfirmado : 0;
+  const nConf = esQ ? x.nConfirmadas : 0;
+  const fila = (txt, val, fuerte, color) => (
+    <div style={{ display: "flex", justifyContent: "space-between", gap: 16, padding: "5px 0", borderTop: fuerte ? `2px solid ${C.ink}` : `1px solid ${C.border}`, fontWeight: fuerte ? 800 : 400, color: color || C.ink }}>
+      <span>{txt}</span><span style={{ whiteSpace: "nowrap" }}>{fmtMoney(val)}</span>
+    </div>
+  );
+  const sinEmpezar = Object.keys(esQ ? x.estados : { [x.estado]: 1 }).every((e) => e === "futura");
+  return (
+    <Modal title={`Neto a pagar — ${x.label}${esQ ? "" : ` · ${x.nombre}`}`} onClose={onClose} width={620}>
+      <div style={{ fontSize: 13, color: C.ink, lineHeight: 1.6 }}>
+        <div style={{ marginBottom: 12 }}>
+          Es lo que se les paga en esa quincena después de descuentos. {sinEmpezar ? "Esta quincena todavía no ha empezado: no hay producción ni pagos, y no debería llevar descuentos." : ""}
+        </div>
+        <div style={{ marginBottom: 12 }}>
+          {fila("Base: producción y horas, o el mínimo garantizado (prorrateado por días hábiles)", p.base)}
+          {fila("+ Horas extra", p.horasExtra)}
+          {fila("+ Bonificaciones", p.bonificacion)}
+          {p.ajuste ? fila("± Ajustes", p.ajuste) : null}
+          {fila("− Cobros de bodega pendientes", -p.cobros, false, p.cobros > 0 ? C.red : undefined)}
+          {nConf > 0 ? fila(`+ ${nConf} persona(s) ya confirmadas en Nómina (neto real)`, confirmadoNeto) : null}
+          {fila("= Neto a pagar", x.neto, true, x.neto < 0 ? C.red : undefined)}
+        </div>
+        {x.neto < 0 && (
+          <div style={{ background: C.redBg, borderRadius: 10, padding: "10px 12px", marginBottom: 12, fontSize: 12.5 }}>
+            Sale negativo porque todavía no hay producción ni pago, y solo queda un descuento de cobros de bodega de {fmtMoney(p.cobros)}.
+          </div>
+        )}
+        <div style={{ fontSize: 11.5, color: C.slate, marginBottom: 12 }}>
+          Los cobros de bodega pendientes se descuentan una sola vez: en la primera quincena sin confirmar desde la fecha del cobro, igual que en Nómina → Destajo (después queda como cobrado). Una quincena que no ha empezado no descuenta nada.
+        </div>
+        {mostrarNombres && lista.length > 0 && (
+          <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "auto", maxHeight: "30vh" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: C.ink }}>
+                  {["Trabajador", "Lote", "Cobro", "Fecha", "Valor"].map((h, i) => (
+                    <th key={h} style={{ padding: "7px 10px", color: C.seam, textAlign: i === 4 ? "right" : "left", fontWeight: 700, fontSize: 11, whiteSpace: "nowrap", position: "sticky", top: 0, background: C.ink }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {lista.slice(0, 60).map((c, i) => (
+                  <tr key={i} style={{ borderTop: `1px solid ${C.border}` }}>
+                    <td style={{ padding: "6px 10px", fontWeight: 600 }}>{c.nombre}</td>
+                    <td style={{ padding: "6px 10px" }}>{c.numLote || "manual"}</td>
+                    <td style={{ padding: "6px 10px" }}>{c.tipo}</td>
+                    <td style={{ padding: "6px 10px", whiteSpace: "nowrap" }}>{c.fecha ? fmtFechaISO(c.fecha) : "sin fecha"}</td>
+                    <td style={{ padding: "6px 10px", textAlign: "right", fontWeight: 700 }}>{fmtMoney(c.valor)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 14 }}>
+        <Btn variant="secondary" onClick={onClose}>Cerrar</Btn>
+      </div>
+    </Modal>
+  );
+}
 function DetalleCostoNominaModal({ filas, totalTarjeta, area, etiquetaPeriodo, mostrarNombres, onClose }) {
   const [verDctos, setVerDctos] = useState(true);
   const [verDctosTrab, setVerDctosTrab] = useState(false);
@@ -5116,10 +5211,18 @@ function DetalleCostoNominaModal({ filas, totalTarjeta, area, etiquetaPeriodo, m
   const resumen = useMemo(() => {
     const m = new Map();
     filas.forEach((f) => {
-      if (!m.has(f.pid)) m.set(f.pid, { pid: f.pid, label: f.label, n: 0, neto: 0, prov: 0, provT: 0, ces: 0, prima: 0, vac: 0, cesT: 0, primaT: 0, vacT: 0, costo: 0, estados: {}, diasP: f.diasP, diasT: f.diasT, inicio: f.inicio });
+      if (!m.has(f.pid)) m.set(f.pid, { pid: f.pid, label: f.label, n: 0, neto: 0, prov: 0, provT: 0, ces: 0, prima: 0, vac: 0, cesT: 0, primaT: 0, vacT: 0, costo: 0, estados: {}, diasP: f.diasP, diasT: f.diasT, inicio: f.inicio, partes: null, cobrosLista: [], netoConfirmado: 0, nConfirmadas: 0 });
       const g = m.get(f.pid);
       g.n += 1; g.neto += f.neto; g.prov += f.prov; g.provT += f.provT || 0; g.ces += f.ces || 0; g.prima += f.prima || 0; g.vac += f.vac || 0; g.cesT += f.cesT || 0; g.primaT += f.primaT || 0; g.vacT += f.vacT || 0; g.costo += f.costo;
       if (g.diasT == null && f.diasT != null) { g.diasP = f.diasP; g.diasT = f.diasT; g.inicio = f.inicio; }
+      if (f.partes) {
+        if (!g.partes) g.partes = { base: 0, produccion: 0, horas: 0, horasExtra: 0, bonificacion: 0, ajuste: 0, cobros: 0 };
+        Object.keys(g.partes).forEach((k) => { g.partes[k] += f.partes[k] || 0; });
+        (f.cobrosDetalle || []).forEach((c) => g.cobrosLista.push({ ...c, nombre: f.nombre }));
+      } else if (f.estado === "confirmada") {
+        g.netoConfirmado += f.neto;
+        g.nConfirmadas += 1;
+      }
       g.estados[f.estado] = (g.estados[f.estado] || 0) + 1;
     });
     return [...m.values()].sort((a, b) => a.pid.localeCompare(b.pid));
@@ -5256,7 +5359,11 @@ function DetalleCostoNominaModal({ filas, totalTarjeta, area, etiquetaPeriodo, m
                   ))}
                 </td>
                 <td style={{ padding: "8px 12px", textAlign: "right" }}>{fmtNum(g.n)}</td>
-                <td style={{ padding: "8px 12px", textAlign: "right" }}>{fmtMoney(g.neto)}</td>
+                <td style={{ padding: "8px 12px", textAlign: "right" }}>
+                  {g.pid !== "fijo"
+                    ? <button type="button" onClick={() => setExplicar({ tipo: "nq", g })} title="Toca para saber de dónde sale" style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: 12.5, color: g.neto < 0 ? C.red : C.violet, textDecoration: "underline", fontFamily: "inherit" }}>{fmtMoney(g.neto)}</button>
+                    : fmtMoney(g.neto)}
+                </td>
                 <td style={{ padding: "8px 12px", textAlign: "right" }}>
                   {g.provT > 0
                     ? <button type="button" onClick={() => setExplicar({ tipo: "q", g })} title="Toca para saber qué es" style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: 12.5, color: C.violet, textDecoration: "underline", fontFamily: "inherit" }}>{fmtMoney(g.prov)}</button>
@@ -5287,7 +5394,11 @@ function DetalleCostoNominaModal({ filas, totalTarjeta, area, etiquetaPeriodo, m
                     <td style={{ padding: "7px 12px", fontWeight: 600 }}>{f.nombre}</td>
                     <td style={{ padding: "7px 12px", whiteSpace: "nowrap" }}>{f.label}</td>
                     <td style={{ padding: "7px 12px", fontSize: 11.5, fontWeight: 700, color: ESTADO_QUINCENA_CC[f.estado].fg, whiteSpace: "nowrap" }}>{ESTADO_QUINCENA_CC[f.estado].txt}</td>
-                    <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtMoney(f.neto)}</td>
+                    <td style={{ padding: "7px 12px", textAlign: "right" }}>
+                      {f.estado !== "fijo" && f.partes
+                        ? <button type="button" onClick={() => setExplicar({ tipo: "nt", f })} title="Toca para saber de dónde sale" style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: 12.5, color: f.neto < 0 ? C.red : C.violet, textDecoration: "underline", fontFamily: "inherit" }}>{fmtMoney(f.neto)}</button>
+                        : fmtMoney(f.neto)}
+                    </td>
                     <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtMoney(f.prov)}</td>
                     <td style={{ padding: "7px 12px", textAlign: "right", fontWeight: 800 }}>{fmtMoney(f.costo)}</td>
                   </tr>
@@ -5300,7 +5411,9 @@ function DetalleCostoNominaModal({ filas, totalTarjeta, area, etiquetaPeriodo, m
       <div style={{ fontSize: 11, color: C.slate, marginTop: 12, lineHeight: 1.5 }}>
         Los Dctos TNS (provisiones de cesantías, prima y vacaciones) y el salario mínimo garantizado se causan con los días hábiles que ya pasaron de cada quincena: la que no ha empezado causa $0 y, al terminar el mes, el total es el mismo de siempre.
       </div>
-      {explicar && <ExplicacionDctosTnsModal datos={explicar} onClose={() => setExplicar(null)} />}
+      {explicar && (explicar.tipo === "q" || explicar.tipo === "t"
+        ? <ExplicacionDctosTnsModal datos={explicar} onClose={() => setExplicar(null)} />
+        : <ExplicacionNetoModal datos={explicar} mostrarNombres={mostrarNombres} onClose={() => setExplicar(null)} />)}
     </Modal>
   );
 }
@@ -5734,7 +5847,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
               valorRealDestajo += liq.pagoPorDia ? (Number(liq.pagoDias) || 0) : (Number(liq.produccionReal) || 0);
               costoRealDestajo += (Number(liq.netoAPagar) || 0) + (Number(liq.cesantiasPeriodo) || 0) + (Number(liq.primaPeriodo) || 0) + (Number(liq.vacacionesPeriodo) || 0);
             } else {
-              const causado = causadoDestajoEnPeriodoCC(t, pid, hoy, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC);
+              const causado = causadoDestajoEnPeriodoCC(t, pid, hoy, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC, liquidacionesDestajo);
               valorRealDestajo += causado.valorProducido;
               costoRealDestajo += causado.costo;
               huboCausado = true;
@@ -5793,7 +5906,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
         const liq = (liquidacionesDestajo || []).find((l) => l.trabajadorId === t.id && l.periodoId === pid);
         const valorProducidoQ = liq
           ? (liq.pagoPorDia ? (Number(liq.pagoDias) || 0) : (Number(liq.produccionReal) || 0))
-          : causadoDestajoEnPeriodoCC(t, pid, hoy, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC).valorProducido;
+          : causadoDestajoEnPeriodoCC(t, pid, hoy, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC, liquidacionesDestajo).valorProducido;
         const valorTotalQ = valorProducidoQ + horasValorQ;
         const diferenciaQ = valorTotalQ - sueldoEsperadoQ;
         if (!porQuincena.has(pid)) porQuincena.set(pid, { pid, label: labelQuincenaCC(pid), ayudaTotal: 0, costoIndirectoTotal: 0, ayudaDetalle: [], costoIndirectoDetalle: [] });
@@ -5834,6 +5947,8 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
         let proporcion = 1;
         let diasP = null;
         let diasT = null;
+        let partes = null;
+        let cobrosDetalle = [];
         if (liq) {
           neto = Number(liq.netoAPagar) || 0;
           ces = Number(liq.cesantiasPeriodo) || 0;
@@ -5843,7 +5958,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
           completas = { ces, prima, vac };
           estado = "confirmada";
         } else {
-          const c = causadoDestajoEnPeriodoCC(t, pid, hoy, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC);
+          const c = causadoDestajoEnPeriodoCC(t, pid, hoy, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC, liquidacionesDestajo);
           neto = c.neto;
           prov = c.provisiones;
           ces = c.cesantias;
@@ -5853,9 +5968,11 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
           proporcion = c.proporcion;
           diasP = c.diasHabilesPasados;
           diasT = c.diasHabilesTotales;
+          partes = c.partes;
+          cobrosDetalle = c.cobrosDetalle;
           estado = hoy < iniPid ? "futura" : hoy <= finPid ? "en_curso" : "sin_confirmar";
         }
-        out.push({ id: t.id, nombre: t.nombre, pid, label: labelQuincenaCC(pid), estado, neto, prov, ces, prima, vac, provT: completas.ces + completas.prima + completas.vac, cesT: completas.ces, primaT: completas.prima, vacT: completas.vac, proporcion, diasP, diasT, inicio: iniPid, fin: finPid, costo: neto + prov });
+        out.push({ id: t.id, nombre: t.nombre, pid, label: labelQuincenaCC(pid), estado, neto, prov, ces, prima, vac, provT: completas.ces + completas.prima + completas.vac, cesT: completas.ces, primaT: completas.prima, vacT: completas.vac, proporcion, diasP, diasT, inicio: iniPid, fin: finPid, partes, cobrosDetalle, costo: neto + prov });
       });
     });
     return out;
@@ -5865,7 +5982,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
       ...detalleCostoNomina,
       ...filas
         .filter((f) => !f.esDestajoReal && !f.sinSueldo)
-        .map((f) => ({ id: f.id, nombre: f.nombre, pid: "fijo", label: "Sueldo fijo del período", estado: "fijo", neto: f.costo, prov: 0, ces: 0, prima: 0, vac: 0, provT: 0, cesT: 0, primaT: 0, vacT: 0, proporcion: 1, diasP: null, diasT: null, costo: f.costo })),
+        .map((f) => ({ id: f.id, nombre: f.nombre, pid: "fijo", label: "Sueldo fijo del período", estado: "fijo", neto: f.costo, prov: 0, ces: 0, prima: 0, vac: 0, provT: 0, cesT: 0, primaT: 0, vacT: 0, proporcion: 1, diasP: null, diasT: null, partes: null, cobrosDetalle: [], costo: f.costo })),
     ],
     [detalleCostoNomina, filas]
   );
