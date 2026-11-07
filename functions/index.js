@@ -10350,6 +10350,54 @@ async function verificarLlamadorPuedeTraerGastosPlanta(request) {
   if (!modulos.includes("areas_centro_costo")) throw new HttpsError("permission-denied", "No tienes permiso para traer gastos desde Busint.");
   return snap.docs[0];
 }
+// (2026-11-07, a pedido de Fredy) «Repuestos maquilas» (REPUE) y «Compra de hilos-hilazas» (CHILA) no son proveedores sino CONCEPTOS de gasto de la
+// factura de compra. No se sabe en qué columna de "cartera cxp-fact" viaja el concepto, así que se detecta sola: se busca cada texto en todas las
+// columnas (coincidencia exacta con el código o con todas las palabras del nombre) y se usa la columna con más coincidencias. También se sigue
+// aceptando un nombre de proveedor del maestro. Si algo no aparece se devuelve un diagnóstico (columnas, otras tablas donde sí está, proveedores parecidos).
+const TABLAS_DIAGNOSTICO_GASTOS = ["cxp-pagos detalles", "cxp-pagosotros detalles", "notas detalles-d", "notascontable detalles", "cartera cxp-dev", "cxp-pagos detallesesp"];
+function prepararPatronGasto(texto) {
+  const norm = normalizarTextoProveedorGasto(texto);
+  const palabras = norm.split(" ").filter((w) => w && !PALABRAS_VACIAS_PROVEEDOR.has(w));
+  // Un texto corto de una sola palabra (REPUE, CHILA) es un código: solo coincide exacto, para no confundirlo con parte de otro nombre.
+  return { texto, norm, palabras, esCodigo: palabras.length === 1 && palabras[0].length <= 5 };
+}
+// Busca los patrones en todas las columnas de una tabla. Devuelve, por patrón, Map columna -> índices de las filas que coinciden.
+function buscarPatronesEnFilas(filas, patrones) {
+  const cache = new Map();
+  const normalizar = (v) => {
+    let n = cache.get(v);
+    if (n === undefined) { n = normalizarTextoProveedorGasto(v); if (cache.size < 200000) cache.set(v, n); }
+    return n;
+  };
+  const res = patrones.map(() => new Map());
+  filas.forEach((f, i) => {
+    if (!f || typeof f !== "object") return;
+    for (const col of Object.keys(f)) {
+      const v = f[col];
+      if (typeof v !== "string" || !v) continue;
+      const n = normalizar(v);
+      if (!n) continue;
+      patrones.forEach((p, pi) => {
+        if (!p.norm) return;
+        const ok = n === p.norm || (!p.esCodigo && p.palabras.length > 0 && p.palabras.every((w) => n.includes(w)));
+        if (!ok) return;
+        const m = res[pi];
+        if (!m.has(col)) m.set(col, []);
+        m.get(col).push(i);
+      });
+    }
+  });
+  return res;
+}
+function resumirFilaDiagnosticoGasto(f) {
+  const out = {};
+  Object.keys(f || {}).slice(0, 16).forEach((k) => {
+    const v = f[k];
+    if (v && typeof v === "object") out[k] = fechaBusintBDaISO(v) || "(objeto)";
+    else out[k] = String(v ?? "").slice(0, 40);
+  });
+  return out;
+}
 exports.getFacturasCompraBusint = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
@@ -10359,11 +10407,12 @@ exports.getFacturasCompraBusint = onCallAuth(
   async (request) => {
     await verificarLlamadorPuedeTraerGastosPlanta(request);
     const datos = request.data || {};
-    const patrones = (Array.isArray(datos.proveedores) ? datos.proveedores : [])
+    const textos = (Array.isArray(datos.patrones) ? datos.patrones : Array.isArray(datos.proveedores) ? datos.proveedores : [])
       .map((x) => String(x || "").trim().slice(0, 80))
       .filter(Boolean)
       .slice(0, 10);
-    if (!patrones.length) throw new HttpsError("invalid-argument", "Indica al menos un proveedor a buscar.");
+    if (!textos.length) throw new HttpsError("invalid-argument", "Indica al menos un concepto o proveedor a buscar.");
+    const patrones = textos.map(prepararPatronGasto);
     const desde = /^\d{4}-\d{2}-\d{2}$/.test(String(datos.desde || "")) ? String(datos.desde) : null;
     const hasta = /^\d{4}-\d{2}-\d{2}$/.test(String(datos.hasta || "")) ? String(datos.hasta) : null;
     let facturas, proveedores;
@@ -10376,14 +10425,34 @@ exports.getFacturasCompraBusint = onCallAuth(
       logger.error("Error consultando Busint BD (getFacturasCompraBusint)", { error: String(err) });
       throw new HttpsError("unavailable", `No se pudo consultar Busint BD: ${err?.message || String(err)}`);
     }
-    // Proveedores cuyo nombre coincide con algún patrón
-    const elegidos = new Map(); // codigo -> { codigo, nombre, patron }
+    const nombrePorCodigo = new Map();
     proveedores.forEach((p) => {
       const codigo = normalizarCodigoCxp(p?.Codigo);
       const nombre = String(p?.Nombre || "").trim();
-      if (!codigo || !nombre) return;
-      const patron = patrones.find((pt) => proveedorCoincideConPatron(nombre, pt));
-      if (patron) elegidos.set(codigo, { codigo, nombre, patron });
+      if (codigo && nombre) nombrePorCodigo.set(codigo, nombre);
+    });
+    // 1) Conceptos: columna con más coincidencias por patrón
+    const enFact = buscarPatronesEnFilas(facturas, patrones);
+    const clavesConcepto = patrones.map(() => null); // Set de "codigo|nfact" por patrón
+    const columnaConcepto = patrones.map(() => null);
+    const llaveDeFila = (f) => {
+      const codigo = normalizarCodigoCxp(f?.CODIGO);
+      const nfact = String(f?.NFACT ?? "").trim();
+      return codigo && nfact ? `${codigo}|${normalizarCodigoCxp(nfact)}` : null;
+    };
+    patrones.forEach((p, pi) => {
+      let mejor = null;
+      enFact[pi].forEach((idxs, col) => { if (!mejor || idxs.length > mejor.idxs.length) mejor = { col, idxs }; });
+      if (!mejor) return;
+      const set = new Set();
+      mejor.idxs.forEach((i) => { const k = llaveDeFila(facturas[i]); if (k) set.add(k); });
+      if (set.size) { clavesConcepto[pi] = set; columnaConcepto[pi] = mejor.col; }
+    });
+    // 2) Proveedores del maestro cuyo nombre coincide (los patrones de código solo sirven para conceptos)
+    const elegidos = new Map(); // codigo -> { codigo, nombre, patron }
+    nombrePorCodigo.forEach((nombre, codigo) => {
+      const p = patrones.find((x) => !x.esCodigo && proveedorCoincideConPatron(nombre, x.texto));
+      if (p) elegidos.set(codigo, { codigo, nombre, patron: p.texto });
     });
     // Misma detección de la columna de fecha de emisión que en Cuentas por Pagar (Fechaini, «emis», «fecha»…)
     const clavesFecha = new Set();
@@ -10395,15 +10464,21 @@ exports.getFacturasCompraBusint = onCallAuth(
       || listaFechas.find((k) => /fechafac/i.test(k))
       || listaFechas[0]
       || null;
-    const grupos = new Map(); // codigo|nfact -> { codigo, nfact, total, totalMax, fecha, fechaVcto }
+    // 3) Se agrupa por proveedor+factura TODAS las filas de las facturas elegidas (el concepto puede venir solo en una fila)
+    const fuenteDeLlave = (llave, codigo) => {
+      for (let pi = 0; pi < patrones.length; pi++) if (clavesConcepto[pi] && clavesConcepto[pi].has(llave)) return `C:${pi}`;
+      return elegidos.has(codigo) ? codigo : null;
+    };
+    const grupos = new Map(); // llave -> { codigo, nfact, total, totalMax, fecha, fechaVcto, fuenteId }
     facturas.forEach((f) => {
+      const llave = llaveDeFila(f);
+      if (!llave) return;
       const codigo = normalizarCodigoCxp(f?.CODIGO);
-      if (!elegidos.has(codigo)) return;
+      const fuenteId = fuenteDeLlave(llave, codigo);
+      if (!fuenteId) return;
       const nfact = String(f?.NFACT ?? "").trim();
-      if (!nfact) return;
-      const llave = `${codigo}|${normalizarCodigoCxp(nfact)}`;
       const totalFila = Number(f?.FACTOTAL) || 0;
-      if (!grupos.has(llave)) grupos.set(llave, { codigo, nfact, total: 0, totalMax: -Infinity, fecha: null, fechaVcto: null });
+      if (!grupos.has(llave)) grupos.set(llave, { codigo, nfact, total: 0, totalMax: -Infinity, fecha: null, fechaVcto: null, fuenteId });
       const g = grupos.get(llave);
       g.total += totalFila;
       if (totalFila > g.totalMax) {
@@ -10412,27 +10487,74 @@ exports.getFacturasCompraBusint = onCallAuth(
         g.fechaVcto = fechaBusintBDaISO(f?.Fechafin);
       }
     });
-    const porProveedor = new Map();
+    const facturasPorFuente = new Map();
     let sinFecha = 0;
     let sinValor = 0;
     const lista = [];
     grupos.forEach((g) => {
-      const prov = elegidos.get(g.codigo);
-      porProveedor.set(g.codigo, (porProveedor.get(g.codigo) || 0) + 1);
+      facturasPorFuente.set(g.fuenteId, (facturasPorFuente.get(g.fuenteId) || 0) + 1);
       if (!(g.total > 0)) { sinValor++; return; }
       if (!g.fecha) { sinFecha++; return; }
       if (desde && g.fecha < desde) return;
       if (hasta && g.fecha > hasta) return;
-      lista.push({ codigo: g.codigo, proveedor: prov.nombre, numeroFactura: g.nfact, total: Math.round(g.total), fecha: g.fecha, fechaVcto: g.fechaVcto });
+      const concepto = g.fuenteId.startsWith("C:") ? textos[Number(g.fuenteId.slice(2))].toUpperCase() : "";
+      lista.push({ codigo: g.codigo, proveedor: nombrePorCodigo.get(g.codigo) || `Proveedor ${g.codigo}`, numeroFactura: g.nfact, total: Math.round(g.total), fecha: g.fecha, fechaVcto: g.fechaVcto, fuenteId: g.fuenteId, concepto });
     });
     lista.sort((a, b) => b.fecha.localeCompare(a.fecha) || String(b.numeroFactura).localeCompare(String(a.numeroFactura), "es", { numeric: true }));
+    const fuentes = [];
+    patrones.forEach((p, pi) => {
+      if (clavesConcepto[pi]) fuentes.push({ id: `C:${pi}`, tipo: "concepto", etiqueta: textos[pi].toUpperCase(), detalle: `columna «${columnaConcepto[pi]}»`, facturas: facturasPorFuente.get(`C:${pi}`) || 0 });
+    });
+    elegidos.forEach((e) => fuentes.push({ id: e.codigo, tipo: "proveedor", etiqueta: e.nombre, detalle: "proveedor", facturas: facturasPorFuente.get(e.codigo) || 0 }));
+    // 4) Diagnóstico: columnas, y para lo que no apareció, otras tablas y proveedores parecidos
+    const sinResultado = patrones.map((p, pi) => ({ p, pi })).filter(({ p, pi }) => !clavesConcepto[pi] && ![...elegidos.values()].some((e) => e.patron === p.texto));
+    const diagnostico = {
+      tabla: "cartera cxp-fact",
+      filas: facturas.length,
+      columnas: Object.keys(facturas[0] || {}),
+      proveedoresEnMaestro: nombrePorCodigo.size,
+      campoEmision,
+      patrones: patrones.map((p, pi) => ({
+        texto: p.texto,
+        columnaConcepto: columnaConcepto[pi],
+        coincidenciasPorColumna: [...enFact[pi].entries()].map(([col, idxs]) => ({ columna: col, filas: idxs.length })).sort((a, b) => b.filas - a.filas).slice(0, 6),
+        muestra: enFact[pi].size ? resumirFilaDiagnosticoGasto(facturas[[...enFact[pi].values()].sort((a, b) => b.length - a.length)[0][0]]) : null,
+      })),
+      sinResultado: [],
+    };
+    if (sinResultado.length) {
+      const objetivos = sinResultado.map((x) => x.p);
+      const parecidos = (p) => {
+        const claves = p.palabras.filter((w) => w.length >= 4);
+        if (!claves.length) return [];
+        const out = [];
+        nombrePorCodigo.forEach((nombre, codigo) => {
+          const n = normalizarTextoProveedorGasto(nombre);
+          if (claves.some((w) => n.includes(w)) && out.length < 8) out.push({ codigo, nombre });
+        });
+        return out;
+      };
+      const otras = objetivos.map(() => []);
+      for (const tabla of TABLAS_DIAGNOSTICO_GASTOS) {
+        let filasT;
+        try { filasT = await consultarTablaBusintBDCompleta(tabla); } catch (err) { continue; }
+        const r = buscarPatronesEnFilas(filasT, objetivos);
+        r.forEach((m, oi) => {
+          m.forEach((idxs, col) => {
+            if (otras[oi].length < 6) otras[oi].push({ tabla, columna: col, filas: idxs.length, muestra: resumirFilaDiagnosticoGasto(filasT[idxs[0]]) });
+          });
+        });
+      }
+      diagnostico.sinResultado = objetivos.map((p, oi) => ({ texto: p.texto, proveedoresParecidos: parecidos(p), enOtrasTablas: otras[oi] }));
+    }
     return {
       consultadoEn: new Date().toISOString(),
       campoEmision,
-      proveedoresEncontrados: [...elegidos.values()].map((p) => ({ ...p, facturas: porProveedor.get(p.codigo) || 0 })).sort((a, b) => a.nombre.localeCompare(b.nombre, "es")),
+      fuentes: fuentes.sort((a, b) => a.etiqueta.localeCompare(b.etiqueta, "es")),
       facturas: lista,
       sinFecha,
       sinValor,
+      diagnostico,
     };
   }
 );

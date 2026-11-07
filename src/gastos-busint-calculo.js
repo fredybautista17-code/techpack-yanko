@@ -1,9 +1,10 @@
 // ─── GASTOS DESDE FACTURAS DE COMPRA DE BUSINT ────────────────────────────────
 // (2026-11-06, a pedido de Fredy) «Traer gastos» en Costos y ventas: lista las facturas de compra de proveedores concretos
-// (por defecto «repuestos de maquila» e «hilazas») para escogerlas con casillas y cargarlas como gastos del área.
+// por CONCEPTO de gasto (por defecto REPUE = «Repuestos maquilas» y CHILA = «Compra de hilos-hilazas») o por proveedor, para escogerlas
+// con casillas y cargarlas como gastos del área.
 // El gasto se fecha con la fecha de la FACTURA. Funciones puras (sin Firestore) para poder probarlas.
 
-export const PROVEEDORES_GASTOS_BUSINT = ["repuestos de maquila", "hilazas"];
+export const CONCEPTOS_GASTOS_BUSINT = ["REPUE", "CHILA"];
 
 const normTxt = (v) => String(v ?? "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]/g, "");
 const normFactura = (v) => String(v ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
@@ -16,7 +17,7 @@ export function proveedoresDeTexto(texto) {
 }
 
 // Filas candidatas a cargar como gasto
-export function candidatosGastos({ facturas, gastosExistentes, proveedorCodigo, busqueda }) {
+export function candidatosGastos({ facturas, gastosExistentes, fuenteId, busqueda }) {
   const cargadas = new Set();
   const porNumero = new Map(); // factura normalizada -> nombres de proveedor normalizados con gasto ya digitado
   (gastosExistentes || []).forEach((g) => {
@@ -30,8 +31,8 @@ export function candidatosGastos({ facturas, gastosExistentes, proveedorCodigo, 
   const q = normTxt(busqueda);
   return (facturas || [])
     .filter((f) => {
-      if (proveedorCodigo && f.codigo !== proveedorCodigo) return false;
-      if (q && !normTxt(`${f.proveedor} ${f.numeroFactura}`).includes(q)) return false;
+      if (fuenteId && f.fuenteId !== fuenteId) return false;
+      if (q && !normTxt(`${f.proveedor} ${f.numeroFactura} ${f.concepto || ""}`).includes(q)) return false;
       return true;
     })
     .map((f) => {
@@ -42,6 +43,8 @@ export function candidatosGastos({ facturas, gastosExistentes, proveedorCodigo, 
         clave,
         codigo: f.codigo,
         proveedor: f.proveedor,
+        concepto: f.concepto || "",
+        fuenteId: f.fuenteId || "",
         numeroFactura: f.numeroFactura,
         fecha: f.fecha,
         fechaVcto: f.fechaVcto || null,
@@ -58,6 +61,7 @@ export function gastoDeFactura(fila, { id, area, usuario, ahora }) {
     id,
     area,
     proveedor: fila.proveedor,
+    concepto: fila.concepto || "",
     numeroFactura: fila.numeroFactura,
     monto: fila.monto,
     fecha: fila.fecha,

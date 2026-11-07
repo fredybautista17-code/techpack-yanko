@@ -22,7 +22,7 @@ import { DevolucionesCalidadView } from "./devoluciones-cliente";
 import { claveArea as claveAreaHistorico } from "./centro-costo-historico-parser";
 import { diasDeTrabajoDelMes, esDiaDeTrabajoISO, sabadoSeTrabajaISO } from "./dias-habiles";
 import { armarListaPorProgramar, estadisticasPedidos, prioridadPedido } from "./lista-programar-calculo";
-import { PROVEEDORES_GASTOS_BUSINT, proveedoresDeTexto, candidatosGastos, gastoDeFactura } from "./gastos-busint-calculo";
+import { CONCEPTOS_GASTOS_BUSINT, proveedoresDeTexto, candidatosGastos, gastoDeFactura } from "./gastos-busint-calculo";
 import { MESES_HIST, COLECCION_HISTORICO_MAQUILA, textoAFilas, parsearHistorial, docHistoricoMes, resumenAnual } from "./historial-maquila-calculo";
 import { PLANTA_PROPIA_VENTAS, rangoDelPeriodo, plantasDeEntradas, clientePorLoteDeCargas, candidatosVentas, ventaDeEntrada, totalLineaVenta, SERVICIOS_VENTA, SIN_SERVICIO, servicioValido, etiquetaServicio, sugerirServicio, resumenPorServicio, bloqueoLinea, servicioDeVenta } from "./ventas-entradas-calculo";
 const firebaseConfig = {
@@ -5120,10 +5120,10 @@ function TraerLotesVentasModal({ area, ventasExistentes, rangoInicial, cierreDe,
 // maquila» e «hilazas») para cargarlas como gastos del área con casillas, sin digitarlas. El gasto lleva la fecha de la factura.
 // Lee "cartera cxp-fact" por el servidor (getFacturasCompraBusint); pagadas o no, porque el gasto cuenta al facturar.
 function TraerGastosBusintModal({ area, gastosExistentes, rangoInicial, cierreDe, currentUser, onClose }) {
-  const [textoProv, setTextoProv] = useState(PROVEEDORES_GASTOS_BUSINT.join(", "));
+  const [textoProv, setTextoProv] = useState(CONCEPTOS_GASTOS_BUSINT.join(", "));
   const [desde, setDesde] = useState(rangoInicial[0]);
   const [hasta, setHasta] = useState(rangoInicial[1]);
-  const [consulta, setConsulta] = useState({ n: 0, proveedores: PROVEEDORES_GASTOS_BUSINT, desde: rangoInicial[0], hasta: rangoInicial[1] });
+  const [consulta, setConsulta] = useState({ n: 0, proveedores: CONCEPTOS_GASTOS_BUSINT, desde: rangoInicial[0], hasta: rangoInicial[1] });
   const [datos, setDatos] = useState(null);
   const [errorBusint, setErrorBusint] = useState("");
   const [provSel, setProvSel] = useState("");
@@ -5135,18 +5135,26 @@ function TraerGastosBusintModal({ area, gastosExistentes, rangoInicial, cierreDe
     let vigente = true;
     setDatos(null);
     setErrorBusint("");
-    httpsCallable(functionsClient, "getFacturasCompraBusint", { timeout: 300000 })({ proveedores: consulta.proveedores, desde: consulta.desde, hasta: consulta.hasta })
+    httpsCallable(functionsClient, "getFacturasCompraBusint", { timeout: 300000 })({ patrones: consulta.proveedores, desde: consulta.desde, hasta: consulta.hasta })
       .then((r) => { if (vigente) setDatos(r.data); })
       .catch((err) => { if (vigente) setErrorBusint(err?.message || String(err)); });
     return () => { vigente = false; };
   }, [consulta]);
-  const proveedoresEncontrados = datos?.proveedoresEncontrados || [];
-  const provEfectivo = proveedoresEncontrados.some((p) => p.codigo === provSel) ? provSel : "";
+  const fuentes = datos?.fuentes || [];
+  const provEfectivo = fuentes.some((p) => p.id === provSel) ? provSel : "";
   const filas = useMemo(
-    () => candidatosGastos({ facturas: datos?.facturas || [], gastosExistentes, proveedorCodigo: provEfectivo, busqueda }),
+    () => candidatosGastos({ facturas: datos?.facturas || [], gastosExistentes, fuenteId: provEfectivo, busqueda }),
     [datos, gastosExistentes, provEfectivo, busqueda]
   );
-  const patronesSinProveedor = datos ? consulta.proveedores.filter((p) => !proveedoresEncontrados.some((e) => e.patron === p)) : [];
+  const sinResultado = datos?.diagnostico?.sinResultado || [];
+  const [diagCopiado, setDiagCopiado] = useState(false);
+  function copiarDiagnostico() {
+    try {
+      navigator.clipboard.writeText(JSON.stringify(datos?.diagnostico || {}, null, 2));
+      setDiagCopiado(true);
+      setTimeout(() => setDiagCopiado(false), 2000);
+    } catch (e) { /* sin portapapeles */ }
+  }
   const elegibles = filas.filter((f) => !f.yaCargada);
   const seleccionadas = elegibles.filter((f) => sel[f.clave]);
   const totalSel = seleccionadas.reduce((a, f) => a + f.monto, 0);
@@ -5189,10 +5197,10 @@ function TraerGastosBusintModal({ area, gastosExistentes, rangoInicial, cierreDe
   return (
     <Modal title={`Traer gastos desde Busint — ${area}`} onClose={onClose} width={1000}>
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 12, maxWidth: 820 }}>
-        Facturas de compra de Busint de los proveedores que indiques, pagadas o no (el gasto cuenta al facturar). El gasto queda con la <strong>fecha de la factura</strong> y el valor total de la factura. Las ya cargadas salen marcadas y no se duplican.
+        Facturas de compra de Busint por <strong>concepto de gasto</strong> (por ejemplo REPUE = repuestos maquilas, CHILA = compra de hilos-hilazas) o por proveedor, pagadas o no (el gasto cuenta al facturar). El gasto queda con la <strong>fecha de la factura</strong> y el valor total de la factura. Las ya cargadas salen marcadas y no se duplican.
       </div>
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
-        <input value={textoProv} onChange={(e) => setTextoProv(e.target.value)} placeholder="Proveedores separados por coma" title="Nombres de proveedor de Busint, separados por coma. Basta con parte del nombre." style={{ ...inp, minWidth: 300, flex: "1 1 300px" }} />
+        <input value={textoProv} onChange={(e) => setTextoProv(e.target.value)} placeholder="Conceptos o proveedores separados por coma" title="Código o nombre del concepto de gasto (REPUE, CHILA…) o nombre de un proveedor, separados por coma." style={{ ...inp, minWidth: 300, flex: "1 1 300px" }} />
         <input type="date" value={desde} onChange={(e) => setDesde(e.target.value)} style={inp} />
         <span style={{ fontSize: 12, color: C.slate, fontWeight: 700 }}>a</span>
         <input type="date" value={hasta} onChange={(e) => setHasta(e.target.value)} style={inp} />
@@ -5201,18 +5209,34 @@ function TraerGastosBusintModal({ area, gastosExistentes, rangoInicial, cierreDe
       {datos && (
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
           <select value={provEfectivo} onChange={(e) => setProvSel(e.target.value)} style={{ ...inp, fontWeight: 700 }}>
-            <option value="">Todos los proveedores ({proveedoresEncontrados.length})</option>
-            {proveedoresEncontrados.map((p) => <option key={p.codigo} value={p.codigo}>{p.nombre} ({p.facturas} fact.)</option>)}
+            <option value="">Todos ({fuentes.length})</option>
+            {fuentes.map((p) => <option key={p.id} value={p.id}>{p.tipo === "concepto" ? `Concepto ${p.etiqueta}` : p.etiqueta} ({p.facturas} fact.)</option>)}
           </select>
-          <input value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder="🔍 Proveedor o N° de factura..." style={{ ...inp, minWidth: 220 }} />
+          <input value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder="🔍 Proveedor, concepto o N° de factura..." style={{ ...inp, minWidth: 220 }} />
           <span style={{ fontSize: 12, color: C.slate }}>{filas.length} factura(s)</span>
         </div>
       )}
       {!datos && !errorBusint && <div style={{ padding: 16, fontSize: 13, color: C.slate }}>Consultando Busint... puede tardar un minuto.</div>}
       {errorBusint && <div style={{ padding: 14, borderRadius: 10, background: C.redBg, color: C.red, fontSize: 13, marginBottom: 12 }}>⚠ No se pudo consultar Busint: {errorBusint}</div>}
-      {patronesSinProveedor.length > 0 && (
+      {datos && fuentes.some((f) => f.tipo === "concepto") && (
+        <div style={{ fontSize: 11.5, color: C.slate, marginBottom: 8 }}>
+          {fuentes.filter((f) => f.tipo === "concepto").map((f) => `${f.etiqueta}: encontrado en la ${f.detalle} (${f.facturas} factura(s) en total)`).join(" · ")}
+        </div>
+      )}
+      {sinResultado.length > 0 && (
         <div style={{ padding: 12, borderRadius: 10, background: C.amberBg, color: C.amber, fontSize: 12.5, marginBottom: 12, lineHeight: 1.5 }}>
-          No encontré ningún proveedor en Busint que coincida con: {patronesSinProveedor.map((p) => `«${p}»`).join(", ")}. Revisa cómo se escribe el nombre en Busint (basta con parte del nombre) y vuelve a buscar.
+          No encontré facturas para: {sinResultado.map((r) => `«${r.texto}»`).join(", ")}.
+          {sinResultado.map((r) => (
+            <div key={r.texto} style={{ marginTop: 6, color: C.ink }}>
+              <strong>{r.texto}</strong>
+              {r.proveedoresParecidos?.length > 0 && <span> · proveedores parecidos: {r.proveedoresParecidos.map((p) => p.nombre).join(", ")}</span>}
+              {r.enOtrasTablas?.length > 0 && <span> · aparece en: {r.enOtrasTablas.map((t) => `${t.tabla} / ${t.columna} (${t.filas})`).join("; ")}</span>}
+              {!r.proveedoresParecidos?.length && !r.enOtrasTablas?.length && <span> · no aparece en ninguna de las tablas de compras que reviso.</span>}
+            </div>
+          ))}
+          <div style={{ marginTop: 8 }}>
+            <Btn small variant="secondary" onClick={copiarDiagnostico}>{diagCopiado ? "✓ Copiado" : "📋 Copiar diagnóstico para Claude"}</Btn>
+          </div>
         </div>
       )}
       {datos && (datos.sinFecha > 0 || datos.sinValor > 0) && (
@@ -5228,7 +5252,7 @@ function TraerGastosBusintModal({ area, gastosExistentes, rangoInicial, cierreDe
                 <th style={{ padding: "9px 10px", position: "sticky", top: 0, background: C.ink, width: 34 }}>
                   <input type="checkbox" checked={todasMarcadas} onChange={(e) => marcarTodas(e.target.checked)} title="Marcar todas las que faltan por cargar" />
                 </th>
-                {th("Fecha factura")}{th("Proveedor")}{th("N° factura")}{th("Valor", "right")}{th("Estado")}
+                {th("Fecha factura")}{th("Concepto")}{th("Proveedor")}{th("N° factura")}{th("Valor", "right")}{th("Estado")}
               </tr>
             </thead>
             <tbody>
@@ -5238,6 +5262,7 @@ function TraerGastosBusintModal({ area, gastosExistentes, rangoInicial, cierreDe
                     <input type="checkbox" disabled={f.yaCargada} checked={!!sel[f.clave] && !f.yaCargada} onChange={(e) => setSel((s) => ({ ...s, [f.clave]: e.target.checked }))} />
                   </td>
                   <td style={{ padding: "7px 10px", whiteSpace: "nowrap" }}>{fmtFechaISO(f.fecha)}</td>
+                  <td style={{ padding: "7px 10px", color: C.slate, fontWeight: 700 }}>{f.concepto || "—"}</td>
                   <td style={{ padding: "7px 10px", fontWeight: 700 }}>{f.proveedor}</td>
                   <td style={{ padding: "7px 10px" }}>{f.numeroFactura}</td>
                   <td style={{ padding: "7px 10px", textAlign: "right", fontWeight: 800 }}>{fmtMoney(f.monto)}</td>
@@ -5250,7 +5275,7 @@ function TraerGastosBusintModal({ area, gastosExistentes, rangoInicial, cierreDe
                 </tr>
               ))}
               {!filas.length && (
-                <tr><td colSpan={6} style={{ padding: 24, textAlign: "center", color: C.slate }}>No hay facturas de estos proveedores en el período.</td></tr>
+                <tr><td colSpan={7} style={{ padding: 24, textAlign: "center", color: C.slate }}>No hay facturas de estos conceptos o proveedores en el período.</td></tr>
               )}
             </tbody>
           </table>
