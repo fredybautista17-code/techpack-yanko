@@ -13,6 +13,7 @@ import { ultimoCorte, armarProveedoresPagar } from "./financiera-programar-pagos
 import { ingresosBase, proyectarDeuda } from "./financiera-proyeccion-deuda-calculo";
 import { mapaDeuda, rutaSalida, costoDelDinero, totalesProveedores, TIPOS_DEUDA, GRUPOS_URGENCIA, tasaMensual } from "./financiera-direccion-calculo";
 import { SEMILLA_EXTERNAS, SEMILLA_BANCO } from "./financiera-direccion-semilla";
+import SubirExtractos from "./financiera-direccion-extractos";
 
 const MESES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
 const etq = (ym) => { const [a, m] = String(ym).split("-").map(Number); return `${MESES[m - 1]} ${String(a).slice(2)}`; };
@@ -253,6 +254,7 @@ export default function DireccionFinancieraView({ db, isAdmin }) {
   const [extra, setExtra] = useState(0);
   const [rodar, setRodar] = useState(true);
   const [cupoTxt, setCupoTxt] = useState("");
+  const [subiendo, setSubiendo] = useState(false);
   const [cargandoSemilla, setCargandoSemilla] = useState(false);
   const [confirmaSemilla, setConfirmaSemilla] = useState(false);
   const [errorSemilla, setErrorSemilla] = useState("");
@@ -308,7 +310,10 @@ export default function DireccionFinancieraView({ db, isAdmin }) {
   return (
     <div>
       <div style={{ marginBottom: 12 }}>
-        <div style={{ fontSize: 21, fontWeight: 900, color: C.ink }}>Dirección financiera</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <div style={{ fontSize: 21, fontWeight: 900, color: C.ink }}>Dirección financiera</div>
+          {isAdmin ? <Boton chico variante="oscuro" onClick={() => setSubiendo(true)}>Subir extractos (PDF)</Boton> : null}
+        </div>
         <div style={{ fontSize: 12.5, color: C.slate, marginTop: 3, maxWidth: 860, lineHeight: 1.5 }}>
           Todo lo que se debe, la ruta para quedar libre de deudas y lo que cuesta el dinero. Lee de ATLAS las facturas de proveedores y las cuotas de Endeudamiento; el crédito, las tarjetas, los impuestos y el resumen del banco se anotan aquí.
         </div>
@@ -500,6 +505,7 @@ export default function DireccionFinancieraView({ db, isAdmin }) {
       ) : null}
 
       {editando ? <FormDeuda db={db} deuda={editando === "nueva" ? null : editando} onClose={() => setEditando(null)} /> : null}
+      {subiendo ? <SubirExtractos db={db} externas={externas} bancoLista={bancoDocs.lista} onClose={() => setSubiendo(false)} /> : null}
       {editMes ? <FormMes db={db} mes={editMes === "nuevo" ? null : editMes} onClose={() => setEditMes(null)} /> : null}
       {confirmaSemilla ? (
         <Ventana titulo="Cargar datos de mis extractos" sub="Se guardan el crédito Bancolombia, las dos tarjetas (corte 15 de octubre) y el resumen mensual de la cuenta corriente de enero a octubre de 2026. Si ya los habías cargado o editado, se reemplazan los de esos mismos nombres y meses." onClose={() => setConfirmaSemilla(false)} ancho={520}>

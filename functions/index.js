@@ -15993,6 +15993,28 @@ Reglas:
   }
 );
 
+// (2026-11-08, a pedido de Fredy) Financiera → Dirección financiera → «Subir extractos»: lee extractos PDF de Bancolombia (cuenta corriente, crédito, tarjeta).
+// Solo LEE y devuelve lo que encontró (functions/extractos-bancolombia.js, sin IA); no escribe nada: la pantalla se lo muestra al administrador y
+// solo si él confirma guarda en Firestore. Solo administradores. El PDF no se guarda en ningún lado.
+exports.leerExtractoBancario = onCallAuth(
+  { timeoutSeconds: 120, memory: "512MiB" },
+  async (request) => {
+    await verificarLlamadorEsAdmin(request);
+    const b64 = String(request.data?.pdfBase64 || "");
+    if (!b64) throw new HttpsError("invalid-argument", "Falta el archivo PDF.");
+    if (b64.length > 9 * 1024 * 1024) throw new HttpsError("invalid-argument", "El PDF pesa demasiado (máximo unos 6 MB).");
+    const buffer = Buffer.from(b64, "base64");
+    if (buffer.length < 200 || buffer.slice(0, 4).toString("latin1") !== "%PDF") throw new HttpsError("invalid-argument", "El archivo no es un PDF.");
+    try {
+      const resultado = await require("./extractos-bancolombia").leerExtracto(buffer);
+      return { nombre: String(request.data?.nombre || "").slice(0, 120), resultado };
+    } catch (err) {
+      logger.error("leerExtractoBancario: no se pudo leer el PDF", { error: String(err) });
+      return { nombre: String(request.data?.nombre || "").slice(0, 120), resultado: { error: "No pude abrir este PDF. Puede estar dañado o protegido con clave." } };
+    }
+  }
+);
+
 // (2026-10-23, a pedido de Fredy) Avisa por correo los recordatorios del asistente cuando llega su hora.
 exports.recordatoriosAtlas = onSchedule(
   { schedule: "every 5 minutes", timeZone: "America/Bogota", secrets: [EMAIL_USER, EMAIL_APP_PASSWORD], timeoutSeconds: 120, memory: "256MiB" },
