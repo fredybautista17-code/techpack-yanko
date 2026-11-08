@@ -82,6 +82,14 @@ function Celda({ r }) {
   return <span style={{ color: C.red, fontWeight: 700 }}>Negociar o aplazar</span>;
 }
 
+// (2026-11-08) Cupo para proveedores del mes en curso, para «Programar pagos a proveedores».
+export function useCupoProveedores(db) {
+  const ym = useMemo(() => new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 7), []);
+  const d = useMesFinanciero(db, ym);
+  const salida = d.res.estimado.total;
+  return { ym, cargando: d.cargando, error: d.error, abonado: d.cumpl.abonado, presupuestado: d.cumpl.presupuestado, salida, cupoCons: d.cumpl.abonado - salida, cupoPres: d.cumpl.presupuestado - salida, sinPresupuesto: d.cumpl.nivel === "sin_presupuesto" };
+}
+
 // items = cuentas por pagar ya ordenadas por urgencia: [{ nombre, total, tier, etiqueta }]
 export default function QuePagarPrimero({ db, items }) {
   const ym = useMemo(() => new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 7), []);

@@ -11,7 +11,7 @@ import { TablaCuotasPago, useCuotasPagos } from "./financiera-cuotas-pagos";
 import { httpsCallable } from "firebase/functions";
 import { diasDeTrabajoDelMes } from "./dias-habiles";
 
-const C = {
+export const C = {
   ink: "#1A1A2E", slate: "#5A5A7A", border: "#E8E2DB", canvas: "#F7F4F0", white: "#FFFFFF", seam: "#C8B8A2",
   green: "#2D9E6B", greenBg: "#EBF7F2", red: "#E85D4A", redBg: "#FDF0EE", blue: "#3D6B9E", blueBg: "#EBF1F7",
   amber: "#C47C1A", amberBg: "#FDF5E6", violet: "#9E5B8F", gris: "#8A8FA8",
@@ -34,17 +34,17 @@ const RUBROS = [
   { k: "cuotas", label: "Cuotas (endeudamiento)", color: C.red },
 ];
 
-const caja = { background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 16px" };
+export const caja = { background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 16px" };
 const th = { padding: "7px 8px", fontSize: 10.5, fontWeight: 800, color: C.slate, textTransform: "uppercase", letterSpacing: 0.3, textAlign: "right", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" };
 const td = { padding: "9px 8px", fontSize: 13, color: C.ink, textAlign: "right", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" };
 const thL = { ...th, textAlign: "left" };
 const tdL = { ...td, textAlign: "left", fontWeight: 700 };
 
-function Boton({ children, onClick, variante = "claro", disabled, chico }) {
+export function Boton({ children, onClick, variante = "claro", disabled, chico }) {
   const est = { claro: { background: C.white, color: C.ink, border: `1.5px solid ${C.border}` }, oscuro: { background: C.ink, color: C.white, border: `1.5px solid ${C.ink}` }, rojo: { background: C.red, color: C.white, border: `1.5px solid ${C.red}` } }[variante];
   return <button onClick={onClick} disabled={disabled} style={{ ...est, borderRadius: 8, padding: chico ? "4px 10px" : "8px 14px", fontSize: chico ? 12 : 13, fontWeight: 700, fontFamily: "inherit", cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.55 : 1 }}>{children}</button>;
 }
-function Ventana({ titulo, sub, onClose, children, ancho = 680 }) {
+export function Ventana({ titulo, sub, onClose, children, ancho = 680 }) {
   useEffect(() => {
     const h = (e) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", h);
@@ -65,7 +65,7 @@ function Ventana({ titulo, sub, onClose, children, ancho = 680 }) {
     </div>
   );
 }
-function Tarjeta({ titulo, valor, sub, fondo, borde, colorValor, oscura }) {
+export function Tarjeta({ titulo, valor, sub, fondo, borde, colorValor, oscura }) {
   return (
     <div style={{ flex: "1 1 220px", background: fondo || C.white, border: `1px solid ${borde || C.border}`, borderRadius: 12, padding: "13px 16px", color: oscura ? C.white : C.ink }}>
       <div style={{ fontSize: 10.5, fontWeight: 800, color: oscura ? C.seam : C.slate, textTransform: "uppercase", letterSpacing: 0.4 }}>{titulo}</div>
