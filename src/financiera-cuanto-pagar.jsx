@@ -456,18 +456,61 @@ function CumplePresupuesto({ ym, cumpl, confirmado, estimado, onProbar, probando
 }
 
 function Escalon({ pasos }) {
+  const [abierto, setAbierto] = useState(null);
   const tope = Math.max(1, ...pasos.map((p) => p.total));
   if (!pasos.length || tope <= 1) return <div style={{ fontSize: 12.5, color: C.slate }}>Todavía no hay cuotas registradas.</div>;
+  const paso = abierto ? pasos.find((p) => p.ym === abierto) : null;
+  const anterior = paso ? pasos[pasos.indexOf(paso) - 1] : null;
   return (
     <div>
-      {pasos.map((p, i) => (
-        <div key={p.ym} style={{ marginBottom: 9 }}>
-          <div style={{ fontSize: 11.5, color: C.slate }}>{i === 0 ? `Desde ${nombreMes(p.ym)}` : nombreMes(p.ym)}</div>
-          <div style={{ fontSize: 14, fontWeight: 800, fontVariantNumeric: "tabular-nums" }}>{money(p.total)}</div>
-          <div style={{ height: 7, width: `${(p.total / tope) * 100}%`, minWidth: p.total > 0 ? 4 : 0, background: C.red, borderRadius: 4, marginTop: 3 }} />
-        </div>
-      ))}
-      <div style={{ fontSize: 11.5, color: C.slate }}>Cuando se acaba una cuota, lo que necesitas al mes baja solo.</div>
+      <div style={{ maxHeight: 420, overflowY: "auto", paddingRight: 4 }}>
+        {pasos.map((p, i) => (
+          <button key={p.ym} type="button" onClick={() => setAbierto(p.ym)} title="Ver qué cuotas se pagan desde este mes"
+            style={{ display: "block", width: "100%", textAlign: "left", border: "none", background: "transparent", padding: "4px 6px", margin: "0 0 5px", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", color: C.ink }}>
+            <div style={{ fontSize: 11.5, color: C.slate, display: "flex", gap: 8 }}>
+              <span>{i === 0 ? `Desde ${nombreMes(p.ym)}` : nombreMes(p.ym)}</span>
+              <span style={{ marginLeft: "auto", color: C.red, fontWeight: 700 }}>ver detalle ›</span>
+            </div>
+            <div style={{ fontSize: 14, fontWeight: 800, fontVariantNumeric: "tabular-nums" }}>{money(p.total)}</div>
+            <div style={{ height: 7, width: `${(p.total / tope) * 100}%`, minWidth: p.total > 0 ? 4 : 0, background: C.red, borderRadius: 4, marginTop: 3 }} />
+          </button>
+        ))}
+      </div>
+      <div style={{ fontSize: 11.5, color: C.slate, marginTop: 4 }}>Cuando se acaba una cuota, lo que necesitas al mes baja solo. Toca un mes para ver qué se paga.</div>
+      {paso ? (
+        <Ventana titulo={`Endeudamiento desde ${nombreMes(paso.ym)}`} sub={`Lo que debes pagar cada mes en cuotas a partir de ${nombreMes(paso.ym)}, hasta el siguiente escalón.`} onClose={() => setAbierto(null)} ancho={760}>
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
+            <Tarjeta titulo="Pago mensual en cuotas" valor={money(paso.total)} sub={`${paso.lista.length} cuota${paso.lista.length === 1 ? "" : "s"} vigente${paso.lista.length === 1 ? "" : "s"}`} />
+            {anterior ? <Tarjeta titulo="Baja frente al escalón anterior" valor={money(anterior.total - paso.total)} sub={`Antes (${nombreMes(anterior.ym)}): ${money(anterior.total)}`} colorValor={C.green} /> : null}
+          </div>
+          {paso.lista.length ? (
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead><tr><th style={thL}>Cuota</th><th style={thL}>Acreedor</th><th style={th}>Valor mensual</th><th style={th}>Día de pago</th><th style={th}>Termina</th></tr></thead>
+                <tbody>
+                  {[...paso.lista].sort((a, b) => (Number(b.valorMensual) || 0) - (Number(a.valorMensual) || 0)).map((c, k) => (
+                    <tr key={c.id || k}>
+                      <td style={tdL}>{c.nombre}</td>
+                      <td style={{ ...td, textAlign: "left" }}>{c.acreedor || "—"}</td>
+                      <td style={td}>{money(c.valorMensual)}</td>
+                      <td style={td}>{c.diaPago ? `día ${c.diaPago}` : "—"}</td>
+                      <td style={td}>{c.hasta ? nombreMes(c.hasta) : "Sin fecha de fin"}</td>
+                    </tr>
+                  ))}
+                  <tr><td style={{ ...tdL, borderTop: `2px solid ${C.ink}` }} colSpan={2}>Total al mes</td><td style={{ ...td, fontWeight: 800, borderTop: `2px solid ${C.ink}` }}>{money(paso.total)}</td><td style={{ ...td, borderTop: `2px solid ${C.ink}` }} colSpan={2} /></tr>
+                </tbody>
+              </table>
+            </div>
+          ) : <div style={{ fontSize: 13, color: C.slate }}>Desde este mes no queda ninguna cuota vigente: no hay deuda por cuotas.</div>}
+          {paso.terminan && paso.terminan.length ? (
+            <div style={{ marginTop: 14, fontSize: 12.5, lineHeight: 1.6 }}>
+              <div style={{ fontWeight: 800, marginBottom: 4 }}>Cuotas que se terminaron antes de este mes</div>
+              {paso.terminan.map((c, k) => <div key={c.id || k}>{c.nombre}{c.acreedor ? ` (${c.acreedor})` : ""} — {money(c.valorMensual)} al mes, última cuota en {nombreMes(c.hasta)}</div>)}
+            </div>
+          ) : null}
+          {paso.sinFin ? <div style={{ marginTop: 12, fontSize: 12, color: C.amber }}>Alguna cuota de esta lista no tiene fecha de fin, así que este pago no baja solo.</div> : null}
+        </Ventana>
+      ) : null}
     </div>
   );
 }

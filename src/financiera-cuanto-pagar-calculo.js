@@ -67,13 +67,17 @@ export function cuotasDelMes(cuotas, ym) {
   return { total: lista.reduce((s, c) => s + num(c.valorMensual), 0), lista };
 }
 // Cómo baja lo que se paga por cuotas a medida que terminan: [{ ym, total }] desde ym, solo cuando cambia.
-export function escalonCuotas(cuotas, ym, max = 6) {
+export function escalonCuotas(cuotas, ym, max = 60) {
   const puntos = new Set([ym]);
   (cuotas || []).forEach((c) => { if (c.hasta && c.hasta >= ym) puntos.add(sumarMes(c.hasta, 1)); });
   const pasos = [];
   [...puntos].sort().forEach((p) => {
-    const total = cuotasDelMes(cuotas, p).total;
-    if (!pasos.length || pasos[pasos.length - 1].total !== total) pasos.push({ ym: p, total });
+    const { total, lista } = cuotasDelMes(cuotas, p);
+    if (pasos.length && pasos[pasos.length - 1].total === total) return;
+    // Cuotas que terminaron justo antes de este escalón (por eso baja el pago) y si alguna vigente nunca termina.
+    const desdeYm = pasos.length ? pasos[pasos.length - 1].ym : p;
+    const terminan = pasos.length ? (cuotas || []).filter((c) => c.hasta && c.hasta >= desdeYm && c.hasta < p) : [];
+    pasos.push({ ym: p, total, lista, terminan, sinFin: lista.some((c) => !c.hasta) });
   });
   return pasos.slice(0, max);
 }
