@@ -15790,11 +15790,87 @@ const ASI_HERRAMIENTAS = [
   { name: "entradas_planta", description: "Lotes que ENTRARON a planta (producto que regresa de confección) en un rango de fechas: unidades totales, por planta, y los lotes con referencia, pedido y planta. Úsala para 'qué lotes ingresaron a planta hoy/ayer/esta semana' o 'cuánto entró de la planta X'. Las entradas llegan de Busint una vez al día a las 6 a. m., así que el día de hoy casi nunca está completo: avisa la última fecha con datos.", input_schema: { type: "object", properties: { desde: { type: "string", description: "Fecha inicial AAAA-MM-DD (si falta, usa 'hasta')." }, hasta: { type: "string", description: "Fecha final AAAA-MM-DD (si falta, hoy)." }, planta: { type: "string", description: "Parte del nombre de la planta, opcional." }, numLote: { type: "string", description: "Número de lote, opcional." } } } },
   { name: "programacion_planta", description: "Programación de planta de ATLAS: lotes enviados a planta con su prioridad (ALTA/MEDIA/NORMAL), motivo, fecha sugerida y estado (pendiente o cumplido). Úsala para 'qué está pendiente en planta', 'qué es prioridad alta', 'qué está atrasado'.", input_schema: { type: "object", properties: { estado: { type: "string", enum: ["pendiente", "cumplido", "todos"] }, prioridad: { type: "string", enum: ["ALTA", "MEDIA", "NORMAL"] }, numLote: { type: "string" }, numPedido: { type: "string" } } } },
   { name: "despachos", description: "Despachos y facturación de la bitácora de despachos (facturas de Busint): documentos, unidades y monto despachado, devoluciones, y el desglose por cliente, en un rango de fechas. Úsala para 'cuánto despachamos hoy / esta semana / este mes' o 'qué se le despachó al cliente X'.", input_schema: { type: "object", properties: { desde: { type: "string", description: "AAAA-MM-DD" }, hasta: { type: "string", description: "AAAA-MM-DD (si falta, hoy)" }, cliente: { type: "string", description: "Parte del nombre del cliente, opcional." } } } },
+  { name: "finanzas_deuda", description: "Dirección financiera de ATLAS (Financiera): TODO lo que debe la empresa (facturas de proveedores de Yanko e Indutex, cuotas de Endeudamiento, crédito y tarjetas, impuestos y embargos que el gerente anotó) ordenado por urgencia; cuándo termina de pagar todo y cuántos intereses paga; y cuánto cuestan el banco (4x1000, comisiones, plan, cupo, sobregiro) y los créditos. Úsala para 'cuánto debo en total', 'qué pago primero', 'cuándo salgo de deudas', 'cuánto me cuesta el banco', 'qué pasa si negocio la tasa / abono un millón más al mes'. Los parámetros son para simular escenarios y son opcionales.", input_schema: { type: "object", properties: { tasa_negociada: { type: "number", description: "Nueva tasa E.A. en % para el crédito bancario más grande (ej. 24). Omitir si no se pregunta por negociar." }, abono_extra: { type: "number", description: "Abono extra por mes en pesos (ej. 1000000)." }, cupo_proveedores: { type: "number", description: "Pesos por mes para pagar proveedores. Si no se da, se usa el que sugiere la Proyección de deuda." }, rodar_pagos: { type: "boolean", description: "true (por defecto en el escenario con plan): al terminar una deuda, su pago pasa a la de más interés." } } } },
   { name: "crear_recordatorio", description: "Crea un recordatorio para el usuario que habla. Se le avisa por correo a la hora indicada y queda visible en el asistente. Si el usuario no dice la hora, pregúntasela antes de llamar a esta herramienta. Calcula la fecha y hora a partir de la fecha y hora actuales que figuran en las instrucciones.", input_schema: { type: "object", properties: { texto: { type: "string", description: "Qué hay que recordar, en una frase corta." }, cuando: { type: "string", description: "Fecha y hora de Colombia, formato AAAA-MM-DDTHH:MM (por ejemplo 2026-10-24T08:00)." } }, required: ["texto", "cuando"] } },
   { name: "listar_recordatorios", description: "Lista los recordatorios pendientes o ya avisados (aún sin cerrar) del usuario que habla, con su id.", input_schema: { type: "object", properties: {} } },
   { name: "cancelar_recordatorio", description: "Cancela o da por hecho un recordatorio del usuario, usando el id que devuelve listar_recordatorios.", input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } },
   { name: "enviar_resumen_manana", description: "Arma el resumen de la mañana (entradas a planta de ayer, prioridades de planta, despachos de ayer, órdenes de compra vencidas, recordatorios) y lo envía por correo al usuario que habla, ahora mismo. Úsala cuando pida que le envíes o le mandes el resumen.", input_schema: { type: "object", properties: {} } }
 ];
+
+// (2026-11-08, a pedido de Fredy) Herramienta «finanzas_deuda»: lee lo mismo que la pantalla Financiera → Dirección financiera y usa la COPIA de su cálculo
+// (functions/financiera-direccion.js). Solo lectura. El cupo mensual para proveedores sugerido lo deja la pantalla en financiera_direccion_resumen/actual.
+const DIR_FIN = require("./financiera-direccion");
+async function asiFinanzasDeuda(args) {
+  const hoy = fechaHoyBogota();
+  const ymHoy = hoy.slice(0, 7);
+  const todo = async (nombre) => (await db.collection(nombre).get()).docs.map((d) => ({ ...d.data(), id: d.id }));
+  const [externas, banco, cuotasManuales, pagosCuotas, cortes, facturasDocs, plazosDoc, manuales, resumenDoc] = await Promise.all([
+    todo("financiera_deudas_externas"), todo("financiera_banco_resumen"), todo("financiera_cuotas"), todo("contabilidad_cuotas_pagos"),
+    todo("contabilidad_cxp_cortes"), todo("contabilidad_cxp_facturas"), db.collection("contabilidad_cxp_plazos").doc("main").get(), todo("contabilidad_cxp_manual"),
+    db.collection("financiera_direccion_resumen").doc("actual").get(),
+  ]);
+  const cuotas = [
+    ...cuotasManuales,
+    ...pagosCuotas.filter((d) => d && d.kind === "plan_liquidaciones" && d.ym && Number(d.plan) > 0)
+      .map((d) => ({ id: `plan_liquidaciones__${d.ym}`, nombre: "Liquidaciones de retiro", valorMensual: Number(d.plan), diaPago: 25, desde: d.ym, hasta: d.ym, auto: true })),
+  ];
+  const facturas = {};
+  facturasDocs.forEach((d) => { facturas[d.id] = d; });
+  const plazos = plazosDoc.exists ? plazosDoc.data()?.plazos || {} : {};
+  const avisos = [];
+  const proveedoresDe = (empresa) => {
+    const corte = DIR_FIN.ultimoCorte(cortes, empresa);
+    const man = manuales.filter((m) => (empresa === "indutex" ? m.empresa === "indutex" : m.empresa !== "indutex"));
+    if (!corte && !man.length) { avisos.push(`No hay corte de Cuentas por Pagar de ${empresa === "indutex" ? "Indutex" : "Yanko"}: sus facturas no están en la deuda.`); return null; }
+    const provs = DIR_FIN.armarProveedoresPagar({ empresa, corte, facturasGuardadas: empresa === "yanko" ? facturas : {}, plazos, nombresProveedor: {}, manuales: man, hoy });
+    return { ...DIR_FIN.totalesProveedores(provs), fechaCorte: corte ? corte.fechaCorte || "" : "" };
+  };
+  const yanko = proveedoresDe("yanko");
+  const indutex = proveedoresDe("indutex");
+  const mapa = DIR_FIN.mapaDeuda({ yanko, indutex, cuotas, externas, ymHoy });
+  const r0 = (n) => Math.round(Number(n) || 0);
+  const saldoProv = (yanko ? yanko.total : 0) + (indutex ? indutex.total : 0);
+  const resumen = resumenDoc.exists ? resumenDoc.data() : null;
+  let cupo = 0;
+  let origenCupo = "no hay";
+  if (Number.isFinite(Number(args.cupo_proveedores)) && args.cupo_proveedores !== undefined && args.cupo_proveedores !== null) { cupo = Math.max(0, Number(args.cupo_proveedores)); origenCupo = "el que pidió el gerente"; }
+  else if (resumen && Number(resumen.cupoSugerido) > 0) { cupo = Number(resumen.cupoSugerido); origenCupo = `sugerido por la Proyección de deuda (guardado el ${String(resumen.actualizadoEn || "").slice(0, 10)})`; }
+  else if (saldoProv > 0) avisos.push("No hay un cupo mensual para proveedores guardado: abrir Financiera → Dirección financiera una vez, o decir cuánto se destina por mes. Sin cupo, las facturas de proveedores no se pagan en la simulación.");
+  const grande = externas.filter((e) => e.tipo === "banco" && Number(e.saldo) > 0).sort((a, b) => Number(b.saldo) - Number(a.saldo))[0] || null;
+  const tasaNeg = Number.isFinite(Number(args.tasa_negociada)) && args.tasa_negociada !== undefined && args.tasa_negociada !== null && grande && Number(args.tasa_negociada) < Number(grande.tasaEA) ? Number(args.tasa_negociada) : null;
+  const comun = { externas, cuotas, saldoProveedores: saldoProv, cupoProveedores: cupo, ymHoy };
+  const base = DIR_FIN.rutaSalida({ ...comun, rodar: false, extra: 0, tasaNegociada: null });
+  const extra = Math.max(0, Number(args.abono_extra) || 0);
+  const rodar = args.rodar_pagos !== false;
+  const plan = DIR_FIN.rutaSalida({ ...comun, rodar, extra, tasaNegociada: tasaNeg });
+  const cortoRuta = (r) => ({ meses_para_terminar: r.n, termina_en: r.ym, intereses_que_pagara: r0(r.interes), sin_plan_de_pago: r.sinPlan, termina_cada_una: r.hitos.map((h) => ({ deuda: h.nombre, saldo_hoy: r0(h.saldo0), mes: h.ym })) });
+  const costo = DIR_FIN.costoDelDinero({ banco, externas });
+  const sinFin = mapa.sinFin.map((c) => c.nombre || c.acreedor || c.id);
+  if (sinFin.length) avisos.push(`Cuotas de Endeudamiento sin fecha final (no se cuentan en la deuda): ${sinFin.join(", ")}.`);
+  if (!externas.length) avisos.push("El gerente aún no ha anotado crédito, tarjetas, impuestos ni embargos en Dirección financiera.");
+  if (base.n === null) avisos.push(base.sinPlan.length ? `Con los pagos actuales la deuda no termina porque estas deudas no tienen pago mensual: ${base.sinPlan.join(", ")}.` : "Con los pagos actuales la deuda no se termina dentro de los 10 años que simula.");
+  avisos.push("Estimaciones: las tarjetas calculan interés sobre todo el saldo (exagera un poco), no se suman facturas nuevas de proveedores y el crédito termina según su cuota mensual.");
+  return {
+    hoy,
+    deuda_total: r0(mapa.total),
+    por_urgencia: { lo_legal: r0(mapa.porGrupo.legal), vencido_con_proveedores: r0(mapa.porGrupo.vencido), deuda_cara: r0(mapa.porGrupo.caro), el_resto: r0(mapa.porGrupo.resto) },
+    deuda_cara_desde_tasa_ea: DIR_FIN.TASA_CARA,
+    proveedores: { yanko: yanko ? { total: r0(yanko.total), vencido: r0(yanko.vencido), corte: yanko.fechaCorte } : null, indutex: indutex ? { total: r0(indutex.total), vencido: r0(indutex.vencido), corte: indutex.fechaCorte } : null },
+    deudas: mapa.filas.slice(0, 40).map((f) => ({ grupo: f.grupo, nombre: f.nombre, saldo: r0(f.saldo), detalle: f.detalle })),
+    salir_de_deudas: {
+      cupo_mensual_proveedores: r0(cupo), origen_del_cupo: origenCupo, presupuesto_mensual_para_deudas: r0(base.presupuesto),
+      como_vas_hoy: cortoRuta(base),
+      escenario: { tasa_negociada: tasaNeg, abono_extra_mensual: r0(extra), pasar_pagos_liberados_a_la_deuda_mas_cara: rodar, ...cortoRuta(plan), intereses_que_ahorra: r0(base.interes - plan.interes), meses_que_adelanta: base.n !== null && plan.n !== null ? base.n - plan.n : null },
+    },
+    costo_del_dinero: {
+      meses_con_datos_del_banco: costo.n, costo_banco_en_esos_meses: r0(costo.costoTotal), porcentaje_de_lo_que_entra: costo.pctIngreso === null ? null : Math.round(costo.pctIngreso * 10000) / 100,
+      porcentaje_que_es_4x1000: costo.pct4x1000 === null ? null : Math.round(costo.pct4x1000 * 100),
+      costo_banco_mensual: r0(costo.bancoMensual), intereses_mensuales_de_creditos_y_tarjetas: r0(costo.interesMensual), costo_total_mensual: r0(costo.costoMensual), costo_proyectado_12_meses: r0(costo.costo12),
+      por_concepto: Object.fromEntries(Object.entries(costo.porConcepto).map(([k, v]) => [k, r0(v)])),
+    },
+    avisos,
+  };
+}
 
 async function asiEjecutarHerramienta(nombre, args, ctx) {
   switch (nombre) {
@@ -15805,6 +15881,7 @@ async function asiEjecutarHerramienta(nombre, args, ctx) {
     case "entradas_planta": return asiEntradasPlanta(args);
     case "programacion_planta": return asiProgramacionPlanta(args);
     case "despachos": return asiDespachos(args);
+    case "finanzas_deuda": return asiFinanzasDeuda(args);
     case "crear_recordatorio": return asiCrearRecordatorio(args, ctx);
     case "listar_recordatorios": return { recordatorios: await asiRecordatoriosDe(ctx.uid) };
     case "cancelar_recordatorio": return asiCancelarRecordatorio(args, ctx);
@@ -15861,6 +15938,7 @@ Reglas:
 - Usa SOLO los datos que devuelven las herramientas. Si un dato no aparece, dilo y no lo inventes. Cuando des una cifra, di de dónde sale (por ejemplo "según Contabilidad", "según Busint", "según Planeación").
 - Para fechas relativas (hoy, ayer, esta semana, este mes) calcúlalas a partir de la fecha de hoy y pasa las herramientas en formato AAAA-MM-DD. Si una herramienta avisa que los datos del día no están completos, díselo al gerente.
 - Eres de solo lectura: no puedes cambiar ni crear nada en ATLAS ni en Busint. Lo único que puedes hacer es manejar los recordatorios del gerente (crear, listar, cancelar) y enviarle por correo el resumen de la mañana. Para un recordatorio necesitas el texto y la hora: si falta la hora, pregúntala. Después de crearlo, confírmalo en una frase con el día y la hora dichos en palabras, y si la herramienta avisa que no hay correo cargado, díselo.
+- Deudas y bancos: para "cuánto debo", "qué pago primero", "cuándo salgo de deudas", "cuánto me cuesta el banco" o simular negociar la tasa o abonar más, usa finanzas_deuda (es lo mismo que Financiera → Dirección financiera). Di siempre que son estimaciones, nombra primero lo más urgente (lo legal, lo vencido, la deuda cara) y repite los avisos importantes de la herramienta. No des consejos de inversión: solo orden de pagos y costos.
 - Si te preguntan algo que ninguna herramienta cubre (por ejemplo sueldos de una persona, inventario de telas, cartera), di con claridad que todavía no puedes consultarlo.
 - Di el dinero con separadores o en palabras, por ejemplo "un millón doscientos mil pesos", y las fechas en palabras ("el 31 de octubre").
 - Vocabulario: lote = número de lote de corte y producción; BPT = bodega de producto terminado; Dado por Cumplido = revisión de la ganancia de cada lote en Contabilidad; las 17 etapas son el seguimiento de un pedido.`;

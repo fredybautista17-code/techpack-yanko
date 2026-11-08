@@ -4,7 +4,7 @@
 //   Salir de deudas  → ruta mes a mes hasta quedar libre; se mueve la tasa, el abono extra y si lo que se libera pasa a la deuda siguiente.
 //   Costo del dinero → lo que cuestan los bancos (resumen mensual de los extractos) y los intereses de lo que se debe.
 // Lee de ATLAS lo que ya existe y guarda solo lo que está fuera de ATLAS: financiera_deudas_externas y financiera_banco_resumen.
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { collection, doc, onSnapshot, setDoc, deleteDoc, writeBatch } from "firebase/firestore";
 import { useMesFinanciero } from "./financiera-que-pagar";
 import { C, caja, Boton, Ventana } from "./financiera-cuanto-pagar";
@@ -268,6 +268,13 @@ export default function DireccionFinancieraView({ db, isAdmin }) {
     const r = proyectarDeuda({ ymInicio: ymHoy, horizonte: 6, escenario: "cons", base, presupuestoMes: {}, operacion: { nomina: ant.nomina, seguridad: ant.seguridad, provisiones: ant.provisiones, gastos: ant.gastos }, cuotas: datos.cuotas, colchonPct: 0.1, nueva: { cuota: 0, plazo: 1, desde: sumarMes(ymHoy, 1) }, proveedores: null });
     return Math.round(r.meses.reduce((s, m) => s + m.paraProveedores, 0) / r.meses.length / 1e5) * 1e5;
   }, [base, ant, datos.cuotas, ymHoy]);
+  // El asistente de ATLAS (servidor) no puede recalcular la Proyección de deuda: se le deja el cupo sugerido a la mano. Solo administradores, y solo si cambió.
+  const cupoGuardado = useRef(null);
+  useEffect(() => {
+    if (!isAdmin || !(cupoSugerido > 0) || cupoGuardado.current === cupoSugerido) return;
+    cupoGuardado.current = cupoSugerido;
+    setDoc(doc(db, "financiera_direccion_resumen", "actual"), { cupoSugerido, ymHoy, actualizadoEn: new Date().toISOString() }, { merge: true }).catch(() => {});
+  }, [db, isAdmin, cupoSugerido, ymHoy]);
   const cupo = cupoTxt === "" ? cupoSugerido : Number(String(cupoTxt).replace(/[^\d.-]/g, "")) || 0;
   const saldoProv = (prov.yanko ? prov.yanko.total : 0) + (prov.indutex ? prov.indutex.total : 0);
 
