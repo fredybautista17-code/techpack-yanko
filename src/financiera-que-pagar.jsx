@@ -15,7 +15,7 @@ const thL = { ...th, textAlign: "left" };
 const tdL = { ...td, textAlign: "left" };
 
 // Lo que entra y lo que sale este mes, en vivo.
-function useMesFinanciero(db, ym) {
+export function useMesFinanciero(db, ym) {
   const [liq, setLiq] = useState({});
   const [gastos, setGastos] = useState([]);
   const [cuotasManuales, setCuotasManuales] = useState([]);
@@ -63,7 +63,7 @@ function useMesFinanciero(db, ym) {
   }, [db, ym]);
   const res = useMemo(() => cuantoPagarMes({ ym, liquidaciones: liq, gastosDocs: gastos, cuotas }), [ym, liq, gastos, cuotas]);
   const cumpl = useMemo(() => cumplimientoPresupuesto({ ym, presupuestos: pres, movimientos: movs, confirmado: res.actual, estimado: res.estimado, hoyISO: `${ym}-15`, diasTotal: 0, diasTranscurridos: 0 }), [ym, pres, movs, res]);
-  return { res, cumpl, cargando, error, pagosMapa };
+  return { res, cumpl, cargando, error, pagosMapa, cuotas };
 }
 
 function Dato({ titulo, valor, sub, color, fondo }) {
