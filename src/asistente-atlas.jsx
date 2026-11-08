@@ -13,6 +13,9 @@ const EJEMPLOS = [
   "¿Cuánto necesito para pagar las órdenes de compra?",
   "Recuérdame mañana a las 8 revisar el lote 7260",
   "Envíame el resumen de la mañana",
+  "¿Cuánto debo en total y qué pago primero?",
+  "¿Cuándo salgo de deudas si abono un millón más al mes?",
+  "¿Cuánto me cuesta el banco al mes?",
 ];
 
 const LS_VOZ = "atlas_asistente_voz";
@@ -243,7 +246,7 @@ export default function AsistenteAtlas() {
       <div style={{ flex: 1, overflowY: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 10, background: C.soft }}>
         {mensajes.length === 0 && (
           <div style={{ fontSize: 13, color: C.mut, lineHeight: 1.5 }}>
-            Pregúntame por un lote, un pedido, una referencia o las órdenes de compra. Toca el micrófono y habla, o escribe abajo.
+            Pregúntame por un lote, un pedido, una referencia, las órdenes de compra, tus deudas o lo que cuesta el banco. Toca el micrófono y habla, o escribe abajo.
             <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 10 }}>
               {EJEMPLOS.map((e) => (
                 <button key={e} onClick={() => enviar(e)} style={{ textAlign: "left", background: C.bg, border: `1px solid ${C.line}`, borderRadius: 8, padding: "7px 10px", fontSize: 12.5, color: C.ink, cursor: "pointer" }}>{e}</button>
