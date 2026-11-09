@@ -13,6 +13,8 @@ import { httpsCallable, getFunctions } from "firebase/functions";
 // Colección Firestore: "devoluciones_cliente" (ver firestore.rules: un Cliente solo
 // lee lo que él mismo creó; solo el personal interno cambia estados).
 //
+// (2026-11-09) El tope de cada casilla descuenta lo ya reportado del mismo lote, y el cliente puede marcar "Quiero que me la
+// despachen de nuevo" (campo solicitaDespacho {nota, por, fecha}): Bodega y Calidad la ven marcada; el re-despacho sigue manual.
 // Estados: reportada -> en_camino -> recibida -> revisada -> lista -> redespachada.
 // Si el cliente escribe la guía al reportar, nace "en_camino"; si no, "reportada".
 //
@@ -53,6 +55,34 @@ const fmtFechaHora = (iso) => {
 };
 const entero = (v) => { const n = Math.floor(Number(v)); return Number.isFinite(n) && n > 0 ? n : 0; };
 const totalLineas = (lineas) => (lineas || []).reduce((s, l) => s + Object.values(l.cantidades || {}).reduce((a, b) => a + (Number(b) || 0), 0), 0);
+// (2026-11-09, a pedido de Fredy) Lo ya devuelto de un lote, por casilla "color|talla": suma las devoluciones de ese lote
+// (menos la que se está editando y las ya despachadas de nuevo, porque esas unidades volvieron al cliente).
+function yaDevueltoDelLote(lista, lote, excluirId) {
+  const u = {};
+  (lista || []).forEach((x) => {
+    if (String(x.lote) !== String(lote) || x.id === excluirId || x.estado === "redespachada") return;
+    (x.lineas || []).forEach((l) => Object.entries(l.cantidades || {}).forEach(([t, n]) => { const k = `${l.color}|${t}`; u[k] = (u[k] || 0) + (Number(n) || 0); }));
+  });
+  return u;
+}
+// Casillas que se pasan de lo disponible (tope menos lo ya devuelto). `base` = cantidades que ya tenía la devolución al editarla
+// (no se reclama por lo que ya estaba guardado, solo por lo que se sube).
+function casillasPasadas(colores, tallas, cant, usado, infantil, base) {
+  return colores.flatMap((c) => tallas
+    .filter((t) => {
+      const k = `${c.color}|${t}`;
+      const v = Number(cant[k]) || 0;
+      const disponible = Math.max(0, (Number(c.tallas?.[t]) || 0) - (Number(usado?.[k]) || 0));
+      return v > disponible && v > (Number(base?.[k]) || 0);
+    })
+    .map((t) => `${c.nombre || c.color} ${etiquetaTalla(t, infantil)}`));
+}
+// Colores con su tope: lo despachado según la factura si Busint lo separa por color; si no, lo cortado del lote.
+function coloresConTope(info) {
+  if (!info) return [];
+  const porColor = !!info.facturacion?.porColor;
+  return info.colores.map((c) => (porColor && c.despachado ? { ...c, tallas: c.despachado } : c));
+}
 const numeroNuevo = () => {
   const d = new Date();
   const p = (n) => String(n).padStart(2, "0");
@@ -74,11 +104,12 @@ function estadoInfo(T, estado) {
 function Pill({ bg, fg, children }) {
   return <span style={{ display: "inline-block", padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: bg, color: fg, whiteSpace: "nowrap" }}>{children}</span>;
 }
-function EstadoPill({ T, d }) {
+function EstadoPill({ T, d, cliente }) {
   const e = estadoInfo(T, d.estado);
   return (
     <span style={{ display: "inline-flex", gap: 6, flexWrap: "wrap" }}>
       <Pill T={T} bg={e.bg} fg={e.fg}>{e.txt}</Pill>
+      {d.solicitaDespacho && d.estado !== "redespachada" && <Pill T={T} bg={T.violetBg} fg={T.violet}>{cliente ? "Despacho solicitado" : "Pide despacho"}</Pill>}
       {d.resultado === "diferencias" && <Pill T={T} bg={T.coralBg} fg={T.coral}>Con diferencias</Pill>}
       {d.resultado === "completa" && <Pill T={T} bg={T.jadeBg} fg={T.jade}>Completa</Pill>}
     </span>
@@ -117,7 +148,7 @@ function usuarioActual(currentUser) {
 // "A · BLANCO" si se conoce el nombre del color (viene del pedido); si no, solo la letra.
 const etiquetaColor = (c) => (c && c.nombre ? `${c.color} · ${c.nombre}` : String(c?.color ?? ""));
 // Tabla color x talla. `valores` = { "color|T6": n }. Con `editable` muestra inputs; `tope` = cantidades máximas del lote.
-function GrillaColorTalla({ T, colores, tallas, valores, onCambiar, tope, editable = true, comparar, infantil = false }) {
+function GrillaColorTalla({ T, colores, tallas, valores, onCambiar, tope, usado, editable = true, comparar, infantil = false }) {
   const th = { padding: "6px 8px", fontSize: 11, color: T.slate, textAlign: "center", borderBottom: `1px solid ${T.border}` };
   const td = { padding: "6px 8px", textAlign: "center", borderBottom: `1px solid ${T.border}`, fontSize: 13 };
   return (
@@ -138,12 +169,15 @@ function GrillaColorTalla({ T, colores, tallas, valores, onCambiar, tope, editab
                 <td style={{ ...td, textAlign: "left", fontWeight: 700 }}>{etiquetaColor(c)}</td>
                 {tallas.map((t) => {
                   const k = `${c.color}|${t}`;
-                  const cap = tope ? c.tallas?.[t] || 0 : null;
+                  const totalCasilla = tope ? c.tallas?.[t] || 0 : 0;
+                  const ya = tope ? Number(usado?.[k]) || 0 : 0;
+                  const cap = tope ? Math.max(0, totalCasilla - ya) : null;
                   const declarado = comparar ? Number(comparar[k]) || 0 : null;
                   const v = Number(valores[k]) || 0;
                   const dif = declarado === null ? 0 : v - declarado;
                   if (!editable) return <td key={t} style={td}>{v || "·"}</td>;
-                  if (tope && !cap) return <td key={t} style={{ ...td, color: T.slate }}>·</td>;
+                  if (tope && !totalCasilla) return <td key={t} style={{ ...td, color: T.slate }}>·</td>;
+                  if (tope && !cap) return <td key={t} style={{ ...td, color: T.slate }}>·<div style={{ fontSize: 10, marginTop: 2 }}>ya devuelto {ya} de {totalCasilla}</div></td>;
                   return (
                     <td key={t} style={td}>
                       <input
@@ -151,7 +185,7 @@ function GrillaColorTalla({ T, colores, tallas, valores, onCambiar, tope, editab
                         onChange={(e) => onCambiar(k, e.target.value, cap)}
                         style={{ ...campo(T), width: 58, textAlign: "center", padding: 0, borderColor: dif < 0 ? T.coral : dif > 0 ? T.amber : T.border }}
                       />
-                      {tope && <div style={{ fontSize: 10, color: T.slate, marginTop: 2 }}>de {cap}</div>}
+                      {tope && <div style={{ fontSize: 10, color: T.slate, marginTop: 2 }}>{ya ? `quedan ${cap} de ${totalCasilla}` : `de ${totalCasilla}`}</div>}
                       {comparar && <div style={{ fontSize: 10, color: dif ? (dif < 0 ? T.coral : T.amber) : T.slate, marginTop: 2 }}>decl. {declarado}</div>}
                     </td>
                   );
@@ -227,6 +261,11 @@ function Detalle({ T, d, mostrarConteo }) {
           ) : null}
         </>
       ) : null}
+      {d.solicitaDespacho ? (
+        <div style={{ fontSize: 12, color: T.violet, marginTop: 10 }}>
+          Despacho de nuevo solicitado{d.solicitaDespacho.por ? ` por ${d.solicitaDespacho.por}` : ""} el {fmtFecha(d.solicitaDespacho.fecha)}{d.solicitaDespacho.nota ? ` · ${d.solicitaDespacho.nota}` : ""}
+        </div>
+      ) : null}
       {d.redespacho ? (
         <div style={{ fontSize: 12, color: T.slate, marginTop: 10 }}>
           Despachada de nuevo el {fmtFecha(d.redespacho.fecha)}{d.redespacho.guia ? ` · guía ${d.redespacho.guia}` : ""}
@@ -265,13 +304,15 @@ function recalcularDiferencias(lineasDecl, lineasConteo) {
 // (2026-10-21, a pedido de Fredy) Editar una devolución: la pueden editar todos los usuarios que tienen Devoluciones
 // (el cliente solo mientras está reportada / en camino, antes de que Bodega la reciba); borrarla, solo el administrador.
 const puedeEditarDev = (d, esCliente) => (esCliente ? ["reportada", "en_camino"].includes(d.estado) : true);
-function EditarDevolucionModal({ db, functionsClient, T, d, usuario, onClose }) {
+function EditarDevolucionModal({ db, functionsClient, T, d, usuario, lista, onClose }) {
   const [info, setInfo] = useState(null);
   const [cant, setCant] = useState(valoresDeLineas(d.lineas));
   const [motivo, setMotivo] = useState(d.motivo || MOTIVOS[0]);
   const [guia, setGuia] = useState(d.guia || "");
   const [obs, setObs] = useState(d.observaciones || "");
   const [infantil, setInfantil] = useState(esInfantilDev(d));
+  const [pide, setPide] = useState(!!d.solicitaDespacho);
+  const [notaDesp, setNotaDesp] = useState(d.solicitaDespacho?.nota || "");
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => {
@@ -285,7 +326,8 @@ function EditarDevolucionModal({ db, functionsClient, T, d, usuario, onClose }) 
     }
     return () => { vivo = false; };
   }, []); // eslint-disable-line
-  const colores = info ? info.colores : coloresDeLineas(d.lineas);
+  const colores = info ? coloresConTope(info) : coloresDeLineas(d.lineas);
+  const usado = useMemo(() => yaDevueltoDelLote(lista, d.lote, d.id), [lista, d.lote, d.id]);
   const tallas = tallasDeLineas(d.lineas, [...(d.tallas || []), ...(info?.tallas || [])]);
   const total = Object.values(cant).reduce((a, v) => a + (Number(v) || 0), 0);
   function cambiar(k, v, cap) {
@@ -296,6 +338,8 @@ function EditarDevolucionModal({ db, functionsClient, T, d, usuario, onClose }) 
   async function guardar() {
     setError("");
     if (!(total > 0)) { setError("Escribe al menos una unidad."); return; }
+    const pasadas = info ? casillasPasadas(colores, tallas, cant, usado, infantil, valoresDeLineas(d.lineas)) : [];
+    if (pasadas.length) { setError(`Hay cantidades por encima de lo que queda por devolver (tope menos lo ya reportado en otras devoluciones del lote): ${pasadas.join(", ")}.`); return; }
     const lineas = colores
       .map((c) => ({ color: c.color, colorNombre: c.nombre || "", cantidades: Object.fromEntries(tallas.map((t) => [t, Number(cant[`${c.color}|${t}`]) || 0]).filter(([, n]) => n > 0)) }))
       .filter((l) => Object.keys(l.cantidades).length);
@@ -306,7 +350,11 @@ function EditarDevolucionModal({ db, functionsClient, T, d, usuario, onClose }) 
     if (guia.trim() !== (d.guia || "")) cambios.push(`guía: ${guia.trim() || "—"}`);
     if (obs.trim() !== (d.observaciones || "")) cambios.push("nota");
     if (infantil !== esInfantilDev(d)) cambios.push(`tallas en ${infantil ? "números" : "letras"}`);
+    if (pide !== !!d.solicitaDespacho) cambios.push(pide ? "pide el despacho de nuevo" : "quitó la solicitud de despacho");
+    else if (pide && notaDesp.trim() !== (d.solicitaDespacho?.nota || "")) cambios.push("nota del despacho");
     const extra = { lineas, tallas, total: totalLineas(lineas), motivo, guia: guia.trim(), observaciones: obs.trim(), tallasInfantil: infantil, editadoPor: usuario, editadoEn: nowISO() };
+    if (pide) extra.solicitaDespacho = { nota: notaDesp.trim(), por: d.solicitaDespacho?.por || usuario, fecha: d.solicitaDespacho?.fecha || nowISO() };
+    else if (d.solicitaDespacho) extra.solicitaDespacho = null;
     if (d.conteo?.length) {
       extra.diferencias = recalcularDiferencias(lineas, d.conteo);
       extra.resultado = extra.diferencias.length ? "diferencias" : "completa";
@@ -324,8 +372,8 @@ function EditarDevolucionModal({ db, functionsClient, T, d, usuario, onClose }) 
     <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 400, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
       <div style={{ background: T.white, borderRadius: 14, padding: 24, maxWidth: 760, width: "100%", maxHeight: "90vh", overflow: "auto", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}>
         <div style={{ fontWeight: 800, fontSize: 16, color: T.ink, marginBottom: 4 }}>Editar devolución {d.numero}</div>
-        <div style={{ fontSize: 12, color: T.slate, marginBottom: 14 }}>Lote {d.lote} · Ref {d.ref || "—"}. {info ? "Cada casilla tiene como tope lo que trae el lote." : "Se editan las cantidades de los colores ya declarados."}</div>
-        <GrillaColorTalla T={T} colores={colores} tallas={tallas} valores={cant} onCambiar={cambiar} tope={!!info} infantil={infantil} />
+        <div style={{ fontSize: 12, color: T.slate, marginBottom: 14 }}>Lote {d.lote} · Ref {d.ref || "—"}. {info ? "Cada casilla tiene como tope lo despachado (o lo del lote) menos lo ya reportado en otras devoluciones del lote." : "Se editan las cantidades de los colores ya declarados."}</div>
+        <GrillaColorTalla T={T} colores={colores} tallas={tallas} valores={cant} onCambiar={cambiar} tope={!!info} usado={usado} infantil={infantil} />
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap", margin: "14px 0" }}>
           <div style={{ flex: 1, minWidth: 170 }}>
             <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>Motivo</div>
@@ -347,6 +395,15 @@ function EditarDevolucionModal({ db, functionsClient, T, d, usuario, onClose }) 
           <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>Nota</div>
           <input value={obs} onChange={(e) => setObs(e.target.value)} style={{ ...campo(T), width: "100%" }} />
         </div>
+        {d.estado !== "redespachada" && (
+          <div style={{ marginBottom: 14 }}>
+            <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13, color: T.ink, cursor: "pointer" }}>
+              <input type="checkbox" checked={pide} onChange={(e) => setPide(e.target.checked)} />
+              Quiero que me la despachen de nuevo cuando la revisen
+            </label>
+            {pide && <input value={notaDesp} onChange={(e) => setNotaDesp(e.target.value)} placeholder="Nota para el despacho (opcional)" style={{ ...campo(T), width: "100%", marginTop: 8 }} />}
+          </div>
+        )}
         {d.conteo?.length ? <div style={{ fontSize: 12, color: T.amber, marginBottom: 10 }}>Esta devolución ya fue contada por Calidad: al guardar, las diferencias se recalculan contra lo nuevo declarado.</div> : null}
         {error && <div style={{ background: T.coralBg, color: T.coral, borderRadius: 8, padding: "8px 12px", fontSize: 13, marginBottom: 10 }}>{error}</div>}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -361,7 +418,7 @@ function EditarDevolucionModal({ db, functionsClient, T, d, usuario, onClose }) 
   );
 }
 // Botones ✎ Editar (quien tenga Devoluciones) y 🗑 Borrar (solo el administrador) + la ventana de edición.
-function AccionesDevolucion({ db, functionsClient, T, d, currentUser, esCliente, onBorrado }) {
+function AccionesDevolucion({ db, functionsClient, T, d, lista, currentUser, esCliente, onBorrado }) {
   const [editando, setEditando] = useState(false);
   const [error, setError] = useState("");
   const usuario = usuarioActual(currentUser);
@@ -378,7 +435,7 @@ function AccionesDevolucion({ db, functionsClient, T, d, currentUser, esCliente,
       {puedeEditar && <button onClick={() => setEditando(true)} style={btn(T)}>✎ Editar</button>}
       {puedeBorrar && <button onClick={borrar} style={{ ...btn(T), color: T.coral, borderColor: T.coral }}>🗑 Borrar</button>}
       {error && <span style={{ color: T.coral, fontSize: 12 }}>{error}</span>}
-      {editando && <EditarDevolucionModal db={db} functionsClient={functionsClient} T={T} d={d} usuario={usuario} onClose={() => setEditando(false)} />}
+      {editando && <EditarDevolucionModal db={db} functionsClient={functionsClient} T={T} d={d} usuario={usuario} lista={lista} onClose={() => setEditando(false)} />}
     </div>
   );
 }
@@ -417,6 +474,8 @@ export function DevolucionesClienteView({ db, functionsClient, T: Tp, currentUse
   const [motivo, setMotivo] = useState(MOTIVOS[0]);
   const [guia, setGuia] = useState("");
   const [obs, setObs] = useState("");
+  const [pideDesp, setPideDesp] = useState(false);
+  const [notaDesp, setNotaDesp] = useState("");
   const [guardando, setGuardando] = useState(false);
   const [aviso, setAviso] = useState("");
   const [abierto, setAbierto] = useState(null);
@@ -438,7 +497,8 @@ export function DevolucionesClienteView({ db, functionsClient, T: Tp, currentUse
     let n = v === "" ? "" : entero(v);
     if (n !== "" && cap && n > cap) {
       n = cap;
-      setAviso(""); setError(despachoPorColor ? `Solo se despacharon ${cap} unidades en esa casilla según la factura; no puedes devolver más.` : `El lote solo tiene ${cap} unidades en esa casilla.`);
+      const ya = yaDevuelto[k] || 0;
+      setAviso(""); setError(ya ? `En esa casilla solo quedan ${cap} unidades por devolver (ya reportaste ${ya} en otras devoluciones de este lote).` : despachoPorColor ? `Solo se despacharon ${cap} unidades en esa casilla según la factura; no puedes devolver más.` : `El lote solo tiene ${cap} unidades en esa casilla.`);
     } else if (n !== "") {
       setError("");
     }
@@ -448,14 +508,17 @@ export function DevolucionesClienteView({ db, functionsClient, T: Tp, currentUse
   // (2026-10-23, a pedido de Fredy) Si Busint dice cuánto se despachó por color y talla (factura del lote), ese es el tope;
   // si no, queda lo cortado del lote como antes.
   const despachoPorColor = !!info?.facturacion?.porColor;
-  const coloresGrilla = useMemo(() => (info ? info.colores.map((c) => (despachoPorColor && c.despachado ? { ...c, tallas: c.despachado } : c)) : []), [info, despachoPorColor]);
+  const coloresGrilla = useMemo(() => coloresConTope(info), [info]);
+  // (2026-11-09, a pedido de Fredy) Lo que ya se reportó de este lote se descuenta del tope de cada casilla.
+  const yaDevuelto = useMemo(() => (info ? yaDevueltoDelLote(lista, info.lote) : {}), [lista, info]);
 
   async function reportar() {
     setError(""); setAviso("");
     if (!info) return;
     if (!(total > 0)) { setError("Escribe al menos una unidad a devolver."); return; }
-    const pasadas = coloresGrilla.flatMap((col) => info.tallas.filter((t) => (Number(cant[`${col.color}|${t}`]) || 0) > (Number(col.tallas?.[t]) || 0)).map((t) => `${col.nombre || col.color} ${etiquetaTalla(t, esInfantilGrupo(info.grupo))}`));
-    if (pasadas.length) { setError(`Hay cantidades por encima de lo ${despachoPorColor ? "despachado" : "del lote"}: ${pasadas.join(", ")}.`); return; }
+    if (lista === null) { setError("Espera un momento: se están cargando tus devoluciones anteriores del lote."); return; }
+    const pasadas = casillasPasadas(coloresGrilla, info.tallas, cant, yaDevuelto, esInfantilGrupo(info.grupo));
+    if (pasadas.length) { setError(`Hay cantidades por encima de lo que queda por devolver (${despachoPorColor ? "despachado" : "del lote"} menos lo ya reportado): ${pasadas.join(", ")}.`); return; }
     if (!uid) { setError("No se pudo identificar tu sesión. Cierra sesión y vuelve a entrar."); return; }
     const lineas = info.colores
       .map((c) => ({ color: c.color, colorNombre: c.nombre || "", cantidades: Object.fromEntries(info.tallas.map((t) => [t, Number(cant[`${c.color}|${t}`]) || 0]).filter(([, n]) => n > 0)) }))
@@ -466,13 +529,14 @@ export function DevolucionesClienteView({ db, functionsClient, T: Tp, currentUse
       id, numero: numeroNuevo(), lote: info.lote, ref: info.ref, pedido: info.pedido, cliente: info.cliente,
       tallas: info.tallas, grupo: info.grupo || "", lineas, total: totalLineas(lineas), motivo, guia: guia.trim(), observaciones: obs.trim(),
       estado, creadoPorUid: uid, creadoPor: usuarioActual(currentUser), creadoEn: nowISO(),
-      historial: [{ estado, fecha: nowISO(), usuario: usuarioActual(currentUser) }],
+      historial: [{ estado, fecha: nowISO(), usuario: usuarioActual(currentUser), ...(pideDesp ? { nota: "Pide que se la despachen de nuevo" } : {}) }],
+      ...(pideDesp ? { solicitaDespacho: { nota: notaDesp.trim(), por: usuarioActual(currentUser), fecha: nowISO() } } : {}),
     };
     setGuardando(true);
     try {
       await setDoc(doc(db, COL, id), limpio(d));
       setAviso(`Devolución ${d.numero} reportada.`);
-      setInfo(null); setCant({}); setLote(""); setGuia(""); setObs(""); setMotivo(MOTIVOS[0]);
+      setInfo(null); setCant({}); setLote(""); setGuia(""); setObs(""); setMotivo(MOTIVOS[0]); setPideDesp(false); setNotaDesp("");
     } catch (e) {
       setError(e?.message || "No se pudo guardar la devolución.");
     } finally {
@@ -500,8 +564,8 @@ export function DevolucionesClienteView({ db, functionsClient, T: Tp, currentUse
         {info && !info.sinDetalle && (
           <>
             <AvisoFacturacion T={T} info={info} />
-            <div style={{ fontSize: 12, color: T.slate, marginBottom: 6 }}>Unidades que devuelves, por color y talla (debajo de cada casilla: {despachoPorColor ? "cantidad despachada según la factura" : "cantidad del lote"})</div>
-            <GrillaColorTalla T={T} colores={coloresGrilla} tallas={info.tallas} valores={cant} onCambiar={cambiar} tope infantil={esInfantilGrupo(info.grupo)} />
+            <div style={{ fontSize: 12, color: T.slate, marginBottom: 6 }}>Unidades que devuelves, por color y talla (debajo de cada casilla: {despachoPorColor ? "cantidad despachada según la factura" : "cantidad del lote"}; si ya reportaste devoluciones de este lote, se descuentan)</div>
+            <GrillaColorTalla T={T} colores={coloresGrilla} tallas={info.tallas} valores={cant} onCambiar={cambiar} tope usado={yaDevuelto} infantil={esInfantilGrupo(info.grupo)} />
             <div style={{ display: "flex", gap: 12, flexWrap: "wrap", margin: "14px 0" }}>
               <div style={{ flex: 1, minWidth: 170 }}>
                 <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>Motivo</div>
@@ -515,6 +579,13 @@ export function DevolucionesClienteView({ db, functionsClient, T: Tp, currentUse
             <div style={{ marginBottom: 14 }}>
               <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>Nota (opcional)</div>
               <input value={obs} onChange={(e) => setObs(e.target.value)} style={{ ...campo(T), width: "100%" }} />
+            </div>
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13, color: T.ink, cursor: "pointer" }}>
+                <input type="checkbox" checked={pideDesp} onChange={(e) => setPideDesp(e.target.checked)} />
+                Quiero que me la despachen de nuevo cuando la revisen
+              </label>
+              {pideDesp && <input value={notaDesp} onChange={(e) => setNotaDesp(e.target.value)} placeholder="Nota para el despacho (opcional)" style={{ ...campo(T), width: "100%", marginTop: 8 }} />}
             </div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
               <span style={{ fontSize: 13, color: T.slate }}>Total a devolver: <b style={{ color: T.ink }}>{total} unidades</b></span>
@@ -532,12 +603,12 @@ export function DevolucionesClienteView({ db, functionsClient, T: Tp, currentUse
             <div key={d.id} style={{ borderTop: `1px solid ${T.border}`, padding: "10px 0" }}>
               <div onClick={() => setAbierto(abierto === d.id ? null : d.id)} style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", cursor: "pointer", fontSize: 13 }}>
                 <span><b>{d.numero}</b> · lote {d.lote} · {d.total} und · {fmtFecha(d.creadoEn)}</span>
-                <EstadoPill T={T} d={d} />
+                <EstadoPill T={T} d={d} cliente={esCliente} />
               </div>
               {abierto === d.id && (
                 <>
                   <Detalle T={T} d={d} mostrarConteo={!esCliente} />
-                  <AccionesDevolucion db={db} functionsClient={functionsClient} T={T} d={d} currentUser={currentUser} esCliente={esCliente} onBorrado={() => setAbierto(null)} />
+                  <AccionesDevolucion db={db} functionsClient={functionsClient} T={T} d={d} lista={lista} currentUser={currentUser} esCliente={esCliente} onBorrado={() => setAbierto(null)} />
                 </>
               )}
             </div>
@@ -561,8 +632,11 @@ function ListaEquipo({ db, T: Tp, currentUser, modo }) {
   const usuario = usuarioActual(currentUser);
 
   const pendiente = (d) => (modo === "bodega" ? ["reportada", "en_camino", "lista"].includes(d.estado) : ["recibida", "revisada"].includes(d.estado));
+  const pideDespacho = (d) => !!d.solicitaDespacho && d.estado !== "redespachada";
+  const cuantosPiden = (lista || []).filter(pideDespacho).length;
   const visibles = (lista || []).filter((d) => {
     if (filtro === "pendientes" && !pendiente(d)) return false;
+    if (filtro === "piden" && !pideDespacho(d)) return false;
     const t = q.trim().toLowerCase();
     if (!t) return true;
     return [d.numero, d.lote, d.ref, d.cliente, d.guia].some((x) => String(x || "").toLowerCase().includes(t));
@@ -623,14 +697,14 @@ function ListaEquipo({ db, T: Tp, currentUser, modo }) {
         {modo === "bodega" ? "Marca cada devolución como recibida cuando llega la mercancía, y como despachada de nuevo cuando vuelve a salir." : "Cuenta por color y talla lo que llegó; ATLAS lo compara con lo que declaró el cliente."}
       </div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12, alignItems: "center" }}>
-        {[["pendientes", modo === "bodega" ? "Por atender" : "Por revisar"], ["todas", "Todas"]].map(([k, t]) => (
+        {[["pendientes", modo === "bodega" ? "Por atender" : "Por revisar"], ["piden", `Piden despacho (${cuantosPiden})`], ["todas", "Todas"]].map(([k, t]) => (
           <button key={k} onClick={() => setFiltro(k)} style={{ ...btn(T), background: filtro === k ? T.denimBg : T.white, color: filtro === k ? T.denim : T.ink, borderColor: filtro === k ? T.denim : T.border }}>{t}</button>
         ))}
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar por número, lote, ref, cliente o guía" style={{ ...campo(T), width: 300 }} />
       </div>
       {error && <div style={{ color: T.coral, fontSize: 13, marginBottom: 8 }}>{error}</div>}
       {lista === null ? <div style={{ fontSize: 13, color: T.slate }}>Cargando…</div>
-        : !visibles.length ? <div style={{ ...tarjeta, fontSize: 13, color: T.slate }}>{filtro === "pendientes" ? "No hay devoluciones pendientes." : "No hay devoluciones."}</div>
+        : !visibles.length ? <div style={{ ...tarjeta, fontSize: 13, color: T.slate }}>{filtro === "pendientes" ? "No hay devoluciones pendientes." : filtro === "piden" ? "Ningún cliente tiene un despacho de nuevo por atender." : "No hay devoluciones."}</div>
         : visibles.map((d) => (
           <div key={d.id} style={{ ...tarjeta, marginBottom: 10 }}>
             <div onClick={() => abrir(d)} style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", cursor: "pointer", alignItems: "center" }}>
@@ -653,7 +727,7 @@ function ListaEquipo({ db, T: Tp, currentUser, modo }) {
                   </div>
                 )}
                 <div style={{ marginTop: 12 }}>{botones(d)}</div>
-                <AccionesDevolucion db={db} T={T} d={d} currentUser={currentUser} esCliente={false} onBorrado={() => setAbierto(null)} />
+                <AccionesDevolucion db={db} T={T} d={d} lista={lista} currentUser={currentUser} esCliente={false} onBorrado={() => setAbierto(null)} />
               </>
             )}
           </div>
