@@ -15791,6 +15791,7 @@ const ASI_HERRAMIENTAS = [
   { name: "programacion_planta", description: "Programación de planta de ATLAS: lotes enviados a planta con su prioridad (ALTA/MEDIA/NORMAL), motivo, fecha sugerida y estado (pendiente o cumplido). Úsala para 'qué está pendiente en planta', 'qué es prioridad alta', 'qué está atrasado'.", input_schema: { type: "object", properties: { estado: { type: "string", enum: ["pendiente", "cumplido", "todos"] }, prioridad: { type: "string", enum: ["ALTA", "MEDIA", "NORMAL"] }, numLote: { type: "string" }, numPedido: { type: "string" } } } },
   { name: "despachos", description: "Despachos y facturación de la bitácora de despachos (facturas de Busint): documentos, unidades y monto despachado, devoluciones, y el desglose por cliente, en un rango de fechas. Úsala para 'cuánto despachamos hoy / esta semana / este mes' o 'qué se le despachó al cliente X'.", input_schema: { type: "object", properties: { desde: { type: "string", description: "AAAA-MM-DD" }, hasta: { type: "string", description: "AAAA-MM-DD (si falta, hoy)" }, cliente: { type: "string", description: "Parte del nombre del cliente, opcional." } } } },
   { name: "finanzas_deuda", description: "Dirección financiera de ATLAS (Financiera): TODO lo que debe la empresa (facturas de proveedores de Yanko e Indutex, cuotas de Endeudamiento, crédito y tarjetas, impuestos y embargos que el gerente anotó) ordenado por urgencia; cuándo termina de pagar todo y cuántos intereses paga; y cuánto cuestan el banco (4x1000, comisiones, plan, cupo, sobregiro) y los créditos. Úsala para 'cuánto debo en total', 'qué pago primero', 'cuándo salgo de deudas', 'cuánto me cuesta el banco', 'qué pasa si negocio la tasa / abono un millón más al mes'. Los parámetros son para simular escenarios y son opcionales.", input_schema: { type: "object", properties: { tasa_negociada: { type: "number", description: "Nueva tasa E.A. en % para el crédito bancario más grande (ej. 24). Omitir si no se pregunta por negociar." }, abono_extra: { type: "number", description: "Abono extra por mes en pesos (ej. 1000000)." }, cupo_proveedores: { type: "number", description: "Pesos por mes para pagar proveedores. Si no se da, se usa el que sugiere la Proyección de deuda." }, rodar_pagos: { type: "boolean", description: "true (por defecto en el escenario con plan): al terminar una deuda, su pago pasa a la de más interés." } } } },
+  { name: "facturas_proveedor", description: "Facturas abiertas de proveedores (Cuentas por Pagar de Yanko e Indutex, más los montos manuales como ICA o DIAN): busca por número de factura o por proveedor (nombre o código) y dice quién es el proveedor, saldo, fecha de emisión, vencimiento, días vencida y si está programada o pagada. Sin filtros devuelve un resumen de los proveedores con más vencido. Úsala para 'de quién es la factura 7371', 'qué le debo al proveedor 62', 'qué facturas vencen esta semana', 'cuánto le debo a Kamila'. Si Busint no tiene el nombre del proveedor, lo dice.", input_schema: { type: "object", properties: { factura: { type: "string", description: "Número de factura (ej. 7371)." }, proveedor: { type: "string", description: "Nombre (o parte) o código del proveedor (ej. 'kamila' o '62')." }, estado: { type: "string", enum: ["todas", "vencidas", "por_vencer"], description: "Filtra las facturas. Por defecto todas." }, vencen_en_dias: { type: "number", description: "Solo las que vencen en los próximos N días (ej. 7 para esta semana); incluye las ya vencidas si no se pide estado." } } } },
   { name: "crear_recordatorio", description: "Crea un recordatorio para el usuario que habla. Se le avisa por correo a la hora indicada y queda visible en el asistente. Si el usuario no dice la hora, pregúntasela antes de llamar a esta herramienta. Calcula la fecha y hora a partir de la fecha y hora actuales que figuran en las instrucciones.", input_schema: { type: "object", properties: { texto: { type: "string", description: "Qué hay que recordar, en una frase corta." }, cuando: { type: "string", description: "Fecha y hora de Colombia, formato AAAA-MM-DDTHH:MM (por ejemplo 2026-10-24T08:00)." } }, required: ["texto", "cuando"] } },
   { name: "listar_recordatorios", description: "Lista los recordatorios pendientes o ya avisados (aún sin cerrar) del usuario que habla, con su id.", input_schema: { type: "object", properties: {} } },
   { name: "cancelar_recordatorio", description: "Cancela o da por hecho un recordatorio del usuario, usando el id que devuelve listar_recordatorios.", input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } },
@@ -15872,6 +15873,78 @@ async function asiFinanzasDeuda(args) {
   };
 }
 
+// (2026-11-09, a pedido de Fredy) Herramienta «facturas_proveedor»: facturas abiertas por proveedor o por número, igual que la pantalla Financiera → Programar pagos a proveedores
+// (usa la COPIA de armarProveedoresPagar en functions/financiera-direccion.js). Solo lectura.
+const asiNorm = (t) => String(t ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+async function asiFacturasProveedor(args) {
+  const hoy = fechaHoyBogota();
+  const todo = async (nombre) => (await db.collection(nombre).get()).docs.map((d) => ({ ...d.data(), id: d.id }));
+  const [cortes, facturasDocs, plazosDoc, manuales, nombresDocs, programados] = await Promise.all([
+    todo("contabilidad_cxp_cortes"), todo("contabilidad_cxp_facturas"), db.collection("contabilidad_cxp_plazos").doc("main").get(), todo("contabilidad_cxp_manual"),
+    todo("contabilidad_cxp_nombres_proveedor"), todo("contabilidad_pagos_programados"),
+  ]);
+  const facturas = {};
+  facturasDocs.forEach((d) => { facturas[d.id] = d; });
+  const plazos = plazosDoc.exists ? plazosDoc.data()?.plazos || {} : {};
+  const nombres = {};
+  nombresDocs.forEach((d) => { if (d.nombre) nombres[d.id] = d.nombre; });
+  const avisos = [];
+  const corteDe = {};
+  const lista = [];
+  ["yanko", "indutex"].forEach((empresa) => {
+    const corte = DIR_FIN.ultimoCorte(cortes, empresa);
+    corteDe[empresa] = corte;
+    const man = manuales.filter((m) => (empresa === "indutex" ? m.empresa === "indutex" : m.empresa !== "indutex"));
+    if (!corte && !man.length) { avisos.push(`No hay corte de Cuentas por Pagar de ${empresa === "indutex" ? "Indutex" : "Yanko"}.`); return; }
+    DIR_FIN.armarProveedoresPagar({ empresa, corte, facturasGuardadas: empresa === "yanko" ? facturas : {}, plazos, nombresProveedor: nombres, manuales: man, hoy }).forEach((p) => lista.push(p));
+  });
+  const regsDe = (key) => programados.filter((r) => r.facturaKey === key);
+  const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+  const filtroFactura = asiNorm(args.factura).replace(/^0+/, "");
+  const filtroProv = asiNorm(args.proveedor);
+  const estado = ["vencidas", "por_vencer"].includes(args.estado) ? args.estado : "todas";
+  const maxDias = Number.isFinite(Number(args.vencen_en_dias)) && args.vencen_en_dias !== undefined && args.vencen_en_dias !== null && args.vencen_en_dias !== "" ? Number(args.vencen_en_dias) : null;
+  const r0 = (n) => Math.round(num(n));
+  const textoEstado = (i) => (i.agregado ? (i.clase === "vencido" ? "vencido (el corte no trae fecha exacta por factura)" : "por vencer (el corte no trae fecha exacta por factura)") : i.dias === null || i.dias === undefined ? (i.clase === "vencido" ? "vencida (sin fecha exacta)" : "sin fecha de vencimiento") : i.dias < 0 ? `vencida hace ${Math.abs(i.dias)} días` : i.dias === 0 ? "vence hoy" : `vence en ${i.dias} días`);
+  const salida = [];
+  lista.forEach((p) => {
+    const codigo = (/^Proveedor (\d+)$/.exec(p.nombre || "") || [])[1] || null;
+    if (filtroProv) {
+      const dentro = asiNorm(p.nombreMostrado).includes(filtroProv) || asiNorm(p.nombre).includes(filtroProv) || (codigo !== null && (codigo === filtroProv || `proveedor ${codigo}` === filtroProv));
+      if (!dentro) return;
+    }
+    const items = p.items.filter((i) => {
+      if (filtroFactura) { const nf = asiNorm(i.nfact).replace(/^0+/, ""); if (!nf || nf !== filtroFactura) return false; }
+      if (estado === "vencidas" && i.clase !== "vencido") return false;
+      if (estado === "por_vencer" && i.clase === "vencido") return false;
+      if (maxDias !== null && !(i.dias === null || i.dias === undefined ? i.clase === "vencido" : i.dias <= maxDias)) return false;
+      return true;
+    });
+    if (!items.length) return;
+    const corte = corteDe[p.empresa];
+    const filas = items.map((i) => {
+      const regs = regsDe(i.key);
+      const prog = regs.filter((r) => r.estado !== "pagado").reduce((s, r) => s + num(r.valor), 0);
+      const pag = regs.filter((r) => r.estado === "pagado" && corte && r.corteId === corte.id).reduce((s, r) => s + num(r.valor), 0);
+      return { factura: i.nfact || i.concepto, emision: i.emision || null, vence: i.vence || null, estado: textoEstado(i), saldo: r0(i.saldo), programado: r0(prog), pagado: r0(pag), agregado_por_edades: i.agregado ? true : undefined };
+    });
+    salida.push({
+      proveedor: p.nombreMostrado, empresa: p.empresa === "indutex" ? "Indutex" : "Yanko", origen: p.origen === "manual" ? "monto manual" : "corte de Cuentas por Pagar",
+      codigo_busint: codigo, sin_nombre_en_busint: codigo !== null ? true : undefined,
+      corte: corte ? corte.fechaCorte || "" : "",
+      saldo_total: r0(p.items.reduce((s, i) => s + num(i.saldo), 0)),
+      vencido_total: r0(p.items.filter((i) => i.clase === "vencido").reduce((s, i) => s + num(i.saldo), 0)),
+      facturas_encontradas: filas.length, facturas: filas.slice(0, 30), _orden: p.items.filter((i) => i.clase === "vencido").reduce((s, i) => s + num(i.saldo), 0),
+    });
+  });
+  salida.sort((a, b) => b._orden - a._orden);
+  salida.forEach((x) => { delete x._orden; });
+  if (salida.some((x) => x.sin_nombre_en_busint)) avisos.push("Hay proveedores que Busint no tiene con nombre (aparecen como «Proveedor N»). El nombre real se guarda en Contabilidad → Cuentas por pagar, y desde ahí sale en todas las pantallas.");
+  if (salida.some((x) => x.empresa === "Indutex")) avisos.push("Indutex trae el saldo por edades (vencido / por vencer), sin una fecha exacta por factura.");
+  if (!salida.length) avisos.push("No encontré facturas con ese filtro en el último corte. Revisa el número o el nombre.");
+  return { hoy, proveedores_encontrados: salida.length, resultados: salida.slice(0, filtroFactura || filtroProv ? 15 : 12), avisos };
+}
+
 async function asiEjecutarHerramienta(nombre, args, ctx) {
   switch (nombre) {
     case "buscar_lote": return asiBuscarLote(args);
@@ -15882,6 +15955,7 @@ async function asiEjecutarHerramienta(nombre, args, ctx) {
     case "programacion_planta": return asiProgramacionPlanta(args);
     case "despachos": return asiDespachos(args);
     case "finanzas_deuda": return asiFinanzasDeuda(args);
+    case "facturas_proveedor": return asiFacturasProveedor(args);
     case "crear_recordatorio": return asiCrearRecordatorio(args, ctx);
     case "listar_recordatorios": return { recordatorios: await asiRecordatoriosDe(ctx.uid) };
     case "cancelar_recordatorio": return asiCancelarRecordatorio(args, ctx);
@@ -15938,6 +16012,7 @@ Reglas:
 - Usa SOLO los datos que devuelven las herramientas. Si un dato no aparece, dilo y no lo inventes. Cuando des una cifra, di de dónde sale (por ejemplo "según Contabilidad", "según Busint", "según Planeación").
 - Para fechas relativas (hoy, ayer, esta semana, este mes) calcúlalas a partir de la fecha de hoy y pasa las herramientas en formato AAAA-MM-DD. Si una herramienta avisa que los datos del día no están completos, díselo al gerente.
 - Eres de solo lectura: no puedes cambiar ni crear nada en ATLAS ni en Busint. Lo único que puedes hacer es manejar los recordatorios del gerente (crear, listar, cancelar) y enviarle por correo el resumen de la mañana. Para un recordatorio necesitas el texto y la hora: si falta la hora, pregúntala. Después de crearlo, confírmalo en una frase con el día y la hora dichos en palabras, y si la herramienta avisa que no hay correo cargado, díselo.
+- Facturas de proveedores: para "de quién es la factura X", "qué le debo al proveedor Y" o "qué facturas vencen esta semana" usa facturas_proveedor. Si el proveedor sale como "Proveedor" con un número es porque Busint no tiene su nombre: dilo y explica que el nombre real se guarda en Contabilidad → Cuentas por pagar.
 - Deudas y bancos: para "cuánto debo", "qué pago primero", "cuándo salgo de deudas", "cuánto me cuesta el banco" o simular negociar la tasa o abonar más, usa finanzas_deuda (es lo mismo que Financiera → Dirección financiera). Di siempre que son estimaciones, nombra primero lo más urgente (lo legal, lo vencido, la deuda cara) y repite los avisos importantes de la herramienta. No des consejos de inversión: solo orden de pagos y costos.
 - Si te preguntan algo que ninguna herramienta cubre (por ejemplo sueldos de una persona, inventario de telas, cartera), di con claridad que todavía no puedes consultarlo.
 - Di el dinero con separadores o en palabras, por ejemplo "un millón doscientos mil pesos", y las fechas en palabras ("el 31 de octubre").
