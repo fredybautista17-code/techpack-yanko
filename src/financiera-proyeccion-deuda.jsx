@@ -8,6 +8,7 @@ import { C, caja, Boton, Ventana, Tarjeta } from "./financiera-cuanto-pagar";
 import { sumarMes } from "./financiera-cuanto-pagar-calculo";
 import { HORIZONTE, ESCENARIOS, ingresosBase, presupuestoClientesPorMes, proyectarDeuda } from "./financiera-proyeccion-deuda-calculo";
 import { ultimoCorte, armarProveedoresPagar } from "./financiera-programar-pagos-calculo";
+import { comprasProyectadas, categoriaDeMateriales } from "./financiera-proyeccion-compras-calculo";
 
 const MESES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
 const etq = (ym) => { const [a, m] = String(ym).split("-").map(Number); return `${MESES[m - 1]} ${String(a).slice(2)}`; };
@@ -79,6 +80,27 @@ export default function ProyeccionDeudaView({ db, isAdmin, vistaAnterior }) {
   const [desde, setDesde] = useState(sumarMes(ymHoy, 1));
   const [detalle, setDetalle] = useState(null);
   const [verAnterior, setVerAnterior] = useState(false);
+  // (2026-11-09) Compras de materiales que se vienen (del presupuesto de Proyección): se restan antes del dinero para proveedores.
+  const [incluirCompras, setIncluirCompras] = useState(true);
+  const [catMat, setCatMat] = useState("");
+  const [plazoCompra, setPlazoCompra] = useState(1);
+  const [presupuestos, setPresupuestos] = useState([]);
+  const [catLista, setCatLista] = useState([]);
+  const [catPorConcepto, setCatPorConcepto] = useState([]);
+  useEffect(() => {
+    const e = () => {};
+    const u = [
+      onSnapshot(collection(db, "contabilidad_presupuestos"), (s) => setPresupuestos(s.docs.map((d) => ({ ...d.data(), id: d.id }))), e),
+      onSnapshot(collection(db, "contabilidad_proyeccion_categorias_lista"), (s) => setCatLista(s.docs.map((d) => ({ ...d.data(), id: d.id }))), e),
+      onSnapshot(collection(db, "contabilidad_proyeccion_categorias_concepto"), (s) => setCatPorConcepto(s.docs.map((d) => ({ ...d.data(), codConcep: d.id }))), e),
+    ];
+    return () => u.forEach((f) => f());
+  }, [db]);
+  const catEfectiva = catMat && catLista.some((c) => c.id === catMat) ? catMat : categoriaDeMateriales(catLista);
+  const compras = useMemo(() => comprasProyectadas({
+    presupuestos, categoriasLista: catLista, categoriasPorConcepto: catPorConcepto, categoriaId: catEfectiva, ymInicio: ymHoy, horizonte: HORIZONTE, plazoMeses: plazoCompra,
+  }), [presupuestos, catLista, catPorConcepto, catEfectiva, ymHoy, plazoCompra]);
+  const comprasMes = incluirCompras && catEfectiva ? compras.pagoMes : null;
 
   const base = useMemo(() => ingresosBase(cacheTotal || cacheBusint, ymHoy, 6), [cacheTotal, cacheBusint, ymHoy]);
   const presupuestoMes = useMemo(() => presupuestoClientesPorMes(presClientes), [presClientes]);
@@ -87,8 +109,8 @@ export default function ProyeccionDeudaView({ db, isAdmin, vistaAnterior }) {
   const operacion = useMemo(() => ({ nomina: ant.nomina, seguridad: ant.seguridad, provisiones: ant.provisiones, gastos: ant.gastos }), [ant]);
   const r = useMemo(() => proyectarDeuda({
     ymInicio: ymHoy, escenario, base, presupuestoMes, operacion, cuotas: datos.cuotas, colchonPct,
-    nueva: { cuota: Number(cuotaTxt) || 0, plazo: Number(plazoTxt) || 1, desde }, proveedores: deudaProv,
-  }), [ymHoy, escenario, base, presupuestoMes, operacion, datos.cuotas, colchonPct, cuotaTxt, plazoTxt, desde, deudaProv]);
+    nueva: { cuota: Number(cuotaTxt) || 0, plazo: Number(plazoTxt) || 1, desde }, proveedores: deudaProv, comprasMes,
+  }), [ymHoy, escenario, base, presupuestoMes, operacion, datos.cuotas, colchonPct, cuotaTxt, plazoTxt, desde, deudaProv, comprasMes]);
   const hoy = r.meses[0];
   const pctColchon = Math.round(colchonPct * 100);
   const esc = ESCENARIOS.find((e) => e.k === escenario);
@@ -127,6 +149,35 @@ export default function ProyeccionDeudaView({ db, isAdmin, vistaAnterior }) {
         </select>
       </div>
 
+      <div style={{ ...caja, marginBottom: 12, padding: "10px 14px" }}>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 13, fontWeight: 800, color: C.ink, cursor: "pointer" }}>
+            <input type="checkbox" checked={incluirCompras} onChange={(e) => setIncluirCompras(e.target.checked)} />
+            Incluir compras futuras de materiales
+          </label>
+          <div style={{ flex: 1 }} />
+          {incluirCompras ? (
+            <>
+              <span style={{ fontSize: 12, color: C.slate }}>Categoría:</span>
+              <select value={catEfectiva} onChange={(e) => setCatMat(e.target.value)} style={{ ...entrada, width: "auto", maxWidth: 260 }}>
+                {!catEfectiva ? <option value="">Elige la categoría de telas…</option> : null}
+                {catLista.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
+              </select>
+              <span style={{ fontSize: 12, color: C.slate }}>Se paga a:</span>
+              <select value={plazoCompra} onChange={(e) => setPlazoCompra(Number(e.target.value))} style={{ ...entrada, width: "auto" }}>
+                <option value={0}>Contado (el mismo mes)</option><option value={1}>30 días</option><option value={2}>60 días</option>
+              </select>
+            </>
+          ) : null}
+        </div>
+        <div style={{ fontSize: 11.5, color: C.slate, marginTop: 6, lineHeight: 1.5 }}>
+          {!incluirCompras ? "Apagado: la proyección solo cuenta nómina, gastos y cuotas, y deja libre la plata que en realidad se va en comprar tela e insumos."
+            : !catEfectiva ? "No encuentro la categoría de telas e insumos en Proyección. Elígela arriba (o créala en Proyección → Administración)."
+            : compras.sinDatos ? "La categoría elegida no tiene presupuesto en Proyección: no hay compras que restar. Crea el presupuesto de un mes en Proyección."
+            : `Promedio presupuestado: ${fm(compras.base.promedio)} al mes (${compras.base.meses.map((x) => etq(x.ym)).join(", ")}); los meses sin presupuesto usan ese promedio. Se resta lo que se pague desde ${etqLargo(sumarMes(ymHoy, plazoCompra))}; lo comprado hasta hoy ya está en Cuentas por Pagar.`}
+        </div>
+      </div>
+
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
         <Tarjeta titulo="Ingreso mensual esperado" valor={fm(hoy.ingreso)} sub={base ? `${esc.ayuda} (${etq(base.desde)}–${etq(base.hasta)})` : "Sin datos de ingresos"} />
         <Tarjeta titulo="Sale sí o sí" valor={fm(r.operacionTotal)} fondo={C.amberBg} sub={`Nómina, seguridad social, provisiones y gastos de ${etqLargo(ant.ym)}`} />
@@ -141,6 +192,7 @@ export default function ProyeccionDeudaView({ db, isAdmin, vistaAnterior }) {
           <Grafica meses={r.meses} onMes={setDetalle} />
           <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 11.5, color: C.slate, marginTop: 6 }}>
             <span><i style={{ display: "inline-block", width: 10, height: 10, background: "#8A8FA8", borderRadius: 2, marginRight: 5 }} />Sale sí o sí</span>
+            {r.comprasTotal > 0 ? <span><i style={{ display: "inline-block", width: 10, height: 10, background: C.amber, borderRadius: 2, marginRight: 5 }} />Compras de tela e insumos</span> : null}
             <span><i style={{ display: "inline-block", width: 10, height: 10, background: C.red, borderRadius: 2, marginRight: 5 }} />Cuotas de hoy</span>
             <span><i style={{ display: "inline-block", width: 10, height: 10, background: C.violet, borderRadius: 2, marginRight: 5 }} />Deuda nueva simulada</span>
             <span><i style={{ display: "inline-block", width: 10, height: 10, background: C.green, borderRadius: 2, marginRight: 5 }} />Línea: ingreso esperado</span>
@@ -197,13 +249,14 @@ export default function ProyeccionDeudaView({ db, isAdmin, vistaAnterior }) {
       <div style={{ ...caja, overflowX: "auto", marginBottom: 12 }}>
         <div style={{ fontSize: 13.5, fontWeight: 800, marginBottom: 6 }}>Mes a mes <span style={{ fontWeight: 400, color: C.slate, fontSize: 12 }}>· toca un mes (o una barra de la gráfica) para ver qué tiene</span></div>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead><tr><th style={thL}>Mes</th><th style={th}>Ingreso</th><th style={th}>Sale sí o sí</th><th style={th}>Cuotas hoy</th><th style={th}>Deuda nueva</th><th style={th}>Margen libre</th><th style={th}>Para proveedores</th><th style={th}>Estado</th><th style={th} /></tr></thead>
+          <thead><tr><th style={thL}>Mes</th><th style={th}>Ingreso</th><th style={th}>Sale sí o sí</th>{r.comprasTotal > 0 ? <th style={th}>Compras tela</th> : null}<th style={th}>Cuotas hoy</th><th style={th}>Deuda nueva</th><th style={th}>Margen libre</th><th style={th}>Para proveedores</th><th style={th}>Estado</th><th style={th} /></tr></thead>
           <tbody>
             {r.meses.map((m) => (
               <tr key={m.ym} onClick={() => setDetalle(m.i)} style={{ cursor: "pointer" }}>
                 <td style={tdL}>{etq(m.ym)}</td>
                 <td style={td}>{fm(m.ingreso)}</td>
                 <td style={td}>{fm(m.operacion)}</td>
+                {r.comprasTotal > 0 ? <td style={td}>{m.compras ? fm(m.compras) : "—"}</td> : null}
                 <td style={td}>{fm(m.cuotas)}</td>
                 <td style={td}>{m.nueva ? fm(m.nueva) : "—"}</td>
                 <td style={{ ...td, fontWeight: 800, color: m.margen >= 0 ? C.ink : C.red }}>{fm(m.margen)}</td>
@@ -254,6 +307,7 @@ function DetalleMes({ m, r, escenario, pctColchon, total, onClose }) {
         <Linea t="Gastos del Excel" v={money(op.gastos)} />
         <Linea fuerte t="Total que sale sí o sí" v={money(m.operacion)} />
       </Bloque>
+      {m.compras > 0 ? <Bloque titulo="Compras de materiales proyectadas"><Linea t="Pago de tela e insumos que se compran más adelante" sub="Del presupuesto de Proyección, según el plazo de pago elegido" v={money(m.compras)} /></Bloque> : null}
       <Bloque titulo="Cuotas de endeudamiento este mes">
         {m.cuotasLista.length ? m.cuotasLista.map((x, k) => <Linea key={x.id || k} t={x.nombre} sub={`${x.acreedor ? `${x.acreedor} · ` : ""}${x.hasta ? (x.hasta === m.ym ? "Última cuota este mes" : `Termina en ${etq(x.hasta)}`) : "Sin fecha de fin"}`} v={money(x.valorMensual)} />) : <Linea t="Sin cuotas vigentes: ya no hay deuda por cuotas." v="$0" />}
         <Linea fuerte t="Total cuotas" v={money(m.cuotas)} />
@@ -261,7 +315,7 @@ function DetalleMes({ m, r, escenario, pctColchon, total, onClose }) {
       {m.nueva > 0 ? <Bloque titulo="Deuda nueva simulada"><Linea t={`Cuota nueva (${r.plazo} meses desde ${etq(r.desde)})`} v={money(m.nueva)} /></Bloque> : null}
       {cambios.length ? <Bloque titulo="Qué cambió frente a hoy">{cambios.map((x, k) => <Linea key={k} t={x.t} v={x.v} />)}</Bloque> : null}
       <Bloque titulo="Resultado del mes">
-        <Linea t={`Ingreso − lo que sale − cuotas${m.nueva ? " − deuda nueva" : ""}`} v={money(m.margen)} color={m.margen >= 0 ? C.green : C.red} />
+        <Linea t={`Ingreso − lo que sale${m.compras ? " − compras" : ""} − cuotas${m.nueva ? " − deuda nueva" : ""}`} v={money(m.margen)} color={m.margen >= 0 ? C.green : C.red} />
         <Linea t={`Colchón de seguridad (${pctColchon} % del ingreso)`} v={money(m.colchon)} />
         <Linea t="Disponible para proveedores" v={money(m.paraProveedores)} />
         {total > 0 ? <Linea t="Acumulado para proveedores hasta este mes" v={`${money(m.acumProveedores)} de ${money(total)}`} /> : null}
@@ -274,7 +328,7 @@ function DetalleMes({ m, r, escenario, pctColchon, total, onClose }) {
 function Grafica({ meses, onMes }) {
   const W = 900, H = 270, pl = 46, pr = 10, pt = 14, pb = 34;
   const N = meses.length;
-  const maxBruto = Math.max(1, ...meses.map((m) => Math.max(m.ingreso, m.operacion + m.cuotas + m.nueva))) * 1.08 / 1e6;
+  const maxBruto = Math.max(1, ...meses.map((m) => Math.max(m.ingreso, m.operacion + m.compras + m.cuotas + m.nueva))) * 1.08 / 1e6;
   const paso = Math.max(10, Math.ceil(maxBruto / 5 / 50) * 50);
   const maxV = paso * 5;
   const iw = (W - pl - pr) / N, bw = iw * 0.62;
@@ -287,8 +341,8 @@ function Grafica({ meses, onMes }) {
       {meses.map((m) => {
         const x = pl + m.i * iw + (iw - bw) / 2;
         let acum = 0;
-        const partes = [[m.operacion, "#8A8FA8"], [m.cuotas, C.red], [m.nueva, C.violet]];
-        const total = mm(m.operacion + m.cuotas + m.nueva);
+        const partes = [[m.operacion, "#8A8FA8"], [m.compras, C.amber], [m.cuotas, C.red], [m.nueva, C.violet]];
+        const total = mm(m.operacion + m.compras + m.cuotas + m.nueva);
         return (
           <g key={m.ym} style={{ cursor: "pointer" }} onClick={() => onMes(m.i)}>
             <rect x={pl + m.i * iw} y={pt} width={iw} height={H - pt - pb} fill="transparent" />

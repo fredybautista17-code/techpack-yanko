@@ -41,7 +41,7 @@ export function ingresoDelMes({ escenario, base, presupuestoMes, ym }) {
 }
 
 // nueva = { cuota, plazo, desde: "AAAA-MM" } (la deuda que se quiere probar). operacion = { nomina, seguridad, provisiones, gastos } del mes anterior.
-export function proyectarDeuda({ ymInicio, horizonte = HORIZONTE, escenario = "cons", base, presupuestoMes, operacion, cuotas, colchonPct = COLCHON_DEFECTO, nueva, proveedores }) {
+export function proyectarDeuda({ ymInicio, horizonte = HORIZONTE, escenario = "cons", base, presupuestoMes, operacion, cuotas, colchonPct = COLCHON_DEFECTO, nueva, proveedores, comprasMes }) {
   const op = { nomina: num(operacion?.nomina), seguridad: num(operacion?.seguridad), provisiones: num(operacion?.provisiones), gastos: num(operacion?.gastos) };
   const opTotal = op.nomina + op.seguridad + op.provisiones + op.gastos;
   const cuotaNueva = Math.max(0, num(nueva?.cuota));
@@ -57,7 +57,8 @@ export function proyectarDeuda({ ymInicio, horizonte = HORIZONTE, escenario = "c
     const ing = ingresoDelMes({ escenario, base, presupuestoMes, ym });
     const cu = cuotasDelMes(cuotas, ym);
     const nu = ym >= desde && ym < sumarMes(desde, plazo) ? cuotaNueva : 0;
-    const margenBase = ing.valor - opTotal - cu.total;
+    const compras = num(comprasMes?.[ym]); // (2026-11-09) pago de compras de materiales futuras que cae en este mes
+    const margenBase = ing.valor - opTotal - cu.total - compras;
     const margen = margenBase - nu;
     const colchon = ing.valor * colchonPct;
     const paraProv = Math.max(0, margen - colchon);
@@ -65,9 +66,9 @@ export function proyectarDeuda({ ymInicio, horizonte = HORIZONTE, escenario = "c
     if (cubreVencido === null && num(proveedores?.vencido) > 0 && acumProv >= num(proveedores.vencido)) cubreVencido = i;
     if (cubreTodo === null && num(proveedores?.vencido) + num(proveedores?.dentro) > 0 && acumProv >= num(proveedores.vencido) + num(proveedores.dentro)) cubreTodo = i;
     meses.push({
-      i, ym, ingreso: ing.valor, ingresoOrigen: ing.origen, operacion: opTotal, cuotas: cu.total, cuotasLista: cu.lista, nueva: nu,
+      i, ym, ingreso: ing.valor, ingresoOrigen: ing.origen, operacion: opTotal, compras, cuotas: cu.total, cuotasLista: cu.lista, nueva: nu,
       margenBase, margen, colchon, paraProveedores: paraProv, acumProveedores: acumProv,
-      cobertura: opTotal + cu.total + nu > 0 ? ing.valor / (opTotal + cu.total + nu) : null,
+      cobertura: opTotal + compras + cu.total + nu > 0 ? ing.valor / (opTotal + compras + cu.total + nu) : null,
       estado: margen < 0 ? "noAlcanza" : margen < colchon ? "ajustado" : "colchon",
       terminan: vigentes0.filter((c) => c.hasta === ym),
       terminaron: vigentes0.filter((c) => c.hasta && c.hasta < ym),
@@ -85,7 +86,7 @@ export function proyectarDeuda({ ymInicio, horizonte = HORIZONTE, escenario = "c
     .sort((a, b) => a.hasta.localeCompare(b.hasta));
   const coberturas = meses.map((m) => m.cobertura).filter((v) => v !== null);
   return {
-    meses, operacion: op, operacionTotal: opTotal, cuotaMaxSegura, desde, plazo, cuotaNueva, libera,
+    meses, comprasTotal: meses.reduce((a, m) => a + m.compras, 0), operacion: op, operacionTotal: opTotal, cuotaMaxSegura, desde, plazo, cuotaNueva, libera,
     mesesNoAlcanzan: meses.filter((m) => m.estado === "noAlcanza"),
     mesesAjustados: meses.filter((m) => m.estado === "ajustado" && m.nueva > 0),
     peorMesNuevo: meses.filter((m) => m.nueva > 0).length ? meses.filter((m) => m.nueva > 0).reduce((a, m) => (m.margen < a.margen ? m : a)) : null,
