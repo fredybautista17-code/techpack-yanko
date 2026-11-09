@@ -128,7 +128,7 @@ export function useProyeccionMensual(db, horizonte = 26) {
   };
 }
 
-export default function ProyeccionDeudaView({ db, isAdmin, vistaAnterior }) {
+export default function ProyeccionDeudaView({ db, isAdmin, vistaAnterior, vistaPresupuesto }) {
   const ymHoy = useMemo(() => new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 7), []);
   const datos = useMesFinanciero(db, ymHoy);
   const deudaProv = useDeudaProveedores(db);
@@ -146,6 +146,7 @@ export default function ProyeccionDeudaView({ db, isAdmin, vistaAnterior }) {
   const [desde, setDesde] = useState(sumarMes(ymHoy, 1));
   const [detalle, setDetalle] = useState(null);
   const [verAnterior, setVerAnterior] = useState(false);
+  const [verPresupuesto, setVerPresupuesto] = useState(false);
   // (2026-11-09) Compras de materiales que se vienen (del presupuesto de Proyección): se restan antes del dinero para proveedores.
   const [incluirCompras, setIncluirCompras] = useState(() => leerOpciones().incluirCompras);
   const [catMat, setCatMat] = useState(() => leerOpciones().catMat);
@@ -239,8 +240,8 @@ export default function ProyeccionDeudaView({ db, isAdmin, vistaAnterior }) {
         </div>
         <div style={{ fontSize: 11.5, color: C.slate, marginTop: 6, lineHeight: 1.5 }}>
           {!incluirCompras ? "Apagado: la proyección solo cuenta nómina, gastos y cuotas, y deja libre la plata que en realidad se va en comprar tela e insumos."
-            : !catEfectiva ? "No encuentro la categoría de telas e insumos en Proyección. Elígela arriba (o créala en Proyección → Administración)."
-            : compras.sinDatos ? "La categoría elegida no tiene presupuesto en Proyección: no hay compras que restar. Crea el presupuesto de un mes en Proyección."
+            : !catEfectiva ? "No encuentro la categoría de telas e insumos en Proyección. Elígela arriba (o créala en Financiera → Administración)."
+            : compras.sinDatos ? "La categoría elegida no tiene presupuesto en Proyección: no hay compras que restar. Crea el presupuesto de un mes abajo, en «Presupuesto de compras (Proyección)»."
             : `Promedio presupuestado: ${fm(compras.base.promedio)} al mes (${compras.base.meses.map((x) => etq(x.ym)).join(", ")}); los meses sin presupuesto usan ese promedio. Se resta lo que se pague desde ${etqLargo(sumarMes(ymHoy, plazoCompra))}; lo comprado hasta hoy ya está en Cuentas por Pagar.`}
         </div>
       </div>
@@ -335,6 +336,19 @@ export default function ProyeccionDeudaView({ db, isAdmin, vistaAnterior }) {
           </tbody>
         </table>
       </div>
+
+      {vistaPresupuesto ? (
+        <div style={{ ...caja, marginBottom: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 13.5, fontWeight: 800 }}>Presupuesto de compras (Proyección)</div>
+              <div style={{ fontSize: 12, color: C.slate }}>Aquí se crean y se ajustan los presupuestos por mes de compras (telas, insumos, servicios…). De la categoría de telas e insumos salen las «Compras de materiales proyectadas» de arriba.</div>
+            </div>
+            <Boton chico onClick={() => setVerPresupuesto((v) => !v)}>{verPresupuesto ? "Ocultar" : "Ver"}</Boton>
+          </div>
+          {verPresupuesto ? <div style={{ marginTop: 14 }}>{vistaPresupuesto}</div> : null}
+        </div>
+      ) : null}
 
       {vistaAnterior ? (
         <div style={{ ...caja }}>

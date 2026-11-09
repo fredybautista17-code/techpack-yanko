@@ -3374,7 +3374,6 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
     { id: "cuanto_pagar", icon: "🧮", label: "Cuánto debo pagar" },
     { id: "endeudamiento", icon: "🏦", label: "Endeudamiento" },
     { id: "ingresos", icon: "💵", label: "Ingresos" },
-    { id: "proyeccion", icon: "🎯", label: "Proyección" },
     { id: "clientes", icon: "🤝", label: "Presupuesto Clientes" },
     { id: "programacion_pagos", icon: "🧭", label: "Proyección de Deuda" },
     { id: "pagos_proveedores", icon: "🧾", label: "Pagos a Proveedores" },
@@ -3469,21 +3468,6 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
           {subView === "cuanto_pagar" && <CuantoPagarMesView db={db} functionsClient={functionsClient} isAdmin={isAdmin} onIrEndeudamiento={() => setSubView("endeudamiento")} />}
           {subView === "endeudamiento" && <EndeudamientoView db={db} isAdmin={isAdmin} />}
           {subView === "ingresos" && <IngresosView db={db} functionsClient={functionsClient} isAdmin={isAdmin} clientesNombres={[...new Set([...(clientesDiseno || []).map((c) => c.nombre), ...(presupuestosCliente || []).map((p) => p.cliente)])].filter(Boolean).sort((x, y) => x.localeCompare(y))} />}
-          {subView === "proyeccion" && (
-            <ProyeccionView
-              compras={compras}
-              movimientos={movimientos}
-              presupuestos={presupuestos}
-              calendarioCxp={calendarioCxp}
-              categoriasProyeccionLista={categoriasProyeccionLista}
-              categoriasPorConceptoProyeccion={categoriasPorConceptoProyeccion}
-              onGuardar={guardarPresupuesto}
-              onFinalizar={finalizarPresupuesto}
-              onDeletePresupuesto={deletePresupuesto}
-              onRecalcular={recalcularPresupuesto}
-              isAdmin={isAdmin}
-            />
-          )}
           {subView === "administracion" && (
             <AdministracionFinancieraView
               compras={compras}
@@ -3511,6 +3495,21 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
             <ProyeccionDeudaView
               db={db}
               isAdmin={isAdmin}
+              vistaPresupuesto={
+                <ProyeccionView
+                  compras={compras}
+                  movimientos={movimientos}
+                  presupuestos={presupuestos}
+                  calendarioCxp={calendarioCxp}
+                  categoriasProyeccionLista={categoriasProyeccionLista}
+                  categoriasPorConceptoProyeccion={categoriasPorConceptoProyeccion}
+                  onGuardar={guardarPresupuesto}
+                  onFinalizar={finalizarPresupuesto}
+                  onDeletePresupuesto={deletePresupuesto}
+                  onRecalcular={recalcularPresupuesto}
+                  isAdmin={isAdmin}
+                />
+              }
               vistaAnterior={<ProgramacionPagosView presupuestosCliente={presupuestosCliente} presupuestos={presupuestos} calendarioCxp={calendarioCxp} />}
             />
           )}
