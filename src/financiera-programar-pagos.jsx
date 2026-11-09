@@ -36,6 +36,9 @@ export default function ProgramarPagosView({ db, isAdmin, usuario }) {
   const [facturasG, setFacturasG] = useState({});
   const [plazos, setPlazos] = useState({});
   const [manuales, setManuales] = useState([]);
+  const [porQuitar, setPorQuitar] = useState(null); // proveedor «(manual)» que se va a quitar
+  const [quitando, setQuitando] = useState(false);
+  const [errorQuitar, setErrorQuitar] = useState("");
   const [nombres, setNombres] = useState({});
   const [programados, setProgramados] = useState([]);
   const [errorLectura, setErrorLectura] = useState("");
@@ -117,6 +120,20 @@ export default function ProgramarPagosView({ db, isAdmin, usuario }) {
     deleteDoc(doc(db, "contabilidad_pagos_programados", reg.id)).catch((e) => setMsg("No se pudo quitar: " + (e?.message || e)));
   };
 
+  // Quita un monto «(manual)» de Cuentas por Pagar (colección contabilidad_cxp_manual). Solo administradores y con confirmación. No toca los renglones del corte de Busint.
+  async function quitarManual() {
+    if (!porQuitar || porQuitar.origen !== "manual") return;
+    const m = manuales.find((x) => `${x.empresa === "indutex" ? "indutex" : "yanko"}|m|${x.id}` === porQuitar.clave);
+    if (!m) { setErrorQuitar("No encontré ese monto manual: puede que ya lo hayan quitado."); return; }
+    setQuitando(true);
+    setErrorQuitar("");
+    try {
+      await deleteDoc(doc(db, "contabilidad_cxp_manual", m.id));
+      setPorQuitar(null);
+      setMsg(`Se quitó «${porQuitar.nombre}» de Cuentas por Pagar.`);
+    } catch (e) { setErrorQuitar(e?.message || "No se pudo quitar."); }
+    setQuitando(false);
+  }
   function abrirSugerencia() {
     const s = sugerirProgramacion(proveedores, cupoLibre, hoy);
     setSugerencia({ ...s, marcadas: Object.fromEntries(s.filas.map((f) => [f.facturaKey, true])) });
@@ -210,7 +227,10 @@ export default function ProgramarPagosView({ db, isAdmin, usuario }) {
                   <td style={td}>{money(p.dentro)}</td>
                   <td style={{ ...td, color: p.programado > 0 ? C.green : C.slate, fontWeight: p.programado > 0 ? 800 : 400 }}>{money(p.programado)}</td>
                   <td style={td}>{money(p.restante)}</td>
-                  <td style={{ ...td, color: C.red, fontWeight: 700 }}>programar ›</td>
+                  <td style={{ ...td, color: C.red, fontWeight: 700, whiteSpace: "nowrap" }}>
+                    programar ›
+                    {isAdmin && p.origen === "manual" ? <span style={{ marginLeft: 10 }} onClick={(e) => e.stopPropagation()}><Boton chico onClick={() => { setErrorQuitar(""); setPorQuitar(p); }}>Quitar</Boton></span> : null}
+                  </td>
                 </tr>
               ))}
               {!visibles.length ? <tr><td colSpan={8} style={{ ...tdL, color: C.slate }}>{proveedores.length ? "Ningún proveedor coincide con el filtro." : "No hay facturas abiertas para mostrar."}</td></tr> : null}
@@ -250,6 +270,22 @@ export default function ProgramarPagosView({ db, isAdmin, usuario }) {
           {pagados.length > 200 ? <div style={{ fontSize: 11.5, color: C.slate, marginTop: 8 }}>Se muestran los 200 más recientes.</div> : null}
         </div>
       )}
+
+      {porQuitar ? (
+        <Ventana titulo="¿Quitar este monto manual?" sub="Se borra de Cuentas por Pagar y no se puede deshacer." onClose={() => setPorQuitar(null)} ancho={520}>
+          <div style={{ fontSize: 14, fontWeight: 800, color: C.ink }}>{porQuitar.nombreMostrado}</div>
+          <div style={{ fontSize: 13, color: C.slate, margin: "4px 0 10px" }}>Saldo {money(porQuitar.total)}{porQuitar.vencido > 0 ? ` · vencido ${money(porQuitar.vencido)}` : ""}</div>
+          <div style={{ fontSize: 12.5, color: C.slate, lineHeight: 1.5 }}>
+            Deja de contar en Programar pagos, en la Proyección de deuda y en Dirección financiera (también en Contabilidad → Cuentas por pagar).
+            {porQuitar.programado > 0 ? <b style={{ color: C.red }}> Tiene {money(porQuitar.programado)} programados: quedarán en la Agenda de pagos sin proveedor y tendrás que quitarlos allí.</b> : null}
+          </div>
+          {errorQuitar ? <div style={{ color: C.red, fontSize: 12.5, marginTop: 10 }}>{errorQuitar}</div> : null}
+          <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+            <Boton variante="rojo" onClick={quitarManual} disabled={quitando}>{quitando ? "Quitando…" : "Sí, quitar"}</Boton>
+            <Boton onClick={() => setPorQuitar(null)}>Cancelar</Boton>
+          </div>
+        </Ventana>
+      ) : null}
 
       {proveedorAbierto ? (
         <DetalleProveedor
