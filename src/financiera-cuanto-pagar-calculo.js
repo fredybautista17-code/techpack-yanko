@@ -94,7 +94,33 @@ export function gastosDelMes(gastosDocs, ym) {
   return { total: 0, origen: "ninguno", deMes: "", lineas: [] };
 }
 
-export function rubrosDelMes({ ym, liquidaciones, gastosDocs, cuotas }) {
+// ─── Gastos de Planta (área MAQUILA: repuestos, hilazas…) ───────────────────────────────────────────────────────────────────────────────
+// (2026-11-09, a pedido de Fredy) Son aparte del Excel de gastos y se registran en Planta (centro_costo_gastos). Entran en todo Financiera como
+// una PROVISIÓN: el gasto de un mes es lo que ya se registró; si el mes está en curso (o aún sin registrar) se provisiona el promedio ponderado de
+// los hasta 6 meses anteriores que tengan gastos (más peso a los recientes; un mes sin gastos no cuenta como $0, es dato que falta).
+// gastosPlanta = [{ fecha: "AAAA-MM-DD", monto, proveedor, numeroFactura, concepto }] ya filtrados al área MAQUILA.
+export const MESES_PROMEDIO_PLANTA = 6;
+const ymHoyBogota = () => new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 7);
+export function gastosPlantaPorMes(gastosPlanta) {
+  const m = {};
+  (gastosPlanta || []).forEach((g) => { const ym = String(g.fecha || "").slice(0, 7); if (/^\d{4}-\d{2}$/.test(ym)) m[ym] = (m[ym] || 0) + num(g.monto); });
+  return m;
+}
+export function gastosPlantaDelMes(gastosPlanta, ym) {
+  const porMes = gastosPlantaPorMes(gastosPlanta);
+  const real = porMes[ym] || 0;
+  const meses = [];
+  for (let i = MESES_PROMEDIO_PLANTA; i >= 1; i--) { const m = sumarMes(ym, -i); if (porMes[m] > 0) meses.push({ ym: m, total: porMes[m] }); }
+  const sw = meses.reduce((t, x, i) => t + (i + 1), 0);
+  const promedio = sw ? meses.reduce((t, x, i) => t + x.total * (i + 1), 0) / sw : 0;
+  const enCurso = ym >= ymHoyBogota();
+  const total = enCurso ? Math.max(real, promedio) : (real > 0 ? real : promedio);
+  const origen = total <= 0 ? "ninguno" : real >= promedio && real > 0 ? "guardado" : (real > 0 && !enCurso ? "guardado" : "promedio");
+  const lineas = (gastosPlanta || []).filter((g) => String(g.fecha || "").slice(0, 7) === ym).sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)));
+  return { total, real, promedio, origen, meses, lineas };
+}
+
+export function rubrosDelMes({ ym, liquidaciones, gastosDocs, gastosPlanta, cuotas }) {
   const porTipo = {};
   TIPOS_NOMINA.forEach((tipo) => {
     const lista = ((liquidaciones || {})[tipo] || []).filter((l) => String(l.periodoId || "").startsWith(`${ym}-`));
@@ -115,14 +141,15 @@ export function rubrosDelMes({ ym, liquidaciones, gastosDocs, cuotas }) {
   const conDatos = tipos.filter((t) => t.quincenas.length > 0);
   const faltan = conDatos.filter((t) => t.quincenas.length < 2).map((t) => ({ tipo: t.tipo, falta: ["Q1", "Q2"].filter((q) => !t.quincenas.includes(q)) }));
   const g = gastosDelMes(gastosDocs, ym);
+  const gp = gastosPlantaDelMes(gastosPlanta, ym);
   const c = cuotasDelMes(cuotas, ym);
   const nomina = tipos.reduce((s, t) => s + t.neto, 0);
   const seguridad = tipos.reduce((s, t) => s + t.seguridad, 0);
   const provisiones = tipos.reduce((s, t) => s + t.prestaciones, 0);
   return {
-    ym, porTipo, nomina, seguridad, provisiones, gastos: g.total, cuotas: c.total,
-    total: nomina + seguridad + provisiones + g.total + c.total,
-    gastosInfo: g, cuotasLista: c.lista,
+    ym, porTipo, nomina, seguridad, provisiones, gastos: g.total + gp.total, gastosExcel: g.total, gastosPlanta: gp.total, cuotas: c.total,
+    total: nomina + seguridad + provisiones + g.total + gp.total + c.total,
+    gastosInfo: g, gastosPlantaInfo: gp, cuotasLista: c.lista,
     hayDatos: conDatos.length > 0,
     completo: conDatos.length > 0 && faltan.length === 0,
     faltan,
@@ -135,7 +162,7 @@ export function rubrosDelMes({ ym, liquidaciones, gastosDocs, cuotas }) {
 export function ponderadoDe(meses) {
   const pesados = meses.map((m, i) => ({ m, w: i + 1 })).filter((x) => x.m.completo);
   // Los gastos solo se promedian en los meses que ya tienen gastos cargados (un mes sin ninguno no es «cero gastos», es dato que falta).
-  const conGastos = pesados.filter((x) => x.m.gastosInfo.origen !== "ninguno");
+  const conGastos = pesados.filter((x) => x.m.gastosInfo.origen !== "ninguno" || x.m.gastosPlantaInfo.origen !== "ninguno");
   const prom = (lista, k) => { const sw = lista.reduce((s, x) => s + x.w, 0); return sw ? lista.reduce((s, x) => s + x.m[k] * x.w, 0) / sw : 0; };
   const out = { nomina: prom(pesados, "nomina"), seguridad: prom(pesados, "seguridad"), provisiones: prom(pesados, "provisiones"), gastos: prom(conGastos, "gastos"), cuotas: prom(pesados, "cuotas") };
   out.total = out.nomina + out.seguridad + out.provisiones + out.gastos + out.cuotas;
@@ -147,9 +174,21 @@ export function ponderadoDe(meses) {
   return out;
 }
 
+// Promedio ponderado (más peso a lo reciente) de los gastos de los meses anteriores, por separado: Excel y Planta (solo meses con gasto real registrado).
+// previos: rubrosDelMes del más viejo al más reciente. Es lo que usa la Proyección de Deuda para no depender de un solo mes.
+export function promedioGastos(previos) {
+  const pesados = (previos || []).map((m, i) => ({ m, w: i + 1 }));
+  const prom = (lista, f) => { const sw = lista.reduce((t, x) => t + x.w, 0); return sw ? lista.reduce((t, x) => t + f(x.m) * x.w, 0) / sw : 0; };
+  const conExcel = pesados.filter((x) => x.m.gastosInfo.origen !== "ninguno");
+  const conPlanta = pesados.filter((x) => x.m.gastosPlantaInfo.real > 0);
+  const excel = prom(conExcel, (m) => m.gastosExcel);
+  const planta = prom(conPlanta, (m) => m.gastosPlantaInfo.real);
+  return { excel, planta, total: excel + planta, mesesExcel: conExcel.map((x) => x.m.ym), mesesPlanta: conPlanta.map((x) => x.m.ym) };
+}
+
 // Todo junto para la pantalla.
-export function cuantoPagarMes({ ym, liquidaciones, gastosDocs, cuotas }) {
-  const lista = mesesHasta(ym).map((m) => rubrosDelMes({ ym: m, liquidaciones, gastosDocs, cuotas }));
+export function cuantoPagarMes({ ym, liquidaciones, gastosDocs, gastosPlanta, cuotas }) {
+  const lista = mesesHasta(ym).map((m) => rubrosDelMes({ ym: m, liquidaciones, gastosDocs, gastosPlanta, cuotas }));
   const actual = lista[lista.length - 1];
   const anterior = lista[lista.length - 2];
   const previos = lista.slice(0, -1);
@@ -158,7 +197,7 @@ export function cuantoPagarMes({ ym, liquidaciones, gastosDocs, cuotas }) {
   // (2026-11-05, a pedido de Fredy) La base de «Necesito al mes» pasa del ponderado al MES ANTERIOR: operación del mes anterior + cuotas vigentes hoy.
   const operacionAnterior = anterior.nomina + anterior.seguridad + anterior.provisiones + anterior.gastos;
   return {
-    ym, lista, actual, anterior, ponderado: pond, necesito: pond.operacion + cuotasHoy, cuotasHoy, escalon: escalonCuotas(cuotas, ym),
+    ym, lista, actual, anterior, ponderado: pond, gastosPromedio: promedioGastos(previos), necesito: pond.operacion + cuotasHoy, cuotasHoy, escalon: escalonCuotas(cuotas, ym),
     operacionAnterior, necesitoAnterior: operacionAnterior + cuotasHoy, estimado: estimadoDelMes(actual, anterior),
   };
 }
@@ -185,6 +224,9 @@ export function estimadoDelMes(actual, anterior) {
     fuentes.push({ tipo, fuente, quincenas: k });
   });
   out.gastos = actual.gastos;
+  out.gastosExcel = actual.gastosExcel;
+  out.gastosPlanta = actual.gastosPlanta;
+  out.gastosPlantaOrigen = actual.gastosPlantaInfo.origen;
   out.cuotas = actual.cuotas;
   out.operacion = out.nomina + out.seguridad + out.provisiones + out.gastos;
   out.total = out.operacion + out.cuotas;
@@ -262,7 +304,7 @@ export function calendarioObligaciones(estimado, cuotasLista, ym, pagosMapa) {
     const fila = { dia: c.diaPago ? Math.min(Math.max(1, Number(c.diaPago) || 1), ult) : null, concepto: `Cuota · ${c.nombre}`, valor: num(c.valorMensual), pagado };
     if (fila.dia) conFecha.push(fila); else sinDia.push(fila);
   });
-  [["Seguridad social", estimado.seguridad], ["Provisiones", estimado.provisiones], ["Gastos del Excel", estimado.gastos]].forEach(([concepto, valor]) => { if (valor > 0) sinDia.push({ dia: null, concepto, valor }); });
+  [["Seguridad social", estimado.seguridad], ["Provisiones", estimado.provisiones], ["Gastos del Excel", estimado.gastosExcel === undefined ? estimado.gastos : estimado.gastosExcel], ["Gastos de Planta (repuestos, hilazas)", num(estimado.gastosPlanta)]].forEach(([concepto, valor]) => { if (valor > 0) sinDia.push({ dia: null, concepto, valor }); });
   conFecha.sort((x, y) => x.dia - y.dia);
   return { conFecha, sinDia };
 }

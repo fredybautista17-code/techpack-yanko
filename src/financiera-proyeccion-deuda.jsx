@@ -6,7 +6,7 @@ import { collection, doc, onSnapshot } from "firebase/firestore";
 import { useMesFinanciero } from "./financiera-que-pagar";
 import { C, caja, Boton, Ventana, Tarjeta } from "./financiera-cuanto-pagar";
 import { sumarMes } from "./financiera-cuanto-pagar-calculo";
-import { HORIZONTE, ESCENARIOS, ingresosBase, presupuestoClientesPorMes, proyectarDeuda } from "./financiera-proyeccion-deuda-calculo";
+import { HORIZONTE, ESCENARIOS, ingresosBase, presupuestoClientesPorMes, proyectarDeuda, operacionDe } from "./financiera-proyeccion-deuda-calculo";
 import { ultimoCorte, armarProveedoresPagar } from "./financiera-programar-pagos-calculo";
 import { comprasProyectadas, categoriaDeMateriales } from "./financiera-proyeccion-compras-calculo";
 
@@ -65,7 +65,7 @@ function useDeudaProveedores(db) {
 // (2026-11-09) Los ajustes que Fredy deja en esta pantalla (ingreso, colchón, compras de materiales) se recuerdan en el navegador para que
 // Estrategia de Pago y Vencimientos calculen con los mismos supuestos. Si no hay nada guardado, valen los de siempre.
 const OPC_KEY = "atlas_proyeccion_deuda_opciones";
-function leerOpciones() {
+export function leerOpciones() {
   let o = {};
   try { o = JSON.parse(window.localStorage.getItem(OPC_KEY) || "{}") || {}; } catch (e) { o = {}; }
   return {
@@ -74,6 +74,7 @@ function leerOpciones() {
     incluirCompras: o.incluirCompras !== false,
     catMat: typeof o.catMat === "string" ? o.catMat : "",
     plazoCompra: [0, 1, 2].includes(o.plazoCompra) ? o.plazoCompra : 1,
+    gastosModo: o.gastosModo === "anterior" ? "anterior" : "promedio",
   };
 }
 function guardarOpciones(o) {
@@ -107,7 +108,7 @@ export function useProyeccionMensual(db, horizonte = 26) {
   const base = useMemo(() => ingresosBase(cacheTotal || cacheBusint, ymHoy, 6), [cacheTotal, cacheBusint, ymHoy]);
   const presupuestoMes = useMemo(() => presupuestoClientesPorMes(presClientes), [presClientes]);
   const ant = datos.res.anterior;
-  const operacion = useMemo(() => ({ nomina: ant.nomina, seguridad: ant.seguridad, provisiones: ant.provisiones, gastos: ant.gastos }), [ant]);
+  const operacion = useMemo(() => operacionDe(datos.res, opc.gastosModo), [datos.res, opc]);
   const catEfectiva = opc.catMat && catLista.some((c) => c.id === opc.catMat) ? opc.catMat : categoriaDeMateriales(catLista);
   const comprasMes = useMemo(() => (opc.incluirCompras && catEfectiva
     ? comprasProyectadas({ presupuestos, categoriasLista: catLista, categoriasPorConcepto: catPorConcepto, categoriaId: catEfectiva, ymInicio: ymHoy, horizonte, plazoMeses: opc.plazoCompra }).pagoMes
@@ -141,6 +142,7 @@ export default function ProyeccionDeudaView({ db, isAdmin, vistaAnterior, vistaP
 
   const [escenario, setEscenario] = useState(() => leerOpciones().escenario);
   const [colchonPct, setColchonPct] = useState(() => leerOpciones().colchonPct);
+  const [gastosModo, setGastosModo] = useState(() => leerOpciones().gastosModo);
   const [cuotaTxt, setCuotaTxt] = useState("");
   const [plazoTxt, setPlazoTxt] = useState("24");
   const [desde, setDesde] = useState(sumarMes(ymHoy, 1));
@@ -151,7 +153,7 @@ export default function ProyeccionDeudaView({ db, isAdmin, vistaAnterior, vistaP
   const [incluirCompras, setIncluirCompras] = useState(() => leerOpciones().incluirCompras);
   const [catMat, setCatMat] = useState(() => leerOpciones().catMat);
   const [plazoCompra, setPlazoCompra] = useState(() => leerOpciones().plazoCompra);
-  useEffect(() => { guardarOpciones({ escenario, colchonPct, incluirCompras, catMat, plazoCompra }); }, [escenario, colchonPct, incluirCompras, catMat, plazoCompra]);
+  useEffect(() => { guardarOpciones({ escenario, colchonPct, incluirCompras, catMat, plazoCompra, gastosModo }); }, [escenario, colchonPct, incluirCompras, catMat, plazoCompra, gastosModo]);
   const [presupuestos, setPresupuestos] = useState([]);
   const [catLista, setCatLista] = useState([]);
   const [catPorConcepto, setCatPorConcepto] = useState([]);
@@ -174,7 +176,7 @@ export default function ProyeccionDeudaView({ db, isAdmin, vistaAnterior, vistaP
   const presupuestoMes = useMemo(() => presupuestoClientesPorMes(presClientes), [presClientes]);
   const ant = datos.res.anterior;
   const hayBase = !!ant.hayDatos;
-  const operacion = useMemo(() => ({ nomina: ant.nomina, seguridad: ant.seguridad, provisiones: ant.provisiones, gastos: ant.gastos }), [ant]);
+  const operacion = useMemo(() => operacionDe(datos.res, gastosModo), [datos.res, gastosModo]);
   const r = useMemo(() => proyectarDeuda({
     ymInicio: ymHoy, escenario, base, presupuestoMes, operacion, cuotas: datos.cuotas, colchonPct,
     nueva: { cuota: Number(cuotaTxt) || 0, plazo: Number(plazoTxt) || 1, desde }, proveedores: deudaProv, comprasMes,
@@ -197,7 +199,7 @@ export default function ProyeccionDeudaView({ db, isAdmin, vistaAnterior, vistaP
       <div style={{ marginBottom: 12 }}>
         <div style={{ fontSize: 21, fontWeight: 900, color: C.ink }}>Proyección de deuda</div>
         <div style={{ fontSize: 12.5, color: C.slate, marginTop: 3, maxWidth: 860, lineHeight: 1.5 }}>
-          Con el ingreso que entra cada mes: cuánto te queda libre después de lo que sale sí o sí y de las cuotas, cuánta deuda nueva te cabe y cuándo te pones al día con proveedores. La operación (nómina, seguridad social, provisiones y gastos) se toma del <b>mes anterior</b> y se repite todos los meses: no ve temporadas.
+          Con el ingreso que entra cada mes: cuánto te queda libre después de lo que sale sí o sí y de las cuotas, cuánta deuda nueva te cabe y cuándo te pones al día con proveedores. La operación se repite todos los meses (no ve temporadas): nómina, seguridad social y provisiones del <b>mes anterior</b>, y los gastos (Excel y Planta: repuestos, hilazas) como <b>promedio de los meses anteriores</b> (o solo el mes anterior, a tu elección).
         </div>
       </div>
       {datos.error ? <div style={{ background: C.redBg, color: C.red, borderRadius: 10, padding: "9px 12px", fontSize: 12.5, marginBottom: 10 }}>{datos.error}</div> : null}
@@ -211,6 +213,10 @@ export default function ProyeccionDeudaView({ db, isAdmin, vistaAnterior, vistaP
           <button key={e.k} onClick={() => setEscenario(e.k)} title={e.ayuda} style={{ border: `1.5px solid ${escenario === e.k ? C.ink : C.border}`, background: escenario === e.k ? C.ink : C.white, color: escenario === e.k ? C.white : C.ink, borderRadius: 8, padding: "7px 14px", fontSize: 13, fontWeight: 700, fontFamily: "inherit", cursor: "pointer" }}>{e.txt}</button>
         ))}
         <div style={{ flex: 1 }} />
+        <span style={{ fontSize: 12, color: C.slate }}>Gastos:</span>
+        <select value={gastosModo} onChange={(e) => setGastosModo(e.target.value)} style={{ ...entrada, width: "auto" }} title="Excel de gastos + gastos de Planta (repuestos, hilazas)">
+          <option value="promedio">Promedio de meses anteriores</option><option value="anterior">Solo el mes anterior</option>
+        </select>
         <span style={{ fontSize: 12, color: C.slate }}>Colchón de seguridad:</span>
         <select value={colchonPct} onChange={(e) => setColchonPct(Number(e.target.value))} style={{ ...entrada, width: "auto" }}>
           <option value={0}>Sin colchón</option><option value={0.1}>10 % del ingreso</option><option value={0.2}>20 % del ingreso</option>
@@ -248,7 +254,7 @@ export default function ProyeccionDeudaView({ db, isAdmin, vistaAnterior, vistaP
 
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
         <Tarjeta titulo="Ingreso mensual esperado" valor={fm(hoy.ingreso)} sub={base ? `${esc.ayuda} (${etq(base.desde)}–${etq(base.hasta)})` : "Sin datos de ingresos"} />
-        <Tarjeta titulo="Sale sí o sí" valor={fm(r.operacionTotal)} fondo={C.amberBg} sub={`Nómina, seguridad social, provisiones y gastos de ${etqLargo(ant.ym)}`} />
+        <Tarjeta titulo="Sale sí o sí" valor={fm(r.operacionTotal)} fondo={C.amberBg} sub={`Nómina, seguridad y provisiones de ${etqLargo(ant.ym)}; gastos ${r.operacion.gastosModo === "promedio" ? "promedio de meses anteriores" : "del mes anterior"}`} />
         <Tarjeta titulo="Cuotas de hoy" valor={fm(hoy.cuotas)} sub={`${hoy.cuotasLista.length} cuota${hoy.cuotasLista.length === 1 ? "" : "s"} vigente${hoy.cuotasLista.length === 1 ? "" : "s"}${hoy.ingreso > 0 ? ` · ${Math.round((hoy.cuotas / hoy.ingreso) * 100)} % del ingreso` : ""}`} />
         <Tarjeta titulo="Margen libre hoy" valor={fm(hoy.margenBase)} colorValor={hoy.margenBase >= 0 ? C.green : C.red} fondo={hoy.margenBase >= hoy.colchon ? C.greenBg : C.redBg} sub="Ingreso − lo que sale − cuotas" />
         <Tarjeta titulo="Cuota máxima segura" valor={fm(r.cuotaMaxSegura)} colorValor={C.blue} fondo={C.blueBg} sub={`Deuda nueva que cabe en ${r.plazo} meses desde ${etq(r.desde)}, con colchón del ${pctColchon} %`} />
@@ -381,11 +387,12 @@ function DetalleMes({ m, r, escenario, pctColchon, total, onClose }) {
     <Ventana titulo={`${etqLargo(m.ym)} · ${c[0]}`} sub="Qué tiene este mes: de dónde entra, qué sale y cuánto queda" onClose={onClose} ancho={720}>
       <div style={{ background: c[2], color: c[1], borderRadius: 10, padding: "8px 12px", fontSize: 12.5, fontWeight: 700, marginBottom: 10 }}>{msg}</div>
       <Bloque titulo="Entra"><Linea t={`Ingreso esperado (${m.ingresoOrigen})`} v={money(m.ingreso)} /></Bloque>
-      <Bloque titulo="Sale sí o sí · base del mes anterior">
+      <Bloque titulo="Sale sí o sí · nómina del mes anterior, gastos según tu elección">
         <Linea t="Nómina (neto a pagar)" v={money(op.nomina)} />
         <Linea t="Seguridad social" v={money(op.seguridad)} />
         <Linea t="Provisiones (cesantías, intereses, prima, vacaciones)" v={money(op.provisiones)} />
-        <Linea t="Gastos del Excel" v={money(op.gastos)} />
+        <Linea t="Gastos del Excel" sub={op.gastosModo === "promedio" ? "Promedio de los meses anteriores con gastos" : "Del mes anterior"} v={money(op.gastosExcel)} />
+        <Linea t="Gastos de Planta (repuestos, hilazas…)" sub={op.gastosModo === "promedio" ? "Promedio de los meses anteriores con gastos registrados en Planta" : "Del mes anterior"} v={money(op.gastosPlanta)} />
         <Linea fuerte t="Total que sale sí o sí" v={money(m.operacion)} />
       </Bloque>
       {m.compras > 0 ? <Bloque titulo="Compras de materiales proyectadas"><Linea t="Pago de tela e insumos que se compran más adelante" sub="Del presupuesto de Proyección, según el plazo de pago elegido" v={money(m.compras)} /></Bloque> : null}

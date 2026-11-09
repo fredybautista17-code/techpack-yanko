@@ -6,6 +6,7 @@
 //     (colección financiera_cuotas); lo demás se lee de Nómina (liquidaciones confirmadas) y de costos_gastos_mes.
 import React, { useState, useEffect, useMemo } from "react";
 import { collection, doc, getDocs, onSnapshot, query, setDoc, deleteDoc, where } from "firebase/firestore";
+import { leerGastosPlanta } from "./financiera-gastos-planta";
 import { cuantoPagarMes, cuotasDelMes, cuotasConLiquidaciones, escalonCuotas, sumarMes, TIPOS_NOMINA, MESES_PONDERADO, cumplimientoPresupuesto } from "./financiera-cuanto-pagar-calculo";
 import { TablaCuotasPago, useCuotasPagos } from "./financiera-cuotas-pagos";
 import { httpsCallable } from "firebase/functions";
@@ -30,7 +31,7 @@ const RUBROS = [
   { k: "nomina", label: "Nómina (neto a pagar)", color: C.blue, campoTipo: "neto" },
   { k: "seguridad", label: "Seguridad social", color: C.violet, campoTipo: "seguridad" },
   { k: "provisiones", label: "Provisiones", color: C.amber, campoTipo: "prestaciones" },
-  { k: "gastos", label: "Gastos del Excel", color: C.gris },
+  { k: "gastos", label: "Gastos (Excel y Planta)", color: C.gris },
   { k: "cuotas", label: "Cuotas (endeudamiento)", color: C.red },
 ];
 
@@ -164,18 +165,18 @@ export function CuantoPagarMesView({ db, onIrEndeudamiento, functionsClient, isA
     const desde = `${sumarMes(ym, -MESES_PONDERADO)}-Q1`;
     const hasta = `${ym}-Q2`;
     const leer = (col) => getDocs(query(collection(db, col), where("periodoId", ">=", desde), where("periodoId", "<=", hasta)));
-    Promise.all([leer("nomina_fiscal_liquidaciones"), leer("nomina_fiscal_destajo_liquidaciones"), leer("nomina_destajo_liquidaciones"), leer("nomina_prestacion_servicios_liquidaciones"), getDocs(collection(db, "costos_gastos_mes"))])
-      .then(([f, fd, d, ps, g]) => {
+    Promise.all([leer("nomina_fiscal_liquidaciones"), leer("nomina_fiscal_destajo_liquidaciones"), leer("nomina_destajo_liquidaciones"), leer("nomina_prestacion_servicios_liquidaciones"), getDocs(collection(db, "costos_gastos_mes")), leerGastosPlanta(db, ym).catch(() => [])])
+      .then(([f, fd, d, ps, g, gpl]) => {
         if (!vivo) return;
         const lista = (s) => s.docs.map((x) => ({ ...x.data(), id: x.id }));
-        setDatos({ liq: { "Fiscal": lista(f), "Fiscal Destajo": lista(fd), "Destajo": lista(d), "Prestación de Servicios": lista(ps) }, gastos: lista(g) });
+        setDatos({ liq: { "Fiscal": lista(f), "Fiscal Destajo": lista(fd), "Destajo": lista(d), "Prestación de Servicios": lista(ps) }, gastos: lista(g), gastosPlanta: gpl });
         setCargando(false);
       })
       .catch((e) => { if (vivo) { setError(e?.message || "No se pudieron leer los datos."); setCargando(false); } });
     return () => { vivo = false; };
   }, [db, ym]);
 
-  const res = useMemo(() => cuantoPagarMes({ ym, liquidaciones: datos.liq, gastosDocs: datos.gastos, cuotas }), [ym, datos, cuotas]);
+  const res = useMemo(() => cuantoPagarMes({ ym, liquidaciones: datos.liq, gastosDocs: datos.gastos, gastosPlanta: datos.gastosPlanta, cuotas }), [ym, datos, cuotas]);
   const { actual, anterior } = res;
   const hayBase = anterior.hayDatos;
   const textoFaltan = (m) => m.faltan.map((f) => `${f.tipo} ${f.falta.join(" y ")}`).join(" · ");
@@ -288,17 +289,19 @@ export function CuantoPagarMesView({ db, onIrEndeudamiento, functionsClient, isA
 
       {psMonto > 0 ? (
         <div style={{ background: C.amberBg, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 14px", fontSize: 12, color: C.amber, lineHeight: 1.5, marginBottom: 10 }}>
-          Prestación de Servicios ({money(psMonto)}) ya está sumada en la nómina. Si esos pagos también están en el Excel de gastos, se cuentan dos veces: revisa el detalle de «Gastos del Excel».
+          Prestación de Servicios ({money(psMonto)}) ya está sumada en la nómina. Si esos pagos también están en el Excel de gastos, se cuentan dos veces: revisa el detalle de «Gastos (Excel y Planta)».
         </div>
       ) : null}
       {actual.gastosInfo.origen === "anterior" ? <div style={{ background: C.amberBg, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 14px", fontSize: 12, color: C.amber, lineHeight: 1.5, marginBottom: 10 }}>Este mes no tiene gastos guardados: se usan los de {nombreMes(actual.gastosInfo.deMes)}. Cárgalos en ¿Cubro mis costos? para dejarlos fijos.</div> : null}
       {actual.gastosInfo.origen === "ninguno" ? <div style={{ background: C.amberBg, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 14px", fontSize: 12, color: C.amber, lineHeight: 1.5, marginBottom: 10 }}>Todavía no hay gastos del Excel cargados. Súbelos en Planeación → Tablero de Costos → ¿Cubro mis costos?</div> : null}
+      {actual.gastosPlantaInfo.origen === "promedio" ? <div style={{ background: C.amberBg, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 14px", fontSize: 12, color: C.amber, lineHeight: 1.5, marginBottom: 10 }}>Gastos de Planta (repuestos, hilazas…): este mes lleva {money(actual.gastosPlantaInfo.real)} registrados; se provisiona el promedio de los {actual.gastosPlantaInfo.meses.length} meses anteriores con gastos ({money(actual.gastosPlantaInfo.promedio)}).</div> : null}
+      {actual.gastosPlantaInfo.origen === "ninguno" ? <div style={{ background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 14px", fontSize: 12, color: C.slate, lineHeight: 1.5, marginBottom: 10 }}>Todavía no hay gastos de Planta (repuestos, hilazas…) registrados: no suman. Se cargan en Planta Yanko → Costo real total (Agregar gasto, Traer de Busint o Cargar Excel).</div> : null}
       <div style={{ fontSize: 11.5, color: C.slate, lineHeight: 1.6 }}>
-        La base de «Necesito al mes» es el mes anterior (con las cuotas vigentes de hoy); si ese mes está incompleto se avisa. Los gastos de cada mes salen de lo que hayas guardado ese mes en ¿Cubro mis costos? (si falta, el último mes cargado). Las cuotas cuentan en los meses entre su inicio y su fin.
+        La base de «Necesito al mes» es el mes anterior (con las cuotas vigentes de hoy); si ese mes está incompleto se avisa. Los gastos de cada mes salen de lo que hayas guardado ese mes en ¿Cubro mis costos? (si falta, el último mes cargado) más los gastos de Planta (repuestos, hilazas…): lo registrado, o el promedio de los meses anteriores si el mes está en curso. Las cuotas cuentan en los meses entre su inicio y su fin.
       </div>
 
       {vd ? (
-        <Ventana ancho={vd.k === "provisiones" ? 1100 : 680} titulo={`${vd.label} — ${nombreMes(ym)}`} sub={vd.campoTipo ? "Por tipo de nómina, de las liquidaciones confirmadas." : vd.k === "gastos" ? (actual.gastosInfo.origen === "anterior" ? `Gastos de ${nombreMes(actual.gastosInfo.deMes)} (el mes no tiene gastos guardados).` : "Gastos incluidos del Excel.") : "Cuotas vigentes en el mes."} onClose={() => setDetalle(null)}>
+        <Ventana ancho={vd.k === "provisiones" ? 1100 : 680} titulo={`${vd.label} — ${nombreMes(ym)}`} sub={vd.campoTipo ? "Por tipo de nómina, de las liquidaciones confirmadas." : vd.k === "gastos" ? (actual.gastosInfo.origen === "anterior" ? `Gastos de ${nombreMes(actual.gastosInfo.deMes)} (el mes no tiene gastos guardados).` : "Gastos incluidos del Excel y gastos de Planta (repuestos, hilazas…).") : "Cuotas vigentes en el mes."} onClose={() => setDetalle(null)}>
           {vd.campoTipo ? (
             <>
             <table style={{ width: "100%", borderCollapse: "collapse", background: C.white }}>
@@ -353,7 +356,9 @@ export function CuantoPagarMesView({ db, onIrEndeudamiento, functionsClient, isA
               <thead><tr><th style={thL}>Empresa</th><th style={thL}>Concepto</th><th style={th}>Valor mensual</th></tr></thead>
               <tbody>
                 {actual.gastosInfo.lineas.map((l, i) => <tr key={i}><td style={{ ...td, textAlign: "left" }}>{l.empresa}</td><td style={tdL}>{l.concepto}</td><td style={td}>{money(l.valor)}</td></tr>)}
-                {!actual.gastosInfo.lineas.length && <tr><td colSpan={3} style={{ ...td, textAlign: "left", color: C.slate }}>Sin gastos cargados.</td></tr>}
+                {!actual.gastosInfo.lineas.length && <tr><td colSpan={3} style={{ ...td, textAlign: "left", color: C.slate }}>Sin gastos del Excel cargados.</td></tr>}
+                {actual.gastosPlantaInfo.origen === "promedio" ? <tr><td style={{ ...td, textAlign: "left" }}>Planta (MAQUILA)</td><td style={tdL}>Provisión: promedio de {actual.gastosPlantaInfo.meses.length} meses anteriores (este mes lleva {money(actual.gastosPlantaInfo.real)} registrados)</td><td style={td}>{money(actual.gastosPlantaInfo.total)}</td></tr> : null}
+                {actual.gastosPlantaInfo.origen === "guardado" ? actual.gastosPlantaInfo.lineas.map((l, i) => <tr key={`p${i}`}><td style={{ ...td, textAlign: "left" }}>Planta (MAQUILA)</td><td style={tdL}>{[l.proveedor, l.concepto, l.numeroFactura ? `fact. ${l.numeroFactura}` : ""].filter(Boolean).join(" · ")}</td><td style={td}>{money(l.monto)}</td></tr>) : null}
                 <tr style={{ background: C.canvas }}><td style={tdL} colSpan={2}>Total</td><td style={{ ...td, fontWeight: 900 }}>{money(actual.gastos)}</td></tr>
               </tbody>
             </table>

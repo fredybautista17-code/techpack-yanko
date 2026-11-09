@@ -16144,7 +16144,22 @@ function finGastosDelMes(gastosDocs, ym) {
   if (anterior) return { total: totalDe(anterior.lineas), origen: "anterior", deMes: anterior.id };
   return { total: 0, origen: "ninguno", deMes: "" };
 }
-function finRubrosDelMes({ ym, liquidaciones, gastosDocs, cuotas }) {
+// Gastos de Planta (área MAQUILA): provisión = lo registrado; si el mes está en curso (o sin registrar) el promedio ponderado de hasta 6 meses anteriores con gastos.
+// COPIA de gastosPlantaDelMes en src/financiera-cuanto-pagar-calculo.js.
+function finGastosPlantaDelMes(gastosPlanta, ym) {
+  const porMes = {};
+  (gastosPlanta || []).forEach((g) => { const m = String(g.fecha || "").slice(0, 7); if (/^\d{4}-\d{2}$/.test(m)) porMes[m] = (porMes[m] || 0) + finNum(g.monto); });
+  const real = porMes[ym] || 0;
+  const meses = [];
+  for (let i = 6; i >= 1; i--) { const m = finSumarMes(ym, -i); if (porMes[m] > 0) meses.push({ ym: m, total: porMes[m] }); }
+  const sw = meses.reduce((t, x, i) => t + (i + 1), 0);
+  const promedio = sw ? meses.reduce((t, x, i) => t + x.total * (i + 1), 0) / sw : 0;
+  const enCurso = ym >= new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 7);
+  const total = enCurso ? Math.max(real, promedio) : (real > 0 ? real : promedio);
+  const origen = total <= 0 ? "ninguno" : real >= promedio && real > 0 ? "guardado" : (real > 0 && !enCurso ? "guardado" : "promedio");
+  return { total, real, promedio, origen };
+}
+function finRubrosDelMes({ ym, liquidaciones, gastosDocs, gastosPlanta, cuotas }) {
   const porTipo = {};
   FIN_TIPOS_NOMINA.forEach((tipo) => {
     const lista = ((liquidaciones || {})[tipo] || []).filter((l) => String(l.periodoId || "").startsWith(`${ym}-`));
@@ -16159,12 +16174,13 @@ function finRubrosDelMes({ ym, liquidaciones, gastosDocs, cuotas }) {
   const tipos = Object.values(porTipo);
   const conDatos = tipos.filter((t) => t.quincenas.length > 0);
   const g = finGastosDelMes(gastosDocs, ym);
+  const gp = finGastosPlantaDelMes(gastosPlanta, ym);
   const cuotasMes = (cuotas || []).filter((c) => c && c.desde && c.desde <= ym && (!c.hasta || ym <= c.hasta));
   const nomina = tipos.reduce((s, t) => s + t.neto, 0);
   const seguridad = tipos.reduce((s, t) => s + t.seguridad, 0);
   const provisiones = tipos.reduce((s, t) => s + t.prestaciones, 0);
   const cuotasTotal = cuotasMes.reduce((s, c) => s + finNum(c.valorMensual), 0);
-  return { ym, porTipo, nomina, seguridad, provisiones, gastos: g.total, cuotas: cuotasTotal, total: nomina + seguridad + provisiones + g.total + cuotasTotal, gastosOrigen: g.origen, hayDatos: conDatos.length > 0 };
+  return { ym, porTipo, nomina, seguridad, provisiones, gastos: g.total + gp.total, gastosExcel: g.total, gastosPlanta: gp.total, cuotas: cuotasTotal, total: nomina + seguridad + provisiones + g.total + gp.total + cuotasTotal, gastosOrigen: g.origen, gastosPlantaOrigen: gp.origen, hayDatos: conDatos.length > 0 };
 }
 function finEstimadoDelMes(actual, anterior) {
   const out = { nomina: 0, seguridad: 0, provisiones: 0 };
@@ -16251,14 +16267,17 @@ async function finCargarDatos(ym) {
   const hasta = `${ym}-Q2`;
   const leer = async (col) => (await db.collection(col).where("periodoId", ">=", desde).where("periodoId", "<=", hasta).get()).docs.map((d) => ({ ...d.data(), id: d.id }));
   const todo = async (q) => (await q.get()).docs.map((d) => ({ ...d.data(), id: d.id }));
-  const [fiscal, fiscalDestajo, destajo, ps, gastosDocs, cuotasManuales, presupuestos, movimientos, recibidas, pagosCuotas] = await Promise.all([
+  const desdePlanta = `${finSumarMes(ym, -12)}-01`;
+  const [fiscal, fiscalDestajo, destajo, ps, gastosDocs, cuotasManuales, presupuestos, movimientos, recibidas, pagosCuotas, gastosPlantaTodos] = await Promise.all([
     leer("nomina_fiscal_liquidaciones"), leer("nomina_fiscal_destajo_liquidaciones"), leer("nomina_destajo_liquidaciones"), leer("nomina_prestacion_servicios_liquidaciones"),
     todo(db.collection("costos_gastos_mes")), todo(db.collection("financiera_cuotas")),
     todo(db.collection("contabilidad_presupuestos_cliente").where("mes", "==", ym)),
     todo(db.collection("contabilidad_movimientos").where("tipo", "==", "ingreso")),
     db.collection("contabilidad_ordenes_compra_recibidas").select().get().then((s) => new Set(s.docs.map((d) => d.id))),
     todo(db.collection("contabilidad_cuotas_pagos")),
+    todo(db.collection("centro_costo_gastos").where("fecha", ">=", desdePlanta)).catch(() => []),
   ]);
+  const gastosPlanta = gastosPlantaTodos.filter((g) => String(g.area || "").trim().toUpperCase() === "MAQUILA");
   // (2026-11-06) El plan mensual de liquidaciones de retiro entra como una cuota más (misma regla que cuotasConLiquidaciones en src/financiera-cuanto-pagar-calculo.js).
   const cuotas = [
     ...cuotasManuales,
@@ -16266,12 +16285,12 @@ async function finCargarDatos(ym) {
       .filter((d) => d && d.kind === "plan_liquidaciones" && d.ym && Number(d.plan) > 0)
       .map((d) => ({ id: `plan_liquidaciones__${d.ym}`, nombre: "Liquidaciones de retiro", valorMensual: Number(d.plan), diaPago: 25, desde: d.ym, hasta: d.ym, auto: true })),
   ];
-  return { liquidaciones: { "Fiscal": fiscal, "Fiscal Destajo": fiscalDestajo, "Destajo": destajo, "Prestación de Servicios": ps }, gastosDocs, cuotas, presupuestos, movimientos, recibidas };
+  return { liquidaciones: { "Fiscal": fiscal, "Fiscal Destajo": fiscalDestajo, "Destajo": destajo, "Prestación de Servicios": ps }, gastosDocs, gastosPlanta, cuotas, presupuestos, movimientos, recibidas };
 }
 // Lo que arma el correo: se calcula «a las 8 a. m.», por eso los días transcurridos son los de trabajo completos hasta AYER.
 function finCalcularCumplimiento({ hoyISO, datos, sinTrabajar }) {
   const ym = hoyISO.slice(0, 7);
-  const base = { liquidaciones: datos.liquidaciones, gastosDocs: datos.gastosDocs, cuotas: datos.cuotas };
+  const base = { liquidaciones: datos.liquidaciones, gastosDocs: datos.gastosDocs, gastosPlanta: datos.gastosPlanta, cuotas: datos.cuotas };
   const actual = finRubrosDelMes({ ym, ...base });
   const anterior = finRubrosDelMes({ ym: finSumarMes(ym, -1), ...base });
   const estimado = finEstimadoDelMes(actual, anterior);

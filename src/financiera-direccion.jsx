@@ -10,7 +10,7 @@ import { useMesFinanciero } from "./financiera-que-pagar";
 import { C, caja, Boton, Ventana } from "./financiera-cuanto-pagar";
 import { sumarMes } from "./financiera-cuanto-pagar-calculo";
 import { ultimoCorte, armarProveedoresPagar } from "./financiera-programar-pagos-calculo";
-import { ingresosBase, proyectarDeuda } from "./financiera-proyeccion-deuda-calculo";
+import { useProyeccionMensual } from "./financiera-proyeccion-deuda";
 import { mapaDeuda, rutaSalida, costoDelDinero, totalesProveedores, TIPOS_DEUDA, GRUPOS_URGENCIA, tasaMensual } from "./financiera-direccion-calculo";
 import { SEMILLA_EXTERNAS, SEMILLA_BANCO } from "./financiera-direccion-semilla";
 import SubirExtractos from "./financiera-direccion-extractos";
@@ -242,10 +242,7 @@ export default function DireccionFinancieraView({ db, isAdmin }) {
   const prov = useProveedoresTotales(db);
   const ext = useColeccion(db, "financiera_deudas_externas");
   const bancoDocs = useColeccion(db, "financiera_banco_resumen");
-  const [cacheTotal, setCacheTotal] = useState(null);
-  const [cacheBusint, setCacheBusint] = useState(null);
-  useEffect(() => onSnapshot(doc(db, "financiera_ingresos_cache", "total_yanko"), (s) => setCacheTotal(s.exists() ? s.data() : null), () => {}), [db]);
-  useEffect(() => onSnapshot(doc(db, "financiera_ingresos_cache", "main"), (s) => setCacheBusint(s.exists() ? s.data() : null), () => {}), [db]);
+  const proy = useProyeccionMensual(db, 6);
 
   const [tab, setTab] = useState("mapa");
   const [editando, setEditando] = useState(null); // null | "nueva" | deuda
@@ -262,14 +259,13 @@ export default function DireccionFinancieraView({ db, isAdmin }) {
   const externas = ext.lista;
   const mapa = useMemo(() => mapaDeuda({ yanko: prov.yanko, indutex: prov.indutex, cuotas: datos.cuotas, externas, ymHoy }), [prov, datos.cuotas, externas, ymHoy]);
 
-  // Cupo mensual para proveedores sugerido por «Proyección de deuda» (escenario conservador, colchón 10 %): promedio de los próximos 6 meses.
-  const base = useMemo(() => ingresosBase(cacheTotal || cacheBusint, ymHoy, 6), [cacheTotal, cacheBusint, ymHoy]);
-  const ant = datos.res.anterior;
+  // Cupo mensual para proveedores sugerido por «Proyección de deuda» (mismos ajustes que esa pantalla: ingreso, colchón, gastos, compras de materiales):
+  // promedio de los próximos 6 meses. Es el mismo cupo que usan Estrategia de Pago y Vencimientos.
   const cupoSugerido = useMemo(() => {
-    if (!base || !ant.hayDatos) return 0;
-    const r = proyectarDeuda({ ymInicio: ymHoy, horizonte: 6, escenario: "cons", base, presupuestoMes: {}, operacion: { nomina: ant.nomina, seguridad: ant.seguridad, provisiones: ant.provisiones, gastos: ant.gastos }, cuotas: datos.cuotas, colchonPct: 0.1, nueva: { cuota: 0, plazo: 1, desde: sumarMes(ymHoy, 1) }, proveedores: null });
-    return Math.round(r.meses.reduce((s, m) => s + m.paraProveedores, 0) / r.meses.length / 1e5) * 1e5;
-  }, [base, ant, datos.cuotas, ymHoy]);
+    if (!proy.listo || proy.sinIngresos || proy.sinNomina) return 0;
+    const v = Object.keys(proy.meses).sort().slice(0, 6).map((k) => proy.meses[k].paraProveedores);
+    return v.length ? Math.round(v.reduce((a, b) => a + b, 0) / v.length / 1e5) * 1e5 : 0;
+  }, [proy]);
   // El asistente de ATLAS (servidor) no puede recalcular la Proyección de deuda: se le deja el cupo sugerido a la mano. Solo administradores, y solo si cambió.
   const cupoGuardado = useRef(null);
   useEffect(() => {

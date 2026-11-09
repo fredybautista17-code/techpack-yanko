@@ -40,9 +40,22 @@ export function ingresoDelMes({ escenario, base, presupuestoMes, ym }) {
   return p > 0 ? { valor: p, origen: "presupuesto de clientes" } : { valor: base.promedio, origen: "promedio (ese mes aún no tiene presupuesto)" };
 }
 
+// Lo que sale sí o sí (sin cuotas ni compras de materiales) a partir de cuantoPagarMes(): nómina, seguridad y provisiones del MES ANTERIOR; los gastos (Excel +
+// Planta) según modo: "promedio" = promedio ponderado de los meses anteriores (si hay alguno con gastos), "anterior" = solo los del mes anterior.
+export function operacionDe(res, modo) {
+  const ant = res.anterior;
+  const gp = res.gastosPromedio || { total: 0, excel: 0, planta: 0 };
+  const usaProm = modo !== "anterior" && gp.total > 0;
+  return {
+    nomina: ant.nomina, seguridad: ant.seguridad, provisiones: ant.provisiones,
+    gastos: usaProm ? gp.total : ant.gastos, gastosExcel: usaProm ? gp.excel : ant.gastosExcel, gastosPlanta: usaProm ? gp.planta : ant.gastosPlanta,
+    gastosModo: usaProm ? "promedio" : "anterior",
+  };
+}
+
 // nueva = { cuota, plazo, desde: "AAAA-MM" } (la deuda que se quiere probar). operacion = { nomina, seguridad, provisiones, gastos } del mes anterior.
 export function proyectarDeuda({ ymInicio, horizonte = HORIZONTE, escenario = "cons", base, presupuestoMes, operacion, cuotas, colchonPct = COLCHON_DEFECTO, nueva, proveedores, comprasMes }) {
-  const op = { nomina: num(operacion?.nomina), seguridad: num(operacion?.seguridad), provisiones: num(operacion?.provisiones), gastos: num(operacion?.gastos) };
+  const op = { nomina: num(operacion?.nomina), seguridad: num(operacion?.seguridad), provisiones: num(operacion?.provisiones), gastos: num(operacion?.gastos), gastosExcel: num(operacion?.gastosExcel), gastosPlanta: num(operacion?.gastosPlanta), gastosModo: operacion?.gastosModo || "anterior" };
   const opTotal = op.nomina + op.seguridad + op.provisiones + op.gastos;
   const cuotaNueva = Math.max(0, num(nueva?.cuota));
   const plazo = Math.max(1, Math.round(num(nueva?.plazo)) || 1);

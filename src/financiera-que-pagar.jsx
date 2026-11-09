@@ -4,6 +4,7 @@
 // proveedores y a quiénes pagar con ese cupo (cuentas ya ordenadas por urgencia en Estrategia de Pago). Es solo lectura: no cambia el calendario de Cuentas por Pagar.
 import React, { useEffect, useMemo, useState } from "react";
 import { collection, getDocs, onSnapshot, query, where } from "firebase/firestore";
+import { leerGastosPlanta } from "./financiera-gastos-planta";
 import { cuantoPagarMes, cuotasConLiquidaciones, cumplimientoPresupuesto, repartirCupo, calendarioObligaciones, sumarMes } from "./financiera-cuanto-pagar-calculo";
 
 const C = { ink: "#1A1A2E", slate: "#5A5A7A", border: "#E8E2DB", canvas: "#F7F4F0", white: "#FFFFFF", green: "#2D9E6B", greenBg: "#EBF7F2", red: "#E85D4A", redBg: "#FDF0EE", amber: "#C47C1A", amberBg: "#FDF5E6", blue: "#3D6B9E" };
@@ -18,6 +19,7 @@ const tdL = { ...td, textAlign: "left" };
 export function useMesFinanciero(db, ym) {
   const [liq, setLiq] = useState({});
   const [gastos, setGastos] = useState([]);
+  const [gastosPlanta, setGastosPlanta] = useState([]); // (2026-11-09) gastos de Planta (MAQUILA): entran como provisión
   const [cuotasManuales, setCuotasManuales] = useState([]);
   const [pagosCuotas, setPagosCuotas] = useState([]); // (2026-11-06) pagos de cuotas del mes y plan de liquidaciones (contabilidad_cuotas_pagos)
   const [pres, setPres] = useState([]);
@@ -50,18 +52,19 @@ export function useMesFinanciero(db, ym) {
     const desde = `${sumarMes(ym, -1)}-Q1`;
     const hasta = `${ym}-Q2`;
     const leer = (col) => getDocs(query(collection(db, col), where("periodoId", ">=", desde), where("periodoId", "<=", hasta)));
-    Promise.all([leer("nomina_fiscal_liquidaciones"), leer("nomina_fiscal_destajo_liquidaciones"), leer("nomina_destajo_liquidaciones"), leer("nomina_prestacion_servicios_liquidaciones"), getDocs(collection(db, "costos_gastos_mes"))])
-      .then(([f, fd, d, ps, g]) => {
+    Promise.all([leer("nomina_fiscal_liquidaciones"), leer("nomina_fiscal_destajo_liquidaciones"), leer("nomina_destajo_liquidaciones"), leer("nomina_prestacion_servicios_liquidaciones"), getDocs(collection(db, "costos_gastos_mes")), leerGastosPlanta(db, ym).catch(() => [])])
+      .then(([f, fd, d, ps, g, gpl]) => {
         if (!vivo) return;
         const lista = (s) => s.docs.map((x) => ({ ...x.data(), id: x.id }));
         setLiq({ "Fiscal": lista(f), "Fiscal Destajo": lista(fd), "Destajo": lista(d), "Prestación de Servicios": lista(ps) });
         setGastos(lista(g));
+        setGastosPlanta(gpl);
         setCargando(false);
       })
       .catch((e) => { if (vivo) { setError(e?.message || "No se pudieron leer los datos."); setCargando(false); } });
     return () => { vivo = false; };
   }, [db, ym]);
-  const res = useMemo(() => cuantoPagarMes({ ym, liquidaciones: liq, gastosDocs: gastos, cuotas }), [ym, liq, gastos, cuotas]);
+  const res = useMemo(() => cuantoPagarMes({ ym, liquidaciones: liq, gastosDocs: gastos, gastosPlanta, cuotas }), [ym, liq, gastos, gastosPlanta, cuotas]);
   const cumpl = useMemo(() => cumplimientoPresupuesto({ ym, presupuestos: pres, movimientos: movs, confirmado: res.actual, estimado: res.estimado, hoyISO: `${ym}-15`, diasTotal: 0, diasTranscurridos: 0 }), [ym, pres, movs, res]);
   return { res, cumpl, cargando, error, pagosMapa, cuotas };
 }
