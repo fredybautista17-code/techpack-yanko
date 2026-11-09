@@ -8,7 +8,8 @@ import { C, caja, Boton, Ventana, Tarjeta } from "./financiera-cuanto-pagar";
 import { sumarMes } from "./financiera-cuanto-pagar-calculo";
 import { HORIZONTE, ESCENARIOS, ingresosBase, presupuestoClientesPorMes, proyectarDeuda, operacionDe } from "./financiera-proyeccion-deuda-calculo";
 import { ultimoCorte, armarProveedoresPagar } from "./financiera-programar-pagos-calculo";
-import { comprasProyectadas, categoriaDeMateriales } from "./financiera-proyeccion-compras-calculo";
+import { comprasParaProyeccion } from "./financiera-proyeccion-compras-calculo";
+import { BASES, CONCEPTOS_PLANTA } from "./financiera-insumos-calculo";
 
 const MESES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
 const etq = (ym) => { const [a, m] = String(ym).split("-").map(Number); return `${MESES[m - 1]} ${String(a).slice(2)}`; };
@@ -37,7 +38,7 @@ const Linea = ({ t, v, color, fuerte, sub }) => (
 );
 
 // Facturas abiertas de Yanko (último corte de Busint) → lo vencido y lo que vence en 30 días.
-function useDeudaProveedores(db) {
+export function useDeudaProveedores(db) {
   const [cortes, setCortes] = useState([]);
   const [facturas, setFacturas] = useState({});
   const [plazos, setPlazos] = useState({});
@@ -72,13 +73,20 @@ export function leerOpciones() {
     escenario: ESCENARIOS.some((x) => x.k === o.escenario) ? o.escenario : "cons",
     colchonPct: [0, 0.1, 0.2].includes(o.colchonPct) ? o.colchonPct : 0.1,
     incluirCompras: o.incluirCompras !== false,
-    catMat: typeof o.catMat === "string" ? o.catMat : "",
+    catsOperar: Array.isArray(o.catsOperar) ? o.catsOperar.filter((x) => typeof x === "string") : null, // null = la categoría de telas e insumos
+    conceptosFuera: Array.isArray(o.conceptosFuera) ? o.conceptosFuera.filter((x) => typeof x === "string") : CONCEPTOS_PLANTA,
+    baseOperar: BASES.some((b) => b.k === o.baseOperar) ? o.baseOperar : "ultimo",
     plazoCompra: [0, 1, 2].includes(o.plazoCompra) ? o.plazoCompra : 1,
     gastosModo: o.gastosModo === "anterior" ? "anterior" : "promedio",
   };
 }
-function guardarOpciones(o) {
-  try { window.localStorage.setItem(OPC_KEY, JSON.stringify(o)); } catch (e) { /* sin almacenamiento: no pasa nada */ }
+// Mezcla con lo ya guardado: cada pantalla (Proyección de Deuda, Insumos y telas) guarda solo sus propios ajustes.
+export function guardarOpciones(parcial) {
+  try {
+    let actual = {};
+    try { actual = JSON.parse(window.localStorage.getItem(OPC_KEY) || "{}") || {}; } catch (e) { actual = {}; }
+    window.localStorage.setItem(OPC_KEY, JSON.stringify({ ...actual, ...parcial }));
+  } catch (e) { /* sin almacenamiento: no pasa nada */ }
 }
 
 // Lo que sale y lo que queda libre MES A MES según la Proyección de Deuda (sin deuda nueva simulada), para Estrategia de Pago y Vencimientos.
@@ -90,11 +98,13 @@ export function useProyeccionMensual(db, horizonte = 26) {
   const [cacheBusint, setCacheBusint] = useState(null);
   const [presClientes, setPresClientes] = useState([]);
   const [presupuestos, setPresupuestos] = useState([]);
+  const [compras, setCompras] = useState([]);
   const [catLista, setCatLista] = useState([]);
   const [catPorConcepto, setCatPorConcepto] = useState([]);
   useEffect(() => {
     const e = () => {};
     const u = [
+      onSnapshot(collection(db, "contabilidad_compras"), (s) => setCompras(s.docs.map((d) => ({ ...d.data(), id: d.id }))), e),
       onSnapshot(doc(db, "financiera_ingresos_cache", "total_yanko"), (s) => setCacheTotal(s.exists() ? s.data() : null), e),
       onSnapshot(doc(db, "financiera_ingresos_cache", "main"), (s) => setCacheBusint(s.exists() ? s.data() : null), e),
       onSnapshot(collection(db, "contabilidad_presupuestos_cliente"), (s) => setPresClientes(s.docs.map((d) => ({ ...d.data(), id: d.id }))), e),
@@ -109,10 +119,8 @@ export function useProyeccionMensual(db, horizonte = 26) {
   const presupuestoMes = useMemo(() => presupuestoClientesPorMes(presClientes), [presClientes]);
   const ant = datos.res.anterior;
   const operacion = useMemo(() => operacionDe(datos.res, opc.gastosModo), [datos.res, opc]);
-  const catEfectiva = opc.catMat && catLista.some((c) => c.id === opc.catMat) ? opc.catMat : categoriaDeMateriales(catLista);
-  const comprasMes = useMemo(() => (opc.incluirCompras && catEfectiva
-    ? comprasProyectadas({ presupuestos, categoriasLista: catLista, categoriasPorConcepto: catPorConcepto, categoriaId: catEfectiva, ymInicio: ymHoy, horizonte, plazoMeses: opc.plazoCompra }).pagoMes
-    : null), [opc, catEfectiva, presupuestos, catLista, catPorConcepto, ymHoy, horizonte]);
+  const comprasCalc = useMemo(() => comprasParaProyeccion({ compras, presupuestos, categoriasLista: catLista, categoriasPorConcepto: catPorConcepto, opc, ymHoy, horizonte }), [compras, presupuestos, catLista, catPorConcepto, opc, ymHoy, horizonte]);
+  const comprasMes = opc.incluirCompras ? comprasCalc.pagoMes : null;
   const r = useMemo(() => proyectarDeuda({
     ymInicio: ymHoy, horizonte, escenario: opc.escenario, base, presupuestoMes, operacion, cuotas: datos.cuotas, colchonPct: opc.colchonPct,
     nueva: { cuota: 0, plazo: 1, desde: sumarMes(ymHoy, 1) }, proveedores: null, comprasMes,
@@ -129,7 +137,7 @@ export function useProyeccionMensual(db, horizonte = 26) {
   };
 }
 
-export default function ProyeccionDeudaView({ db, isAdmin, vistaAnterior, vistaPresupuesto }) {
+export default function ProyeccionDeudaView({ db, isAdmin, vistaAnterior, vistaPresupuesto, onIrInsumos }) {
   const ymHoy = useMemo(() => new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 7), []);
   const datos = useMesFinanciero(db, ymHoy);
   const deudaProv = useDeudaProveedores(db);
@@ -151,26 +159,27 @@ export default function ProyeccionDeudaView({ db, isAdmin, vistaAnterior, vistaP
   const [verPresupuesto, setVerPresupuesto] = useState(false);
   // (2026-11-09) Compras de materiales que se vienen (del presupuesto de Proyección): se restan antes del dinero para proveedores.
   const [incluirCompras, setIncluirCompras] = useState(() => leerOpciones().incluirCompras);
-  const [catMat, setCatMat] = useState(() => leerOpciones().catMat);
   const [plazoCompra, setPlazoCompra] = useState(() => leerOpciones().plazoCompra);
-  useEffect(() => { guardarOpciones({ escenario, colchonPct, incluirCompras, catMat, plazoCompra, gastosModo }); }, [escenario, colchonPct, incluirCompras, catMat, plazoCompra, gastosModo]);
+  useEffect(() => { guardarOpciones({ escenario, colchonPct, incluirCompras, plazoCompra, gastosModo }); }, [escenario, colchonPct, incluirCompras, plazoCompra, gastosModo]);
   const [presupuestos, setPresupuestos] = useState([]);
+  const [comprasReales, setComprasReales] = useState([]);
   const [catLista, setCatLista] = useState([]);
   const [catPorConcepto, setCatPorConcepto] = useState([]);
   useEffect(() => {
     const e = () => {};
     const u = [
+      onSnapshot(collection(db, "contabilidad_compras"), (s) => setComprasReales(s.docs.map((d) => ({ ...d.data(), id: d.id }))), e),
       onSnapshot(collection(db, "contabilidad_presupuestos"), (s) => setPresupuestos(s.docs.map((d) => ({ ...d.data(), id: d.id }))), e),
       onSnapshot(collection(db, "contabilidad_proyeccion_categorias_lista"), (s) => setCatLista(s.docs.map((d) => ({ ...d.data(), id: d.id }))), e),
       onSnapshot(collection(db, "contabilidad_proyeccion_categorias_concepto"), (s) => setCatPorConcepto(s.docs.map((d) => ({ ...d.data(), codConcep: d.id }))), e),
     ];
     return () => u.forEach((f) => f());
   }, [db]);
-  const catEfectiva = catMat && catLista.some((c) => c.id === catMat) ? catMat : categoriaDeMateriales(catLista);
-  const compras = useMemo(() => comprasProyectadas({
-    presupuestos, categoriasLista: catLista, categoriasPorConcepto: catPorConcepto, categoriaId: catEfectiva, ymInicio: ymHoy, horizonte: HORIZONTE, plazoMeses: plazoCompra,
-  }), [presupuestos, catLista, catPorConcepto, catEfectiva, ymHoy, plazoCompra]);
-  const comprasMes = incluirCompras && catEfectiva ? compras.pagoMes : null;
+  const opcInsumos = useMemo(() => leerOpciones(), []); // categorías, conceptos y base se eligen en «Insumos y telas» (se leen al abrir la pantalla)
+  const compras = useMemo(() => comprasParaProyeccion({
+    compras: comprasReales, presupuestos, categoriasLista: catLista, categoriasPorConcepto: catPorConcepto, opc: { ...opcInsumos, plazoCompra }, ymHoy, horizonte: HORIZONTE,
+  }), [comprasReales, presupuestos, catLista, catPorConcepto, opcInsumos, ymHoy, plazoCompra]);
+  const comprasMes = incluirCompras ? compras.pagoMes : null;
 
   const base = useMemo(() => ingresosBase(cacheTotal || cacheBusint, ymHoy, 6), [cacheTotal, cacheBusint, ymHoy]);
   const presupuestoMes = useMemo(() => presupuestoClientesPorMes(presClientes), [presClientes]);
@@ -232,23 +241,19 @@ export default function ProyeccionDeudaView({ db, isAdmin, vistaAnterior, vistaP
           <div style={{ flex: 1 }} />
           {incluirCompras ? (
             <>
-              <span style={{ fontSize: 12, color: C.slate }}>Categoría:</span>
-              <select value={catEfectiva} onChange={(e) => setCatMat(e.target.value)} style={{ ...entrada, width: "auto", maxWidth: 260 }}>
-                {!catEfectiva ? <option value="">Elige la categoría de telas…</option> : null}
-                {catLista.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
-              </select>
               <span style={{ fontSize: 12, color: C.slate }}>Se paga a:</span>
               <select value={plazoCompra} onChange={(e) => setPlazoCompra(Number(e.target.value))} style={{ ...entrada, width: "auto" }}>
                 <option value={0}>Contado (el mismo mes)</option><option value={1}>30 días</option><option value={2}>60 días</option>
               </select>
+              {onIrInsumos ? <Boton chico onClick={onIrInsumos}>Ver «Insumos y telas»</Boton> : null}
             </>
           ) : null}
         </div>
         <div style={{ fontSize: 11.5, color: C.slate, marginTop: 6, lineHeight: 1.5 }}>
           {!incluirCompras ? "Apagado: la proyección solo cuenta nómina, gastos y cuotas, y deja libre la plata que en realidad se va en comprar tela e insumos."
-            : !catEfectiva ? "No encuentro la categoría de telas e insumos en Proyección. Elígela arriba (o créala en Financiera → Administración)."
-            : compras.sinDatos ? "La categoría elegida no tiene presupuesto en Proyección: no hay compras que restar. Crea el presupuesto de un mes abajo, en «Presupuesto de compras (Proyección)»."
-            : `Promedio presupuestado: ${fm(compras.base.promedio)} al mes (${compras.base.meses.map((x) => etq(x.ym)).join(", ")}); los meses sin presupuesto usan ese promedio. Se resta lo que se pague desde ${etqLargo(sumarMes(ymHoy, plazoCompra))}; lo comprado hasta hoy ya está en Cuentas por Pagar.`}
+            : compras.fuente === "ninguna" ? "No hay categorías de insumos y telas elegidas: elígelas en «Insumos y telas»."
+            : compras.fuente === "real" ? `Necesidad mensual para operar: ${fm(compras.provision)} (según lo realmente comprado: ${compras.nec.usados.map((x) => etq(x)).join(", ")}). Se resta lo que se pague desde ${etqLargo(sumarMes(ymHoy, plazoCompra))}; lo comprado hasta hoy ya está en Cuentas por Pagar. Categorías y base se eligen en «Insumos y telas».`
+            : `Todavía no hay compras reales cargadas: se usa el presupuesto de Proyección (${fm(compras.provision)} al mes). Se resta lo que se pague desde ${etqLargo(sumarMes(ymHoy, plazoCompra))}.`}
         </div>
       </div>
 
@@ -348,7 +353,7 @@ export default function ProyeccionDeudaView({ db, isAdmin, vistaAnterior, vistaP
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 13.5, fontWeight: 800 }}>Presupuesto de compras (Proyección)</div>
-              <div style={{ fontSize: 12, color: C.slate }}>Aquí se crean y se ajustan los presupuestos por mes de compras (telas, insumos, servicios…). De la categoría de telas e insumos salen las «Compras de materiales proyectadas» de arriba.</div>
+              <div style={{ fontSize: 12, color: C.slate }}>Aquí se crean y se ajustan los presupuestos por mes de compras (telas, insumos, servicios…). El presupuesto se compara con lo real en «Insumos y telas».</div>
             </div>
             <Boton chico onClick={() => setVerPresupuesto((v) => !v)}>{verPresupuesto ? "Ocultar" : "Ver"}</Boton>
           </div>
@@ -395,7 +400,7 @@ function DetalleMes({ m, r, escenario, pctColchon, total, onClose }) {
         <Linea t="Gastos de Planta (repuestos, hilazas…)" sub={op.gastosModo === "promedio" ? "Promedio de los meses anteriores con gastos registrados en Planta" : "Del mes anterior"} v={money(op.gastosPlanta)} />
         <Linea fuerte t="Total que sale sí o sí" v={money(m.operacion)} />
       </Bloque>
-      {m.compras > 0 ? <Bloque titulo="Compras de materiales proyectadas"><Linea t="Pago de tela e insumos que se compran más adelante" sub="Del presupuesto de Proyección, según el plazo de pago elegido" v={money(m.compras)} /></Bloque> : null}
+      {m.compras > 0 ? <Bloque titulo="Compras de materiales proyectadas"><Linea t="Pago de tela e insumos que se compran más adelante" sub="Provisión según lo realmente comprado (Insumos y telas), con el plazo de pago elegido" v={money(m.compras)} /></Bloque> : null}
       <Bloque titulo="Cuotas de endeudamiento este mes">
         {m.cuotasLista.length ? m.cuotasLista.map((x, k) => <Linea key={x.id || k} t={x.nombre} sub={`${x.acreedor ? `${x.acreedor} · ` : ""}${x.hasta ? (x.hasta === m.ym ? "Última cuota este mes" : `Termina en ${etq(x.hasta)}`) : "Sin fecha de fin"}`} v={money(x.valorMensual)} />) : <Linea t="Sin cuotas vigentes: ya no hay deuda por cuotas." v="$0" />}
         <Linea fuerte t="Total cuotas" v={money(m.cuotas)} />

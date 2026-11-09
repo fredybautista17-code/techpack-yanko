@@ -8,6 +8,7 @@ import QuePagarPrimero from "./financiera-que-pagar";
 import { IngresosView } from "./financiera-ingresos";
 import ProgramarPagosView from "./financiera-programar-pagos";
 import ProyeccionDeudaView, { useProyeccionMensual } from "./financiera-proyeccion-deuda";
+import InsumosOperarView from "./financiera-insumos";
 import DireccionFinancieraView from "./financiera-direccion";
 
 const firebaseConfig = {
@@ -3376,6 +3377,7 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
     { id: "ingresos", icon: "💵", label: "Ingresos" },
     { id: "clientes", icon: "🤝", label: "Presupuesto Clientes" },
     { id: "programacion_pagos", icon: "🧭", label: "Proyección de Deuda" },
+    { id: "insumos_operar", icon: "🧵", label: "Insumos y telas" },
     { id: "pagos_proveedores", icon: "🧾", label: "Pagos a Proveedores" },
     { id: "vencimientos", icon: "📆", label: "Vencimientos" },
     { id: "estrategia_pago", icon: "📌", label: "Estrategia de Pago" },
@@ -3495,6 +3497,7 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
             <ProyeccionDeudaView
               db={db}
               isAdmin={isAdmin}
+              onIrInsumos={() => setSubView("insumos_operar")}
               vistaPresupuesto={
                 <ProyeccionView
                   compras={compras}
@@ -3513,6 +3516,7 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
               vistaAnterior={<ProgramacionPagosView presupuestosCliente={presupuestosCliente} presupuestos={presupuestos} calendarioCxp={calendarioCxp} />}
             />
           )}
+          {subView === "insumos_operar" && <InsumosOperarView db={db} />}
           {subView === "vencimientos" && (
             <VencimientosView
               db={db}

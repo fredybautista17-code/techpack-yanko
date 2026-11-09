@@ -3,6 +3,7 @@
 // Regla: lo comprado hasta hoy YA está en Cuentas por Pagar (se paga con «para proveedores»); aquí solo entra lo que se compre desde el mes siguiente,
 // y se paga «plazoMeses» después (0 = en el mismo mes que se compra).
 import { sumarMes } from "./financiera-cuanto-pagar-calculo";
+import { necesidadOperar, pagoDeProvision } from "./financiera-insumos-calculo";
 
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 const norm = (t) => String(t ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
@@ -41,4 +42,29 @@ export function comprasProyectadas({ presupuestos, categoriasLista, categoriasPo
     pagoMes[ym] = num(comprasMes[sumarMes(ym, -plazo)]); // solo hay compra futura si el mes de compra es > ymInicio
   }
   return { comprasMes, pagoMes, base: { meses: conDatos.map((ym) => ({ ym, total: porMes[ym] })), promedio }, sinDatos: !conDatos.length };
+}
+
+// Categorías que cuentan como insumos y telas: las que el usuario eligió en «Insumos y telas» o, si nunca eligió, la de telas e insumos.
+export function categoriasElegidas(catsOperar, categoriasLista) {
+  if (Array.isArray(catsOperar)) return catsOperar;
+  const c = categoriaDeMateriales(categoriasLista);
+  return c ? [c] : [];
+}
+
+// Lo que la Proyección de Deuda resta por compras de insumos y telas. Fuente: lo REAL comprado (provisión mensual de «Insumos y telas»); si todavía no hay
+// compras reales cargadas, el presupuesto de Proyección. opc = { catsOperar, conceptosFuera, baseOperar, plazoCompra }.
+// → { pagoMes | null, fuente: "real" | "presupuesto" | "ninguna", provision, nec }
+export function comprasParaProyeccion({ compras, presupuestos, categoriasLista, categoriasPorConcepto, opc, ymHoy, horizonte }) {
+  const catsSel = categoriasElegidas(opc.catsOperar, categoriasLista);
+  const nec = necesidadOperar({ compras, presupuestos, categoriasLista, categoriasPorConcepto, catsSel, conceptosFuera: opc.conceptosFuera, ymHoy, baseK: opc.baseOperar });
+  if (!catsSel.length) return { pagoMes: null, fuente: "ninguna", provision: 0, nec };
+  if (!nec.sinDatos) return { pagoMes: pagoDeProvision({ provision: nec.totalNecesito, ymInicio: ymHoy, horizonte, plazoMeses: opc.plazoCompra }), fuente: "real", provision: nec.totalNecesito, nec };
+  const pagoMes = {};
+  let provision = 0;
+  catsSel.forEach((id) => {
+    const c = comprasProyectadas({ presupuestos, categoriasLista, categoriasPorConcepto, categoriaId: id, ymInicio: ymHoy, horizonte, plazoMeses: opc.plazoCompra });
+    Object.keys(c.pagoMes).forEach((ym) => { pagoMes[ym] = (pagoMes[ym] || 0) + c.pagoMes[ym]; });
+    provision += c.base.promedio;
+  });
+  return { pagoMes, fuente: "presupuesto", provision, nec };
 }
