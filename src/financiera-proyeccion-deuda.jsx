@@ -62,6 +62,72 @@ function useDeudaProveedores(db) {
   }, [cortes, facturas, plazos, manuales]);
 }
 
+// (2026-11-09) Los ajustes que Fredy deja en esta pantalla (ingreso, colchón, compras de materiales) se recuerdan en el navegador para que
+// Estrategia de Pago y Vencimientos calculen con los mismos supuestos. Si no hay nada guardado, valen los de siempre.
+const OPC_KEY = "atlas_proyeccion_deuda_opciones";
+function leerOpciones() {
+  let o = {};
+  try { o = JSON.parse(window.localStorage.getItem(OPC_KEY) || "{}") || {}; } catch (e) { o = {}; }
+  return {
+    escenario: ESCENARIOS.some((x) => x.k === o.escenario) ? o.escenario : "cons",
+    colchonPct: [0, 0.1, 0.2].includes(o.colchonPct) ? o.colchonPct : 0.1,
+    incluirCompras: o.incluirCompras !== false,
+    catMat: typeof o.catMat === "string" ? o.catMat : "",
+    plazoCompra: [0, 1, 2].includes(o.plazoCompra) ? o.plazoCompra : 1,
+  };
+}
+function guardarOpciones(o) {
+  try { window.localStorage.setItem(OPC_KEY, JSON.stringify(o)); } catch (e) { /* sin almacenamiento: no pasa nada */ }
+}
+
+// Lo que sale y lo que queda libre MES A MES según la Proyección de Deuda (sin deuda nueva simulada), para Estrategia de Pago y Vencimientos.
+// meses[ym] = { ingreso, operacion, compras, cuotas, salidas (= operación + compras + cuotas), margen, colchon, paraProveedores }.
+export function useProyeccionMensual(db, horizonte = 26) {
+  const ymHoy = useMemo(() => new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 7), []);
+  const datos = useMesFinanciero(db, ymHoy);
+  const [cacheTotal, setCacheTotal] = useState(null);
+  const [cacheBusint, setCacheBusint] = useState(null);
+  const [presClientes, setPresClientes] = useState([]);
+  const [presupuestos, setPresupuestos] = useState([]);
+  const [catLista, setCatLista] = useState([]);
+  const [catPorConcepto, setCatPorConcepto] = useState([]);
+  useEffect(() => {
+    const e = () => {};
+    const u = [
+      onSnapshot(doc(db, "financiera_ingresos_cache", "total_yanko"), (s) => setCacheTotal(s.exists() ? s.data() : null), e),
+      onSnapshot(doc(db, "financiera_ingresos_cache", "main"), (s) => setCacheBusint(s.exists() ? s.data() : null), e),
+      onSnapshot(collection(db, "contabilidad_presupuestos_cliente"), (s) => setPresClientes(s.docs.map((d) => ({ ...d.data(), id: d.id }))), e),
+      onSnapshot(collection(db, "contabilidad_presupuestos"), (s) => setPresupuestos(s.docs.map((d) => ({ ...d.data(), id: d.id }))), e),
+      onSnapshot(collection(db, "contabilidad_proyeccion_categorias_lista"), (s) => setCatLista(s.docs.map((d) => ({ ...d.data(), id: d.id }))), e),
+      onSnapshot(collection(db, "contabilidad_proyeccion_categorias_concepto"), (s) => setCatPorConcepto(s.docs.map((d) => ({ ...d.data(), codConcep: d.id }))), e),
+    ];
+    return () => u.forEach((f) => f());
+  }, [db]);
+  const opc = useMemo(() => leerOpciones(), []);
+  const base = useMemo(() => ingresosBase(cacheTotal || cacheBusint, ymHoy, 6), [cacheTotal, cacheBusint, ymHoy]);
+  const presupuestoMes = useMemo(() => presupuestoClientesPorMes(presClientes), [presClientes]);
+  const ant = datos.res.anterior;
+  const operacion = useMemo(() => ({ nomina: ant.nomina, seguridad: ant.seguridad, provisiones: ant.provisiones, gastos: ant.gastos }), [ant]);
+  const catEfectiva = opc.catMat && catLista.some((c) => c.id === opc.catMat) ? opc.catMat : categoriaDeMateriales(catLista);
+  const comprasMes = useMemo(() => (opc.incluirCompras && catEfectiva
+    ? comprasProyectadas({ presupuestos, categoriasLista: catLista, categoriasPorConcepto: catPorConcepto, categoriaId: catEfectiva, ymInicio: ymHoy, horizonte, plazoMeses: opc.plazoCompra }).pagoMes
+    : null), [opc, catEfectiva, presupuestos, catLista, catPorConcepto, ymHoy, horizonte]);
+  const r = useMemo(() => proyectarDeuda({
+    ymInicio: ymHoy, horizonte, escenario: opc.escenario, base, presupuestoMes, operacion, cuotas: datos.cuotas, colchonPct: opc.colchonPct,
+    nueva: { cuota: 0, plazo: 1, desde: sumarMes(ymHoy, 1) }, proveedores: null, comprasMes,
+  }), [ymHoy, horizonte, opc, base, presupuestoMes, operacion, datos.cuotas, comprasMes]);
+  const meses = useMemo(() => {
+    const m = {};
+    r.meses.forEach((x) => { m[x.ym] = { ingreso: x.ingreso, operacion: x.operacion, compras: x.compras, cuotas: x.cuotas, salidas: x.operacion + x.compras + x.cuotas, margen: x.margen, colchon: x.colchon, paraProveedores: x.paraProveedores }; });
+    return m;
+  }, [r]);
+  const esc = ESCENARIOS.find((x) => x.k === opc.escenario);
+  return {
+    listo: !datos.cargando, error: datos.error, meses, ymHoy, sinIngresos: !base, sinNomina: !ant.hayDatos,
+    resumen: `ingreso ${esc ? esc.txt.toLowerCase() : "conservador"}, colchón del ${Math.round(opc.colchonPct * 100)} %, ${comprasMes ? `compras de materiales a ${opc.plazoCompra === 0 ? "contado" : `${opc.plazoCompra * 30} días`}` : "sin compras de materiales"}`,
+  };
+}
+
 export default function ProyeccionDeudaView({ db, isAdmin, vistaAnterior }) {
   const ymHoy = useMemo(() => new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 7), []);
   const datos = useMesFinanciero(db, ymHoy);
@@ -73,17 +139,18 @@ export default function ProyeccionDeudaView({ db, isAdmin, vistaAnterior }) {
   useEffect(() => onSnapshot(doc(db, "financiera_ingresos_cache", "main"), (s) => setCacheBusint(s.exists() ? s.data() : null), () => {}), [db]);
   useEffect(() => onSnapshot(collection(db, "contabilidad_presupuestos_cliente"), (s) => setPresClientes(s.docs.map((d) => ({ ...d.data(), id: d.id }))), () => {}), [db]);
 
-  const [escenario, setEscenario] = useState("cons");
-  const [colchonPct, setColchonPct] = useState(0.1);
+  const [escenario, setEscenario] = useState(() => leerOpciones().escenario);
+  const [colchonPct, setColchonPct] = useState(() => leerOpciones().colchonPct);
   const [cuotaTxt, setCuotaTxt] = useState("");
   const [plazoTxt, setPlazoTxt] = useState("24");
   const [desde, setDesde] = useState(sumarMes(ymHoy, 1));
   const [detalle, setDetalle] = useState(null);
   const [verAnterior, setVerAnterior] = useState(false);
   // (2026-11-09) Compras de materiales que se vienen (del presupuesto de Proyección): se restan antes del dinero para proveedores.
-  const [incluirCompras, setIncluirCompras] = useState(true);
-  const [catMat, setCatMat] = useState("");
-  const [plazoCompra, setPlazoCompra] = useState(1);
+  const [incluirCompras, setIncluirCompras] = useState(() => leerOpciones().incluirCompras);
+  const [catMat, setCatMat] = useState(() => leerOpciones().catMat);
+  const [plazoCompra, setPlazoCompra] = useState(() => leerOpciones().plazoCompra);
+  useEffect(() => { guardarOpciones({ escenario, colchonPct, incluirCompras, catMat, plazoCompra }); }, [escenario, colchonPct, incluirCompras, catMat, plazoCompra]);
   const [presupuestos, setPresupuestos] = useState([]);
   const [catLista, setCatLista] = useState([]);
   const [catPorConcepto, setCatPorConcepto] = useState([]);

@@ -7,7 +7,7 @@ import { CuantoPagarMesView, EndeudamientoView } from "./financiera-cuanto-pagar
 import QuePagarPrimero from "./financiera-que-pagar";
 import { IngresosView } from "./financiera-ingresos";
 import ProgramarPagosView from "./financiera-programar-pagos";
-import ProyeccionDeudaView from "./financiera-proyeccion-deuda";
+import ProyeccionDeudaView, { useProyeccionMensual } from "./financiera-proyeccion-deuda";
 import DireccionFinancieraView from "./financiera-direccion";
 
 const firebaseConfig = {
@@ -2441,7 +2441,27 @@ function ProgramacionPagosView({ presupuestosCliente, presupuestos, calendarioCx
 // hasta que se pulse "Aplicar esta sugerencia", que reemplaza el calendario
 // de cada proveedor incluido en el plan (mismo guardarCalendarioProveedor
 // que se usa más abajo en aplicarPlanEstrategia, uno por uno).
-function EstrategiaPagoView({ db, cortes, manuales, calendario, presupuestosCliente, presupuestos, nombresProveedor, onAplicarPlan, isAdmin }) {
+// (2026-11-09, a pedido de Fredy) Estrategia de Pago y Vencimientos ya no usan el presupuesto viejo de compras de Proyección: toman lo que sale y lo que
+// queda libre de la Proyección de Deuda (nómina, seguridad social, provisiones, gastos, compras de materiales y cuotas), con los mismos ajustes que
+// se dejaron en esa pantalla. Este aviso dice con qué supuestos se calculó y si falta algún dato.
+function AvisoProyeccion({ proy, texto }) {
+  const alertas = [
+    proy.error ? `No pude leer los datos de la Proyección de Deuda: ${proy.error}` : null,
+    !proy.listo && !proy.error ? "Calculando con la Proyección de Deuda…" : null,
+    proy.listo && proy.sinIngresos ? "Todavía no hay abonos de clientes guardados: el ingreso sale en $0. Entra a Financiera → Ingresos y pulsa «Traer desde TNS y Busint»." : null,
+    proy.listo && proy.sinNomina ? "No hay nómina confirmada del mes anterior: lo que sale se vería menor de lo real. Confirma las quincenas en Pago de Nómina." : null,
+  ].filter(Boolean);
+  return (
+    <div style={{ marginBottom: 18 }}>
+      <div style={{ fontSize: 12, color: C.slate, lineHeight: 1.5, background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 10, padding: "8px 12px" }}>
+        {texto} Calculado con la <b>Proyección de Deuda</b> ({proy.resumen}). Para cambiar esos supuestos, ajústalos en Financiera → Proyección de Deuda.
+      </div>
+      {alertas.map((a) => <div key={a} style={{ marginTop: 6, background: C.amberBg, color: C.amber, borderRadius: 10, padding: "8px 12px", fontSize: 12.5 }}>{a}</div>)}
+    </div>
+  );
+}
+function EstrategiaPagoView({ db, cortes, manuales, calendario, nombresProveedor, onAplicarPlan, isAdmin }) {
+  const proy = useProyeccionMensual(db);
   const [aplicando, setAplicando] = useState(false);
   const [aplicado, setAplicado] = useState(false);
 
@@ -2482,16 +2502,13 @@ function EstrategiaPagoView({ db, cortes, manuales, calendario, presupuestosClie
     return mb - ma;
   });
 
-  // Disponible proyectado por mes: mismo cruce que Programación de Pagos
-  // (Ingresos esperados − Egresos comprometidos), pero SIN restar lo que ya
-  // esté en el calendario de Cuentas por Pagar -- esta vista replantea desde
-  // cero cuánto hay para prometer, no lo que ya se prometió antes.
+  // Disponible proyectado por mes (2026-11-09): lo que la Proyección de Deuda deja libre para proveedores (ingreso − nómina, gastos, compras de
+  // materiales y cuotas − colchón). Es el mismo cupo de esa pantalla, así hay un solo número. No resta lo que ya esté en el calendario de Cuentas
+  // por Pagar -- esta vista replantea desde cero cuánto hay para prometer, no lo que ya se prometió antes.
   const meses = proximosMeses(24);
   const disponibleMes = {};
   meses.forEach((m) => {
-    const ingresosEsperados = (presupuestosCliente || []).filter((p) => p.mes === m).reduce((s, p) => s + (p.monto || 0), 0);
-    const egresosComprometidos = (presupuestos || []).filter((p) => p.mes === m).reduce((s, p) => s + (p.totalProyectado || 0), 0);
-    disponibleMes[m] = Math.max(ingresosEsperados - egresosComprometidos, 0);
+    disponibleMes[m] = proy.listo ? Math.max((proy.meses[m] && proy.meses[m].paraProveedores) || 0, 0) : 0;
   });
 
   // Reparto: recorre los proveedores en orden de urgencia y les va asignando
@@ -2537,6 +2554,7 @@ function EstrategiaPagoView({ db, cortes, manuales, calendario, presupuestosClie
           Ordena todas las cuentas por pagar del corte más reciente por antigüedad (91+ días primero) y reparte el disponible proyectado de caja mes a mes, empezando siempre por lo más vencido. Es una sugerencia de lectura — no cambia nada hasta que se aplique.
         </p>
       </div>
+      <AvisoProyeccion proy={proy} texto="El cupo de cada mes es lo que queda libre para pagar proveedores después de nómina, gastos, compras de materiales, cuotas y colchón." />
       {db ? <QuePagarPrimero db={db} items={filasOrdenadas.map((f) => { const tier = urgencia(f)[0]; return { nombre: f.nombreMostrado || f.nombre, total: f.total, tier, etiqueta: ETIQUETAS_TIER[tier] }; })} /> : null}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 14, marginBottom: 22 }}>
         <KPI icon="📌" label="Deuda total (corte más reciente + manuales)" value={fmtCOP(totalDeuda)} color={C.violet} bg={C.violetBg} />
@@ -2582,7 +2600,7 @@ function EstrategiaPagoView({ db, cortes, manuales, calendario, presupuestosClie
           {isAdmin && (
             <div style={{ marginTop: 20, display: "flex", justifyContent: "flex-end", gap: 10, alignItems: "center" }}>
               {aplicado && <span style={{ fontSize: 12, color: C.green, fontWeight: 700 }}>✓ Plan aplicado al calendario de Cuentas por Pagar</span>}
-              <Btn onClick={aplicar} disabled={aplicando || !Object.keys(planPorProveedor).length}>
+              <Btn onClick={aplicar} disabled={aplicando || !proy.listo || !Object.keys(planPorProveedor).length}>
                 {aplicando ? "Aplicando..." : "✅ Aplicar esta sugerencia"}
               </Btn>
             </div>
@@ -2803,7 +2821,8 @@ function ColumnaSemana({ titulo, total, tono, tarjetas, detalleFacturasPorProvee
     </div>
   );
 }
-function VencimientosView({ cortes, manuales, presupuestosCliente, presupuestos, nombresProveedor }) {
+function VencimientosView({ db, cortes, manuales, nombresProveedor }) {
+  const proy = useProyeccionMensual(db);
   // (2026-09-28, a pedido de Fredy) Botón "Ver todas las semanas" -- por
   // defecto la ventana sigue siendo de 12 semanas (SEMANAS_VENCIMIENTOS);
   // al activarlo se amplía a 104 (2 años) para que prácticamente toda la
@@ -2948,8 +2967,11 @@ function VencimientosView({ cortes, manuales, presupuestosCliente, presupuestos,
   let acumulado = 0;
   const filas = semanas.map((s) => {
     const mes = s.slice(0, 7);
-    const ingresosMes = (presupuestosCliente || []).filter((p) => p.mes === mes).reduce((sum, p) => sum + (p.monto || 0), 0);
-    const egresosMes = (presupuestos || []).filter((p) => p.mes === mes).reduce((sum, p) => sum + (p.totalProyectado || 0), 0);
+    // (2026-11-09) Ingreso y salidas del mes según la Proyección de Deuda; si la ventana pasa del horizonte calculado se repite el último mes.
+    const clavesProy = Object.keys(proy.meses).sort();
+    const dato = proy.meses[mes] || proy.meses[clavesProy[clavesProy.length - 1]] || { ingreso: 0, salidas: 0 };
+    const ingresosMes = dato.ingreso;
+    const egresosMes = dato.salidas;
     const nSemanas = semanasPorMes[mes] || 1;
     const ingresosEsperados = ingresosMes / nSemanas;
     const egresosComprometidos = egresosMes / nSemanas;
@@ -2975,10 +2997,11 @@ function VencimientosView({ cortes, manuales, presupuestosCliente, presupuestos,
         <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: C.ink }}>Vencimientos</h2>
         <p style={{ margin: "4px 0 0", fontSize: 13, color: C.slate, maxWidth: 640 }}>
           Semana a semana, cuánto vence en Cuentas por Pagar (fecha real de Busint, más los proveedores manuales que
-          tengan fecha) cruzado contra el disponible proyectado de caja -- Presupuesto Clientes menos Proyección,
-          repartido en partes iguales entre las semanas de cada mes.
+          tengan fecha) cruzado contra el disponible proyectado de caja -- el ingreso esperado menos lo que sale
+          (nómina, gastos, compras de materiales y cuotas), repartido en partes iguales entre las semanas de cada mes.
         </p>
       </div>
+      <AvisoProyeccion proy={proy} texto="«Egresos» es lo que sale sí o sí cada mes (sin colchón)." />
       <div style={{ display: "grid", gridTemplateColumns: "1.1fr 1fr", gap: 14, marginBottom: 20 }}>
         <div style={{ borderRadius: 16, padding: "20px 22px", background: estaSemana.saldoAcumulado >= 0 ? C.greenBg : C.redBg, border: `1.5px solid ${estaSemana.saldoAcumulado >= 0 ? C.green : C.red}` }}>
           <div style={{ fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.03em", color: C.slate, marginBottom: 6 }}>
@@ -3095,7 +3118,7 @@ function VencimientosView({ cortes, manuales, presupuestosCliente, presupuestos,
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
             <thead>
               <tr style={{ background: C.ink }}>
-                {["Semana", "Ingresos esperados", "Egresos comprometidos", "Vence en CxP", "Saldo neto semana", "Saldo acumulado"].map((h) => (
+                {["Semana", "Ingresos esperados", "Sale (nómina, gastos, tela, cuotas)", "Vence en CxP", "Saldo neto semana", "Saldo acumulado"].map((h) => (
                   <th key={h} style={{ padding: "9px 12px", color: C.seam, textAlign: h === "Semana" ? "left" : "right", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>
                     {h}
                   </th>
@@ -3493,10 +3516,9 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
           )}
           {subView === "vencimientos" && (
             <VencimientosView
+              db={db}
               cortes={cortesCxp}
               manuales={manualCxp}
-              presupuestosCliente={presupuestosCliente}
-              presupuestos={presupuestos}
               nombresProveedor={nombresProveedorCxp}
             />
           )}
@@ -3506,8 +3528,6 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
               cortes={cortesCxp}
               manuales={manualCxp}
               calendario={calendarioCxp}
-              presupuestosCliente={presupuestosCliente}
-              presupuestos={presupuestos}
               nombresProveedor={nombresProveedorCxp}
               onAplicarPlan={aplicarPlanEstrategia}
               isAdmin={isAdmin}
