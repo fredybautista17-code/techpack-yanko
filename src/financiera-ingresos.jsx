@@ -74,7 +74,6 @@ function combinarTotalYanko(t, b) {
 // (2026-11-05, a pedido de Fredy) Cada cobro de cliente que llega de TNS/Busint se clasifica en Nómina, Insumos, Tela o Maquinaria. Cada clasificación
 // escribe/actualiza movimientos de ingreso en contabilidad_movimientos (id fijo: ing_<mes>_<cliente>_<ítem>), que es lo que suma «Presupuesto Clientes».
 const CATS_CLASIF = ["Anticipo Nómina", "Anticipo Insumos", "Anticipo Tela", "Anticipo Maquinaria"];
-const corto = (c) => c.replace("Anticipo ", "");
 const slug = (t) => String(t || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
 const NO_APLICA = "__NA__";
 // Clave estable del cliente entre pantallas: así «Total Yanko» y «TNS · Yanko» comparten la misma clasificación.
@@ -91,39 +90,130 @@ const finDeMes = (ym, hoy) => {
 const idMov = (ym, ck, cat) => `ing_${ym}_${slug(ck)}_${slug(cat)}`;
 const idClasif = (ym, ck) => `${ym}__${slug(ck)}`;
 
-function FilaClasificar({ fila, bloqueada, onGuardar }) {
-  const [vals, setVals] = useState(() => Object.fromEntries(CATS_CLASIF.map((c) => [c, fila.items[c] ? String(fila.items[c]) : ""])));
+// (2026-11-10, a pedido de Fredy) La ventana pregunta por RUBRO (los mismos de «Debo pagar»), con un solo selector por ingreso. Cada rubro se
+// traduce al Anticipo de siempre, así «Presupuesto Clientes» y Contabilidad no cambian: Nómina, Seg. social y Provisiones → Anticipo Nómina ·
+// Gastos → Anticipo Insumos · Cuotas → Anticipo Maquinaria · Tela → Anticipo Tela (no cuenta). La clasificación guarda `rubros` (lo que eligió)
+// e `items` (el mismo reparto por Anticipo de antes); lo clasificado antes de este cambio se muestra como el rubro equivalente.
+const RUBROS = [
+  { k: "nomina", etq: "Nómina", cat: "Anticipo Nómina" },
+  { k: "ss", etq: "Seg. social", cat: "Anticipo Nómina" },
+  { k: "prov", etq: "Provisiones", cat: "Anticipo Nómina" },
+  { k: "gastos", etq: "Gastos", cat: "Anticipo Insumos" },
+  { k: "cuotas", etq: "Cuotas", cat: "Anticipo Maquinaria" },
+  { k: "tela", etq: "Tela (no baja «Debo pagar»)", cat: "Anticipo Tela" },
+];
+const LEGADO_A_RUBRO = { "Anticipo Nómina": "nomina", "Anticipo Insumos": "gastos", "Anticipo Maquinaria": "cuotas", "Anticipo Tela": "tela" };
+const rubrosDe = (d) => {
+  if (d?.rubros && Object.values(d.rubros).some((v) => v > 0)) return d.rubros;
+  const o = {};
+  Object.entries(d?.items || {}).forEach(([c, v]) => { if (v > 0 && LEGADO_A_RUBRO[c]) o[LEGADO_A_RUBRO[c]] = v; });
+  return o;
+};
+const itemsDeRubros = (rubros) => {
+  const items = {};
+  RUBROS.forEach((r) => { const v = Math.round(Number(rubros?.[r.k]) || 0); if (v > 0) items[r.cat] = (items[r.cat] || 0) + v; });
+  return items;
+};
+
+function FilaIngreso({ fila, bloqueada, onGuardar }) {
+  const [partes, setPartes] = useState(() => {
+    const ex = RUBROS.filter((r) => fila.rubros[r.k] > 0).map((r) => ({ r: r.k, monto: String(Math.round(fila.rubros[r.k])) }));
+    return ex.length ? ex : [{ r: "", monto: String(Math.round(fila.monto)) }];
+  });
   const [guardando, setGuardando] = useState(false);
-  const suma = CATS_CLASIF.reduce((s, c) => s + (Number(vals[c]) || 0), 0);
-  const resto = Math.round(fila.monto - suma);
-  const excede = resto < -1;
-  const completar = (c) => setVals((v) => ({ ...v, [c]: String(Math.max(0, Math.round((Number(v[c]) || 0) + resto))) }));
-  const yaGuardado = CATS_CLASIF.reduce((s, c) => s + (fila.items[c] || 0), 0);
-  const cambio = Math.round(suma) !== Math.round(yaGuardado);
-  async function guardar() { setGuardando(true); try { await onGuardar(fila, vals); } finally { setGuardando(false); } }
+  const total = Math.round(fila.monto);
+  const suma = partes.reduce((s, p) => s + (Number(p.monto) || 0), 0);
+  const resto = Math.round(total - suma);
+  const unica = partes.length === 1 && resto === 0;
+  const elegidos = {};
+  partes.forEach((p) => { const v = Math.round(Number(p.monto) || 0); if (p.r && v > 0) elegidos[p.r] = (elegidos[p.r] || 0) + v; });
+  const igual = RUBROS.every((r) => (elegidos[r.k] || 0) === Math.round(fila.rubros[r.k] || 0));
+  const completo = partes.every((p) => p.r && Number(p.monto) > 0) && Math.abs(resto) <= 1;
+  const cambiar = (i, campo, valor) => setPartes((ps) => ps.map((p, j) => (j === i ? { ...p, [campo]: valor } : p)));
+  const dividir = () => setPartes((ps) => {
+    if (ps.length === 1 && Math.round(total - (Number(ps[0].monto) || 0)) === 0) {
+      const m1 = Math.round(total / 2);
+      return [{ ...ps[0], monto: String(m1) }, { r: "", monto: String(total - m1) }];
+    }
+    const falta = Math.max(0, Math.round(total - ps.reduce((s, p) => s + (Number(p.monto) || 0), 0)));
+    return [...ps, { r: "", monto: String(falta) }];
+  });
+  const quitar = (i) => setPartes((ps) => {
+    const n = ps.filter((_, j) => j !== i);
+    return n.length === 1 ? [{ ...n[0], monto: String(total) }] : n;
+  });
+  async function guardar() { setGuardando(true); try { await onGuardar(fila, elegidos); } finally { setGuardando(false); } }
+  const sel = { padding: "6px 8px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 12.5, fontFamily: "inherit", background: C.white, color: C.ink, minWidth: 190 };
   return (
-    <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "8px 0", borderTop: `1px solid ${C.border}`, opacity: bloqueada ? 0.5 : 1 }}>
-      <div style={{ width: 150 }}>
-        <div style={{ fontSize: 12.5, fontWeight: 800, color: C.ink }}>{etiquetaMes(fila.ym)}</div>
-        <div style={{ fontSize: 12, color: C.slate, fontVariantNumeric: "tabular-nums" }}>{money(fila.monto)}</div>
+    <div style={{ display: "flex", gap: 12, alignItems: "flex-start", flexWrap: "wrap", padding: "9px 0", borderTop: `1px solid ${C.border}`, opacity: bloqueada ? 0.5 : 1 }}>
+      <div style={{ width: 80, paddingTop: 6, fontSize: 12.5, fontWeight: 800, color: C.ink }}>{etiquetaMes(fila.ym)}</div>
+      <div style={{ width: 120, paddingTop: 6, textAlign: "right", fontSize: 13, fontWeight: 800, color: C.ink, fontVariantNumeric: "tabular-nums" }}>{money(fila.monto)}</div>
+      <div style={{ flex: "1 1 280px", display: "flex", flexDirection: "column", gap: 6 }}>
+        {partes.map((p, i) => (
+          <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <select disabled={bloqueada} value={p.r} onChange={(e) => cambiar(i, "r", e.target.value)} aria-label={`Rubro de ${etiquetaMes(fila.ym)}`}
+              style={{ ...sel, borderColor: p.r ? C.green : C.border, background: p.r ? C.greenBg : C.white }}>
+              <option value="">Elegir rubro…</option>
+              {RUBROS.map((r) => <option key={r.k} value={r.k}>{r.etq}</option>)}
+            </select>
+            {!unica ? <input type="number" min="0" disabled={bloqueada} value={p.monto} onChange={(e) => cambiar(i, "monto", e.target.value)} placeholder="monto"
+              style={{ width: 130, boxSizing: "border-box", padding: "6px 8px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 12.5, fontFamily: "inherit", textAlign: "right", fontVariantNumeric: "tabular-nums" }} /> : null}
+            {partes.length > 1 && !bloqueada ? <button type="button" onClick={() => quitar(i)} title="Quitar esta parte" style={{ background: "none", border: "none", color: C.blue, fontSize: 12, fontWeight: 700, cursor: "pointer", textDecoration: "underline", padding: 0 }}>Quitar</button> : null}
+          </div>
+        ))}
+        {!unica ? <div style={{ fontSize: 12, fontWeight: 800, color: resto < -1 ? C.red : resto > 1 ? C.amber : C.green }}>{resto < -1 ? `Se pasa por ${money(-resto)}` : resto > 1 ? `Falta repartir ${money(resto)}` : "Cuadra ✓"}</div> : null}
       </div>
-      {CATS_CLASIF.map((c) => (
-        <div key={c} style={{ width: 118 }}>
-          <button type="button" disabled={bloqueada || resto <= 0} onClick={() => completar(c)} title="Poner aquí lo que falta por clasificar"
-            style={{ fontSize: 10.5, fontWeight: 800, color: C.slate, textTransform: "uppercase", letterSpacing: 0.3, background: "none", border: "none", padding: 0, cursor: bloqueada || resto <= 0 ? "default" : "pointer", textDecoration: bloqueada || resto <= 0 ? "none" : "underline dotted" }}>{corto(c)}{c === "Anticipo Tela" ? " *" : ""}</button>
-          <input type="number" min="0" disabled={bloqueada} value={vals[c]} onChange={(e) => setVals((v) => ({ ...v, [c]: e.target.value }))} placeholder="0"
-            style={{ display: "block", width: "100%", boxSizing: "border-box", padding: "5px 7px", border: `1.5px solid ${C.border}`, borderRadius: 7, fontSize: 12.5, fontFamily: "inherit", fontVariantNumeric: "tabular-nums" }} />
-        </div>
-      ))}
-      <div style={{ minWidth: 120, fontSize: 12, fontWeight: 800, color: excede ? C.red : resto > 1 ? C.amber : C.green }}>
-        {excede ? `Se pasa por ${money(-resto)}` : resto > 1 ? `Sin clasificar ${money(resto)}` : "Todo clasificado"}
+      <div style={{ display: "flex", gap: 10, alignItems: "center", paddingTop: 3 }}>
+        {!bloqueada && partes.length < RUBROS.length ? <button type="button" onClick={dividir} title="Si este ingreso fue para más de un rubro" style={{ background: "none", border: "none", color: C.blue, fontSize: 12.5, fontWeight: 700, cursor: "pointer", textDecoration: "underline", padding: 0 }}>Dividir</button> : null}
+        <Boton chico variante="oscuro" disabled={bloqueada || guardando || !completo || igual} onClick={guardar}>{guardando ? "Guardando…" : igual && completo ? "Guardado ✓" : "Guardar"}</Boton>
       </div>
-      <Boton chico variante="oscuro" disabled={bloqueada || excede || guardando || !cambio} onClick={guardar}>{guardando ? "Guardando…" : "Guardar"}</Boton>
     </div>
   );
 }
 
-function ClasificarIngresosModal({ filas, soloCk, clientesNombres, mapa, onMapa, onGuardar, onTodoA, onClose }) {
+function GrupoIngresoCliente({ g, valorMapa, clientesNombres, hoyYm, onMapa, onGuardar, onTodoA }) {
+  const [verAnteriores, setVerAnteriores] = useState(false);
+  const ok = valorMapa && valorMapa !== NO_APLICA;
+  const actuales = g.filas.filter((f) => hoyYm && f.ym >= hoyYm);
+  const anteriores = g.filas.filter((f) => !(hoyYm && f.ym >= hoyYm));
+  const pendAnt = anteriores.reduce((s, f) => s + Math.max(0, f.pendiente), 0);
+  const fila = (f) => <FilaIngreso key={`${f.id}-${Math.round(f.monto)}-${Object.values(f.items).join("_")}`} fila={f} bloqueada={!ok} onGuardar={onGuardar} />;
+  const rotulo = { fontSize: 11, fontWeight: 800, color: C.slate, textTransform: "uppercase", letterSpacing: 0.4, margin: "10px 0 2px" };
+  return (
+    <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: "10px 14px", marginBottom: 12 }}>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 4 }}>
+        <div style={{ fontSize: 14, fontWeight: 900, color: C.ink }}>{g.nombre}</div>
+        <div style={{ fontSize: 11.5, color: C.slate }}>en el presupuesto es:</div>
+        <select value={valorMapa} onChange={(e) => onMapa(g.ck, e.target.value)} style={{ padding: "5px 8px", border: `1.5px solid ${ok ? C.border : C.amber}`, borderRadius: 7, fontSize: 12.5, fontFamily: "inherit", maxWidth: 260 }}>
+          <option value="">— elegir cliente del presupuesto —</option>
+          {clientesNombres.map((n) => <option key={n} value={n}>{n}</option>)}
+          <option value={NO_APLICA}>No aplica (no preguntar más)</option>
+        </select>
+        <div style={{ marginLeft: "auto", fontSize: 12, color: C.slate }}>Falta por clasificar: <b style={{ color: g.pendiente > 1 ? C.amber : C.green }}>{money(g.pendiente)}</b></div>
+      </div>
+      {!ok ? <div style={{ fontSize: 12, color: C.amber, marginBottom: 4 }}>Primero elige a qué cliente del presupuesto corresponde (o «No aplica»).</div> : null}
+      {actuales.length ? <><div style={rotulo}>Este mes</div>{actuales.map(fila)}</> : null}
+      {anteriores.length ? (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ border: `1.5px dashed ${C.border}`, borderRadius: 10, padding: "8px 12px", display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", background: C.canvas }}>
+            <div style={{ flex: 1, minWidth: 220, fontSize: 12.5, color: C.ink }}><b>Meses anteriores:</b> {anteriores.length} {anteriores.length === 1 ? "mes" : "meses"} · {pendAnt > 1 ? `${money(pendAnt)} sin clasificar` : "todo clasificado ✓"}</div>
+            <Boton chico onClick={() => setVerAnteriores((v) => !v)}>{verAnteriores ? "Ocultar ▴" : `Ver ${anteriores.length === 1 ? "el mes" : `los ${anteriores.length}`} ▾`}</Boton>
+            {ok && pendAnt > 1 ? (
+              <select value="" onChange={(e) => { if (e.target.value) onTodoA({ ...g, filas: anteriores }, e.target.value); }} aria-label="Pasar todo lo pendiente de los meses anteriores a un rubro"
+                style={{ padding: "5px 8px", border: `1.5px solid ${C.border}`, borderRadius: 7, fontSize: 12.5, fontFamily: "inherit" }}>
+                <option value="">Pasar todo a…</option>
+                {RUBROS.map((r) => <option key={r.k} value={r.k}>{r.etq}</option>)}
+              </select>
+            ) : null}
+          </div>
+          {verAnteriores ? anteriores.map(fila) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ClasificarIngresosModal({ filas, soloCk, clientesNombres, mapa, hoyYm, onMapa, onGuardar, onTodoA, onClose }) {
   const [verTodas, setVerTodas] = useState(false);
   const grupos = useMemo(() => {
     const m = new Map();
@@ -135,11 +225,11 @@ function ClasificarIngresosModal({ filas, soloCk, clientesNombres, mapa, onMapa,
       g.filas.push(f);
       g.pendiente += Math.max(0, f.pendiente);
     });
-    return [...m.values()].map((g) => ({ ...g, filas: g.filas.sort((a, b) => (a.ym < b.ym ? -1 : 1)) })).sort((a, b) => b.pendiente - a.pendiente);
+    return [...m.values()].map((g) => ({ ...g, filas: g.filas.sort((a, b) => (a.ym < b.ym ? 1 : -1)) })).sort((a, b) => b.pendiente - a.pendiente);
   }, [filas, soloCk, verTodas, mapa]);
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: C.white, borderRadius: 14, width: "min(1020px, 95vw)", height: "80vh", minWidth: 520, minHeight: 320, maxWidth: "98vw", maxHeight: "96vh", resize: "both", overflow: "auto", display: "flex", flexDirection: "column", boxShadow: "0 18px 60px rgba(0,0,0,0.3)" }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: C.white, borderRadius: 14, width: "min(900px, 95vw)", height: "80vh", minWidth: 520, minHeight: 320, maxWidth: "98vw", maxHeight: "96vh", resize: "both", overflow: "auto", display: "flex", flexDirection: "column", boxShadow: "0 18px 60px rgba(0,0,0,0.3)" }}>
         <div style={{ padding: "14px 18px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", position: "sticky", top: 0, background: C.white, zIndex: 2 }}>
           <div style={{ fontSize: 17, fontWeight: 900, color: C.ink }}>¿Para qué fue cada ingreso?</div>
           <label style={{ fontSize: 12, color: C.slate, display: "flex", gap: 6, alignItems: "center" }}><input type="checkbox" checked={verTodas} onChange={(e) => setVerTodas(e.target.checked)} /> Ver también los ya clasificados</label>
@@ -147,34 +237,10 @@ function ClasificarIngresosModal({ filas, soloCk, clientesNombres, mapa, onMapa,
         </div>
         <div style={{ padding: "10px 18px 18px", flex: 1 }}>
           <div style={{ fontSize: 12, color: C.slate, lineHeight: 1.5, marginBottom: 8 }}>
-            Reparte lo que entró de cada cliente entre los ítems del presupuesto. Pulsa el nombre del ítem para poner ahí lo que falta. Lo clasificado suma en «Presupuesto Clientes» (el ítem Tela * se muestra pero no cuenta para el total del presupuesto). Lo que dejes sin clasificar te lo vuelvo a preguntar.
+            Elige el rubro de cada ingreso: son los mismos de «Debo pagar», así baja lo que debes en cada uno. Si un ingreso fue para más de un rubro, pulsa «Dividir». En «Presupuesto Clientes» se sigue viendo como antes: Nómina, Seg. social y Provisiones suman a Anticipo Nómina · Gastos a Insumos · Cuotas a Maquinaria. Tela no cuenta en el presupuesto ni baja «Debo pagar». Lo que dejes sin clasificar te lo vuelvo a preguntar.
           </div>
           {!grupos.length ? <div style={{ padding: 24, textAlign: "center", fontSize: 14, color: C.green, fontWeight: 800 }}>Todo está clasificado.</div> : null}
-          {grupos.map((g) => {
-            const valorMapa = mapa[g.ck] || "";
-            const ok = valorMapa && valorMapa !== NO_APLICA;
-            return (
-              <div key={g.ck} style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: "10px 14px", marginBottom: 12 }}>
-                <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 4 }}>
-                  <div style={{ fontSize: 14, fontWeight: 900, color: C.ink }}>{g.nombre}</div>
-                  <div style={{ fontSize: 11.5, color: C.slate }}>en el presupuesto es:</div>
-                  <select value={valorMapa} onChange={(e) => onMapa(g.ck, e.target.value)} style={{ padding: "5px 8px", border: `1.5px solid ${ok ? C.border : C.amber}`, borderRadius: 7, fontSize: 12.5, fontFamily: "inherit", maxWidth: 260 }}>
-                    <option value="">— elegir cliente del presupuesto —</option>
-                    {clientesNombres.map((n) => <option key={n} value={n}>{n}</option>)}
-                    <option value={NO_APLICA}>No aplica (no preguntar más)</option>
-                  </select>
-                  {ok && g.pendiente > 1 ? (
-                    <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-                      <span style={{ fontSize: 11.5, color: C.slate }}>Todo lo pendiente ({money(g.pendiente)}) a:</span>
-                      {CATS_CLASIF.map((c) => <Boton key={c} chico onClick={() => onTodoA(g, c)}>{corto(c)}</Boton>)}
-                    </div>
-                  ) : null}
-                </div>
-                {!ok ? <div style={{ fontSize: 12, color: C.amber, marginBottom: 4 }}>Primero elige a qué cliente del presupuesto corresponde (o «No aplica»).</div> : null}
-                {g.filas.map((f) => <FilaClasificar key={`${f.id}-${Math.round(f.monto)}-${Object.values(f.items).join("_")}`} fila={f} bloqueada={!ok} onGuardar={onGuardar} />)}
-              </div>
-            );
-          })}
+          {grupos.map((g) => <GrupoIngresoCliente key={g.ck} g={g} valorMapa={mapa[g.ck] || ""} clientesNombres={clientesNombres} hoyYm={hoyYm} onMapa={onMapa} onGuardar={onGuardar} onTodoA={onTodoA} />)}
         </div>
       </div>
     </div>
@@ -346,7 +412,7 @@ export function IngresosView({ db, functionsClient, isAdmin, clientesNombres = [
         if (!ck || mapa[ck] === NO_APLICA) return;
         const items = clasif[idClasif(ym, ck)]?.items || {};
         const ya = CATS_CLASIF.reduce((t, c) => t + (items[c] || 0), 0);
-        out.push({ id: idClasif(ym, ck), ym, key, ck, nombre: datos.nombres?.[key] || key, monto, items, pendiente: Math.round(monto - ya) });
+        out.push({ id: idClasif(ym, ck), ym, key, ck, nombre: datos.nombres?.[key] || key, monto, items, rubros: rubrosDe(clasif[idClasif(ym, ck)]), pendiente: Math.round(monto - ya) });
       });
     });
     return out;
@@ -365,27 +431,28 @@ export function IngresosView({ db, functionsClient, isAdmin, clientesNombres = [
     descripcion: `Ingreso automático (${F.nombre}) ${fila.ym} · ${fila.nombre}`, valor, referencia: `Ingresos ${fila.ym}`,
     proveedor: clienteP, cliente: clienteP, distribucion: [], origen: "ingresos_auto", ingresoClave: fila.ck, creadoEn: new Date().toISOString(),
   });
-  async function guardarClasif(fila, vals) {
+  async function guardarClasif(fila, rubros) {
     const clienteP = mapa[fila.ck];
     if (!clienteP || clienteP === NO_APLICA) return;
-    const items = {};
-    CATS_CLASIF.forEach((c) => { const v = Math.round(Number(vals[c]) || 0); if (v > 0) items[c] = v; });
+    const items = itemsDeRubros(rubros);
+    const rubrosGuardar = {};
+    RUBROS.forEach((r) => { const v = Math.round(Number(rubros[r.k]) || 0); if (v > 0) rubrosGuardar[r.k] = v; });
     const batch = writeBatch(db);
-    batch.set(doc(db, "financiera_ingresos_clasificacion", fila.id), { ym: fila.ym, ck: fila.ck, key: fila.key, nombre: fila.nombre, cliente: clienteP, monto: Math.round(fila.monto), items, actualizadoEn: new Date().toISOString() });
+    batch.set(doc(db, "financiera_ingresos_clasificacion", fila.id), { ym: fila.ym, ck: fila.ck, key: fila.key, nombre: fila.nombre, cliente: clienteP, monto: Math.round(fila.monto), items, rubros: rubrosGuardar, actualizadoEn: new Date().toISOString() });
     CATS_CLASIF.forEach((c) => {
       const ref = doc(db, "contabilidad_movimientos", idMov(fila.ym, fila.ck, c));
       if (items[c]) batch.set(ref, movimientoDe(fila, c, items[c], clienteP)); else batch.delete(ref);
     });
     try { await batch.commit(); setError(""); } catch (e) { setError(`No se pudo guardar la clasificación: ${e?.message || e}`); }
   }
-  async function todoA(grupo, cat) {
+  async function todoA(grupo, rubro) {
     const clienteP = mapa[grupo.ck];
     if (!clienteP || clienteP === NO_APLICA) return;
     for (const f of grupo.filas) {
       if (f.pendiente <= 1) continue;
-      const vals = {};
-      CATS_CLASIF.forEach((c) => { vals[c] = String((f.items[c] || 0) + (c === cat ? f.pendiente : 0)); });
-      await guardarClasif(f, vals);
+      const r = { ...f.rubros };
+      r[rubro] = (r[rubro] || 0) + f.pendiente;
+      await guardarClasif(f, r);
     }
   }
   async function cambiarMapa(ck, valor) {
@@ -538,7 +605,7 @@ export function IngresosView({ db, functionsClient, isAdmin, clientesNombres = [
       {detalleAbierto ? <DetalleIngresoModal titulo={detalleAbierto.titulo} recibos={detalleAbierto.recibos} tns={detalleAbierto.tns} nota={detalleAbierto.nota} onClose={() => setDetalle(null)} /> : null}
 
       {abrirClasif && puedeClasificar ? (
-        <ClasificarIngresosModal filas={filasClasif} soloCk={abrirClasif.soloCk} clientesNombres={clientesNombres} mapa={mapa} onMapa={cambiarMapa} onGuardar={guardarClasif} onTodoA={todoA} onClose={() => setAbrirClasif(null)} />
+        <ClasificarIngresosModal filas={filasClasif} soloCk={abrirClasif.soloCk} clientesNombres={clientesNombres} mapa={mapa} hoyYm={hoyYm} onMapa={cambiarMapa} onGuardar={guardarClasif} onTodoA={todoA} onClose={() => setAbrirClasif(null)} />
       ) : null}
 
       {verDiag && datos && (esTns || combinada) ? (
