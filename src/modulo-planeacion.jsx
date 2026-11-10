@@ -6573,6 +6573,18 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
   );
   const balanceBaseAdministrativa = baseAdministrativaPeriodo - costoAreaApoyo;
   const pctCoberturaBaseAdministrativa = costoAreaApoyo > 0 ? (baseAdministrativaPeriodo / costoAreaApoyo) * 100 : 0;
+  // (2026-11-10, a pedido de Fredy) «Todas las áreas» por área: las áreas con modo «Base Administrativa» y los Líderes (marcados Base Administrativa)
+  // no se miden por producción; se juntan en «Estructura» y se comparan contra la Base cobrada del Dado por Cumplido (un solo monto).
+  const areasBaseCC = new Set((areasNomina || []).filter((a) => a.modoMedicion === "base_dado_por_cumplido").map((a) => a.nombre));
+  const personasEstructuraCC = verPorAreaCC
+    ? (trabajadores || []).filter((t) => t.activo !== false && (t.medirComoBaseAdministrativa || areasBaseCC.has(t.area)))
+    : [];
+  const idsEstructuraCC = new Set(personasEstructuraCC.map((t) => t.id));
+  const filasProduccionCC = verPorAreaCC ? filas.filter((f) => !idsEstructuraCC.has(f.id)) : filas;
+  const estructuraCC = {
+    personas: personasEstructuraCC.map((t) => ({ id: t.id, nombre: t.nombre, area: t.medirComoBaseAdministrativa ? "Líderes (Base Administrativa)" : (t.area || "Sin asignar"), costo: costoPeriodo(costoMensualCompletoCC(t)), sinSueldo: !t.sueldo })),
+    base: baseAdministrativaPeriodo, lotes: lotesBaseAdministrativaPeriodo,
+  };
   // (2026-09-14, a pedido de Fredy) Modo "Reparto por Despacho": varias
   // areas de apoyo (Contabilidad, Diseno, Bodega, Gerencia, Mantenimiento,
   // Tesoreria, Talento Humano, Lideres de Area, Marketing) se reparten un
@@ -7247,11 +7259,10 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
             <>
               {verPorAreaCC && (
                 <ResumenAreasCC
-                  filas={filas} garantizadoDe={garantizadoDe} etiquetaPeriodo={etiquetaPeriodo}
-                  totalValor={totalValor} totalCosto={totalCosto} totalAyuda={totalAyuda} totalExcedente={totalExcedente}
-                  totalUnidades={totalUnidades} unidadesTerminadas={unidadesTerminadasPeriodo}
+                  filas={filasProduccionCC} garantizadoDe={garantizadoDe} etiquetaPeriodo={etiquetaPeriodo}
+                  estructura={estructuraCC} unidadesTerminadas={unidadesTerminadasPeriodo}
                   totalAyudaQuincenas={totalAyudaQuincenas} totalCostoIndirecto={totalCostoIndirectoQuincenas}
-                  hayCausado={filas.some((f) => f.huboCausado)} vista={vistaCC} onVista={setVistaCC}
+                  hayCausado={filasProduccionCC.some((f) => f.huboCausado)} vista={vistaCC} onVista={setVistaCC}
                   onVerTrabajador={setTrabajadorDetalleAbierto} onExcel={filas.length > 0 ? exportarCentroCostoExcel : null}
                 />
               )}

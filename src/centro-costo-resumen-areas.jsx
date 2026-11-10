@@ -2,7 +2,7 @@
 // una cinta con las cifras clave y las áreas de la que más ayuda necesita a la que menos (toca un área para ver a su gente). Es solo presentación:
 // usa las mismas filas y los mismos totales de la pantalla; no cambia ningún cálculo. Las demás cifras quedan plegadas en «Más cifras del período».
 import React, { useMemo, useState } from "react";
-import { agruparPorArea } from "./centro-costo-resumen-areas-calculo";
+import { agruparPorArea, estadoCobertura } from "./centro-costo-resumen-areas-calculo";
 
 const K = { ink: "#1A1A2E", slate: "#5A5A7A", border: "#E8E2DB", canvas: "#F7F4F0", white: "#FFFFFF", green: "#2D9E6B", greenBg: "#EBF7F2", red: "#D24A38", redBg: "#FDF0EE", amber: "#B26F12", amberBg: "#FDF5E6", ambar: "#D99A2B", violet: "#6B4C9A", track: "#EFE9E1", panel: "#FBF9F6" };
 const dinero = (n) => (Number(n) < 0 ? "-$" : "$") + Math.round(Math.abs(Number(n) || 0)).toLocaleString("es-CO");
@@ -78,11 +78,64 @@ function FilaArea({ a, abierta, onToggle, onVerTrabajador }) {
   );
 }
 
+// Estructura: las áreas y personas que se pagan con la Base del Dado por Cumplido se miden juntas contra la Base cobrada del período (un solo monto).
+function FilaEstructura({ estructura }) {
+  const [abierta, setAbierta] = useState(false);
+  const costo = estructura.personas.reduce((s, p) => s + (p.sinSueldo ? 0 : Number(p.costo) || 0), 0);
+  const base = Number(estructura.base) || 0;
+  const balance = base - costo;
+  const cobertura = costo > 0 ? base / costo : null;
+  const est = estadoCobertura(cobertura === null ? null : Math.min(cobertura, 1));
+  const e = ESTADO[est.k];
+  const pct = cobertura === null ? 0 : Math.max(0, Math.min(100, cobertura * 100));
+  return (
+    <div style={{ marginTop: 14 }}>
+      <div style={{ fontSize: 16, fontWeight: 900, color: K.ink, marginBottom: 2 }}>Estructura · se paga con la Base</div>
+      <div style={{ fontSize: 12, color: K.slate, marginBottom: 8 }}>Áreas y personas medidas contra la Base cobrada del Dado por Cumplido (un solo monto para todas). No suman a la ayuda de arriba.</div>
+      <div style={{ background: K.white, border: `1px solid ${K.border}`, borderRadius: 14, overflow: "hidden" }}>
+        <div onClick={() => setAbierta(!abierta)} role="button" tabIndex={0} aria-expanded={abierta} onKeyDown={(ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); setAbierta(!abierta); } }}
+          style={{ display: "grid", gridTemplateColumns: "22px minmax(120px,190px) minmax(160px,1fr) 140px 140px", gap: 14, alignItems: "center", padding: "13px 16px", cursor: "pointer" }}>
+          <span style={{ color: K.slate, display: "inline-block", transform: abierta ? "rotate(90deg)" : "none", transition: "transform .15s" }}>▸</span>
+          <div style={{ fontWeight: 900, fontSize: 15, color: K.ink }}>Estructura<div style={{ fontWeight: 500, fontSize: 12, color: K.slate }}>{estructura.personas.length} {estructura.personas.length === 1 ? "persona" : "personas"}</div></div>
+          <div>
+            <div style={{ height: 14, background: K.track, borderRadius: 99, overflow: "hidden" }}><div style={{ width: `${pct}%`, height: "100%", background: e.barra, borderRadius: 99 }} /></div>
+            <div style={{ fontSize: 11.5, color: K.slate, marginTop: 3 }}>
+              {cobertura === null ? "Sin nómina para comparar" : `La Base cobrada (${millones(base)}, ${estructura.lotes || 0} lote${estructura.lotes === 1 ? "" : "s"}) cubre el ${Math.round(cobertura * 100)} % de la nómina (${millones(costo)})`}
+            </div>
+          </div>
+          <div style={{ textAlign: "right", fontWeight: 900, fontVariantNumeric: "tabular-nums", color: balance < 0 ? K.red : K.green }}>{millones(balance)}<div style={{ fontWeight: 500, fontSize: 11.5, color: K.slate }}>Base − costo</div></div>
+          <span style={{ justifySelf: "end", fontSize: 12, fontWeight: 800, borderRadius: 999, padding: "3px 11px", background: e.fondo, color: e.color, whiteSpace: "nowrap" }}>{est.texto}</span>
+        </div>
+        {abierta ? (
+          <div style={{ borderTop: `1px solid ${K.border}`, background: K.panel, padding: "6px 16px 14px 52px", overflowX: "auto" }}>
+            {!estructura.lotes ? <div style={{ fontSize: 12, color: K.amber, padding: "6px 0" }}>⚠ No hay lotes de Dado por Cumplido aprobados con fecha de aprobación en este período.</div> : null}
+            <table style={{ borderCollapse: "collapse", width: "100%" }}>
+              <thead><tr><th style={{ ...th, textAlign: "left" }}>Persona</th><th style={{ ...th, textAlign: "left" }}>Área</th><th style={th}>Costo nómina del período</th></tr></thead>
+              <tbody>
+                {estructura.personas.slice().sort((a, b) => (Number(b.costo) || 0) - (Number(a.costo) || 0)).map((p) => (
+                  <tr key={p.id}><td style={{ ...td, textAlign: "left", fontWeight: 800 }}>{p.nombre}</td><td style={{ ...td, textAlign: "left" }}>{p.area}</td><td style={td}>{p.sinSueldo ? <span style={{ color: K.amber }}>sin sueldo cargado</span> : dinero(p.costo)}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+// filas = SOLO las personas de producción (las de la «Base» van aparte en `estructura`); los totales de la cinta salen de esas mismas filas.
+// estructura = { personas: [{ id, nombre, area, costo, sinSueldo }], base, lotes } — nómina de las áreas/personas que se pagan con la Base del Dado por Cumplido.
 export default function ResumenAreasCC({
-  filas, garantizadoDe, etiquetaPeriodo, totalValor, totalCosto, totalAyuda, totalExcedente, totalUnidades, unidadesTerminadas,
+  filas, garantizadoDe, etiquetaPeriodo, unidadesTerminadas, estructura,
   totalAyudaQuincenas, totalCostoIndirecto, hayCausado, vista, onVista, onVerTrabajador, onExcel,
 }) {
   const g = useMemo(() => agruparPorArea(filas, garantizadoDe), [filas, garantizadoDe]);
+  const totalValor = filas.reduce((s, f) => s + (Number(f.valorProducido) || 0), 0);
+  const totalCosto = filas.reduce((s, f) => s + (f.sinSueldo ? 0 : Number(f.costo) || 0), 0);
+  const totalUnidades = filas.reduce((s, f) => s + (Number(f.unidades) || 0), 0);
+  const totalAyuda = g.total.ayuda;
+  const totalExcedente = g.areas.reduce((s, a) => s + a.excedente, 0);
   const [abiertas, setAbiertas] = useState(() => ({}));
   const [soloAyuda, setSoloAyuda] = useState(false);
   const lista = g.areas.filter((a) => !soloAyuda || a.ayuda > 0);
@@ -103,7 +156,7 @@ export default function ResumenAreasCC({
       </div>
 
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "10px 28px", background: K.ink, color: "#fff", borderRadius: 14, padding: "14px 20px", marginBottom: 16 }}>
-        <Cifra etiqueta="Costo nómina causado" valor={millones(totalCosto)} sub={hayCausado ? "🟡 incluye causado sin confirmar" : etiquetaPeriodo} />
+        <Cifra etiqueta="Costo nómina causado" valor={millones(totalCosto)} sub={hayCausado ? "🟡 incluye causado sin confirmar" : "áreas de producción"} />
         <Cifra etiqueta="Valor producido" valor={millones(totalValor)} sub={`${entero(totalUnidades)} unidades`} />
         <Cifra etiqueta="Total ayudado" valor={millones(totalAyuda)} sub="garantizado − producido" color="#FF9C8E" />
         <Cifra etiqueta="Total excedente" valor={millones(totalExcedente)} sub="no se resta" color="#7FD9AE" />
@@ -126,6 +179,8 @@ export default function ResumenAreasCC({
           )) : <div style={{ fontSize: 13, color: K.slate, padding: 10 }}>Ninguna área necesitó ayuda en este período.</div>}
         </>
       ) : null}
+
+      {vista === "area" && estructura && estructura.personas.length > 0 ? <FilaEstructura estructura={estructura} /> : null}
 
       <details style={{ background: K.white, border: `1px solid ${K.border}`, borderRadius: 12, padding: "0 16px", marginTop: 6 }}>
         <summary style={{ cursor: "pointer", padding: "12px 0", fontWeight: 800, fontSize: 13, color: K.ink }}>Más cifras del período (unidades, ayuda por quincena, costo indirecto)</summary>
