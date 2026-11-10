@@ -46,7 +46,7 @@ function armarCorreoDevolucion(d) {
     tallas.map((t) => `<td style="${celda}text-align:right">${Number(l.cantidades?.[t]) || ""}</td>`).join("") + "</tr>"
   )).join("");
   const encabezado = `<tr><th style="${celda}text-align:left">Color</th>${tallas.map((t) => `<th style="${celda}text-align:right">${esc(etiqueta(t))}</th>`).join("")}</tr>`;
-  const origen = d.origen?.tipo ? `${ORIGENES[d.origen.tipo] || d.origen.tipo}${d.origen.documentos?.length ? ` · ${d.origen.documentos.map(esc).join(", ")}` : ""}` : "";
+  const origen = d.origen?.tipo ? `${ORIGENES[d.origen.tipo] || d.origen.tipo}${d.origen.documentos?.length ? ` · ${d.origen.documentos.map(esc).join(", ")}` : ""}${d.origen.confirmar ? ` (por confirmar: Busint lo muestra como ${esc(ORIGENES[d.origen.busint] || d.origen.busint || "otro tipo")})` : ""}` : "";
   const dato = (k, v) => (v ? `<tr><td style="padding:3px 14px 3px 0;color:#5A5A7A">${k}</td><td style="padding:3px 0"><b>${v}</b></td></tr>` : "");
   const asunto = `↩️ Nueva devolución ${d.numero || ""} · ${d.cliente || "Cliente"} · lote ${d.lote || "—"} · ${Number(d.total) || 0} und`;
   const html =

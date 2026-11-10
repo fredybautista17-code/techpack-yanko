@@ -106,9 +106,33 @@ export function resumenDespachoJunto(devs) {
 
 // (2026-11-10, a pedido de Fredy) En qué tarjeta de Bodega → Devoluciones cae cada una: «factura» (Facturadas), «remision» (Remisionadas:
 // traslado externo o en consignación) o «clasificar» (sin origen guardado o «Mixto: confirmar»: la líder le pone el origen con ✎ Editar).
-export function grupoOrigen(d) {
-  const t = d?.origen?.tipo;
+export function grupoDeTipoOrigen(t) {
   if (t === "factura") return "factura";
   if (t === "traslado_externo" || t === "traslado_consignacion") return "remision";
-  return "clasificar";
+  return null;
+}
+// (2026-11-10) Si la cliente eligió un tipo distinto al que muestra Busint, la devolución queda con origen.confirmar = true y cae en «Por clasificar»
+// hasta que la líder la confirme con ✎ Editar.
+export function grupoOrigen(d) {
+  if (d?.origen?.confirmar) return "clasificar";
+  return grupoDeTipoOrigen(d?.origen?.tipo) || "clasificar";
+}
+// Para la cliente: la tarjeta por la que ella la montó (sin importar si está por confirmar). «otras» = devoluciones viejas sin tipo.
+export function grupoOrigenCliente(d) {
+  return grupoDeTipoOrigen(d?.origen?.tipo) || "otras";
+}
+// Origen que se guarda cuando la cliente elige la tarjeta `tipo` ("factura" | "remision") y Busint dice `detectado` (resultado de origenDeFacturacion o null).
+export function origenElegidoPorCliente(tipo, detectado) {
+  const gDet = grupoDeTipoOrigen(detectado?.tipo);
+  const difiere = !!gDet && gDet !== tipo;
+  const tipoFinal = gDet === tipo ? detectado.tipo : tipo === "remision" ? "traslado_externo" : "factura";
+  return {
+    difiere,
+    origen: {
+      tipo: tipoFinal,
+      documentos: gDet === tipo && tipo === "factura" ? detectado.documentos || [] : [],
+      fuente: "cliente",
+      ...(difiere ? { confirmar: true, busint: detectado.tipo } : {}),
+    },
+  };
 }

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import { getApps } from "firebase/app";
 import { getAuth } from "firebase/auth";
 import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, query, where, writeBatch } from "firebase/firestore";
-import { grupoOrigen, fechaDePaso, tiempoDevolucion, textoTiempo, etiquetaOrigen, origenDeFacturacion, resumenDespachoJunto, ORIGENES, ORIGENES_ELEGIBLES } from "./devoluciones-tiempos";
+import { grupoOrigen, grupoOrigenCliente, origenElegidoPorCliente, fechaDePaso, tiempoDevolucion, textoTiempo, etiquetaOrigen, origenDeFacturacion, resumenDespachoJunto, ORIGENES, ORIGENES_ELEGIBLES } from "./devoluciones-tiempos";
 import { httpsCallable, getFunctions } from "firebase/functions";
 
 // ─── DEVOLUCIONES DE CLIENTES ────────────────────────────────────────────
@@ -113,7 +113,7 @@ function EstadoPill({ T, d, cliente }) {
       {d.solicitaDespacho && d.estado !== "redespachada" && <Pill T={T} bg={T.violetBg} fg={T.violet}>{cliente ? "Despacho solicitado" : "Pide despacho"}</Pill>}
       {d.resultado === "diferencias" && <Pill T={T} bg={T.coralBg} fg={T.coral}>Con diferencias</Pill>}
       {d.resultado === "completa" && <Pill T={T} bg={T.jadeBg} fg={T.jade}>Completa</Pill>}
-      {d.origen?.tipo ? <Pill T={T} bg={T.canvas} fg={T.slate}>{d.origen.tipo === "factura" ? "🧾 " : d.origen.tipo === "sin_dato" ? "" : "🚚 "}{etiquetaOrigen(d.origen)}</Pill> : null}
+      {d.origen?.tipo ? <Pill T={T} bg={T.canvas} fg={T.slate}>{d.origen.tipo === "factura" ? "🧾 " : d.origen.tipo === "sin_dato" ? "" : "🚚 "}{etiquetaOrigen(d.origen)}{d.origen.confirmar ? " · por confirmar" : ""}</Pill> : null}
       {(() => {
         const t = tiempoDevolucion(d);
         const c = t.cerrada ? (t.tardo ? [T.amberBg, T.amber] : [T.canvas, T.slate]) : t.nivel === "rojo" ? [T.coralBg, T.coral] : t.nivel === "ambar" ? [T.amberBg, T.amber] : [T.jadeBg, T.jade];
@@ -251,7 +251,7 @@ function Detalle({ T, d, mostrarConteo }) {
       <div style={{ fontSize: 12, color: T.slate, marginBottom: 8 }}>
         Lote <b style={{ color: T.ink }}>{d.lote}</b> · Ref {d.ref || "—"}{d.pedido ? ` · Pedido ${d.pedido}` : ""} · Motivo: {d.motivo || "—"} · Guía: {d.guia || "—"}
       </div>
-      {d.origen?.tipo ? <div style={{ fontSize: 12, color: T.slate, marginBottom: 8 }}>Origen en Busint: <b style={{ color: T.ink }}>{etiquetaOrigen(d.origen)}</b>{d.origen.documentos?.length ? ` · ${d.origen.documentos.join(", ")}` : ""}{d.origen.fuente === "manual" ? " (confirmado a mano)" : ""}</div> : null}
+      {d.origen?.tipo ? <div style={{ fontSize: 12, color: T.slate, marginBottom: 8 }}>Origen en Busint: <b style={{ color: T.ink }}>{etiquetaOrigen(d.origen)}</b>{d.origen.documentos?.length ? ` · ${d.origen.documentos.join(", ")}` : ""}{d.origen.fuente === "manual" ? " (confirmado a mano)" : ""}{d.origen.confirmar ? ` · por confirmar (la cliente la montó como ${etiquetaOrigen(d.origen)}; Busint la muestra como ${etiquetaOrigen({ tipo: d.origen.busint })})` : ""}</div> : null}
       {d.observaciones ? <div style={{ fontSize: 12, color: T.slate, marginBottom: 8 }}>Nota del cliente: {d.observaciones}</div> : null}
       <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, margin: "6px 0" }}>DECLARADO POR EL CLIENTE</div>
       <GrillaColorTalla T={T} colores={coloresDeLineas(d.lineas)} tallas={tallas} valores={valores} editable={false} infantil={infantil} />
@@ -369,10 +369,11 @@ function EditarDevolucionModal({ db, functionsClient, T, d, usuario, lista, esCl
     else if (d.solicitaDespacho) extra.solicitaDespacho = null;
     // Origen en Busint (factura / traslado externo): el personal lo puede corregir; si no, queda el que detectó Busint.
     const tipoOrigen = esCliente ? (d.origen?.tipo || detectado?.tipo || "") : (origenTipo || detectado?.tipo || "");
-    if (tipoOrigen && tipoOrigen !== d.origen?.tipo) {
-      const manual = !esCliente && !!origenTipo && origenTipo !== detectado?.tipo;
+    const confirmando = !esCliente && !!d.origen?.confirmar;
+    if (tipoOrigen && (tipoOrigen !== d.origen?.tipo || confirmando)) {
+      const manual = confirmando || (!esCliente && !!origenTipo && origenTipo !== detectado?.tipo);
       extra.origen = { tipo: tipoOrigen, documentos: !manual && detectado?.tipo === tipoOrigen ? detectado.documentos : (d.origen?.documentos || []), fuente: manual ? "manual" : "busint" };
-      cambios.push(`origen: ${ORIGENES[tipoOrigen] || tipoOrigen}`);
+      cambios.push(`origen ${confirmando ? "confirmado" : ""}: ${ORIGENES[tipoOrigen] || tipoOrigen}`.replace("origen :", "origen:"));
     }
     if (d.conteo?.length) {
       extra.diferencias = recalcularDiferencias(lineas, d.conteo);
@@ -488,7 +489,7 @@ function AvisoFacturacion({ T, info }) {
 }
 
 // ─── PANTALLA DEL CLIENTE ────────────────────────────────────────────────
-export function DevolucionesClienteView({ db, functionsClient, T: Tp, currentUser }) {
+function FormularioDevolucionesCliente({ db, functionsClient, T: Tp, currentUser, tipo, onVolverHub }) {
   const T = Tp || TEMA_DEFECTO;
   const esCliente = currentUser?.role === "Cliente";
   const uid = (() => { try { return getAuth(getApps()[0]).currentUser?.uid || ""; } catch { return ""; } })();
@@ -552,11 +553,11 @@ export function DevolucionesClienteView({ db, functionsClient, T: Tp, currentUse
       .filter((l) => Object.keys(l.cantidades).length);
     const id = `dev_${Date.now()}`;
     const estado = guia.trim() ? "en_camino" : "reportada";
-    const origen = origenDeFacturacion(info.facturacion);
+    const { origen } = origenElegidoPorCliente(tipo, origenDeFacturacion(info.facturacion));
     const d = {
       id, numero: numeroNuevo(), lote: info.lote, ref: info.ref, pedido: info.pedido, cliente: info.cliente,
       tallas: info.tallas, grupo: info.grupo || "", lineas, total: totalLineas(lineas), motivo, guia: guia.trim(), observaciones: obs.trim(),
-      estado, ...(origen ? { origen } : {}), creadoPorUid: uid, creadoPor: usuarioActual(currentUser), creadoEn: nowISO(),
+      estado, origen, creadoPorUid: uid, creadoPor: usuarioActual(currentUser), creadoEn: nowISO(),
       historial: [{ estado, fecha: nowISO(), usuario: usuarioActual(currentUser), ...(pideDesp ? { nota: "Pide que se la despachen de nuevo" } : {}) }],
       ...(pideDesp ? { solicitaDespacho: { nota: notaDesp.trim(), por: usuarioActual(currentUser), fecha: nowISO() } } : {}),
     };
@@ -575,9 +576,10 @@ export function DevolucionesClienteView({ db, functionsClient, T: Tp, currentUse
   const tarjeta = { background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, padding: "18px 20px", marginBottom: 18 };
   return (
     <div style={{ maxWidth: 900 }}>
-      <div style={{ fontSize: 20, fontWeight: 800, color: T.ink, marginBottom: 4 }}>Devoluciones</div>
-      <div style={{ fontSize: 13, color: T.slate, marginBottom: 16 }}>Reporta lo que devuelves por lote, color y talla. Solo puedes consultar lotes de tu cliente.</div>
-      <div style={tarjeta}>
+      {onVolverHub && <button onClick={onVolverHub} style={{ background: "none", border: "none", color: T.slate, fontSize: 12, cursor: "pointer", fontFamily: "inherit", padding: 0, marginBottom: 10 }}>← Volver a Devoluciones</button>}
+      <div style={{ fontSize: 20, fontWeight: 800, color: T.ink, marginBottom: 4 }}>{TITULOS_CLIENTE[tipo] || "Devoluciones"}</div>
+      <div style={{ fontSize: 13, color: T.slate, marginBottom: 16 }}>{tipo === "otras" ? "Devoluciones anteriores que todavía no tienen tipo asignado." : "Reporta lo que devuelves por lote, color y talla. Solo puedes consultar lotes de tu cliente."}</div>
+      {tipo !== "otras" && <div style={tarjeta}>
         <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 12 }}>
           <div>
             <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>Número de lote</div>
@@ -592,6 +594,11 @@ export function DevolucionesClienteView({ db, functionsClient, T: Tp, currentUse
         {info && !info.sinDetalle && (
           <>
             <AvisoFacturacion T={T} info={info} />
+            {origenElegidoPorCliente(tipo, origenDeFacturacion(info.facturacion)).difiere && (
+              <div style={{ background: T.amberBg, color: T.amber, borderRadius: 8, padding: "8px 12px", fontSize: 13, marginBottom: 10 }}>
+                Busint muestra este lote como {origenDeFacturacion(info.facturacion).tipo === "factura" ? "facturado" : "remisionado (traslado)"}, pero entraste por «{tipo === "factura" ? "Facturadas" : "Remisionadas"}». Puedes reportarla igual: el equipo de Yanko la confirmará.
+              </div>
+            )}
             <div style={{ fontSize: 12, color: T.slate, marginBottom: 6 }}>Unidades que devuelves, por color y talla (debajo de cada casilla: {despachoPorColor ? "cantidad despachada según la factura" : "cantidad del lote"}; si ya reportaste devoluciones de este lote, se descuentan)</div>
             <GrillaColorTalla T={T} colores={coloresGrilla} tallas={info.tallas} valores={cant} onCambiar={cambiar} tope usado={yaDevuelto} infantil={esInfantilGrupo(info.grupo)} />
             <div style={{ display: "flex", gap: 12, flexWrap: "wrap", margin: "14px 0" }}>
@@ -621,13 +628,13 @@ export function DevolucionesClienteView({ db, functionsClient, T: Tp, currentUse
             </div>
           </>
         )}
-      </div>
+      </div>}
       <div style={tarjeta}>
         <div style={{ fontSize: 14, fontWeight: 800, color: T.ink, marginBottom: 8 }}>{esCliente ? "Tus devoluciones" : "Devoluciones reportadas"}</div>
         {errLista && <div style={{ color: T.coral, fontSize: 13 }}>{errLista}</div>}
         {lista === null ? <div style={{ fontSize: 13, color: T.slate }}>Cargando…</div>
-          : !lista.length ? <div style={{ fontSize: 13, color: T.slate }}>Todavía no has reportado devoluciones.</div>
-          : lista.map((d) => (
+          : !lista.filter((d) => grupoOrigenCliente(d) === tipo).length ? <div style={{ fontSize: 13, color: T.slate }}>Todavía no has reportado devoluciones de este tipo.</div>
+          : lista.filter((d) => grupoOrigenCliente(d) === tipo).map((d) => (
             <div key={d.id} style={{ borderTop: `1px solid ${T.border}`, padding: "10px 0" }}>
               <div onClick={() => setAbierto(abierto === d.id ? null : d.id)} style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", cursor: "pointer", fontSize: 13 }}>
                 <span><b>{d.numero}</b> · lote {d.lote} · {d.total} und · {fmtFecha(d.creadoEn)}</span>
@@ -886,6 +893,75 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, tipo, o
         ))}
     </div>
   );
+}
+
+const TITULOS_CLIENTE = { factura: "🧾 Facturadas", remision: "🚚 Remisionadas", otras: "Otras devoluciones" };
+
+// (2026-11-10, a pedido de Fredy) Entrada de la CLIENTE a Devoluciones: dos tarjetas grandes, Facturadas y Remisionadas. Al entrar a una monta la
+// devolución de ese tipo; el tipo que elige queda guardado como origen (si Busint dice otro, queda «por confirmar» para la líder).
+function HubDevolucionesCliente({ db, T: Tp, currentUser, onElegir }) {
+  const T = Tp || TEMA_DEFECTO;
+  const esCliente = currentUser?.role === "Cliente";
+  const uid = (() => { try { return getAuth(getApps()[0]).currentUser?.uid || ""; } catch { return ""; } })();
+  const { lista, error } = useDevoluciones(db, esCliente ? uid : null);
+  const conteo = (g) => {
+    const l = (lista || []).filter((d) => grupoOrigenCliente(d) === g);
+    return {
+      proceso: l.filter((d) => d.estado !== "redespachada").length,
+      piden: l.filter((d) => d.solicitaDespacho && d.estado !== "redespachada").length,
+      resueltas: l.filter((d) => d.estado === "redespachada").length,
+    };
+  };
+  const otras = (lista || []).filter((d) => grupoOrigenCliente(d) === "otras").length;
+  const tarjetas = [
+    { k: "factura", icono: "🧾", titulo: "Facturadas", txt: "Lotes que te despachamos con factura. Reporta aquí lo que devuelves de ellos.", color: T.denim, bg: T.denimBg, deco: "#F3F6FA" },
+    { k: "remision", icono: "🚚", titulo: "Remisionadas", txt: "Lotes que te despachamos por traslado externo (remisión). Reporta aquí lo que devuelves de ellos.", color: T.violet, bg: T.violetBg, deco: "#F7F4FB" },
+  ];
+  const tile = (n, etiqueta, color, bg) => (
+    <div style={{ borderRadius: 12, padding: "10px 12px", background: n > 0 ? bg : "#F5F2EE" }}>
+      <div style={{ fontSize: 24, lineHeight: 1.1, fontWeight: 800, color: n > 0 ? color : T.ink }}>{n}</div>
+      <div style={{ fontSize: 11, fontWeight: 700, color: T.slate }}>{etiqueta}</div>
+    </div>
+  );
+  return (
+    <div style={{ maxWidth: 940 }}>
+      <div style={{ fontSize: 26, fontWeight: 800, color: T.ink, marginBottom: 4 }}>↩️ Devoluciones</div>
+      <div style={{ fontSize: 14, color: T.slate, marginBottom: 20 }}>Elige de qué tipo es la devolución que vas a reportar</div>
+      {error && <div style={{ color: T.coral, fontSize: 13, marginBottom: 8 }}>{error}</div>}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 18 }}>
+        {tarjetas.map((t) => {
+          const c = conteo(t.k);
+          return (
+            <button key={t.k} onClick={() => onElegir(t.k)} style={{ position: "relative", overflow: "hidden", background: T.white, border: `1px solid ${T.border}`, borderRadius: 20, padding: "26px 28px 22px", cursor: "pointer", textAlign: "left", fontFamily: "inherit", color: T.ink }}>
+              <span style={{ position: "absolute", top: -60, right: -50, width: 150, height: 150, borderRadius: "50%", background: t.deco }} />
+              <div style={{ position: "relative", width: 58, height: 58, borderRadius: 16, background: t.bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28, marginBottom: 18 }}>{t.icono}</div>
+              <div style={{ position: "relative", fontSize: 21, fontWeight: 800, marginBottom: 6 }}>{t.titulo}</div>
+              <div style={{ position: "relative", fontSize: 14, color: T.slate, marginBottom: 16, lineHeight: 1.45 }}>{t.txt}</div>
+              <div style={{ position: "relative", display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 16 }}>
+                {tile(c.proceso, "En proceso", t.color, t.bg)}
+                {tile(c.piden, "Despacho solicitado", T.violet, T.violetBg)}
+                {tile(c.resueltas, "Despachadas de nuevo", T.jade, T.jadeBg)}
+              </div>
+              <div style={{ position: "relative", textAlign: "right", fontSize: 14, fontWeight: 800, color: t.color }}>Entrar →</div>
+            </button>
+          );
+        })}
+      </div>
+      {otras > 0 && (
+        <div style={{ marginTop: 18 }}>
+          <button onClick={() => onElegir("otras")} style={{ background: "none", border: "none", color: T.denim, fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer", padding: "6px 2px", textDecoration: "underline", textUnderlineOffset: 3 }}>
+            Devoluciones anteriores sin tipo ({otras})
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function DevolucionesClienteView(props) {
+  const [tipo, setTipo] = useState(null);
+  if (!tipo) return <HubDevolucionesCliente db={props.db} T={props.T} currentUser={props.currentUser} onElegir={setTipo} />;
+  return <FormularioDevolucionesCliente {...props} tipo={tipo} onVolverHub={() => setTipo(null)} />;
 }
 
 const TITULOS_TIPO = { factura: "🧾 Facturadas", remision: "🚚 Remisionadas", clasificar: "⚠️ Por clasificar", despachar: "📦 Todas las listas para despachar" };
