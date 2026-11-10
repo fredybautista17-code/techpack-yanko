@@ -25,6 +25,7 @@ import { armarListaPorProgramar, estadisticasPedidos, prioridadPedido } from "./
 import { CONCEPTOS_GASTOS_BUSINT, proveedoresDeTexto, candidatosGastos, gastoDeFactura } from "./gastos-busint-calculo";
 import { MESES_HIST, COLECCION_HISTORICO_MAQUILA, textoAFilas, parsearHistorial, docHistoricoMes, resumenAnual } from "./historial-maquila-calculo";
 import { PLANTA_PROPIA_VENTAS, rangoDelPeriodo, plantasDeEntradas, clientePorLoteDeCargas, candidatosVentas, ventaDeEntrada, totalLineaVenta, SERVICIOS_VENTA, SIN_SERVICIO, servicioValido, etiquetaServicio, sugerirServicio, resumenPorServicio, bloqueoLinea, servicioDeVenta } from "./ventas-entradas-calculo";
+import ResumenAreasCC from "./centro-costo-resumen-areas";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
   authDomain: "techpack-yanko-f37b8.firebaseapp.com",
@@ -6497,6 +6498,9 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
   // fecha, lote, proceso, referencia, cantidad y total de cada registro
   // (la suma de estos es "Unidades"/"Valor producido" de su fila).
   const [trabajadorDetalleAbierto, setTrabajadorDetalleAbierto] = useState(null);
+  // (2026-11-10, a pedido de Fredy) «Todas las áreas» se lee por área primero (ver centro-costo-resumen-areas.jsx); con un área elegida queda como antes.
+  const [vistaCC, setVistaCC] = useState("area");
+  const verPorAreaCC = !areaFija && !areaSel;
   // (2026-09-14, a pedido de Fredy) Modal para ver, por nombre, quienes son
   // los trabajadores que cuentan en el "Reparto por Despacho" -- antes solo
   // se veia el conteo ("4 de 20"), sin saber quienes son.
@@ -7241,6 +7245,17 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
             </>
           ) : (
             <>
+              {verPorAreaCC && (
+                <ResumenAreasCC
+                  filas={filas} garantizadoDe={garantizadoDe} etiquetaPeriodo={etiquetaPeriodo}
+                  totalValor={totalValor} totalCosto={totalCosto} totalAyuda={totalAyuda} totalExcedente={totalExcedente}
+                  totalUnidades={totalUnidades} unidadesTerminadas={unidadesTerminadasPeriodo}
+                  totalAyudaQuincenas={totalAyudaQuincenas} totalCostoIndirecto={totalCostoIndirectoQuincenas}
+                  hayCausado={filas.some((f) => f.huboCausado)} vista={vistaCC} onVista={setVistaCC}
+                  onVerTrabajador={setTrabajadorDetalleAbierto} onExcel={filas.length > 0 ? exportarCentroCostoExcel : null}
+                />
+              )}
+              {!verPorAreaCC && (
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 24 }}>
                 <KPI icon="📦" label="Unidades producidas" value={fmtNum(totalUnidades)} color={C.blue} bg={C.blueBg} />
                 <KPI icon="✅" label="Unidades en Terminadas" value={fmtNum(unidadesTerminadasPeriodo)} color={C.amber} bg={C.amberBg} sub="proceso Terminación, toda la empresa" />
@@ -7255,6 +7270,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
                 <KPI icon="📈" label="Total excedente" value={fmtMoney(totalExcedente)} color={C.green} bg={C.greenBg} sub="no se resta" />
                 <KPI icon="⏱️" label="Costo indirecto" value={fmtMoney(totalCostoIndirectoQuincenas)} color={C.amber} bg={C.amberBg} sub="horas trabajadas causadas -- no es costo del producto, ver detalle abajo" />
               </div>
+              )}
               {detalleQuincenasDestajoCC.length > 0 && (
                 <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
                   <details style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12 }}>
@@ -7314,12 +7330,12 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
                   </details>
                 </div>
               )}
-              {filas.length > 0 && (
+              {filas.length > 0 && !verPorAreaCC && (
                 <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
                   <Btn variant="ghost" onClick={exportarCentroCostoExcel}>📥 Descargar Excel</Btn>
                 </div>
               )}
-              <Tabla vacio="No hay trabajadores en esta área." columnas={columnas} filas={filas} onRowClick={setTrabajadorDetalleAbierto} />
+              {(!verPorAreaCC || vistaCC === "trabajador") && <Tabla vacio="No hay trabajadores en esta área." columnas={columnas} filas={filas} onRowClick={setTrabajadorDetalleAbierto} />}
               {trabajadorDetalleAbierto && (
                 <Modal title={`${trabajadorDetalleAbierto.nombre} — ${etiquetaPeriodo}`} onClose={() => setTrabajadorDetalleAbierto(null)} width={780}>
                   <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: 12 }}>
