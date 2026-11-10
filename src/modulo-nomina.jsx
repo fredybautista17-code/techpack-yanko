@@ -23,6 +23,60 @@ const firebaseConfig = {
 const fbApp = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
 const db = getFirestore(fbApp);
 const functionsClient = getFunctions(fbApp);
+
+// (2026-11-10, a pedido de Fredy) Nómina → Dropbox: sube el Excel del mes (Resumen + una hoja por quincena) a /NOMINA FISCAL o /NOMINA DESTAJO GENERAL.
+// Nunca lanza error: devuelve {ok, mensaje}; si Dropbox falla, la liquidación igual quedó guardada.
+async function subirNominaDropbox(tipo, datos) {
+  try {
+    const r = await httpsCallable(functionsClient, "subirNominaADropbox", { timeout: 300000 })({ tipo, ...datos });
+    const res = r.data?.resultados || [];
+    const fallo = res.find((x) => x.error);
+    if (fallo) return { ok: false, mensaje: `No se pudo subir a Dropbox: ${fallo.error}` };
+    const subidos = res.filter((x) => x.subido);
+    if (!subidos.length) return { ok: true, mensaje: res.map((x) => x.mensaje).filter(Boolean).join(" ") || "No había quincenas para subir." };
+    return { ok: true, mensaje: `Subido a Dropbox: ${subidos.map((x) => x.ruta.split("/").slice(-1)[0]).join(", ")}` };
+  } catch (e) {
+    return { ok: false, mensaje: `No se pudo subir a Dropbox: ${e?.message || e}` };
+  }
+}
+const NOMBRES_MES_DROPBOX = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+// Los N meses cerrados anteriores al actual (hora Bogotá), del más viejo al más nuevo: ["2026-09","2026-10"].
+function mesesAnterioresDropbox(n) {
+  const hoy = new Date(Date.now() - 5 * 3600 * 1000);
+  const salida = [];
+  for (let i = n; i >= 1; i--) {
+    const d = new Date(Date.UTC(hoy.getUTCFullYear(), hoy.getUTCMonth() - i, 1));
+    salida.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`);
+  }
+  return salida;
+}
+const etiquetaMesDropbox = (m) => `${NOMBRES_MES_DROPBOX[Number(m.slice(5, 7)) - 1]} ${m.slice(0, 4)}`;
+// Botón del Historial: vuelve a subir a Dropbox los meses ya confirmados (por ejemplo los que se confirmaron antes de existir la subida automática).
+function BotonSubirNominaDropbox({ tipo }) {
+  const [n, setN] = useState(2);
+  const [subiendo, setSubiendo] = useState(false);
+  const [estado, setEstado] = useState(null);
+  const meses = mesesAnterioresDropbox(n);
+  async function subir() {
+    setSubiendo(true);
+    setEstado(null);
+    const r = await subirNominaDropbox(tipo, { meses });
+    setEstado(r);
+    setSubiendo(false);
+  }
+  return (
+    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+      <select value={n} onChange={(e) => setN(Number(e.target.value))} disabled={subiendo} style={{ fontSize: 12, padding: "6px 8px", border: `1px solid ${C.border}`, borderRadius: 6, background: C.white || "#fff", color: C.ink || "inherit" }}>
+        {[1, 2, 3].map((k) => {
+          const ms = mesesAnterioresDropbox(k);
+          return <option key={k} value={k}>{k === 1 ? `Solo ${etiquetaMesDropbox(ms[0])}` : `${etiquetaMesDropbox(ms[0])} a ${etiquetaMesDropbox(ms[ms.length - 1])}`}</option>;
+        })}
+      </select>
+      <Btn variant="secondary" small onClick={subir} disabled={subiendo}>{subiendo ? "Subiendo…" : "☁️ Subir a Dropbox"}</Btn>
+      {estado && <span style={{ fontSize: 12, fontWeight: 700, color: estado.ok ? C.green : C.red }}>{estado.mensaje}</span>}
+    </div>
+  );
+}
 const storage = getStorage(fbApp);
 async function fsSave(col, id, data) {
   await setDoc(doc(db, col, id), data, { merge: true });
@@ -7754,6 +7808,7 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
   const [resultados, setResultados] = useState(null);
   const [guardando, setGuardando] = useState(false);
   const [guardadoOk, setGuardadoOk] = useState(false);
+  const [dropboxMsg, setDropboxMsg] = useState(null);
   const [detalleFaltas, setDetalleFaltas] = useState(null); // { trabajador, fechas }
 
   const [areaFiltro, setAreaFiltro] = useState("");
@@ -7874,6 +7929,8 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
       }
       setPeriodoAbierto("");
       setGuardadoOk(true);
+      setDropboxMsg({ ok: true, mensaje: "Subiendo a Dropbox…" });
+      subirNominaDropbox("fiscal", { periodoId }).then(setDropboxMsg); // sin esperar: no frena el guardado
     } finally {
       setGuardando(false);
     }
@@ -8134,6 +8191,7 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
               {guardando ? "Guardando..." : "✅ Confirmar y guardar liquidación de la quincena"}
             </Btn>
             {guardadoOk && <span style={{ marginLeft: 10, fontSize: 12, color: C.green, fontWeight: 700 }}>✅ Liquidación guardada — el acumulado de cesantías de cada uno ya quedó actualizado.</span>}
+            {guardadoOk && dropboxMsg && <span style={{ marginLeft: 10, fontSize: 12, color: dropboxMsg.ok ? C.green : C.red, fontWeight: 700 }}>{dropboxMsg.ok ? "☁️ " : "⚠️ "}{dropboxMsg.mensaje}</span>}
           </div>
         </>
       )}
@@ -8192,7 +8250,10 @@ function HistorialFiscalView({ liquidaciones, trabajadores }) {
                 <FSel value={periodoFiltro} onChange={setPeriodoFiltro} options={periodos.map((p) => ({ value: p, label: p }))} placeholder="Todos los períodos" />
               </Field>
             </div>
-            <Btn variant="secondary" small onClick={exportarExcel} disabled={!filas.length}>⬇ Exportar a Excel</Btn>
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <BotonSubirNominaDropbox tipo="fiscal" />
+              <Btn variant="secondary" small onClick={exportarExcel} disabled={!filas.length}>⬇ Exportar a Excel</Btn>
+            </div>
           </div>
           <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
             <KPI icon="💵" label="Neto pagado (total)" value={fmtMoney(totales.neto)} color={C.green} bg={C.greenBg} />
@@ -8770,6 +8831,7 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
   const [resultados, setResultados] = useState(null); // null | [{trabajador, calculo}]
   const [guardando, setGuardando] = useState(false);
   const [guardadoOk, setGuardadoOk] = useState(false);
+  const [dropboxMsg, setDropboxMsg] = useState(null);
   const [detalleFaltas, setDetalleFaltas] = useState(null); // { trabajador, fechas }
 
   const [empresaFiltro, setEmpresaFiltro] = useState("");
@@ -8882,6 +8944,8 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
       }
       setPeriodoAbierto("");
       setGuardadoOk(true);
+      setDropboxMsg({ ok: true, mensaje: "Subiendo a Dropbox…" });
+      subirNominaDropbox("fiscalDestajo", { periodoId }).then(setDropboxMsg); // sin esperar: no frena el guardado
     } finally {
       setGuardando(false);
     }
@@ -9113,6 +9177,7 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
               {guardando ? "Guardando..." : "✅ Confirmar y guardar liquidación de la quincena"}
             </Btn>
             {guardadoOk && <span style={{ marginLeft: 10, fontSize: 12, color: C.green, fontWeight: 700 }}>✅ Liquidación guardada — el acumulado de cesantías de cada uno ya quedó actualizado.</span>}
+            {guardadoOk && dropboxMsg && <span style={{ marginLeft: 10, fontSize: 12, color: dropboxMsg.ok ? C.green : C.red, fontWeight: 700 }}>{dropboxMsg.ok ? "☁️ " : "⚠️ "}{dropboxMsg.mensaje}</span>}
           </div>
         </>
       )}
@@ -9471,7 +9536,10 @@ function HistorialFiscalDestajoView({ liquidaciones, trabajadores }) {
                 <FSel value={periodoFiltro} onChange={setPeriodoFiltro} options={periodos.map((p) => ({ value: p, label: p }))} placeholder="Todos los períodos" />
               </Field>
             </div>
-            <Btn variant="secondary" small onClick={exportarExcel} disabled={!filas.length}>⬇ Exportar a Excel</Btn>
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <BotonSubirNominaDropbox tipo="fiscalDestajo" />
+              <Btn variant="secondary" small onClick={exportarExcel} disabled={!filas.length}>⬇ Exportar a Excel</Btn>
+            </div>
           </div>
           <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
             <KPI icon="💵" label="Neto pagado (total)" value={fmtMoney(totales.neto)} color={C.green} bg={C.greenBg} />
@@ -9942,6 +10010,7 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
   const [resultados, setResultados] = useState(null); // null | [{trabajador, calculo}]
   const [guardando, setGuardando] = useState(false);
   const [guardadoOk, setGuardadoOk] = useState(false);
+  const [dropboxMsg, setDropboxMsg] = useState(null);
   const [detalleFaltas, setDetalleFaltas] = useState(null); // { trabajador, fechas }
   // (2026-09-18, a pedido de Fredy) "Ajuste de Nómina" -- solo administrador,
   // Yuleisi Virginia y María Fernanda Páez (puedeAjustarDestajo) pueden
@@ -10100,6 +10169,8 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
       }
       setPeriodoAbierto("");
       setGuardadoOk(true);
+      setDropboxMsg({ ok: true, mensaje: "Subiendo a Dropbox…" });
+      subirNominaDropbox("destajo", { periodoId }).then(setDropboxMsg); // sin esperar: no frena el guardado
     } finally {
       setGuardando(false);
     }
@@ -10353,6 +10424,7 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
               {guardando ? "Guardando..." : "✅ Confirmar y guardar liquidación de la quincena"}
             </Btn>
             {guardadoOk && <span style={{ marginLeft: 10, fontSize: 12, color: C.green, fontWeight: 700 }}>✅ Liquidación guardada — el acumulado de cesantías de cada uno ya quedó actualizado.</span>}
+            {guardadoOk && dropboxMsg && <span style={{ marginLeft: 10, fontSize: 12, color: dropboxMsg.ok ? C.green : C.red, fontWeight: 700 }}>{dropboxMsg.ok ? "☁️ " : "⚠️ "}{dropboxMsg.mensaje}</span>}
           </div>
         </>
       )}
@@ -11349,7 +11421,10 @@ function HistorialDestajoView({ liquidaciones, trabajadores }) {
                 <FSel value={periodoFiltro} onChange={setPeriodoFiltro} options={periodos.map((p) => ({ value: p, label: p }))} placeholder="Todos los períodos" />
               </Field>
             </div>
-            <Btn variant="secondary" small onClick={exportarExcel} disabled={!filas.length}>⬇ Exportar a Excel</Btn>
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <BotonSubirNominaDropbox tipo="destajo" />
+              <Btn variant="secondary" small onClick={exportarExcel} disabled={!filas.length}>⬇ Exportar a Excel</Btn>
+            </div>
           </div>
           <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
             <KPI icon="💵" label="Neto pagado (total)" value={fmtMoney(totales.neto)} color={C.green} bg={C.greenBg} />

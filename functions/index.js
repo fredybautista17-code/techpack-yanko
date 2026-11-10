@@ -15082,6 +15082,54 @@ async function verificarLlamadorConModulos(request, modulosPermitidos, queVer = 
   if (!modulosPermitidos.some((m) => modulos.includes(m))) throw new HttpsError("permission-denied", `No tienes permiso para ver ${queVer}.`);
   return snap.docs[0];
 }
+// (2026-11-10, a pedido de Fredy) NÓMINA → DROPBOX. Al confirmar cada quincena la pantalla de nómina llama a esta función y el Excel del mes
+// queda en Dropbox: /NOMINA FISCAL/AAAA/ (Fiscal) y /NOMINA DESTAJO GENERAL/AAAA/ (Fiscal Destajo y Destajo). Es un archivo por mes y tipo
+// (hoja Resumen + una hoja por quincena); se sobrescribe cada vez que se confirma una quincena del mes, así siempre queda al día.
+// data: { tipo: "fiscal" | "fiscalDestajo" | "destajo" | "todos", periodoId?: "2026-10-Q2", meses?: ["2026-09","2026-10"] } (máx. 12 meses).
+const nominaDropbox = require("./nomina-dropbox");
+async function subirNominaMesADropbox(tipo, mes) {
+  const t = nominaDropbox.TIPOS[tipo];
+  const snap = await db.collection(t.coleccion).where("periodoId", ">=", `${mes}-Q1`).where("periodoId", "<=", `${mes}-Q2`).get();
+  const liquidaciones = snap.docs.map((d) => d.data());
+  if (!liquidaciones.length) return { tipo, mes, subido: false, trabajadores: 0, mensaje: `No hay quincenas confirmadas de ${nominaDropbox.nombreMes(mes)} en ${t.titulo.toLowerCase()}.` };
+  const wb = nominaDropbox.construirLibro(ExcelJS, tipo, mes, liquidaciones);
+  const buffer = await wb.xlsx.writeBuffer();
+  const ruta = nominaDropbox.rutaDropbox(tipo, mes);
+  await subirArchivoADropbox(buffer, ruta);
+  logger.info("subirNominaADropbox completado", { tipo, mes, ruta, filas: liquidaciones.length });
+  return { tipo, mes, subido: true, ruta, trabajadores: liquidaciones.length };
+}
+exports.subirNominaADropbox = onCallAuth(
+  {
+    secrets: [DROPBOX_APP_KEY, DROPBOX_APP_SECRET, DROPBOX_REFRESH_TOKEN],
+    timeoutSeconds: 300,
+    memory: "512MiB",
+  },
+  async (request) => {
+    await verificarLlamadorConModulos(request, ["nomina"], "la nómina");
+    const pedido = String(request.data?.tipo || "todos");
+    const tipos = pedido === "todos" ? Object.keys(nominaDropbox.TIPOS) : [pedido];
+    if (tipos.some((t) => !nominaDropbox.TIPOS[t])) throw new HttpsError("invalid-argument", "Tipo de nómina no válido.");
+    let meses = Array.isArray(request.data?.meses) ? request.data.meses : [];
+    if (request.data?.periodoId) meses = [nominaDropbox.mesDePeriodo(request.data.periodoId)];
+    meses = [...new Set(meses.map((m) => String(m)))];
+    if (!meses.length || meses.length > 12 || meses.some((m) => !nominaDropbox.esMesValido(m))) {
+      throw new HttpsError("invalid-argument", "Indica el período (AAAA-MM-Q1/Q2) o hasta 12 meses con formato AAAA-MM.");
+    }
+    const resultados = [];
+    for (const mes of meses) {
+      for (const tipo of tipos) {
+        try {
+          resultados.push(await subirNominaMesADropbox(tipo, mes));
+        } catch (err) {
+          logger.error("subirNominaADropbox falló", { tipo, mes, error: err?.message || String(err) });
+          resultados.push({ tipo, mes, subido: false, error: err?.message || String(err) });
+        }
+      }
+    }
+    return { ok: resultados.every((r) => !r.error), resultados };
+  }
+);
 exports.getLotesPorIntegrarBusint = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
