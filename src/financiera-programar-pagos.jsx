@@ -412,7 +412,7 @@ function DetalleProveedor({ prov, hoy, isAdmin, onClose, programar, guardarCampo
   }
 
   return (
-    <Ventana titulo={prov.nombreMostrado} sub={`${prov.items.length} factura${prov.items.length === 1 ? "" : "s"} abierta${prov.items.length === 1 ? "" : "s"} · saldo ${money(prov.total)} · vencido ${money(prov.vencido)}`} onClose={onClose} ancho={1100}>
+    <Ventana titulo={prov.nombreMostrado} sub={`${prov.items.length} factura${prov.items.length === 1 ? "" : "s"} abierta${prov.items.length === 1 ? "" : "s"} · saldo ${money(prov.total)} · vencido ${money(prov.vencido)}`} onClose={onClose} ancho={1700} alto="92vh">
       {!prov.conDetalle && prov.origen === "corte" ? (
         <div style={{ background: C.blueBg, color: C.blue, borderRadius: 10, padding: "8px 12px", fontSize: 12, marginBottom: 10, lineHeight: 1.5 }}>
           Este proveedor no tiene el detalle por factura en el corte (viene de TNS o el detalle no está guardado). Se programa por monto: «vencido» y «por vencer». Para ver facturas, trae el corte desde Busint en Contabilidad.
@@ -441,7 +441,7 @@ function DetalleProveedor({ prov, hoy, isAdmin, onClose, programar, guardarCampo
               <React.Fragment key={i.key}>
                 <tr>
                   {isAdmin ? <td style={td}>{i.restante > 0 ? <input type="checkbox" checked={!!sel[i.key]} onChange={(e) => setSel((s) => ({ ...s, [i.key]: e.target.checked }))} /> : null}</td> : null}
-                  <td style={{ ...tdL, fontWeight: 700 }}>{i.concepto}</td>
+                  <td style={{ ...tdL, fontWeight: 700, whiteSpace: "nowrap" }}>{i.concepto}</td>
                   <td style={td}>{fechaCorta(i.emision)}</td>
                   <td style={td}>{fechaCorta(i.vence)}</td>
                   <td style={td}><Pastilla clase={i.clase} dias={i.dias} /></td>

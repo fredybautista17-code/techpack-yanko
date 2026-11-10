@@ -45,7 +45,7 @@ export function Boton({ children, onClick, variante = "claro", disabled, chico }
   const est = { claro: { background: C.white, color: C.ink, border: `1.5px solid ${C.border}` }, oscuro: { background: C.ink, color: C.white, border: `1.5px solid ${C.ink}` }, rojo: { background: C.red, color: C.white, border: `1.5px solid ${C.red}` } }[variante];
   return <button onClick={onClick} disabled={disabled} style={{ ...est, borderRadius: 8, padding: chico ? "4px 10px" : "8px 14px", fontSize: chico ? 12 : 13, fontWeight: 700, fontFamily: "inherit", cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.55 : 1 }}>{children}</button>;
 }
-export function Ventana({ titulo, sub, onClose, children, ancho = 680 }) {
+export function Ventana({ titulo, sub, onClose, children, ancho = 680, alto }) {
   useEffect(() => {
     const h = (e) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", h);
@@ -53,7 +53,7 @@ export function Ventana({ titulo, sub, onClose, children, ancho = 680 }) {
   }, [onClose]);
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: C.canvas, borderRadius: 14, width: `min(${ancho}px, 100%)`, maxWidth: "100%", maxHeight: "92vh", minWidth: 320, minHeight: 240, resize: "both", overflow: "hidden", display: "flex", flexDirection: "column", boxShadow: "0 12px 40px rgba(0,0,0,0.25)" }} title={undefined}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: C.canvas, borderRadius: 14, width: `min(${ancho}px, 100%)`, maxWidth: "100%", maxHeight: "92vh", ...(alto ? { height: alto } : {}), minWidth: 320, minHeight: 240, resize: "both", overflow: "hidden", display: "flex", flexDirection: "column", boxShadow: "0 12px 40px rgba(0,0,0,0.25)" }} title={undefined}>
         <div style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "16px 20px", borderBottom: `1px solid ${C.border}` }}>
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 17, fontWeight: 800, color: C.ink }}>{titulo}</div>
