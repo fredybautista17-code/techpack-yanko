@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { getApps } from "firebase/app";
 import { getAuth } from "firebase/auth";
-import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, query, where } from "firebase/firestore";
+import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, query, where, writeBatch } from "firebase/firestore";
+import { fechaDePaso, tiempoDevolucion, textoTiempo, etiquetaOrigen, origenDeFacturacion, resumenDespachoJunto, ORIGENES, ORIGENES_ELEGIBLES } from "./devoluciones-tiempos";
 import { httpsCallable, getFunctions } from "firebase/functions";
 
 // ─── DEVOLUCIONES DE CLIENTES ────────────────────────────────────────────
@@ -112,6 +113,12 @@ function EstadoPill({ T, d, cliente }) {
       {d.solicitaDespacho && d.estado !== "redespachada" && <Pill T={T} bg={T.violetBg} fg={T.violet}>{cliente ? "Despacho solicitado" : "Pide despacho"}</Pill>}
       {d.resultado === "diferencias" && <Pill T={T} bg={T.coralBg} fg={T.coral}>Con diferencias</Pill>}
       {d.resultado === "completa" && <Pill T={T} bg={T.jadeBg} fg={T.jade}>Completa</Pill>}
+      {d.origen?.tipo ? <Pill T={T} bg={T.canvas} fg={T.slate}>{d.origen.tipo === "factura" ? "🧾 " : d.origen.tipo === "sin_dato" ? "" : "🚚 "}{etiquetaOrigen(d.origen)}</Pill> : null}
+      {(() => {
+        const t = tiempoDevolucion(d);
+        const c = t.cerrada ? (t.tardo ? [T.amberBg, T.amber] : [T.canvas, T.slate]) : t.nivel === "rojo" ? [T.coralBg, T.coral] : t.nivel === "ambar" ? [T.amberBg, T.amber] : [T.jadeBg, T.jade];
+        return <Pill T={T} bg={c[0]} fg={c[1]}>{textoTiempo(t)}</Pill>;
+      })()}
     </span>
   );
 }
@@ -214,7 +221,7 @@ function tallasDeLineas(lineas, extra) {
   return TALLAS_ORDEN.filter((t) => set.has(t));
 }
 
-function Linea({ T, estado }) {
+function Linea({ T, estado, d }) {
   const idx = PASOS.indexOf(estado);
   return (
     <div style={{ display: "flex", margin: "8px 0 14px" }}>
@@ -225,6 +232,7 @@ function Linea({ T, estado }) {
           <div key={p} style={{ flex: 1, textAlign: "center", fontSize: 10.5, color: actual ? T.denim : hecho ? T.ink : T.slate, fontWeight: actual ? 700 : 400 }}>
             <div style={{ width: 12, height: 12, borderRadius: "50%", margin: "0 auto 4px", background: actual ? T.denim : hecho ? T.jade : T.border }} />
             {e.txt}
+            {(() => { const f = d && i <= idx ? fechaDePaso(d, p) : ""; return f ? <div style={{ fontSize: 10, color: T.slate, fontWeight: 400, marginTop: 2 }}>{fmtFecha(f)}</div> : null; })()}
           </div>
         );
       })}
@@ -239,10 +247,11 @@ function Detalle({ T, d, mostrarConteo }) {
   const infantil = esInfantilDev(d);
   return (
     <div style={{ paddingTop: 10 }}>
-      <Linea T={T} estado={d.estado} />
+      <Linea T={T} estado={d.estado} d={d} />
       <div style={{ fontSize: 12, color: T.slate, marginBottom: 8 }}>
         Lote <b style={{ color: T.ink }}>{d.lote}</b> · Ref {d.ref || "—"}{d.pedido ? ` · Pedido ${d.pedido}` : ""} · Motivo: {d.motivo || "—"} · Guía: {d.guia || "—"}
       </div>
+      {d.origen?.tipo ? <div style={{ fontSize: 12, color: T.slate, marginBottom: 8 }}>Origen en Busint: <b style={{ color: T.ink }}>{etiquetaOrigen(d.origen)}</b>{d.origen.documentos?.length ? ` · ${d.origen.documentos.join(", ")}` : ""}{d.origen.fuente === "manual" ? " (confirmado a mano)" : ""}</div> : null}
       {d.observaciones ? <div style={{ fontSize: 12, color: T.slate, marginBottom: 8 }}>Nota del cliente: {d.observaciones}</div> : null}
       <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, margin: "6px 0" }}>DECLARADO POR EL CLIENTE</div>
       <GrillaColorTalla T={T} colores={coloresDeLineas(d.lineas)} tallas={tallas} valores={valores} editable={false} infantil={infantil} />
@@ -268,7 +277,7 @@ function Detalle({ T, d, mostrarConteo }) {
       ) : null}
       {d.redespacho ? (
         <div style={{ fontSize: 12, color: T.slate, marginTop: 10 }}>
-          Despachada de nuevo el {fmtFecha(d.redespacho.fecha)}{d.redespacho.guia ? ` · guía ${d.redespacho.guia}` : ""}
+          Despachada de nuevo el {fmtFecha(d.redespacho.fecha)}{d.redespacho.guia ? ` · guía ${d.redespacho.guia}` : ""}{d.redespacho.junto?.length ? ` · junto con ${d.redespacho.junto.join(", ")}` : ""}
         </div>
       ) : null}
       <div style={{ marginTop: 12, borderTop: `1px solid ${T.border}`, paddingTop: 8 }}>
@@ -304,8 +313,11 @@ function recalcularDiferencias(lineasDecl, lineasConteo) {
 // (2026-10-21, a pedido de Fredy) Editar una devolución: la pueden editar todos los usuarios que tienen Devoluciones
 // (el cliente solo mientras está reportada / en camino, antes de que Bodega la reciba); borrarla, solo el administrador.
 const puedeEditarDev = (d, esCliente) => (esCliente ? ["reportada", "en_camino"].includes(d.estado) : true);
-function EditarDevolucionModal({ db, functionsClient, T, d, usuario, lista, onClose }) {
+function EditarDevolucionModal({ db, functionsClient, T, d, usuario, lista, esCliente, onClose }) {
   const [info, setInfo] = useState(null);
+  const [origenTipo, setOrigenTipo] = useState(d.origen?.tipo || "");
+  const detectado = useMemo(() => origenDeFacturacion(info?.facturacion), [info]);
+  const origenActual = origenTipo || detectado?.tipo || "sin_dato";
   const [cant, setCant] = useState(valoresDeLineas(d.lineas));
   const [motivo, setMotivo] = useState(d.motivo || MOTIVOS[0]);
   const [guia, setGuia] = useState(d.guia || "");
@@ -355,6 +367,13 @@ function EditarDevolucionModal({ db, functionsClient, T, d, usuario, lista, onCl
     const extra = { lineas, tallas, total: totalLineas(lineas), motivo, guia: guia.trim(), observaciones: obs.trim(), tallasInfantil: infantil, editadoPor: usuario, editadoEn: nowISO() };
     if (pide) extra.solicitaDespacho = { nota: notaDesp.trim(), por: d.solicitaDespacho?.por || usuario, fecha: d.solicitaDespacho?.fecha || nowISO() };
     else if (d.solicitaDespacho) extra.solicitaDespacho = null;
+    // Origen en Busint (factura / traslado externo): el personal lo puede corregir; si no, queda el que detectó Busint.
+    const tipoOrigen = esCliente ? (d.origen?.tipo || detectado?.tipo || "") : (origenTipo || detectado?.tipo || "");
+    if (tipoOrigen && tipoOrigen !== d.origen?.tipo) {
+      const manual = !esCliente && !!origenTipo && origenTipo !== detectado?.tipo;
+      extra.origen = { tipo: tipoOrigen, documentos: !manual && detectado?.tipo === tipoOrigen ? detectado.documentos : (d.origen?.documentos || []), fuente: manual ? "manual" : "busint" };
+      cambios.push(`origen: ${ORIGENES[tipoOrigen] || tipoOrigen}`);
+    }
     if (d.conteo?.length) {
       extra.diferencias = recalcularDiferencias(lineas, d.conteo);
       extra.resultado = extra.diferencias.length ? "diferencias" : "completa";
@@ -390,6 +409,14 @@ function EditarDevolucionModal({ db, functionsClient, T, d, usuario, lista, onCl
               <option value="num">Números (niños: 6, 8, 10, 12)</option>
             </select>
           </div>
+          {!esCliente && (
+            <div style={{ flex: 1, minWidth: 170 }}>
+              <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>Origen en Busint</div>
+              <select value={origenActual} onChange={(e) => setOrigenTipo(e.target.value)} style={{ ...campo(T), width: "100%" }}>
+                {[...new Set([...ORIGENES_ELEGIBLES, origenActual])].map((o) => <option key={o} value={o}>{ORIGENES[o] || o}</option>)}
+              </select>
+            </div>
+          )}
         </div>
         <div style={{ marginBottom: 14 }}>
           <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>Nota</div>
@@ -435,7 +462,7 @@ function AccionesDevolucion({ db, functionsClient, T, d, lista, currentUser, esC
       {puedeEditar && <button onClick={() => setEditando(true)} style={btn(T)}>✎ Editar</button>}
       {puedeBorrar && <button onClick={borrar} style={{ ...btn(T), color: T.coral, borderColor: T.coral }}>🗑 Borrar</button>}
       {error && <span style={{ color: T.coral, fontSize: 12 }}>{error}</span>}
-      {editando && <EditarDevolucionModal db={db} functionsClient={functionsClient} T={T} d={d} usuario={usuario} lista={lista} onClose={() => setEditando(false)} />}
+      {editando && <EditarDevolucionModal db={db} functionsClient={functionsClient} T={T} d={d} usuario={usuario} lista={lista} esCliente={esCliente} onClose={() => setEditando(false)} />}
     </div>
   );
 }
@@ -525,10 +552,11 @@ export function DevolucionesClienteView({ db, functionsClient, T: Tp, currentUse
       .filter((l) => Object.keys(l.cantidades).length);
     const id = `dev_${Date.now()}`;
     const estado = guia.trim() ? "en_camino" : "reportada";
+    const origen = origenDeFacturacion(info.facturacion);
     const d = {
       id, numero: numeroNuevo(), lote: info.lote, ref: info.ref, pedido: info.pedido, cliente: info.cliente,
       tallas: info.tallas, grupo: info.grupo || "", lineas, total: totalLineas(lineas), motivo, guia: guia.trim(), observaciones: obs.trim(),
-      estado, creadoPorUid: uid, creadoPor: usuarioActual(currentUser), creadoEn: nowISO(),
+      estado, ...(origen ? { origen } : {}), creadoPorUid: uid, creadoPor: usuarioActual(currentUser), creadoEn: nowISO(),
       historial: [{ estado, fecha: nowISO(), usuario: usuarioActual(currentUser), ...(pideDesp ? { nota: "Pide que se la despachen de nuevo" } : {}) }],
       ...(pideDesp ? { solicitaDespacho: { nota: notaDesp.trim(), por: usuarioActual(currentUser), fecha: nowISO() } } : {}),
     };
@@ -674,18 +702,51 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado }) {
   const [msg, setMsg] = useState("");
   const [redes, setRedes] = useState({ fecha: new Date().toISOString().slice(0, 10), guia: "" });
   const [conteo, setConteo] = useState({});
+  const [sel, setSel] = useState([]); // devoluciones marcadas para despacharlas juntas (solo Bodega, «Lista para despachar»)
+  const [juntas, setJuntas] = useState({ fecha: new Date().toISOString().slice(0, 10), guia: "" });
+  const [msgJunto, setMsgJunto] = useState("");
   const usuario = usuarioActual(currentUser);
 
   const pendiente = (d) => (modo === "bodega" ? ["reportada", "en_camino", "lista"].includes(d.estado) : ["recibida", "revisada"].includes(d.estado));
   const pideDespacho = (d) => !!d.solicitaDespacho && d.estado !== "redespachada";
   const cuantosPiden = (lista || []).filter(pideDespacho).length;
-  const visibles = (lista || []).filter((d) => {
+  const atrasadas = (lista || []).filter((d) => tiempoDevolucion(d).atrasada).length;
+  const visiblesBase = (lista || []).filter((d) => {
     if (filtro === "pendientes" && !pendiente(d)) return false;
+    if (filtro === "atrasadas" && !tiempoDevolucion(d).atrasada) return false;
     if (filtro === "piden" && !pideDespacho(d)) return false;
     const t = q.trim().toLowerCase();
     if (!t) return true;
     return [d.numero, d.lote, d.ref, d.cliente, d.guia].some((x) => String(x || "").toLowerCase().includes(t));
   });
+  // Lo pendiente y lo atrasado se muestra con la más vieja primero; «Todas» sigue de la más nueva a la más vieja.
+  const visibles = filtro === "todas" || filtro === "piden" ? visiblesBase : [...visiblesBase].sort((a, b) => (a.creadoEn || "").localeCompare(b.creadoEn || ""));
+  const selValidas = sel.filter((id) => (lista || []).some((d) => d.id === id && d.estado === "lista"));
+  const clienteSel = (lista || []).find((d) => d.id === selValidas[0])?.cliente;
+  async function despacharJuntas() {
+    const elegidas = (lista || []).filter((d) => selValidas.includes(d.id));
+    if (elegidas.length < 2 || !juntas.fecha) return;
+    setTrabajando("junto"); setMsgJunto("");
+    try {
+      const batch = writeBatch(db);
+      const despachoId = `desp_${Date.now()}`;
+      elegidas.forEach((d) => {
+        const otras = elegidas.filter((x) => x.id !== d.id).map((x) => x.numero);
+        const ev = { estado: "redespachada", fecha: nowISO(), usuario, nota: `Despachada junto con ${otras.join(", ")}` };
+        batch.update(doc(db, COL, d.id), limpio({
+          redespacho: { fecha: juntas.fecha, guia: juntas.guia.trim(), por: usuario, despachoId, junto: otras },
+          estado: "redespachada", historial: [...(d.historial || []), ev], actualizadoEn: nowISO(),
+        }));
+      });
+      await batch.commit();
+      setMsgJunto(`Despachadas juntas: ${elegidas.map((x) => x.numero).join(", ")}.`);
+      setSel([]); setJuntas({ fecha: juntas.fecha, guia: "" });
+    } catch (e) {
+      setMsgJunto(e?.message || "No se pudo guardar el despacho.");
+    } finally {
+      setTrabajando("");
+    }
+  }
 
   function abrir(d) {
     setMsg("");
@@ -742,18 +803,56 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado }) {
         {modo === "bodega" ? "Marca cada devolución como recibida cuando llega la mercancía, y como despachada de nuevo cuando vuelve a salir." : "Cuenta por color y talla lo que llegó; ATLAS lo compara con lo que declaró el cliente."}
       </div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12, alignItems: "center" }}>
-        {[["pendientes", modo === "bodega" ? "Por atender" : "Por revisar"], ["piden", `Piden despacho (${cuantosPiden})`], ["todas", "Todas"]].map(([k, t]) => (
+        {[["pendientes", modo === "bodega" ? "Por atender" : "Por revisar"], ["atrasadas", `Atrasadas (${atrasadas})`], ["piden", `Piden despacho (${cuantosPiden})`], ["todas", "Todas"]].map(([k, t]) => (
           <button key={k} onClick={() => setFiltro(k)} style={{ ...btn(T), background: filtro === k ? T.denimBg : T.white, color: filtro === k ? T.denim : T.ink, borderColor: filtro === k ? T.denim : T.border }}>{t}</button>
         ))}
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar por número, lote, ref, cliente o guía" style={{ ...campo(T), width: 300 }} />
       </div>
       {error && <div style={{ color: T.coral, fontSize: 13, marginBottom: 8 }}>{error}</div>}
+      {modo === "bodega" && msgJunto && selValidas.length === 0 && <div style={{ fontSize: 13, color: msgJunto.startsWith("Despachadas") ? T.jade : T.coral, marginBottom: 10 }}>{msgJunto}</div>}
+      {modo === "bodega" && selValidas.length > 0 && (() => {
+        const elegidas = (lista || []).filter((d) => selValidas.includes(d.id));
+        const grupos = resumenDespachoJunto(elegidas);
+        const unidades = elegidas.reduce((s, d) => s + (Number(d.total) || 0), 0);
+        return (
+          <div style={{ background: T.white, border: `1px solid ${T.denim}`, borderRadius: 14, padding: "14px 18px", marginBottom: 12 }}>
+            <div style={{ fontSize: 14, fontWeight: 800, color: T.ink, marginBottom: 6 }}>Despachar juntas · {elegidas.length} {elegidas.length === 1 ? "devolución" : "devoluciones"} · {unidades} und · {clienteSel || "—"}</div>
+            {elegidas.length < 2 ? (
+              <div style={{ fontSize: 13, color: T.slate }}>Marca al menos otra devolución «Lista para despachar» del mismo cliente para despacharlas juntas.</div>
+            ) : (
+              <>
+                {grupos.map((g) => (
+                  <div key={g.tipo} style={{ fontSize: 13, color: T.ink, marginBottom: 4 }}>
+                    <b>{g.tipo === "factura" ? "🧾 " : g.tipo === "sin_dato" ? "" : "🚚 "}{g.etiqueta}</b> ({g.unidades} und): {g.devs.map((x) => `${x.numero} · lote ${x.lote} · ${x.total} und${x.documentos.length ? ` · ${x.documentos.join(", ")}` : ""}`).join("  |  ")}
+                  </div>
+                ))}
+                {grupos.length > 1 ? <div style={{ fontSize: 12, color: T.amber, margin: "4px 0 8px" }}>Salen en el mismo envío, pero en Busint cada tipo lleva su propio documento (las facturadas por factura, las remisionadas por traslado externo).</div> : null}
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end", marginTop: 8 }}>
+                  <div><div style={{ fontSize: 11, color: T.slate, marginBottom: 3 }}>Fecha</div><input type="date" value={juntas.fecha} onChange={(e) => setJuntas({ ...juntas, fecha: e.target.value })} style={campo(T)} /></div>
+                  <div><div style={{ fontSize: 11, color: T.slate, marginBottom: 3 }}>Guía</div><input value={juntas.guia} onChange={(e) => setJuntas({ ...juntas, guia: e.target.value })} placeholder="Número de guía" style={campo(T)} /></div>
+                  <button disabled={trabajando === "junto" || !juntas.fecha} onClick={despacharJuntas} style={btn(T, "primario")}>{trabajando === "junto" ? "Guardando…" : "Despachar juntas"}</button>
+                </div>
+              </>
+            )}
+            {msgJunto && <div style={{ fontSize: 13, color: T.coral, marginTop: 8 }}>{msgJunto}</div>}
+            <div style={{ marginTop: 8 }}><button onClick={() => { setSel([]); setMsgJunto(""); }} style={btn(T)}>Quitar selección</button></div>
+          </div>
+        );
+      })()}
       {lista === null ? <div style={{ fontSize: 13, color: T.slate }}>Cargando…</div>
         : !visibles.length ? <div style={{ ...tarjeta, fontSize: 13, color: T.slate }}>{filtro === "pendientes" ? "No hay devoluciones pendientes." : filtro === "piden" ? "Ningún cliente tiene un despacho de nuevo por atender." : "No hay devoluciones."}</div>
         : visibles.map((d) => (
           <div key={d.id} style={{ ...tarjeta, marginBottom: 10 }}>
             <div onClick={() => abrir(d)} style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", cursor: "pointer", alignItems: "center" }}>
-              <span style={{ fontSize: 14 }}><b>{d.numero}</b> · {d.cliente || "—"} · lote {d.lote} · ref {d.ref || "—"} · {d.total} und · {fmtFecha(d.creadoEn)}</span>
+              <span style={{ fontSize: 14 }}>
+                {d.estado === "lista" && modo === "bodega" && (
+                  <input type="checkbox" title="Marcar para despachar junto con otras" checked={selValidas.includes(d.id)}
+                    disabled={!selValidas.includes(d.id) && selValidas.length > 0 && clienteSel !== d.cliente}
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={(e) => setSel((a) => (e.target.checked ? [...a.filter((x) => x !== d.id), d.id] : a.filter((x) => x !== d.id)))}
+                    style={{ marginRight: 8 }} />
+                )}
+                <b>{d.numero}</b> · {d.cliente || "—"} · lote {d.lote} · ref {d.ref || "—"} · {d.total} und · {fmtFecha(d.creadoEn)}</span>
               <EstadoPill T={T} d={d} />
             </div>
             {abierto === d.id && (
