@@ -56,7 +56,7 @@ function armarCorreoDevolucion(d) {
     `<table style="border-collapse:collapse;margin-bottom:14px">` +
     dato("Cliente", esc(d.cliente)) + dato("Lote", esc(d.lote)) + dato("Referencia", esc(d.ref)) + dato("Pedido", esc(d.pedido)) +
     dato("Unidades", String(Number(d.total) || 0)) + dato("Motivo", esc(d.motivo)) + dato("Guía de transporte", esc(d.guia)) +
-    dato("Origen en Busint", origen) + dato("Reportada por", esc(d.creadoPor)) +
+    dato("Origen en Busint", origen) + dato(d.origen?.tipo === "factura" ? "Factura original" : "Remisión original (TNS)", esc(d.documentoOriginal)) + dato("Reportada por", esc(d.creadoPor)) +
     (d.solicitaDespacho ? dato("Pide despacho de nuevo", esc(d.solicitaDespacho.nota ? `Sí — ${d.solicitaDespacho.nota}` : "Sí")) : "") +
     dato("Nota del cliente", esc(d.observaciones)) +
     `</table>` +

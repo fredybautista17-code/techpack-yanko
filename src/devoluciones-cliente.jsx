@@ -56,6 +56,12 @@ const fmtFechaHora = (iso) => {
   return Number.isNaN(d.getTime()) ? "" : d.toLocaleString("es-CO", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 };
 const entero = (v) => { const n = Math.floor(Number(v)); return Number.isFinite(n) && n > 0 ? n : 0; };
+// (2026-11-10, a pedido de Fredy) Documento original de TNS: la cliente lo escribe al reportar (remisión si es Remisionada, factura si es Facturada)
+// y Jesús escribe el documento NUEVO al despachar de nuevo. Se guardan como documentoOriginal y redespacho.documentoNuevo.
+const DOC_MIN = 3;
+const docValido = (v) => String(v || "").trim().length >= DOC_MIN;
+const etiquetaDocOriginal = (origenTipo) => (origenTipo === "factura" ? "Número de factura" : "Número de remisión de TNS");
+const MONO = { fontFamily: "ui-monospace, Menlo, Consolas, monospace" };
 const totalLineas = (lineas) => (lineas || []).reduce((s, l) => s + Object.values(l.cantidades || {}).reduce((a, b) => a + (Number(b) || 0), 0), 0);
 // (2026-11-09, a pedido de Fredy) Lo ya devuelto de un lote, por casilla "color|talla": suma las devoluciones de ese lote
 // (menos la que se está editando y las ya despachadas de nuevo, porque esas unidades volvieron al cliente).
@@ -256,6 +262,7 @@ function Detalle({ T, d, mostrarConteo }) {
       </div>
       {d.envioJunto?.length ? <div style={{ fontSize: 12, color: T.slate, marginBottom: 8 }}>Viene en el mismo envío con: <b style={{ color: T.ink }}>{d.envioJunto.join(", ")}</b></div> : null}
       {d.origen?.tipo ? <div style={{ fontSize: 12, color: T.slate, marginBottom: 8 }}>Origen en Busint: <b style={{ color: T.ink }}>{etiquetaOrigen(d.origen)}</b>{d.origen.documentos?.length ? ` · ${d.origen.documentos.join(", ")}` : ""}{d.origen.fuente === "manual" ? " (confirmado a mano)" : ""}{d.origen.confirmar ? ` · por confirmar (la cliente la montó como ${etiquetaOrigen(d.origen)}; Busint la muestra como ${etiquetaOrigen({ tipo: d.origen.busint })})` : ""}</div> : null}
+      {String(d.documentoOriginal || "").trim() ? <div style={{ fontSize: 12, color: T.slate, marginBottom: 8 }}>{d.origen?.tipo === "factura" ? "Factura original" : "Remisión original (TNS)"}: <b style={{ color: T.ink, ...MONO }}>{d.documentoOriginal}</b></div> : null}
       {d.observaciones ? <div style={{ fontSize: 12, color: T.slate, marginBottom: 8 }}>Nota del cliente: {d.observaciones}</div> : null}
       <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, margin: "6px 0" }}>DECLARADO POR EL CLIENTE</div>
       <GrillaColorTalla T={T} colores={coloresDeLineas(d.lineas)} tallas={tallas} valores={valores} editable={false} infantil={infantil} />
@@ -274,6 +281,17 @@ function Detalle({ T, d, mostrarConteo }) {
           ) : null}
         </>
       ) : null}
+      {!mostrarConteo && d.estado === "redespachada" && d.conteo?.length ? (
+        <>
+          <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, margin: "12px 0 6px" }}>LO QUE TE ENVIAMOS DE NUEVO</div>
+          <GrillaColorTalla T={T} colores={coloresDeLineas(d.conteo)} tallas={tallasDeLineas(d.conteo, tallas)} valores={conteoVal} editable={false} infantil={infantil} />
+          {totalLineas(d.lineas) > totalLineas(d.conteo) ? (
+            <div style={{ background: T.coralBg, color: T.coral, borderRadius: 8, padding: "8px 12px", fontSize: 12, marginTop: 8 }}>
+              Recibimos {totalLineas(d.conteo)} de las {totalLineas(d.lineas)} unidades que reportaste; te enviamos las {totalLineas(d.conteo)} que llegaron.
+            </div>
+          ) : null}
+        </>
+      ) : null}
       {d.solicitaDespacho ? (
         <div style={{ fontSize: 12, color: T.violet, marginTop: 10 }}>
           Despacho de nuevo solicitado{d.solicitaDespacho.por ? ` por ${d.solicitaDespacho.por}` : ""} el {fmtFecha(d.solicitaDespacho.fecha)}{d.solicitaDespacho.nota ? ` · ${d.solicitaDespacho.nota}` : ""}
@@ -281,7 +299,7 @@ function Detalle({ T, d, mostrarConteo }) {
       ) : null}
       {d.redespacho ? (
         <div style={{ fontSize: 12, color: T.slate, marginTop: 10 }}>
-          Despachada de nuevo el {fmtFecha(d.redespacho.fecha)}{d.redespacho.guia ? ` · guía ${d.redespacho.guia}` : ""}{d.redespacho.junto?.length ? ` · junto con ${d.redespacho.junto.join(", ")}` : ""}
+          Despachada de nuevo el {fmtFecha(d.redespacho.fecha)}{d.redespacho.guia ? ` · guía ${d.redespacho.guia}` : ""}{String(d.redespacho.documentoNuevo || "").trim() ? <> · nueva remisión/factura <b style={{ color: T.ink, ...MONO }}>{d.redespacho.documentoNuevo}</b></> : null}{d.redespacho.junto?.length ? ` · junto con ${d.redespacho.junto.join(", ")}` : ""}
         </div>
       ) : null}
       <div style={{ marginTop: 12, borderTop: `1px solid ${T.border}`, paddingTop: 8 }}>
@@ -327,6 +345,7 @@ function EditarDevolucionModal({ db, functionsClient, T, d, usuario, lista, esCl
   const [guia, setGuia] = useState(d.guia || "");
   const [transp, setTransp] = useState(d.transportadora || "");
   const [obs, setObs] = useState(d.observaciones || "");
+  const [docOrig, setDocOrig] = useState(d.documentoOriginal || "");
   const [infantil, setInfantil] = useState(esInfantilDev(d));
   const [pide, setPide] = useState(!!d.solicitaDespacho);
   const [notaDesp, setNotaDesp] = useState(d.solicitaDespacho?.nota || "");
@@ -355,6 +374,7 @@ function EditarDevolucionModal({ db, functionsClient, T, d, usuario, lista, esCl
   async function guardar() {
     setError("");
     if (!(total > 0)) { setError("Escribe al menos una unidad."); return; }
+    if (esCliente && !docValido(docOrig)) { setError(`Escribe el ${etiquetaDocOriginal(origenActual).toLowerCase()} con el que te despachamos este lote.`); return; }
     const pasadas = info ? casillasPasadas(colores, tallas, cant, usado, infantil, valoresDeLineas(d.lineas)) : [];
     if (pasadas.length) { setError(`Hay cantidades por encima de lo que queda por devolver (tope menos lo ya reportado en otras devoluciones del lote): ${pasadas.join(", ")}.`); return; }
     const lineas = colores
@@ -370,10 +390,11 @@ function EditarDevolucionModal({ db, functionsClient, T, d, usuario, lista, esCl
     const pasaEnCamino = d.estado === "reportada" && !!guia.trim() && !String(d.guia || "").trim();
     if (pasaEnCamino) cambios.push("pasa a En camino");
     if (obs.trim() !== (d.observaciones || "")) cambios.push("nota");
+    if (docOrig.trim() !== (d.documentoOriginal || "")) cambios.push(`documento original: ${docOrig.trim() || "—"}`);
     if (infantil !== esInfantilDev(d)) cambios.push(`tallas en ${infantil ? "números" : "letras"}`);
     if (pide !== !!d.solicitaDespacho) cambios.push(pide ? "pide el despacho de nuevo" : "quitó la solicitud de despacho");
     else if (pide && notaDesp.trim() !== (d.solicitaDespacho?.nota || "")) cambios.push("nota del despacho");
-    const extra = { lineas, tallas, total: totalLineas(lineas), motivo, guia: guia.trim(), transportadora: transp, observaciones: obs.trim(), tallasInfantil: infantil, editadoPor: usuario, editadoEn: nowISO() };
+    const extra = { lineas, tallas, total: totalLineas(lineas), motivo, guia: guia.trim(), transportadora: transp, observaciones: obs.trim(), documentoOriginal: docOrig.trim(), tallasInfantil: infantil, editadoPor: usuario, editadoEn: nowISO() };
     if (pide) extra.solicitaDespacho = { nota: notaDesp.trim(), por: d.solicitaDespacho?.por || usuario, fecha: d.solicitaDespacho?.fecha || nowISO() };
     else if (d.solicitaDespacho) extra.solicitaDespacho = null;
     // Origen en Busint (factura / traslado externo): el personal lo puede corregir; si no, queda el que detectó Busint.
@@ -434,6 +455,10 @@ function EditarDevolucionModal({ db, functionsClient, T, d, usuario, lista, esCl
               </select>
             </div>
           )}
+        </div>
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>{etiquetaDocOriginal(origenActual)}{esCliente ? " *" : ""}</div>
+          <input value={docOrig} onChange={(e) => setDocOrig(e.target.value)} placeholder="Número del documento" style={{ ...campo(T), width: 260 }} />
         </div>
         <div style={{ marginBottom: 14 }}>
           <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>Nota</div>
@@ -529,6 +554,11 @@ function FormularioDevolucionesCliente({ db, functionsClient, T: Tp, currentUser
   const [envio, setEnvio] = useState({ guia: "", transp: "", fecha: new Date().toISOString().slice(0, 10) });
   const [guardandoEnvio, setGuardandoEnvio] = useState(false);
   const [msgEnvio, setMsgEnvio] = useState("");
+  // (2026-11-10, a pedido de Fredy) Documento original de TNS: obligatorio al reportar. En Facturadas, si Busint muestra una sola factura del lote, ya viene escrita.
+  const [docOrig, setDocOrig] = useState("");
+  const facturasBusint = useMemo(() => (info?.facturacion?.facturas || []).map((x) => String(x.nfact || "").trim()).filter(Boolean), [info]);
+  useEffect(() => { setDocOrig(tipo === "factura" && facturasBusint.length === 1 ? facturasBusint[0] : ""); }, [info]); // eslint-disable-line
+  const etiquetaDoc = etiquetaDocOriginal(tipo === "factura" ? "factura" : "traslado_externo");
   const sinGuia = (d) => d.estado === "reportada" && !String(d.guia || "").trim();
   const listaTipo = lista === null ? null : lista.filter((d) => grupoOrigenCliente(d) === tipo);
   const selValidas = selG.filter((id) => (lista || []).some((d) => d.id === id && sinGuia(d)));
@@ -595,6 +625,7 @@ function FormularioDevolucionesCliente({ db, functionsClient, T: Tp, currentUser
     setError(""); setAviso("");
     if (!info) return;
     if (!(total > 0)) { setError("Escribe al menos una unidad a devolver."); return; }
+    if (!docValido(docOrig)) { setError(`Escribe el ${etiquetaDoc.toLowerCase()} con el que te despachamos este lote.`); return; }
     if (lista === null) { setError("Espera un momento: se están cargando tus devoluciones anteriores del lote."); return; }
     const pasadas = casillasPasadas(coloresGrilla, info.tallas, cant, yaDevuelto, esInfantilGrupo(info.grupo));
     if (pasadas.length) { setError(`Hay cantidades por encima de lo que queda por devolver (${despachoPorColor ? "despachado" : "del lote"} menos lo ya reportado): ${pasadas.join(", ")}.`); return; }
@@ -608,7 +639,7 @@ function FormularioDevolucionesCliente({ db, functionsClient, T: Tp, currentUser
     const d = {
       id, numero: numeroNuevo(), lote: info.lote, ref: info.ref, pedido: info.pedido, cliente: info.cliente,
       tallas: info.tallas, grupo: info.grupo || "", lineas, total: totalLineas(lineas), motivo, guia: guia.trim(), ...(transp ? { transportadora: transp } : {}), observaciones: obs.trim(),
-      estado, origen, creadoPorUid: uid, creadoPor: usuarioActual(currentUser), creadoEn: nowISO(),
+      documentoOriginal: docOrig.trim(), estado, origen, creadoPorUid: uid, creadoPor: usuarioActual(currentUser), creadoEn: nowISO(),
       historial: [{ estado, fecha: nowISO(), usuario: usuarioActual(currentUser), ...(pideDesp ? { nota: "Pide que se la despachen de nuevo" } : {}) }],
       ...(pideDesp ? { solicitaDespacho: { nota: notaDesp.trim(), por: usuarioActual(currentUser), fecha: nowISO() } } : {}),
     };
@@ -616,7 +647,7 @@ function FormularioDevolucionesCliente({ db, functionsClient, T: Tp, currentUser
     try {
       await setDoc(doc(db, COL, id), limpio(d));
       setAviso(`Devolución ${d.numero} reportada.`);
-      setInfo(null); setCant({}); setLote(""); setGuia(""); setTransp(""); setObs(""); setMotivo(MOTIVOS[0]); setPideDesp(false); setNotaDesp("");
+      setInfo(null); setCant({}); setLote(""); setDocOrig(""); setGuia(""); setTransp(""); setObs(""); setMotivo(MOTIVOS[0]); setPideDesp(false); setNotaDesp("");
     } catch (e) {
       setError(e?.message || "No se pudo guardar la devolución.");
     } finally {
@@ -652,6 +683,14 @@ function FormularioDevolucionesCliente({ db, functionsClient, T: Tp, currentUser
             )}
             <div style={{ fontSize: 12, color: T.slate, marginBottom: 6 }}>Unidades que devuelves, por color y talla (debajo de cada casilla: {despachoPorColor ? "cantidad despachada según la factura" : "cantidad del lote"}; si ya reportaste devoluciones de este lote, se descuentan)</div>
             <GrillaColorTalla T={T} colores={coloresGrilla} tallas={info.tallas} valores={cant} onCambiar={cambiar} tope usado={yaDevuelto} infantil={esInfantilGrupo(info.grupo)} />
+            <div style={{ marginTop: 14, background: T.amberBg, border: `1px solid ${T.border}`, borderRadius: 10, padding: "12px 14px" }}>
+              <div style={{ fontSize: 12, color: T.ink, fontWeight: 700, marginBottom: 6 }}>{etiquetaDoc} <span style={{ color: T.coral }}>*</span></div>
+              <input value={docOrig} onChange={(e) => setDocOrig(e.target.value)} placeholder="Número del documento" aria-label={etiquetaDoc} style={{ ...campo(T), width: 240 }} />
+              <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>
+                Obligatorio. Es el número del documento con el que te despachamos este lote (viene en la {tipo === "factura" ? "factura" : "remisión"} de la mercancía).
+                {facturasBusint.length > 1 ? ` Busint muestra estas facturas del lote: ${facturasBusint.join(", ")}.` : ""}
+              </div>
+            </div>
             <div style={{ display: "flex", gap: 12, flexWrap: "wrap", margin: "14px 0" }}>
               <div style={{ flex: 1, minWidth: 170 }}>
                 <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>Motivo</div>
@@ -724,7 +763,7 @@ function FormularioDevolucionesCliente({ db, functionsClient, T: Tp, currentUser
                     <input type="checkbox" title="Marcar para ponerle la guía de salida" checked={selValidas.includes(d.id)} onClick={(e) => e.stopPropagation()}
                       onChange={(e) => setSelG((a) => (e.target.checked ? [...a.filter((x) => x !== d.id), d.id] : a.filter((x) => x !== d.id)))} style={{ marginRight: 8 }} />
                   )}
-                  <b>{d.numero}</b> · lote {d.lote} · {d.total} und · {fmtFecha(d.creadoEn)}
+                  <b>{d.numero}</b> · lote {d.lote} · {d.total} und{String(d.documentoOriginal || "").trim() ? ` · ${d.documentoOriginal}` : ""} · {fmtFecha(d.creadoEn)}
                 </span>
                 <EstadoPill T={T} d={d} cliente={esCliente} />
               </div>
@@ -748,12 +787,13 @@ function CambiarEstadoDev({ T, d, ocupado, onCambiar }) {
   const [motivo, setMotivo] = useState("");
   const [fecha, setFecha] = useState(new Date().toISOString().slice(0, 10));
   const [guia, setGuia] = useState("");
+  const [nuevaRem, setNuevaRem] = useState("");
   const aplicar = () => {
     if (!nuevo) return;
     const de = estadoInfo(T, d.estado).txt;
     const a = estadoInfo(T, nuevo).txt;
     const extra = {};
-    if (nuevo === "redespachada") extra.redespacho = { fecha, guia: guia.trim(), por: "" };
+    if (nuevo === "redespachada") extra.redespacho = { fecha, guia: guia.trim(), ...(nuevaRem.trim() ? { documentoNuevo: nuevaRem.trim() } : {}), por: "" };
     if (nuevo === "recibida" && !d.recibidaEn) extra.recibidaEn = new Date().toISOString();
     if (nuevo === "revisada" && !d.revisadoEn) extra.revisadoEn = new Date().toISOString();
     onCambiar(nuevo, extra, `Cambio de estado: ${de} → ${a}${motivo.trim() ? ` — ${motivo.trim()}` : ""}`);
@@ -774,6 +814,7 @@ function CambiarEstadoDev({ T, d, ocupado, onCambiar }) {
           <>
             <div><div style={{ fontSize: 11, color: T.slate, marginBottom: 3 }}>Fecha</div><input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} style={campo(T)} /></div>
             <div><div style={{ fontSize: 11, color: T.slate, marginBottom: 3 }}>Guía</div><input value={guia} onChange={(e) => setGuia(e.target.value)} placeholder="Número de guía" style={campo(T)} /></div>
+            <div><div style={{ fontSize: 11, color: T.slate, marginBottom: 3 }}>Nueva remisión o factura</div><input value={nuevaRem} onChange={(e) => setNuevaRem(e.target.value)} placeholder="Número (opcional)" style={campo(T)} /></div>
           </>
         )}
         <div style={{ flex: 1, minWidth: 180 }}>
@@ -782,6 +823,63 @@ function CambiarEstadoDev({ T, d, ocupado, onCambiar }) {
         </div>
         <button disabled={ocupado || !nuevo || (nuevo === "redespachada" && !fecha)} onClick={aplicar} style={btn(T, "primario")}>Cambiar estado</button>
       </div>
+    </div>
+  );
+}
+
+// (2026-11-10, a pedido de Fredy) Resumen para Jesús (Bodega) cuando Anny ya contó la devolución: qué debe ingresar de nuevo en TNS
+// (con la remisión o factura original que dio la cliente) y qué va a enviar otra vez a la cliente (con la nueva remisión, que él anota al despachar).
+// Las dos listas son lo que Anny contó, por color y talla: lo que no llegó no se puede enviar.
+function ResumenBodega({ T, d }) {
+  const infantil = esInfantilDev(d);
+  const valores = valoresDeLineas(d.conteo);
+  const tallas = tallasDeLineas(d.conteo, d.tallas);
+  const colores = coloresDeLineas(d.conteo).filter((c) => tallas.some((t) => Number(valores[`${c.color}|${t}`]) > 0));
+  const contadas = totalLineas(d.conteo);
+  const declaradas = totalLineas(d.lineas);
+  const falta = declaradas - contadas;
+  const docOrig = String(d.documentoOriginal || "").trim();
+  const docNuevo = String(d.redespacho?.documentoNuevo || "").trim();
+  const chip = (bg, fg) => ({ ...MONO, fontWeight: 700, fontSize: 12.5, borderRadius: 6, padding: "2px 8px", background: bg, color: fg });
+  const caja = (color) => ({ flex: "1 1 300px", minWidth: 0, border: `1px solid ${T.border}`, borderTop: `4px solid ${color}`, borderRadius: 12, padding: "12px 14px", background: T.white });
+  return (
+    <div style={{ marginTop: 14, borderTop: `1px solid ${T.border}`, paddingTop: 10 }}>
+      <div style={{ fontSize: 14, fontWeight: 800, color: T.ink }}>Resumen para Bodega</div>
+      <div style={{ fontSize: 12, color: T.slate, margin: "2px 0 8px" }}>Todo sale de lo que Calidad contó{d.revisadoPor ? ` (${d.revisadoPor})` : ""}. Lo que no llegó no se puede enviar.</div>
+      {falta > 0 ? (
+        <div style={{ background: T.coralBg, color: T.coral, borderRadius: 8, padding: "8px 12px", fontSize: 12.5, fontWeight: 600, marginBottom: 10 }}>
+          Calidad contó {contadas} de las {declaradas} unidades que declaró la cliente: faltan {falta}. Se ingresa y se envía solo lo contado.
+        </div>
+      ) : falta < 0 ? (
+        <div style={{ background: T.amberBg, color: T.amber, borderRadius: 8, padding: "8px 12px", fontSize: 12.5, fontWeight: 600, marginBottom: 10 }}>
+          Calidad contó {contadas} unidades, {-falta} más de las {declaradas} que declaró la cliente.
+        </div>
+      ) : (
+        <div style={{ background: T.jadeBg, color: T.jade, borderRadius: 8, padding: "8px 12px", fontSize: 12.5, fontWeight: 600, marginBottom: 10 }}>El conteo coincide con lo declarado por la cliente ({contadas} und).</div>
+      )}
+      {!contadas ? (
+        <div style={{ fontSize: 13, color: T.slate }}>No llegó ninguna unidad: no hay nada que ingresar ni enviar.</div>
+      ) : (
+        <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+          <div style={caja(T.denim)}>
+            <div style={{ fontSize: 14, fontWeight: 800, color: T.ink }}>① Ingresar de nuevo en TNS</div>
+            <div style={{ fontSize: 12, color: T.slate, margin: "4px 0 8px" }}>
+              {d.origen?.tipo === "factura" ? "Factura original" : "Remisión original"}: {docOrig ? <span style={chip(T.violetBg, T.violet)}>{docOrig}</span> : <span style={chip(T.amberBg, T.amber)}>falta: pídela a la cliente o anótala con ✎ Editar</span>}
+              {d.origen?.tipo ? <span> · {etiquetaOrigen(d.origen)}</span> : null}
+            </div>
+            <GrillaColorTalla T={T} colores={colores} tallas={tallas} valores={valores} editable={false} infantil={infantil} />
+            <div style={{ fontSize: 12, color: T.slate, marginTop: 6 }}>Lote {d.lote} · <b style={{ color: T.ink }}>{contadas} und</b></div>
+          </div>
+          <div style={caja(T.jade)}>
+            <div style={{ fontSize: 14, fontWeight: 800, color: T.ink }}>② Enviar otra vez a la cliente</div>
+            <div style={{ fontSize: 12, color: T.slate, margin: "4px 0 8px" }}>
+              Nueva remisión: {docNuevo ? <span style={chip(T.jadeBg, T.jade)}>{docNuevo}</span> : <span style={chip(T.amberBg, T.amber)}>pendiente: se anota al despachar</span>}
+            </div>
+            <GrillaColorTalla T={T} colores={colores} tallas={tallas} valores={valores} editable={false} infantil={infantil} />
+            <div style={{ fontSize: 12, color: T.slate, marginTop: 6 }}>Lote {d.lote} · <b style={{ color: T.ink }}>{contadas} und</b></div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -798,10 +896,10 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, tipo, o
   const [abierto, setAbierto] = useState(null);
   const [trabajando, setTrabajando] = useState("");
   const [msg, setMsg] = useState("");
-  const [redes, setRedes] = useState({ fecha: new Date().toISOString().slice(0, 10), guia: "" });
+  const [redes, setRedes] = useState({ fecha: new Date().toISOString().slice(0, 10), guia: "", nuevo: "" });
   const [conteo, setConteo] = useState({});
   const [sel, setSel] = useState([]); // devoluciones marcadas para despacharlas juntas (solo Bodega, «Lista para despachar»)
-  const [juntas, setJuntas] = useState({ fecha: new Date().toISOString().slice(0, 10), guia: "" });
+  const [juntas, setJuntas] = useState({ fecha: new Date().toISOString().slice(0, 10), guia: "", nuevo: "" });
   const [msgJunto, setMsgJunto] = useState("");
   const usuario = usuarioActual(currentUser);
 
@@ -815,7 +913,7 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, tipo, o
     if (filtro === "piden" && !pideDespacho(d)) return false;
     const t = q.trim().toLowerCase();
     if (!t) return true;
-    return [d.numero, d.lote, d.ref, d.cliente, d.guia].some((x) => String(x || "").toLowerCase().includes(t));
+    return [d.numero, d.lote, d.ref, d.cliente, d.guia, d.documentoOriginal, d.redespacho?.documentoNuevo].some((x) => String(x || "").toLowerCase().includes(t));
   });
   // Lo pendiente y lo atrasado se muestra con la más vieja primero; «Todas» sigue de la más nueva a la más vieja.
   const visibles = filtro === "todas" || filtro === "piden" ? visiblesBase : [...visiblesBase].sort((a, b) => (a.creadoEn || "").localeCompare(b.creadoEn || ""));
@@ -823,7 +921,7 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, tipo, o
   const clienteSel = (lista || []).find((d) => d.id === selValidas[0])?.cliente;
   async function despacharJuntas() {
     const elegidas = (lista || []).filter((d) => selValidas.includes(d.id));
-    if (elegidas.length < 2 || !juntas.fecha) return;
+    if (elegidas.length < 2 || !juntas.fecha || !docValido(juntas.nuevo)) return;
     setTrabajando("junto"); setMsgJunto("");
     try {
       const batch = writeBatch(db);
@@ -832,13 +930,13 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, tipo, o
         const otras = elegidas.filter((x) => x.id !== d.id).map((x) => x.numero);
         const ev = { estado: "redespachada", fecha: nowISO(), usuario, nota: `Despachada junto con ${otras.join(", ")}` };
         batch.update(doc(db, COL, d.id), limpio({
-          redespacho: { fecha: juntas.fecha, guia: juntas.guia.trim(), por: usuario, despachoId, junto: otras },
+          redespacho: { fecha: juntas.fecha, guia: juntas.guia.trim(), documentoNuevo: juntas.nuevo.trim(), por: usuario, despachoId, junto: otras },
           estado: "redespachada", historial: [...(d.historial || []), ev], actualizadoEn: nowISO(),
         }));
       });
       await batch.commit();
       setMsgJunto(`Despachadas juntas: ${elegidas.map((x) => x.numero).join(", ")}.`);
-      setSel([]); setJuntas({ fecha: juntas.fecha, guia: "" });
+      setSel([]); setJuntas({ fecha: juntas.fecha, guia: "", nuevo: "" });
     } catch (e) {
       setMsgJunto(e?.message || "No se pudo guardar el despacho.");
     } finally {
@@ -854,8 +952,8 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, tipo, o
   }
   async function accion(d, estado, extra, nota) {
     setTrabajando(d.id); setMsg("");
-    try { await cambiarEstado(db, d, estado, extra, usuario, nota); }
-    catch (e) { setMsg(e?.message || "No se pudo guardar el cambio."); }
+    try { await cambiarEstado(db, d, estado, extra, usuario, nota); return true; }
+    catch (e) { setMsg(e?.message || "No se pudo guardar el cambio."); return false; }
     finally { setTrabajando(""); }
   }
   // Jesús (Bodega): una devolución que viene en un envío con otras se puede recibir junto con todas las del mismo envío.
@@ -905,7 +1003,9 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, tipo, o
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
             <div><div style={{ fontSize: 11, color: T.slate, marginBottom: 3 }}>Fecha</div><input type="date" value={redes.fecha} onChange={(e) => setRedes({ ...redes, fecha: e.target.value })} style={campo(T)} /></div>
             <div><div style={{ fontSize: 11, color: T.slate, marginBottom: 3 }}>Guía</div><input value={redes.guia} onChange={(e) => setRedes({ ...redes, guia: e.target.value })} placeholder="Número de guía" style={campo(T)} /></div>
-            <button disabled={ocupado || !redes.fecha} onClick={() => accion(d, "redespachada", { redespacho: { fecha: redes.fecha, guia: redes.guia.trim(), por: usuario } })} style={btn(T, "primario")}>Despachada de nuevo</button>
+            <div><div style={{ fontSize: 11, color: T.slate, marginBottom: 3 }}>Nueva remisión o factura *</div><input value={redes.nuevo} onChange={(e) => setRedes({ ...redes, nuevo: e.target.value })} placeholder="Número nuevo de TNS" style={{ ...campo(T), width: 180 }} /></div>
+            <button disabled={ocupado || !redes.fecha || !docValido(redes.nuevo)} onClick={async () => { const ok = await accion(d, "redespachada", { redespacho: { fecha: redes.fecha, guia: redes.guia.trim(), documentoNuevo: redes.nuevo.trim(), por: usuario } }); if (ok) setRedes((r) => ({ ...r, guia: "", nuevo: "" })); }} style={btn(T, "primario")}>Despachada de nuevo</button>
+            <div style={{ flexBasis: "100%", fontSize: 11, color: T.slate }}>Crea primero la nueva remisión en TNS; aquí solo anotas el número (si son varios documentos, sepáralos con coma).</div>
           </div>
         );
       }
@@ -952,7 +1052,8 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, tipo, o
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end", marginTop: 8 }}>
                   <div><div style={{ fontSize: 11, color: T.slate, marginBottom: 3 }}>Fecha</div><input type="date" value={juntas.fecha} onChange={(e) => setJuntas({ ...juntas, fecha: e.target.value })} style={campo(T)} /></div>
                   <div><div style={{ fontSize: 11, color: T.slate, marginBottom: 3 }}>Guía</div><input value={juntas.guia} onChange={(e) => setJuntas({ ...juntas, guia: e.target.value })} placeholder="Número de guía" style={campo(T)} /></div>
-                  <button disabled={trabajando === "junto" || !juntas.fecha} onClick={despacharJuntas} style={btn(T, "primario")}>{trabajando === "junto" ? "Guardando…" : "Despachar juntas"}</button>
+                  <div><div style={{ fontSize: 11, color: T.slate, marginBottom: 3 }}>Nueva remisión o factura *</div><input value={juntas.nuevo} onChange={(e) => setJuntas({ ...juntas, nuevo: e.target.value })} placeholder="Número nuevo de TNS" style={{ ...campo(T), width: 180 }} /></div>
+                  <button disabled={trabajando === "junto" || !juntas.fecha || !docValido(juntas.nuevo)} onClick={despacharJuntas} style={btn(T, "primario")}>{trabajando === "junto" ? "Guardando…" : "Despachar juntas"}</button>
                 </div>
               </>
             )}
@@ -974,12 +1075,13 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, tipo, o
                     onChange={(e) => setSel((a) => (e.target.checked ? [...a.filter((x) => x !== d.id), d.id] : a.filter((x) => x !== d.id)))}
                     style={{ marginRight: 8 }} />
                 )}
-                <b>{d.numero}</b> · {d.cliente || "—"} · lote {d.lote} · ref {d.ref || "—"} · {d.total} und · {fmtFecha(d.creadoEn)}</span>
+                <b>{d.numero}</b> · {d.cliente || "—"} · lote {d.lote} · ref {d.ref || "—"} · {d.total} und{String(d.documentoOriginal || "").trim() ? ` · ${d.documentoOriginal}` : ""} · {fmtFecha(d.creadoEn)}</span>
               <EstadoPill T={T} d={d} />
             </div>
             {abierto === d.id && (
               <>
                 <Detalle T={T} d={d} mostrarConteo />
+                {modo === "bodega" && ["revisada", "lista"].includes(d.estado) && d.conteo?.length ? <ResumenBodega T={T} d={d} /> : null}
                 {msg && <div style={{ color: T.coral, fontSize: 13, marginTop: 8 }}>{msg}</div>}
                 {modo === "calidad" && d.estado === "recibida" && (
                   <div style={{ marginTop: 14, borderTop: `1px solid ${T.border}`, paddingTop: 10 }}>
