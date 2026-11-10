@@ -306,6 +306,8 @@ export default function LoQueCuestaOperarView({ db, isAdmin, usuario, onIr }) {
           <button style={enlace} onClick={() => ir("pagos_proveedores")}>Pagos a Proveedores →</button>
           <button style={enlace} onClick={() => ir("endeudamiento")}>Endeudamiento →</button>
           <button style={enlace} onClick={() => ir("programacion_pagos")}>Proyección de Deuda →</button>
+          <button style={enlace} onClick={() => ir("vencimientos")}>Vencimientos →</button>
+          <button style={enlace} onClick={() => ir("estrategia_pago")}>Estrategia de Pago →</button>
         </div>
       </div>
     </div>

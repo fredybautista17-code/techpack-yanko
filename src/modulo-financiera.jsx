@@ -3370,6 +3370,7 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
   }
 
   const isAdmin = currentUser?.isAdmin;
+  // (2026-11-10) «Vencimientos» y «Estrategia de Pago» salen del menú (a pedido de Fredy) pero siguen abriéndose desde «Lo que cuesta operar».
   const NAV = [
     { id: "direccion_financiera", icon: "📊", label: "Dirección financiera" },
     { id: "lo_que_cuesta_operar", icon: "🎯", label: "Lo que cuesta operar" },
@@ -3381,8 +3382,6 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
     { id: "programacion_pagos", icon: "🧭", label: "Proyección de Deuda" },
     { id: "insumos_operar", icon: "🧵", label: "Insumos y telas" },
     { id: "pagos_proveedores", icon: "🧾", label: "Pagos a Proveedores" },
-    { id: "vencimientos", icon: "📆", label: "Vencimientos" },
-    { id: "estrategia_pago", icon: "📌", label: "Estrategia de Pago" },
     { id: "administracion", icon: "🗂️", label: "Administración" },
   ];
 
