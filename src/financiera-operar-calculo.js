@@ -24,8 +24,14 @@ export function liqProgramadas(pagosMapa, ym) {
   return Object.values(pagosMapa || {}).filter((d) => d && d.kind === "liq_programada" && d.ym === ym);
 }
 
-export function armarOperar({ ym, hoy, est, porCategoria, pagosMapa, cuotasLista, programados, liqRetiro, pagadoNomina, insumos, deudaProv, recogido }) {
+// config = { diasPago: {seguridad: 10, …}, proveedoresOperar: [nombre…], proveedoresDeuda: [nombre…] } (doc operar_config en contabilidad_cuotas_pagos)
+export const CONFIG_ID = "operar_config";
+export function armarOperar({ config, ym, hoy, est, porCategoria, pagosMapa, cuotasLista, programados, liqRetiro, pagadoNomina, insumos, deudaProv, recogido }) {
   const ult = ultimoDia(ym);
+  const cfg = config || {};
+  const dias = cfg.diasPago || {};
+  const lOperar = new Set(cfg.proveedoresOperar || []);
+  const lDeuda = new Set(cfg.proveedoresDeuda || []);
   const items = [];
   const fechaDe = (dia) => `${ym}-${dd(dia)}`;
   const agregar = (it) => items.push({ pagado: 0, atrasadoOrigen: "", ...it, valor: Math.max(0, num(it.valor)), pagado: Math.max(0, num(it.pagado)) });
@@ -43,7 +49,8 @@ export function armarOperar({ ym, hoy, est, porCategoria, pagosMapa, cuotasLista
     const valor = num(est[k.campo]);
     if (valor <= 0) return;
     const doc = (pagosMapa || {})[`op__${k.clave}__${ym}`];
-    agregar({ id: `op_${k.clave}`, dia: null, concepto: k.concepto, valor, pagado: num(doc && doc.pagado), clase: "operar", rubro: k.rubro, ir: k.ir, accion: { tipo: "op", clave: k.clave } });
+    const diaCfg = Math.round(num(dias[k.clave]));
+    agregar({ id: `op_${k.clave}`, dia: diaCfg >= 1 ? Math.min(diaCfg, ult) : null, diaCfg: diaCfg >= 1 ? diaCfg : 0, concepto: k.concepto, valor, pagado: num(doc && doc.pagado), clase: "operar", rubro: k.rubro, ir: k.ir, accion: { tipo: "op", clave: k.clave } });
   });
 
   // Cuotas de Endeudamiento (deuda). Las «Liquidaciones de retiro» automáticas se muestran por persona si ya están programadas.
@@ -69,10 +76,12 @@ export function armarOperar({ ym, hoy, est, porCategoria, pagosMapa, cuotasLista
     if (!pagada && !(esISO(x.fecha) && x.fecha <= fechaDe(ult))) return;
     const antes = esISO(x.fecha) && x.fecha < `${ym}-01`;
     const dia = antes || !esISO(x.fecha) ? 1 : Number(x.fecha.slice(8, 10));
-    const vencida = !!x.vence && esISO(x.vence) && x.vence < hoy;
+    const provKey = x.proveedor || x.proveedorMostrado || "";
+    const vencidaPorFecha = !!x.vence && esISO(x.vence) && x.vence < hoy;
+    const vencida = lOperar.has(provKey) ? false : lDeuda.has(provKey) ? true : vencidaPorFecha;
     agregar({
       id: `prov_${x.id}`, dia, concepto: `Proveedor · ${x.proveedorMostrado || x.proveedor || "—"}`, sub: [x.concepto, x.nfact ? `fact. ${x.nfact}` : ""].filter(Boolean).join(" · "),
-      valor: num(x.valor), pagado: pagada ? num(x.valor) : 0, clase: vencida ? "deuda" : "operar", rubro: vencida ? "deuda" : "insumos", ir: "pagos_proveedores", accion: { tipo: "prov", id: x.id },
+      valor: num(x.valor), pagado: pagada ? num(x.valor) : 0, clase: vencida ? "deuda" : "operar", rubro: vencida ? "deuda" : "insumos", ir: "pagos_proveedores", accion: { tipo: "prov", id: x.id }, provKey, provManual: lOperar.has(provKey) || lDeuda.has(provKey),
       atrasadoOrigen: !pagada && antes ? x.fecha : "",
     });
   });

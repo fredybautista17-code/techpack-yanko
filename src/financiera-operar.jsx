@@ -2,20 +2,21 @@
 // qué entró para cubrirlo, qué hay que pagar cada semana (con «Pagado» en cada pago) y cuánto se debe aparte (deuda). No reemplaza ninguna pantalla:
 // cada cifra y cada pago lleva a su pantalla de detalle. Los cálculos viven en financiera-operar-calculo.js.
 import React, { useEffect, useMemo, useState } from "react";
-import { collection, doc, getDocs, onSnapshot, query, setDoc, where } from "firebase/firestore";
+import { arrayRemove, arrayUnion, collection, doc, getDocs, onSnapshot, query, setDoc, where } from "firebase/firestore";
 import { C, caja, Boton, Tarjeta } from "./financiera-cuanto-pagar";
 import { useMesFinanciero } from "./financiera-que-pagar";
 import { useDeudaProveedores, leerOpciones } from "./financiera-proyeccion-deuda";
 import { necesidadOperar } from "./financiera-insumos-calculo";
 import { categoriasElegidas } from "./financiera-proyeccion-compras-calculo";
 import { recogidoDeLotes } from "./costos-general-calculo";
-import { armarOperar, COL_PAGOS_OPERAR } from "./financiera-operar-calculo";
+import { armarOperar, COL_PAGOS_OPERAR, CONFIG_ID } from "./financiera-operar-calculo";
 
 const MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
 const DIAS = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"];
 const money = (n) => (Number(n) < 0 ? "-$" : "$") + Math.round(Math.abs(Number(n) || 0)).toLocaleString("es-CO");
 const fm = (n) => { const v = Math.round((Number(n) || 0) / 1e5) / 10; return (v < 0 ? "-$" : "$") + Math.abs(v).toLocaleString("es-CO", { minimumFractionDigits: 0, maximumFractionDigits: 1 }) + " M"; };
 const hoyBogota = () => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Bogota" }).format(new Date());
+const moverMes = (ym, d) => { const [a, m] = ym.split("-").map(Number); const t = a * 12 + (m - 1) + d; return `${Math.floor(t / 12)}-${String((t % 12) + 1).padStart(2, "0")}`; };
 const corto = (iso) => { const [, m, d] = String(iso).split("-").map(Number); return `${d} ${MESES[m - 1].slice(0, 3)}`; };
 const th = { padding: "7px 8px", fontSize: 10.5, fontWeight: 800, color: C.slate, textTransform: "uppercase", letterSpacing: 0.3, textAlign: "right", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" };
 const td = { padding: "8px 8px", fontSize: 12.5, color: C.ink, textAlign: "right", borderBottom: `1px solid ${C.border}`, fontVariantNumeric: "tabular-nums" };
@@ -62,14 +63,25 @@ function useRecogidoMes(db, ym) {
   return recogido;
 }
 
-function Chip({ clase }) {
+function Chip({ clase, onClick, titulo }) {
   const deuda = clase === "deuda";
-  return <span style={{ display: "inline-block", padding: "1px 8px", borderRadius: 999, fontSize: 10.5, fontWeight: 800, background: deuda ? C.redBg : C.blueBg, color: deuda ? C.red : C.blue }}>{deuda ? "Deuda" : "Operar"}</span>;
+  const estilo = { display: "inline-block", padding: "1px 8px", borderRadius: 999, fontSize: 10.5, fontWeight: 800, background: deuda ? C.redBg : C.blueBg, color: deuda ? C.red : C.blue, border: "none", fontFamily: "inherit" };
+  if (!onClick) return <span style={estilo}>{deuda ? "Deuda" : "Operar"}</span>;
+  return <button onClick={onClick} title={titulo} style={{ ...estilo, cursor: "pointer", outline: `1px dashed ${deuda ? C.red : C.blue}` }}>{deuda ? "Deuda" : "Operar"} ⇄</button>;
+}
+
+// Días de pago de seguridad social/provisiones/gastos y qué proveedores cuentan como «operar» o como «deuda» (un documento compartido para todos los equipos).
+function useConfigOperar(db) {
+  const [cfg, setCfg] = useState({});
+  useEffect(() => onSnapshot(doc(db, COL_PAGOS_OPERAR, CONFIG_ID), (s) => setCfg(s.exists() ? s.data() : {}), () => setCfg({})), [db]);
+  return cfg;
 }
 
 export default function LoQueCuestaOperarView({ db, isAdmin, usuario, onIr }) {
   const hoy = useMemo(() => hoyBogota(), []);
-  const ym = hoy.slice(0, 7);
+  const [ym, setYm] = useState(() => hoyBogota().slice(0, 7));
+  const esActual = ym === hoy.slice(0, 7);
+  const config = useConfigOperar(db);
   const datos = useMesFinanciero(db, ym);
   const deudaProv = useDeudaProveedores(db);
   const insumos = useInsumosOperar(db, ym);
@@ -84,16 +96,29 @@ export default function LoQueCuestaOperarView({ db, isAdmin, usuario, onIr }) {
   const [trabajando, setTrabajando] = useState("");
 
   const r = useMemo(() => armarOperar({
-    ym, hoy, est: datos.res.estimado, porCategoria: datos.cumpl.porCategoria, pagosMapa: datos.pagosMapa, cuotasLista: datos.res.actual.cuotasLista,
+    config, ym, hoy, est: datos.res.estimado, porCategoria: datos.cumpl.porCategoria, pagosMapa: datos.pagosMapa, cuotasLista: datos.res.actual.cuotasLista,
     programados, liqRetiro, pagadoNomina, insumos: insumos.total, deudaProv, recogido,
-  }), [ym, hoy, datos.res, datos.cumpl, datos.pagosMapa, programados, liqRetiro, pagadoNomina, insumos.total, deudaProv, recogido]);
+  }), [config, ym, hoy, datos.res, datos.cumpl, datos.pagosMapa, programados, liqRetiro, pagadoNomina, insumos.total, deudaProv, recogido]);
 
   const ir = (id) => { if (onIr && id) onIr(id); };
   const visible = (it) => filtro === "todo" || it.clase === (filtro === "operar" ? "operar" : "deuda");
 
   // «Pagado» escribe en el mismo lugar donde ya lo marca cada pantalla de detalle; «Deshacer» lo devuelve.
+  async function guardarConfig(campos) {
+    setMsg("");
+    try { await setDoc(doc(db, COL_PAGOS_OPERAR, CONFIG_ID), { kind: "operar_config", ...campos, actualizadoEn: new Date().toISOString() }, { merge: true }); }
+    catch (e) { setMsg(`No se pudo guardar el ajuste: ${e?.message || e}`); }
+  }
+  const guardarDia = (clave, texto) => { const n = Math.round(Number(texto)); guardarConfig({ diasPago: { [clave]: n >= 1 && n <= 31 ? n : 0 } }); };
+  // Cambia el proveedor entero de «operar» a «deuda» (o al revés): se recuerda para todas sus facturas.
+  const alternarProveedor = (it) => {
+    const operar = it.clase === "operar";
+    guardarConfig(operar
+      ? { proveedoresDeuda: arrayUnion(it.provKey), proveedoresOperar: arrayRemove(it.provKey) }
+      : { proveedoresOperar: arrayUnion(it.provKey), proveedoresDeuda: arrayRemove(it.provKey) });
+  };
   async function marcar(it, pagado) {
-    if (!it.accion) return;
+    if (!it.accion || !esActual) return;
     setMsg("");
     setTrabajando(it.id);
     const ahora = new Date().toISOString();
@@ -123,12 +148,23 @@ export default function LoQueCuestaOperarView({ db, isAdmin, usuario, onIr }) {
           <button onClick={() => ir(it.ir)} style={{ ...enlace, color: C.ink, fontWeight: 700, textAlign: "left" }} title="Ver el detalle">{it.concepto}</button>
           {it.sub ? <div style={{ fontSize: 11, color: C.slate }}>{it.sub}</div> : null}
           {it.atrasado ? <div style={{ fontSize: 11, color: C.red, fontWeight: 700 }}>Atrasado</div> : null}
+          {it.accion && it.accion.tipo === "op" && isAdmin ? (
+            <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>
+              Día de pago: <input type="number" min="0" max="31" defaultValue={it.diaCfg || ""} placeholder="—" aria-label={`Día de pago de ${it.concepto}`} key={`${it.id}-${it.diaCfg}`}
+                onBlur={(e) => { if (Number(e.target.value || 0) !== it.diaCfg) guardarDia(it.accion.clave, e.target.value); }} style={{ width: 46, padding: "2px 4px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 11.5, fontFamily: "inherit" }} />
+            </div>
+          ) : null}
         </td>
-        <td style={{ ...td, textAlign: "center" }}><Chip clase={it.clase} /></td>
+        <td style={{ ...td, textAlign: "center" }}>
+          {it.accion && it.accion.tipo === "prov" && isAdmin && it.provKey
+            ? <Chip clase={it.clase} onClick={() => alternarProveedor(it)} titulo={`Cambiar a ${it.clase === "operar" ? "deuda" : "operar"} todas las facturas de este proveedor`} />
+            : <Chip clase={it.clase} />}
+          {it.provManual ? <div style={{ fontSize: 9.5, color: C.slate }}>elegido por ti</div> : null}
+        </td>
         <td style={{ ...td, fontWeight: 800 }}>{money(it.valor)}{parcial ? <div style={{ fontSize: 11, color: C.amber, fontWeight: 600 }}>falta {money(it.falta)}</div> : null}</td>
         <td style={{ ...td, textAlign: "center", whiteSpace: "nowrap" }}>
           {it.listo ? <span style={{ color: C.green, fontWeight: 800 }}>✓ Pagado</span> : null}
-          {it.accion && isAdmin ? (
+          {it.accion && isAdmin && esActual ? (
             it.listo
               ? <button style={{ ...enlace, marginLeft: 8, color: C.slate }} disabled={trabajando === it.id} onClick={() => marcar(it, false)}>Deshacer</button>
               : <Boton chico onClick={() => marcar(it, true)} disabled={trabajando === it.id}>Pagado</Boton>
@@ -147,7 +183,13 @@ export default function LoQueCuestaOperarView({ db, isAdmin, usuario, onIr }) {
   return (
     <div>
       <div style={{ marginBottom: 12 }}>
-        <div style={{ fontSize: 21, fontWeight: 900, color: C.ink }}>Lo que cuesta operar · {MESES[mH - 1]} {aH}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ fontSize: 21, fontWeight: 900, color: C.ink }}>Lo que cuesta operar · {MESES[Number(ym.slice(5, 7)) - 1]} {ym.slice(0, 4)}</div>
+          <button onClick={() => setYm(moverMes(ym, -1))} aria-label="Mes anterior" style={{ ...enlace, border: `1px solid ${C.border}`, borderRadius: 8, padding: "3px 10px", fontSize: 14 }}>◀</button>
+          <button onClick={() => setYm(moverMes(ym, 1))} aria-label="Mes siguiente" style={{ ...enlace, border: `1px solid ${C.border}`, borderRadius: 8, padding: "3px 10px", fontSize: 14 }}>▶</button>
+          {!esActual ? <button onClick={() => setYm(hoy.slice(0, 7))} style={enlace}>Volver al mes en curso</button> : null}
+        </div>
+        {!esActual ? <div style={{ fontSize: 12, color: C.amber, marginTop: 4 }}>Estás viendo otro mes: es de consulta. El botón «Pagado» solo funciona en el mes en curso.</div> : null}
         <div style={{ fontSize: 12.5, color: C.slate, marginTop: 3, maxWidth: 860, lineHeight: 1.5 }}>
           Hoy {diaSemana} {dH} de {MESES[mH - 1]}. Una sola pantalla: qué cuesta operar el mes, qué entró para cubrirlo y qué toca pagar cada semana. Toca cualquier cifra o pago para ir a su detalle.
         </div>
@@ -160,7 +202,7 @@ export default function LoQueCuestaOperarView({ db, isAdmin, usuario, onIr }) {
 
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
         <Tarjeta titulo="Cuesta operar el mes" valor={fm(k.cuestaOperar)} fondo={C.blueBg} colorValor={C.blue} sub="mano de obra + insumos y telas + gastos básicos" />
-        <Tarjeta titulo="Esta semana debo tener" valor={money(k.estaSemana)} fondo={k.atrasado > 0 ? C.redBg : undefined} colorValor={k.atrasado > 0 ? C.red : undefined} sub={`${corto(k.lunes)} al ${corto(k.domingo)}${k.atrasado > 0 ? ` · incluye ${money(k.atrasado)} atrasado` : ""}`} />
+        <Tarjeta titulo="Esta semana debo tener" valor={esActual ? money(k.estaSemana) : "—"} fondo={esActual && k.atrasado > 0 ? C.redBg : undefined} colorValor={esActual && k.atrasado > 0 ? C.red : undefined} sub={esActual ? `${corto(k.lunes)} al ${corto(k.domingo)}${k.atrasado > 0 ? ` · incluye ${money(k.atrasado)} atrasado` : ""}` : "solo se calcula en el mes en curso"} />
         <Tarjeta titulo="Falta por pagar este mes" valor={fm(k.faltaTotal)} sub={`${fm(k.faltaOperar)} operar · ${fm(k.faltaDeuda)} deuda`} />
       </div>
 
@@ -247,7 +289,7 @@ export default function LoQueCuestaOperarView({ db, isAdmin, usuario, onIr }) {
           );
         })()}
         <div style={{ fontSize: 11.5, color: C.slate, marginTop: 6, lineHeight: 1.5 }}>
-          «Operar» = nómina, seguridad social, provisiones, gastos y facturas de insumos y telas que aún no vencen. «Deuda» = cuotas, liquidaciones y facturas de proveedores que ya están vencidas. Las fechas de nómina (15 y fin de mes) son aproximadas.
+          «Operar» = nómina, seguridad social, provisiones, gastos y facturas de insumos y telas que aún no vencen. «Deuda» = cuotas, liquidaciones y facturas de proveedores vencidas; toca el chip ⇄ de un proveedor para decidir tú si cuenta como operar o como deuda. Pon el día de pago de seguridad social, provisiones y gastos para verlos en su semana. Las fechas de nómina (15 y fin de mes) son aproximadas.
         </div>
       </div>
 
