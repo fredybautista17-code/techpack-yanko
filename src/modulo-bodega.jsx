@@ -5295,7 +5295,7 @@ function BodegaHubView({ onSeleccionar, onVolver, onLogout, puedeVerControlDespa
 // (ver BitacorasView en App.js). sincronizarBitacoraTela sigue viviendo en
 // App.js sin cambios -- solo cambió DÓNDE se ve ese catálogo.
 
-export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAccessContabilidad, soloLecturaBodega, puedeVerControlDespacho, puedeRevertirDespacho, soloDevoluciones, onVolver, onLogout }) {
+export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAccessContabilidad, soloLecturaBodega, puedeVerControlDespacho, puedeRevertirDespacho, soloDevoluciones, puedeCambiarEstadoDev, onVolver, onLogout }) {
   // (2026-11-10, a pedido de Fredy) Rol con el permiso "bodega_solo_devoluciones": en Bodega solo ve Devoluciones (el administrador siempre ve todo).
   const soloDev = !currentUser?.isAdmin && !!soloDevoluciones && currentUser?.role !== "Cliente";
   const [vistaElegida, setVista] = useState(soloDev ? "devoluciones" : "hub");
@@ -5328,7 +5328,7 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
       <div style={{ minHeight: "100vh", background: C.canvas, fontFamily: "'Inter',-apple-system,sans-serif", padding: 24 }}>
         <div style={{ maxWidth: 1000, margin: "0 auto" }}>
           <button onClick={() => (soloDev ? onVolver() : setVista("hub"))} style={{ background: "none", border: "none", color: C.slate, fontSize: 12, cursor: "pointer", fontFamily: "inherit", marginBottom: 12 }}>{soloDev ? "← Volver al Inicio" : "← Volver a Bodega"}</button>
-          <DevolucionesBodegaView db={db} currentUser={currentUser} />
+          <DevolucionesBodegaView db={db} currentUser={currentUser} puedeCambiarEstado={!!puedeCambiarEstadoDev} />
         </div>
       </div>
     );

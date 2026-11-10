@@ -618,8 +618,53 @@ export function DevolucionesClienteView({ db, functionsClient, T: Tp, currentUse
   );
 }
 
+// (2026-11-10, a pedido de Fredy) La líder de Bodega (permiso «Puede cambiar el estado de las devoluciones», o administrador) puede llevar una
+// devolución a CUALQUIER estado, adelante o atrás. Queda en el Historial con su nombre y el motivo; los datos ya guardados (conteo, recibida por…) no se borran.
+function CambiarEstadoDev({ T, d, ocupado, onCambiar }) {
+  const [nuevo, setNuevo] = useState("");
+  const [motivo, setMotivo] = useState("");
+  const [fecha, setFecha] = useState(new Date().toISOString().slice(0, 10));
+  const [guia, setGuia] = useState("");
+  const aplicar = () => {
+    if (!nuevo) return;
+    const de = estadoInfo(T, d.estado).txt;
+    const a = estadoInfo(T, nuevo).txt;
+    const extra = {};
+    if (nuevo === "redespachada") extra.redespacho = { fecha, guia: guia.trim(), por: "" };
+    if (nuevo === "recibida" && !d.recibidaEn) extra.recibidaEn = new Date().toISOString();
+    if (nuevo === "revisada" && !d.revisadoEn) extra.revisadoEn = new Date().toISOString();
+    onCambiar(nuevo, extra, `Cambio de estado: ${de} → ${a}${motivo.trim() ? ` — ${motivo.trim()}` : ""}`);
+    setNuevo(""); setMotivo("");
+  };
+  return (
+    <div style={{ marginTop: 12, borderTop: `1px solid ${T.border}`, paddingTop: 10 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 6 }}>CAMBIAR ESTADO (líder)</div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+        <div>
+          <div style={{ fontSize: 11, color: T.slate, marginBottom: 3 }}>Pasar a</div>
+          <select value={nuevo} onChange={(e) => setNuevo(e.target.value)} style={{ ...campo(T), minWidth: 190 }}>
+            <option value="">Elige el estado…</option>
+            {PASOS.filter((p) => p !== d.estado).map((p) => <option key={p} value={p}>{estadoInfo(T, p).txt}</option>)}
+          </select>
+        </div>
+        {nuevo === "redespachada" && (
+          <>
+            <div><div style={{ fontSize: 11, color: T.slate, marginBottom: 3 }}>Fecha</div><input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} style={campo(T)} /></div>
+            <div><div style={{ fontSize: 11, color: T.slate, marginBottom: 3 }}>Guía</div><input value={guia} onChange={(e) => setGuia(e.target.value)} placeholder="Número de guía" style={campo(T)} /></div>
+          </>
+        )}
+        <div style={{ flex: 1, minWidth: 180 }}>
+          <div style={{ fontSize: 11, color: T.slate, marginBottom: 3 }}>Motivo (opcional)</div>
+          <input value={motivo} onChange={(e) => setMotivo(e.target.value)} placeholder="Por qué cambias el estado" style={{ ...campo(T), width: "100%" }} />
+        </div>
+        <button disabled={ocupado || !nuevo || (nuevo === "redespachada" && !fecha)} onClick={aplicar} style={btn(T, "primario")}>Cambiar estado</button>
+      </div>
+    </div>
+  );
+}
+
 // ─── LISTA PARA EL EQUIPO (Bodega y Calidad) ─────────────────────────────
-function ListaEquipo({ db, T: Tp, currentUser, modo }) {
+function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado }) {
   const T = Tp || TEMA_DEFECTO;
   const { lista, error } = useDevoluciones(db, null);
   const [filtro, setFiltro] = useState("pendientes");
@@ -727,6 +772,10 @@ function ListaEquipo({ db, T: Tp, currentUser, modo }) {
                   </div>
                 )}
                 <div style={{ marginTop: 12 }}>{botones(d)}</div>
+                {modo === "bodega" && (puedeCambiarEstado || currentUser?.isAdmin) && (
+                  <CambiarEstadoDev key={`${d.id}-${d.estado}`} T={T} d={d} ocupado={trabajando === d.id}
+                    onCambiar={(estado, extra, nota) => accion(d, estado, estado === "redespachada" ? { redespacho: { ...extra.redespacho, por: usuario } } : extra, nota)} />
+                )}
                 <AccionesDevolucion db={db} T={T} d={d} lista={lista} currentUser={currentUser} esCliente={false} onBorrado={() => setAbierto(null)} />
               </>
             )}

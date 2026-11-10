@@ -14183,7 +14183,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     { area: "🧾 Preórdenes y Órdenes", items: [["preordenes_vincular_pedido", "Puede vincular referencias a pedidos (aunque la preorden esté aprobada)"], ["preordenes_pasar_a_orden", "Puede pasar referencias con tela confirmada a Órdenes (botón «Pasar a Orden»)"]] },
     { area: "📋 Planeación", items: [["planeacion", "Planeación"]] },
     { area: "🏭 Planta Yanko", items: [["planta", "Planta Yanko"]] },
-    { area: "📦 Bodega", items: [["bodega", "Bodega"], ["bodega_solo_devoluciones", "Solo Devoluciones (no ve Despacho y Saldo ni Control de Despacho)"]] },
+    { area: "📦 Bodega", items: [["bodega", "Bodega"], ["bodega_solo_devoluciones", "Solo Devoluciones (no ve Despacho y Saldo ni Control de Despacho)"], ["bodega_cambiar_estado_devoluciones", "Puede cambiar el estado de las devoluciones (líder)"]] },
     { area: "👷 Nómina", items: [["nomina", "Completa (todo el módulo)"], ["nomina_novedades", "Solo Novedades"], ["nomina_editar_catalogos", "Puede editar catálogos (Trabajadores, Turnos, etc.) sin admin total"], ["nomina_ver_anomalias_huellero", "Puede ver Anomalías Huellero"], ["nomina_ver_duplicados_huellero", "Puede ver Diagnóstico de Duplicados"], ["nomina_cerrar_quincena", "Puede cerrar Quincena (General y por Área)"], ["nomina_agregar_cobros_manual", "Puede agregar cobros/deducciones manuales"], ["nomina_ajustar_destajo", "Puede agregar Ajustes de Nómina en Destajo"], ["nomina_editar_horas_extra", "Puede editar/borrar Horas Extras"], ["nomina_editar_bonificacion", "Puede editar/borrar Bonificaciones"], ["nomina_autorizar_permisos", "Puede generar códigos de autorización de permisos (4.º permiso del mes en adelante)"]] },
     { area: "🎯 KPIs", items: [["kpis", "KPIs"]] },
     { area: "📋 Informes", items: [["informes", "Informes"]] },
@@ -20553,6 +20553,8 @@ function AppInner() {
     verControlDespacho: userRoleData?.perms?.includes("control_despacho") ?? false,
     // (2026-11-10, a pedido de Fredy) Rol que en Bodega ve SOLO "Devoluciones" (sin Despacho y Saldo ni Control de Despacho). Se marca en Roles → 📦 Bodega (llave de módulos). Apagado por defecto.
     bodegaSoloDevoluciones: !!userRoleData?.modulos?.includes("bodega_solo_devoluciones"),
+    // (2026-11-10, a pedido de Fredy) La líder de Bodega puede llevar una devolución a cualquier estado (Roles → 📦 Bodega).
+    bodegaCambiarEstadoDev: !!userRoleData?.modulos?.includes("bodega_cambiar_estado_devoluciones"),
     // Permiso dedicado para editar el módulo de KPIs (puestos, funciones,
     // catálogo de KPIs — crear/editar/borrar/trasladar) sin darle a la
     // persona el resto de permisos de administrador general.
@@ -20947,7 +20949,7 @@ function AppInner() {
     return <ModuloPlanta currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (moduloActivo === "bodega") {
-    return <ModuloBodega currentUser={currentUser} puedeAprobarDespacho={perms.aprobarDespacho} canAccessContabilidad={canAccessContabilidad} soloLecturaBodega={currentUser?.role === "Cliente"} puedeVerControlDespacho={perms.verControlDespacho} soloDevoluciones={perms.bodegaSoloDevoluciones} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+    return <ModuloBodega currentUser={currentUser} puedeAprobarDespacho={perms.aprobarDespacho} canAccessContabilidad={canAccessContabilidad} soloLecturaBodega={currentUser?.role === "Cliente"} puedeVerControlDespacho={perms.verControlDespacho} soloDevoluciones={perms.bodegaSoloDevoluciones} puedeCambiarEstadoDev={perms.bodegaCambiarEstadoDev} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (moduloActivo === "nomina") {
     return <ModuloNomina currentUser={currentUser} soloNovedades={soloNovedadesNomina} puedeEditarCatalogos={canAccessNominaEditarCatalogos} puedeVerAnomaliasHuellero={canVerAnomaliasHuellero} puedeVerDuplicadosHuellero={canVerDuplicadosHuellero} puedeCerrarQuincena={canCerrarQuincena} puedeAgregarCobrosManual={canAgregarCobrosManual} puedeAjustarDestajo={canAjustarDestajo} puedeEditarHorasExtra={canEditarHorasExtra} puedeEditarBonificacion={canEditarBonificacion} puedeAutorizarPermisos={canAutorizarPermisos} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
