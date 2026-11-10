@@ -14183,7 +14183,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     { area: "🧾 Preórdenes y Órdenes", items: [["preordenes_vincular_pedido", "Puede vincular referencias a pedidos (aunque la preorden esté aprobada)"], ["preordenes_pasar_a_orden", "Puede pasar referencias con tela confirmada a Órdenes (botón «Pasar a Orden»)"]] },
     { area: "📋 Planeación", items: [["planeacion", "Planeación"]] },
     { area: "🏭 Planta Yanko", items: [["planta", "Planta Yanko"]] },
-    { area: "📦 Bodega", items: [["bodega", "Bodega"]] },
+    { area: "📦 Bodega", items: [["bodega", "Bodega"], ["bodega_solo_devoluciones", "Solo Devoluciones (no ve Despacho y Saldo ni Control de Despacho)"]] },
     { area: "👷 Nómina", items: [["nomina", "Completa (todo el módulo)"], ["nomina_novedades", "Solo Novedades"], ["nomina_editar_catalogos", "Puede editar catálogos (Trabajadores, Turnos, etc.) sin admin total"], ["nomina_ver_anomalias_huellero", "Puede ver Anomalías Huellero"], ["nomina_ver_duplicados_huellero", "Puede ver Diagnóstico de Duplicados"], ["nomina_cerrar_quincena", "Puede cerrar Quincena (General y por Área)"], ["nomina_agregar_cobros_manual", "Puede agregar cobros/deducciones manuales"], ["nomina_ajustar_destajo", "Puede agregar Ajustes de Nómina en Destajo"], ["nomina_editar_horas_extra", "Puede editar/borrar Horas Extras"], ["nomina_editar_bonificacion", "Puede editar/borrar Bonificaciones"], ["nomina_autorizar_permisos", "Puede generar códigos de autorización de permisos (4.º permiso del mes en adelante)"]] },
     { area: "🎯 KPIs", items: [["kpis", "KPIs"]] },
     { area: "📋 Informes", items: [["informes", "Informes"]] },
@@ -14549,7 +14549,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
                       <div style={{ fontWeight: 700, fontSize: 14, color: T.ink }}>{r.name}</div>
                       <div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase", letterSpacing: "0.06em", marginTop: 10, marginBottom: 4 }}>Permisos de flujo de trabajo</div>
                       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                        {["editar", "aprobar", "declinar", "admin", "corte", "ilustracion", "aprobar_corte", "aprobar_despacho", "control_despacho", "bodega_solo_devoluciones", "editar_kpis", "marcar_observaciones"].map((perm) => (
+                        {["editar", "aprobar", "declinar", "admin", "corte", "ilustracion", "aprobar_corte", "aprobar_despacho", "control_despacho", "editar_kpis", "marcar_observaciones"].map((perm) => (
                           <span key={perm} onClick={() => onUpdateConfig({ roles: config.roles.map((x) => (x.id !== r.id ? x : { ...x, perms: x.perms.includes(perm) ? x.perms.filter((p) => p !== perm) : [...x.perms, perm] })) })}
                             style={{ padding: "3px 10px", borderRadius: 4, fontSize: 11, fontWeight: 700, cursor: "pointer", background: r.perms.includes(perm) ? T.jadeBg : "#EDEDF2", color: r.perms.includes(perm) ? T.jade : T.slate, border: `1px solid ${r.perms.includes(perm) ? T.jade : T.border}` }}
                           >{perm}</span>
@@ -20551,8 +20551,8 @@ function AppInner() {
     // Generales + Estado de Despacho) -- separado del acceso a Bodega en
     // si, para poder dejar algunos roles solo con "Despacho y Saldo".
     verControlDespacho: userRoleData?.perms?.includes("control_despacho") ?? false,
-    // (2026-11-10, a pedido de Fredy) Rol que en Bodega ve SOLO "Devoluciones" (sin Despacho y Saldo ni Control de Despacho). Apagado por defecto.
-    bodegaSoloDevoluciones: userRoleData?.perms?.includes("bodega_solo_devoluciones") ?? false,
+    // (2026-11-10, a pedido de Fredy) Rol que en Bodega ve SOLO "Devoluciones" (sin Despacho y Saldo ni Control de Despacho). Se marca en Roles → 📦 Bodega (llave de módulos). Apagado por defecto.
+    bodegaSoloDevoluciones: !!userRoleData?.modulos?.includes("bodega_solo_devoluciones"),
     // Permiso dedicado para editar el módulo de KPIs (puestos, funciones,
     // catálogo de KPIs — crear/editar/borrar/trasladar) sin darle a la
     // persona el resto de permisos de administrador general.
