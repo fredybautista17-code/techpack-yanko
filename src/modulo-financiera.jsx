@@ -10,6 +10,7 @@ import ProgramarPagosView from "./financiera-programar-pagos";
 import ProyeccionDeudaView, { useProyeccionMensual } from "./financiera-proyeccion-deuda";
 import InsumosOperarView from "./financiera-insumos";
 import DireccionFinancieraView from "./financiera-direccion";
+import LoQueCuestaOperarView from "./financiera-operar";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
@@ -3371,6 +3372,7 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
   const isAdmin = currentUser?.isAdmin;
   const NAV = [
     { id: "direccion_financiera", icon: "📊", label: "Dirección financiera" },
+    { id: "lo_que_cuesta_operar", icon: "🎯", label: "Lo que cuesta operar" },
     { id: "pago_nomina", icon: "💰", label: "Pago de Nómina" },
     { id: "cuanto_pagar", icon: "🧮", label: "Cuánto debo pagar" },
     { id: "endeudamiento", icon: "🏦", label: "Endeudamiento" },
@@ -3466,6 +3468,7 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
       <div style={{ flex: 1, padding: "28px 32px", overflow: "auto" }}>
         <div style={{ maxWidth: 1100, margin: "0 auto" }}>
           {subView === "direccion_financiera" && <DireccionFinancieraView db={db} isAdmin={isAdmin} />}
+          {subView === "lo_que_cuesta_operar" && <LoQueCuestaOperarView db={db} isAdmin={isAdmin} usuario={currentUser?.name || currentUser?.username || currentUser?.email || ""} onIr={setSubView} />}
           {subView === "pago_nomina" && <PagoNominaView currentUser={currentUser} />}
           {subView === "cuanto_pagar" && <CuantoPagarMesView db={db} functionsClient={functionsClient} isAdmin={isAdmin} onIrEndeudamiento={() => setSubView("endeudamiento")} />}
           {subView === "endeudamiento" && <EndeudamientoView db={db} isAdmin={isAdmin} />}
