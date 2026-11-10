@@ -2246,6 +2246,46 @@ function ComparativoConceptosView({ compras, onImportar, onDeleteMes, onUpdateCo
   );
   const registrosDeCelda = (codConcep, concepto, mes) =>
     compras.filter((c) => c.mes === mes && c.codConcep === codConcep && c.concepto === concepto);
+  // (2026-11-10, a pedido de Fredy) Descarga el comparativo a Excel: hoja «Comparativo» (un mes por columna, total, cambio del último mes contra
+  // el anterior y TOTAL MES) y, si hay celdas con IVA/retención cuadrados a mano, hoja «IVA y retención» con el neto a pagar. Valores numéricos.
+  async function descargarExcel() {
+    const XLSX = await import("xlsx");
+    const encabezado = ["Código", "Concepto", ...meses.map((m) => fmtMesCorto(m)), "Total"];
+    if (penultimoMes) encabezado.push(`Cambio ${fmtMesCorto(penultimoMes)} → ${fmtMesCorto(ultimoMes)} ($)`, "Cambio (%)");
+    const hojaFilas = filas.map((f) => {
+      const fila = [f.codConcep, f.concepto, ...meses.map((m) => Math.round(f.porMes[m] || 0)), Math.round(f.total)];
+      if (penultimoMes) fila.push(Math.round(f.cambio), (f.porMes[penultimoMes] || 0) > 0 ? Math.round(f.cambioPct * 10) / 10 : (f.porMes[ultimoMes] || 0) > 0 ? "nuevo" : "");
+      return fila;
+    });
+    const filaTotal = ["TOTAL MES", "", ...meses.map((m) => Math.round(totalesPorMes[m])), Math.round(granTotal)];
+    if (penultimoMes) {
+      const dif = (totalesPorMes[ultimoMes] || 0) - (totalesPorMes[penultimoMes] || 0);
+      filaTotal.push(Math.round(dif), (totalesPorMes[penultimoMes] || 0) > 0 ? Math.round((dif / totalesPorMes[penultimoMes]) * 1000) / 10 : "");
+    }
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet([["COMPARATIVO POR CONCEPTO (valor bruto Busint)"], [], encabezado, ...hojaFilas, [], filaTotal]);
+    ws["!cols"] = [{ wch: 10 }, { wch: 46 }, ...meses.map(() => ({ wch: 16 })), { wch: 18 }, ...(penultimoMes ? [{ wch: 24 }, { wch: 12 }] : [])];
+    XLSX.utils.book_append_sheet(wb, ws, "Comparativo");
+    // Celdas (mes + concepto) con IVA / retención cuadrados: neto a pagar = valor + IVA − retención.
+    const celdas = new Map();
+    compras.filter((c) => c.iva !== undefined || c.retencion !== undefined).forEach((c) => {
+      const k = `${c.mes}__${c.codConcep}__${c.concepto}`;
+      if (!celdas.has(k)) celdas.set(k, { mes: c.mes, codConcep: c.codConcep, concepto: c.concepto, valor: 0, iva: 0, ret: 0 });
+      const x = celdas.get(k);
+      x.valor += Number(c.valor) || 0; x.iva += Number(c.iva) || 0; x.ret += Number(c.retencion) || 0;
+    });
+    if (celdas.size) {
+      const lista = [...celdas.values()].sort((a, b) => a.mes.localeCompare(b.mes) || b.valor - a.valor);
+      const ws2 = XLSX.utils.aoa_to_sheet([
+        ["IVA Y RETENCIÓN CUADRADOS"], [],
+        ["Mes", "Código", "Concepto", "Valor bruto", "IVA", "Retención", "Neto a pagar"],
+        ...lista.map((x) => [fmtMesCorto(x.mes), x.codConcep, x.concepto, Math.round(x.valor), Math.round(x.iva), Math.round(x.ret), Math.round(x.valor + x.iva - x.ret)]),
+      ]);
+      ws2["!cols"] = [{ wch: 10 }, { wch: 10 }, { wch: 46 }, { wch: 16 }, { wch: 14 }, { wch: 14 }, { wch: 16 }];
+      XLSX.utils.book_append_sheet(wb, ws2, "IVA y retención");
+    }
+    XLSX.writeFile(wb, `Comparativo_por_Concepto_${new Date().toLocaleDateString("en-CA", { timeZone: "America/Bogota" })}.xlsx`);
+  }
   return (
     <div>
       {showImport && (
@@ -2281,9 +2321,14 @@ function ComparativoConceptosView({ compras, onImportar, onDeleteMes, onUpdateCo
             Gasto agrupado por concepto, mes a mes (Valor Bruto Busint). Haz clic en un valor para cuadrar IVA / Retención y ver el neto a pagar.
           </p>
         </div>
-        <Btn variant="danger" onClick={() => setShowImport(true)}>
-          📥 Importar Busint
-        </Btn>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <Btn variant="secondary" onClick={descargarExcel} disabled={!compras.length}>
+            ⬇ Descargar Excel
+          </Btn>
+          <Btn variant="danger" onClick={() => setShowImport(true)}>
+            📥 Importar Busint
+          </Btn>
+        </div>
       </div>
       {!compras.length ? (
         <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>
