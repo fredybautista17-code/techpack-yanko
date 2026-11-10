@@ -5733,6 +5733,11 @@ exports.getCuentasPorPagarBusintGen = onCallAuth(
   },
   async (request) => {
     await verificarLlamadorEsAdmin(request);
+    return calcularCuentasPorPagarBusintGen();
+  }
+);
+// (2026-11-10) El cálculo del corte vive en esta función para que lo use tanto el botón «Traer corte desde Busint» como la corrida automática (abajo).
+async function calcularCuentasPorPagarBusintGen() {
     let facturas, pagos, pagosOtros, proveedores, notasDescuento, devoluciones, notasContables, pagosEsp, pagosCab;
     try {
       [facturas, pagos, pagosOtros, proveedores, notasDescuento, devoluciones, notasContables, pagosEsp, pagosCab] = await Promise.all([
@@ -6224,6 +6229,52 @@ exports.getCuentasPorPagarBusintGen = onCallAuth(
       totalAnticipos: proveedoresResultado.reduce((s, p) => s + (p.anticiposTotal || 0), 0),
       diagnosticoAnticipos,
     };
+}
+
+// (2026-11-10, a pedido de Fredy) Corte de Cuentas por Pagar de Yanko AUTOMÁTICO, 2 veces al día (7 a. m. y 1 p. m., hora de Colombia), igual que el botón
+// «Traer corte desde Busint» pero sin abrir nada. Un solo corte por día (id auto_AAAA-MM-DD): la corrida de la 1 p. m. reemplaza la de las 7 a. m. Si Busint
+// falla o devuelve cero proveedores, NO se toca el corte anterior. De ahí leen Pagos a Proveedores, Insumos y telas, Proyección de Deuda y Lo que cuesta operar.
+exports.actualizarCuentasPorPagarBusintDiario = onSchedule(
+  { schedule: "0 7,13 * * *", timeZone: "America/Bogota", secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY], timeoutSeconds: 540, memory: "1GiB" },
+  async () => {
+    let resp;
+    try {
+      resp = await calcularCuentasPorPagarBusintGen();
+    } catch (err) {
+      logger.error("CXP automático: no se pudo consultar Busint; se deja el corte anterior", { error: String(err?.message || err) });
+      return;
+    }
+    const proveedores = resp.proveedores || [];
+    if (!proveedores.length) {
+      logger.warn("CXP automático: Busint no devolvió proveedores; se deja el corte anterior");
+      return;
+    }
+    const corteId = `auto_${resp.fechaCorte}`;
+    const claveDoc = (n) => String(n || "").replace(/[./\s]/g, "_");
+    const ref = db.collection("contabilidad_cxp_facturas");
+    for (let i = 0; i < proveedores.length; i += 400) {
+      const lote = db.batch();
+      proveedores.slice(i, i + 400).forEach((p) => {
+        lote.set(ref.doc(claveDoc(p.nombre)), {
+          nombre: p.nombre,
+          corteId,
+          fechaCorte: resp.fechaCorte,
+          facturas: (p.facturas || []).map((f) => ({ nfact: f.nfact, facTotal: Math.round(f.facTotal || 0), pagado: Math.round(f.pagado || 0), descuento: Math.round(f.descuento || 0), devolucion: Math.round(f.devolucion || 0), saldo: Math.round(f.saldo || 0), fechaEmisionISO: f.fechaEmisionISO || null, fechaVctoISO: f.fechaVctoISO || null, diasVencido: f.diasVencido || 0 })),
+        });
+      });
+      await lote.commit();
+    }
+    await db.collection("contabilidad_cxp_cortes").doc(corteId).set({
+      id: corteId,
+      fechaCorte: resp.fechaCorte,
+      campoNit: resp.campoNit || "",
+      campoEmision: resp.campoEmision || "",
+      empresa: "yanko",
+      proveedores: proveedores.map(({ facturas, ...resto }) => resto),
+      creadoEn: new Date().toISOString(),
+      origen: "automatico",
+    });
+    logger.info("CXP automático: corte guardado", { corteId, proveedores: proveedores.length, total: resp.totalGeneral });
   }
 );
 
