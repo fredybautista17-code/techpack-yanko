@@ -103,3 +103,12 @@ export function resumenDespachoJunto(devs) {
   const orden = ["factura", "traslado_externo", "traslado_consignacion", "mixto", "sin_dato"];
   return [...grupos.values()].sort((a, b) => orden.indexOf(a.tipo) - orden.indexOf(b.tipo));
 }
+
+// (2026-11-10, a pedido de Fredy) En qué tarjeta de Bodega → Devoluciones cae cada una: «factura» (Facturadas), «remision» (Remisionadas:
+// traslado externo o en consignación) o «clasificar» (sin origen guardado o «Mixto: confirmar»: la líder le pone el origen con ✎ Editar).
+export function grupoOrigen(d) {
+  const t = d?.origen?.tipo;
+  if (t === "factura") return "factura";
+  if (t === "traslado_externo" || t === "traslado_consignacion") return "remision";
+  return "clasificar";
+}

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import { getApps } from "firebase/app";
 import { getAuth } from "firebase/auth";
 import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, query, where, writeBatch } from "firebase/firestore";
-import { fechaDePaso, tiempoDevolucion, textoTiempo, etiquetaOrigen, origenDeFacturacion, resumenDespachoJunto, ORIGENES, ORIGENES_ELEGIBLES } from "./devoluciones-tiempos";
+import { grupoOrigen, fechaDePaso, tiempoDevolucion, textoTiempo, etiquetaOrigen, origenDeFacturacion, resumenDespachoJunto, ORIGENES, ORIGENES_ELEGIBLES } from "./devoluciones-tiempos";
 import { httpsCallable, getFunctions } from "firebase/functions";
 
 // ─── DEVOLUCIONES DE CLIENTES ────────────────────────────────────────────
@@ -692,10 +692,13 @@ function CambiarEstadoDev({ T, d, ocupado, onCambiar }) {
 }
 
 // ─── LISTA PARA EL EQUIPO (Bodega y Calidad) ─────────────────────────────
-function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado }) {
+function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, tipo, onVolverHub }) {
   const T = Tp || TEMA_DEFECTO;
   const { lista, error } = useDevoluciones(db, null);
-  const [filtro, setFiltro] = useState("pendientes");
+  // `tipo` (solo Bodega): la tarjeta elegida en el menú de Devoluciones. null = todas, como antes.
+  const enTipo = (d) => !tipo || (tipo === "despachar" ? d.estado === "lista" : tipo === "clasificar" ? d.estado !== "redespachada" && grupoOrigen(d) === "clasificar" : grupoOrigen(d) === tipo);
+  const base = (lista || []).filter(enTipo);
+  const [filtro, setFiltro] = useState(tipo === "clasificar" || tipo === "despachar" ? "todas" : "pendientes");
   const [q, setQ] = useState("");
   const [abierto, setAbierto] = useState(null);
   const [trabajando, setTrabajando] = useState("");
@@ -709,9 +712,9 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado }) {
 
   const pendiente = (d) => (modo === "bodega" ? ["reportada", "en_camino", "lista"].includes(d.estado) : ["recibida", "revisada"].includes(d.estado));
   const pideDespacho = (d) => !!d.solicitaDespacho && d.estado !== "redespachada";
-  const cuantosPiden = (lista || []).filter(pideDespacho).length;
-  const atrasadas = (lista || []).filter((d) => tiempoDevolucion(d).atrasada).length;
-  const visiblesBase = (lista || []).filter((d) => {
+  const cuantosPiden = base.filter(pideDespacho).length;
+  const atrasadas = base.filter((d) => tiempoDevolucion(d).atrasada).length;
+  const visiblesBase = base.filter((d) => {
     if (filtro === "pendientes" && !pendiente(d)) return false;
     if (filtro === "atrasadas" && !tiempoDevolucion(d).atrasada) return false;
     if (filtro === "piden" && !pideDespacho(d)) return false;
@@ -798,7 +801,8 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado }) {
   const tarjeta = { background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, padding: "14px 18px" };
   return (
     <div style={{ maxWidth: 940 }}>
-      <div style={{ fontSize: 18, fontWeight: 800, color: T.ink, marginBottom: 4 }}>Devoluciones de clientes</div>
+      {onVolverHub && <button onClick={onVolverHub} style={{ background: "none", border: "none", color: T.slate, fontSize: 12, cursor: "pointer", fontFamily: "inherit", padding: 0, marginBottom: 10 }}>← Volver a Devoluciones</button>}
+      <div style={{ fontSize: 18, fontWeight: 800, color: T.ink, marginBottom: 4 }}>{(tipo && TITULOS_TIPO[tipo]) || "Devoluciones de clientes"}</div>
       <div style={{ fontSize: 13, color: T.slate, marginBottom: 12 }}>
         {modo === "bodega" ? "Marca cada devolución como recibida cuando llega la mercancía, y como despachada de nuevo cuando vuelve a salir." : "Cuenta por color y talla lo que llegó; ATLAS lo compara con lo que declaró el cliente."}
       </div>
@@ -884,8 +888,80 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado }) {
   );
 }
 
+const TITULOS_TIPO = { factura: "🧾 Facturadas", remision: "🚚 Remisionadas", clasificar: "⚠️ Por clasificar", despachar: "📦 Todas las listas para despachar" };
+
+// (2026-11-10, a pedido de Fredy) Entrada de Bodega → Devoluciones: dos tarjetas grandes, Facturadas y Remisionadas (según el origen en Busint),
+// más «Por clasificar» (sin origen o mixtas) y el enlace «Todas las listas para despachar» para juntar de ambos tipos en un solo envío.
+function HubDevolucionesBodega({ db, T: Tp, onElegir }) {
+  const T = Tp || TEMA_DEFECTO;
+  const { lista, error } = useDevoluciones(db, null);
+  const conteo = (g) => {
+    const l = (lista || []).filter((d) => grupoOrigen(d) === g);
+    return {
+      atender: l.filter((d) => ["reportada", "en_camino", "lista"].includes(d.estado)).length,
+      atrasadas: l.filter((d) => tiempoDevolucion(d).atrasada).length,
+      piden: l.filter((d) => d.solicitaDespacho && d.estado !== "redespachada").length,
+    };
+  };
+  const porClasificar = (lista || []).filter((d) => d.estado !== "redespachada" && grupoOrigen(d) === "clasificar").length;
+  const listasParaDespachar = (lista || []).filter((d) => d.estado === "lista").length;
+  const tarjetas = [
+    { k: "factura", icono: "🧾", titulo: "Facturadas", txt: "Lotes que salieron con factura en Busint. Se re-despachan por factura.", color: T.denim, bg: T.denimBg, deco: "#F3F6FA" },
+    { k: "remision", icono: "🚚", titulo: "Remisionadas", txt: "Lotes que salieron como traslado externo en Busint. Se re-despachan por traslado.", color: T.violet, bg: T.violetBg, deco: "#F7F4FB" },
+  ];
+  const tile = (n, etiqueta, color, bg) => (
+    <div style={{ borderRadius: 12, padding: "10px 12px", background: n > 0 ? bg : "#F5F2EE" }}>
+      <div style={{ fontSize: 24, lineHeight: 1.1, fontWeight: 800, color: n > 0 ? color : T.ink }}>{n}</div>
+      <div style={{ fontSize: 11, fontWeight: 700, color: T.slate }}>{etiqueta}</div>
+    </div>
+  );
+  return (
+    <div style={{ maxWidth: 940 }}>
+      <div style={{ fontSize: 26, fontWeight: 800, color: T.ink, marginBottom: 4 }}>↩️ Devoluciones</div>
+      <div style={{ fontSize: 14, color: T.slate, marginBottom: 20 }}>Elige qué tipo de devolución vas a atender</div>
+      {error && <div style={{ color: T.coral, fontSize: 13, marginBottom: 8 }}>{error}</div>}
+      {lista === null ? <div style={{ fontSize: 13, color: T.slate }}>Cargando…</div> : (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 18 }}>
+            {tarjetas.map((t) => {
+              const c = conteo(t.k);
+              return (
+                <button key={t.k} onClick={() => onElegir(t.k)} style={{ position: "relative", overflow: "hidden", background: T.white, border: `1px solid ${T.border}`, borderRadius: 20, padding: "26px 28px 22px", cursor: "pointer", textAlign: "left", fontFamily: "inherit", color: T.ink }}>
+                  <span style={{ position: "absolute", top: -60, right: -50, width: 150, height: 150, borderRadius: "50%", background: t.deco }} />
+                  <div style={{ position: "relative", width: 58, height: 58, borderRadius: 16, background: t.bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28, marginBottom: 18 }}>{t.icono}</div>
+                  <div style={{ position: "relative", fontSize: 21, fontWeight: 800, marginBottom: 6 }}>{t.titulo}</div>
+                  <div style={{ position: "relative", fontSize: 14, color: T.slate, marginBottom: 16, lineHeight: 1.45 }}>{t.txt}</div>
+                  <div style={{ position: "relative", display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 16 }}>
+                    <div style={{ borderRadius: 12, padding: "10px 12px", background: "#F5F2EE" }}><div style={{ fontSize: 24, lineHeight: 1.1, fontWeight: 800, color: T.ink }}>{c.atender}</div><div style={{ fontSize: 11, fontWeight: 700, color: T.slate }}>Por atender</div></div>
+                    {tile(c.atrasadas, "Atrasadas", T.coral, T.coralBg)}
+                    {tile(c.piden, "Piden despacho", T.jade, T.jadeBg)}
+                  </div>
+                  <div style={{ position: "relative", textAlign: "right", fontSize: 14, fontWeight: 800, color: t.color }}>Entrar →</div>
+                </button>
+              );
+            })}
+          </div>
+          <div style={{ marginTop: 18, display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+            {porClasificar > 0 && (
+              <button onClick={() => onElegir("clasificar")} style={{ display: "flex", alignItems: "center", gap: 10, background: T.amberBg, border: "1px solid #F0DDB8", color: T.amber, borderRadius: 14, padding: "10px 16px", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
+                ⚠️ Por clasificar <span style={{ background: T.amber, color: "#fff", borderRadius: 20, padding: "1px 9px", fontSize: 12 }}>{porClasificar}</span>
+                <span style={{ fontWeight: 600 }}>sin origen o mixtas</span>
+              </button>
+            )}
+            <button onClick={() => onElegir("despachar")} style={{ background: "none", border: "none", color: T.denim, fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer", padding: "6px 2px", textDecoration: "underline", textUnderlineOffset: 3 }}>
+              Todas las listas para despachar ({listasParaDespachar})
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export function DevolucionesBodegaView(props) {
-  return <ListaEquipo {...props} modo="bodega" />;
+  const [tipo, setTipo] = useState(null);
+  if (!tipo) return <HubDevolucionesBodega db={props.db} T={props.T} onElegir={setTipo} />;
+  return <ListaEquipo {...props} modo="bodega" tipo={tipo} onVolverHub={() => setTipo(null)} />;
 }
 export function DevolucionesCalidadView(props) {
   return <ListaEquipo {...props} modo="calidad" />;
