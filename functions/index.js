@@ -15156,6 +15156,33 @@ exports.avisarNuevaDevolucionCliente = onDocumentCreated(
     }
   }
 );
+// (2026-11-10, a pedido de Fredy) Aviso diario de cumpleaños a Talento Humano (antes Yuleisi Moreno, ahora Midalys): todos los días a las 7:00 a. m.
+// (hora de Colombia) manda UN correo con quienes cumplen años hoy y quienes cumplen dentro de 3 días, solo si hay alguien. Lo reciben los usuarios
+// activos con correo que tengan marcada la tarjeta «Cumpleaños» en Usuarios → Mi Día. La lista está en nomina_cumpleanos (se edita en
+// Nómina → Personal → Cumpleaños). nomina_cumpleanos_avisos/{AAAA-MM-DD} marca el día ya avisado para no repetir el correo.
+const cumpleanosAviso = require("./cumpleanos");
+exports.avisarCumpleanos = onSchedule(
+  { schedule: "0 7 * * *", timeZone: "America/Bogota", secrets: [EMAIL_USER, EMAIL_APP_PASSWORD], timeoutSeconds: 60, memory: "256MiB" },
+  async () => {
+    const hoy = new Date().toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
+    try {
+      const marca = db.collection("nomina_cumpleanos_avisos").doc(hoy);
+      if ((await marca.get()).exists) { logger.info("avisarCumpleanos: ya se avisó hoy", { hoy }); return; }
+      const lista = (await db.collection("nomina_cumpleanos").get()).docs.map((x) => x.data());
+      const av = cumpleanosAviso.cumpleanosParaAviso(lista, hoy);
+      const correo = cumpleanosAviso.armarCorreoCumpleanos(av, hoy);
+      if (!correo) { logger.info("avisarCumpleanos: nadie cumple años hoy ni dentro de 3 días", { hoy }); return; }
+      const usuarios = (await db.collection("users").get()).docs.map((x) => x.data());
+      const correos = cumpleanosAviso.destinatariosCumpleanos(usuarios);
+      if (!correos.length) { logger.warn("avisarCumpleanos: nadie tiene marcada la tarjeta «Cumpleaños» (o no tiene correo)", { hoy, ...av }); return; }
+      await mandarCorreo(crearTransporte(), correos, correo.asunto, correo.html);
+      await marca.set({ enviadoEn: new Date().toISOString(), destinatarios: correos.length, hoy: av.hoy, en3: av.en3 });
+      logger.info("avisarCumpleanos enviado", { hoy, destinatarios: correos.length, ...av });
+    } catch (err) {
+      logger.error("avisarCumpleanos falló", { hoy, error: err?.message || String(err) });
+    }
+  }
+);
 exports.getLotesPorIntegrarBusint = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],

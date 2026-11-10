@@ -62,6 +62,12 @@ export const GRUPOS_MI_DIA = [
     id: "nomina", titulo: "Nómina",
     tarjetas: [{ id: "auditoria_nomina", label: "Auditoría Busint vs Nómina (todas las áreas)" }],
   },
+  {
+    // (2026-11-10, a pedido de Fredy) Para Talento Humano (Midalys): quién cumple años hoy, en los próximos 3 días y en los próximos 30.
+    // Quien tenga esta tarjeta marcada también recibe el correo automático (3 días antes y el mismo día). La lista se cambia en Nómina → Personal → Cumpleaños.
+    id: "talento_humano", titulo: "Talento Humano",
+    tarjetas: [{ id: "cumpleanos", label: "Cumpleaños de los trabajadores: hoy y próximos días (y recibe el correo de aviso, 3 días antes y el mismo día)" }],
+  },
 ];
 
 const ids = (grupo) => GRUPOS_MI_DIA.find((g) => g.id === grupo).tarjetas.map((t) => t.id);

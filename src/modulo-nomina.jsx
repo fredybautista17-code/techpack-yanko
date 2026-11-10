@@ -12,6 +12,7 @@ import {
 } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { getStorage, ref as storageRef, uploadString, getDownloadURL } from "firebase/storage";
+import CumpleanosView from "./cumpleanos";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
   authDomain: "techpack-yanko-f37b8.firebaseapp.com",
@@ -15681,6 +15682,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
       ]
     : soloNovedades
     ? [
+        { id: "cumpleanos", icon: "🎂", label: "Cumpleaños" },
         { id: "ausencias", icon: "📅", label: "Motivos de Ausencia" },
         { id: "permisos", icon: "🗓️", label: "Permisos (Calendario)" },
         ...(puedeCodigosPermiso ? [{ id: "codigos_permiso", icon: "🔐", label: "Códigos de Permiso" }] : []),
@@ -15714,6 +15716,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           ] },
         { group: "Personal", icon: "🪪", items: [
             { id: "ingreso_personal", icon: "🪪", label: "Ingreso de Personal" },
+            { id: "cumpleanos", icon: "🎂", label: "Cumpleaños" },
           ] },
         { group: "Novedades", icon: "📣", items: [
             { id: "ausencias", icon: "📅", label: "Motivos de Ausencia" },
@@ -16379,6 +16382,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "historial_quincenas" && !areaLider && !soloNovedades && <HistorialQuincenasView liquidacionesF={liquidacionesF} liquidacionesFD={liquidacionesFD} liquidacionesD={liquidacionesD} liquidacionesPS={liquidacionesPS} trabajadores={trabajadores} />}
           {subView === "reporte_area" && !areaLider && !soloNovedades && <ReporteNominaPorAreaView trabajadores={trabajadores} liquidacionesF={liquidacionesF} liquidacionesFD={liquidacionesFD} liquidacionesD={liquidacionesD} liquidacionesPS={liquidacionesPS} causacionManual={causacionManual} />}
           {subView === "trabajadores" && !areaLider && !soloNovedades && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarTrabajador} onDelete={borrarTrabajador} areasNomina={areasNomina} areasTNS={areasTNS} zonasNomina={zonasNomina} tiposContrato={tiposContrato} onSaveArea={guardarAreaNomina} onSaveZona={guardarZonaNomina} turnos={turnos} gruposTrabajo={gruposTrabajo} />}
+          {subView === "cumpleanos" && !areaLider && <CumpleanosView db={db} />}
           {subView === "ingreso_personal" && !areaLider && !soloNovedades && <IngresoPersonalView trabajadores={trabajadores} candidatos={candidatos} liquidacionesRetiro={liquidacionesRetiro} isAdmin={isAdminCatalogos} areasNomina={areasNomina} areasTNS={areasTNS} zonasNomina={zonasNomina} tiposContrato={tiposContrato} turnos={turnos} gruposTrabajo={gruposTrabajo} onGuardarTrabajador={guardarTrabajador} onGuardarCandidato={guardarCandidato} onBorrarCandidato={borrarCandidato} onContratarCandidato={contratarCandidato} />}
           {subView === "grupos_trabajo" && !areaLider && !soloNovedades && <GruposTrabajoView grupos={gruposTrabajo} areasNomina={areasNomina} isAdmin={isAdminCatalogos} onSave={guardarGrupoTrabajo} onDelete={borrarGrupoTrabajo} />}
           {subView === "areas_nomina" && !areaLider && !soloNovedades && <AreasNominaView areas={areasNomina} trabajadores={trabajadores} procesos={precios} grupos={gruposTrabajo} turnos={turnos} isAdmin={isAdminCatalogos} onSave={guardarAreaNomina} onAplicarTurno={aplicarTurnoATrabajadores} onDelete={borrarAreaNomina} />}
