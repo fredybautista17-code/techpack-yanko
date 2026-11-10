@@ -521,7 +521,7 @@ function Escalon({ pasos }) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-const FORM_VACIO = { id: "", nombre: "", acreedor: "", valorMensual: "", diaPago: "", desde: "", hasta: "", nota: "" };
+const FORM_VACIO = { id: "", nombre: "", acreedor: "", valorMensual: "", diaPago: "", desde: "", hasta: "", nota: "", vinculoLiquidaciones: false };
 const entrada = { width: "100%", padding: "9px 11px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" };
 
 export function EndeudamientoView({ db, isAdmin }) {
@@ -533,6 +533,20 @@ export function EndeudamientoView({ db, isAdmin }) {
   const [msg, setMsg] = useState("");
   const [guardando, setGuardando] = useState(false);
   const [verTerminadas, setVerTerminadas] = useState(false);
+  // (2026-11-10, a pedido de Fredy) «Traer liquidaciones pendientes»: el total «No pagadas» de las liquidaciones de retiro de Nómina se puede traer a la cuota de liquidaciones.
+  const [liqs, setLiqs] = useState([]);
+  const [verLiq, setVerLiq] = useState(false);
+  useEffect(() => onSnapshot(collection(db, "nomina_liquidaciones_retiro"), (s) => setLiqs(s.docs.map((d) => ({ ...d.data(), id: d.id }))), () => {}), [db]);
+  const liqPend = useMemo(() => liqs.filter((l) => l.estadoPago !== "pagada" && Number(l.totalAPagar) > 0).sort((a, b) => (Number(b.totalAPagar) || 0) - (Number(a.totalAPagar) || 0)), [liqs]);
+  const liqTotal = Math.round(liqPend.reduce((s, l) => s + (Number(l.totalAPagar) || 0), 0));
+  const esCuotaLiq = (c) => !!c.vinculoLiquidaciones || /liquidaci/i.test(String(c.nombre || ""));
+  async function traerLiq(c) {
+    setMsg("");
+    setGuardando(true);
+    try { await setDoc(doc(db, COL_CUOTAS, c.id), { valorMensual: liqTotal, vinculoLiquidaciones: true, actualizadoEn: new Date().toISOString() }, { merge: true }); }
+    catch (err) { setMsg(`No se pudo traer de Nómina: ${err?.message || err}`); }
+    finally { setGuardando(false); }
+  }
 
   const estadoDe = (c) => (c.desde > ymHoy ? "futura" : c.hasta && c.hasta < ymHoy ? "terminada" : c.hasta && c.hasta <= sumarMes(ymHoy, 2) ? "pronto" : "vigente");
   const ordenadas = useMemo(() => [...cuotas].sort((a, b) => (a.hasta || "9999-99").localeCompare(b.hasta || "9999-99") || String(a.nombre).localeCompare(String(b.nombre))), [cuotas]);
@@ -561,7 +575,7 @@ export function EndeudamientoView({ db, isAdmin }) {
       const id = form.id || `cuota_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
       const previa = cuotas.find((c) => c.id === id);
       await setDoc(doc(db, COL_CUOTAS, id), {
-        nombre: form.nombre.trim(), acreedor: form.acreedor.trim(), valorMensual: Number(form.valorMensual), diaPago: form.diaPago === "" ? null : Number(form.diaPago),
+        nombre: form.nombre.trim(), acreedor: form.acreedor.trim(), vinculoLiquidaciones: !!form.vinculoLiquidaciones, valorMensual: Number(form.valorMensual), diaPago: form.diaPago === "" ? null : Number(form.diaPago),
         desde: form.desde, hasta: form.hasta || "", nota: form.nota.trim(), creadoEn: previa?.creadoEn || new Date().toISOString(), actualizadoEn: new Date().toISOString(),
       }, { merge: true });
       setForm(null);
@@ -580,7 +594,13 @@ export function EndeudamientoView({ db, isAdmin }) {
     const [txt, col, fondo] = ETIQUETA[estadoDe(c)];
     return (
       <tr key={c.id}>
-        <td style={tdL}>{c.nombre}{c.acreedor ? <div style={{ fontSize: 11, fontWeight: 500, color: C.slate }}>{c.acreedor}</div> : null}{c.nota ? <div style={{ fontSize: 11, fontWeight: 500, color: C.slate }}>{c.nota}</div> : null}</td>
+        <td style={tdL}>{c.nombre}{c.acreedor ? <div style={{ fontSize: 11, fontWeight: 500, color: C.slate }}>{c.acreedor}</div> : null}{esCuotaLiq(c) ? (
+          <div style={{ marginTop: 3, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", fontSize: 11, fontWeight: 700, color: Math.abs(liqTotal - (Number(c.valorMensual) || 0)) <= 1 ? C.green : C.amber }}>
+            <span>{Math.abs(liqTotal - (Number(c.valorMensual) || 0)) <= 1 ? `✓ Igual al pendiente de Nómina (${liqPend.length} ${liqPend.length === 1 ? "persona" : "personas"})` : `Nómina hoy: ${money(liqTotal)} · ${liqPend.length} ${liqPend.length === 1 ? "persona" : "personas"}`}</span>
+            {isAdmin && Math.abs(liqTotal - (Number(c.valorMensual) || 0)) > 1 ? <Boton chico onClick={() => traerLiq(c)} disabled={guardando}>Traer de Nómina</Boton> : null}
+            <Boton chico onClick={() => setVerLiq(true)}>Ver quién</Boton>
+          </div>
+        ) : null}{c.nota ? <div style={{ fontSize: 11, fontWeight: 500, color: C.slate }}>{c.nota}</div> : null}</td>
         <td style={td}>{money(c.valorMensual)}</td>
         <td style={td}>{c.diaPago ? `día ${c.diaPago}` : "—"}</td>
         <td style={td}>{nombreMes(c.desde)}</td>
@@ -597,6 +617,7 @@ export function EndeudamientoView({ db, isAdmin }) {
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 6 }}>
         <h2 style={{ margin: 0, fontSize: 21, fontWeight: 900, color: C.ink }}>Endeudamiento</h2>
         <div style={{ flex: 1 }} />
+        {isAdmin && liqTotal > 0 && !cuotas.some(esCuotaLiq) ? <Boton onClick={() => { setMsg(""); setForm({ ...FORM_VACIO, nombre: "LIQUIDACIONES PENDIENTES", acreedor: "TRABAJADORES", valorMensual: String(liqTotal), diaPago: "25", desde: ymHoy, hasta: ymHoy, vinculoLiquidaciones: true }); }}>＋ Traer liquidaciones de Nómina ({money(liqTotal)})</Boton> : null}
         {isAdmin ? <Boton variante="oscuro" onClick={() => { setMsg(""); setForm({ ...FORM_VACIO, desde: ymHoy }); }}>＋ Agregar cuota</Boton> : null}
       </div>
       <div style={{ fontSize: 12.5, color: C.slate, marginBottom: 16, maxWidth: 840, lineHeight: 1.5 }}>
@@ -636,6 +657,12 @@ export function EndeudamientoView({ db, isAdmin }) {
             <label style={{ fontSize: 12, fontWeight: 700, color: C.slate }}>Día de pago (1 a 31)<input style={entrada} type="number" min="1" max="31" value={form.diaPago} onChange={campo("diaPago")} /></label>
             <label style={{ fontSize: 12, fontWeight: 700, color: C.slate }}>Empieza (mes)<input style={entrada} type="month" value={form.desde} onChange={campo("desde")} /></label>
             <label style={{ fontSize: 12, fontWeight: 700, color: C.slate }}>Termina (mes, opcional)<input style={entrada} type="month" value={form.hasta} onChange={campo("hasta")} /></label>
+            {liqTotal > 0 || form.vinculoLiquidaciones ? (
+              <div style={{ gridColumn: "1 / -1", fontSize: 12, color: C.slate, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <Boton chico onClick={() => setForm((f) => ({ ...f, valorMensual: String(liqTotal), vinculoLiquidaciones: true }))}>Traer de Nómina: {money(liqTotal)}</Boton>
+                <span>{liqPend.length} {liqPend.length === 1 ? "liquidación pendiente" : "liquidaciones pendientes"} («No pagadas») en Nómina.{form.vinculoLiquidaciones ? " Esta cuota queda marcada como de liquidaciones." : ""}</span>
+              </div>
+            ) : null}
             <label style={{ gridColumn: "1 / -1", fontSize: 12, fontWeight: 700, color: C.slate }}>Nota (opcional)<input style={entrada} value={form.nota} onChange={campo("nota")} /></label>
           </div>
           {msg ? <div style={{ color: C.red, fontSize: 12.5, marginTop: 10 }}>{msg}</div> : null}
@@ -643,6 +670,16 @@ export function EndeudamientoView({ db, isAdmin }) {
             <Boton onClick={() => setForm(null)}>Cancelar</Boton>
             <Boton variante="oscuro" onClick={guardar} disabled={guardando}>{guardando ? "Guardando…" : "Guardar cuota"}</Boton>
           </div>
+        </Ventana>
+      ) : null}
+      {verLiq ? (
+        <Ventana titulo="Liquidaciones pendientes en Nómina" ancho={520} onClose={() => setVerLiq(false)}>
+          {!liqPend.length ? <div style={{ fontSize: 13, color: C.slate }}>No hay liquidaciones «No pagadas» en Nómina.</div> : (
+            <div>
+              {liqPend.map((l) => <div key={l.id} style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 13, padding: "4px 0", borderBottom: `1px solid ${C.border}` }}><span>{l.nombre || "—"}</span><b style={{ fontVariantNumeric: "tabular-nums" }}>{money(l.totalAPagar)}</b></div>)}
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 13.5, padding: "8px 0 0", fontWeight: 900 }}><span>Total ({liqPend.length})</span><span>{money(liqTotal)}</span></div>
+            </div>
+          )}
         </Ventana>
       ) : null}
       {borrar ? (
