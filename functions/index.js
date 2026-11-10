@@ -15937,7 +15937,7 @@ async function asiFinanzasDeuda(args) {
   const cuotas = [
     ...cuotasManuales,
     ...pagosCuotas.filter((d) => d && d.kind === "plan_liquidaciones" && d.ym && Number(d.plan) > 0)
-      .map((d) => ({ id: `plan_liquidaciones__${d.ym}`, nombre: "Liquidaciones de retiro", valorMensual: Number(d.plan), diaPago: 25, desde: d.ym, hasta: d.ym, auto: true })),
+      .map((d) => ({ id: `plan_liquidaciones__${d.ym}`, nombre: "Liquidaciones de retiro", valorMensual: Number(d.plan), diaPago: Number(d.diaPago) >= 1 ? Math.min(31, Math.round(Number(d.diaPago))) : 25, desde: d.ym, hasta: d.ym, auto: true })),
   ];
   const facturas = {};
   facturasDocs.forEach((d) => { facturas[d.id] = d; });
@@ -16407,7 +16407,7 @@ async function finCargarDatos(ym) {
     ...cuotasManuales,
     ...pagosCuotas
       .filter((d) => d && d.kind === "plan_liquidaciones" && d.ym && Number(d.plan) > 0)
-      .map((d) => ({ id: `plan_liquidaciones__${d.ym}`, nombre: "Liquidaciones de retiro", valorMensual: Number(d.plan), diaPago: 25, desde: d.ym, hasta: d.ym, auto: true })),
+      .map((d) => ({ id: `plan_liquidaciones__${d.ym}`, nombre: "Liquidaciones de retiro", valorMensual: Number(d.plan), diaPago: Number(d.diaPago) >= 1 ? Math.min(31, Math.round(Number(d.diaPago))) : 25, desde: d.ym, hasta: d.ym, auto: true })),
   ];
   return { liquidaciones: { "Fiscal": fiscal, "Fiscal Destajo": fiscalDestajo, "Destajo": destajo, "Prestación de Servicios": ps }, gastosDocs, gastosPlanta, cuotas, presupuestos, movimientos, recibidas };
 }

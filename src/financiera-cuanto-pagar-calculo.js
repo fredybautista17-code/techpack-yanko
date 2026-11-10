@@ -59,7 +59,7 @@ export function cuotaVigente(c, ym) {
 export function cuotasConLiquidaciones(cuotas, pagosDocs) {
   const sinteticas = (pagosDocs || [])
     .filter((d) => d && d.kind === "plan_liquidaciones" && d.ym && num(d.plan) > 0)
-    .map((d) => ({ id: `plan_liquidaciones__${d.ym}`, nombre: "Liquidaciones de retiro", acreedor: "Plan del mes (pendientes en Nómina)", valorMensual: num(d.plan), diaPago: 25, desde: d.ym, hasta: d.ym, auto: true }));
+    .map((d) => ({ id: `plan_liquidaciones__${d.ym}`, nombre: "Liquidaciones de retiro", acreedor: "Plan del mes (pendientes en Nómina)", valorMensual: num(d.plan), diaPago: num(d.diaPago) >= 1 ? Math.min(31, Math.round(num(d.diaPago))) : 25, desde: d.ym, hasta: d.ym, auto: true }));
   return [...(cuotas || []), ...sinteticas];
 }
 export function cuotasDelMes(cuotas, ym) {
