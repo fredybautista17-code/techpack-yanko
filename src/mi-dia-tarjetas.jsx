@@ -9,7 +9,8 @@ import { getFunctions } from "firebase/functions";
 import ConsumoTelaCortePanel from "./consumo-tela-corte";
 import { useCierreDiario, TablaTrabajadores } from "./cierre-diario";
 import { diaDeArea, diasDelMesHasta, esHabilISO, sumarDiasISO } from "./cierre-diario-calculo";
-import { claveCierreDeArea, IDS_CIERRE, IDS_PLANEACION } from "./mi-dia-tarjetas-catalogo";
+import { claveCierreDeArea, IDS_CIERRE, IDS_PLANEACION, IDS_ORDENES_COMPRA, IDS_CIERRE_AREAS, AREA_DE_TARJETA_CIERRE } from "./mi-dia-tarjetas-catalogo";
+import BloqueOrdenesCompra from "./mi-dia-costos";
 import { MiDiaPlaneacionBloque, ProgramadorProcesosStandalone, MiDiaNominaStandalone, ListaPorProgramarBloque } from "./modulo-planeacion";
 
 const C = {
@@ -105,7 +106,7 @@ function Loseta({ titulo, valor, sub, color, fondo, linea, extra }) {
   );
 }
 
-function BloqueCierre({ db, currentUser }) {
+function BloqueCierre({ db, currentUser, deOtraArea }) {
   const hoyISO = useMemo(() => new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 10), []);
   const [diaSel, setDiaSel] = useState(hoyISO);
   const [alcance, setAlcance] = useState("mes");
@@ -194,7 +195,7 @@ function BloqueCierre({ db, currentUser }) {
     const bg = !conNivel ? C.canvas : e.nivel === "cumple" ? C.greenBg : e.nivel === "cerca" ? C.amberBg : C.redBg;
     const ln = !conNivel ? C.border : e.nivel === "cumple" ? C.greenLn : e.nivel === "cerca" ? C.amberLn : C.redLn;
     let pill = "Sin meta diaria";
-    let sub = "Tu área todavía no tiene meta diaria (se define en Nómina → Áreas → «Meta diaria de unidades»).";
+    let sub = `${deOtraArea ? "El área" : "Tu área"} todavía no tiene meta diaria (se define en Nómina → Áreas → «Meta diaria de unidades»).`;
     if (sinCierre) { pill = "Sin cierre"; sub = "Este día todavía no tiene cierre guardado."; }
     else if (!esHabil) { pill = "Día no hábil"; sub = "Fin de semana o festivo: cuenta lo producido, no se cobra sueldo."; }
     else if (verMeta) {
@@ -406,6 +407,25 @@ function BloqueCierre({ db, currentUser }) {
   );
 }
 
+// (2026-11-10, a pedido de Fredy) Cierre de áreas que no son la del usuario (Corte, Control de calidad, Zona de calor), para quien vigila
+// los costos: reutiliza el cierre diario de arriba con el área elegida en una pestañita. Solo una a la vez, para no leer tres veces los datos.
+function BloqueCierreAreas({ db, currentUser, ids }) {
+  const [elegida, setElegida] = useState(ids[0]);
+  const id = ids.includes(elegida) ? elegida : ids[0];
+  const area = AREA_DE_TARJETA_CIERRE[id];
+  const usuarioArea = useMemo(() => ({ ...currentUser, areaNomina: area, tarjetasMiDia: ["meta_hoy", "saldo_acumulado", "cubren_salario", "meta_dia", "trabajadores"] }), [currentUser, area]);
+  return (
+    <div>
+      {ids.length > 1 ? (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+          {ids.map((x) => <Chip key={x} activo={x === id} onClick={() => setElegida(x)}>{AREA_DE_TARJETA_CIERRE[x]}</Chip>)}
+        </div>
+      ) : null}
+      <BloqueCierre key={id} db={db} currentUser={usuarioArea} deOtraArea />
+    </div>
+  );
+}
+
 // Pantalla «☀️ Mi Día» por tarjetas: una barra de pestañas con UNA sección a la vez (en vez de apilar todo y obligar a bajar),
 // solo con las piezas que el administrador marcó para este usuario.
 export default function MiDiaTarjetasStandalone({ db, currentUser, onVolver, onLogout }) {
@@ -423,7 +443,15 @@ export default function MiDiaTarjetasStandalone({ db, currentUser, onVolver, onL
     secciones.push({ id: "cierre", icon: "💰", label: "Cierre diario", render: () => <BloqueCierre db={db} currentUser={currentUser} /> });
   }
   if (marcadas.includes("consumo_tela")) {
-    secciones.push({ id: "consumo", icon: "🧵", label: "Consumo de tela", render: () => <BloqueConsumoTela db={db} /> });
+    secciones.push({ id: "consumo", icon: "🧵", label: "Costo de tela", render: () => <BloqueConsumoTela db={db} /> });
+  }
+  const idsOC = marcadas.filter((id) => IDS_ORDENES_COMPRA.includes(id));
+  if (idsOC.length) {
+    secciones.push({ id: "ordenes", icon: "🛒", label: "Órdenes de compra", render: () => <BloqueOrdenesCompra db={db} visibles={idsOC} /> });
+  }
+  const idsCierreAreas = IDS_CIERRE_AREAS.filter((id) => marcadas.includes(id));
+  if (idsCierreAreas.length) {
+    secciones.push({ id: "cierre_areas", icon: "🎯", label: "Cierre de áreas", render: () => <BloqueCierreAreas db={db} currentUser={currentUser} ids={idsCierreAreas} /> });
   }
   if (idsPlaneacion.length) {
     secciones.push({ id: "planeacion", icon: "📊", label: "Planeación", render: () => <MiDiaPlaneacionBloque visibles={idsPlaneacion} /> });

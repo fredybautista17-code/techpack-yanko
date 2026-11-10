@@ -16,8 +16,26 @@ export const GRUPOS_MI_DIA = [
     ],
   },
   {
-    id: "consumo_tela", titulo: "Costos de Corte", requiere: "areaCorte",
-    tarjetas: [{ id: "consumo_tela", label: "Consumo de tela: teórico contra real (trazos de ATLAS y rendimiento de Busint)" }],
+    // (2026-11-10, a pedido de Fredy) Ya no exige que el usuario sea del área CORTE: la persona de costos también ve el saldo de la tela.
+    id: "consumo_tela", titulo: "Costo de tela (teórico contra real)",
+    tarjetas: [{ id: "consumo_tela", label: "Saldo de costo de la tela: consumo teórico contra real, con lo pagado de más en pesos (trazos de ATLAS y rendimiento de Busint)" }],
+  },
+  {
+    // (2026-11-10, a pedido de Fredy) Para la persona de costos: mismas órdenes de Contabilidad → Órdenes de compra. Su rol necesita ese permiso.
+    id: "ordenes_compra", titulo: "Órdenes de compra",
+    tarjetas: [
+      { id: "oc_vencidas", label: "Órdenes de compra vencidas y por vencer" },
+      { id: "oc_precios", label: "Precios de compra: insumos que subieron frente a la compra anterior" },
+    ],
+  },
+  {
+    // (2026-11-10, a pedido de Fredy) Cierre diario de áreas que NO son la del usuario (cumple / no cumple la meta). No exige «Área Interna».
+    id: "cierre_areas", titulo: "Cierre de otras áreas (¿cumplen la meta?)",
+    tarjetas: [
+      { id: "cierre_corte", label: "Corte" },
+      { id: "cierre_calidad", label: "Control de calidad" },
+      { id: "cierre_zona_calor", label: "Zona de calor" },
+    ],
   },
   {
     id: "planeacion", titulo: "Planeación",
@@ -49,6 +67,10 @@ export const GRUPOS_MI_DIA = [
 const ids = (grupo) => GRUPOS_MI_DIA.find((g) => g.id === grupo).tarjetas.map((t) => t.id);
 export const IDS_CIERRE = ids("cierre");
 export const IDS_PLANEACION = ids("planeacion");
+export const IDS_ORDENES_COMPRA = ids("ordenes_compra");
+export const IDS_CIERRE_AREAS = ids("cierre_areas");
+// «Área Interna» con la que se abre el cierre de cada tarjeta de «Cierre de otras áreas».
+export const AREA_DE_TARJETA_CIERRE = { cierre_corte: "Corte", cierre_calidad: "Control de calidad", cierre_zona_calor: "Zona calor" };
 export const TARJETAS_MI_DIA = GRUPOS_MI_DIA.flatMap((g) => g.tarjetas.map((t) => ({ ...t, grupo: g.titulo })));
 export const TARJETAS_DEFECTO_MIDIA = ["meta_hoy", "saldo_acumulado", "cubren_salario", "meta_dia"];
 
