@@ -7,7 +7,7 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { collection, onSnapshot, doc, setDoc, deleteDoc, writeBatch } from "firebase/firestore";
 import { SEMILLA } from "./cumpleanos-semilla";
-import { MESES, diaValido, fechaTexto, nombreBonito, hoyBogotaISO, agruparProximos, cumpleanosSinDia } from "./cumpleanos-calculo";
+import { MESES, diaValido, fechaTexto, nombreBonito, hoyBogotaISO, agruparProximos, cumpleanosSinDia, revisarContraActivos } from "./cumpleanos-calculo";
 
 const COL = "nomina_cumpleanos";
 const C = {
@@ -85,7 +85,7 @@ export function BloqueCumpleanos({ db }) {
 }
 
 // ─── Pantalla de Nómina → Personal → Cumpleaños ───
-export default function CumpleanosView({ db, puedeEditar = true }) {
+export default function CumpleanosView({ db, puedeEditar = true, trabajadores }) {
   const { lista, error } = useCumpleanos(db);
   const hoy = hoyBogotaISO();
   const [mesSel, setMesSel] = useState(Number(hoy.slice(5, 7)));
@@ -96,9 +96,13 @@ export default function CumpleanosView({ db, puedeEditar = true }) {
   const [quitarId, setQuitarId] = useState(null);
   const [msg, setMsg] = useState({ ok: true, txt: "" });
   const [ocupado, setOcupado] = useState(false);
+  const [verRevision, setVerRevision] = useState(false);
+  const [dejados, setDejados] = useState([]); // los que Talento Humano decidió «Dejar» en la revisión (solo mientras la pantalla está abierta)
 
   const todos = useMemo(() => lista || [], [lista]);
   const sinDia = useMemo(() => cumpleanosSinDia(todos), [todos]);
+  const revision = useMemo(() => (verRevision ? revisarContraActivos(todos, trabajadores) : null), [verRevision, todos, trabajadores]);
+  const sinAvisos = todos.filter((x) => x.activo === false).length;
   const cuantosPorMes = (m) => todos.filter((x) => Number(x.mes) === m).length;
   const t = q.trim().toLowerCase();
   const visibles = (t
@@ -146,6 +150,15 @@ export default function CumpleanosView({ db, puedeEditar = true }) {
     } catch (e) { avisar(false, e?.message || "No se pudo guardar."); }
     setOcupado(false);
   }
+  // «Quitar de los avisos»: la persona queda en la lista, pero ya no sale en la tarjeta del Mi Día ni en el correo. Se puede reactivar.
+  async function ponerAvisos(x, activo) {
+    setOcupado(true);
+    try {
+      await setDoc(doc(db, COL, x.id), { activo, actualizadoEn: new Date().toISOString() }, { merge: true });
+      avisar(true, activo ? `${nombreBonito(x.nombre)} vuelve a salir en los avisos.` : `${nombreBonito(x.nombre)} ya no sale en los avisos.`);
+    } catch (e) { avisar(false, e?.message || "No se pudo guardar el cambio."); }
+    setOcupado(false);
+  }
   async function quitar(x) {
     setOcupado(true);
     try { await deleteDoc(doc(db, COL, x.id)); setQuitarId(null); avisar(true, `${nombreBonito(x.nombre)} se quitó de la lista.`); }
@@ -174,6 +187,52 @@ export default function CumpleanosView({ db, puedeEditar = true }) {
               {sinDia.length === 1 ? "1 persona sin día" : `${sinDia.length} personas sin día`} ({sinDia.map((x) => `${nombreBonito(x.nombre)}, ${MESES[Number(x.mes) - 1]?.toLowerCase() || "sin mes"}`).join("; ")}): completa el día con «Editar» para que se le avise. Hasta entonces no sale en los avisos.
             </div>
           ) : null}
+          {todos.length && trabajadores ? (
+            <div style={{ marginBottom: 12 }}>
+              <button onClick={() => setVerRevision((v) => !v)} style={boton(false)}>{verRevision ? "Ocultar la revisión" : "Revisar con trabajadores activos"}</button>
+            </div>
+          ) : null}
+          {revision ? (() => {
+            const pendientes = (arr) => arr.filter((r) => !dejados.includes((r.c || r).id));
+            const filaRev = (c, extra) => (
+              <div key={c.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "8px 0", borderTop: `1px solid ${C.border}`, fontSize: 13 }}>
+                <span><b>{nombreBonito(c.nombre)}</b> <span style={{ color: C.slate }}>· {diaValido(Number(c.mes), Number(c.dia)) ? `${c.dia} de ${MESES[Number(c.mes) - 1].toLowerCase()}` : "sin día"}</span>{extra}</span>
+                {puedeEditar ? (
+                  <span style={{ display: "inline-flex", gap: 6 }}>
+                    <button onClick={() => setDejados((d) => [...d, c.id])} style={botonChico}>Dejar</button>
+                    <button disabled={ocupado} onClick={() => ponerAvisos(c, false)} style={botonChico}>Quitar de los avisos</button>
+                  </span>
+                ) : null}
+              </div>
+            );
+            const noApar = pendientes(revision.noAparecen.map((c) => ({ c }))).map((r) => r.c);
+            const dud = pendientes(revision.dudosos);
+            return (
+              <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 16px", marginBottom: 14, background: C.canvas }}>
+                <div style={{ fontSize: 14, fontWeight: 800, color: C.ink }}>Revisión con los trabajadores activos de Nómina</div>
+                <div style={{ fontSize: 12, color: C.slate, margin: "4px 0 10px" }}>
+                  {revision.totalActivos} trabajadores activos · {revision.coinciden.length} coinciden · {revision.noAparecen.length} no aparecen · {revision.dudosos.length} dudosos. El nombre coincide cuando todas sus palabras están en el nombre completo de Nómina. Nada se cambia solo.
+                </div>
+                {!revision.totalActivos ? <div style={{ fontSize: 13, color: C.amber }}>No hay trabajadores activos cargados en Nómina, no se puede comparar.</div> : (
+                  <>
+                    <div style={{ fontSize: 11, fontWeight: 800, color: C.slate, textTransform: "uppercase", letterSpacing: 0.4, marginTop: 4 }}>No aparecen entre los activos ({noApar.length})</div>
+                    {noApar.length ? noApar.map((c) => filaRev(c, null)) : <div style={{ fontSize: 13, color: C.slate, padding: "6px 0" }}>Nadie por revisar aquí.</div>}
+                    <div style={{ fontSize: 11, fontWeight: 800, color: C.slate, textTransform: "uppercase", letterSpacing: 0.4, marginTop: 14 }}>Dudosos: encajan con más de un activo ({dud.length})</div>
+                    {dud.length ? dud.map((r) => filaRev(r.c, <span style={{ color: C.amber, fontSize: 12 }}> · podría ser {r.candidatos.map((t) => nombreBonito(t.nombre)).join(" o ")}</span>)) : <div style={{ fontSize: 13, color: C.slate, padding: "6px 0" }}>Ninguno.</div>}
+                    <details style={{ marginTop: 14 }}>
+                      <summary style={{ fontSize: 13, fontWeight: 700, color: C.ink, cursor: "pointer" }}>Coinciden con un activo ({revision.coinciden.length})</summary>
+                      <div style={{ fontSize: 12, color: C.slate, marginTop: 6 }}>{revision.coinciden.map((r) => nombreBonito(r.c.nombre)).join(" · ")}</div>
+                    </details>
+                    <details style={{ marginTop: 10 }}>
+                      <summary style={{ fontSize: 13, fontWeight: 700, color: C.ink, cursor: "pointer" }}>Activos que no están en la lista de cumpleaños ({revision.activosSinCumple.length})</summary>
+                      <div style={{ fontSize: 12, color: C.slate, margin: "6px 0" }}>Nómina no guarda la fecha de cumpleaños: si quieres agregarlos, escribe su nombre, mes y día arriba.</div>
+                      <div style={{ fontSize: 12, color: C.slate }}>{revision.activosSinCumple.map((t) => nombreBonito(t.nombre)).join(" · ") || "Todos los activos están en la lista."}</div>
+                    </details>
+                  </>
+                )}
+              </div>
+            );
+          })() : null}
           {puedeEditar ? (
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 12 }}>
               <div><div style={{ fontSize: 11, color: C.slate, marginBottom: 3 }}>Nombre</div><input value={nuevo.nombre} onChange={(e) => setNuevo({ ...nuevo, nombre: e.target.value })} placeholder="Ej. MIDALYS APELLIDO" style={{ ...campo, width: 240 }} /></div>
@@ -211,7 +270,7 @@ export default function CumpleanosView({ db, puedeEditar = true }) {
                   </tr>
                 ) : (
                   <tr key={x.id}>
-                    <td style={td}>{nombreBonito(x.nombre)}</td>
+                    <td style={{ ...td, color: x.activo === false ? C.slate : C.ink }}>{nombreBonito(x.nombre)}{x.activo === false ? <span style={{ marginLeft: 8, padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: C.canvas, color: C.slate }}>Sin avisos</span> : null}</td>
                     {t ? <td style={td}>{MESES[Number(x.mes) - 1] || "—"}</td> : null}
                     <td style={td}>{diaValido(Number(x.mes), Number(x.dia)) ? x.dia : <span style={{ padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: C.amberBg, color: C.amber }}>Falta el día</span>}</td>
                     <td style={{ ...td, textAlign: "right", whiteSpace: "nowrap" }}>
@@ -223,6 +282,7 @@ export default function CumpleanosView({ db, puedeEditar = true }) {
                         </>
                       ) : (
                         <>
+                          {x.activo === false ? <><button disabled={ocupado} onClick={() => ponerAvisos(x, true)} style={botonChico}>Reactivar</button>{" "}</> : null}
                           <button onClick={() => empezarEdicion(x)} style={botonChico}>Editar</button>{" "}
                           <button onClick={() => { setEditId(null); setQuitarId(x.id); }} style={botonChico}>Quitar</button>
                         </>
@@ -233,7 +293,7 @@ export default function CumpleanosView({ db, puedeEditar = true }) {
               </tbody>
             </table>
           </div>
-          <div style={{ fontSize: 12, color: C.slate, marginTop: 10 }}>{todos.length} {todos.length === 1 ? "persona" : "personas"} en la lista. Solo se guardan día y mes (no el año).</div>
+          <div style={{ fontSize: 12, color: C.slate, marginTop: 10 }}>{todos.length} {todos.length === 1 ? "persona" : "personas"} en la lista{sinAvisos ? ` (${sinAvisos} sin avisos)` : ""}. Solo se guardan día y mes (no el año).</div>
         </div>
       )}
     </div>

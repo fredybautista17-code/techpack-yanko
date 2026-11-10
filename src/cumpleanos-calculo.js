@@ -44,3 +44,29 @@ export function agruparProximos(lista, hoyISO, hasta = 30) {
     adelante: todos.filter((x) => x.faltan > 3 && x.faltan <= hasta),
   };
 }
+
+// ─── Revisión contra los trabajadores activos de Nómina ───
+// (2026-11-10, a pedido de Fredy) El documento de cumpleaños trae nombres cortos («ANNY BELTRAN») y Nómina nombres completos
+// («ANNY CLARISA BELTRAN JAIMES»): una persona coincide con un trabajador activo si TODAS las palabras de su nombre están en el nombre
+// completo (sin tildes ni mayúsculas, en cualquier orden). Nada se cambia solo: es una lista para que Talento Humano decida.
+const normPalabras = (s) => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase().replace(/[^A-Z0-9]+/g, " ").split(/\s+/).filter(Boolean);
+const claveTrab = (t) => String(t.id ?? t.nombre);
+
+// lista = nomina_cumpleanos; trabajadores = nomina_trabajadores. Los cumpleaños ya sin avisos (activo === false) no entran a la revisión.
+export function revisarContraActivos(lista, trabajadores) {
+  const activos = (trabajadores || [])
+    .filter((t) => t && t.activo !== false && String(t.nombre || "").trim())
+    .map((t) => ({ t, palabras: new Set(normPalabras(t.nombre)) }));
+  const coinciden = [], noAparecen = [], dudosos = [];
+  const usados = new Set();
+  (lista || []).filter((c) => c && c.activo !== false).forEach((c) => {
+    const w = normPalabras(c.nombre);
+    const hallados = w.length ? activos.filter((a) => w.every((p) => a.palabras.has(p))) : [];
+    hallados.forEach((a) => usados.add(claveTrab(a.t)));
+    if (!hallados.length) noAparecen.push(c);
+    else if (hallados.length === 1) coinciden.push({ c, t: hallados[0].t });
+    else dudosos.push({ c, candidatos: hallados.map((h) => h.t) });
+  });
+  const activosSinCumple = activos.filter((a) => !usados.has(claveTrab(a.t))).map((a) => a.t).sort((a, b) => String(a.nombre).localeCompare(String(b.nombre), "es"));
+  return { coinciden, noAparecen, dudosos, activosSinCumple, totalActivos: activos.length };
+}
