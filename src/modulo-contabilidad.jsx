@@ -12,7 +12,7 @@ import {
   serverTimestamp,
 } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
-import { rangoMeses, rangoSugerido, gruposDesdeBusint } from "./compras-busint-traer";
+import { rangoMeses, rangoSugerido, gruposDesdeBusint, nombresConocidos } from "./compras-busint-traer";
 import OrdenesCompraView from "./contabilidad-ordenes-compra";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
@@ -1126,7 +1126,7 @@ function ImportarBusintModal({ comprasExistentes, onConfirm, onClose }) {
       if (!resp?.encontrada) {
         setError(resp?.diagnostico?.mensaje || "Busint no devolvió una tabla de compras con concepto, fecha y valor. Usa el Excel mientras se revisa.");
       } else {
-        const parsed = gruposDesdeBusint(resp);
+        const parsed = gruposDesdeBusint(resp, nombresConocidos(comprasExistentes));
         if (!parsed.length) {
           const f = resp.fechasTabla || {};
           setError(`Busint no trae compras en ${meses.length === 1 ? "ese mes" : "esos meses"}${f.hasta ? ` (la tabla llega hasta ${f.hasta})` : ""}.`);
@@ -1163,6 +1163,7 @@ function ImportarBusintModal({ comprasExistentes, onConfirm, onClose }) {
   }
   const mesesPresentes = [...new Set(grupos.map((g) => g.mes))].sort();
   const seleccionados = grupos.filter((g) => g.incluir);
+  const sinNombre = seleccionados.filter((g) => !g.concepto).length;
   const totalSeleccionado = seleccionados.reduce((s, g) => s + g.valor, 0);
   function confirmar() {
     onConfirm(
@@ -1264,6 +1265,11 @@ function ImportarBusintModal({ comprasExistentes, onConfirm, onClose }) {
           <div style={{ fontSize: 13, color: C.slate, marginBottom: 14 }}>
             Se agruparon en <strong>{grupos.length}</strong> conceptos. Desmarca los que no quieras importar.
           </div>
+          {sinNombre > 0 && (
+            <div style={{ padding: "10px 14px", borderRadius: 8, marginBottom: 12, fontSize: 12, lineHeight: 1.5, background: C.amberBg, color: C.amber, fontWeight: 600 }}>
+              {sinNombre} concepto{sinNombre !== 1 ? "s" : ""} sin nombre (marcados en ámbar). Ese código no existe en tus meses cargados ni en el catálogo de Busint: si lo importas así, aparecerá solo con el código en el comparativo.
+            </div>
+          )}
           {origenBusint && (
             <div style={{ padding: "10px 14px", borderRadius: 8, marginBottom: 12, fontSize: 12, lineHeight: 1.5, background: origenBusint.valorEsTotal ? C.amberBg : C.blueBg, color: origenBusint.valorEsTotal ? C.amber : C.blue, fontWeight: 600 }}>
               Traído de Busint (tabla «{origenBusint.tabla}»){origenBusint.consultadoEn ? ` · ${new Date(origenBusint.consultadoEn).toLocaleString("es-CO")}` : ""}.
@@ -1346,7 +1352,7 @@ function ImportarBusintModal({ comprasExistentes, onConfirm, onClose }) {
                     </td>
                     <td style={{ padding: "6px 10px", whiteSpace: "nowrap" }}>{fmtMesCorto(g.mes)}</td>
                     <td style={{ padding: "6px 10px", whiteSpace: "nowrap" }}>{g.codConcep}</td>
-                    <td style={{ padding: "6px 10px" }}>{g.concepto}</td>
+                    <td style={{ padding: "6px 10px", ...(g.concepto ? {} : { background: C.amberBg, color: C.amber, fontWeight: 700 }) }}>{g.concepto || "(sin nombre)"}</td>
                     <td style={{ padding: "6px 10px", textAlign: "center" }}>{g.entradas}</td>
                     <td style={{ padding: "6px 10px", fontWeight: 700, color: C.ink, whiteSpace: "nowrap" }}>
                       {fmtCOP(g.valor)}
@@ -2385,7 +2391,7 @@ function ComparativoConceptosView({ compras, onImportar, onDeleteMes, onUpdateCo
                       }}
                     >
                       <td style={{ padding: "8px 12px", color: C.slate, whiteSpace: "nowrap" }}>{f.codConcep}</td>
-                      <td style={{ padding: "8px 12px", color: C.ink, fontWeight: 600 }}>{f.concepto}</td>
+                      <td style={{ padding: "8px 12px", color: C.ink, fontWeight: 600 }}>{f.concepto || f.codConcep || "Sin nombre"}</td>
                       {meses.map((m) => {
                         const tieneValor = !!f.porMes[m];
                         const cuadrada = cuadradasSet.has(`${m}__${f.codConcep}__${f.concepto}`);
@@ -2468,7 +2474,7 @@ function ComparativoConceptosView({ compras, onImportar, onDeleteMes, onUpdateCo
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     {subieron.map((f, i) => (
                       <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
-                        <span style={{ color: C.ink, fontWeight: 600 }}>{f.concepto}</span>
+                        <span style={{ color: C.ink, fontWeight: 600 }}>{f.concepto || f.codConcep || "Sin nombre"}</span>
                         <span style={{ color: C.red, fontWeight: 700, whiteSpace: "nowrap" }}>
                           +{fmtCOP(f.cambio)} ({Math.abs(f.cambioPct) >= 999 ? "nuevo" : `${Math.round(f.cambioPct)}%`})
                         </span>
@@ -2487,7 +2493,7 @@ function ComparativoConceptosView({ compras, onImportar, onDeleteMes, onUpdateCo
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     {bajaron.map((f, i) => (
                       <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
-                        <span style={{ color: C.ink, fontWeight: 600 }}>{f.concepto}</span>
+                        <span style={{ color: C.ink, fontWeight: 600 }}>{f.concepto || f.codConcep || "Sin nombre"}</span>
                         <span style={{ color: C.green, fontWeight: 700, whiteSpace: "nowrap" }}>
                           {fmtCOP(f.cambio)} ({Math.round(f.cambioPct)}%)
                         </span>

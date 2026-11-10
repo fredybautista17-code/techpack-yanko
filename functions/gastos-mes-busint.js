@@ -100,6 +100,14 @@ const num = (v) => {
   return Number.isFinite(n) ? n : 0;
 };
 
+// (2026-11-10) Código de concepto comparable: mayúsculas, sin espacios ni asterisco inicial («*CMPA» = «CMPA»).
+const normCodConcepto = (c) => String(c ?? "").trim().toUpperCase().replace(/^\*+/, "");
+// Nombre de un concepto desde un Map(código -> nombre): primero el código tal cual, luego el normalizado.
+function nombreDeConcepto(mapa, cod) {
+  if (!mapa) return "";
+  return mapa.get(cod) || mapa.get(normCodConcepto(cod)) || "";
+}
+
 // Agrupa las filas del mes (ym = "AAAA-MM") por concepto + proveedor (si la tabla trae proveedor) y suma el valor.
 // nombrePorCodigo: Map(código de proveedor normalizado -> nombre); normCodigo: normaliza ese código; nombrePorConcepto: Map(código de concepto -> nombre).
 // Si el valor es el TOTAL de la factura (cols.valorEsTotal) y hay número de factura, cada factura cuenta una sola vez (la más alta de sus filas).
@@ -139,7 +147,7 @@ function agruparGastosMes(filas, cols, ym, nombrePorCodigo, normCodigo, nombrePo
     filasMes++;
     const provCod = cols.proveedorCodigo ? norm(f[cols.proveedorCodigo]) : "";
     const provNom = cols.proveedorNombre ? String(f[cols.proveedorNombre] ?? "").trim() : "";
-    const nombreConcepto = concepto || (nombrePorConcepto && nombrePorConcepto.get(codConcep)) || "";
+    const nombreConcepto = concepto || nombreDeConcepto(nombrePorConcepto, codConcep);
     const clave = `${codConcep}|${nombreConcepto}|${provCod || provNom}`;
     if (!grupos.has(clave)) {
       const nombre = provNom || (provCod && nombrePorCodigo ? nombrePorCodigo.get(provCod) || "" : "");
@@ -156,4 +164,4 @@ function agruparGastosMes(filas, cols, ym, nombrePorCodigo, normCodigo, nombrePo
   return { lineas, filasMes, sinFecha, minFecha, maxFecha };
 }
 
-module.exports = { claveCol, detectarColumnas, esTablaCompras, candidatosTablasCompras, elegirTablaCompras, fechaAISO, agruparGastosMes };
+module.exports = { normCodConcepto, nombreDeConcepto, claveCol, detectarColumnas, esTablaCompras, candidatosTablasCompras, elegirTablaCompras, fechaAISO, agruparGastosMes };

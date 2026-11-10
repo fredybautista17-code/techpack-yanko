@@ -30,13 +30,34 @@ export function rangoSugerido(comprasExistentes, hoy = new Date()) {
   return { desde: desde > actual ? actual : desde, hasta: actual };
 }
 
+// Código comparable: mayúsculas, sin espacios ni asterisco inicial («*CMPA» = «CMPA»).
+const normCod = (c) => String(c ?? "").trim().toUpperCase().replace(/^\*+/, "");
+
+// Nombre más usado de cada código en las compras ya cargadas (Excel): Map(código normalizado -> nombre). El comparativo agrupa por código + nombre,
+// así que un mes traído de Busint con el nombre vacío partía el rubro en dos filas.
+export function nombresConocidos(comprasExistentes) {
+  const conteo = new Map();
+  (comprasExistentes || []).forEach((c) => {
+    const nom = String(c.concepto ?? "").trim();
+    const cod = normCod(c.codConcep);
+    if (!cod || !nom) return;
+    if (!conteo.has(cod)) conteo.set(cod, new Map());
+    const m = conteo.get(cod);
+    m.set(nom, (m.get(nom) || 0) + 1);
+  });
+  const out = new Map();
+  conteo.forEach((m, cod) => out.set(cod, [...m.entries()].sort((a, b) => b[1] - a[1])[0][0]));
+  return out;
+}
+
 // resp = respuesta de getGastosMesBusint con `porMes`. Suma por mes + código + concepto (se descartan los proveedores).
-export function gruposDesdeBusint(resp) {
+// Si una línea llega sin nombre, se usa el que ya tiene ese código en `conocidos` (ver nombresConocidos).
+export function gruposDesdeBusint(resp, conocidos) {
   const grupos = new Map();
   (resp?.porMes || []).forEach(({ mes, lineas }) => {
     (lineas || []).forEach((l) => {
       const codConcep = String(l.codConcep ?? "").trim();
-      const concepto = String(l.concepto ?? "").trim();
+      const concepto = String(l.concepto ?? "").trim() || (conocidos && conocidos.get(normCod(codConcep))) || "";
       const clave = `${mes}__${codConcep}__${concepto}`;
       if (!grupos.has(clave)) grupos.set(clave, { mes, codConcep, concepto, valor: 0, entradas: 0 });
       const g = grupos.get(clave);

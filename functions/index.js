@@ -10717,16 +10717,21 @@ exports.getGastosMesBusint = onCallAuth(
         logger.warn("getGastosMesBusint: no se pudo leer el maestro de proveedores", { error: String(err) });
       }
     }
-    // Si la tabla no trae el nombre del concepto, se toma del catálogo «compras especiales-conceptos de compra» (CodConcepto → NomConcepto).
+    // Si la tabla no trae el nombre del concepto (o lo trae vacío), se toma del catálogo «compras especiales-conceptos de compra» (CodConcepto → NomConcepto).
+    // (2026-11-10) Ahora se lee SIEMPRE y se guarda también el código sin asterisco, porque el comparativo agrupa por código + nombre y un nombre vacío partía el rubro en dos filas.
     let nombrePorConcepto = null;
-    if (!elegida.cols.concepto) {
+    {
       try {
         const catalogo = await consultarTablaBusintBDCompleta("compras especiales-conceptos de compra");
         nombrePorConcepto = new Map();
         catalogo.forEach((c) => {
           const cod = String(c?.CodConcepto ?? "").trim();
           const nom = String(c?.NomConcepto ?? "").trim();
-          if (cod && nom) nombrePorConcepto.set(cod, nom);
+          if (cod && nom) {
+            nombrePorConcepto.set(cod, nom);
+            const sinAst = GastosMesBusint.normCodConcepto(cod);
+            if (sinAst && !nombrePorConcepto.has(sinAst)) nombrePorConcepto.set(sinAst, nom);
+          }
         });
       } catch (err) {
         logger.warn("getGastosMesBusint: no se pudo leer el catálogo de conceptos de compra", { error: String(err) });
