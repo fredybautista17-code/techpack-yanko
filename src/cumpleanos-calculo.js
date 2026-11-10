@@ -1,6 +1,8 @@
 // (2026-11-10, a pedido de Fredy) Cumpleaños de los trabajadores para Talento Humano. Funciones puras (sin Firestore ni red):
 // las usan la pantalla de Nómina → Personal → Cumpleaños y la tarjeta «🎂 Cumpleaños» del Mi Día.
-// La lista vive en la colección nomina_cumpleanos: {id, nombre, mes (1-12), dia (1-31 o null si falta), activo?}. Solo día y mes: no hay año.
+// La lista vive en la colección nomina_cumpleanos: {id, nombre, mes (1-12), dia (1-31 o null si falta), activo?, especial?, etiqueta?}. Solo día y mes: no hay año.
+// «especial: true» = persona a quien también se le avisa el cumpleaños pero que NO es trabajador activo de ATLAS (ex colaborador, externo, el pastor…);
+// la «etiqueta» dice quién es («Pastor», «Mecánico»). Las personas especiales no se comparan contra Nómina.
 
 export const MESES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
 const DIAS_SEMANA = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"];
@@ -28,6 +30,15 @@ export function fechaTexto(mes, dia, hoyISO) {
   return `${DIAS_SEMANA[d.getUTCDay()]} ${d.getUTCDate()} de ${MESES[d.getUTCMonth()].toLowerCase()}`;
 }
 export const nombreBonito = (s) => String(s || "").trim().toLowerCase().replace(/(^|\s)(\S)/g, (m, a, b) => a + b.toUpperCase());
+export const esEspecial = (x) => !!x && x.especial === true;
+// «Pastor Rene (Pastor)»: el nombre con su etiqueta si es una persona especial y la tiene.
+export const nombreConEtiqueta = (x) => nombreBonito(x && x.nombre) + (esEspecial(x) && String(x.etiqueta || "").trim() ? ` (${String(x.etiqueta).trim()})` : "");
+// «CL» para Cindy Leal: iniciales de las dos primeras palabras.
+export function iniciales(nombre) {
+  const p = String(nombre || "").trim().split(/\s+/).filter(Boolean);
+  if (!p.length) return "?";
+  return ((p[0][0] || "") + (p.length > 1 ? p[1][0] || "" : p[0][1] || "")).toUpperCase();
+}
 
 // Los que cuentan para los avisos: activos y con un día válido.
 export const cumpleanosValidos = (lista) => (lista || []).filter((x) => x && x.activo !== false && diaValido(Number(x.mes), Number(x.dia)));
@@ -52,14 +63,14 @@ export function agruparProximos(lista, hoyISO, hasta = 30) {
 const normPalabras = (s) => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase().replace(/[^A-Z0-9]+/g, " ").split(/\s+/).filter(Boolean);
 const claveTrab = (t) => String(t.id ?? t.nombre);
 
-// lista = nomina_cumpleanos; trabajadores = nomina_trabajadores. Los cumpleaños ya sin avisos (activo === false) no entran a la revisión.
+// lista = nomina_cumpleanos; trabajadores = nomina_trabajadores. Los cumpleaños ya sin avisos (activo === false) y las personas especiales no entran a la revisión.
 export function revisarContraActivos(lista, trabajadores) {
   const activos = (trabajadores || [])
     .filter((t) => t && t.activo !== false && String(t.nombre || "").trim())
     .map((t) => ({ t, palabras: new Set(normPalabras(t.nombre)) }));
   const coinciden = [], noAparecen = [], dudosos = [];
   const usados = new Set();
-  (lista || []).filter((c) => c && c.activo !== false).forEach((c) => {
+  (lista || []).filter((c) => c && c.activo !== false && !esEspecial(c)).forEach((c) => {
     const w = normPalabras(c.nombre);
     const hallados = w.length ? activos.filter((a) => w.every((p) => a.palabras.has(p))) : [];
     hallados.forEach((a) => usados.add(claveTrab(a.t)));

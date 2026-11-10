@@ -14,6 +14,8 @@ const bisiesto = (y) => (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
 const fechaEn = (y, mes, dia) => Date.UTC(y, mes - 1, mes === 2 && dia === 29 && !bisiesto(y) ? 28 : dia);
 const msDeISO = (iso) => { const [y, m, d] = String(iso).split("-").map(Number); return Date.UTC(y, m - 1, d); };
 const nombreBonito = (s) => String(s || "").trim().toLowerCase().replace(/(^|\s)(\S)/g, (m, a, b) => a + b.toUpperCase());
+// Las personas especiales (no son trabajadores activos) llevan su etiqueta: «Pastor Rene (Pastor)».
+const conEtiqueta = (x) => nombreBonito(x.nombre) + (x.especial === true && String(x.etiqueta || "").trim() ? ` (${String(x.etiqueta).trim()})` : "");
 
 function diasFaltan(mes, dia, hoyISO) {
   const h = msDeISO(hoyISO);
@@ -30,7 +32,7 @@ const fechaTexto = (hoyISO, sumar) => {
 // {hoy: [nombres], en3: [nombres]} — solo activos y con día válido; ordenados por nombre.
 function cumpleanosParaAviso(lista, hoyISO) {
   const validos = (lista || []).filter((x) => x && x.activo !== false && diaValido(Number(x.mes), Number(x.dia)));
-  const por = (n) => validos.filter((x) => diasFaltan(Number(x.mes), Number(x.dia), hoyISO) === n).map((x) => nombreBonito(x.nombre)).sort((a, b) => a.localeCompare(b, "es"));
+  const por = (n) => validos.filter((x) => diasFaltan(Number(x.mes), Number(x.dia), hoyISO) === n).map(conEtiqueta).sort((a, b) => a.localeCompare(b, "es"));
   return { hoy: por(0), en3: por(3) };
 }
 
