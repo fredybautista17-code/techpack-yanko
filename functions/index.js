@@ -10638,8 +10638,11 @@ exports.getGastosMesBusint = onCallAuth(
   async (request) => {
     await verificarLlamadorPuedeTraerGastosPlanta(request);
     const datos = request.data || {};
-    const ym = String(datos.mes || "").trim();
-    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(ym)) throw new HttpsError("invalid-argument", "Indica el mes (AAAA-MM).");
+    // (2026-11-10) «meses»: lista opcional (hasta 12) para pedir varios meses leyendo la tabla UNA sola vez (la usa Contabilidad → Importar compras → «Traer de Busint»).
+    const reMes = /^\d{4}-(0[1-9]|1[0-2])$/;
+    const mesesPedidos = Array.isArray(datos.meses) ? [...new Set(datos.meses.map((m) => String(m || "").trim()))].filter((m) => reMes.test(m)).slice(0, 12) : [];
+    const ym = String(datos.mes || mesesPedidos[0] || "").trim();
+    if (!reMes.test(ym)) throw new HttpsError("invalid-argument", "Indica el mes (AAAA-MM).");
     const tablaForzada = String(datos.tabla || "").trim().slice(0, 80) || null;
     // 1) Lista de tablas de la API (la misma que usa la pantalla de prueba de Busint)
     let nombresTablas = [];
@@ -10730,8 +10733,15 @@ exports.getGastosMesBusint = onCallAuth(
       }
     }
     const r = GastosMesBusint.agruparGastosMes(filas, elegida.cols, ym, nombrePorCodigo, normalizarCodigoCxp, nombrePorConcepto);
+    const porMes = mesesPedidos.length
+      ? mesesPedidos.map((m) => {
+          const x = m === ym ? r : GastosMesBusint.agruparGastosMes(filas, elegida.cols, m, nombrePorCodigo, normalizarCodigoCxp, nombrePorConcepto);
+          return { mes: m, filasMes: x.filasMes, lineas: x.lineas };
+        })
+      : undefined;
     return {
       encontrada: true,
+      ...(porMes ? { porMes } : {}),
       consultadoEn: new Date().toISOString(),
       mes: ym,
       tabla: elegida.tabla,

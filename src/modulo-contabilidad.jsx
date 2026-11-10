@@ -12,6 +12,7 @@ import {
   serverTimestamp,
 } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
+import { rangoMeses, rangoSugerido, gruposDesdeBusint } from "./compras-busint-traer";
 import OrdenesCompraView from "./contabilidad-ordenes-compra";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
@@ -1097,6 +1098,48 @@ function ImportarBusintModal({ comprasExistentes, onConfirm, onClose }) {
   const [reemplazar, setReemplazar] = useState({});
   const [error, setError] = useState("");
   const [cargando, setCargando] = useState(false);
+  // (2026-11-10, a pedido de Fredy) «Traer de Busint»: lee las compras directo de la API en vez del Excel. Mismo paso 2 de revisión.
+  const sugerido = rangoSugerido(comprasExistentes);
+  const [desde, setDesde] = useState(sugerido.desde);
+  const [hasta, setHasta] = useState(sugerido.hasta);
+  const [origenBusint, setOrigenBusint] = useState(null);
+  function mostrarGrupos(parsed) {
+    setGrupos(parsed.map((g) => ({ ...g, incluir: true })));
+    const mesesPresentes = [...new Set(parsed.map((g) => g.mes))];
+    const init = {};
+    mesesPresentes.forEach((m) => {
+      init[m] = comprasExistentes.some((c) => c.mes === m);
+    });
+    setReemplazar(init);
+    setPaso(2);
+  }
+  async function traerDeBusint() {
+    const meses = rangoMeses(desde, hasta);
+    if (!meses.length) {
+      setError("Revisa los meses: «Desde» no puede ser posterior a «Hasta» y el rango máximo es de 12 meses.");
+      return;
+    }
+    setError("");
+    setCargando(true);
+    try {
+      const resp = (await httpsCallable(functionsClient, "getGastosMesBusint", { timeout: 330000 })({ meses })).data;
+      if (!resp?.encontrada) {
+        setError(resp?.diagnostico?.mensaje || "Busint no devolvió una tabla de compras con concepto, fecha y valor. Usa el Excel mientras se revisa.");
+      } else {
+        const parsed = gruposDesdeBusint(resp);
+        if (!parsed.length) {
+          const f = resp.fechasTabla || {};
+          setError(`Busint no trae compras en ${meses.length === 1 ? "ese mes" : "esos meses"}${f.hasta ? ` (la tabla llega hasta ${f.hasta})` : ""}.`);
+        } else {
+          setOrigenBusint({ tabla: resp.tabla, valorEsTotal: !!resp.valorEsTotal, consultadoEn: resp.consultadoEn, meses });
+          mostrarGrupos(parsed);
+        }
+      }
+    } catch (err) {
+      setError(`No se pudo traer de Busint: ${err?.message || err}`);
+    }
+    setCargando(false);
+  }
   async function handleFile(e) {
     const f = e.target.files[0];
     if (!f) return;
@@ -1107,14 +1150,8 @@ function ImportarBusintModal({ comprasExistentes, onConfirm, onClose }) {
       if (!parsed.length) {
         setError("No se encontraron filas válidas. Verifica que el archivo tenga las columnas CodConcep, Concepto, Fechaini y Vbruto (export de Busint).");
       } else {
-        setGrupos(parsed.map((g) => ({ ...g, incluir: true })));
-        const mesesPresentes = [...new Set(parsed.map((g) => g.mes))];
-        const init = {};
-        mesesPresentes.forEach((m) => {
-          init[m] = comprasExistentes.some((c) => c.mes === m);
-        });
-        setReemplazar(init);
-        setPaso(2);
+        setOrigenBusint(null);
+        mostrarGrupos(parsed);
       }
     } catch (err) {
       setError("No se pudo leer el archivo. Verifica que sea un Excel válido (.xlsx o .xls) exportado de Busint.");
@@ -1159,6 +1196,30 @@ function ImportarBusintModal({ comprasExistentes, onConfirm, onClose }) {
           >
             Sube el export de Busint del mes (.xlsx). El sistema agrupa automáticamente todas las filas repetidas por <strong>Código de Concepto</strong> y las suma usando la columna <strong>Vbruto</strong>, dentro del mes de cada fecha.
           </div>
+          <div style={{ padding: "12px 14px", border: `1.5px solid ${C.border}`, borderRadius: 8, marginBottom: 14, background: C.white }}>
+            <div style={{ fontSize: 13, fontWeight: 800, color: C.ink, marginBottom: 8 }}>Traer directo de Busint (sin Excel)</div>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+              {[["Desde", desde, setDesde], ["Hasta", hasta, setHasta]].map(([et, v, set]) => (
+                <label key={et} style={{ fontSize: 11, fontWeight: 700, color: C.slate, display: "flex", flexDirection: "column", gap: 4 }}>
+                  {et}
+                  <input
+                    type="month"
+                    value={v}
+                    onChange={(e) => set(e.target.value)}
+                    disabled={cargando}
+                    style={{ padding: "7px 10px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, color: C.ink, background: C.white, fontFamily: "inherit" }}
+                  />
+                </label>
+              ))}
+              <Btn variant="danger" onClick={traerDeBusint} disabled={cargando}>
+                {cargando ? "Consultando Busint..." : "Traer de Busint"}
+              </Btn>
+            </div>
+            <div style={{ fontSize: 11, color: C.slate, marginTop: 8, lineHeight: 1.45 }}>
+              Sugerido: desde el mes siguiente al último cargado hasta el mes actual. Puede tardar un minuto. Antes de guardar vas a ver la tabla para revisarla y compararla con tu Excel.
+            </div>
+          </div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: C.slate, margin: "0 0 6px" }}>O sube el Excel:</div>
           <input
             type="file"
             accept=".xlsx,.xls"
@@ -1203,6 +1264,14 @@ function ImportarBusintModal({ comprasExistentes, onConfirm, onClose }) {
           <div style={{ fontSize: 13, color: C.slate, marginBottom: 14 }}>
             Se agruparon en <strong>{grupos.length}</strong> conceptos. Desmarca los que no quieras importar.
           </div>
+          {origenBusint && (
+            <div style={{ padding: "10px 14px", borderRadius: 8, marginBottom: 12, fontSize: 12, lineHeight: 1.5, background: origenBusint.valorEsTotal ? C.amberBg : C.blueBg, color: origenBusint.valorEsTotal ? C.amber : C.blue, fontWeight: 600 }}>
+              Traído de Busint (tabla «{origenBusint.tabla}»){origenBusint.consultadoEn ? ` · ${new Date(origenBusint.consultadoEn).toLocaleString("es-CO")}` : ""}.
+              {origenBusint.valorEsTotal
+                ? " OJO: esta tabla solo trae el TOTAL de cada factura (incluye IVA), no el Vbruto del Excel. Compara el total de un mes con tu Excel antes de importar: puede salir mayor."
+                : " Compara el total de un mes con tu Excel la primera vez, para confirmar que cuadra."}
+            </div>
+          )}
           {mesesPresentes.map((mes) => {
             const yaExiste = comprasExistentes.some((c) => c.mes === mes);
             return (
