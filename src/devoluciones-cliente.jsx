@@ -35,6 +35,7 @@ const esInfantilGrupo = (g) => /ni[ñn][oa]/i.test(String(g || ""));
 // Un cambio hecho a mano (tallasInfantil) manda sobre lo que se dedujo de la línea de la referencia.
 const esInfantilDev = (d) => (d?.tallasInfantil === true || d?.tallasInfantil === false ? d.tallasInfantil : esInfantilGrupo(d?.grupo));
 const MOTIVOS = ["Defecto de costura", "Defecto de tela", "Talla equivocada", "Excedente", "Otro"];
+const TRANSPORTADORAS = ["Servientrega", "Coordinadora", "Interrapidísimo", "Envía", "Otra"];
 const PASOS = ["reportada", "en_camino", "recibida", "revisada", "lista", "redespachada"];
 const TEMA_DEFECTO = {
   ink: "#1A1A2E", slate: "#5A5A7A", canvas: "#F7F4F0", white: "#FFFFFF", coral: "#E85D4A", coralBg: "#FDF0EE",
@@ -113,6 +114,8 @@ function EstadoPill({ T, d, cliente }) {
       {d.solicitaDespacho && d.estado !== "redespachada" && <Pill T={T} bg={T.violetBg} fg={T.violet}>{cliente ? "Despacho solicitado" : "Pide despacho"}</Pill>}
       {d.resultado === "diferencias" && <Pill T={T} bg={T.coralBg} fg={T.coral}>Con diferencias</Pill>}
       {d.resultado === "completa" && <Pill T={T} bg={T.jadeBg} fg={T.jade}>Completa</Pill>}
+      {cliente && d.estado === "reportada" && !String(d.guia || "").trim() ? <Pill T={T} bg={T.coral} fg="#fff">📦 Falta la guía de salida</Pill> : null}
+      {String(d.guia || "").trim() ? <Pill T={T} bg={T.jadeBg} fg={T.jade}>Guía {d.guia}{d.transportadora ? ` · ${d.transportadora}` : ""}</Pill> : null}
       {d.origen?.tipo ? <Pill T={T} bg={T.canvas} fg={T.slate}>{d.origen.tipo === "factura" ? "🧾 " : d.origen.tipo === "sin_dato" ? "" : "🚚 "}{etiquetaOrigen(d.origen)}{d.origen.confirmar ? " · por confirmar" : ""}</Pill> : null}
       {(() => {
         const t = tiempoDevolucion(d);
@@ -249,8 +252,9 @@ function Detalle({ T, d, mostrarConteo }) {
     <div style={{ paddingTop: 10 }}>
       <Linea T={T} estado={d.estado} d={d} />
       <div style={{ fontSize: 12, color: T.slate, marginBottom: 8 }}>
-        Lote <b style={{ color: T.ink }}>{d.lote}</b> · Ref {d.ref || "—"}{d.pedido ? ` · Pedido ${d.pedido}` : ""} · Motivo: {d.motivo || "—"} · Guía: {d.guia || "—"}
+        Lote <b style={{ color: T.ink }}>{d.lote}</b> · Ref {d.ref || "—"}{d.pedido ? ` · Pedido ${d.pedido}` : ""} · Motivo: {d.motivo || "—"} · Guía: {d.guia || "—"}{d.transportadora ? ` · ${d.transportadora}` : ""}{d.fechaSalida ? ` · salió el ${fmtFecha(d.fechaSalida)}` : ""}
       </div>
+      {d.envioJunto?.length ? <div style={{ fontSize: 12, color: T.slate, marginBottom: 8 }}>Viene en el mismo envío con: <b style={{ color: T.ink }}>{d.envioJunto.join(", ")}</b></div> : null}
       {d.origen?.tipo ? <div style={{ fontSize: 12, color: T.slate, marginBottom: 8 }}>Origen en Busint: <b style={{ color: T.ink }}>{etiquetaOrigen(d.origen)}</b>{d.origen.documentos?.length ? ` · ${d.origen.documentos.join(", ")}` : ""}{d.origen.fuente === "manual" ? " (confirmado a mano)" : ""}{d.origen.confirmar ? ` · por confirmar (la cliente la montó como ${etiquetaOrigen(d.origen)}; Busint la muestra como ${etiquetaOrigen({ tipo: d.origen.busint })})` : ""}</div> : null}
       {d.observaciones ? <div style={{ fontSize: 12, color: T.slate, marginBottom: 8 }}>Nota del cliente: {d.observaciones}</div> : null}
       <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, margin: "6px 0" }}>DECLARADO POR EL CLIENTE</div>
@@ -321,6 +325,7 @@ function EditarDevolucionModal({ db, functionsClient, T, d, usuario, lista, esCl
   const [cant, setCant] = useState(valoresDeLineas(d.lineas));
   const [motivo, setMotivo] = useState(d.motivo || MOTIVOS[0]);
   const [guia, setGuia] = useState(d.guia || "");
+  const [transp, setTransp] = useState(d.transportadora || "");
   const [obs, setObs] = useState(d.observaciones || "");
   const [infantil, setInfantil] = useState(esInfantilDev(d));
   const [pide, setPide] = useState(!!d.solicitaDespacho);
@@ -360,11 +365,15 @@ function EditarDevolucionModal({ db, functionsClient, T, d, usuario, lista, esCl
     else if (JSON.stringify(valoresDeLineas(lineas)) !== JSON.stringify(valoresDeLineas(d.lineas))) cambios.push("cantidades por color/talla");
     if (motivo !== d.motivo) cambios.push(`motivo: ${motivo}`);
     if (guia.trim() !== (d.guia || "")) cambios.push(`guía: ${guia.trim() || "—"}`);
+    if (transp !== (d.transportadora || "")) cambios.push(`transportadora: ${transp || "—"}`);
+    // Si estaba «Reportada» y ahora tiene guía de salida, pasa sola a «En camino».
+    const pasaEnCamino = d.estado === "reportada" && !!guia.trim() && !String(d.guia || "").trim();
+    if (pasaEnCamino) cambios.push("pasa a En camino");
     if (obs.trim() !== (d.observaciones || "")) cambios.push("nota");
     if (infantil !== esInfantilDev(d)) cambios.push(`tallas en ${infantil ? "números" : "letras"}`);
     if (pide !== !!d.solicitaDespacho) cambios.push(pide ? "pide el despacho de nuevo" : "quitó la solicitud de despacho");
     else if (pide && notaDesp.trim() !== (d.solicitaDespacho?.nota || "")) cambios.push("nota del despacho");
-    const extra = { lineas, tallas, total: totalLineas(lineas), motivo, guia: guia.trim(), observaciones: obs.trim(), tallasInfantil: infantil, editadoPor: usuario, editadoEn: nowISO() };
+    const extra = { lineas, tallas, total: totalLineas(lineas), motivo, guia: guia.trim(), transportadora: transp, observaciones: obs.trim(), tallasInfantil: infantil, editadoPor: usuario, editadoEn: nowISO() };
     if (pide) extra.solicitaDespacho = { nota: notaDesp.trim(), por: d.solicitaDespacho?.por || usuario, fecha: d.solicitaDespacho?.fecha || nowISO() };
     else if (d.solicitaDespacho) extra.solicitaDespacho = null;
     // Origen en Busint (factura / traslado externo): el personal lo puede corregir; si no, queda el que detectó Busint.
@@ -381,7 +390,7 @@ function EditarDevolucionModal({ db, functionsClient, T, d, usuario, lista, esCl
     }
     setGuardando(true);
     try {
-      await cambiarEstado(db, d, d.estado, extra, usuario, `Editó la devolución${cambios.length ? `: ${cambios.join("; ")}` : ""}`);
+      await cambiarEstado(db, d, pasaEnCamino ? "en_camino" : d.estado, extra, usuario, `Editó la devolución${cambios.length ? `: ${cambios.join("; ")}` : ""}`);
       onClose();
     } catch (e) {
       setError(e?.message || "No se pudo guardar la edición.");
@@ -402,6 +411,13 @@ function EditarDevolucionModal({ db, functionsClient, T, d, usuario, lista, esCl
           <div style={{ flex: 1, minWidth: 170 }}>
             <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>Guía de transporte</div>
             <input value={guia} onChange={(e) => setGuia(e.target.value)} style={{ ...campo(T), width: "100%" }} />
+          </div>
+          <div style={{ flex: 1, minWidth: 170 }}>
+            <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>Transportadora (opcional)</div>
+            <select value={transp} onChange={(e) => setTransp(e.target.value)} style={{ ...campo(T), width: "100%" }}>
+              <option value="">Elegir…</option>
+              {[...new Set([...TRANSPORTADORAS, ...(transp ? [transp] : [])])].map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
           </div>
           <div style={{ flex: 1, minWidth: 170 }}>
             <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>Tallas se muestran en</div>
@@ -501,12 +517,47 @@ function FormularioDevolucionesCliente({ db, functionsClient, T: Tp, currentUser
   const [cant, setCant] = useState({});
   const [motivo, setMotivo] = useState(MOTIVOS[0]);
   const [guia, setGuia] = useState("");
+  const [transp, setTransp] = useState("");
   const [obs, setObs] = useState("");
   const [pideDesp, setPideDesp] = useState(false);
   const [notaDesp, setNotaDesp] = useState("");
   const [guardando, setGuardando] = useState(false);
   const [aviso, setAviso] = useState("");
   const [abierto, setAbierto] = useState(null);
+  // Varias devoluciones, un solo envío: se marcan las que no tienen guía y se les pone una guía a todas.
+  const [selG, setSelG] = useState([]);
+  const [envio, setEnvio] = useState({ guia: "", transp: "", fecha: new Date().toISOString().slice(0, 10) });
+  const [guardandoEnvio, setGuardandoEnvio] = useState(false);
+  const [msgEnvio, setMsgEnvio] = useState("");
+  const sinGuia = (d) => d.estado === "reportada" && !String(d.guia || "").trim();
+  const listaTipo = lista === null ? null : lista.filter((d) => grupoOrigenCliente(d) === tipo);
+  const selValidas = selG.filter((id) => (lista || []).some((d) => d.id === id && sinGuia(d)));
+  async function guardarEnvio() {
+    const elegidas = (lista || []).filter((d) => selValidas.includes(d.id));
+    const guiaN = envio.guia.trim();
+    if (!elegidas.length || guiaN.length < 4) return;
+    setGuardandoEnvio(true); setMsgEnvio("");
+    try {
+      const batch = writeBatch(db);
+      const envioId = `env_${Date.now()}`;
+      const usuario = usuarioActual(currentUser);
+      elegidas.forEach((d) => {
+        const otras = elegidas.filter((x) => x.id !== d.id).map((x) => x.numero);
+        const nota = `Guía ${guiaN}${envio.transp ? ` · ${envio.transp}` : ""}${otras.length ? ` · junto con ${otras.join(", ")}` : ""}`;
+        batch.update(doc(db, COL, d.id), limpio({
+          guia: guiaN, transportadora: envio.transp, fechaSalida: envio.fecha, envioId, envioJunto: otras,
+          estado: "en_camino", historial: [...(d.historial || []), { estado: "en_camino", fecha: nowISO(), usuario, nota }], actualizadoEn: nowISO(),
+        }));
+      });
+      await batch.commit();
+      setMsgEnvio(`Listo: la guía ${guiaN} quedó en ${elegidas.length} ${elegidas.length === 1 ? "devolución" : "devoluciones"}, «En camino».`);
+      setSelG([]); setEnvio({ ...envio, guia: "" });
+    } catch (e) {
+      setMsgEnvio(e?.message || "No se pudo guardar la guía.");
+    } finally {
+      setGuardandoEnvio(false);
+    }
+  }
 
   async function buscar() {
     setError(""); setAviso(""); setInfo(null); setCant({});
@@ -556,7 +607,7 @@ function FormularioDevolucionesCliente({ db, functionsClient, T: Tp, currentUser
     const { origen } = origenElegidoPorCliente(tipo, origenDeFacturacion(info.facturacion));
     const d = {
       id, numero: numeroNuevo(), lote: info.lote, ref: info.ref, pedido: info.pedido, cliente: info.cliente,
-      tallas: info.tallas, grupo: info.grupo || "", lineas, total: totalLineas(lineas), motivo, guia: guia.trim(), observaciones: obs.trim(),
+      tallas: info.tallas, grupo: info.grupo || "", lineas, total: totalLineas(lineas), motivo, guia: guia.trim(), ...(transp ? { transportadora: transp } : {}), observaciones: obs.trim(),
       estado, origen, creadoPorUid: uid, creadoPor: usuarioActual(currentUser), creadoEn: nowISO(),
       historial: [{ estado, fecha: nowISO(), usuario: usuarioActual(currentUser), ...(pideDesp ? { nota: "Pide que se la despachen de nuevo" } : {}) }],
       ...(pideDesp ? { solicitaDespacho: { nota: notaDesp.trim(), por: usuarioActual(currentUser), fecha: nowISO() } } : {}),
@@ -565,7 +616,7 @@ function FormularioDevolucionesCliente({ db, functionsClient, T: Tp, currentUser
     try {
       await setDoc(doc(db, COL, id), limpio(d));
       setAviso(`Devolución ${d.numero} reportada.`);
-      setInfo(null); setCant({}); setLote(""); setGuia(""); setObs(""); setMotivo(MOTIVOS[0]); setPideDesp(false); setNotaDesp("");
+      setInfo(null); setCant({}); setLote(""); setGuia(""); setTransp(""); setObs(""); setMotivo(MOTIVOS[0]); setPideDesp(false); setNotaDesp("");
     } catch (e) {
       setError(e?.message || "No se pudo guardar la devolución.");
     } finally {
@@ -610,6 +661,13 @@ function FormularioDevolucionesCliente({ db, functionsClient, T: Tp, currentUser
                 <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>Guía de transporte (opcional)</div>
                 <input value={guia} onChange={(e) => setGuia(e.target.value)} placeholder="Número de guía" style={{ ...campo(T), width: "100%" }} />
               </div>
+              <div style={{ flex: 1, minWidth: 170 }}>
+                <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>Transportadora (opcional)</div>
+                <select value={transp} onChange={(e) => setTransp(e.target.value)} style={{ ...campo(T), width: "100%" }}>
+                  <option value="">Elegir…</option>
+                  {TRANSPORTADORAS.map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </div>
             </div>
             <div style={{ marginBottom: 14 }}>
               <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>Nota (opcional)</div>
@@ -632,12 +690,42 @@ function FormularioDevolucionesCliente({ db, functionsClient, T: Tp, currentUser
       <div style={tarjeta}>
         <div style={{ fontSize: 14, fontWeight: 800, color: T.ink, marginBottom: 8 }}>{esCliente ? "Tus devoluciones" : "Devoluciones reportadas"}</div>
         {errLista && <div style={{ color: T.coral, fontSize: 13 }}>{errLista}</div>}
+        {msgEnvio && selValidas.length === 0 && <div style={{ background: msgEnvio.startsWith("Listo") ? T.jadeBg : T.coralBg, color: msgEnvio.startsWith("Listo") ? T.jade : T.coral, borderRadius: 8, padding: "8px 12px", fontSize: 13, marginBottom: 10 }}>{msgEnvio}</div>}
+        {tipo !== "otras" && (listaTipo || []).some(sinGuia) && (
+          <div style={{ fontSize: 12, color: T.slate, marginBottom: 8 }}>
+            Las devoluciones sin guía tienen una casilla: márcalas (una o varias) para ponerles <b>una sola guía de salida</b> si las mandas en el mismo envío.{" "}
+            <label style={{ cursor: "pointer", fontWeight: 700, color: T.denim }}>
+              <input type="checkbox" style={{ marginRight: 4 }} checked={(listaTipo || []).filter(sinGuia).length > 0 && selValidas.length === (listaTipo || []).filter(sinGuia).length}
+                onChange={(e) => setSelG(e.target.checked ? (listaTipo || []).filter(sinGuia).map((d) => d.id) : [])} />Marcar todas
+            </label>
+          </div>
+        )}
+        {selValidas.length > 0 && (
+          <div style={{ background: T.white, border: `1px solid ${T.denim}`, borderRadius: 14, padding: "14px 18px", marginBottom: 12 }}>
+            <div style={{ fontSize: 14, fontWeight: 800, color: T.ink }}>Agregar una guía a {selValidas.length} {selValidas.length === 1 ? "devolución" : "devoluciones"}</div>
+            <div style={{ fontSize: 12, color: T.slate, margin: "4px 0 10px" }}>Todas pasan a «En camino» con la misma guía y quedan anotadas como un solo envío.</div>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+              <div><div style={{ fontSize: 11, color: T.slate, marginBottom: 3 }}>Número de guía</div><input value={envio.guia} onChange={(e) => setEnvio({ ...envio, guia: e.target.value })} placeholder="Ej. 1234567890" style={{ ...campo(T), width: 190 }} /></div>
+              <div><div style={{ fontSize: 11, color: T.slate, marginBottom: 3 }}>Transportadora (opcional)</div>
+                <select value={envio.transp} onChange={(e) => setEnvio({ ...envio, transp: e.target.value })} style={campo(T)}><option value="">Elegir…</option>{TRANSPORTADORAS.map((t) => <option key={t} value={t}>{t}</option>)}</select></div>
+              <div><div style={{ fontSize: 11, color: T.slate, marginBottom: 3 }}>Fecha de salida</div><input type="date" value={envio.fecha} onChange={(e) => setEnvio({ ...envio, fecha: e.target.value })} style={campo(T)} /></div>
+              <button disabled={guardandoEnvio || envio.guia.trim().length < 4 || !envio.fecha} onClick={guardarEnvio} style={btn(T, "primario")}>{guardandoEnvio ? "Guardando…" : selValidas.length > 1 ? "Guardar guía en todas" : "Guardar guía"}</button>
+            </div>
+            {msgEnvio && <div style={{ fontSize: 13, color: T.coral, marginTop: 8 }}>{msgEnvio}</div>}
+          </div>
+        )}
         {lista === null ? <div style={{ fontSize: 13, color: T.slate }}>Cargando…</div>
           : !lista.filter((d) => grupoOrigenCliente(d) === tipo).length ? <div style={{ fontSize: 13, color: T.slate }}>Todavía no has reportado devoluciones de este tipo.</div>
           : lista.filter((d) => grupoOrigenCliente(d) === tipo).map((d) => (
             <div key={d.id} style={{ borderTop: `1px solid ${T.border}`, padding: "10px 0" }}>
               <div onClick={() => setAbierto(abierto === d.id ? null : d.id)} style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", cursor: "pointer", fontSize: 13 }}>
-                <span><b>{d.numero}</b> · lote {d.lote} · {d.total} und · {fmtFecha(d.creadoEn)}</span>
+                <span>
+                  {sinGuia(d) && (
+                    <input type="checkbox" title="Marcar para ponerle la guía de salida" checked={selValidas.includes(d.id)} onClick={(e) => e.stopPropagation()}
+                      onChange={(e) => setSelG((a) => (e.target.checked ? [...a.filter((x) => x !== d.id), d.id] : a.filter((x) => x !== d.id)))} style={{ marginRight: 8 }} />
+                  )}
+                  <b>{d.numero}</b> · lote {d.lote} · {d.total} und · {fmtFecha(d.creadoEn)}
+                </span>
                 <EstadoPill T={T} d={d} cliente={esCliente} />
               </div>
               {abierto === d.id && (
@@ -770,6 +858,21 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, tipo, o
     catch (e) { setMsg(e?.message || "No se pudo guardar el cambio."); }
     finally { setTrabajando(""); }
   }
+  // Jesús (Bodega): una devolución que viene en un envío con otras se puede recibir junto con todas las del mismo envío.
+  async function recibirEnvio(d) {
+    const grupo = (lista || []).filter((x) => x.envioId && x.envioId === d.envioId && ["reportada", "en_camino"].includes(x.estado));
+    if (grupo.length < 2) return;
+    setTrabajando(d.id); setMsg("");
+    try {
+      const batch = writeBatch(db);
+      grupo.forEach((x) => {
+        const ev = { estado: "recibida", fecha: nowISO(), usuario, nota: `Recibida con el envío (guía ${x.guia || d.guia || "—"}): ${grupo.map((g) => g.numero).join(", ")}` };
+        batch.update(doc(db, COL, x.id), limpio({ recibidaPor: usuario, recibidaEn: nowISO(), estado: "recibida", historial: [...(x.historial || []), ev], actualizadoEn: nowISO() }));
+      });
+      await batch.commit();
+    } catch (e) { setMsg(e?.message || "No se pudo guardar la recepción del envío."); }
+    finally { setTrabajando(""); }
+  }
   async function guardarConteo(d) {
     const declarado = valoresDeLineas(d.lineas);
     const tallas = tallasDeLineas(d.lineas, d.tallas);
@@ -788,7 +891,15 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, tipo, o
   const botones = (d) => {
     const ocupado = trabajando === d.id;
     if (modo === "bodega") {
-      if (d.estado === "reportada" || d.estado === "en_camino") return <button disabled={ocupado} onClick={() => accion(d, "recibida", { recibidaPor: usuario, recibidaEn: nowISO() })} style={btn(T, "primario")}>Marcar como recibida</button>;
+      if (d.estado === "reportada" || d.estado === "en_camino") {
+        const delEnvio = d.envioId ? (lista || []).filter((x) => x.envioId === d.envioId && ["reportada", "en_camino"].includes(x.estado)) : [];
+        return (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button disabled={ocupado} onClick={() => accion(d, "recibida", { recibidaPor: usuario, recibidaEn: nowISO() })} style={btn(T, "primario")}>Marcar como recibida</button>
+            {delEnvio.length > 1 && <button disabled={ocupado} onClick={() => recibirEnvio(d)} style={btn(T)}>Recibir todo el envío ({delEnvio.length})</button>}
+          </div>
+        );
+      }
       if (d.estado === "lista") {
         return (
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
