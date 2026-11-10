@@ -106,6 +106,17 @@ export default function ConsumoTelaCortePanel({ pedidos, desde, hasta, functions
         <div style={{ fontSize: 12.5, color: C.amber, background: C.amberBg, border: `1px solid ${C.amber}`, borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>
           ⚠ La tabla «{busint.tablaUsada}» de Busint no trajo ninguna fila{busint.errorTabla ? ` (${busint.errorTabla})` : ""}.
           {busint.candidatas?.length ? ` Tablas parecidas que existen: ${busint.candidatas.join(", ")}.` : " No se encontró otra tabla con «rendimiento» en el nombre."} Abre «Ver columnas de Busint» y avísame.
+          {busint.diagnosticoVacio && (
+            <div style={{ marginTop: 8, color: C.ink, fontSize: 12, lineHeight: 1.6 }}>
+              <div><strong>Qué respondió Busint:</strong> {busint.diagnosticoVacio.respuesta?.error
+                ? busint.diagnosticoVacio.respuesta.error
+                : `${busint.diagnosticoVacio.respuesta?.tipo || "—"}${busint.diagnosticoVacio.respuesta?.largo !== null && busint.diagnosticoVacio.respuesta?.largo !== undefined ? ` con ${busint.diagnosticoVacio.respuesta.largo} filas` : ""}${busint.diagnosticoVacio.respuesta?.llaves?.length ? ` · llaves: ${busint.diagnosticoVacio.respuesta.llaves.join(", ")}` : ""}`}</div>
+              {busint.diagnosticoVacio.respuesta?.muestra && <div style={{ fontFamily: "monospace", wordBreak: "break-all" }}>{busint.diagnosticoVacio.respuesta.muestra}</div>}
+              {(busint.diagnosticoVacio.otrasTablas || []).map((t) => (
+                <div key={t.tabla}><strong>{t.tabla}:</strong> {t.error ? t.error : t.filasEnPagina ? `trae filas · columnas: ${t.columnas.join(" · ")}` : "sin filas"}</div>
+              ))}
+            </div>
+          )}
         </div>
       )}
       {busint && faltantes.length > 0 && busint.total > 0 && (

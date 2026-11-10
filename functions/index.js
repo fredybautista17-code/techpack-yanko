@@ -16893,6 +16893,33 @@ exports.getRendimientoCorteBusint = onCallAuth(
         }
       }
     }
+    // (2026-11-10, a pedido de Fredy) Si la tabla llega sin filas, se deja dicho POR QUÉ: la forma cruda de la respuesta de la página 1
+    // (¿arreglo vacío?, ¿objeto con otra llave?) y un vistazo a otras tablas de corte de Busint (columnas y si traen filas).
+    // La API solo acepta tableName/page/pageSize (no hay filtro de fechas), así que "vacía" o "forma no reconocida" son las dos causas posibles.
+    let diagnosticoVacio;
+    if (!filas.length) {
+      diagnosticoVacio = { respuesta: null, otrasTablas: [] };
+      try {
+        const crudo = await consultarTablaBusintBD(tablaUsada, 1, 3);
+        const esArr = Array.isArray(crudo);
+        diagnosticoVacio.respuesta = {
+          tipo: esArr ? "arreglo" : crudo === null ? "null" : typeof crudo,
+          llaves: !esArr && crudo && typeof crudo === "object" ? Object.keys(crudo).slice(0, 15) : [],
+          largo: esArr ? crudo.length : null,
+          muestra: JSON.stringify(crudo).slice(0, 400),
+        };
+      } catch (err) {
+        diagnosticoVacio.respuesta = { error: String(err?.message || err).slice(0, 300) };
+      }
+      for (const t of ["trabajo corte", "trabajo corte 1", "gv-1invcorte-telas"]) {
+        try {
+          const fs = extraerFilasBusintBD(await consultarTablaBusintBD(t, 1, 2)) || [];
+          diagnosticoVacio.otrasTablas.push({ tabla: t, filasEnPagina: fs.length, columnas: fs.length ? Object.keys(fs[0]) : [] });
+        } catch (err) {
+          diagnosticoVacio.otrasTablas.push({ tabla: t, error: String(err?.message || err).slice(0, 120) });
+        }
+      }
+    }
     const llaves = filas.length ? Object.keys(filas[0]) : [];
     const det = detectarColumnasRendCorte(llaves);
     const val = (f, col) => (col ? f[col] : undefined);
@@ -16937,6 +16964,7 @@ exports.getRendimientoCorteBusint = onCallAuth(
       tablaUsada,
       candidatas,
       errorTabla,
+      diagnosticoVacio,
       columnas: llaves,
       detectadas: det,
       filas: request.data?.soloTeorico ? [] : filasVentana,
