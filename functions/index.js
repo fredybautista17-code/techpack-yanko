@@ -125,7 +125,7 @@ function onCallAuth(a, b) {
   return conOpciones ? onCall(a, envuelto) : onCall(envuelto);
 }
 const { onSchedule } = require("firebase-functions/v2/scheduler");
-const { onDocumentWritten } = require("firebase-functions/v2/firestore");
+const { onDocumentWritten, onDocumentCreated } = require("firebase-functions/v2/firestore");
 const { defineSecret } = require("firebase-functions/params");
 const logger = require("firebase-functions/logger");
 const admin = require("firebase-admin");
@@ -15128,6 +15128,32 @@ exports.subirNominaADropbox = onCallAuth(
       }
     }
     return { ok: resultados.every((r) => !r.error), resultados };
+  }
+);
+// (2026-11-10, a pedido de Fredy) CORREO «NUEVA DEVOLUCIÓN»: apenas un cliente reporta una devolución (se crea el documento en
+// devoluciones_cliente) le llega un correo a los usuarios activos de los roles Gerencia y Bodega, y a Anny Beltrán, Diego Ochoa y
+// María Fernanda Páez (por nombre). El documento guarda `correoAvisoEnviado` para no repetirlo si el servidor reintenta; si el envío
+// falla no afecta a la devolución (solo queda en el registro).
+const devolucionCorreo = require("./devolucion-correo");
+exports.avisarNuevaDevolucionCliente = onDocumentCreated(
+  { document: "devoluciones_cliente/{devId}", secrets: [EMAIL_USER, EMAIL_APP_PASSWORD], timeoutSeconds: 60, memory: "256MiB" },
+  async (event) => {
+    const snap = event.data;
+    if (!snap) return;
+    const d = snap.data() || {};
+    if (d.correoAvisoEnviado) return;
+    try {
+      const usuarios = (await db.collection("users").get()).docs.map((x) => x.data());
+      const { correos, sinCorreo } = devolucionCorreo.destinatariosDevolucion(usuarios);
+      if (sinCorreo.length) logger.warn("avisarNuevaDevolucionCliente: sin correo activo para", { personas: sinCorreo });
+      if (!correos.length) { logger.warn("avisarNuevaDevolucionCliente: no hay a quién avisar", { devolucion: d.numero }); return; }
+      const { asunto, html } = devolucionCorreo.armarCorreoDevolucion(d);
+      await mandarCorreo(crearTransporte(), correos, asunto, html);
+      await snap.ref.update({ correoAvisoEnviado: new Date().toISOString() });
+      logger.info("avisarNuevaDevolucionCliente enviado", { devolucion: d.numero, destinatarios: correos.length });
+    } catch (err) {
+      logger.error("avisarNuevaDevolucionCliente falló", { devolucion: d.numero, error: err?.message || String(err) });
+    }
   }
 );
 exports.getLotesPorIntegrarBusint = onCallAuth(
