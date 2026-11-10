@@ -114,12 +114,15 @@ function Pill({ bg, fg, children }) {
 }
 function EstadoPill({ T, d, cliente }) {
   const e = estadoInfo(T, d.estado);
+  const resultadoVisible = !cliente || d.estado === "redespachada"; // la cliente no ve el resultado del conteo hasta que despachamos de nuevo
+  if (cliente && d.estado === "revisada") e.txt = "En revisión";
+  if (cliente && d.estado === "lista") e.txt = "Preparando el reenvío";
   return (
     <span style={{ display: "inline-flex", gap: 6, flexWrap: "wrap" }}>
       <Pill T={T} bg={e.bg} fg={e.fg}>{e.txt}</Pill>
       {d.solicitaDespacho && d.estado !== "redespachada" && <Pill T={T} bg={T.violetBg} fg={T.violet}>{cliente ? "Despacho solicitado" : "Pide despacho"}</Pill>}
-      {d.resultado === "diferencias" && <Pill T={T} bg={T.coralBg} fg={T.coral}>Con diferencias</Pill>}
-      {d.resultado === "completa" && <Pill T={T} bg={T.jadeBg} fg={T.jade}>Completa</Pill>}
+      {resultadoVisible && d.resultado === "diferencias" && <Pill T={T} bg={T.coralBg} fg={T.coral}>Con diferencias</Pill>}
+      {resultadoVisible && d.resultado === "completa" && <Pill T={T} bg={T.jadeBg} fg={T.jade}>Completa</Pill>}
       {cliente && d.estado === "reportada" && !String(d.guia || "").trim() ? <Pill T={T} bg={T.coral} fg="#fff">📦 Falta la guía de salida</Pill> : null}
       {String(d.guia || "").trim() ? <Pill T={T} bg={T.jadeBg} fg={T.jade}>Guía {d.guia}{d.transportadora ? ` · ${d.transportadora}` : ""}</Pill> : null}
       {d.origen?.tipo ? <Pill T={T} bg={T.canvas} fg={T.slate}>{d.origen.tipo === "factura" ? "🧾 " : d.origen.tipo === "sin_dato" ? "" : "🚚 "}{etiquetaOrigen(d.origen)}{d.origen.confirmar ? " · por confirmar" : ""}</Pill> : null}
@@ -249,11 +252,91 @@ function Linea({ T, estado, d }) {
   );
 }
 
+// (2026-11-10, a pedido de Fredy) La cliente NO ve el conteo de Calidad mientras la devolución está en proceso: solo ve en qué va.
+// Cuando Bodega la marca «Despachada de nuevo» aparece el cuadro con lo que envió, lo que recibimos, lo que faltó y lo que se le envía otra vez.
+const MENSAJE_CLIENTE = {
+  reportada: "Tu devolución quedó reportada. Cuando mandes la mercancía, agrega la guía de salida.",
+  en_camino: "Tu mercancía va en camino hacia Yanko. Te avisaremos cuando la recibamos.",
+  recibida: "Recibimos tu mercancía. Calidad la va a contar y revisar.",
+  revisada: "Calidad terminó de revisar tu devolución. Estamos preparando el reenvío.",
+  lista: "Tu reenvío está listo. En cuanto salga, aquí verás el detalle completo.",
+};
+function CuadroEnviadoRecibido({ T, d }) {
+  const infantil = esInfantilDev(d);
+  const env = valoresDeLineas(d.lineas);
+  const rec = valoresDeLineas(d.conteo);
+  const tallas = tallasDeLineas(d.conteo, tallasDeLineas(d.lineas, d.tallas));
+  const colores = [];
+  [...coloresDeLineas(d.lineas), ...coloresDeLineas(d.conteo)].forEach((c) => { if (!colores.some((x) => x.color === c.color)) colores.push(c); });
+  const num = (v) => Number(v) || 0;
+  const filas = colores
+    .map((c) => ({ c, e: tallas.map((t) => num(env[`${c.color}|${t}`])), r: tallas.map((t) => num(rec[`${c.color}|${t}`])) }))
+    .filter((f) => f.e.some(Boolean) || f.r.some(Boolean));
+  const suma = (a) => a.reduce((x, y) => x + y, 0);
+  const tE = suma(filas.map((f) => suma(f.e)));
+  const tR = suma(filas.map((f) => suma(f.r)));
+  const falta = tE - tR;
+  const celdaBase = { padding: "8px 10px", borderBottom: `1px solid ${T.border}`, textAlign: "right", fontVariantNumeric: "tabular-nums" };
+  const celda = (e, r, key, negrita) => (e === r
+    ? <td key={key} style={{ ...celdaBase, fontWeight: negrita ? 800 : 400 }}>{e}</td>
+    : <td key={key} style={{ ...celdaBase, background: T.coralBg, color: T.coral, fontWeight: 800 }}>{e}<span style={{ fontWeight: 400, padding: "0 3px" }}>→</span>{r}</td>);
+  const tile = (titulo, valor, color) => (
+    <div style={{ border: `1px solid ${T.border}`, borderTop: `4px solid ${color}`, borderRadius: 12, padding: "10px 14px", background: T.white }}>
+      <div style={{ fontSize: 11, color: T.slate, fontWeight: 600 }}>{titulo}</div>
+      <div style={{ fontSize: 24, fontWeight: 800, color: titulo === "Faltaron" && valor > 0 ? T.coral : T.ink, fontVariantNumeric: "tabular-nums" }}>{valor}</div>
+    </div>
+  );
+  const th = { ...celdaBase, fontSize: 11, color: T.slate, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em" };
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div style={{ fontSize: 15, fontWeight: 800, color: T.ink }}>Lo que enviaste y lo que recibimos</div>
+      <div style={{ fontSize: 12, color: T.slate, margin: "2px 0 10px" }}>Cada casilla muestra lo que enviaste → lo que recibimos y contó Calidad.</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginBottom: 12 }}>
+        {tile("Enviaste", tE, T.denim)}
+        {tile("Recibimos", tR, T.violet)}
+        {falta < 0 ? tile("Sobraron", -falta, T.amber) : tile("Faltaron", falta, falta > 0 ? T.coral : T.jade)}
+        {tile("Te enviamos de nuevo", tR, T.jade)}
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ borderCollapse: "collapse", fontSize: 13, width: "100%", minWidth: 420 }}>
+          <thead><tr>
+            <th style={{ ...th, textAlign: "left" }}>Color</th>
+            {tallas.map((t) => <th key={t} style={th}>{etiquetaTalla(t, infantil)}</th>)}
+            <th style={th}>Total</th>
+          </tr></thead>
+          <tbody>
+            {filas.map((f) => (
+              <tr key={f.c.color}>
+                <td style={{ ...celdaBase, textAlign: "left" }}>{f.c.nombre ? `${f.c.color} · ${f.c.nombre}` : f.c.color}</td>
+                {tallas.map((t, i) => celda(f.e[i], f.r[i], t))}
+                {celda(suma(f.e), suma(f.r), "tot", true)}
+              </tr>
+            ))}
+          </tbody>
+          <tfoot><tr>
+            <td style={{ ...celdaBase, textAlign: "left", fontWeight: 800, borderBottom: "none" }}>Total</td>
+            {tallas.map((t, i) => { const a = suma(filas.map((f) => f.e[i])); const b = suma(filas.map((f) => f.r[i])); return a === b ? <td key={t} style={{ ...celdaBase, fontWeight: 800, borderBottom: "none" }}>{a}</td> : <td key={t} style={{ ...celdaBase, background: T.coralBg, color: T.coral, fontWeight: 800, borderBottom: "none" }}>{a}<span style={{ fontWeight: 400, padding: "0 3px" }}>→</span>{b}</td>; })}
+            {tE === tR ? <td style={{ ...celdaBase, fontWeight: 800, borderBottom: "none" }}>{tE}</td> : <td style={{ ...celdaBase, background: T.coralBg, color: T.coral, fontWeight: 800, borderBottom: "none" }}>{tE}<span style={{ fontWeight: 400, padding: "0 3px" }}>→</span>{tR}</td>}
+          </tr></tfoot>
+        </table>
+      </div>
+      {falta > 0 ? (
+        <div style={{ background: T.coralBg, color: T.coral, borderRadius: 8, padding: "8px 12px", fontSize: 12.5, fontWeight: 600, marginTop: 12 }}>Recibimos {tR} de las {tE} unidades que enviaste. Te enviamos de nuevo las {tR} que llegaron.</div>
+      ) : falta < 0 ? (
+        <div style={{ background: T.amberBg, color: T.amber, borderRadius: 8, padding: "8px 12px", fontSize: 12.5, fontWeight: 600, marginTop: 12 }}>Recibimos {tR} unidades, {-falta} más de las {tE} que enviaste. Te enviamos de nuevo las {tR}.</div>
+      ) : (
+        <div style={{ background: T.jadeBg, color: T.jade, borderRadius: 8, padding: "8px 12px", fontSize: 12.5, fontWeight: 600, marginTop: 12 }}>Recibimos todo lo que enviaste ({tR} unidades) y te lo enviamos de nuevo.</div>
+      )}
+    </div>
+  );
+}
+
 function Detalle({ T, d, mostrarConteo }) {
   const tallas = tallasDeLineas(d.lineas, d.tallas);
   const valores = valoresDeLineas(d.lineas);
   const conteoVal = valoresDeLineas(d.conteo);
   const infantil = esInfantilDev(d);
+  const verCuadro = !mostrarConteo && d.estado === "redespachada" && !!d.conteo?.length;
   return (
     <div style={{ paddingTop: 10 }}>
       <Linea T={T} estado={d.estado} d={d} />
@@ -264,8 +347,8 @@ function Detalle({ T, d, mostrarConteo }) {
       {d.origen?.tipo ? <div style={{ fontSize: 12, color: T.slate, marginBottom: 8 }}>Origen en Busint: <b style={{ color: T.ink }}>{etiquetaOrigen(d.origen)}</b>{d.origen.documentos?.length ? ` · ${d.origen.documentos.join(", ")}` : ""}{d.origen.fuente === "manual" ? " (confirmado a mano)" : ""}{d.origen.confirmar ? ` · por confirmar (la cliente la montó como ${etiquetaOrigen(d.origen)}; Busint la muestra como ${etiquetaOrigen({ tipo: d.origen.busint })})` : ""}</div> : null}
       {String(d.documentoOriginal || "").trim() ? <div style={{ fontSize: 12, color: T.slate, marginBottom: 8 }}>{d.origen?.tipo === "factura" ? "Factura original" : "Remisión original (TNS)"}: <b style={{ color: T.ink, ...MONO }}>{d.documentoOriginal}</b></div> : null}
       {d.observaciones ? <div style={{ fontSize: 12, color: T.slate, marginBottom: 8 }}>Nota del cliente: {d.observaciones}</div> : null}
-      <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, margin: "6px 0" }}>DECLARADO POR EL CLIENTE</div>
-      <GrillaColorTalla T={T} colores={coloresDeLineas(d.lineas)} tallas={tallas} valores={valores} editable={false} infantil={infantil} />
+      {!verCuadro && <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, margin: "6px 0" }}>DECLARADO POR EL CLIENTE</div>}
+      {!verCuadro && <GrillaColorTalla T={T} colores={coloresDeLineas(d.lineas)} tallas={tallas} valores={valores} editable={false} infantil={infantil} />}
       {mostrarConteo && d.conteo?.length ? (
         <>
           <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, margin: "12px 0 6px" }}>CONTADO POR CALIDAD</div>
@@ -281,16 +364,12 @@ function Detalle({ T, d, mostrarConteo }) {
           ) : null}
         </>
       ) : null}
-      {!mostrarConteo && d.estado === "redespachada" && d.conteo?.length ? (
-        <>
-          <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, margin: "12px 0 6px" }}>LO QUE TE ENVIAMOS DE NUEVO</div>
-          <GrillaColorTalla T={T} colores={coloresDeLineas(d.conteo)} tallas={tallasDeLineas(d.conteo, tallas)} valores={conteoVal} editable={false} infantil={infantil} />
-          {totalLineas(d.lineas) > totalLineas(d.conteo) ? (
-            <div style={{ background: T.coralBg, color: T.coral, borderRadius: 8, padding: "8px 12px", fontSize: 12, marginTop: 8 }}>
-              Recibimos {totalLineas(d.conteo)} de las {totalLineas(d.lineas)} unidades que reportaste; te enviamos las {totalLineas(d.conteo)} que llegaron.
-            </div>
-          ) : null}
-        </>
+      {verCuadro ? <CuadroEnviadoRecibido T={T} d={d} /> : null}
+      {!mostrarConteo && d.estado !== "redespachada" && MENSAJE_CLIENTE[d.estado] ? (
+        <div style={{ background: T.canvas, border: `1px dashed ${T.border}`, borderRadius: 12, padding: "12px 14px", fontSize: 13, color: T.ink, fontWeight: 600, marginTop: 10 }}>
+          {MENSAJE_CLIENTE[d.estado]}
+          <div style={{ fontSize: 12, color: T.slate, fontWeight: 400, marginTop: 4 }}>Cuando despachemos de nuevo, aquí verás el cuadro con lo que enviaste, lo que recibimos y lo que te enviamos otra vez.</div>
+        </div>
       ) : null}
       {d.solicitaDespacho ? (
         <div style={{ fontSize: 12, color: T.violet, marginTop: 10 }}>
