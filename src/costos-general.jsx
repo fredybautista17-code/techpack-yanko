@@ -564,7 +564,7 @@ export default function CostosGeneralView({ db }) {
       setGastosEdit(fusionarBusint(lineasGastos, r2.lineas));
       setVerGastos(true);
       const fuera = r2.lineas.filter((l) => !l.incluir).length;
-      setMsgGastos(`Traje ${r2.lineas.length} conceptos de Busint (tabla «${resp.tabla}», ${resp.filasMes} compras del mes): ${r2.lineas.length - fuera} cuentan y ${fuera} quedaron fuera. ${r2.nuevos ? `${r2.nuevos} son nuevos: revísalos. ` : ""}Pulsa «Guardar gastos de ${MESES[mes - 1].toLowerCase()}» para dejarlos.`);
+      setMsgGastos(`Traje ${r2.lineas.length} conceptos de Busint (tabla «${resp.tabla}», ${resp.filasMes} compras del mes): ${r2.lineas.length - fuera} cuentan y ${fuera} quedaron fuera. ${r2.nuevos ? `${r2.nuevos} son nuevos: revísalos. ` : ""}${resp.valorEsTotal ? "Ojo: esa tabla trae el total de cada factura (con IVA incluido), no el valor bruto. " : ""}Pulsa «Guardar gastos de ${MESES[mes - 1].toLowerCase()}» para dejarlos.`);
     } catch (e) {
       setMsgGastos(`No pude traer los gastos de Busint: ${e?.message || e}`);
     } finally {

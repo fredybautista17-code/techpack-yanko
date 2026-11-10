@@ -1,13 +1,17 @@
 "use strict";
 // ─── GASTOS DEL MES DESDE BUSINT (Tablero de Costos → «¿Cubro mis costos?» → Gastos del mes → «Traer de Busint») ─────────────
 // (2026-11-10, a pedido de Fredy) Las compras por CONCEPTO (CodConcep, Concepto, Fechaini, Vbruto) que hoy se importan desde un Excel de
-// Busint se leen directo de la API. No se sabe en qué tabla viven, así que se buscan: de la lista de tablas de la API se toman las que
-// parecen de compras/entradas, se mira una muestra de cada una y se queda con la primera que trae concepto + fecha + valor bruto.
+// Busint se leen directo de la API. No se sabía en qué tabla viven, así que se buscan: de la lista de tablas de la API se toman las que
+// parecen de compras / cuentas por pagar, se mira una muestra de cada una y se queda con la primera que trae concepto + fecha + valor.
+// (2026-11-10, 2.ª versión) La primera búsqueda solo probó 40 de las 974 tablas y se quedó en las de inventario («bmp - entrada…»). Ahora se
+// prueban primero las de cuentas por pagar («cartera cxp-fact»: concepto de obligación FCBI, fecha Fechaini, total FACTOTAL), se dejan fuera
+// las de punto de venta e inventario, y si la tabla solo trae el TOTAL de la factura (con IVA) se cuenta cada factura una sola vez.
 // Funciones puras (sin Firestore ni red) para poder probarlas.
 
 const claveCol = (k) => String(k || "").toLowerCase().replace(/[^a-z0-9]/g, "");
 
 // Detecta las columnas por nombre (sin importar mayúsculas, guiones ni espacios). Devuelve null en las que no encuentra.
+// valorEsTotal = true cuando no hay valor bruto y se usó el total de la factura (incluye IVA).
 function detectarColumnas(keys) {
   const ks = (keys || []).map((k) => ({ k, n: claveCol(k) }));
   const buscar = (...res) => {
@@ -17,31 +21,42 @@ function detectarColumnas(keys) {
     }
     return null;
   };
+  const bruto = buscar(/^vbruto$/, /^valorbruto/, /^vlrbruto/);
+  const total = bruto ? null : buscar(/^factotal$/, /^factot$/, /^totalfactura$/, /^valorfactura$/);
   return {
-    codConcep: buscar(/^codconcep/, /^codigoconcep/, /^concepcod/),
+    codConcep: buscar(/^codconcep/, /^codigoconcep/, /^concepcod/, /^fcbi$/),
     concepto: buscar(/^concepto$/, /^nombreconcep/, /^descconcep/, /^desconcep/, /^concepto/),
     fecha: buscar(/^fechaini$/, /^fecha$/, /^fechafac/, /^fechaemis/, /^fecha(?!fin|vcto|venc)/),
-    valor: buscar(/^vbruto$/, /^valorbruto/, /^vlrbruto/),
+    valor: bruto || total,
+    valorEsTotal: !bruto && !!total,
+    numeroFactura: buscar(/^nfact$/, /^nfactura$/, /^numfact/, /^numerofactura/),
     proveedorCodigo: buscar(/^codprov/, /^codigoprov/, /^codtercero/, /^nit$/, /^codigo$/, /^proveedor$/, /^tercero$/),
     proveedorNombre: buscar(/^nombreprov/, /^razonsocial/, /^nomprov/, /^nombretercero/, /^nombre$/),
   };
 }
 
-// Una tabla sirve si trae código de concepto, fecha y valor bruto.
+// Una tabla sirve si trae código de concepto, fecha y valor (bruto o total de la factura).
 function esTablaCompras(keys) {
   const c = detectarColumnas(keys);
   return !!(c.codConcep && c.fecha && c.valor);
 }
 
-// De la lista de tablas de la API, las que vale la pena mirar (las de compras primero).
-function candidatosTablasCompras(nombres, max = 40) {
+const PRIORITARIAS = ["cartera cxp-fact", "contabilidad - cxp", "cierre cxp", "cartera cxp-ajustes", "cartera cxp-cruce", "cartera cxp-dev"];
+const EXCLUIDAS = /^pos|bmp - |evacuar|muestras|^historia|rollos|^bc-.*(stock|inventario|corte|comercial|facturacion)/;
+
+// De la lista de tablas de la API, las que vale la pena mirar: primero las de cuentas por pagar, luego las de compras; sin punto de venta ni inventario.
+function candidatosTablasCompras(nombres, max = 80) {
   const puntaje = (t) => {
     const n = String(t).toLowerCase();
-    if (/compra/.test(n)) return 0;
-    if (/entrada/.test(n)) return 1;
-    if (/gasto|egreso|causa/.test(n)) return 2;
-    if (/factur|cxp|contab/.test(n)) return 3;
-    if (/movim/.test(n)) return 4;
+    const pr = PRIORITARIAS.indexOf(n);
+    if (pr >= 0) return pr;
+    if (EXCLUIDAS.test(n)) return null;
+    if (/cxp/.test(n)) return 10;
+    if (/compra/.test(n)) return 11;
+    if (/gasto|egreso|causa/.test(n)) return 12;
+    if (/obligacion|contab/.test(n)) return 13;
+    if (/factur/.test(n)) return 14;
+    if (/entrada/.test(n)) return 15;
     return null;
   };
   return (nombres || [])
@@ -73,25 +88,31 @@ function fechaAISO(v) {
   return m ? `${m[1]}-${m[2]}-${m[3]}` : null;
 }
 
+// Números con miles en punto y decimales en coma («6.000.000», «1.234,56») o con punto decimal («1234.56»).
 const num = (v) => {
   if (typeof v === "number") return Number.isFinite(v) ? v : 0;
-  let t = String(v ?? "").replace(/[^0-9.,\-]/g, "");
-  if (/^-?\d{1,3}(\.\d{3})+(,\d+)?$/.test(t)) t = t.replace(/\./g, "").replace(",", "."); // 1.234.567,89
-  else if (/^-?\d+,\d+$/.test(t)) t = t.replace(",", "."); // 12,5
-  else t = t.replace(/,/g, ""); // 1,234,567.89
-  const n = Number(t);
+  let s = String(v ?? "").trim().replace(/[^0-9.,\-]/g, "");
+  if (!s) return 0;
+  if (s.includes(",") && s.includes(".")) s = s.lastIndexOf(",") > s.lastIndexOf(".") ? s.replace(/\./g, "").replace(",", ".") : s.replace(/,/g, "");
+  else if (s.includes(",")) s = /,\d{1,2}$/.test(s) ? s.replace(",", ".") : s.replace(/,/g, "");
+  else if (/^-?\d{1,3}(\.\d{3})+$/.test(s)) s = s.replace(/\./g, "");
+  const n = Number(s);
   return Number.isFinite(n) ? n : 0;
 };
 
-// Agrupa las filas del mes (ym = "AAAA-MM") por concepto + proveedor (si la tabla trae proveedor) y suma el valor bruto.
-// nombrePorCodigo: Map(codigo de proveedor normalizado -> nombre) y normCodigo: función para normalizar el código (opcionales).
-function agruparGastosMes(filas, cols, ym, nombrePorCodigo, normCodigo) {
+// Agrupa las filas del mes (ym = "AAAA-MM") por concepto + proveedor (si la tabla trae proveedor) y suma el valor.
+// nombrePorCodigo: Map(código de proveedor normalizado -> nombre); normCodigo: normaliza ese código; nombrePorConcepto: Map(código de concepto -> nombre).
+// Si el valor es el TOTAL de la factura (cols.valorEsTotal) y hay número de factura, cada factura cuenta una sola vez (la más alta de sus filas).
+function agruparGastosMes(filas, cols, ym, nombrePorCodigo, normCodigo, nombrePorConcepto) {
   const norm = typeof normCodigo === "function" ? normCodigo : (x) => String(x ?? "").trim();
   const grupos = new Map();
   let filasMes = 0;
   let sinFecha = 0;
   let minFecha = null;
   let maxFecha = null;
+  const unaVez = !!(cols.valorEsTotal && cols.numeroFactura);
+  const facturas = new Map(); // solo si unaVez: llave -> fila elegida {f, valor}
+  const lista = [];
   (filas || []).forEach((f) => {
     if (!f || typeof f !== "object") return;
     const fecha = fechaAISO(f[cols.fecha]);
@@ -102,16 +123,30 @@ function agruparGastosMes(filas, cols, ym, nombrePorCodigo, normCodigo) {
     const codConcep = String(f[cols.codConcep] ?? "").trim();
     const concepto = cols.concepto ? String(f[cols.concepto] ?? "").trim() : "";
     if (!codConcep && !concepto) return;
+    const valor = num(f[cols.valor]);
+    if (unaVez) {
+      const provCod = cols.proveedorCodigo ? norm(f[cols.proveedorCodigo]) : "";
+      const llave = `${provCod}|${String(f[cols.numeroFactura] ?? "").trim().toUpperCase()}`;
+      const previa = facturas.get(llave);
+      if (!previa || Math.abs(valor) > Math.abs(previa.valor)) facturas.set(llave, { f, valor, codConcep: codConcep || previa?.codConcep || "", concepto: concepto || previa?.concepto || "" });
+      else if (previa && !previa.codConcep && codConcep) previa.codConcep = codConcep;
+      return;
+    }
+    lista.push({ f, valor, codConcep, concepto });
+  });
+  const todas = unaVez ? [...facturas.values()] : lista;
+  todas.forEach(({ f, valor, codConcep, concepto }) => {
     filasMes++;
     const provCod = cols.proveedorCodigo ? norm(f[cols.proveedorCodigo]) : "";
     const provNom = cols.proveedorNombre ? String(f[cols.proveedorNombre] ?? "").trim() : "";
-    const clave = `${codConcep}|${concepto}|${provCod || provNom}`;
+    const nombreConcepto = concepto || (nombrePorConcepto && nombrePorConcepto.get(codConcep)) || "";
+    const clave = `${codConcep}|${nombreConcepto}|${provCod || provNom}`;
     if (!grupos.has(clave)) {
       const nombre = provNom || (provCod && nombrePorCodigo ? nombrePorCodigo.get(provCod) || "" : "");
-      grupos.set(clave, { codConcep, concepto, proveedorCodigo: provCod, proveedor: nombre, valor: 0, entradas: 0 });
+      grupos.set(clave, { codConcep, concepto: nombreConcepto, proveedorCodigo: provCod, proveedor: nombre, valor: 0, entradas: 0 });
     }
     const g = grupos.get(clave);
-    g.valor += num(f[cols.valor]);
+    g.valor += valor;
     g.entradas += 1;
   });
   const lineas = [...grupos.values()]

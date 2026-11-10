@@ -10613,21 +10613,24 @@ exports.getGastosMesBusint = onCallAuth(
         throw new HttpsError("unavailable", `No se pudo consultar la tabla «${tablaForzada}»: ${err?.message || String(err)}`);
       }
     } else {
-      const candidatas = GastosMesBusint.candidatosTablasCompras(nombresTablas, 40);
+      const candidatas = GastosMesBusint.candidatosTablasCompras(nombresTablas, 80);
       const muestras = [];
       for (let i = 0; i < candidatas.length; i += 5) {
         const lote = candidatas.slice(i, i + 5);
         const res = await Promise.all(lote.map(async (tabla) => {
           try {
             const filasMuestra = extraerFilasBusintBD(await consultarTablaBusintBD(tabla, 1, 3)) || [];
-            return { tabla, keys: Object.keys(filasMuestra[0] || {}) };
+            const primera = filasMuestra[0] || {};
+            return { tabla, keys: Object.keys(primera), fila: primera };
           } catch (err) {
             return { tabla, keys: [], error: String(err?.message || err).slice(0, 120) };
           }
         }));
         res.forEach((r) => muestras.push(r));
       }
-      muestras.forEach((m) => probadas.push({ tabla: m.tabla, columnas: m.keys.slice(0, 30), sirve: GastosMesBusint.esTablaCompras(m.keys), ...(m.error ? { error: m.error } : {}) }));
+      // Una fila de ejemplo (valores cortos) solo de las tablas que parecen de cuentas por pagar / compras, para poder verificar las columnas.
+      const filaCorta = (f) => Object.fromEntries(Object.entries(f || {}).slice(0, 40).map(([k, v]) => [k, typeof v === "object" && v !== null ? (v.isValidDateTime ? `${v.year}-${v.month}-${v.day}` : "[obj]") : String(v ?? "").slice(0, 40)]));
+      muestras.forEach((m) => probadas.push({ tabla: m.tabla, columnas: m.keys.slice(0, 40), sirve: GastosMesBusint.esTablaCompras(m.keys), ...(m.keys.length && /cxp|compra|obligacion|contab/i.test(m.tabla) ? { ejemplo: filaCorta(m.fila) } : {}), ...(m.error ? { error: m.error } : {}) }));
       elegida = GastosMesBusint.elegirTablaCompras(muestras);
     }
     if (!elegida) {
@@ -10635,7 +10638,7 @@ exports.getGastosMesBusint = onCallAuth(
         encontrada: false,
         mes: ym,
         lineas: [],
-        diagnostico: { mensaje: "No encontré una tabla de Busint con concepto, fecha y valor bruto (CodConcep, Fechaini, Vbruto).", tablasProbadas: probadas, tablasDeLaApi: nombresTablas.length },
+        diagnostico: { mensaje: "No encontré una tabla de Busint con concepto, fecha y valor (CodConcep o FCBI, Fechaini, Vbruto o FACTOTAL).", tablasProbadas: probadas, tablasDeLaApi: nombresTablas.length },
       };
     }
     // 3) La tabla completa, agrupada por concepto y proveedor
@@ -10660,13 +10663,29 @@ exports.getGastosMesBusint = onCallAuth(
         logger.warn("getGastosMesBusint: no se pudo leer el maestro de proveedores", { error: String(err) });
       }
     }
-    const r = GastosMesBusint.agruparGastosMes(filas, elegida.cols, ym, nombrePorCodigo, normalizarCodigoCxp);
+    // Si la tabla no trae el nombre del concepto, se toma del catálogo «compras especiales-conceptos de compra» (CodConcepto → NomConcepto).
+    let nombrePorConcepto = null;
+    if (!elegida.cols.concepto) {
+      try {
+        const catalogo = await consultarTablaBusintBDCompleta("compras especiales-conceptos de compra");
+        nombrePorConcepto = new Map();
+        catalogo.forEach((c) => {
+          const cod = String(c?.CodConcepto ?? "").trim();
+          const nom = String(c?.NomConcepto ?? "").trim();
+          if (cod && nom) nombrePorConcepto.set(cod, nom);
+        });
+      } catch (err) {
+        logger.warn("getGastosMesBusint: no se pudo leer el catálogo de conceptos de compra", { error: String(err) });
+      }
+    }
+    const r = GastosMesBusint.agruparGastosMes(filas, elegida.cols, ym, nombrePorCodigo, normalizarCodigoCxp, nombrePorConcepto);
     return {
       encontrada: true,
       consultadoEn: new Date().toISOString(),
       mes: ym,
       tabla: elegida.tabla,
       columnas: elegida.cols,
+      valorEsTotal: !!elegida.cols.valorEsTotal,
       totalFilasTabla: filas.length,
       filasMes: r.filasMes,
       sinFecha: r.sinFecha,
