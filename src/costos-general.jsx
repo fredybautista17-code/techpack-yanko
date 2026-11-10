@@ -10,11 +10,14 @@
 // Escribe solo en costos_gastos_mes (gastos cargados) y costos_cierres_mes (foto del cierre). Lo demás solo lo lee.
 import React, { useState, useEffect, useMemo } from "react";
 import { collection, doc, getDoc, getDocs, query, setDoc, where } from "firebase/firestore";
+import { getApps } from "firebase/app";
+import { getFunctions, httpsCallable } from "firebase/functions";
 import { useCentroCostoDatos, filasCorteVivo } from "./centro-costo-historico";
 import { AREAS_HISTORICO, normTexto } from "./centro-costo-historico-parser";
 import { ayudaQuincenasPorPersona } from "./ayuda-quincena";
 import { mismoNombre } from "./corte-equipos";
 import { unirPorAlias } from "./nombres-alias";
+import { lineasDesdeBusint, fusionarBusint } from "./costos-gastos-busint";
 import { cierreGeneral, parsearGastos, totalGastos, detalleLotes, detalleFiscal, AREAS_FUERA_DEFECTO, cuentaPorDefecto, TIPO_FISCAL, TIPO_FISCAL_DESTAJO, TIPO_PRESTACION, DESTAJO_AYUDA_FUERA_DEFECTO, DESTAJO_PROVISION_FUERA_DEFECTO } from "./costos-general-calculo";
 
 const C = {
@@ -383,6 +386,8 @@ export default function CostosGeneralView({ db }) {
   const [gastosEdit, setGastosEdit] = useState(null);
   const [archivoGastos, setArchivoGastos] = useState("");
   const [msgGastos, setMsgGastos] = useState("");
+  const [trayendo, setTrayendo] = useState(false);
+  const [diagBusint, setDiagBusint] = useState(null);
   const [guardando, setGuardando] = useState(false);
   const [msgCierre, setMsgCierre] = useState("");
   const [busq, setBusq] = useState("");
@@ -524,6 +529,46 @@ export default function CostosGeneralView({ db }) {
       setMsgGastos(`Leí ${res.lineas.length} gastos de «${file.name}». Revísalos y pulsa «Guardar gastos de ${MESES[mes - 1].toLowerCase()}».`);
     } catch (e) {
       setMsgGastos(`No pude leer el archivo: ${e?.message || e}`);
+    }
+  }
+  // (2026-11-10, a pedido de Fredy) Trae de Busint las compras del mes por concepto y proveedor y las deja como líneas de gastos.
+  // Solo reemplaza las líneas que ya venían de Busint; las del Excel o a mano no se tocan. No guarda hasta pulsar «Guardar gastos».
+  async function traerDeBusint() {
+    setTrayendo(true);
+    setDiagBusint(null);
+    setMsgGastos("Consultando Busint… puede tardar un minuto.");
+    try {
+      const fx = getFunctions(getApps()[0]);
+      const resp = (await httpsCallable(fx, "getGastosMesBusint")({ mes: ym })).data;
+      if (!resp?.encontrada) {
+        setDiagBusint(resp?.diagnostico || { mensaje: "Busint no devolvió datos." });
+        setMsgGastos("No encontré la tabla de compras por concepto en Busint. Abajo está el diagnóstico para enviárselo a Claude.");
+        return;
+      }
+      const [lista, porConcepto] = await Promise.all([
+        getDocs(collection(db, "contabilidad_proyeccion_categorias_lista")).catch(() => ({ docs: [] })),
+        getDocs(collection(db, "contabilidad_proyeccion_categorias_concepto")).catch(() => ({ docs: [] })),
+      ]);
+      const r2 = lineasDesdeBusint(resp, {
+        previas: [...(datos.gastosAnterior?.lineas || []), ...(datos.gastosMes?.lineas || [])],
+        manuales: lineasGastos,
+        categoriasLista: lista.docs.map((d) => ({ ...d.data(), id: d.id })),
+        categoriasPorConcepto: porConcepto.docs.map((d) => ({ ...d.data(), codConcep: d.id })),
+      });
+      if (!r2.lineas.length) {
+        setMsgGastos(resp.filasMes
+          ? `Busint trajo ${resp.filasMes} compras de ${MESES[mes - 1].toLowerCase()} pero todas sumaron cero.`
+          : `Busint no tiene compras de ${MESES[mes - 1].toLowerCase()} ${anio} en la tabla «${resp.tabla}» (sus fechas van de ${resp.fechasTabla?.desde || "—"} a ${resp.fechasTabla?.hasta || "—"}).`);
+        return;
+      }
+      setGastosEdit(fusionarBusint(lineasGastos, r2.lineas));
+      setVerGastos(true);
+      const fuera = r2.lineas.filter((l) => !l.incluir).length;
+      setMsgGastos(`Traje ${r2.lineas.length} conceptos de Busint (tabla «${resp.tabla}», ${resp.filasMes} compras del mes): ${r2.lineas.length - fuera} cuentan y ${fuera} quedaron fuera. ${r2.nuevos ? `${r2.nuevos} son nuevos: revísalos. ` : ""}Pulsa «Guardar gastos de ${MESES[mes - 1].toLowerCase()}» para dejarlos.`);
+    } catch (e) {
+      setMsgGastos(`No pude traer los gastos de Busint: ${e?.message || e}`);
+    } finally {
+      setTrayendo(false);
     }
   }
   function alternarGasto(i) {
@@ -843,9 +888,17 @@ export default function CostosGeneralView({ db }) {
           <input type="file" accept=".xls,.xlsx" style={{ display: "none" }} onChange={(e) => { leerExcelGastos(e.target.files?.[0]); e.target.value = ""; }} />
           <span style={{ display: "inline-block", padding: "8px 14px", borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: "pointer", border: `1.5px solid ${C.border}`, background: C.white, color: C.ink }}>📂 Cargar Excel de gastos</span>
         </label>
+        <Boton onClick={traerDeBusint} disabled={trayendo}>{trayendo ? "Consultando Busint…" : "📥 Traer de Busint"}</Boton>
         {(gastosEdit || origenGastos === "anterior") ? <Boton primario onClick={guardarGastos} disabled={guardando || !lineasGastos.length}>Guardar gastos de {MESES[mes - 1].toLowerCase()}</Boton> : null}
       </div>
       {msgGastos ? <div style={{ fontSize: 12.5, color: C.blue, fontWeight: 700, marginBottom: 8 }}>{msgGastos}</div> : null}
+      {diagBusint ? (
+        <div style={{ background: C.amberBg, borderRadius: 10, padding: "10px 14px", fontSize: 12, color: C.amber, marginBottom: 10 }}>
+          <div style={{ marginBottom: 6 }}>{diagBusint.mensaje || "Sin detalle."} Probé {diagBusint.tablasProbadas?.length || 0} tablas de las {diagBusint.tablasDeLaApi || 0} de la API.</div>
+          <Boton onClick={() => { const t = JSON.stringify(diagBusint, null, 2); try { navigator.clipboard.writeText(t); setMsgGastos("Diagnóstico copiado: pégalo en el chat con Claude."); } catch { setMsgGastos("No pude copiar; selecciona el texto de abajo."); } }}>📋 Copiar diagnóstico para Claude</Boton>
+          <textarea readOnly value={JSON.stringify(diagBusint, null, 2)} style={{ width: "100%", height: 90, marginTop: 8, fontSize: 11, fontFamily: "monospace", boxSizing: "border-box" }} />
+        </div>
+      ) : null}
       {origenGastos === "anterior" ? (
         <div style={{ background: C.amberBg, borderRadius: 10, padding: "10px 14px", fontSize: 12.5, color: C.amber, marginBottom: 10 }}>
           Este mes no tiene gastos guardados: se están usando los del último mes cargado ({datos.gastosAnterior?.id}). Carga el Excel del mes o pulsa «Guardar gastos» para dejar estos.
@@ -868,7 +921,7 @@ export default function CostosGeneralView({ db }) {
                   <td style={tdL}>{l.concepto}</td>
                   <td style={td}>{l.dia || "—"}</td>
                   <td style={td}>{l.valor > 0 ? money(l.valor) : <span style={{ color: C.amber }}>Por definir</span>}</td>
-                  <td style={{ ...td, textAlign: "left", color: C.slate }}>{l.motivo || l.frecuencia}</td>
+                  <td style={{ ...td, textAlign: "left", color: C.slate }}>{l.origen === "busint" ? <span style={{ background: C.blueBg, color: C.blue, borderRadius: 6, padding: "1px 6px", fontSize: 11, fontWeight: 700, marginRight: 6 }}>Busint</span> : null}{l.motivo || l.frecuencia}</td>
                 </tr>
               ))}
               <tr style={{ background: C.canvas }}><td style={td} /><td style={tdL} colSpan={3}>Total incluido ({totalGastos(lineasGastos).incluidas})</td><td style={{ ...td, fontWeight: 800 }}>{money(totalGastos(lineasGastos).total)}</td><td style={td} /></tr>

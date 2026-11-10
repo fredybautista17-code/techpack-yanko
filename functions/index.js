@@ -10572,6 +10572,111 @@ exports.getFacturasCompraBusint = onCallAuth(
   }
 );
 
+// ─── GASTOS DEL MES DESDE BUSINT («Traer de Busint» en Tablero de Costos → Gastos del mes) ───────────────────────────────────
+// (2026-11-10, a pedido de Fredy) Reemplaza el Excel «Control de gastos y vencimientos» para lo que se factura en Busint: lee las compras del
+// mes por CONCEPTO (CodConcep, Concepto, Fechaini, Vbruto, igual que el export que se importa en Contabilidad) y las agrupa por concepto y
+// proveedor. La tabla se busca sola entre las de la API (ver functions/gastos-mes-busint.js); si no aparece se devuelve un diagnóstico.
+// Solo lectura: no escribe nada. Permiso: el mismo de «Traer gastos» de Planta (admin, costosPlanta o Áreas → Centro de Costo).
+const GastosMesBusint = require("./gastos-mes-busint");
+exports.getGastosMesBusint = onCallAuth(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 300,
+    memory: "1GiB",
+  },
+  async (request) => {
+    await verificarLlamadorPuedeTraerGastosPlanta(request);
+    const datos = request.data || {};
+    const ym = String(datos.mes || "").trim();
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(ym)) throw new HttpsError("invalid-argument", "Indica el mes (AAAA-MM).");
+    const tablaForzada = String(datos.tabla || "").trim().slice(0, 80) || null;
+    // 1) Lista de tablas de la API (la misma que usa la pantalla de prueba de Busint)
+    let nombresTablas = [];
+    try {
+      const swaggerResp = await fetch("https://api-yanko-bd.busint.info/swagger/v1/swagger.json");
+      const swagger = await swaggerResp.json();
+      nombresTablas = swagger.paths["/api/Query"].post.parameters.find((p) => p.name === "tableName").schema.enum || [];
+    } catch (err) {
+      logger.warn("getGastosMesBusint: no se pudo leer la lista de tablas", { error: String(err) });
+    }
+    if (!nombresTablas.length) nombresTablas = ["compras", "compras detalles", "entradas", "entradas detalles"];
+    // 2) Qué tabla usar
+    const probadas = [];
+    let elegida = null;
+    if (tablaForzada) {
+      try {
+        const filasMuestra = extraerFilasBusintBD(await consultarTablaBusintBD(tablaForzada, 1, 3)) || [];
+        const keys = Object.keys(filasMuestra[0] || {});
+        probadas.push({ tabla: tablaForzada, columnas: keys.slice(0, 30), sirve: GastosMesBusint.esTablaCompras(keys) });
+        if (GastosMesBusint.esTablaCompras(keys)) elegida = { tabla: tablaForzada, cols: GastosMesBusint.detectarColumnas(keys) };
+      } catch (err) {
+        throw new HttpsError("unavailable", `No se pudo consultar la tabla «${tablaForzada}»: ${err?.message || String(err)}`);
+      }
+    } else {
+      const candidatas = GastosMesBusint.candidatosTablasCompras(nombresTablas, 40);
+      const muestras = [];
+      for (let i = 0; i < candidatas.length; i += 5) {
+        const lote = candidatas.slice(i, i + 5);
+        const res = await Promise.all(lote.map(async (tabla) => {
+          try {
+            const filasMuestra = extraerFilasBusintBD(await consultarTablaBusintBD(tabla, 1, 3)) || [];
+            return { tabla, keys: Object.keys(filasMuestra[0] || {}) };
+          } catch (err) {
+            return { tabla, keys: [], error: String(err?.message || err).slice(0, 120) };
+          }
+        }));
+        res.forEach((r) => muestras.push(r));
+      }
+      muestras.forEach((m) => probadas.push({ tabla: m.tabla, columnas: m.keys.slice(0, 30), sirve: GastosMesBusint.esTablaCompras(m.keys), ...(m.error ? { error: m.error } : {}) }));
+      elegida = GastosMesBusint.elegirTablaCompras(muestras);
+    }
+    if (!elegida) {
+      return {
+        encontrada: false,
+        mes: ym,
+        lineas: [],
+        diagnostico: { mensaje: "No encontré una tabla de Busint con concepto, fecha y valor bruto (CodConcep, Fechaini, Vbruto).", tablasProbadas: probadas, tablasDeLaApi: nombresTablas.length },
+      };
+    }
+    // 3) La tabla completa, agrupada por concepto y proveedor
+    let filas;
+    try {
+      filas = await consultarTablaBusintBDCompleta(elegida.tabla);
+    } catch (err) {
+      logger.error("Error consultando Busint BD (getGastosMesBusint)", { tabla: elegida.tabla, error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar «${elegida.tabla}» en Busint: ${err?.message || String(err)}`);
+    }
+    let nombrePorCodigo = null;
+    if (elegida.cols.proveedorCodigo && !elegida.cols.proveedorNombre) {
+      try {
+        const maestro = await consultarTablaBusintBDCompleta("maestro de proveedores");
+        nombrePorCodigo = new Map();
+        maestro.forEach((p) => {
+          const codigo = normalizarCodigoCxp(p?.Codigo);
+          const nombre = String(p?.Nombre || "").trim();
+          if (codigo && nombre) nombrePorCodigo.set(codigo, nombre);
+        });
+      } catch (err) {
+        logger.warn("getGastosMesBusint: no se pudo leer el maestro de proveedores", { error: String(err) });
+      }
+    }
+    const r = GastosMesBusint.agruparGastosMes(filas, elegida.cols, ym, nombrePorCodigo, normalizarCodigoCxp);
+    return {
+      encontrada: true,
+      consultadoEn: new Date().toISOString(),
+      mes: ym,
+      tabla: elegida.tabla,
+      columnas: elegida.cols,
+      totalFilasTabla: filas.length,
+      filasMes: r.filasMes,
+      sinFecha: r.sinFecha,
+      fechasTabla: { desde: r.minFecha, hasta: r.maxFecha },
+      lineas: r.lineas,
+      diagnostico: { tablasProbadas: probadas.filter((x) => x.sirve).map((x) => x.tabla), tablasDeLaApi: nombresTablas.length },
+    };
+  }
+);
+
 // ─── CÓDIGOS DE AUTORIZACIÓN DE PERMISOS (Nómina) ───────────────────────
 // (2026-10-28, a pedido de Fredy) Cada trabajador puede tener hasta N permisos
 // al mes (por defecto 3, configurable en config/nomina_permisos). Desde el
