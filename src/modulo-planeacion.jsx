@@ -1906,7 +1906,8 @@ function normalizarRef(v) {
 // ─── PRECIO DE CONFECCIÓN DE LA COTIZACIÓN APROBADA ───────────────────────────
 // (2026-10-26, a pedido de Fredy) Cuando una referencia no tiene entradas a talleres, se muestra el valor del
 // proceso "Confección" de su cotización APROBADA en ATLAS (solo la MISMA referencia, sin la vinculada).
-// Por cada cotización se toma la última versión aprobada. Solo se lee Firestore ("cotizaciones").
+// (2026-11-11, a pedido de Fredy) Se toma la ÚLTIMA versión cotizada (la última no deshabilitada que tenga valor de Confección), aprobada o no,
+// y se dice su estado; en «Programar Lote» ese valor se rellena solo en el precio. Solo se lee Firestore ("cotizaciones").
 let cacheConfeccionCotizada = null; // { en, mapa }
 async function cargarConfeccionCotizada() {
   if (cacheConfeccionCotizada && Date.now() - cacheConfeccionCotizada.en < 5 * 60 * 1000) return cacheConfeccionCotizada.mapa;
@@ -1917,14 +1918,21 @@ async function cargarConfeccionCotizada() {
     if (c.eliminado) return; // en la Papelera del Cotizador
     const k = normalizarRef(c.referencia);
     if (!k) return;
-    const aprobadas = (c.versiones || []).filter((v) => v?.estado === "aprobada");
-    if (!aprobadas.length) return;
-    const ver = [...aprobadas].sort((a, b) => String(b.decision?.fecha || "").localeCompare(String(a.decision?.fecha || "")) || (Number(b.numero) || 0) - (Number(a.numero) || 0))[0];
-    const proc = (ver.v?.procesos || []).find((p) => String(p?.nombre || "").normalize("NFD").replace(/[̀-ͯ]/g, "").trim().toLowerCase() === "confeccion");
-    const valor = numCotizador(proc?.valor);
-    if (!(valor > 0)) return;
+    // Última versión (las deshabilitadas no cuentan) que tenga valor en el proceso «Confección».
+    let ver = null;
+    let valor = 0;
+    const vs = c.versiones || [];
+    for (let i = vs.length - 1; i >= 0; i -= 1) {
+      if (!vs[i] || vs[i].estado === "deshabilitada") continue;
+      const proc = (vs[i].v?.procesos || []).find((p) => String(p?.nombre || "").normalize("NFD").replace(/[̀-ͯ]/g, "").trim().toLowerCase() === "confeccion");
+      const val = numCotizador(proc?.valor);
+      if (val > 0) { ver = vs[i]; valor = val; break; }
+    }
+    if (!ver) return;
+    const estado = ver.estado || "borrador";
+    const fecha = String((estado === "aprobada" ? ver.decision?.fecha : "") || ver.fecha || ver.envio?.fecha || "").slice(0, 10);
     if (!mapa.has(k)) mapa.set(k, []);
-    mapa.get(k).push({ id: d.id, cliente: c.cliente || "General", referencia: c.referencia, version: ver.numero, fecha: String(ver.decision?.fecha || "").slice(0, 10), valor });
+    mapa.get(k).push({ id: d.id, cliente: c.cliente || "General", referencia: c.referencia, version: ver.numero, estado, fecha, valor });
   });
   mapa.forEach((lista) => lista.sort((a, b) => b.fecha.localeCompare(a.fecha)));
   cacheConfeccionCotizada = { en: Date.now(), mapa };
@@ -1944,11 +1952,17 @@ function CotizacionConfeccionBox({ items, referencia, onUsar }) {
   return (
     <div style={{ marginBottom: 16, padding: "10px 12px", background: C.blueBg, borderRadius: 8, border: `1px solid ${C.border}` }}>
       <div style={{ fontSize: 10, fontWeight: 800, color: C.ink, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.04em" }}>
-        📄 Cotización aprobada · {referencia}
+        📄 {items.length > 1 ? "Cotizaciones" : "Cotización"} · {referencia}
       </div>
       {items.map((it) => (
         <div key={it.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6, fontSize: 12, padding: "5px 0" }}>
-          <span style={{ color: C.slate }}>{it.cliente} · V{it.version}{it.fecha ? ` · aprobada ${fmtFechaISO(it.fecha)}` : ""}</span>
+          <span style={{ color: C.slate }}>
+            {it.cliente} · V{it.version}
+            <span style={{ display: "inline-block", marginLeft: 6, padding: "1px 7px", borderRadius: 99, fontSize: 10, fontWeight: 700, ...(it.estado === "aprobada" ? { background: "#dff1e8", color: "#1d7a50" } : { background: "#fff4dc", color: "#8a6200", border: "1px solid #e8c982" }) }}>
+              {{ aprobada: "aprobada", aprobacion: "en aprobación", devuelta: "devuelta" }[it.estado] || "sin aprobar"}
+            </span>
+            {it.fecha ? ` · ${fmtFechaISO(it.fecha)}` : ""}
+          </span>
           <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ fontWeight: 800, color: C.blue }}>Confección ${fmtNum(it.valor)}</span>
             {onUsar ? (
@@ -1957,7 +1971,12 @@ function CotizacionConfeccionBox({ items, referencia, onUsar }) {
           </span>
         </div>
       ))}
-      <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>No es una entrada real: es el valor del proceso «Confección» de la cotización aprobada para esta misma referencia.</div>
+      {items.some((it) => it.estado !== "aprobada") && (
+        <div style={{ fontSize: 11, color: "#8a6200", background: "#fff4dc", border: "1px solid #e8c982", borderRadius: 6, padding: "6px 8px", marginTop: 4 }}>
+          Hay versiones que todavía no están aprobadas: el precio puede cambiar.
+        </div>
+      )}
+      <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>No es una entrada real: es el valor del proceso «Confección» de la última versión cotizada para esta misma referencia.</div>
     </div>
   );
 }
@@ -2136,6 +2155,9 @@ function ProgramarLoteBMPModal({ lote, existente, plantas, entradasTalleres, onC
   const [planta, setPlanta] = useState(existente?.plantaDestino || "");
   const [fecha, setFecha] = useState(existente?.fechaProgramada || today());
   const [precioConfeccion, setPrecioConfeccion] = useState(existente?.precioConfeccion || "");
+  // (2026-11-11) Si no hay entradas y hay cotización, el precio se rellena solo con la última versión cotizada, mientras nadie lo haya escrito o elegido a mano.
+  const [precioManual, setPrecioManual] = useState(!!existente?.precioConfeccion);
+  const elegirPrecio = (v) => { setPrecioManual(true); setPrecioConfeccion(v); };
   const historial = useMemo(() => {
     const ref = normalizarRef(refBuscada);
     if (!ref) return [];
@@ -2144,7 +2166,12 @@ function ProgramarLoteBMPModal({ lote, existente, plantas, entradasTalleres, onC
       .sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""))
       .slice(0, 5);
   }, [entradasTalleres, refBuscada]);
-  const cotizacionesRef = !historial.length && cotizadas ? cotizadas.get(normalizarRef(refBuscada)) || [] : [];
+  const cotizacionesRef = useMemo(() => (!historial.length && cotizadas ? cotizadas.get(normalizarRef(refBuscada)) || [] : []), [historial, cotizadas, refBuscada]);
+  useEffect(() => {
+    if (precioManual) return;
+    setPrecioConfeccion(cotizacionesRef.length ? cotizacionesRef[0].valor : "");
+  }, [cotizacionesRef, precioManual]);
+  const precioAutomatico = !precioManual && cotizacionesRef.length > 0;
   const valorLote = Number(precioConfeccion || 0) * Number(lote.cantidadBMP || 0);
   function confirmar() {
     if (!planta.trim() || !fecha) return;
@@ -2181,7 +2208,7 @@ function ProgramarLoteBMPModal({ lote, existente, plantas, entradasTalleres, onC
                 <span style={{ fontWeight: 800, color: h.precioEntrada !== h.precioTeorico ? C.red : C.green }}>Entrada ${fmtNum(h.precioEntrada)}</span>
                 <button
                   type="button"
-                  onClick={() => { setPrecioConfeccion(h.precioEntrada); setPlanta(h.nombrePlanta || ""); }}
+                  onClick={() => { elegirPrecio(h.precioEntrada); setPlanta(h.nombrePlanta || ""); }}
                   style={{ fontSize: 11, color: C.blue, background: "none", border: "none", cursor: "pointer", textDecoration: "underline", padding: 0 }}
                 >
                   usar
@@ -2193,9 +2220,9 @@ function ProgramarLoteBMPModal({ lote, existente, plantas, entradasTalleres, onC
       ) : cotizacionesRef.length > 0 ? (
         <>
           <div style={{ fontSize: 11, color: C.slate, marginBottom: 8 }}>
-            Sin entradas registradas para "{refBuscada}": se muestra lo que quedó en la cotización aprobada.
+            Sin entradas registradas para "{refBuscada}": {precioAutomatico ? `se tomó el valor de la última versión cotizada (V${cotizacionesRef[0].version}) y se puso como precio; lo puedes cambiar.` : "se muestra el valor de la última versión cotizada."}
           </div>
-          <CotizacionConfeccionBox items={cotizacionesRef} referencia={refBuscada.trim().toUpperCase()} onUsar={(valor) => setPrecioConfeccion(valor)} />
+          <CotizacionConfeccionBox items={cotizacionesRef} referencia={refBuscada.trim().toUpperCase()} onUsar={elegirPrecio} />
         </>
       ) : !(entradasTalleres || []).length ? (
         <div style={{ fontSize: 11, color: C.slate, marginBottom: 16 }}>
@@ -2236,9 +2263,9 @@ function ProgramarLoteBMPModal({ lote, existente, plantas, entradasTalleres, onC
             min={0}
             step="0.01"
             value={precioConfeccion}
-            onChange={(e) => setPrecioConfeccion(e.target.value)}
+            onChange={(e) => elegirPrecio(e.target.value)}
             placeholder="0"
-            style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }}
+            style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${precioAutomatico ? "#8db3d6" : C.border}`, background: precioAutomatico ? "#f4f9ff" : undefined, borderRadius: 8, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }}
           />
         </div>
       </div>
