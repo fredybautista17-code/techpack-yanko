@@ -11542,17 +11542,44 @@ async function cargarMapasAreaCP() {
 function areaDeProgramacionCP(p, m) {
   return claveAreaCorreoProgramacion(p.programadoDesdeArea) || m.areaPorLider.get(p.liderUsername) || m.areaPorProceso.get(m.norm(p.proceso)) || "";
 }
+// (2026-11-11, a pedido de Fredy) Lotes que SIGUEN en la planta propia según el inventario de Busint en este momento. Es la misma regla de la
+// pantalla (ubicacionActual === "Planta" de agruparLotes / construirLotesDesdeBusintGen): primero BPT, luego Semiterminado (suma de Semiterminado e
+// Inv Proceso, salvo que sean idénticos), y solo si no hay de eso, Planta con inventario.
+const PLANTA_PROPIA_CP = "INDUSTRIAS YANKO MODULO CENTRO";
+function lotesEnPlantaDeBusintCP(lotes) {
+  const enPlanta = new Set();
+  (lotes || []).forEach((l) => {
+    if (l.nombrePlanta !== PLANTA_PROPIA_CP) return;
+    const raw = Number(l.invSemiterminado) || 0;
+    const proc = Number(l.invProceso) || 0;
+    const semi = raw === proc ? raw : raw + proc;
+    if (!(Number(l.invBPT) > 0) && !(semi > 0) && Number(l.invPlanta) > 0) enPlanta.add(String(l.numLote));
+  });
+  return enPlanta;
+}
 // Cumplimiento de lo programado el día `diaEvaluar` (si no se da, el día ANTERIOR a `fechaRef`). `fechaRef` es "hoy" para medir lo tarde.
 async function armarCumplimientoProgramacionCP(fechaRef, diaEvaluar) {
   const ayer = diaEvaluar || sumarDiasISOCP(fechaRef, -1);
   const porArea = { planta: [], calidad: [], zonacalor: [] };
   let cargaPlaneacion = null; // fecha de la última carga de Planeación con la que se midió Planta (para avisar si está atrasada)
   let cargaCreadoEn = null; // y cuándo se cargó (para decir la hora en el correo)
+  let plantaEnVivo = null; // {hora} si Planta se midió con el inventario de Busint consultado al armar el correo
   // ── Planta de confección: contra la última carga de Planeación (igual que la pantalla) ──
   const plantaSnap = await db.collection("planta_programacion").where("fechaEnviado", "==", ayer).get();
   if (!plantaSnap.empty) {
     let enPlanta = null;
+    let enPlantaVivo = null;
     let fechaCarga = null;
+    // Primero el inventario de Busint en vivo: así no depende de que alguien haya pulsado «Actualizar desde Busint» antes de que salga el correo.
+    try {
+      const vivo = await obtenerLotesPlaneacionDesdeBusint();
+      if (vivo && Array.isArray(vivo.lotes) && vivo.lotes.length) {
+        enPlantaVivo = lotesEnPlantaDeBusintCP(vivo.lotes);
+        plantaEnVivo = { hora: new Date().toISOString() };
+      }
+    } catch (err) {
+      logger.warn("cumplimiento programación: no se pudo leer el inventario de Busint en vivo; se usa la última carga de Planeación", { error: String(err) });
+    }
     try {
       const s = await db.collection("planeacion_cargas").orderBy("creadoEn", "desc").limit(1).get();
       if (!s.empty) {
@@ -11567,8 +11594,12 @@ async function armarCumplimientoProgramacionCP(fechaRef, diaEvaluar) {
     }
     plantaSnap.docs.forEach((dc) => {
       const p = dc.data();
-      const cumplido = p.estado === "cumplido" || (enPlanta && !enPlanta.has(String(p.numLote)));
-      const fecha = p.fechaCumplioISO || (cumplido ? fechaCarga : null);
+      const salioPorCarga = !!enPlanta && !enPlanta.has(String(p.numLote));
+      const salioEnVivo = !!enPlantaVivo && !enPlantaVivo.has(String(p.numLote));
+      const cumplido = p.estado === "cumplido" || salioPorCarga || salioEnVivo;
+      // Fecha: la marcada a mano, o la de la carga que ya lo mostraba fuera de Planta; si solo lo vio salir el inventario en vivo, hoy (si se mide el día de hoy)
+      // o ninguna (si se mide un día anterior no se sabe cuándo salió, así que no se marca «tarde»).
+      const fecha = p.fechaCumplioISO || (salioPorCarga ? fechaCarga : null) || (salioEnVivo && ayer === fechaHoyBogota() ? ayer : null);
       porArea.planta.push({ numLote: String(p.numLote), referencia: p.referencia || "", proceso: "", trabajador: "", cantidad: p.cantidad ?? null, hecho: cumplido ? p.cantidad ?? null : 0, numPedido: p.numPedido ?? "", prioridad: p.prioridad ? String(p.prioridad).charAt(0).toUpperCase() + String(p.prioridad).slice(1) : "", estado: cumplido ? (fecha && fecha > ayer ? "tarde" : "cumplido") : "no", fechaCumplimiento: fecha });
     });
   }
@@ -11589,7 +11620,7 @@ async function armarCumplimientoProgramacionCP(fechaRef, diaEvaluar) {
       porArea[area].push({ numLote: String(p.numLote), referencia: p.referencia || "", proceso: p.proceso || "", trabajador: p.trabajadorNombre || "", cantidad: p.cantidad ?? null, hecho: p.hecho, numPedido: p.numPedido ?? "", prioridad: p.prioridad || "", estado: p.completo ? (p.llegoTarde ? "tarde" : "cumplido") : p.parcial ? "parcial" : "no", fechaCumplimiento: p.fechaCumplimiento });
     });
   }
-  return { ayer, porArea, cargaPlaneacion, cargaCreadoEn };
+  return { ayer, porArea, cargaPlaneacion, cargaCreadoEn, plantaEnVivo };
 }
 // Lo programado para `dia` por área. "nuevo" = se programó después del último correo enviado.
 async function programacionDiaPorAreaCP(dia, desdeISO) {
@@ -11638,7 +11669,7 @@ function seccionProgramacionCP(area, items) {
   const nombre = AREAS_CORREO_PROGRAMACION[area];
   return `<h3 style="${H3_CP}">${escHtmlCP(nombre)} <span style="font-weight:400;color:#667085;font-size:13px">· ${items.length} ${items.length === 1 ? "lote" : "lotes"}${resaltar ? ` (${nNuevos} ${nNuevos === 1 ? "nuevo" : "nuevos"})` : ""}</span></h3>${tablaHtmlCP(columnas, filas)}`;
 }
-function seccionCumplimientoCP(area, filas, cargaPlaneacion, diaEvaluado, cargaCreadoEn) {
+function seccionCumplimientoCP(area, filas, cargaPlaneacion, diaEvaluado, cargaCreadoEn, plantaEnVivo) {
   const cumplidos = filas.filter((f) => f.estado === "cumplido" || f.estado === "tarde").length;
   const hayProceso = filas.some((f) => f.proceso);
   const chip = (f) => {
@@ -11663,7 +11694,10 @@ function seccionCumplimientoCP(area, filas, cargaPlaneacion, diaEvaluado, cargaC
     return d && !Number.isNaN(d.getTime()) ? d.toLocaleTimeString("es-CO", { timeZone: "America/Bogota", hour: "numeric", minute: "2-digit" }) : "";
   })();
   const atrasada = !!cargaPlaneacion && !!diaEvaluado && String(cargaPlaneacion) < String(diaEvaluado);
-  const notaCarga = area === "planta" && cargaPlaneacion
+  const horaVivo = plantaEnVivo && plantaEnVivo.hora ? new Date(plantaEnVivo.hora).toLocaleTimeString("es-CO", { timeZone: "America/Bogota", hour: "numeric", minute: "2-digit" }) : "";
+  const notaCarga = area === "planta" && plantaEnVivo
+    ? `<div style="margin:8px 0 0;padding:8px 12px;border-radius:8px;background:#f2f4f7;color:#475467;font-size:12px;font-family:Arial,Helvetica,sans-serif">Planta se midió con el inventario de Busint consultado${horaVivo ? ` a las ${escHtmlCP(horaVivo)}` : ""}: un lote cuenta como cumplido cuando ya no tiene inventario en Planta.</div>`
+    : area === "planta" && cargaPlaneacion
     ? `<div style="margin:8px 0 0;padding:8px 12px;border-radius:8px;background:${atrasada ? "#fef0c7" : "#f2f4f7"};color:${atrasada ? "#b54708" : "#475467"};font-size:12px;font-family:Arial,Helvetica,sans-serif">${atrasada ? "⚠ " : ""}Planta se mide con la última carga de Planeación: la del ${escHtmlCP(fechaLatinaCP(cargaPlaneacion))}${horaCarga ? `, cargada a las ${escHtmlCP(horaCarga)}` : ""}. Un lote que salió de Planta después de esa carga figura como «No cumplido» hasta que se cargue Planeación de nuevo.</div>`
     : "";
   const html = `<h3 style="${H3_CP}">${escHtmlCP(AREAS_CORREO_PROGRAMACION[area])} <span style="font-weight:400;color:#667085;font-size:13px">· ${cumplidos} de ${filas.length} cumplidos</span></h3>${tablaHtmlCP(columnas, ordenadas)}${notaCarga}`;
@@ -11790,7 +11824,7 @@ async function enviarCorreoNocheCP({ fechaHoy, diaProgramacion, soloProgramacion
       for (const a of areas) {
         const filas = cumpl.porArea[a];
         if (!filas.length) continue;
-        const sc = seccionCumplimientoCP(a, filas, cumpl.cargaPlaneacion, cumpl.ayer, cumpl.cargaCreadoEn);
+        const sc = seccionCumplimientoCP(a, filas, cumpl.cargaPlaneacion, cumpl.ayer, cumpl.cargaCreadoEn, cumpl.plantaEnVivo);
         cumplidos += sc.cumplidos; totalCumpl += sc.total; sec += sc.html;
       }
       if (sec) cuerpo += `<h2 style="${H2_CP}">${momento === "manana" ? "Cumplimiento del día anterior" : "Metas cumplidas hoy"} ${fechaLatinaCP(cumpl.ayer)}: ${cumplidos} de ${totalCumpl}</h2>${sec}`;
@@ -11860,7 +11894,7 @@ async function enviarCorreoNocheCP({ fechaHoy, diaProgramacion, soloProgramacion
 }
 // Todos los días a las 7 p. m. (hora Colombia), solo si hoy fue día de trabajo: metas cumplidas HOY + programación del SIGUIENTE día de trabajo.
 exports.enviarProgramacionNocheDiario = onSchedule(
-  { schedule: "every day 19:00", timeZone: "America/Bogota", secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY, EMAIL_USER, EMAIL_APP_PASSWORD], timeoutSeconds: 540, memory: "1GiB" },
+  { schedule: "every day 19:00", timeZone: "America/Bogota", secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY, BUSINT_TOKEN, BUSINT_BASE_URL, EMAIL_USER, EMAIL_APP_PASSWORD], timeoutSeconds: 540, memory: "1GiB" },
   async () => {
     const hoy = fechaHoyBogota();
     const sinTrabajar = await diasSinTrabajarCP();
@@ -11877,7 +11911,7 @@ exports.enviarProgramacionNocheDiario = onSchedule(
 // (los sábados programados cuentan; los festivos y "Días sin trabajar" no). Cada lista recibe solo su área y gerencia ('todas') recibe todo.
 // (Mismo nombre que el correo de las 7:15 a. m. de antes, para que el despliegue lo reemplace y no queden dos.)
 exports.enviarCumplimientoProgramacionDiario = onSchedule(
-  { schedule: "every day 10:00", timeZone: "America/Bogota", secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY, EMAIL_USER, EMAIL_APP_PASSWORD], timeoutSeconds: 540, memory: "1GiB" },
+  { schedule: "every day 10:00", timeZone: "America/Bogota", secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY, BUSINT_TOKEN, BUSINT_BASE_URL, EMAIL_USER, EMAIL_APP_PASSWORD], timeoutSeconds: 540, memory: "1GiB" },
   async () => {
     const hoy = fechaHoyBogota();
     const sinTrabajar = await diasSinTrabajarCP();
@@ -11892,7 +11926,7 @@ exports.enviarCumplimientoProgramacionDiario = onSchedule(
 );
 // Prueba manual (solo admin): arma el mismo correo de la mañana (programación de la fecha dada, o de hoy, + cumplimiento del día de trabajo anterior). Con `paraMi: true` lo manda solo al correo real del admin que lo pide.
 exports.enviarCumplimientoProgramacionAhora = onCallAuth(
-  { secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY, EMAIL_USER, EMAIL_APP_PASSWORD], timeoutSeconds: 540, memory: "1GiB" },
+  { secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY, BUSINT_TOKEN, BUSINT_BASE_URL, EMAIL_USER, EMAIL_APP_PASSWORD], timeoutSeconds: 540, memory: "1GiB" },
   async (request) => {
     const adminDoc = await verificarLlamadorEsAdmin(request);
     const fecha = /^\d{4}-\d{2}-\d{2}$/.test(String(request.data?.fecha || "")) ? request.data.fecha : null;
