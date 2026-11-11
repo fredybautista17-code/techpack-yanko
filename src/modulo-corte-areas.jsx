@@ -358,6 +358,7 @@ export default function CentroCostoCorteEnAreas({ areaNombre, currentUser }) {
         desde={periodo === "dia" ? fechaDia : periodo === "mes" ? `${mesKey}-01` : `${anioSel}-01-01`}
         hasta={periodo === "dia" ? fechaDia : periodo === "mes" ? `${mesKey}-31` : `${anioSel}-12-31`}
         functionsClient={functionsClient}
+        db={db}
       />
       <div style={{ marginTop: 34 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>

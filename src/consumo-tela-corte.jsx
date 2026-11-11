@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { httpsCallable } from "firebase/functions";
-import { TOLERANCIA_CONSUMO, cortesAtlasConTrazo, armarFilasConsumoTela, aplicarDetalleTelasConsumo, aplicarCostoTelaConsumo, resumenConsumoTela, clasificarConsumoSimple } from "./consumo-tela-calculo";
+import { collection, onSnapshot } from "firebase/firestore";
+import { TOLERANCIA_CONSUMO, cortesAtlasConTrazo, armarFilasConsumoTela, aplicarDetalleTelasConsumo, aplicarCotizadoConsumo, cotizadoPorReferencia, aplicarCostoTelaConsumo, resumenConsumoTela, clasificarConsumoSimple } from "./consumo-tela-calculo";
 
 // Consumo de tela de CORTE — teórico contra real (2026-10-31, a pedido de Fredy).
 // Se muestra dentro de "Centro de Costo — Planeación · CORTE". Une los cortes de ATLAS
@@ -10,7 +11,7 @@ import { TOLERANCIA_CONSUMO, cortesAtlasConTrazo, armarFilasConsumoTela, aplicar
 const C = {
   ink: "#1A1A2E", slate: "#5A5A7A", border: "#E8E2DB", canvas: "#F7F4F0", white: "#FFFFFF",
   green: "#2D9E6B", greenBg: "#EBF7F2", red: "#D9483A", redBg: "#FDF0EE", amber: "#B26B0F", amberBg: "#FDF5E6",
-  debia: "#CFC8F0", uso: "#5B4FCF",
+  debia: "#CFC8F0", uso: "#5B4FCF", cotizo: "#E3A33B",
 };
 const COLUMNAS_CLAVE = ["fecha", "referencia", "cantidad", "consMlTeor", "mlReal"];
 const fmtM = (n) => (n === null || n === undefined ? "—" : Number(n).toLocaleString("es-CO", { minimumFractionDigits: 1, maximumFractionDigits: 1 }));
@@ -35,9 +36,10 @@ function etiquetaDe(f) {
 }
 
 function fraseDe(f) {
-  const dif = f.realM - f.teorM;
-  if (f.tipo === "mas" || f.tipo === "menos") return `${f.tipo === "menos" ? "Usó" : "Gastó"} ${fmtM(Math.abs(dif))} m ${f.tipo === "menos" ? "menos" : "más"} que la ficha (${fmtM(Math.abs(f.difPct))} %).`;
-  if (f.tipo === "normal") return `Usó casi lo mismo que la ficha (${dif > 0 ? "+" : ""}${fmtM(dif)} m).`;
+  const dif = f.realM - f.baseM;
+  const contra = f.baseCot ? "lo cotizado" : "la ficha";
+  if (f.tipo === "mas" || f.tipo === "menos") return `${f.tipo === "menos" ? "Usó" : "Gastó"} ${fmtM(Math.abs(dif))} m ${f.tipo === "menos" ? "menos" : "más"} que ${contra} (${fmtM(Math.abs(f.difPct))} %).`;
+  if (f.tipo === "normal") return `Usó casi lo mismo que ${contra} (${dif > 0 ? "+" : ""}${fmtM(dif)} m).`;
   if (f.estado === "sin_teorico") return `Busint registró ${fmtM(f.realM)} m, pero no hay ficha de telas para compararlo.`;
   return f.trazoM > 0 ? `Se tendieron ${fmtM(f.trazoM)} m; falta el consumo real de Busint.` : "Falta el consumo real de Busint.";
 }
@@ -56,7 +58,7 @@ function Barra({ nombre, valor, max, color }) {
 
 function TarjetaLote({ f, abierta, onToggle, limite }) {
   const e = etiquetaDe(f);
-  const max = Math.max(f.teorM || 0, f.realM || 0) * 1.04;
+  const max = Math.max(f.teorM || 0, f.realM || 0, f.cotizM || 0) * 1.04;
   const conPlata = f.pagadoDeMas !== null && f.pagadoDeMas !== undefined;
   const tarjeta = f.tipo === "falta" ? null : f;
   const pregTrazo = !(f.trazoM > 0)
@@ -69,6 +71,11 @@ function TarjetaLote({ f, abierta, onToggle, limite }) {
   const pregFicha = !tarjeta
     ? "Todavía no se puede responder: falta el consumo real o la ficha de telas."
     : `${f.tipo === "normal" ? "Sí, está dentro de lo normal." : f.tipo === "menos" ? "Gastó menos que la ficha: ahorro de tela." : "Gastó más que la ficha: hay tela de más."} Debía ${fmtM(f.teorM)} m y usó ${fmtM(f.realM)} m.`;
+  const unidP = f.unidadesLote > 0 ? f.unidadesLote : f.unidades;
+  const porPrenda = (n) => (unidP > 0 ? ` (${Number(n / unidP).toLocaleString("es-CO", { minimumFractionDigits: 3, maximumFractionDigits: 3 })} por prenda)` : "");
+  const pregCot = f.cotizM > 0
+    ? `${f.tipo === "normal" ? "Sí, está dentro de lo normal." : f.tipo === "menos" ? "Se gastó menos que lo cotizado: ahorro real." : f.tipo === "mas" ? "Se gastó más que lo cotizado: la tela se comió margen." : ""} Cotizó ${fmtM(f.cotizM)} m${porPrenda(f.cotizM)}${f.realM > 0 ? ` y usó ${fmtM(f.realM)} m${porPrenda(f.realM)}` : ""}.`.trim()
+    : "";
   return (
     <article style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, marginBottom: 10, overflow: "hidden" }}>
       <div
@@ -85,6 +92,7 @@ function TarjetaLote({ f, abierta, onToggle, limite }) {
           <div style={{ fontSize: 12.5, color: C.slate }}>{f.refs.join(", ") || "—"}{f.tela ? ` · ${f.tela}` : f.pedido ? ` · Pedido ${f.pedido}` : ""} · {Number(f.unidades || 0).toLocaleString("es-CO")} unid.</div>
         </div>
         <div style={{ flex: "2 1 260px", minWidth: 0 }}>
+          {f.cotizM > 0 && <Barra nombre="Cotizó" valor={f.cotizM} max={max} color={C.cotizo} />}
           <Barra nombre="Debía" valor={f.teorM || 0} max={max} color={C.debia} />
           <Barra nombre="Usó" valor={f.realM || 0} max={max} color={C.uso} />
         </div>
@@ -104,14 +112,16 @@ function TarjetaLote({ f, abierta, onToggle, limite }) {
       {abierta && (
         <div style={{ borderTop: `1px solid ${C.border}`, background: "#FBF9F6", padding: "14px 18px 16px" }}>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
-            <div style={{ flex: "1 1 260px", background: C.white, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 12px" }}>
-              <div style={{ fontSize: 11.5, textTransform: "uppercase", letterSpacing: "0.05em", color: C.slate, fontWeight: 700, marginBottom: 4 }}>1. ¿Gastó lo que decía la ficha?</div>
-              <div style={{ fontSize: 13.5 }}>{pregFicha}</div>
-            </div>
-            <div style={{ flex: "1 1 260px", background: C.white, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 12px" }}>
-              <div style={{ fontSize: 11.5, textTransform: "uppercase", letterSpacing: "0.05em", color: C.slate, fontWeight: 700, marginBottom: 4 }}>2. ¿Lo tendido coincide con Busint?</div>
-              <div style={{ fontSize: 13.5 }}>{pregTrazo}</div>
-            </div>
+            {[
+              ...(f.cotizM > 0 ? [["¿Se gastó lo que se cotizó?", pregCot]] : []),
+              [f.cotizM > 0 ? "¿Y contra la ficha de Busint?" : "¿Gastó lo que decía la ficha?", pregFicha],
+              ["¿Lo tendido coincide con Busint?", pregTrazo],
+            ].map(([titulo, texto], i) => (
+              <div key={titulo} style={{ flex: "1 1 220px", background: C.white, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 12px" }}>
+                <div style={{ fontSize: 11.5, textTransform: "uppercase", letterSpacing: "0.05em", color: C.slate, fontWeight: 700, marginBottom: 4 }}>{f.cotizM > 0 || i < 2 ? `${i + 1}. ` : ""}{titulo}</div>
+                <div style={{ fontSize: 13.5 }}>{texto}</div>
+              </div>
+            ))}
           </div>
           {f.fuente === "detalle" && f.porTela && f.porTela.length > 0 && (
             <div style={{ overflowX: "auto" }}>
@@ -146,6 +156,8 @@ function TarjetaLote({ f, abierta, onToggle, limite }) {
               {f.realPorPrenda !== null && f.realPorPrenda !== undefined ? ` · usó ${Number(f.realPorPrenda).toLocaleString("es-CO", { minimumFractionDigits: 3, maximumFractionDigits: 3 })} m` : ""}.
             </div>
           )}
+          {f.sinCotizacion && f.sinCotizacion.length > 0 && <div style={{ marginTop: 10, fontSize: 12.5, color: C.slate }}>Sin cotización aprobada en ATLAS para {f.sinCotizacion.join(", ")}: se comparó contra la ficha de telas.</div>}
+          {f.cotizVersiones && f.cotizVersiones.length > 0 && <div style={{ marginTop: 6, fontSize: 12.5, color: C.slate }}>Cotización aprobada usada: {f.cotizVersiones.join(", ")}.</div>}
           {f.detalleTrazo && <div style={{ marginTop: 6, fontSize: 12.5, color: C.slate }}>Trazos del lote: {f.detalleTrazo}.</div>}
           {f.fuente === "detalle" && <div style={{ marginTop: 6, fontSize: 12.5, color: C.slate }}>Fuente: ficha de telas de la referencia y detalle de telas del lote en Busint.</div>}
         </div>
@@ -154,7 +166,7 @@ function TarjetaLote({ f, abierta, onToggle, limite }) {
   );
 }
 
-export default function ConsumoTelaCortePanel({ pedidos, desde, hasta, functionsClient }) {
+export default function ConsumoTelaCortePanel({ pedidos, desde, hasta, functionsClient, db }) {
   const [busint, setBusint] = useState(null);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState("");
@@ -165,6 +177,8 @@ export default function ConsumoTelaCortePanel({ pedidos, desde, hasta, functions
   const [verColumnas, setVerColumnas] = useState(false);
   const [costosTela, setCostosTela] = useState({});
   const [errorCostos, setErrorCostos] = useState("");
+  const [cotPorRef, setCotPorRef] = useState(null); // lo cotizado por referencia (versión aprobada); null = aún no cargado
+  const [errorCot, setErrorCot] = useState("");
 
   useEffect(() => {
     let vivo = true;
@@ -178,6 +192,15 @@ export default function ConsumoTelaCortePanel({ pedidos, desde, hasta, functions
     return () => { vivo = false; };
   }, [functionsClient, recarga]);
 
+  useEffect(() => {
+    if (!db) return undefined;
+    const unsub = onSnapshot(
+      collection(db, "cotizaciones"),
+      (snap) => { setCotPorRef(cotizadoPorReferencia(snap.docs.map((d) => ({ ...d.data(), id: d.id })))); setErrorCot(""); },
+      (err) => setErrorCot(err?.message || String(err))
+    );
+    return () => unsub();
+  }, [db]);
   const tol = useMemo(() => ({ verde: limite, rojo: limite * 2 }), [limite]);
   const cortes = useMemo(() => cortesAtlasConTrazo(pedidos, desde, hasta), [pedidos, desde, hasta]);
   const filasBase = useMemo(
@@ -213,7 +236,8 @@ export default function ConsumoTelaCortePanel({ pedidos, desde, hasta, functions
     return () => { vivo = false; };
   }, [lotesKey, functionsClient, recarga]);
   const filasDetalle = useMemo(() => aplicarDetalleTelasConsumo(filasBase, costosTela, tol), [filasBase, costosTela, tol]);
-  const filas = useMemo(() => aplicarCostoTelaConsumo(filasDetalle, costosTela), [filasDetalle, costosTela]);
+  const filasCot = useMemo(() => aplicarCotizadoConsumo(filasDetalle, cotPorRef), [filasDetalle, cotPorRef]);
+  const filas = useMemo(() => aplicarCostoTelaConsumo(filasCot, costosTela), [filasCot, costosTela]);
   const usaDetalle = useMemo(() => filas.some((f) => f.fuente === "detalle"), [filas]);
   const filasC = useMemo(() => clasificarConsumoSimple(filas, limite), [filas, limite]);
   const resumen = useMemo(() => resumenConsumoTela(filas), [filas]);
@@ -239,9 +263,10 @@ export default function ConsumoTelaCortePanel({ pedidos, desde, hasta, functions
         </button>
       </div>
       <p style={{ margin: "0 0 12px", fontSize: 13, color: C.slate, maxWidth: 900 }}>
-        ¿Se gastó la tela que decía la ficha? Cada lote compara lo que <strong>debía</strong> usar (ficha de telas × unidades) con lo que <strong>usó</strong> (lo cortado, según Busint), y revisa que lo <strong>tendido</strong> en ATLAS coincida con lo registrado. Medidas en metros lineales (m).
+        ¿Se gastó la tela que se cotizó? Cada lote compara lo que <strong>cotizó</strong> (consumo de la cotización aprobada × unidades) y lo que <strong>debía</strong> usar (ficha de telas de Busint) con lo que <strong>usó</strong> (lo cortado, según Busint), y revisa que lo <strong>tendido</strong> en ATLAS coincida con lo registrado. Medidas en metros lineales (m).
       </p>
       {error && <div style={{ fontSize: 12.5, color: C.red, background: C.redBg, border: `1px solid ${C.red}`, borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>⚠ No se pudo traer el rendimiento de Busint: {error}. Se muestran solo los trazos de ATLAS.</div>}
+      {errorCot && <div style={{ fontSize: 12.5, color: C.amber, background: C.amberBg, border: `1px solid ${C.amber}`, borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>⚠ No se pudieron leer las cotizaciones ({errorCot}); sin ellas el consumo se compara solo contra la ficha de telas.</div>}
       {errorCostos && <div style={{ fontSize: 12.5, color: C.amber, background: C.amberBg, border: `1px solid ${C.amber}`, borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>⚠ No se pudo traer el detalle de telas de Busint ({errorCostos}); sin él no se calcula el consumo por tela ni el dinero.</div>}
       {busint && busint.total === 0 && usaDetalle && (
         <div style={{ fontSize: 12.5, color: C.slate, background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>
@@ -276,7 +301,7 @@ export default function ConsumoTelaCortePanel({ pedidos, desde, hasta, functions
         {resumen.n > 0 ? (
           <>
             <div style={{ fontSize: 17, fontWeight: 700, lineHeight: 1.4, color: C.ink }}>
-              En <strong>{resumen.n}</strong> {resumen.n === 1 ? "lote" : "lotes"} con datos completos se usaron <strong>{fmtM(resumen.real)} m</strong> de tela y la ficha preveía <strong>{fmtM(resumen.teor)} m</strong>:{" "}
+              En <strong>{resumen.n}</strong> {resumen.n === 1 ? "lote" : "lotes"} con datos completos se usaron <strong>{fmtM(resumen.real)} m</strong> de tela y {resumen.nCot === resumen.n ? "lo cotizado era" : resumen.nCot > 0 ? "lo previsto era" : "la ficha preveía"} <strong>{fmtM(resumen.teor)} m</strong>:{" "}
               <strong style={{ color: difResumen < 0 ? C.green : difResumen > 0 ? C.red : C.slate }}>{difResumen === 0 ? "sin diferencia" : `${fmtM(Math.abs(difResumen))} m ${difResumen < 0 ? "menos" : "más"}`}</strong>
               {resumen.pctReal !== null && difResumen !== 0 ? ` (${fmtPct(resumen.pctReal)})` : ""}.
             </div>
@@ -285,7 +310,7 @@ export default function ConsumoTelaCortePanel({ pedidos, desde, hasta, functions
                 {resumen.pesos < 0 ? "Ahorro en tela de " : resumen.pesos > 0 ? "Pagaste de más en tela: " : "Sin diferencia en pesos"}
                 {resumen.pesos !== 0 && <strong style={{ color: resumen.pesos < 0 ? C.green : C.red, fontSize: 15 }}>{fmtPesos(Math.abs(resumen.pesos))}</strong>}
                 {` en ${resumen.nPesos} ${resumen.nPesos === 1 ? "lote" : "lotes"} con precio de tela`}
-                {resumen.sinPrecio > 0 ? `; ${resumen.sinPrecio} sin precio` : ""}. Metros de más o de menos × costo de la tela de cada lote en Busint.
+                {resumen.sinPrecio > 0 ? `; ${resumen.sinPrecio} sin precio` : ""}. Metros de más o de menos{resumen.nCot > 0 ? " contra lo cotizado" : ""} × costo de la tela de cada lote en Busint.{resumen.nCot > 0 && resumen.nCot < resumen.n ? " «Lo previsto» es la cotización aprobada y, donde no la hay, la ficha de telas." : ""}
               </div>
             )}
           </>
@@ -321,7 +346,7 @@ export default function ConsumoTelaCortePanel({ pedidos, desde, hasta, functions
         ))
       )}
       <p style={{ margin: "8px 0 0", fontSize: 12.5, color: C.slate }}>
-        <strong>Cómo se lee:</strong> «Debía» = ficha de telas × unidades del lote. «Usó» = lo que Busint registró cortado en ese lote. Hasta {limite} % de diferencia es normal; más de eso se marca como ahorro o gasto de más.
+        <strong>Cómo se lee:</strong> «Cotizó» = consumo de la cotización aprobada × unidades. «Debía» = ficha de telas × unidades del lote. «Usó» = lo que Busint registró cortado en ese lote. El veredicto se da contra lo cotizado (si la referencia no tiene cotización aprobada, contra la ficha). Hasta {limite} % de diferencia es normal; más de eso se marca como ahorro o gasto de más.
       </p>
       {busint && (
         <div style={{ marginTop: 8 }}>

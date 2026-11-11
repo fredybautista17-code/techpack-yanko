@@ -117,6 +117,7 @@ export function armarFilasConsumoTela({ cortes, filasBusint, desde, hasta, tol =
       cortador: c.cortador,
       pedido: c.pedido,
       refs: c.refs.map((r) => r.ref),
+      refsDetalle: c.refs.map((r) => ({ ref: r.ref, total: Number(r.total) || 0 })),
       tela: c.tela,
       unidades,
       detalleTrazo: c.detalleTrazo,
@@ -198,9 +199,58 @@ export function aplicarDetalleTelasConsumo(filas, detallePorLote, tol = TOLERANC
       estado,
       conBusint: realM !== null,
       fuente: "detalle",
+      unidadesLote: unid,
       porTela: Array.isArray(d.telas) ? d.telas : [],
       sinFicha: Array.isArray(d.sinFicha) ? d.sinFicha : [],
     };
+  });
+}
+
+// ─── Lo COTIZADO (2026-11-11, a pedido de Fredy) ───────────────────────────────────────────────────────────
+// El precio de venta se armó con el consumo de tela de la cotización. Se toma, por referencia, la ÚLTIMA versión aprobada de la
+// cotización (la misma que usa "Para renegociar") y se suman los consumos (m por prenda) de sus telas.
+const normRefCot = (s) => String(s || "").trim().toUpperCase().replace(/\s+/g, "").replace(/-/g, "");
+const numCot = (x) => {
+  const v = Number(String(x === null || x === undefined ? "" : x).trim().replace(/\s/g, "").replace(",", "."));
+  return Number.isFinite(v) ? v : 0;
+};
+export function cotizadoPorReferencia(cotizaciones) {
+  const out = {};
+  (cotizaciones || []).forEach((c) => {
+    if (!c || c.eliminado) return;
+    const ref = normRefCot(c.referencia);
+    if (!ref) return;
+    const aprobadas = (c.versiones || []).filter((v) => v && v.estado === "aprobada");
+    const v = aprobadas[aprobadas.length - 1];
+    if (!v || !v.v) return;
+    const telas = (v.v.telas || []).map((t) => ({ material: String(t.material || "").trim(), consumo: numCot(t.consumo) })).filter((t) => t.consumo > 0);
+    const consumo = telas.reduce((s, t) => s + t.consumo, 0);
+    if (!(consumo > 0)) return;
+    const previa = out[ref];
+    if (previa && String(previa.fecha) > String(v.fecha || "")) return;
+    out[ref] = { consumo, telas, version: v.numero, fecha: v.fecha || "", cotizacion: c.nombre || "" };
+  });
+  return out;
+}
+
+// Agrega a cada lote lo que se cotizó (cotizM = consumo cotizado × unidades de cada referencia). Si una referencia no tiene
+// cotización aprobada, el lote queda con `sinCotizacion` y se sigue comparando contra la ficha. cotPorRef === null = aún no cargadas.
+export function aplicarCotizadoConsumo(filas, cotPorRef) {
+  if (!cotPorRef) return filas;
+  return filas.map((f) => {
+    const refs = Array.isArray(f.refsDetalle) && f.refsDetalle.length
+      ? f.refsDetalle
+      : (f.refs || []).length === 1 ? [{ ref: f.refs[0], total: Number(f.unidades) || 0 }] : [];
+    if (!refs.length) return f;
+    const faltan = refs.filter((r) => !cotPorRef[normRefCot(r.ref)]).map((r) => r.ref);
+    if (faltan.length) return { ...f, sinCotizacion: faltan };
+    const unidadesF = refs.reduce((s, r) => s + (Number(r.total) || 0), 0);
+    if (!(unidadesF > 0)) return f;
+    // Si el detalle de telas junta varios cortes del lote, lo cotizado se escala a las unidades de todo el lote.
+    const escala = f.fuente === "detalle" && f.unidadesLote > unidadesF ? f.unidadesLote / unidadesF : 1;
+    const cotizM = refs.reduce((s, r) => s + cotPorRef[normRefCot(r.ref)].consumo * (Number(r.total) || 0), 0) * escala;
+    const versiones = [...new Set(refs.map((r) => `${r.ref} V${cotPorRef[normRefCot(r.ref)].version}`))];
+    return { ...f, cotizM: redondear(cotizM, 2), cotizVersiones: versiones };
   });
 }
 
@@ -211,6 +261,11 @@ export function aplicarCostoTelaConsumo(filas, costosPorLote) {
     const c = f.lote ? (costosPorLote || {})[String(f.lote)] : null;
     const costoMetro = c && c.costoPorMetro > 0 ? c.costoPorMetro : null;
     const difM = f.realM !== null && f.realM !== undefined && f.teorM !== null && f.teorM !== undefined ? f.realM - f.teorM : null;
+    // Contra lo cotizado: (real − cotizado) × costo por metro de la tela del lote.
+    if (f.cotizM > 0 && f.realM > 0) {
+      const difCot = f.realM - f.cotizM;
+      return { ...f, costoMetro, difM: difCot, pagadoDeMas: costoMetro !== null ? Math.round(difCot * costoMetro) : null };
+    }
     // Con el detalle por tela, cada tela se valora con su propio costo (MUNICH y AMORELA no cuestan lo mismo).
     if (f.fuente === "detalle" && Array.isArray(f.porTela) && f.porTela.length && difM !== null) {
       let pesos = 0;
@@ -235,17 +290,26 @@ export function clasificarConsumoSimple(filas, limite = TOLERANCIA_CONSUMO.verde
   return filas.map((f) => {
     const avisos = [];
     const tieneReal = f.realM > 0;
-    const tieneTeor = f.teorM > 0;
+    const baseM = f.cotizM > 0 ? f.cotizM : f.teorM;
+    const tieneTeor = baseM > 0;
     let tipo = "falta";
     let difPct = null;
     if (tieneReal && tieneTeor) {
-      difPct = pctSobre(f.realM, f.teorM);
+      difPct = pctSobre(f.realM, baseM);
       tipo = difPct > limite ? "mas" : difPct < -limite ? "menos" : "normal";
     }
     if (f.trazoM > 0 && tieneReal) {
       const t = pctSobre(f.trazoM, f.realM);
       if (t !== null && Math.abs(t) > limite) {
         avisos.push(`Lo tendido (${m1(f.trazoM)} m) y lo que registró Busint (${m1(f.realM)} m) difieren ${m1(Math.abs(t))} %: revisar capas o registro.`);
+      }
+    }
+    if (f.cotizM > 0 && f.teorM > 0) {
+      const p = pctSobre(f.cotizM, f.teorM);
+      if (p !== null && Math.abs(p) > limite) {
+        const u = f.unidadesLote > 0 ? f.unidadesLote : f.unidades;
+        const pp = (n) => (u > 0 ? Number(n / u).toLocaleString("es-CO", { minimumFractionDigits: 3, maximumFractionDigits: 3 }) : m1(n));
+        avisos.push(`La ficha de telas de Busint (${pp(f.teorM)} m por prenda) y la cotización (${pp(f.cotizM)} m) no coinciden (${p > 0 ? "+" : ""}${m1(p)} %). Conviene corregir la que esté mal.`);
       }
     }
     const sinPareja = (f.porTela || []).filter((t) => t.sinPareja);
@@ -255,20 +319,21 @@ export function clasificarConsumoSimple(filas, limite = TOLERANCIA_CONSUMO.verde
       );
     }
     if (f.sinFicha && f.sinFicha.length) avisos.push(`No hay ficha de telas en Busint para: ${f.sinFicha.join(", ")}.`);
-    return { ...f, tipo, difPct, avisos };
+    return { ...f, tipo, difPct, avisos, baseM: tieneTeor ? baseM : null, baseCot: f.cotizM > 0 };
   });
 }
 
 export function resumenConsumoTela(filas) {
   const cuenta = { cruza: 0, revisar: 0, nocruza: 0, esperando: 0, sin_teorico: 0 };
   filas.forEach((f) => { cuenta[f.estado] = (cuenta[f.estado] || 0) + 1; });
-  const conReal = filas.filter((f) => f.teorM > 0 && f.realM > 0);
-  const teor = conReal.reduce((s, f) => s + f.teorM, 0);
+  const baseDe = (f) => (f.cotizM > 0 ? f.cotizM : f.teorM);
+  const conReal = filas.filter((f) => baseDe(f) > 0 && f.realM > 0);
+  const teor = conReal.reduce((s, f) => s + baseDe(f), 0);
   const real = conReal.reduce((s, f) => s + f.realM, 0);
   const trazo = conReal.reduce((s, f) => s + (f.trazoM || 0), 0);
   const conPesos = conReal.filter((f) => f.pagadoDeMas !== null && f.pagadoDeMas !== undefined);
   const pesos = conPesos.reduce((s, f) => s + f.pagadoDeMas, 0);
-  return { cuenta, teor: redondear(teor), real: redondear(real), trazo: redondear(trazo), pctReal: pctSobre(real, teor), n: conReal.length, pesos, nPesos: conPesos.length, sinPrecio: conReal.length - conPesos.length };
+  return { cuenta, teor: redondear(teor), real: redondear(real), trazo: redondear(trazo), pctReal: pctSobre(real, teor), n: conReal.length, nCot: conReal.filter((f) => f.cotizM > 0).length, pesos, nPesos: conPesos.length, sinPrecio: conReal.length - conPesos.length };
 }
 
 // Aviso al crear el lote en ATLAS (Busint aún no tiene el real): trazo del corte contra el

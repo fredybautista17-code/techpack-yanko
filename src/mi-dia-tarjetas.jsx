@@ -62,7 +62,7 @@ function BloqueConsumoTela({ db }) {
         <Chip activo={alcance === "anio"} onClick={() => setAlcance("anio")}>Este año</Chip>
       </div>
       <div style={{ marginTop: -22 }}>
-        <ConsumoTelaCortePanel pedidos={pedidos} desde={desde} hasta={hasta} functionsClient={functionsClient} />
+        <ConsumoTelaCortePanel pedidos={pedidos} desde={desde} hasta={hasta} functionsClient={functionsClient} db={db} />
       </div>
     </div>
   );
