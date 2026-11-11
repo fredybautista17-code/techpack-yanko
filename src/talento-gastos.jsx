@@ -3,7 +3,7 @@ import { collection, onSnapshot, doc, setDoc, deleteDoc } from "firebase/firesto
 import { httpsCallable } from "firebase/functions";
 import { candidatosGastos, proveedoresDeTexto } from "./gastos-busint-calculo";
 import {
-  COL_GASTOS_TALENTO, COL_PRESUPUESTO_TALENTO, CONCEPTO_TALENTO_DEFECTO, MESES_CORTOS, TODOS,
+  COL_GASTOS_TALENTO, COL_PRESUPUESTO_TALENTO, CONCEPTOS_TALENTO_DEFECTO, MESES_CORTOS, TODOS,
   armarSerie, sugerirPresupuesto, proyeccionCierre, comparacionAnioEnCurso, gastoTalentoDeFactura, itemsDeGastos, claveItem, idPresupuesto, hoyBogotaISO,
 } from "./talento-gastos-calculo";
 
@@ -44,10 +44,10 @@ function useColeccion(db, nombre) {
 
 // ─── Ventana «Traer de Busint» ───
 function TraerDeBusintModal({ db, functionsClient, gastos, currentUser, onClose, anioActual, hoy }) {
-  const [texto, setTexto] = useState(CONCEPTO_TALENTO_DEFECTO);
+  const [texto, setTexto] = useState(CONCEPTOS_TALENTO_DEFECTO.join(", "));
   const [desde, setDesde] = useState(`${anioActual - 3}-01-01`);
   const [hasta, setHasta] = useState(hoy);
-  const [consulta, setConsulta] = useState({ n: 1, conceptos: [CONCEPTO_TALENTO_DEFECTO], desde: `${anioActual - 3}-01-01`, hasta: hoy });
+  const [consulta, setConsulta] = useState({ n: 1, conceptos: CONCEPTOS_TALENTO_DEFECTO, desde: `${anioActual - 3}-01-01`, hasta: hoy });
   const [datos, setDatos] = useState(null);
   const [errorBusint, setErrorBusint] = useState("");
   const [busqueda, setBusqueda] = useState("");
@@ -387,7 +387,7 @@ export default function GastosTalentoHumanoView({ db, functionsClient, currentUs
       ) : !serie.anios.length ? (
         <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 16, padding: "32px 24px", textAlign: "center" }}>
           <div style={{ fontSize: 16, fontWeight: 800, color: C.ink, marginBottom: 6 }}>Todavía no hay gastos cargados</div>
-          <div style={{ fontSize: 13.5, color: C.slate, maxWidth: 520, margin: "0 auto 14px" }}>Pulsa «Traer de Busint», deja el concepto {CONCEPTO_TALENTO_DEFECTO} y busca: salen las facturas de los últimos años para que escojas cuáles guardar.</div>
+          <div style={{ fontSize: 13.5, color: C.slate, maxWidth: 520, margin: "0 auto 14px" }}>Pulsa «Traer de Busint», deja los conceptos {CONCEPTOS_TALENTO_DEFECTO.join(" y ")} (actividades de recreación y recreación y cultura) y busca: salen las facturas de los últimos años para que escojas cuáles guardar.</div>
           <button onClick={() => setModal(true)} style={boton("pri")}>📥 Traer de Busint</button>
         </div>
       ) : (

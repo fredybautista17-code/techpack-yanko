@@ -8,13 +8,14 @@
 
 export const COL_GASTOS_TALENTO = "nomina_talento_gastos";
 export const COL_PRESUPUESTO_TALENTO = "nomina_talento_presupuesto";
-export const CONCEPTO_TALENTO_DEFECTO = "RECREACION";
+// Los dos conceptos de Busint que son gasto de Talento Humano (Fredy, 2026-11-11): ACTIV «Actividades de recreación» y *ACTI «Recreación y cultura».
+export const CONCEPTOS_TALENTO_DEFECTO = ["ACTIV", "*ACTI"];
 export const MESES_CORTOS = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
 
-const NOMBRES_ITEM = { RECREACION: "Recreación", DOTACION: "Dotación", CAPACITACION: "Capacitación", BIENESTAR: "Bienestar" };
+const NOMBRES_ITEM = { ACTIV: "Actividades de recreación", ACTIVIDADESDERECREACION: "Actividades de recreación", ACTI: "Recreación y cultura", RECREACIONYCULTURA: "Recreación y cultura", RECREACION: "Recreación", DOTACION: "Dotación", CAPACITACION: "Capacitación", BIENESTAR: "Bienestar" };
 const sinTildes = (s) => String(s ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "");
 
-// «RECREACION» -> «Recreación»; lo que no esté en la lista queda con la primera letra en mayúscula.
+// «ACTIV» -> «Actividades de recreación», «*ACTI» -> «Recreación y cultura», «RECREACION» -> «Recreación»; lo que no esté en la lista queda con la primera letra en mayúscula.
 export function nombreItem(texto) {
   const t = String(texto || "").trim();
   if (!t) return "Sin ítem";
