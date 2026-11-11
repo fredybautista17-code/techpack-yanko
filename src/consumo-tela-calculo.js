@@ -227,6 +227,38 @@ export function aplicarCostoTelaConsumo(filas, costosPorLote) {
   });
 }
 
+// Clasificación en palabras para las tarjetas (2026-11-11): un solo límite en vez de dos.
+//   tipo: "menos" (ahorró tela) | "mas" (gastó de más) | "normal" (hasta `limite` %) | "falta" (sin real o sin ficha)
+//   avisos: textos para revisar (lo tendido no coincide con Busint, telas sin pareja entre ficha y corte, referencia sin ficha).
+export function clasificarConsumoSimple(filas, limite = TOLERANCIA_CONSUMO.verde) {
+  const m1 = (n) => Number(n).toLocaleString("es-CO", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  return filas.map((f) => {
+    const avisos = [];
+    const tieneReal = f.realM > 0;
+    const tieneTeor = f.teorM > 0;
+    let tipo = "falta";
+    let difPct = null;
+    if (tieneReal && tieneTeor) {
+      difPct = pctSobre(f.realM, f.teorM);
+      tipo = difPct > limite ? "mas" : difPct < -limite ? "menos" : "normal";
+    }
+    if (f.trazoM > 0 && tieneReal) {
+      const t = pctSobre(f.trazoM, f.realM);
+      if (t !== null && Math.abs(t) > limite) {
+        avisos.push(`Lo tendido (${m1(f.trazoM)} m) y lo que registró Busint (${m1(f.realM)} m) difieren ${m1(Math.abs(t))} %: revisar capas o registro.`);
+      }
+    }
+    const sinPareja = (f.porTela || []).filter((t) => t.sinPareja);
+    if (sinPareja.length) {
+      avisos.push(
+        `Hay telas que no coinciden entre la ficha y el corte: ${sinPareja.map((t) => `${t.tela} (${t.realM > 0 ? `se usó ${m1(t.realM)} m y no está en la ficha` : "está en la ficha y no se cortó"})`).join("; ")}. Puede ser un cambio de tela o un nombre distinto, y por eso el dinero puede variar aunque los metros totales cuadren.`
+      );
+    }
+    if (f.sinFicha && f.sinFicha.length) avisos.push(`No hay ficha de telas en Busint para: ${f.sinFicha.join(", ")}.`);
+    return { ...f, tipo, difPct, avisos };
+  });
+}
+
 export function resumenConsumoTela(filas) {
   const cuenta = { cruza: 0, revisar: 0, nocruza: 0, esperando: 0, sin_teorico: 0 };
   filas.forEach((f) => { cuenta[f.estado] = (cuenta[f.estado] || 0) + 1; });
