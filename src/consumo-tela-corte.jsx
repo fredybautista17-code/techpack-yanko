@@ -1,12 +1,14 @@
 import { useState, useEffect, useMemo } from "react";
 import { httpsCallable } from "firebase/functions";
 import { collection, onSnapshot } from "firebase/firestore";
+import CalendarioAhorroTela from "./consumo-tela-calendario";
 import { TOLERANCIA_CONSUMO, cortesAtlasConTrazo, armarFilasConsumoTela, aplicarDetalleTelasConsumo, aplicarCotizadoConsumo, cotizadoPorReferencia, aplicarCostoTelaConsumo, resumenConsumoTela, clasificarConsumoSimple } from "./consumo-tela-calculo";
 
 // Consumo de tela de CORTE — teórico contra real (2026-10-31, a pedido de Fredy).
 // Se muestra dentro de "Centro de Costo — Planeación · CORTE". Une los cortes de ATLAS
 // (metros tendidos = trazos) con Busint: el Visor de Rendimiento de Corte o, cuando viene vacío,
 // la ficha de telas y el detalle de telas de cada lote.
+// (2026-11-11, a pedido de Fredy) Vista «Calendario»: el ahorro de tela día por día (consumo-tela-calendario.jsx); en ella el periodo se amplía a los meses completos.
 // (2026-11-11) Pantalla en tarjetas: una por lote, con «Debía» contra «Usó», una etiqueta en palabras y el detalle al tocarla.
 const C = {
   ink: "#1A1A2E", slate: "#5A5A7A", border: "#E8E2DB", canvas: "#F7F4F0", white: "#FFFFFF",
@@ -166,7 +168,16 @@ function TarjetaLote({ f, abierta, onToggle, limite }) {
   );
 }
 
-export default function ConsumoTelaCortePanel({ pedidos, desde, hasta, functionsClient, db }) {
+const ultimoDiaDelMes = (iso) => {
+  const [y, m] = String(iso || "").split("-").map(Number);
+  return y && m ? `${y}-${String(m).padStart(2, "0")}-${String(new Date(y, m, 0).getDate()).padStart(2, "0")}` : iso;
+};
+
+export default function ConsumoTelaCortePanel({ pedidos, desde: desdePeriodo, hasta: hastaPeriodo, functionsClient, db }) {
+  const [vista, setVista] = useState("calendario");
+  // En el calendario se ven los meses completos, aunque el periodo elegido sea «Hoy».
+  const desde = vista === "calendario" && desdePeriodo ? `${String(desdePeriodo).slice(0, 8)}01` : desdePeriodo;
+  const hasta = vista === "calendario" && hastaPeriodo ? ultimoDiaDelMes(hastaPeriodo) : hastaPeriodo;
   const [busint, setBusint] = useState(null);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState("");
@@ -297,7 +308,13 @@ export default function ConsumoTelaCortePanel({ pedidos, desde, hasta, functions
       )}
       {periodoFueraDeVentana && <div style={{ fontSize: 12, color: C.slate, marginBottom: 8 }}>Busint se consulta de los últimos 150 días (desde {fmtFecha(busint.desde)}); lo anterior sale solo con trazos.</div>}
 
-      <section aria-label="Resumen del periodo" style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: "16px 20px", marginBottom: 14 }}>
+      <div role="group" aria-label="Forma de ver" style={{ display: "inline-flex", background: C.white, border: `1px solid ${C.border}`, borderRadius: 999, padding: 3, marginBottom: 12 }}>
+        {[["calendario", "Calendario"], ["tarjetas", "Tarjetas por lote"]].map(([id, texto]) => (
+          <button key={id} onClick={() => setVista(id)} aria-pressed={vista === id} style={{ border: 0, background: vista === id ? C.ink : "transparent", color: vista === id ? C.white : C.slate, padding: "6px 16px", borderRadius: 999, fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>{texto}</button>
+        ))}
+      </div>
+
+      {vista === "tarjetas" && <section aria-label="Resumen del periodo" style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: "16px 20px", marginBottom: 14 }}>
         {resumen.n > 0 ? (
           <>
             <div style={{ fontSize: 17, fontWeight: 700, lineHeight: 1.4, color: C.ink }}>
@@ -317,9 +334,9 @@ export default function ConsumoTelaCortePanel({ pedidos, desde, hasta, functions
         ) : (
           <div style={{ fontSize: 14, color: C.slate }}>Todavía no hay lotes con consumo real y ficha de telas en este periodo.</div>
         )}
-      </section>
+      </section>}
 
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
+      {vista === "tarjetas" && <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
         {FILTROS.filter((x) => x.id === "todos" || cuenta[x.id] > 0 || filtro === x.id).map((x) => (
           <button
             key={x.id}
@@ -334,10 +351,15 @@ export default function ConsumoTelaCortePanel({ pedidos, desde, hasta, functions
           Normal hasta{" "}
           <input type="number" min="0" step="0.5" value={limite} onChange={(e) => setLimite(Math.max(0, Number(e.target.value) || 0))} style={{ width: 56, padding: "4px 6px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12 }} /> % de diferencia
         </span>
-      </div>
+      </div>}
 
       {cargando && !busint ? (
         <div style={{ padding: 20, color: C.slate, fontSize: 13 }}>Consultando Busint…</div>
+      ) : vista === "calendario" ? (
+        <CalendarioAhorroTela
+          filas={filasC}
+          renderLote={(f) => <TarjetaLote key={f.key} f={f} limite={limite} abierta={!!abiertas[f.key]} onToggle={() => setAbiertas((a) => ({ ...a, [f.key]: !a[f.key] }))} />}
+        />
       ) : !visibles.length ? (
         <div style={{ padding: 20, color: C.slate, fontSize: 13 }}>No hay cortes ni rendimiento de Busint en este periodo{filtro !== "todos" ? " con ese filtro" : ""}.</div>
       ) : (
@@ -345,9 +367,9 @@ export default function ConsumoTelaCortePanel({ pedidos, desde, hasta, functions
           <TarjetaLote key={f.key} f={f} limite={limite} abierta={!!abiertas[f.key]} onToggle={() => setAbiertas((a) => ({ ...a, [f.key]: !a[f.key] }))} />
         ))
       )}
-      <p style={{ margin: "8px 0 0", fontSize: 12.5, color: C.slate }}>
+      {vista === "tarjetas" && <p style={{ margin: "8px 0 0", fontSize: 12.5, color: C.slate }}>
         <strong>Cómo se lee:</strong> «Cotizó» = consumo de la cotización aprobada × unidades. «Debía» = ficha de telas × unidades del lote. «Usó» = lo que Busint registró cortado en ese lote. El veredicto se da contra lo cotizado (si la referencia no tiene cotización aprobada, contra la ficha). Hasta {limite} % de diferencia es normal; más de eso se marca como ahorro o gasto de más.
-      </p>
+      </p>}
       {busint && (
         <div style={{ marginTop: 8 }}>
           <span onClick={() => setVerColumnas((v) => !v)} style={{ fontSize: 12, color: C.slate, cursor: "pointer", textDecoration: "underline" }}>{verColumnas ? "Ocultar" : "Ver"} columnas de Busint ({busint.columnas?.length || 0})</span>
