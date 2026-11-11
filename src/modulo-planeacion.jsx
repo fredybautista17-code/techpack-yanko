@@ -5901,6 +5901,126 @@ function HistorialAnualMaquila({ area, ventasCC, gastosCC, puedeCargar, currentU
     </div>
   );
 }
+// (2026-11-11, a pedido de Fredy) Detalle de cada recuadro de «Costo real total»: al tocarlo se ve con qué se armó esa cifra
+// (las facturas de insumos, la suma nómina + insumos, las ventas por servicio, ventas − costo). Solo lectura: usa los mismos
+// datos y totales que ya suman los recuadros, así que el detalle nunca difiere de la cifra.
+function DetalleCostoRealModal({ tipo, onClose, onIr, etiquetaPeriodo, gastos, ventas, ventasPorServicio, totalGastos, totalVentas, costoNomina, costoTotal, balance, puedeVerNomina }) {
+  const porFechaDesc = (a, b) => String(b.fecha || "").localeCompare(String(a.fecha || ""));
+  const gastosOrd = useMemo(() => [...(gastos || [])].sort(porFechaDesc), [gastos]);
+  const ventasOrd = useMemo(() => [...(ventas || [])].sort(porFechaDesc), [ventas]);
+  const enlace = { background: "none", border: "none", padding: 0, marginTop: 4, color: C.blue, fontWeight: 700, fontSize: 11.5, textDecoration: "underline", cursor: "pointer", fontFamily: "inherit" };
+  const Total = ({ txt, valor, color, bg }) => (
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginTop: 12, padding: "12px 14px", borderRadius: 10, background: bg, color, fontWeight: 800, fontSize: 14 }}>
+      <span>{txt}</span><span>{fmtMoney(valor)}</span>
+    </div>
+  );
+  const Linea = ({ titulo, sub, valor, color, bg, enlaceTxt, enlaceId, resultado }) => (
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "12px 14px", border: `${resultado ? 2 : 1}px solid ${resultado ? color : C.border}`, borderRadius: 10, background: bg || C.white, color: color || C.ink }}>
+      <div>
+        <div style={{ fontSize: 13.5 }}>{titulo}</div>
+        {sub ? <div style={{ fontSize: 11.5, color: C.slate, fontWeight: 400, marginTop: 2 }}>{sub}</div> : null}
+        {enlaceTxt ? <button type="button" style={enlace} onClick={() => onIr(enlaceId)}>{enlaceTxt}</button> : null}
+      </div>
+      <b style={{ fontSize: 15, whiteSpace: "nowrap" }}>{fmtMoney(valor)}</b>
+    </div>
+  );
+  const Op = ({ t }) => <div style={{ textAlign: "center", fontWeight: 800, color: C.slate, fontSize: 16, lineHeight: 1 }}>{t}</div>;
+  if (tipo === "insumos") {
+    return (
+      <Modal title={`🧵 Costo insumos · ${etiquetaPeriodo}`} onClose={onClose} width={760}>
+        <div style={{ fontSize: 12.5, color: C.slate, marginBottom: 14 }}>Las facturas de insumos cargadas en esta área dentro del período. La suma de esta lista es el recuadro.</div>
+        <Tabla
+          vacio="Sin gastos digitados en este período."
+          columnas={[
+            { key: "fecha", label: "Fecha", render: (g) => fmtFechaISO(g.fecha) },
+            { key: "proveedor", label: "Proveedor" },
+            { key: "numeroFactura", label: "N° Factura" },
+            { key: "monto", label: "Monto", align: "right", render: (g) => fmtMoney(g.monto) },
+            colOrigenCC,
+          ]}
+          filas={gastosOrd}
+        />
+        <Total txt={`Total · ${gastosOrd.length} factura(s)`} valor={totalGastos} color={C.amber} bg={C.amberBg} />
+        <div style={{ fontSize: 11.5, color: C.slate, marginTop: 10 }}>Cada factura se edita o se borra desde la lista «Gastos — facturas de insumos» de esta misma pantalla.</div>
+      </Modal>
+    );
+  }
+  if (tipo === "ventas") {
+    return (
+      <Modal title={`🧾 Ventas · ${etiquetaPeriodo}`} onClose={onClose} width={860}>
+        <div style={{ fontSize: 12.5, color: C.slate, marginBottom: 14 }}>Las ventas registradas en esta área dentro del período, con el subtotal por tipo de servicio. La suma de esta lista es el recuadro.</div>
+        {ventasPorServicio.length > 0 && (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+            {ventasPorServicio.map((g) => (
+              <div key={g.servicio} style={{ padding: "6px 10px", borderRadius: 8, border: `1px solid ${g.servicio === SIN_SERVICIO ? C.amber : C.border}`, background: g.servicio === SIN_SERVICIO ? C.amberBg : C.white, fontSize: 11.5 }}>
+                <div style={{ fontWeight: 800, color: g.servicio === SIN_SERVICIO ? C.amber : C.ink }}>{g.etiqueta}</div>
+                <div style={{ color: C.slate }}><strong style={{ color: C.ink }}>{fmtMoney(g.ventas)}</strong> · {g.lineas} venta(s) · {fmtNum(g.unidades)} und</div>
+              </div>
+            ))}
+          </div>
+        )}
+        <Tabla
+          vacio="Sin ventas digitadas en este período."
+          columnas={[
+            { key: "fecha", label: "Fecha", render: (v) => fmtFechaISO(v.fecha) },
+            { key: "referencia", label: "Ref" },
+            { key: "lote", label: "Lote" },
+            { key: "cliente", label: "Cliente" },
+            { key: "servicio", label: "Servicio", render: (v) => etiquetaServicio(servicioDeVenta(v)) },
+            { key: "cantidad", label: "Cant.", align: "right", render: (v) => fmtNum(v.cantidad) },
+            { key: "total", label: "Total", align: "right", render: (v) => <strong>{fmtMoney(v.total)}</strong> },
+            colOrigenCC,
+          ]}
+          filas={ventasOrd}
+        />
+        <Total txt={`Total · ${ventasOrd.length} venta(s)`} valor={totalVentas} color={C.blue} bg={C.blueBg} />
+      </Modal>
+    );
+  }
+  if (tipo === "total") {
+    const pctNomina = costoTotal > 0 ? Math.max(0, Math.min(100, (costoNomina / costoTotal) * 100)) : 0;
+    return (
+      <Modal title={`🏦 Costo total · ${etiquetaPeriodo}`} onClose={onClose} width={560}>
+        <div style={{ fontSize: 12.5, color: C.slate, marginBottom: 14 }}>Lo que costó operar el área en el período: la nómina más los insumos comprados.</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <Linea titulo="Costo de nómina" sub="Lo que cuesta la gente del área en el período" valor={costoNomina} enlaceTxt={puedeVerNomina ? "🔍 ¿De dónde sale la nómina?" : ""} enlaceId="nomina" />
+          <Op t="+" />
+          <Linea titulo="Costo de insumos" sub={`${(gastos || []).length} factura(s) del período`} valor={totalGastos} enlaceTxt="Ver las facturas →" enlaceId="insumos" />
+          <Op t="=" />
+          <Linea titulo="Costo total" valor={costoTotal} color={C.violet} bg={C.violetBg} resultado />
+        </div>
+        {costoTotal > 0 && (
+          <>
+            <div style={{ display: "flex", height: 10, borderRadius: 6, overflow: "hidden", gap: 2, margin: "14px 0 4px" }}>
+              <span style={{ width: `${pctNomina}%`, background: C.violet }} />
+              <span style={{ width: `${100 - pctNomina}%`, background: C.amber }} />
+            </div>
+            <div style={{ fontSize: 11.5, color: C.slate }}>Nómina {pctNomina.toFixed(1).replace(".", ",")} % · Insumos {(100 - pctNomina).toFixed(1).replace(".", ",")} %</div>
+          </>
+        )}
+      </Modal>
+    );
+  }
+  const margenPct = totalVentas > 0 ? (balance / totalVentas) * 100 : null;
+  const etiquetaResultado = balance > 0 ? "hubo ganancia" : balance < 0 ? "hubo pérdida" : "en equilibrio";
+  return (
+    <Modal title={`${balance >= 0 ? "✅" : "⚠️"} Ganancia real · ${etiquetaPeriodo}`} onClose={onClose} width={560}>
+      <div style={{ fontSize: 12.5, color: C.slate, marginBottom: 14 }}>Lo que vendió el área menos lo que costó operarla en el período.</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <Linea titulo="Ventas" sub={`${(ventas || []).length} venta(s) del período`} valor={totalVentas} enlaceTxt="Ver las ventas →" enlaceId="ventas" />
+        <Op t="−" />
+        <Linea titulo="Costo total" sub={`nómina ${fmtMoney(costoNomina)} + insumos ${fmtMoney(totalGastos)}`} valor={costoTotal} enlaceTxt="Ver cómo se arma →" enlaceId="total" />
+        <Op t="=" />
+        <Linea titulo={<>Ganancia real <span style={{ display: "inline-block", marginLeft: 6, padding: "2px 9px", borderRadius: 99, fontSize: 11, fontWeight: 800, background: balance >= 0 ? "#cdeedd" : "#fadbd8" }}>{etiquetaResultado}</span></>} valor={balance} color={balance >= 0 ? C.green : C.red} bg={balance >= 0 ? C.greenBg : C.redBg} resultado />
+      </div>
+      {margenPct !== null && (
+        <div style={{ fontSize: 11.5, color: C.slate, marginTop: 10 }}>
+          Equivale al {margenPct.toFixed(1).replace(".", ",")} % de las ventas.
+        </div>
+      )}
+    </Modal>
+  );
+}
 // (2026-11-06, a pedido de Fredy) Con soloCostoReal esta misma vista se monta en Planta Yanko mostrando SOLO el bloque
 // «Costo real total» (gastos, ventas, ganancia real, historial y cierre de mes) de un área fija, sin el detalle por
 // trabajador. puedeEditarCostos=false la deja de solo lectura (sin cargar, borrar ni cerrar mes).
@@ -5963,6 +6083,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
   const [traerLotesAbierto, setTraerLotesAbierto] = useState(false);
   const [traerGastosAbierto, setTraerGastosAbierto] = useState(false);
   const [detalleNominaAbierto, setDetalleNominaAbierto] = useState(false);
+  const [detalleCostoReal, setDetalleCostoReal] = useState(null); // null | "insumos" | "total" | "ventas" | "ganancia"
   const [ventaForm, setVentaForm] = useState({ referencia: "", lote: "", cantidad: "", precio: "", total: "", cliente: "", servicio: "", totalManual: false, fecha: hoy });
   // (2026-09-22, a pedido de Fredy) Liquidaciones YA CONFIRMADAS de Nómina
   // -> Destajo (misma colección que usa NominaDestajoView en
@@ -7412,10 +7533,10 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
                 </div>
               )}
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 20 }}>
-                <KPI icon="🧵" label={`Costo insumos (${etiquetaPeriodo})`} value={fmtMoney(totalGastosPeriodo)} color={C.amber} bg={C.amberBg} sub={`${gastosPeriodo.length} factura(s)`} />
-                <KPI icon="🏦" label="Costo total (nómina + insumos)" value={fmtMoney(costoTotalConInsumos)} color={C.violet} bg={C.violetBg} />
-                <KPI icon="🧾" label={`Ventas (${etiquetaPeriodo})`} value={fmtMoney(totalVentasCentroCostoPeriodo)} color={C.blue} bg={C.blueBg} sub={`${ventasCentroCostoPeriodo.length} venta(s)`} />
-                <KPI icon={balanceRealConVentas >= 0 ? "✅" : "⚠️"} label="Ganancia real (Ventas − Costo total)" value={fmtMoney(balanceRealConVentas)} color={balanceRealConVentas >= 0 ? C.green : C.red} bg={balanceRealConVentas >= 0 ? C.greenBg : C.redBg} />
+                <KPI icon="🧵" label={`Costo insumos (${etiquetaPeriodo})`} value={fmtMoney(totalGastosPeriodo)} color={C.amber} bg={C.amberBg} sub={`${gastosPeriodo.length} factura(s)`} onClick={() => setDetalleCostoReal("insumos")} />
+                <KPI icon="🏦" label="Costo total (nómina + insumos)" value={fmtMoney(costoTotalConInsumos)} color={C.violet} bg={C.violetBg} onClick={() => setDetalleCostoReal("total")} />
+                <KPI icon="🧾" label={`Ventas (${etiquetaPeriodo})`} value={fmtMoney(totalVentasCentroCostoPeriodo)} color={C.blue} bg={C.blueBg} sub={`${ventasCentroCostoPeriodo.length} venta(s)`} onClick={() => setDetalleCostoReal("ventas")} />
+                <KPI icon={balanceRealConVentas >= 0 ? "✅" : "⚠️"} label="Ganancia real (Ventas − Costo total)" value={fmtMoney(balanceRealConVentas)} color={balanceRealConVentas >= 0 ? C.green : C.red} bg={balanceRealConVentas >= 0 ? C.greenBg : C.redBg} onClick={() => setDetalleCostoReal("ganancia")} />
               </div>
               {modoMedicion === "destajo" && (
                 <div style={{ marginBottom: 16 }}>
@@ -7659,6 +7780,23 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
               </PanelLateral>
             );
           })()}
+          {detalleCostoReal && areaSel && (
+            <DetalleCostoRealModal
+              tipo={detalleCostoReal}
+              onClose={() => setDetalleCostoReal(null)}
+              onIr={(destino) => { if (destino === "nomina") { setDetalleCostoReal(null); setDetalleNominaAbierto(true); } else setDetalleCostoReal(destino); }}
+              etiquetaPeriodo={etiquetaPeriodo}
+              gastos={gastosPeriodo}
+              ventas={ventasCentroCostoPeriodo}
+              ventasPorServicio={ventasPorServicio}
+              totalGastos={totalGastosPeriodo}
+              totalVentas={totalVentasCentroCostoPeriodo}
+              costoNomina={costoNominaParaTotal}
+              costoTotal={costoTotalConInsumos}
+              balance={balanceRealConVentas}
+              puedeVerNomina={modoMedicion === "destajo"}
+            />
+          )}
           {detalleNominaAbierto && areaSel && (
             <DetalleCostoNominaModal
               filas={detalleCostoNominaCompleto}
