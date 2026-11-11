@@ -301,7 +301,7 @@ export function clasificarConsumoSimple(filas, limite = TOLERANCIA_CONSUMO.verde
     if (f.trazoM > 0 && tieneReal) {
       const t = pctSobre(f.trazoM, f.realM);
       if (t !== null && Math.abs(t) > limite) {
-        avisos.push(`Lo tendido (${m1(f.trazoM)} m) y lo que registró Busint (${m1(f.realM)} m) difieren ${m1(Math.abs(t))} %: revisar capas o registro.`);
+        avisos.push(`Lo tendido en ATLAS (${m1(f.trazoM)} m) y lo que registró Busint (${m1(f.realM)} m) difieren ${m1(Math.abs(t))} %: revisar capas o registro.`);
       }
     }
     if (f.cotizM > 0 && f.teorM > 0) {

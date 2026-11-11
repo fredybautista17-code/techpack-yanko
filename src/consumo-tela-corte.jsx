@@ -63,13 +63,14 @@ function TarjetaLote({ f, abierta, onToggle, limite }) {
   const max = Math.max(f.teorM || 0, f.realM || 0, f.cotizM || 0) * 1.04;
   const conPlata = f.pagadoDeMas !== null && f.pagadoDeMas !== undefined;
   const tarjeta = f.tipo === "falta" ? null : f;
+  // «Tendido» = los metros de los trazos que se registraron en ATLAS.
   const pregTrazo = !(f.trazoM > 0)
     ? "Este lote no tiene trazos registrados en ATLAS."
     : !(f.realM > 0)
-      ? `Se tendieron ${fmtM(f.trazoM)} m; falta el real de Busint para compararlo.`
+      ? `En ATLAS se registraron ${fmtM(f.trazoM)} m tendidos; falta el real de Busint para compararlo.`
       : Math.abs((f.trazoM - f.realM) / f.realM * 100) <= limite
-        ? `Sí. Se tendieron ${fmtM(f.trazoM)} m y Busint registró ${fmtM(f.realM)} m.`
-        : `No del todo. Se tendieron ${fmtM(f.trazoM)} m y Busint registró ${fmtM(f.realM)} m (${fmtPct((f.trazoM - f.realM) / f.realM * 100)}).`;
+        ? `Sí. En ATLAS se registraron ${fmtM(f.trazoM)} m tendidos y Busint registró ${fmtM(f.realM)} m.`
+        : `No del todo. En ATLAS se registraron ${fmtM(f.trazoM)} m tendidos y Busint ${fmtM(f.realM)} m: ATLAS tiene ${fmtM(Math.abs(f.realM - f.trazoM))} m ${f.trazoM < f.realM ? "menos" : "más"} (${fmtM(Math.abs((f.trazoM - f.realM) / f.realM * 100))} %).`;
   const pregFicha = !tarjeta
     ? "Todavía no se puede responder: falta el consumo real o la ficha de telas."
     : `${f.tipo === "normal" ? "Sí, está dentro de lo normal." : f.tipo === "menos" ? "Gastó menos que la ficha: ahorro de tela." : "Gastó más que la ficha: hay tela de más."} Debía ${fmtM(f.teorM)} m y usó ${fmtM(f.realM)} m.`;
@@ -117,7 +118,7 @@ function TarjetaLote({ f, abierta, onToggle, limite }) {
             {[
               ...(f.cotizM > 0 ? [["¿Se gastó lo que se cotizó?", pregCot]] : []),
               [f.cotizM > 0 ? "¿Y contra la ficha de Busint?" : "¿Gastó lo que decía la ficha?", pregFicha],
-              ["¿Lo tendido coincide con Busint?", pregTrazo],
+              ["¿Lo registrado en ATLAS coincide con Busint?", pregTrazo],
             ].map(([titulo, texto], i) => (
               <div key={titulo} style={{ flex: "1 1 220px", background: C.white, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 12px" }}>
                 <div style={{ fontSize: 11.5, textTransform: "uppercase", letterSpacing: "0.05em", color: C.slate, fontWeight: 700, marginBottom: 4 }}>{f.cotizM > 0 || i < 2 ? `${i + 1}. ` : ""}{titulo}</div>
@@ -274,7 +275,7 @@ export default function ConsumoTelaCortePanel({ pedidos, desde: desdePeriodo, ha
         </button>
       </div>
       <p style={{ margin: "0 0 12px", fontSize: 13, color: C.slate, maxWidth: 900 }}>
-        ¿Se gastó la tela que se cotizó? Cada lote compara lo que <strong>cotizó</strong> (consumo de la cotización aprobada × unidades) y lo que <strong>debía</strong> usar (ficha de telas de Busint) con lo que <strong>usó</strong> (lo cortado, según Busint), y revisa que lo <strong>tendido</strong> en ATLAS coincida con lo registrado. Medidas en metros lineales (m).
+        ¿Se gastó la tela que se cotizó? Cada lote compara lo que <strong>cotizó</strong> (consumo de la cotización aprobada × unidades) y lo que <strong>debía</strong> usar (ficha de telas de Busint) con lo que <strong>usó</strong> (lo cortado, según Busint), y revisa que lo <strong>tendido</strong> (los metros de los trazos registrados en ATLAS) coincida con lo que registró Busint. Medidas en metros lineales (m).
       </p>
       {error && <div style={{ fontSize: 12.5, color: C.red, background: C.redBg, border: `1px solid ${C.red}`, borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>⚠ No se pudo traer el rendimiento de Busint: {error}. Se muestran solo los trazos de ATLAS.</div>}
       {errorCot && <div style={{ fontSize: 12.5, color: C.amber, background: C.amberBg, border: `1px solid ${C.amber}`, borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>⚠ No se pudieron leer las cotizaciones ({errorCot}); sin ellas el consumo se compara solo contra la ficha de telas.</div>}
