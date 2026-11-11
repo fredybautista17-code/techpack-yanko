@@ -36,6 +36,12 @@ const esInfantilGrupo = (g) => /ni[ñn][oa]/i.test(String(g || ""));
 const esInfantilDev = (d) => (d?.tallasInfantil === true || d?.tallasInfantil === false ? d.tallasInfantil : esInfantilGrupo(d?.grupo));
 const MOTIVOS = ["Defecto de costura", "Defecto de tela", "Talla equivocada", "Excedente", "Otro"];
 const TRANSPORTADORAS = ["Servientrega", "Coordinadora", "Interrapidísimo", "Envía", "Otra"];
+// (2026-11-11, a pedido de Fredy) Registro manual: tallas que se ofrecen cuando no hay datos de Busint (adulto con letras, infantil con número).
+const TALLAS_MANUAL = {
+  adulto: ["T4", "T6", "T8", "T10", "T12", "T14", "T16", "T18"],
+  infantil: ["T2", "T4", "T6", "T8", "T10", "T12", "T14", "T16"],
+};
+const hoyBogotaISO = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
 const PASOS = ["reportada", "en_camino", "recibida", "revisada", "lista", "redespachada"];
 const TEMA_DEFECTO = {
   ink: "#1A1A2E", slate: "#5A5A7A", canvas: "#F7F4F0", white: "#FFFFFF", coral: "#E85D4A", coralBg: "#FDF0EE",
@@ -120,6 +126,7 @@ function EstadoPill({ T, d, cliente }) {
   return (
     <span style={{ display: "inline-flex", gap: 6, flexWrap: "wrap" }}>
       <Pill T={T} bg={e.bg} fg={e.fg}>{e.txt}</Pill>
+      {d.registroManual && <Pill T={T} bg={T.denimBg} fg={T.denim}>Registro manual</Pill>}
       {d.solicitaDespacho && d.estado !== "redespachada" && <Pill T={T} bg={T.violetBg} fg={T.violet}>{cliente ? "Despacho solicitado" : "Pide despacho"}</Pill>}
       {resultadoVisible && d.resultado === "diferencias" && <Pill T={T} bg={T.coralBg} fg={T.coral}>Con diferencias</Pill>}
       {resultadoVisible && d.resultado === "completa" && <Pill T={T} bg={T.jadeBg} fg={T.jade}>Completa</Pill>}
@@ -343,6 +350,7 @@ function Detalle({ T, d, mostrarConteo }) {
       <div style={{ fontSize: 12, color: T.slate, marginBottom: 8 }}>
         Lote <b style={{ color: T.ink }}>{d.lote}</b> · Ref {d.ref || "—"}{d.pedido ? ` · Pedido ${d.pedido}` : ""} · Motivo: {d.motivo || "—"} · Guía: {d.guia || "—"}{d.transportadora ? ` · ${d.transportadora}` : ""}{d.fechaSalida ? ` · salió el ${fmtFecha(d.fechaSalida)}` : ""}
       </div>
+      {d.registroManual ? <div style={{ fontSize: 12, color: T.slate, marginBottom: 8 }}>Registro manual{d.creadoPor ? ` de ${d.creadoPor}` : ""}: los datos se escribieron a mano (sin Busint), así que no tienen tope por casilla; conviene contar con cuidado.</div> : null}
       {d.envioJunto?.length ? <div style={{ fontSize: 12, color: T.slate, marginBottom: 8 }}>Viene en el mismo envío con: <b style={{ color: T.ink }}>{d.envioJunto.join(", ")}</b></div> : null}
       {d.origen?.tipo ? <div style={{ fontSize: 12, color: T.slate, marginBottom: 8 }}>Origen en Busint: <b style={{ color: T.ink }}>{etiquetaOrigen(d.origen)}</b>{d.origen.documentos?.length ? ` · ${d.origen.documentos.join(", ")}` : ""}{d.origen.fuente === "manual" ? " (confirmado a mano)" : ""}{d.origen.confirmar ? ` · por confirmar (la cliente la montó como ${etiquetaOrigen(d.origen)}; Busint la muestra como ${etiquetaOrigen({ tipo: d.origen.busint })})` : ""}</div> : null}
       {String(d.documentoOriginal || "").trim() ? <div style={{ fontSize: 12, color: T.slate, marginBottom: 8 }}>{d.origen?.tipo === "factura" ? "Factura original" : "Remisión original (TNS)"}: <b style={{ color: T.ink, ...MONO }}>{d.documentoOriginal}</b></div> : null}
@@ -628,6 +636,18 @@ function FormularioDevolucionesCliente({ db, functionsClient, T: Tp, currentUser
   const [guardando, setGuardando] = useState(false);
   const [aviso, setAviso] = useState("");
   const [abierto, setAbierto] = useState(null);
+  // (2026-11-11, a pedido de Fredy) Registro manual: cuando el lote no está en Busint, no trae colores y tallas, o es una devolución antigua,
+  // cualquiera (la cliente o el personal de Yanko) la escribe a mano. Queda con registroManual: true y sin tope por casilla.
+  const [manual, setManual] = useState(false);
+  const [mCli, setMCli] = useState("");
+  const [mLote, setMLote] = useState("");
+  const [mRef, setMRef] = useState("");
+  const [mPedido, setMPedido] = useState("");
+  const [mInfantil, setMInfantil] = useState(false);
+  const [mColores, setMColores] = useState([""]);
+  const [mCant, setMCant] = useState({});
+  const [mEstado, setMEstado] = useState("reportada");
+  const [mFecha, setMFecha] = useState(hoyBogotaISO());
   // Varias devoluciones, un solo envío: se marcan las que no tienen guía y se les pone una guía a todas.
   const [selG, setSelG] = useState([]);
   const [envio, setEnvio] = useState({ guia: "", transp: "", fecha: new Date().toISOString().slice(0, 10) });
@@ -669,7 +689,7 @@ function FormularioDevolucionesCliente({ db, functionsClient, T: Tp, currentUser
   }
 
   async function buscar() {
-    setError(""); setAviso(""); setInfo(null); setCant({});
+    setError(""); setAviso(""); setInfo(null); setCant({}); setManual(false);
     if (!/^\d+$/.test(lote.trim())) { setError("Escribe el número de lote (solo números)."); return; }
     setBuscando(true);
     try {
@@ -734,6 +754,74 @@ function FormularioDevolucionesCliente({ db, functionsClient, T: Tp, currentUser
     }
   }
 
+  const clientesConocidos = useMemo(() => [...new Set((lista || []).map((x) => String(x.cliente || "").trim()).filter(Boolean))], [lista]);
+  const totalManual = useMemo(() => Object.values(mCant).reduce((s, v) => s + (Number(v) || 0), 0), [mCant]);
+  const tallasManual = TALLAS_MANUAL[mInfantil ? "infantil" : "adulto"];
+  function abrirManual(desde) {
+    setError(""); setAviso("");
+    const l = String(desde?.lote || lote).trim();
+    const sugerido = (lista || []).find((x) => x.cliente)?.cliente || currentUser?.clienteAsociado || (currentUser?.clientesAsociados || [])[0] || "";
+    setMLote(/^\d+$/.test(l) ? l : "");
+    setMRef(desde?.ref || ""); setMPedido(desde?.pedido || "");
+    setMCli(desde?.cliente || sugerido);
+    setMInfantil(desde ? esInfantilGrupo(desde.grupo) : false);
+    setMColores([""]); setMCant({}); setMEstado("reportada"); setMFecha(hoyBogotaISO()); setDocOrig("");
+    setInfo(null); setManual(true);
+  }
+  function cambiarManual(i, t, v) {
+    setError("");
+    setMCant((c) => ({ ...c, [`${i}|${t}`]: v === "" ? "" : entero(v) }));
+  }
+  async function reportarManual() {
+    setError(""); setAviso("");
+    const loteN = mLote.trim().replace(/\.0+$/, "");
+    if (!/^\d{1,9}$/.test(loteN)) { setError("Escribe el número de lote (solo números)."); return; }
+    if (!mCli.trim()) { setError("Escribe el cliente."); return; }
+    if (!mRef.trim()) { setError("Escribe la referencia."); return; }
+    const lineas = [];
+    const vistos = new Set();
+    for (let i = 0; i < mColores.length; i++) {
+      const nombre = mColores[i].trim();
+      const cantidades = Object.fromEntries(tallasManual.map((t) => [t, entero(mCant[`${i}|${t}`])]).filter(([, n]) => n > 0));
+      if (!Object.keys(cantidades).length) continue;
+      if (!nombre) { setError("Escribe el nombre del color en cada fila que tenga unidades."); return; }
+      if (vistos.has(nombre.toUpperCase())) { setError(`El color «${nombre}» está repetido: junta sus unidades en una sola fila.`); return; }
+      vistos.add(nombre.toUpperCase());
+      lineas.push({ color: nombre, colorNombre: "", cantidades });
+    }
+    if (!lineas.length) { setError("Escribe al menos una unidad a devolver."); return; }
+    if (!docValido(docOrig)) { setError(`Escribe el ${etiquetaDoc.toLowerCase()} con el que se despachó este lote.`); return; }
+    if (!uid) { setError("No se pudo identificar tu sesión. Cierra sesión y vuelve a entrar."); return; }
+    const hoy = hoyBogotaISO();
+    if (!esCliente && (!/^\d{4}-\d{2}-\d{2}$/.test(mFecha) || mFecha > hoy)) { setError("La fecha en que se reportó no puede ser futura."); return; }
+    const usuario = usuarioActual(currentUser);
+    const creadoEn = !esCliente && mFecha !== hoy ? new Date(`${mFecha}T12:00:00-05:00`).toISOString() : nowISO();
+    const estado = esCliente ? (guia.trim() ? "en_camino" : "reportada") : mEstado;
+    const nota = `Registro manual${esCliente ? "" : ` por ${usuario} a nombre del cliente`}${pideDesp ? " · pide que se la despachen de nuevo" : ""}`;
+    const historial = [{ estado: "reportada", fecha: creadoEn, usuario, nota }];
+    if (estado !== "reportada") historial.push({ estado, fecha: creadoEn, usuario, nota: estado === "recibida" ? "Registrada como ya recibida" : "Registrada ya en camino" });
+    const { origen } = origenElegidoPorCliente(tipo, null);
+    const id = `dev_${Date.now()}`;
+    const d = {
+      id, numero: numeroNuevo(), lote: loteN, ref: mRef.trim(), pedido: mPedido.trim(), cliente: mCli.trim(),
+      tallas: tallasManual, grupo: "", tallasInfantil: mInfantil, lineas, total: totalLineas(lineas), motivo, guia: guia.trim(), ...(transp ? { transportadora: transp } : {}), observaciones: obs.trim(),
+      documentoOriginal: docOrig.trim(), estado, origen: { ...origen, ...(esCliente ? {} : { fuente: "manual" }) }, registroManual: true,
+      creadoPorUid: uid, creadoPor: usuario, creadoEn, historial,
+      ...(estado === "recibida" ? { recibidaPor: usuario, recibidaEn: creadoEn } : {}),
+      ...(pideDesp ? { solicitaDespacho: { nota: notaDesp.trim(), por: usuario, fecha: nowISO() } } : {}),
+    };
+    setGuardando(true);
+    try {
+      await setDoc(doc(db, COL, id), limpio(d));
+      setAviso(`Devolución ${d.numero} registrada a mano.`);
+      setManual(false); setLote(""); setDocOrig(""); setGuia(""); setTransp(""); setObs(""); setMotivo(MOTIVOS[0]); setPideDesp(false); setNotaDesp("");
+    } catch (e) {
+      setError(e?.message || "No se pudo guardar la devolución.");
+    } finally {
+      setGuardando(false);
+    }
+  }
+
   const tarjeta = { background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, padding: "18px 20px", marginBottom: 18 };
   return (
     <div style={{ maxWidth: 900 }}>
@@ -747,11 +835,14 @@ function FormularioDevolucionesCliente({ db, functionsClient, T: Tp, currentUser
             <input value={lote} onChange={(e) => setLote(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") buscar(); }} placeholder="Ej. 7136" style={{ ...campo(T), width: 130 }} />
           </div>
           <button onClick={buscar} disabled={buscando} style={btn(T)}>{buscando ? "Buscando…" : "Buscar lote"}</button>
+          {!manual && <span style={{ fontSize: 13, color: T.slate, paddingBottom: 8 }}>¿No sale el lote o es una devolución antigua? <button onClick={() => abrirManual()} style={{ background: "none", border: "none", padding: 0, color: T.denim, fontFamily: "inherit", fontSize: 13, fontWeight: 700, textDecoration: "underline", textUnderlineOffset: 3, cursor: "pointer" }}>Registrar a mano</button></span>}
           {info && <div style={{ fontSize: 13, color: T.slate, paddingBottom: 8 }}>Ref <b style={{ color: T.ink }}>{info.ref || "—"}</b>{info.cliente ? ` · ${info.cliente}` : ""}{info.pedido ? ` · pedido ${info.pedido}` : ""}</div>}
         </div>
-        {error && <div style={{ background: T.coralBg, color: T.coral, borderRadius: 8, padding: "8px 12px", fontSize: 13, marginBottom: 10 }}>{error}</div>}
+        {error && <div style={{ background: T.coralBg, color: T.coral, borderRadius: 8, padding: "8px 12px", fontSize: 13, marginBottom: 10 }}>{error}
+          {!manual && /^\d+$/.test(lote.trim()) && /encontr/i.test(error) && <div><button onClick={() => abrirManual()} style={{ ...btn(T), marginTop: 8 }}>Registrar a mano el lote {lote.trim()}</button></div>}
+        </div>}
         {aviso && <div style={{ background: T.jadeBg, color: T.jade, borderRadius: 8, padding: "8px 12px", fontSize: 13, marginBottom: 10 }}>{aviso}</div>}
-        {info && info.sinDetalle && <div style={{ background: T.amberBg, color: T.amber, borderRadius: 8, padding: "8px 12px", fontSize: 13 }}>Encontramos el lote, pero no trae el detalle por color y talla. Avisa al equipo de Yanko.</div>}
+        {info && info.sinDetalle && <div style={{ background: T.amberBg, color: T.amber, borderRadius: 8, padding: "8px 12px", fontSize: 13 }}>Encontramos el lote, pero no trae el detalle por color y talla. Puedes registrarla escribiendo tú los colores y las tallas.<div><button onClick={() => abrirManual(info)} style={{ ...btn(T), marginTop: 8 }}>Registrar a mano el lote {info.lote}</button></div></div>}
         {info && !info.sinDetalle && (
           <>
             <AvisoFacturacion T={T} info={info} />
@@ -803,6 +894,131 @@ function FormularioDevolucionesCliente({ db, functionsClient, T: Tp, currentUser
               <button onClick={reportar} disabled={guardando} style={btn(T, "primario")}>{guardando ? "Guardando…" : "Reportar devolución"}</button>
             </div>
           </>
+        )}
+        {manual && (
+          <div style={{ marginTop: 14, borderTop: `1px dashed ${T.border}`, paddingTop: 14 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+              <span style={{ fontSize: 15, fontWeight: 800, color: T.ink }}>Registrar a mano</span>
+              <Pill T={T} bg={T.denimBg} fg={T.denim}>Registro manual</Pill>
+            </div>
+            <div style={{ fontSize: 12, color: T.slate, marginBottom: 12 }}>Escribe tú los datos. Sin Busint no hay tope por casilla; la devolución queda marcada como registro manual para que Bodega y Calidad la revisen con más cuidado.</div>
+            <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
+              <div style={{ flex: "1 1 170px" }}>
+                <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>Cliente</div>
+                <input value={mCli} onChange={(e) => setMCli(e.target.value)} list="dev-clientes-conocidos" aria-label="Cliente" style={{ ...campo(T), width: "100%" }} />
+                <datalist id="dev-clientes-conocidos">{clientesConocidos.map((c) => <option key={c} value={c} />)}</datalist>
+              </div>
+              <div style={{ flex: "1 1 130px" }}>
+                <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>Número de lote</div>
+                <input value={mLote} onChange={(e) => setMLote(e.target.value)} placeholder="Ej. 7136" inputMode="numeric" aria-label="Número de lote" style={{ ...campo(T), width: "100%" }} />
+              </div>
+              <div style={{ flex: "1 1 130px" }}>
+                <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>Referencia</div>
+                <input value={mRef} onChange={(e) => setMRef(e.target.value)} placeholder="Ej. 975101" aria-label="Referencia" style={{ ...campo(T), width: "100%" }} />
+              </div>
+              <div style={{ flex: "1 1 130px" }}>
+                <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>Pedido (opcional)</div>
+                <input value={mPedido} onChange={(e) => setMPedido(e.target.value)} placeholder="Ej. 5521" aria-label="Pedido" style={{ ...campo(T), width: "100%" }} />
+              </div>
+            </div>
+            <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>Tipo de tallas</div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+              {[[false, "Adulto (XS, S, M, L…)"], [true, "Infantil (4, 6, 8, 10…)"]].map(([v, txt]) => (
+                <button key={txt} type="button" aria-pressed={mInfantil === v} onClick={() => { if (mInfantil !== v) { setMInfantil(v); setMCant({}); } }}
+                  style={{ padding: "5px 13px", borderRadius: 20, fontSize: 13, cursor: "pointer", fontFamily: "inherit", border: `1px solid ${mInfantil === v ? T.ink : T.border}`, background: mInfantil === v ? T.ink : T.white, color: mInfantil === v ? T.white : T.ink, fontWeight: mInfantil === v ? 800 : 500 }}>{txt}</button>
+              ))}
+            </div>
+            <div style={{ fontSize: 12, color: T.slate, marginBottom: 6 }}>Unidades que devuelves, por color y talla</div>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ borderCollapse: "collapse" }}>
+                <thead>
+                  <tr>
+                    <th style={{ padding: "6px 8px", fontSize: 11, color: T.slate, textAlign: "left" }}>Color</th>
+                    {tallasManual.map((x) => <th key={x} style={{ padding: "6px 8px", fontSize: 11, color: T.slate }}>{etiquetaTalla(x, mInfantil)}</th>)}
+                    <th style={{ padding: "6px 8px", fontSize: 11, color: T.slate }}>Total</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {mColores.map((c, i) => (
+                    <tr key={i}>
+                      <td style={{ padding: "3px 4px" }}>
+                        <input value={c} onChange={(e) => setMColores((l) => l.map((x, j) => (j === i ? e.target.value : x)))} placeholder="Color (ej. A · BLANCO)" aria-label={`Color ${i + 1}`} style={{ ...campo(T), width: 190 }} />
+                      </td>
+                      {tallasManual.map((x) => (
+                        <td key={x} style={{ padding: "3px 4px", textAlign: "center" }}>
+                          <input type="number" min="0" value={mCant[`${i}|${x}`] ?? ""} onChange={(e) => cambiarManual(i, x, e.target.value)} aria-label={`${c || `Color ${i + 1}`} talla ${etiquetaTalla(x, mInfantil)}`} style={{ ...campo(T), width: 58, textAlign: "center", padding: 0 }} />
+                        </td>
+                      ))}
+                      <td style={{ padding: "3px 8px", textAlign: "center", fontWeight: 700, fontSize: 13 }}>{tallasManual.reduce((s, x) => s + (Number(mCant[`${i}|${x}`]) || 0), 0)}</td>
+                      <td>{mColores.length > 1 && <button type="button" aria-label={`Quitar el color ${i + 1}`} onClick={() => { setMColores((l) => l.filter((_, j) => j !== i)); setMCant((cc) => { const n = {}; Object.entries(cc).forEach(([k, v]) => { const [fi, ta] = k.split("|"); const fn = Number(fi); if (fn === i) return; n[`${fn > i ? fn - 1 : fn}|${ta}`] = v; }); return n; }); }} style={{ background: "none", border: "none", color: T.slate, fontSize: 16, cursor: "pointer" }}>×</button>}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <button type="button" onClick={() => setMColores((l) => [...l, ""])} style={{ ...btn(T), marginTop: 8, background: T.denimBg, color: T.denim }}>+ Agregar color</button>
+            <div style={{ marginTop: 14, background: T.amberBg, border: `1px solid ${T.border}`, borderRadius: 10, padding: "12px 14px" }}>
+              <div style={{ fontSize: 12, color: T.ink, fontWeight: 700, marginBottom: 6 }}>{etiquetaDoc} <span style={{ color: T.coral }}>*</span></div>
+              <input value={docOrig} onChange={(e) => setDocOrig(e.target.value)} placeholder="Número del documento" aria-label={etiquetaDoc} style={{ ...campo(T), width: 240 }} />
+              <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>Obligatorio, igual que cuando se busca el lote.</div>
+            </div>
+            <div style={{ display: "flex", gap: 12, flexWrap: "wrap", margin: "14px 0" }}>
+              <div style={{ flex: 1, minWidth: 170 }}>
+                <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>Motivo</div>
+                <select value={motivo} onChange={(e) => setMotivo(e.target.value)} style={{ ...campo(T), width: "100%" }}>{MOTIVOS.map((m) => <option key={m}>{m}</option>)}</select>
+              </div>
+              <div style={{ flex: 1, minWidth: 170 }}>
+                <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>Guía de transporte (opcional)</div>
+                <input value={guia} onChange={(e) => setGuia(e.target.value)} placeholder="Número de guía" style={{ ...campo(T), width: "100%" }} />
+              </div>
+              <div style={{ flex: 1, minWidth: 170 }}>
+                <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>Transportadora (opcional)</div>
+                <select value={transp} onChange={(e) => setTransp(e.target.value)} style={{ ...campo(T), width: "100%" }}>
+                  <option value="">Elegir…</option>
+                  {TRANSPORTADORAS.map((x) => <option key={x} value={x}>{x}</option>)}
+                </select>
+              </div>
+            </div>
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>Nota (opcional)</div>
+              <input value={obs} onChange={(e) => setObs(e.target.value)} placeholder="Ej. Devolución antigua, llegó en abril" style={{ ...campo(T), width: "100%" }} />
+            </div>
+            {!esCliente && (
+              <div style={{ borderLeft: `3px solid ${T.denim}`, paddingLeft: 12, marginBottom: 14 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: T.denim, marginBottom: 6 }}>Solo para el personal de Yanko</div>
+                <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                  <div style={{ flex: "1 1 170px" }}>
+                    <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>Estado inicial</div>
+                    <select value={mEstado} onChange={(e) => setMEstado(e.target.value)} style={{ ...campo(T), width: "100%" }}>
+                      <option value="reportada">Reportada</option>
+                      <option value="en_camino">En camino</option>
+                      <option value="recibida">Recibida (ya llegó)</option>
+                    </select>
+                  </div>
+                  <div style={{ flex: "1 1 170px" }}>
+                    <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>Fecha en que se reportó</div>
+                    <input type="date" value={mFecha} max={hoyBogotaISO()} onChange={(e) => setMFecha(e.target.value)} style={{ ...campo(T), width: "100%" }} />
+                  </div>
+                </div>
+                <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>Sirve para cargar devoluciones antiguas con su fecha real y para que los 5 días hábiles se cuenten bien.</div>
+              </div>
+            )}
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13, color: T.ink, cursor: "pointer" }}>
+                <input type="checkbox" checked={pideDesp} onChange={(e) => setPideDesp(e.target.checked)} />
+                {esCliente ? "Quiero que me la despachen de nuevo cuando la revisen" : "El cliente pide que se la despachen de nuevo cuando la revisen"}
+              </label>
+              {pideDesp && <input value={notaDesp} onChange={(e) => setNotaDesp(e.target.value)} placeholder="Nota para el despacho (opcional)" style={{ ...campo(T), width: "100%", marginTop: 8 }} />}
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+              <span style={{ fontSize: 13, color: T.slate }}>Total a devolver: <b style={{ color: T.ink }}>{totalManual} unidades</b></span>
+              <span style={{ display: "flex", gap: 8 }}>
+                <button type="button" onClick={() => { setManual(false); setError(""); }} style={btn(T)}>Cancelar</button>
+                <button type="button" onClick={reportarManual} disabled={guardando} style={btn(T, "primario")}>{guardando ? "Guardando…" : "Reportar devolución"}</button>
+              </span>
+            </div>
+          </div>
         )}
       </div>}
       <div style={tarjeta}>
