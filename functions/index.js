@@ -15215,6 +15215,7 @@ exports.avisarNuevaDevolucionCliente = onDocumentCreated(
 // activos con correo que tengan marcada la tarjeta «Cumpleaños» en Usuarios → Mi Día. La lista está en nomina_cumpleanos (se edita en
 // Nómina → Personal → Cumpleaños). nomina_cumpleanos_avisos/{AAAA-MM-DD} marca el día ya avisado para no repetir el correo.
 const cumpleanosAviso = require("./cumpleanos");
+const consumoTelaBusint = require("./consumo-tela");
 exports.avisarCumpleanos = onSchedule(
   { schedule: "0 7 * * *", timeZone: "America/Bogota", secrets: [EMAIL_USER, EMAIL_APP_PASSWORD], timeoutSeconds: 60, memory: "256MiB" },
   async () => {
@@ -17073,5 +17074,57 @@ exports.getCostoTelaLotesBusint = onCallAuth(
       l.costoPorMetro = l.metros > 0 ? Math.round((l.valor / l.metros) * 100) / 100 : null;
     });
     return { ok: true, lotes };
+  }
+);
+
+// ─── Consumo de tela por lote y por tela (Busint) — teórico contra real, sin depender del Visor ─────────
+// (2026-11-11, a pedido de Fredy) La tabla "bc-visor de rendimiento de corte" llega vacía por la API. Esto la reemplaza cruzando
+// "telas" (ficha: metros por prenda de cada tela de la referencia), "orden produccion detalles telas" (lo cortado: largo × capas + ajuste
+// por Codcomp) y "estandar componentes prod" (Codcomp → nombre de la tela). Devuelve por lote lo mismo que getCostoTelaLotesBusint
+// (metros, valor, costoPorMetro) más el teórico y el real por tela. Entrada: { lotes: [{ lote, refs: [{ ref, total }] }] }.
+exports.getConsumoTelaLotesBusint = onCallAuth(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 300,
+    memory: "512MiB",
+  },
+  async (request) => {
+    if (!request.auth) throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+    const usuarioSnap = await db.collection("users").where("authUid", "==", request.auth.uid).limit(1).get();
+    if (usuarioSnap.empty) throw new HttpsError("permission-denied", "No tienes permiso para hacer esto.");
+    if (usuarioSnap.docs[0].data().role === "Cliente") throw new HttpsError("permission-denied", "No tienes permiso para ver el consumo de tela.");
+    const pedidos = Array.isArray(request.data?.lotes) ? request.data.lotes : [];
+    const lotes = new Map();
+    pedidos.slice(0, 400).forEach((p) => {
+      const lote = String(p?.lote ?? "").trim();
+      if (!lote) return;
+      const refs = (Array.isArray(p.refs) ? p.refs : [])
+        .map((r) => ({ ref: String(r?.ref ?? "").trim(), total: Number(r?.total) || 0 }))
+        .filter((r) => r.ref && r.total > 0);
+      lotes.set(lote, refs);
+    });
+    if (!lotes.size) return { ok: true, lotes: {}, errorFicha: "" };
+    const [detalle, componentes, telas] = await Promise.allSettled([
+      consultarTablaBusintBDCompleta("orden produccion detalles telas"),
+      consultarTablaBusintBDCompleta("estandar componentes prod"),
+      consultarTablaBusintBDCompleta("telas"),
+    ]);
+    if (detalle.status !== "fulfilled") {
+      logger.error("Error consultando Busint BD (getConsumoTelaLotesBusint)", { error: String(detalle.reason) });
+      throw new HttpsError("unavailable", `No se pudo consultar el detalle de telas en Busint: ${detalle.reason?.message || String(detalle.reason)}`);
+    }
+    const errores = [];
+    if (componentes.status !== "fulfilled") errores.push(`estandar componentes prod (${componentes.reason?.message || String(componentes.reason)})`);
+    if (telas.status !== "fulfilled") errores.push(`telas (${telas.reason?.message || String(telas.reason)})`);
+    return {
+      ok: true,
+      lotes: consumoTelaBusint.armarConsumoTelaPorLote({
+        lotes,
+        filasDetalle: detalle.value,
+        filasComponentes: componentes.status === "fulfilled" ? componentes.value : [],
+        filasTelas: telas.status === "fulfilled" ? telas.value : [],
+      }),
+      errorFicha: errores.length ? `No se pudo leer: ${errores.join(", ")}` : "",
+    };
   }
 );

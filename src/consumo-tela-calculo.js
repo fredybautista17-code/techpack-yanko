@@ -161,6 +161,49 @@ export function armarFilasConsumoTela({ cortes, filasBusint, desde, hasta, tol =
   return filas.sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)));
 }
 
+// Cuando el Visor de Busint no trae el corte, el teórico y el real salen del detalle de telas del lote
+// (getConsumoTelaLotesBusint: ficha "telas" × unidades contra largo × capas + ajuste por tela).
+// detallePorLote[lote] = { realM, teorM, unidades, costoPorMetro, sinFicha, telas: [{ tela, realM, teorM, difM, costoMetro, sinPareja }] }
+// Si el lote tiene varios cortes en ATLAS, el detalle se asigna al primero (el de fecha más antigua).
+export function aplicarDetalleTelasConsumo(filas, detallePorLote, tol = TOLERANCIA_CONSUMO) {
+  const det = detallePorLote || {};
+  const primera = new Map();
+  filas.forEach((f) => {
+    if (f.origen !== "atlas" || !f.lote) return;
+    const p = primera.get(f.lote);
+    if (!p || String(f.fecha) < String(p.fecha)) primera.set(f.lote, f);
+  });
+  return filas.map((f) => {
+    const d = f.origen === "atlas" && f.lote ? det[f.lote] : null;
+    if (!d || primera.get(f.lote) !== f) return f;
+    if (f.teorM > 0 && f.realM > 0) return f; // el Visor manda cuando trae el corte completo
+    const realM = d.realM > 0 ? d.realM : null;
+    const teorM = d.teorM > 0 ? d.teorM : null;
+    const unid = d.unidades > 0 ? d.unidades : f.unidades;
+    const trazoVsTeor = pctSobre(f.trazoM, teorM);
+    const realVsTeor = pctSobre(realM, teorM);
+    let estado;
+    if (realM === null) estado = "esperando";
+    else if (teorM === null) estado = "sin_teorico";
+    else estado = peor(clasificarDif(trazoVsTeor, tol), clasificarDif(realVsTeor, tol)) || "esperando";
+    return {
+      ...f,
+      teorM,
+      teorPorPrenda: teorM !== null && unid > 0 ? teorM / unid : null,
+      realM,
+      realPorPrenda: realM !== null && unid > 0 ? realM / unid : null,
+      trazoVsTeor,
+      realVsTeor,
+      trazoVsReal: pctSobre(f.trazoM, realM),
+      estado,
+      conBusint: realM !== null,
+      fuente: "detalle",
+      porTela: Array.isArray(d.telas) ? d.telas : [],
+      sinFicha: Array.isArray(d.sinFicha) ? d.sinFicha : [],
+    };
+  });
+}
+
 // Costo de la tela por lote (Busint): costoPorMetro = valor de la tela del lote / sus metros.
 // «Pagué de más» = (metros reales − metros teóricos) × costo por metro (negativo = ahorro).
 export function aplicarCostoTelaConsumo(filas, costosPorLote) {
@@ -168,6 +211,18 @@ export function aplicarCostoTelaConsumo(filas, costosPorLote) {
     const c = f.lote ? (costosPorLote || {})[String(f.lote)] : null;
     const costoMetro = c && c.costoPorMetro > 0 ? c.costoPorMetro : null;
     const difM = f.realM !== null && f.realM !== undefined && f.teorM !== null && f.teorM !== undefined ? f.realM - f.teorM : null;
+    // Con el detalle por tela, cada tela se valora con su propio costo (MUNICH y AMORELA no cuestan lo mismo).
+    if (f.fuente === "detalle" && Array.isArray(f.porTela) && f.porTela.length && difM !== null) {
+      let pesos = 0;
+      let sinPrecio = false;
+      f.porTela.forEach((t) => {
+        if (!t.difM) return;
+        const cm = t.costoMetro > 0 ? t.costoMetro : costoMetro;
+        if (cm > 0) pesos += t.difM * cm;
+        else sinPrecio = true;
+      });
+      return { ...f, costoMetro, difM, pagadoDeMas: sinPrecio ? null : Math.round(pesos) };
+    }
     return { ...f, costoMetro, difM, pagadoDeMas: costoMetro !== null && difM !== null ? Math.round(difM * costoMetro) : null };
   });
 }

@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
 import { httpsCallable } from "firebase/functions";
-import { TOLERANCIA_CONSUMO, cortesAtlasConTrazo, armarFilasConsumoTela, aplicarCostoTelaConsumo, resumenConsumoTela, clasificarDif } from "./consumo-tela-calculo";
+import { TOLERANCIA_CONSUMO, cortesAtlasConTrazo, armarFilasConsumoTela, aplicarDetalleTelasConsumo, aplicarCostoTelaConsumo, resumenConsumoTela, clasificarDif } from "./consumo-tela-calculo";
 
 // Consumo de tela de CORTE — teórico contra real (2026-10-31, a pedido de Fredy).
 // Se muestra dentro de "Centro de Costo — Planeación · CORTE". Une los cortes de ATLAS
@@ -57,19 +57,37 @@ export default function ConsumoTelaCortePanel({ pedidos, desde, hasta, functions
     () => armarFilasConsumoTela({ cortes, filasBusint: busint?.filas || [], desde, hasta, tol }),
     [cortes, busint, desde, hasta, tol]
   );
-  // Costo de la tela de cada lote (Busint) para convertir los metros de más en pesos.
-  const lotesKey = useMemo(() => [...new Set(filasBase.filter((f) => f.lote && f.realM > 0).map((f) => String(f.lote)))].sort().join(","), [filasBase]);
+  // Detalle de telas de cada lote (Busint): teórico y real por tela + costo, para cuando el Visor no trae el corte
+  // y para convertir los metros de más en pesos.
+  const lotesPedir = useMemo(() => {
+    const m = new Map();
+    cortes.forEach((c) => {
+      if (!c.lote) return;
+      const e = m.get(c.lote) || new Map();
+      c.refs.forEach((r) => e.set(r.ref, (e.get(r.ref) || 0) + (Number(r.total) || 0)));
+      m.set(c.lote, e);
+    });
+    return [...m].sort((a, b) => String(a[0]).localeCompare(String(b[0]))).map(([lote, refs]) => ({ lote, refs: [...refs].map(([ref, total]) => ({ ref, total })) }));
+  }, [cortes]);
+  const lotesKey = useMemo(() => JSON.stringify(lotesPedir), [lotesPedir]);
   useEffect(() => {
-    if (!lotesKey) return undefined;
+    const lotes = JSON.parse(lotesKey);
+    if (!lotes.length) return undefined;
     let vivo = true;
     setErrorCostos("");
-    const llamar = httpsCallable(functionsClient, "getCostoTelaLotesBusint", { timeout: 300000 });
-    llamar({ numLotes: lotesKey.split(",").slice(0, 400) })
-      .then((r) => { if (vivo) setCostosTela((prev) => ({ ...prev, ...(r.data?.lotes || {}) })); })
+    const llamar = httpsCallable(functionsClient, "getConsumoTelaLotesBusint", { timeout: 300000 });
+    llamar({ lotes: lotes.slice(0, 400) })
+      .then((r) => {
+        if (!vivo) return;
+        setCostosTela((prev) => ({ ...prev, ...(r.data?.lotes || {}) }));
+        if (r.data?.errorFicha) setErrorCostos(r.data.errorFicha);
+      })
       .catch((err) => { if (vivo) setErrorCostos(err?.message || String(err)); });
     return () => { vivo = false; };
   }, [lotesKey, functionsClient, recarga]);
-  const filas = useMemo(() => aplicarCostoTelaConsumo(filasBase, costosTela), [filasBase, costosTela]);
+  const filasDetalle = useMemo(() => aplicarDetalleTelasConsumo(filasBase, costosTela, tol), [filasBase, costosTela, tol]);
+  const filas = useMemo(() => aplicarCostoTelaConsumo(filasDetalle, costosTela), [filasDetalle, costosTela]);
+  const usaDetalle = useMemo(() => filas.some((f) => f.fuente === "detalle"), [filas]);
   const resumen = useMemo(() => resumenConsumoTela(filas), [filas]);
   const visibles = filtro === "todos" ? filas : filas.filter((f) => f.estado === filtro);
   const faltantes = busint ? COLUMNAS_CLAVE.filter((k) => !busint.detectadas?.[k]) : [];
@@ -101,8 +119,13 @@ export default function ConsumoTelaCortePanel({ pedidos, desde, hasta, functions
         Cada corte se cruza con tres números: los <strong>trazos</strong> que se tendieron en ATLAS (largo × capas), el consumo <strong>teórico</strong> de Busint (promedio por prenda × unidades) y el consumo <strong>real</strong> que Busint registra del corte. Medidas en metros lineales (ml).
       </p>
       {error && <div style={{ fontSize: 12.5, color: C.red, background: C.redBg, border: `1px solid ${C.red}`, borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>⚠ No se pudo traer el rendimiento de Busint: {error}. Se muestran solo los trazos de ATLAS.</div>}
-      {errorCostos && <div style={{ fontSize: 12.5, color: C.amber, background: C.amberBg, border: `1px solid ${C.amber}`, borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>⚠ No se pudo traer el costo de la tela de Busint ({errorCostos}); la columna «Pagué de más» queda sin valores.</div>}
-      {busint && busint.total === 0 && (
+      {errorCostos && <div style={{ fontSize: 12.5, color: C.amber, background: C.amberBg, border: `1px solid ${C.amber}`, borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>⚠ No se pudo traer el detalle de telas de Busint ({errorCostos}); sin él no se calcula el consumo por tela ni la columna «Pagué de más».</div>}
+      {busint && busint.total === 0 && usaDetalle && (
+        <div style={{ fontSize: 12.5, color: C.slate, background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>
+          El Visor de Rendimiento de Corte no entrega filas por la API de Busint. Mientras tanto, el teórico sale de la <strong>ficha de telas</strong> de la referencia (metros por prenda × unidades) y el real, del <strong>detalle de telas</strong> de cada lote (largo × capas + ajuste), tela por tela.
+        </div>
+      )}
+      {busint && busint.total === 0 && !usaDetalle && (
         <div style={{ fontSize: 12.5, color: C.amber, background: C.amberBg, border: `1px solid ${C.amber}`, borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>
           ⚠ La tabla «{busint.tablaUsada}» de Busint no trajo ninguna fila{busint.errorTabla ? ` (${busint.errorTabla})` : ""}.
           {busint.candidatas?.length ? ` Tablas parecidas que existen: ${busint.candidatas.join(", ")}.` : " No se encontró otra tabla con «rendimiento» en el nombre."} Abre «Ver columnas de Busint» y avísame.
@@ -160,6 +183,7 @@ export default function ConsumoTelaCortePanel({ pedidos, desde, hasta, functions
                     <td style={{ padding: "9px 10px" }}>
                       <div style={{ fontWeight: 700 }}>{f.refs.join(", ") || "—"}</div>
                       <div style={{ fontSize: 11, color: C.slate }}>{f.tela || (f.pedido ? `Pedido ${f.pedido}` : "")}</div>
+                      {f.sinFicha && f.sinFicha.length > 0 && <div style={{ fontSize: 11, color: C.amber }}>⚠ Sin ficha de telas en Busint: {f.sinFicha.join(", ")}</div>}
                     </td>
                     <td style={{ padding: "9px 10px", textAlign: "right" }}>{Number(f.unidades || 0).toLocaleString("es-CO")}</td>
                     <td style={{ padding: "9px 10px", textAlign: "right" }}>
@@ -180,7 +204,15 @@ export default function ConsumoTelaCortePanel({ pedidos, desde, hasta, functions
                       {f.pagadoDeMas !== null && f.pagadoDeMas !== undefined ? (
                         <>
                           <strong style={{ color: f.pagadoDeMas > 0 ? C.red : f.pagadoDeMas < 0 ? C.green : C.slate }}>{fmtPesos(f.pagadoDeMas)}</strong>
-                          <div style={{ fontSize: 11, color: C.slate }}>{f.difM > 0 ? "+" : ""}{fmtM(f.difM)} m × {fmtPesos(f.costoMetro)}/m</div>
+                          {f.fuente === "detalle" && f.porTela && f.porTela.length > 0 ? (
+                            f.porTela.map((t) => (
+                              <div key={t.tela} style={{ fontSize: 11, color: t.difM > 0 ? C.red : C.slate }} title={`Real ${fmtM(t.realM)} m · teórico ${fmtM(t.teorM)} m`}>
+                                {t.tela}: {t.difM > 0 ? "+" : ""}{fmtM(t.difM)} m{t.costoMetro > 0 ? ` × ${fmtPesos(t.costoMetro)}/m` : ""}{t.sinPareja ? " ⚠" : ""}
+                              </div>
+                            ))
+                          ) : (
+                            <div style={{ fontSize: 11, color: C.slate }}>{f.difM > 0 ? "+" : ""}{fmtM(f.difM)} m × {fmtPesos(f.costoMetro)}/m</div>
+                          )}
                         </>
                       ) : f.realM > 0 && f.teorM > 0 ? <span style={{ fontSize: 11, color: C.slate }}>sin precio</span> : <span style={{ color: C.slate }}>—</span>}
                     </td>
