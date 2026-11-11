@@ -10414,6 +10414,24 @@ async function verificarLlamadorPuedeTraerGastosPlanta(request) {
   if (!modulos.includes("areas_centro_costo")) throw new HttpsError("permission-denied", "No tienes permiso para traer gastos desde Busint.");
   return snap.docs[0];
 }
+// (2026-11-11, a pedido de Fredy) Talento Humano (Nómina) también puede traer gastos de Busint para su presupuesto: además de quien ya
+// puede en Planta, entra quien tenga el módulo Nómina completo o el de novedades en su rol.
+async function verificarLlamadorPuedeTraerGastosTalentoHumano(request) {
+  try {
+    return await verificarLlamadorPuedeTraerGastosPlanta(request);
+  } catch (err) {
+    if (err?.code !== "permission-denied") throw err;
+    const snap = await db.collection("users").where("authUid", "==", request.auth.uid).limit(1).get();
+    if (snap.empty) throw err;
+    const u = snap.docs[0].data();
+    const configSnap = await db.collection("config").doc("main").get();
+    const roles = configSnap.exists ? configSnap.data().roles || [] : [];
+    const roleData = roles.find((r) => r.name === u.role);
+    const modulos = Array.isArray(roleData?.modulos) ? roleData.modulos : [];
+    if (modulos.includes("nomina") || modulos.includes("nomina_novedades")) return snap.docs[0];
+    throw err;
+  }
+}
 // (2026-11-07, a pedido de Fredy) «Repuestos maquilas» (REPUE) y «Compra de hilos-hilazas» (CHILA) no son proveedores sino CONCEPTOS de gasto de la
 // factura de compra. No se sabe en qué columna de "cartera cxp-fact" viaja el concepto, así que se detecta sola: se busca cada texto en todas las
 // columnas (coincidencia exacta con el código o con todas las palabras del nombre) y se usa la columna con más coincidencias. También se sigue
@@ -10469,7 +10487,9 @@ exports.getFacturasCompraBusint = onCallAuth(
     memory: "1GiB",
   },
   async (request) => {
-    await verificarLlamadorPuedeTraerGastosPlanta(request);
+    // (2026-11-11) «Gastos de Talento Humano» (Nómina) usa esta misma búsqueda con origen: "talento_humano".
+    if (request.data?.origen === "talento_humano") await verificarLlamadorPuedeTraerGastosTalentoHumano(request);
+    else await verificarLlamadorPuedeTraerGastosPlanta(request);
     const datos = request.data || {};
     const textos = (Array.isArray(datos.patrones) ? datos.patrones : Array.isArray(datos.proveedores) ? datos.proveedores : [])
       .map((x) => String(x || "").trim().slice(0, 80))
