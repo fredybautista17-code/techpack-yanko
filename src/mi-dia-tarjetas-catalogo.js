@@ -66,7 +66,11 @@ export const GRUPOS_MI_DIA = [
     // (2026-11-10, a pedido de Fredy) Para Talento Humano (Midalys): quién cumple años hoy, en los próximos 3 días y en los próximos 30.
     // Quien tenga esta tarjeta marcada también recibe el correo automático (3 días antes y el mismo día). La lista se cambia en Nómina → Personal → Cumpleaños.
     id: "talento_humano", titulo: "Talento Humano",
-    tarjetas: [{ id: "cumpleanos", label: "Cumpleaños de los trabajadores: hoy y próximos días (y recibe el correo de aviso, 3 días antes y el mismo día)" }],
+    // (2026-11-11, a pedido de Fredy) Gastos de Talento Humano (conceptos ACTIV y *ACTI de Busint): lo gastado en el año, el presupuesto del año siguiente y las últimas facturas.
+    tarjetas: [
+      { id: "cumpleanos", label: "Cumpleaños de los trabajadores: hoy y próximos días (y recibe el correo de aviso, 3 días antes y el mismo día)" },
+      { id: "gastos_talento", label: "Gastos de Talento Humano: lo gastado en el año, presupuesto del año siguiente y últimas facturas" },
+    ],
   },
 ];
 

@@ -508,3 +508,70 @@ export default function GastosTalentoHumanoView({ db, functionsClient, currentUs
     </div>
   );
 }
+
+// ─── Tarjeta del Mi Día («Gastos de Talento Humano») ───
+// (2026-11-11, a pedido de Fredy) Resumen para Talento Humano: lo gastado en el año contra el mismo tramo del anterior, el avance hacia el presupuesto
+// del año siguiente (si ya se guardó) y las últimas facturas traídas de Busint. Traer de Busint y armar el presupuesto se hace en Nómina → Personal.
+export function BloqueGastosTalento({ db }) {
+  const hoy = hoyBogotaISO();
+  const { lista: gastosRaw, error } = useColeccion(db, COL_GASTOS_TALENTO);
+  const { lista: presRaw } = useColeccion(db, COL_PRESUPUESTO_TALENTO);
+  const gastos = useMemo(() => gastosRaw || [], [gastosRaw]);
+  const serie = useMemo(() => armarSerie({ gastos, item: TODOS, hoy }), [gastos, hoy]);
+  const comp = useMemo(() => comparacionAnioEnCurso(serie), [serie]);
+  const porItem = useMemo(() => itemsDeGastos(gastos).map((it) => {
+    const s = armarSerie({ gastos, item: it, hoy });
+    return { item: it, actual: s.totales[s.anioActual] || 0, anterior: s.totales[s.anioActual - 1] || 0 };
+  }), [gastos, hoy]);
+  const presGuardado = (presRaw || []).find((p) => p.id === idPresupuesto(serie.anioPres, TODOS));
+  const ultimas = useMemo(() => [...gastos].sort((a, b) => String(b.fecha).localeCompare(String(a.fecha))).slice(0, 5), [gastos]);
+  const caja = { background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: "14px 16px" };
+  if (error) return <div style={{ ...caja, color: C.red, fontSize: 13 }}>⚠ {error}</div>;
+  if (gastosRaw === null) return <div style={{ padding: 16, color: C.slate, fontSize: 13 }}>Cargando…</div>;
+  if (!serie.anios.length) {
+    return <div style={{ ...caja, color: C.slate, fontSize: 13.5 }}>Todavía no hay gastos de Talento Humano cargados. Se traen de Busint en <b>Nómina → Personal → Gastos de Talento Humano</b>.</div>;
+  }
+  const totalActual = serie.totales[serie.anioActual] || 0;
+  return (
+    <div style={{ display: "grid", gap: 12 }}>
+      <section aria-label="Gastado en el año" style={caja}>
+        <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.07em", textTransform: "uppercase", color: C.slate }}>Gastado en {serie.anioActual}</div>
+        <div style={{ fontSize: 30, fontWeight: 900, color: C.ink, margin: "2px 0" }}>{pesos(totalActual)}</div>
+        <div style={{ fontSize: 13, color: C.slate }}>
+          {comp && comp.pct !== null ? <>De enero a {MESES_CORTOS[comp.hasta - 1].toLowerCase()}: <b style={{ color: comp.pct > 0 ? C.red : C.green }}>{pct(comp.pct)}</b> contra el mismo tramo de {serie.anioActual - 1} ({pesos(comp.anterior)}).</> : "Lo que va del año, con las facturas de Busint ya cargadas."}
+        </div>
+        {porItem.length > 0 && (
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 10 }}>
+            {porItem.map((x) => (
+              <div key={x.item} style={{ flex: "1 1 190px", background: C.soft, border: `1px solid ${C.border}`, borderRadius: 10, padding: "8px 12px" }}>
+                <div style={{ fontSize: 12, color: C.slate, fontWeight: 700 }}>{x.item}</div>
+                <div style={{ fontSize: 16, fontWeight: 900, color: C.ink }}>{pesos(x.actual)}</div>
+                <div style={{ fontSize: 11.5, color: C.slate }}>{serie.anioActual - 1}: {pesos(x.anterior)}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+      <section aria-label="Presupuesto" style={{ ...caja, borderColor: presGuardado ? C.presup : C.border, background: presGuardado ? C.presupBg : C.white }}>
+        <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.07em", textTransform: "uppercase", color: C.slate }}>Presupuesto {serie.anioPres}</div>
+        {presGuardado ? (
+          <>
+            <div style={{ fontSize: 24, fontWeight: 900, color: C.ink, margin: "2px 0" }}>{pesos(presGuardado.total)}</div>
+            <div style={{ fontSize: 13, color: C.slate }}>Guardado{presGuardado.actualizadoPor ? ` por ${presGuardado.actualizadoPor}` : ""}. {totalActual > 0 ? `Equivale a ${pct((presGuardado.total / totalActual - 1) * 100)} contra lo gastado hasta hoy en ${serie.anioActual}.` : ""}</div>
+          </>
+        ) : (
+          <div style={{ fontSize: 13.5, color: C.slate, marginTop: 4 }}>Todavía no está armado. Se arma mes por mes en <b>Nómina → Personal → Gastos de Talento Humano</b>.</div>
+        )}
+      </section>
+      <section aria-label="Últimas facturas" style={caja}>
+        <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.07em", textTransform: "uppercase", color: C.slate, marginBottom: 4 }}>Últimas facturas cargadas</div>
+        {ultimas.map((g) => (
+          <div key={g.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", padding: "7px 0", borderTop: `1px solid ${C.border}`, fontSize: 13.5 }}>
+            <span><b>{fmtFecha(g.fecha)}</b> · {g.item}{g.numeroFactura ? ` · ${g.numeroFactura}` : ""}</span>
+            <b>{pesos(g.monto)}</b>
+          </div>
+        ))}
+      </section>
+    </div>
+  );
+}

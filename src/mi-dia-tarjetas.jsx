@@ -12,6 +12,7 @@ import { diaDeArea, diasDelMesHasta, esHabilISO, sumarDiasISO } from "./cierre-d
 import { claveCierreDeArea, IDS_CIERRE, IDS_PLANEACION, IDS_ORDENES_COMPRA, IDS_CIERRE_AREAS, AREA_DE_TARJETA_CIERRE } from "./mi-dia-tarjetas-catalogo";
 import BloqueOrdenesCompra from "./mi-dia-costos";
 import { BloqueCumpleanos } from "./cumpleanos";
+import { BloqueGastosTalento } from "./talento-gastos";
 import { MiDiaPlaneacionBloque, ProgramadorProcesosStandalone, MiDiaNominaStandalone, ListaPorProgramarBloque } from "./modulo-planeacion";
 
 const C = {
@@ -459,6 +460,9 @@ export default function MiDiaTarjetasStandalone({ db, currentUser, onVolver, onL
   }
   if (marcadas.includes("cumpleanos")) {
     secciones.push({ id: "cumpleanos", icon: "🎂", label: "Cumpleaños", render: () => <BloqueCumpleanos db={db} /> });
+  }
+  if (marcadas.includes("gastos_talento")) {
+    secciones.push({ id: "gastos_talento", icon: "💜", label: "Gastos de Talento Humano", render: () => <BloqueGastosTalento db={db} /> });
   }
   if (marcadas.includes("auditoria_nomina")) {
     secciones.push({ id: "auditoria", icon: "🔍", label: "Auditoría Nómina", render: () => <MiDiaNominaStandalone currentUser={currentUser} incrustado /> });
