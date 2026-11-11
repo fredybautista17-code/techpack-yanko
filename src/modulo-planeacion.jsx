@@ -5452,8 +5452,11 @@ function ExplicacionNetoModal({ datos, mostrarNombres, onClose }) {
     </Modal>
   );
 }
-function DetalleCostoNominaModal({ filas, totalTarjeta, area, etiquetaPeriodo, mostrarNombres, onClose }) {
+function DetalleCostoNominaModal({ filas, totalTarjeta, area, etiquetaPeriodo, mostrarNombres, puedeVerFijos = false, onClose }) {
   const [verDctos, setVerDctos] = useState(true);
+  // (2026-11-11, a pedido de Fredy) El administrador toca «Sueldo fijo del período» y ve quiénes son, con su sueldo y auxilio (también en Planta Yanko, que no muestra nombres).
+  const [verFijos, setVerFijos] = useState(false);
+  const fijos = useMemo(() => filas.filter((f) => f.estado === "fijo").sort((a, b) => String(a.nombre).localeCompare(String(b.nombre), "es")), [filas]);
   const [verDctosTrab, setVerDctosTrab] = useState(false);
   const [explicar, setExplicar] = useState(null);
   const resumen = useMemo(() => {
@@ -5600,7 +5603,11 @@ function DetalleCostoNominaModal({ filas, totalTarjeta, area, etiquetaPeriodo, m
           <tbody>
             {resumen.map((g, i) => (
               <tr key={g.pid} style={{ background: i % 2 ? "#FAF8F5" : C.white, borderTop: `1px solid ${C.border}` }}>
-                <td style={{ padding: "8px 12px", fontWeight: 700 }}>{g.label}</td>
+                <td style={{ padding: "8px 12px", fontWeight: 700 }}>
+                  {g.pid === "fijo" && puedeVerFijos
+                    ? <button type="button" onClick={() => setVerFijos(true)} title="Toca para ver quiénes son" style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: 12.5, fontWeight: 700, color: C.ink, fontFamily: "inherit", textAlign: "left" }}>{g.label} <span style={{ fontSize: 10, color: C.blue, fontWeight: 700 }}>Ver detalle →</span></button>
+                    : g.label}
+                </td>
                 <td style={{ padding: "8px 12px", fontSize: 11.5, fontWeight: 700 }}>
                   {Object.keys(g.estados).sort((a, b) => ESTADO_QUINCENA_CC[a].orden - ESTADO_QUINCENA_CC[b].orden).map((e) => (
                     <span key={e} style={{ color: ESTADO_QUINCENA_CC[e].fg, marginRight: 10, whiteSpace: "nowrap" }}>{ESTADO_QUINCENA_CC[e].txt} ({g.estados[e]})</span>
@@ -5662,6 +5669,26 @@ function DetalleCostoNominaModal({ filas, totalTarjeta, area, etiquetaPeriodo, m
       {explicar && (explicar.tipo === "q" || explicar.tipo === "t"
         ? <ExplicacionDctosTnsModal datos={explicar} onClose={() => setExplicar(null)} />
         : <ExplicacionNetoModal datos={explicar} mostrarNombres={mostrarNombres} onClose={() => setExplicar(null)} />)}
+      {verFijos && puedeVerFijos && (
+        <Modal title={`Sueldo fijo del período · ${fijos.length} persona(s)`} onClose={() => setVerFijos(false)} width={640}>
+          <div style={{ fontSize: 12.5, color: C.slate, marginBottom: 14 }}>
+            Trabajadores de {area} que no se pagan por destajo, con el sueldo y el auxilio de transporte de su ficha. El costo del período ({etiquetaPeriodo}) es sueldo + auxilio; no incluye provisiones de cesantías, prima ni vacaciones.
+          </div>
+          <Tabla
+            vacio="No hay trabajadores de sueldo fijo en esta área."
+            columnas={[
+              { key: "nombre", label: "Trabajador" },
+              { key: "sueldoMes", label: "Sueldo mensual", align: "right", render: (f) => fmtMoney(f.sueldoMes) },
+              { key: "auxilioMes", label: "Auxilio de transporte", align: "right", render: (f) => fmtMoney(f.auxilioMes) },
+              { key: "costo", label: "Costo del período", align: "right", render: (f) => <strong>{fmtMoney(f.costo)}</strong> },
+            ]}
+            filas={fijos}
+          />
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginTop: 12, padding: "12px 14px", borderRadius: 10, background: C.canvas, fontWeight: 800, fontSize: 14 }}>
+            <span>Total · {fijos.length} persona(s)</span><span>{fmtMoney(fijos.reduce((a, f) => a + f.costo, 0))}</span>
+          </div>
+        </Modal>
+      )}
     </Modal>
   );
 }
@@ -6588,9 +6615,9 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
       ...detalleCostoNomina,
       ...filas
         .filter((f) => !f.esDestajoReal && !f.sinSueldo)
-        .map((f) => ({ id: f.id, nombre: f.nombre, pid: "fijo", label: "Sueldo fijo del período", estado: "fijo", neto: f.costo, prov: 0, ces: 0, prima: 0, vac: 0, provT: 0, cesT: 0, primaT: 0, vacT: 0, proporcion: 1, diasP: null, diasT: null, partes: null, cobrosDetalle: [], costo: f.costo })),
+        .map((f) => ({ id: f.id, nombre: f.nombre, sueldoMes: Number((trabajadoresArea.find((t) => t.id === f.id) || {}).sueldo) || 0, auxilioMes: Number((trabajadoresArea.find((t) => t.id === f.id) || {}).auxilioTransporte) || 0, pid: "fijo", label: "Sueldo fijo del período", estado: "fijo", neto: f.costo, prov: 0, ces: 0, prima: 0, vac: 0, provT: 0, cesT: 0, primaT: 0, vacT: 0, proporcion: 1, diasP: null, diasT: null, partes: null, cobrosDetalle: [], costo: f.costo })),
     ],
-    [detalleCostoNomina, filas]
+    [detalleCostoNomina, filas, trabajadoresArea]
   );
   // (2026-11-04, a pedido de Fredy) Se quitó el KPI "Balance" (y su % cubierto): confundía al convivir con Total ayudado.
   const algunoSinSueldo = trabajadoresArea.some((t) => t.tipoNomina !== "Destajo" && !t.sueldo);
@@ -7804,6 +7831,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
               area={areaSel}
               etiquetaPeriodo={etiquetaPeriodo}
               mostrarNombres={!soloCostoReal}
+              puedeVerFijos={!!isAdmin}
               onClose={() => setDetalleNominaAbierto(false)}
             />
           )}
