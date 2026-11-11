@@ -11503,13 +11503,20 @@ function estadosProgramacionesCP(programaciones, entradas, hoyISO) {
     const desde = ord.map((p) => String(p.creadoEn || "").slice(0, 10)).filter(Boolean).sort()[0] || "";
     const vale = !!ent && (!desde || (ent.ultima || ent.primera || "") >= desde);
     let disponible = vale ? Number(ent.total) || 0 : 0;
+    // (2026-11-11, a pedido de Fredy) Una programación repetida (mismo lote, proceso, trabajador, día y cantidad) es la misma entrega: comparte lo hecho en vez de
+    // quitárselo a la primera; si no, la copia salía «No cumplido» aunque el lote ya había entrado en Busint.
+    const repartido = new Map();
     ord.forEach((p) => {
       const cant = p.cantidad == null ? null : Number(p.cantidad) || 0;
+      const claveRep = cant === null ? null : `${p.trabajadorId || p.trabajadorNombre || ""}|${p.fechaProgramada || ""}|${cant}`;
       let hecho = 0;
-      if (disponible > 0) {
+      if (claveRep !== null && repartido.has(claveRep)) {
+        hecho = repartido.get(claveRep);
+      } else if (disponible > 0) {
         hecho = cant === null ? disponible : Math.min(cant, disponible);
         disponible = Math.max(0, disponible - hecho);
       }
+      if (claveRep !== null && !repartido.has(claveRep)) repartido.set(claveRep, hecho);
       const completo = cant === null ? hecho > 0 : hecho >= cant;
       const fechaCumplimiento = vale ? ent.ultima || ent.primera || null : null;
       out.push({ ...p, hecho, completo, parcial: !completo && hecho > 0, fechaCumplimiento: completo ? fechaCumplimiento : null, llegoTarde: completo && !!fechaCumplimiento && fechaCumplimiento > (p.fechaProgramada || "") });
@@ -11539,6 +11546,8 @@ function areaDeProgramacionCP(p, m) {
 async function armarCumplimientoProgramacionCP(fechaRef, diaEvaluar) {
   const ayer = diaEvaluar || sumarDiasISOCP(fechaRef, -1);
   const porArea = { planta: [], calidad: [], zonacalor: [] };
+  let cargaPlaneacion = null; // fecha de la última carga de Planeación con la que se midió Planta (para avisar si está atrasada)
+  let cargaCreadoEn = null; // y cuándo se cargó (para decir la hora en el correo)
   // ── Planta de confección: contra la última carga de Planeación (igual que la pantalla) ──
   const plantaSnap = await db.collection("planta_programacion").where("fechaEnviado", "==", ayer).get();
   if (!plantaSnap.empty) {
@@ -11549,6 +11558,8 @@ async function armarCumplimientoProgramacionCP(fechaRef, diaEvaluar) {
       if (!s.empty) {
         const c = s.docs[0].data();
         fechaCarga = c.fecha || null;
+        cargaPlaneacion = fechaCarga;
+        cargaCreadoEn = c.creadoEn || null;
         enPlanta = new Set((c.lotes || []).filter((l) => l.nombrePlanta === "INDUSTRIAS YANKO MODULO CENTRO" && (l.ubicacionActual ? l.ubicacionActual === "Planta" : l.invPlanta > 0)).map((l) => String(l.numLote)));
       }
     } catch (err) {
@@ -11578,7 +11589,7 @@ async function armarCumplimientoProgramacionCP(fechaRef, diaEvaluar) {
       porArea[area].push({ numLote: String(p.numLote), referencia: p.referencia || "", proceso: p.proceso || "", trabajador: p.trabajadorNombre || "", cantidad: p.cantidad ?? null, hecho: p.hecho, numPedido: p.numPedido ?? "", prioridad: p.prioridad || "", estado: p.completo ? (p.llegoTarde ? "tarde" : "cumplido") : p.parcial ? "parcial" : "no", fechaCumplimiento: p.fechaCumplimiento });
     });
   }
-  return { ayer, porArea };
+  return { ayer, porArea, cargaPlaneacion, cargaCreadoEn };
 }
 // Lo programado para `dia` por área. "nuevo" = se programó después del último correo enviado.
 async function programacionDiaPorAreaCP(dia, desdeISO) {
@@ -11627,7 +11638,7 @@ function seccionProgramacionCP(area, items) {
   const nombre = AREAS_CORREO_PROGRAMACION[area];
   return `<h3 style="${H3_CP}">${escHtmlCP(nombre)} <span style="font-weight:400;color:#667085;font-size:13px">· ${items.length} ${items.length === 1 ? "lote" : "lotes"}${resaltar ? ` (${nNuevos} ${nNuevos === 1 ? "nuevo" : "nuevos"})` : ""}</span></h3>${tablaHtmlCP(columnas, filas)}`;
 }
-function seccionCumplimientoCP(area, filas) {
+function seccionCumplimientoCP(area, filas, cargaPlaneacion, diaEvaluado, cargaCreadoEn) {
   const cumplidos = filas.filter((f) => f.estado === "cumplido" || f.estado === "tarde").length;
   const hayProceso = filas.some((f) => f.proceso);
   const chip = (f) => {
@@ -11646,7 +11657,16 @@ function seccionCumplimientoCP(area, filas) {
   ];
   const orden = { no: 0, parcial: 1, tarde: 2, cumplido: 3 };
   const ordenadas = [...filas].sort((a, b) => orden[a.estado] - orden[b.estado] || String(a.numLote).localeCompare(String(b.numLote)));
-  const html = `<h3 style="${H3_CP}">${escHtmlCP(AREAS_CORREO_PROGRAMACION[area])} <span style="font-weight:400;color:#667085;font-size:13px">· ${cumplidos} de ${filas.length} cumplidos</span></h3>${tablaHtmlCP(columnas, ordenadas)}`;
+  // Planta se mide contra la última carga de Planeación: si esa carga es anterior al día evaluado, lo que salió después sigue «en Planta» y sale «No cumplido».
+  const horaCarga = (() => {
+    const d = cargaCreadoEn ? new Date(cargaCreadoEn) : null;
+    return d && !Number.isNaN(d.getTime()) ? d.toLocaleTimeString("es-CO", { timeZone: "America/Bogota", hour: "numeric", minute: "2-digit" }) : "";
+  })();
+  const atrasada = !!cargaPlaneacion && !!diaEvaluado && String(cargaPlaneacion) < String(diaEvaluado);
+  const notaCarga = area === "planta" && cargaPlaneacion
+    ? `<div style="margin:8px 0 0;padding:8px 12px;border-radius:8px;background:${atrasada ? "#fef0c7" : "#f2f4f7"};color:${atrasada ? "#b54708" : "#475467"};font-size:12px;font-family:Arial,Helvetica,sans-serif">${atrasada ? "⚠ " : ""}Planta se mide con la última carga de Planeación: la del ${escHtmlCP(fechaLatinaCP(cargaPlaneacion))}${horaCarga ? `, cargada a las ${escHtmlCP(horaCarga)}` : ""}. Un lote que salió de Planta después de esa carga figura como «No cumplido» hasta que se cargue Planeación de nuevo.</div>`
+    : "";
+  const html = `<h3 style="${H3_CP}">${escHtmlCP(AREAS_CORREO_PROGRAMACION[area])} <span style="font-weight:400;color:#667085;font-size:13px">· ${cumplidos} de ${filas.length} cumplidos</span></h3>${tablaHtmlCP(columnas, ordenadas)}${notaCarga}`;
   return { html, cumplidos, total: filas.length };
 }
 // ── Días de trabajo (2026-10-28) ──
@@ -11770,7 +11790,7 @@ async function enviarCorreoNocheCP({ fechaHoy, diaProgramacion, soloProgramacion
       for (const a of areas) {
         const filas = cumpl.porArea[a];
         if (!filas.length) continue;
-        const sc = seccionCumplimientoCP(a, filas);
+        const sc = seccionCumplimientoCP(a, filas, cumpl.cargaPlaneacion, cumpl.ayer, cumpl.cargaCreadoEn);
         cumplidos += sc.cumplidos; totalCumpl += sc.total; sec += sc.html;
       }
       if (sec) cuerpo += `<h2 style="${H2_CP}">${momento === "manana" ? "Cumplimiento del día anterior" : "Metas cumplidas hoy"} ${fechaLatinaCP(cumpl.ayer)}: ${cumplidos} de ${totalCumpl}</h2>${sec}`;

@@ -134,13 +134,20 @@ export function estadosProgramaciones(programaciones, entradas, hoyISO) {
     const desde = ordenadas.map((p) => String(p.creadoEn || "").slice(0, 10)).filter(Boolean).sort()[0] || "";
     const vale = !!ent && (!desde || (ent.ultima || ent.primera || "") >= desde);
     let disponible = vale ? Number(ent.total) || 0 : 0;
+    // (2026-11-11, a pedido de Fredy) Una programación repetida (mismo lote, proceso, trabajador, día y cantidad) es la misma entrega: comparte lo hecho en vez de
+    // quitárselo a la primera; si no, la copia salía «No cumplido» aunque el lote ya había entrado en Busint.
+    const repartido = new Map();
     ordenadas.forEach((p) => {
       const cant = p.cantidad == null ? null : Number(p.cantidad) || 0;
+      const claveRep = cant === null ? null : `${p.trabajadorId || p.trabajadorNombre || ""}|${p.fechaProgramada || ""}|${cant}`;
       let hecho = 0;
-      if (disponible > 0) {
+      if (claveRep !== null && repartido.has(claveRep)) {
+        hecho = repartido.get(claveRep);
+      } else if (disponible > 0) {
         hecho = cant === null ? disponible : Math.min(cant, disponible);
         disponible = Math.max(0, disponible - hecho);
       }
+      if (claveRep !== null && !repartido.has(claveRep)) repartido.set(claveRep, hecho);
       const completo = cant === null ? hecho > 0 : hecho >= cant;
       const fechaCumplimiento = vale ? (ent.ultima || ent.primera || null) : null;
       let estado;
