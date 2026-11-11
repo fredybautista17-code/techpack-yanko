@@ -1135,9 +1135,9 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
           ) : (
           <div style={{ background: C.navy, color: C.white, borderRadius: 18, padding: 22, marginBottom: 14 }}>
             <div style={{ fontSize: 11, letterSpacing: 0.6, opacity: 0.7, fontWeight: 700 }}>PRECIO DE VENTA · V{ver.numero}</div>
-            {/* (2026-11-10, a pedido de Fredy) Arriba va el precio SIN IVA; el de con IVA queda pequeño. «Aprobar y aplicar» sigue enviando el precio con IVA. */}
-            <div style={{ fontSize: 42, fontWeight: 800, letterSpacing: -1.5, marginTop: 6 }}>{fmtCOP(calc.escMargen.precioSinIva)}</div>
-            <div style={{ fontSize: 12, opacity: 0.75 }}>sin IVA · con IVA {fmtPct(ver.v.tasas.iva)} {fmtCOP(calc.escMargen.precioConIva)}</div>
+            {/* (2026-11-11, a pedido de Fredy) Arriba va el precio CON IVA (el mismo que envía «Aprobar y aplicar»); el de sin IVA queda pequeño. La barra, el margen y la utilidad siguen calculados sin IVA. */}
+            <div style={{ fontSize: 42, fontWeight: 800, letterSpacing: -1.5, marginTop: 6 }}>{fmtCOP(calc.escMargen.precioConIva)}</div>
+            <div style={{ fontSize: 12, opacity: 0.75 }}>con IVA {fmtPct(ver.v.tasas.iva)} · sin IVA <b>{fmtCOP(calc.escMargen.precioSinIva)}</b></div>
             {(() => {
               const total = calc.escMargen.precioSinIva;
               if (!(total > 0)) return null;
