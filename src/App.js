@@ -11616,6 +11616,8 @@ function EstadisticasView({ protos, capsulas, stages, config }) {
   const [yearFilter, setYearFilter] = useState(currentYear);
   const [monthFilter, setMonthFilter] = useState("todos");
   const [personFilter, setPersonFilter] = useState("todos");
+  // (2026-11-12, a pedido de Fredy) Desglose al hacer clic en «Por Cliente»: { tipo: "refs"|"protos", cliente, tab }.
+  const [desglose, setDesglose] = useState(null);
   const allRefs = capsulas.flatMap((c) => c.referencias);
   const allItems = [...protos, ...allRefs];
   const years = [...new Set(allItems.map((x) => x.createdAt?.slice(0, 4)).filter(Boolean))].sort().reverse();
@@ -11761,10 +11763,123 @@ function EstadisticasView({ protos, capsulas, stages, config }) {
       const items = base.filter((p) => p.cliente === cli);
       const t = items.length, ap = items.filter((x) => x.status === "aprobado").length, dec = items.filter((x) => x.status === "declinado").length, en = t - ap - dec;
       const promovidos = items.filter((x) => x.status === "aprobado" && x.promotedTo).length;
-      return { name: cli, total: t, ap, dec, en, promovidos, pctAp: t ? Math.round((ap / t) * 100) : 0 };
+      const sinCapsula = items.filter((x) => x.status === "aprobado" && !x.promotedTo).length;
+      return { name: cli, total: t, ap, dec, en, promovidos, sinCapsula, pctAp: t ? Math.round((ap / t) * 100) : 0 };
     }).filter((x) => x.total > 0).sort((a, b) => b.total - a.total);
   }
   const clienteProtoStats = porClienteProtos();
+  // ── Desglose al hacer clic (2026-11-12, a pedido de Fredy) ──
+  // Solo lee lo que ya hay: mismas reglas de período que los recuadros de arriba, así los números cuadran.
+  // «Sin cápsula» = prototipo aprobado que nadie ha promovido a una cápsula (promotedTo vacío).
+  const baseDelPeriodo = (arr) => arr.filter((x) => (!yearFilter || x.createdAt?.slice(0, 4) === yearFilter) && (monthFilter === "todos" || parseInt(x.createdAt?.slice(5, 7)) - 1 === parseInt(monthFilter)));
+  const grupoDe = (x) => (x.status === "aprobado" ? "ap" : x.status === "declinado" ? "dec" : "en");
+  const fdesg = (v) => (v ? String(v).slice(0, 10).split("-").reverse().join("/") : "—");
+  const etapaNombre = (id) => stages.find((st) => st.id === id)?.label || id || "—";
+  const fechaAprobacion = (x) => {
+    const txt = `Estado → "${STATUS.aprobado?.label}".`;
+    const o = [...(x.observations || [])].reverse().find((ob) => ob.type === "update" && ob.text === txt);
+    return (o?.date || x.stageStartedAt || x.createdAt || "").slice(0, 10);
+  };
+  async function exportarDesglose(cabecera, filas, nombreArchivo) {
+    const XLSX = await import("xlsx");
+    const ws = XLSX.utils.aoa_to_sheet([cabecera, ...filas]);
+    ws["!cols"] = cabecera.map((h, i) => ({ wch: Math.min(40, Math.max(String(h).length + 2, ...filas.map((f) => String(f[i] ?? "").length + 2))) }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Desglose");
+    XLSX.writeFile(wb, nombreArchivo);
+  }
+  function renderDesglose() {
+    const { tipo, cliente, tab } = desglose;
+    const esProto = tipo === "protos";
+    const GRUPOS = { ap: ["✓ Aprobada", T.jade, T.jadeBg], en: ["⚙ En proceso", T.denim, T.denimBg], dec: ["✕ Declinada", T.coral, T.coralBg] };
+    const pill = (txt, color, bg, extra) => <span style={{ display: "inline-block", padding: "2px 9px", borderRadius: 20, background: bg, color, fontWeight: 700, fontSize: 11, ...(extra || {}) }}>{txt}</span>;
+    let tabs = [], columnas = [], filas = [], pie = "";
+    if (!esProto) {
+      const refsCli = baseDelPeriodo(capsulas.flatMap((c) => (c.referencias || []).filter((r) => (r.colores || []).includes(cliente)).map((r) => ({ ...r, _cap: c }))));
+      const capsCli = capsulas.filter((c) => (c.referencias || []).some((r) => (r.colores || []).includes(cliente)));
+      const n = (g) => refsCli.filter((r) => grupoDe(r) === g).length;
+      tabs = [["todas", "Todas", refsCli.length], ["ap", "✓ Aprobadas", n("ap")], ["en", "⚙ En proceso", n("en")], ["dec", "✕ Declinadas", n("dec")], ["caps", "🗂 Cápsulas", capsCli.length]];
+      if (tab === "caps") {
+        columnas = [
+          { h: "Cápsula", v: (c) => `${c.name}${c.season ? " · " + c.season : ""}`, render: (c) => <b>{c.name}{c.season ? <span style={{ fontWeight: 400, color: T.slate }}> · {c.season}</span> : null}</b> },
+          { h: "Referencias", v: (c) => c.t, num: true },
+          { h: "Aprobadas", v: (c) => c.ap, num: true, render: (c) => pill(`✓ ${c.ap}`, T.jade, T.jadeBg) },
+          { h: "En proceso", v: (c) => c.en, num: true, render: (c) => pill(`⚙ ${c.en}`, T.denim, T.denimBg) },
+          { h: "Declinadas", v: (c) => c.dec, num: true, render: (c) => pill(`✕ ${c.dec}`, T.coral, T.coralBg) },
+          { h: "Estado", v: (c) => ({ cumplida: "Cumplida", en_curso: "En curso", con_declinaciones: "Con declinaciones", sin_referencias: "Sin referencias" }[c.est]) },
+        ];
+        filas = capsCli.map((c) => {
+          const rs = (c.referencias || []).filter((r) => (r.colores || []).includes(cliente));
+          return { id: c.id, name: c.name, season: c.season, t: rs.length, ap: rs.filter((r) => r.status === "aprobado").length, dec: rs.filter((r) => r.status === "declinado").length, en: rs.filter((r) => grupoDe(r) === "en").length, est: estadoCapsula(c) };
+        });
+        pie = "Las cápsulas se cuentan sin filtrar por fecha, igual que el recuadro 🗂 de la fila; las referencias de cada una son las de este cliente.";
+      } else {
+        columnas = [
+          { h: "Referencia", v: (r) => `${r.reference || ""} ${r.name || ""}`.trim(), render: (r) => <div><b>{r.reference || "—"}</b><div style={{ fontSize: 11, color: T.slate }}>{r.name}</div></div> },
+          { h: "Cápsula", v: (r) => `${r._cap.name}${r._cap.season ? " · " + r._cap.season : ""}` },
+          { h: "Estado", v: (r) => STATUS[r.status]?.label || r.status || "", render: (r) => { const g = GRUPOS[grupoDe(r)]; return pill(STATUS[r.status]?.label || g[0], g[1], g[2]); } },
+          { h: "Etapa", v: (r) => (grupoDe(r) === "en" ? etapaNombre(r.currentStage) + (isOverdue(r, stages) ? " (vencida)" : "") : "—"), render: (r) => (grupoDe(r) === "en" ? <span>{etapaNombre(r.currentStage)}{isOverdue(r, stages) && <b style={{ color: T.coral }}> · vencida</b>}</span> : "—") },
+          { h: "Días en etapa", v: (r) => (grupoDe(r) === "en" && r.stageStartedAt ? daysAgo(r.stageStartedAt) : ""), num: true },
+          { h: "Responsable", v: (r) => r.assignedTo || "—" },
+          { h: "Creada", v: (r) => fdesg(r.createdAt) },
+        ];
+        filas = refsCli.filter((r) => tab === "todas" || grupoDe(r) === tab).sort((a, b) => (isOverdue(b, stages) ? 1 : 0) - (isOverdue(a, stages) ? 1 : 0) || (b.createdAt || "").localeCompare(a.createdAt || ""));
+      }
+    } else {
+      const protosCli = baseDelPeriodo(protos).filter((x) => x.cliente === cliente);
+      const sin = (x) => x.status === "aprobado" && !x.promotedTo;
+      const n = (g) => protosCli.filter((x) => grupoDe(x) === g).length;
+      tabs = [["todas", "Todos", protosCli.length], ["ap", "✓ Aprobados", n("ap")], ["en", "⚙ En proceso", n("en")], ["dec", "✕ Declinados", n("dec")], ["sin", "📭 Aprobados sin cápsula", protosCli.filter(sin).length]];
+      columnas = [
+        { h: "Prototipo", v: (x) => `${x.reference || ""} ${x.name || ""}`.trim(), render: (x) => <div><b>{x.reference || "—"}</b><div style={{ fontSize: 11, color: T.slate }}>{x.name}</div></div> },
+        { h: "Estado", v: (x) => STATUS[x.status]?.label || x.status || "", render: (x) => { const g = GRUPOS[grupoDe(x)]; return pill(STATUS[x.status]?.label || g[0], g[1], g[2]); } },
+        { h: "Cápsula", v: (x) => (x.status !== "aprobado" ? "—" : x.promotedTo ? (capsulas.find((c) => c.id === x.promotedTo)?.name || "Promovido") : "Sin cápsula"), render: (x) => (x.status !== "aprobado" ? "—" : x.promotedTo ? (capsulas.find((c) => c.id === x.promotedTo)?.name || "Promovido") : pill("📭 Sin cápsula", T.amber, T.amberBg)) },
+        { h: "Aprobado el", v: (x) => (x.status === "aprobado" ? fdesg(fechaAprobacion(x)) : "—") },
+        { h: "Días sin hacer nada", v: (x) => (sin(x) ? daysAgo(fechaAprobacion(x)) : ""), num: true, render: (x) => (sin(x) ? <b style={{ color: daysAgo(fechaAprobacion(x)) > 14 ? T.coral : T.ink }}>{daysAgo(fechaAprobacion(x))} d</b> : "—") },
+        { h: "Responsable", v: (x) => x.assignedTo || "—" },
+        { h: "Creado", v: (x) => fdesg(x.createdAt) },
+      ];
+      filas = protosCli.filter((x) => (tab === "todas" ? true : tab === "sin" ? sin(x) : grupoDe(x) === tab));
+      if (tab === "sin") filas = filas.sort((a, b) => fechaAprobacion(a).localeCompare(fechaAprobacion(b)));
+      else filas = filas.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+      pie = "«Sin cápsula» = aprobado y todavía no promovido a una cápsula. Ordenados del más antiguo al más reciente.";
+    }
+    const hoyArchivo = new Date().toISOString().slice(0, 10);
+    return (
+      <Modal title={`${esProto ? "🧪" : "🏢"} ${cliente}`} onClose={() => setDesglose(null)} width={880}>
+        <div style={{ fontSize: 12, color: T.slate, marginBottom: 12 }}>{periodLabel} · {esProto ? "prototipos" : "cápsulas y referencias"}</div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
+          {tabs.map(([k, l, cnt]) => (
+            <button key={k} onClick={() => setDesglose({ ...desglose, tab: k })} style={{ padding: "6px 12px", borderRadius: 20, border: `1.5px solid ${tab === k ? T.ink : T.border}`, background: tab === k ? T.ink : T.white, color: tab === k ? T.white : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>{l} ({cnt})</button>
+          ))}
+          <button
+            onClick={() => exportarDesglose(columnas.map((c) => c.h), filas.map((f) => columnas.map((c) => c.v(f))), `Desglose_${cliente.replace(/[^A-Za-z0-9]+/g, "_")}_${tab}_${hoyArchivo}.xlsx`)}
+            disabled={!filas.length}
+            style={{ marginLeft: "auto", padding: "6px 12px", borderRadius: 8, border: `1.5px solid ${T.border}`, background: T.canvas, fontWeight: 700, fontSize: 12, cursor: filas.length ? "pointer" : "default", fontFamily: "inherit", opacity: filas.length ? 1 : 0.5 }}
+          >📥 Excel</button>
+        </div>
+        {!filas.length ? (
+          <div style={{ padding: 26, textAlign: "center", color: T.slate, fontSize: 13 }}>Nada en este grupo para el período elegido.</div>
+        ) : (
+          <div style={{ overflow: "auto", border: `1px solid ${T.border}`, borderRadius: 10, maxHeight: "60vh" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 640 }}>
+              <thead>
+                <tr>{columnas.map((c) => <th key={c.h} style={{ position: "sticky", top: 0, background: T.canvas, textAlign: c.num ? "right" : "left", padding: "8px 10px", fontSize: 10, letterSpacing: 0.5, textTransform: "uppercase", color: T.slate, borderBottom: `1px solid ${T.border}`, whiteSpace: "nowrap" }}>{c.h}</th>)}</tr>
+              </thead>
+              <tbody>
+                {filas.map((f, i) => (
+                  <tr key={f.id || i} style={{ borderBottom: `1px solid ${T.border}` }}>
+                    {columnas.map((c) => <td key={c.h} style={{ padding: "8px 10px", textAlign: c.num ? "right" : "left", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>{c.render ? c.render(f) : c.v(f)}</td>)}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <div style={{ fontSize: 12, color: T.slate, marginTop: 10 }}>{filas.length} {filas.length === 1 ? "fila" : "filas"}. {pie}</div>
+      </Modal>
+    );
+  }
   function PersonBlock({ data, label }) {
     return !data.length ? (
       <div style={{ color: T.slate, fontSize: 13, textAlign: "center", padding: 20 }}>Sin datos de {label.toLowerCase()}.</div>
@@ -11919,11 +12034,12 @@ function EstadisticasView({ protos, capsulas, stages, config }) {
           clienteProtoStats.map((c) => (
             <div key={c.name} style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 0", borderBottom: `1px solid ${T.border}` }}>
               <Avatar name={c.name} size={38} />
-              <div style={{ flex: 1 }}><div style={{ fontWeight: 700, fontSize: 14, color: T.ink }}>{c.name}</div><div style={{ fontSize: 12, color: T.slate }}>{c.total} prototipo{c.total !== 1 ? "s" : ""}{c.promovidos > 0 ? ` · ${c.promovidos} promovido${c.promovidos !== 1 ? "s" : ""} a cápsula` : ""}</div></div>
+              <div onClick={() => setDesglose({ tipo: "protos", cliente: c.name, tab: "todas" })} title="Ver el detalle de este cliente" style={{ flex: 1, cursor: "pointer" }}><div style={{ fontWeight: 700, fontSize: 14, color: T.ink }}>{c.name}</div><div style={{ fontSize: 12, color: T.slate }}>{c.total} prototipo{c.total !== 1 ? "s" : ""}{c.promovidos > 0 ? ` · ${c.promovidos} promovido${c.promovidos !== 1 ? "s" : ""} a cápsula` : ""}</div></div>
               <div style={{ display: "flex", gap: 8, fontSize: 12, flexWrap: "wrap" }}>
-                <span style={{ padding: "3px 10px", borderRadius: 20, background: T.jadeBg, color: T.jade, fontWeight: 700 }}>✓ {c.ap} ({c.pctAp}%)</span>
-                <span style={{ padding: "3px 10px", borderRadius: 20, background: T.denimBg, color: T.denim, fontWeight: 700 }}>⚙ {c.en}</span>
-                <span style={{ padding: "3px 10px", borderRadius: 20, background: T.coralBg, color: T.coral, fontWeight: 700 }}>✕ {c.dec}</span>
+                <button onClick={() => setDesglose({ tipo: "protos", cliente: c.name, tab: "ap" })} style={{ padding: "3px 10px", borderRadius: 20, background: T.jadeBg, color: T.jade, fontWeight: 700, border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: "inherit" }}>✓ {c.ap} ({c.pctAp}%)</button>
+                <button onClick={() => setDesglose({ tipo: "protos", cliente: c.name, tab: "en" })} style={{ padding: "3px 10px", borderRadius: 20, background: T.denimBg, color: T.denim, fontWeight: 700, border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: "inherit" }}>⚙ {c.en}</button>
+                <button onClick={() => setDesglose({ tipo: "protos", cliente: c.name, tab: "dec" })} style={{ padding: "3px 10px", borderRadius: 20, background: T.coralBg, color: T.coral, fontWeight: 700, border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: "inherit" }}>✕ {c.dec}</button>
+                <button onClick={() => setDesglose({ tipo: "protos", cliente: c.name, tab: "sin" })} title="Prototipos aprobados que todavía no se pasaron a una cápsula" style={{ padding: "3px 10px", borderRadius: 20, background: T.white, color: c.sinCapsula > 0 ? T.amber : T.slate, fontWeight: 700, border: `1.5px dashed ${c.sinCapsula > 0 ? "#E0A458" : T.border}`, cursor: "pointer", fontFamily: "inherit", fontSize: "inherit" }}>📭 {c.sinCapsula} sin cápsula</button>
               </div>
             </div>
           ))
@@ -11938,17 +12054,18 @@ function EstadisticasView({ protos, capsulas, stages, config }) {
           clienteStats.map((c) => (
             <div key={c.name} style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 0", borderBottom: `1px solid ${T.border}` }}>
               <Avatar name={c.name} size={38} />
-              <div style={{ flex: 1 }}><div style={{ fontWeight: 700, fontSize: 14, color: T.ink }}>{c.name}</div><div style={{ fontSize: 12, color: T.slate }}>{c.capsulasTotal} cápsula{c.capsulasTotal !== 1 ? "s" : ""} · {c.refsTotal} referencia{c.refsTotal !== 1 ? "s" : ""}</div></div>
+              <div onClick={() => setDesglose({ tipo: "refs", cliente: c.name, tab: "todas" })} title="Ver el detalle de este cliente" style={{ flex: 1, cursor: "pointer" }}><div style={{ fontWeight: 700, fontSize: 14, color: T.ink }}>{c.name}</div><div style={{ fontSize: 12, color: T.slate }}>{c.capsulasTotal} cápsula{c.capsulasTotal !== 1 ? "s" : ""} · {c.refsTotal} referencia{c.refsTotal !== 1 ? "s" : ""}</div></div>
               <div style={{ display: "flex", gap: 8, fontSize: 12, flexWrap: "wrap" }}>
-                <span style={{ padding: "3px 10px", borderRadius: 20, background: T.violetBg, color: T.violet, fontWeight: 700 }}>🗂 {c.capsulasTotal}</span>
-                <span style={{ padding: "3px 10px", borderRadius: 20, background: T.jadeBg, color: T.jade, fontWeight: 700 }}>✓ {c.refsAp} ({c.pctAp}%)</span>
-                <span style={{ padding: "3px 10px", borderRadius: 20, background: T.denimBg, color: T.denim, fontWeight: 700 }}>⚙ {c.refsEn}</span>
-                <span style={{ padding: "3px 10px", borderRadius: 20, background: T.coralBg, color: T.coral, fontWeight: 700 }}>✕ {c.refsDec}</span>
+                <button onClick={() => setDesglose({ tipo: "refs", cliente: c.name, tab: "caps" })} style={{ padding: "3px 10px", borderRadius: 20, background: T.violetBg, color: T.violet, fontWeight: 700, border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: "inherit" }}>🗂 {c.capsulasTotal}</button>
+                <button onClick={() => setDesglose({ tipo: "refs", cliente: c.name, tab: "ap" })} style={{ padding: "3px 10px", borderRadius: 20, background: T.jadeBg, color: T.jade, fontWeight: 700, border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: "inherit" }}>✓ {c.refsAp} ({c.pctAp}%)</button>
+                <button onClick={() => setDesglose({ tipo: "refs", cliente: c.name, tab: "en" })} style={{ padding: "3px 10px", borderRadius: 20, background: T.denimBg, color: T.denim, fontWeight: 700, border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: "inherit" }}>⚙ {c.refsEn}</button>
+                <button onClick={() => setDesglose({ tipo: "refs", cliente: c.name, tab: "dec" })} style={{ padding: "3px 10px", borderRadius: 20, background: T.coralBg, color: T.coral, fontWeight: 700, border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: "inherit" }}>✕ {c.refsDec}</button>
               </div>
             </div>
           ))
         )}
       </div>
+      {desglose && renderDesglose()}
     </div>
   );
 }
