@@ -14768,6 +14768,148 @@ async function exportarHistorialLiquidacionesRetiroExcel(historial, trabajadores
   XLSX.utils.book_append_sheet(wb, ws, "Liquidaciones de Retiro");
   XLSX.writeFile(wb, `Historial_Liquidaciones_Retiro_${today()}.xlsx`);
 }
+// ─── VACACIONES DE TRABAJADORES ───────────────────────────────────────────
+// (2026-11-12, a pedido de Fredy) Pantalla de consulta, dentro de Novedades,
+// para saber de un vistazo las vacaciones de cada trabajador sin tener que
+// liquidarlo: dias ganados, dias ya tomados y dias/valor pendientes.
+// Usa EXACTAMENTE la misma cuenta de la Liquidacion de Trabajador
+// (calcularLiquidacionRetiro con corte "hoy"): ganados = 15 dias habiles por
+// anio de 360 dias trabajados (lo mismo que sueldo x dias / 720), tomados =
+// dias habiles de Ausencias con motivo "Vacaciones", y el valor pendiente =
+// dias pendientes x (sueldo mensual / 30). Asi las dos pantallas dan el
+// mismo numero. Solo lectura: las vacaciones se siguen registrando en
+// Novedades -> Motivos de Ausencia.
+const TIPOS_NOMINA_CON_VACACIONES = ["Fiscal", "Fiscal Destajo"];
+const VACACIONES_DIAS_POR_ANIO = 15;
+const VACACIONES_UMBRAL_PROGRAMAR = 15;
+const VACACIONES_UMBRAL_REVISAR = 30;
+function estadoVacaciones(pendientes) {
+  if (pendientes > VACACIONES_UMBRAL_REVISAR) return { key: "revisar", label: "Para revisar", color: C.red, bg: C.redBg };
+  if (pendientes > VACACIONES_UMBRAL_PROGRAMAR) return { key: "programar", label: "Por programar", color: C.amber, bg: C.amberBg };
+  return { key: "aldia", label: "Al día", color: C.green, bg: C.greenBg };
+}
+function VacacionesView({ trabajadores, ausencias, faltas, areasNomina, turnos }) {
+  const [busqueda, setBusqueda] = useState("");
+  const [areaFiltro, setAreaFiltro] = useState("");
+  const [estadoFiltro, setEstadoFiltro] = useState("");
+  const [verTodos, setVerTodos] = useState(false);
+  const [detalleId, setDetalleId] = useState(null);
+  const hoy = today();
+  const filasBase = useMemo(() => {
+    return (trabajadores || [])
+      .filter((t) => t.activo)
+      .map((t) => {
+        const tipo = t.tipoNomina || "";
+        const sueldo = Number(t.sueldo) || 0;
+        const base = { id: t.id, t, nombre: t.nombre || "", area: t.area || "Sin asignar", tipo, sueldo, ingreso: t.fechaIngreso || "", conVacaciones: TIPOS_NOMINA_CON_VACACIONES.includes(tipo) };
+        if (!t.fechaIngreso) return { ...base, sinIngreso: true, ganados: 0, tomados: 0, pendientes: 0, valor: 0, estado: null, calculo: null };
+        const r = calcularLiquidacionRetiro(t, hoy, ausencias, faltas, areasNomina, turnos);
+        const ganados = (r.diasBase / 360) * VACACIONES_DIAS_POR_ANIO;
+        const tomados = r.diasVacacionesTomados;
+        const pendientes = Math.max(0, ganados - tomados);
+        return { ...base, sinIngreso: false, ganados, tomados, pendientes, valor: pendientes * (sueldo / 30), estado: estadoVacaciones(pendientes), calculo: r };
+      });
+  }, [trabajadores, ausencias, faltas, areasNomina, turnos, hoy]);
+  const filasTipo = filasBase.filter((f) => verTodos || f.conVacaciones);
+  const areas = [...new Set(filasTipo.map((f) => f.area))].sort((a, b) => a.localeCompare(b, "es"));
+  const q = normalizarNombreParaComparar(busqueda);
+  const filas = filasTipo
+    .filter((f) => (!areaFiltro || f.area === areaFiltro) && (!estadoFiltro || (f.estado && f.estado.key === estadoFiltro)) && (!q || normalizarNombreParaComparar(f.nombre).includes(q)))
+    .sort((a, b) => b.pendientes - a.pendientes || a.nombre.localeCompare(b.nombre, "es"));
+  const conPendientes = filas.filter((f) => f.pendientes > 0.05).length;
+  const totalDias = filas.reduce((s, f) => s + f.pendientes, 0);
+  const totalValor = filas.reduce((s, f) => s + f.valor, 0);
+  const aRevisar = filas.filter((f) => f.estado && f.estado.key === "revisar").length;
+  const sinIngreso = filasTipo.filter((f) => f.sinIngreso).length;
+  const fmtD = (n) => Number(n || 0).toLocaleString("es-CO", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  const antiguedad = (dias) => `${Math.floor(dias / 360)} a ${Math.floor((dias % 360) / 30)} m`;
+  const detalle = detalleId ? filasBase.find((f) => f.id === detalleId) : null;
+  const periodos = useMemo(() => {
+    if (!detalle) return [];
+    return (ausencias || [])
+      .filter((a) => a.trabajadorId === detalle.id && a.motivo === "Vacaciones")
+      .map((a) => ({ id: a.id, desde: a.fechaInicio, hasta: a.fechaFin, dias: diasHabilesPorMotivos([a], detalle.t, areasNomina, turnos, ["Vacaciones"], "0000-01-01", "9999-12-31") }))
+      .sort((a, b) => (b.desde || "").localeCompare(a.desde || ""));
+  }, [detalle, ausencias, areasNomina, turnos]);
+  const columnas = [
+    { key: "nombre", label: "Trabajador", render: (f) => (<div><div style={{ fontWeight: 700 }}>{f.nombre}</div><div style={{ fontSize: 10, color: C.slate }}>{f.area} · {f.tipo || "Sin clasificar"}</div></div>) },
+    { key: "ingreso", label: "Ingreso", align: "right", render: (f) => (f.sinIngreso ? <span style={{ color: C.amber, fontWeight: 700 }}>Sin fecha</span> : <div><div>{fmtFechaISO(f.ingreso)}</div><div style={{ fontSize: 10, color: C.slate }}>{antiguedad(f.calculo.diasBase)}</div></div>) },
+    { key: "ganados", label: "Ganados", align: "right", render: (f) => (f.sinIngreso ? "—" : fmtD(f.ganados)) },
+    { key: "tomados", label: "Tomados", align: "right", render: (f) => (f.sinIngreso ? "—" : fmtNum(f.tomados)) },
+    { key: "pendientes", label: "Pendientes", align: "right", render: (f) => (f.sinIngreso ? "—" : <b>{fmtD(f.pendientes)}</b>) },
+    { key: "valor", label: "Valor pendiente", align: "right", render: (f) => (f.sinIngreso ? "—" : fmtMoney(f.valor)) },
+    { key: "estado", label: "Estado", align: "right", render: (f) => (f.estado ? <span style={{ background: f.estado.bg, color: f.estado.color, fontWeight: 700, fontSize: 11, padding: "3px 10px", borderRadius: 99 }}>{f.estado.label}</span> : "—") },
+  ];
+  const selStyle = { padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, color: C.ink, background: C.white, fontFamily: "inherit" };
+  return (
+    <div>
+      <div style={{ fontSize: 13, color: C.slate, marginBottom: 14, lineHeight: 1.5 }}>
+        Cuánto ha ganado, cuánto ha tomado y cuánto le queda a cada trabajador activo. Los días ganados son 15 hábiles por año trabajado; los tomados salen de <b>Motivos de Ausencia</b> con motivo «Vacaciones». Es la misma cuenta de la Liquidación de Trabajador, calculada a hoy.
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10, marginBottom: 14 }}>
+        <KPI icon="🏖️" label="Con vacaciones pendientes" value={fmtNum(conPendientes)} color={C.blue} bg={C.blueBg} sub={`de ${fmtNum(filas.length)} trabajadores`} />
+        <KPI icon="📅" label="Días pendientes (total)" value={fmtD(totalDias)} color={C.ink} bg={C.canvas} sub="días hábiles" />
+        <KPI icon="💰" label="Acumulado en vacaciones" value={fmtMoney(totalValor)} color={C.violet} bg={C.violetBg} sub="lo que se debe hoy" />
+        <KPI icon="⚠️" label="Para revisar" value={fmtNum(aRevisar)} color={C.red} bg={C.redBg} sub="más de 30 días sin tomar" />
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", marginBottom: 12 }}>
+        <div style={{ flex: "1 1 200px", minWidth: 160 }}><FInput value={busqueda} onChange={setBusqueda} placeholder="Buscar trabajador…" icon="🔍" /></div>
+        <select value={areaFiltro} onChange={(e) => setAreaFiltro(e.target.value)} style={selStyle} aria-label="Área">
+          <option value="">Todas las áreas</option>
+          {areas.map((a) => <option key={a} value={a}>{a}</option>)}
+        </select>
+        <select value={estadoFiltro} onChange={(e) => setEstadoFiltro(e.target.value)} style={selStyle} aria-label="Estado">
+          <option value="">Todos los estados</option>
+          <option value="aldia">Al día</option>
+          <option value="programar">Por programar</option>
+          <option value="revisar">Para revisar</option>
+        </select>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: C.slate, cursor: "pointer", userSelect: "none" }}>
+          <input type="checkbox" checked={verTodos} onChange={(e) => setVerTodos(e.target.checked)} />
+          Incluir destajo y prestación de servicios
+        </label>
+      </div>
+      <Tabla columnas={columnas} filas={filas} onRowClick={(f) => setDetalleId(f.id)} vacio="Nadie coincide con el filtro." />
+      <div style={{ fontSize: 11.5, color: C.slate, marginTop: 10, lineHeight: 1.6 }}>
+        <b style={{ color: C.green }}>Al día</b>: 15 días o menos pendientes · <b style={{ color: C.amber }}>Por programar</b>: entre 16 y 30 · <b style={{ color: C.red }}>Para revisar</b>: más de 30 (acumula más de dos años).
+        {!verTodos && " Por defecto solo se muestran los de nómina Fiscal y Fiscal Destajo."}
+        {sinIngreso > 0 && ` ${sinIngreso} trabajador${sinIngreso === 1 ? "" : "es"} sin fecha de ingreso en su ficha (no se puede calcular).`}
+      </div>
+      {detalle && !detalle.sinIngreso && (
+        <Modal title={`🏖️ ${detalle.nombre}`} onClose={() => setDetalleId(null)} width={560}>
+          <div style={{ fontSize: 12, color: C.slate, marginBottom: 12 }}>
+            {detalle.area} · {detalle.tipo || "Sin clasificar"} · ingresó el {fmtFechaISO(detalle.ingreso)} ({antiguedad(detalle.calculo.diasBase)} trabajados)
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 14 }}>
+            <KPI icon="➕" label="Ganados" value={fmtD(detalle.ganados)} color={C.blue} bg={C.blueBg} />
+            <KPI icon="✅" label="Tomados" value={fmtNum(detalle.tomados)} color={C.green} bg={C.greenBg} />
+            <KPI icon="⏳" label="Pendientes" value={fmtD(detalle.pendientes)} color={detalle.estado.color} bg={detalle.estado.bg} sub={detalle.estado.label} />
+          </div>
+          {[
+            ["Sueldo mensual actual", fmtMoney(detalle.sueldo)],
+            ["Valor de un día (sueldo ÷ 30)", fmtMoney(detalle.sueldo / 30)],
+            ["Valor pendiente", fmtMoney(detalle.valor)],
+          ].map(([l, v]) => (
+            <div key={l} style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 13, padding: "7px 0", borderBottom: `1px solid ${C.border}` }}>
+              <span style={{ color: C.slate }}>{l}</span><b>{v}</b>
+            </div>
+          ))}
+          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.5, textTransform: "uppercase", color: C.slate, margin: "16px 0 6px" }}>Vacaciones que ya tomó</div>
+          {periodos.length === 0 && <div style={{ fontSize: 13, color: C.slate }}>Aún no registra vacaciones en Motivos de Ausencia.</div>}
+          {periodos.map((p) => (
+            <div key={p.id || p.desde} style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 13, padding: "7px 0", borderBottom: `1px solid ${C.border}` }}>
+              <span style={{ color: C.slate }}>{fmtFechaISO(p.desde)} al {fmtFechaISO(p.hasta)}</span><b>{fmtNum(p.dias)} días hábiles</b>
+            </div>
+          ))}
+          <div style={{ fontSize: 11.5, color: C.slate, background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", marginTop: 14, lineHeight: 1.55 }}>
+            Cálculo: {fmtNum(detalle.calculo.diasBase)} días trabajados ÷ 360 × {VACACIONES_DIAS_POR_ANIO} = {fmtD(detalle.ganados)} ganados. Menos {fmtNum(detalle.tomados)} tomados = {fmtD(detalle.pendientes)} pendientes × {fmtMoney(detalle.sueldo / 30)} = {fmtMoney(detalle.valor)}.
+            {detalle.calculo.diasNoRemunerados > 0 && ` Se descontaron ${fmtNum(detalle.calculo.diasNoRemunerados)} días de licencia no remunerada o sin justificar.`}
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
 function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesRetiro, prestamos, areasNomina, turnos, onGuardarLiquidacionRetiro, onGuardarTrabajador, onGuardarAusencia, onCambiarEstadoPagoLiquidacion, onCambiarEmpleadorLiquidacion, onBorrarLiquidacionRetiro, currentUser }) {
   const [areaFiltro, setAreaFiltro] = useState("");
   const [trabajadorId, setTrabajadorId] = useState("");
@@ -15686,6 +15828,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
         { id: "cumpleanos", icon: "🎂", label: "Cumpleaños" },
         { id: "gastos_talento", icon: "💜", label: "Gastos de Talento Humano" },
         { id: "ausencias", icon: "📅", label: "Motivos de Ausencia" },
+        { id: "vacaciones", icon: "🏖️", label: "Vacaciones" },
         { id: "permisos", icon: "🗓️", label: "Permisos (Calendario)" },
         ...(puedeCodigosPermiso ? [{ id: "codigos_permiso", icon: "🔐", label: "Códigos de Permiso" }] : []),
         { id: "tabulador_asistencia", icon: "📋", label: "Tabulador de Asistencia" },
@@ -15723,6 +15866,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           ] },
         { group: "Novedades", icon: "📣", items: [
             { id: "ausencias", icon: "📅", label: "Motivos de Ausencia" },
+            { id: "vacaciones", icon: "🏖️", label: "Vacaciones" },
             { id: "permisos", icon: "🗓️", label: "Permisos (Calendario)" },
             ...(puedeCodigosPermiso ? [{ id: "codigos_permiso", icon: "🔐", label: "Códigos de Permiso" }] : []),
             { id: "tabulador_asistencia", icon: "📋", label: "Tabulador de Asistencia" },
@@ -16386,6 +16530,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "reporte_area" && !areaLider && !soloNovedades && <ReporteNominaPorAreaView trabajadores={trabajadores} liquidacionesF={liquidacionesF} liquidacionesFD={liquidacionesFD} liquidacionesD={liquidacionesD} liquidacionesPS={liquidacionesPS} causacionManual={causacionManual} />}
           {subView === "trabajadores" && !areaLider && !soloNovedades && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarTrabajador} onDelete={borrarTrabajador} areasNomina={areasNomina} areasTNS={areasTNS} zonasNomina={zonasNomina} tiposContrato={tiposContrato} onSaveArea={guardarAreaNomina} onSaveZona={guardarZonaNomina} turnos={turnos} gruposTrabajo={gruposTrabajo} />}
           {subView === "cumpleanos" && !areaLider && <CumpleanosView db={db} trabajadores={trabajadores} />}
+          {subView === "vacaciones" && !areaLider && <VacacionesView trabajadores={trabajadores} ausencias={ausencias} faltas={faltasSinJustificar} areasNomina={areasNomina} turnos={turnos} />}
           {subView === "gastos_talento" && !areaLider && <GastosTalentoHumanoView db={db} functionsClient={functionsClient} currentUser={currentUser} isAdmin={isAdmin} />}
           {subView === "ingreso_personal" && !areaLider && !soloNovedades && <IngresoPersonalView trabajadores={trabajadores} candidatos={candidatos} liquidacionesRetiro={liquidacionesRetiro} isAdmin={isAdminCatalogos} areasNomina={areasNomina} areasTNS={areasTNS} zonasNomina={zonasNomina} tiposContrato={tiposContrato} turnos={turnos} gruposTrabajo={gruposTrabajo} onGuardarTrabajador={guardarTrabajador} onGuardarCandidato={guardarCandidato} onBorrarCandidato={borrarCandidato} onContratarCandidato={contratarCandidato} />}
           {subView === "grupos_trabajo" && !areaLider && !soloNovedades && <GruposTrabajoView grupos={gruposTrabajo} areasNomina={areasNomina} isAdmin={isAdminCatalogos} onSave={guardarGrupoTrabajo} onDelete={borrarGrupoTrabajo} />}
