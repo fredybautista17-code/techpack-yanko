@@ -7286,6 +7286,8 @@ function diasSinAuxilioDeAusencias(ausencias, trabajador, turno, inicio, fin) {
       if (fecha < inicio || fecha > finEf) return;
       if (calendario && fecha.slice(8, 10) === "31") return;
       if (!calendario && !diaEsperado(fecha, turno)) return;
+      // (2026-11-12, a pedido de Fredy) En VACACIONES el sabado nunca cuenta (arreglo interno de la fabrica): tampoco descuenta auxilio de transporte.
+      if (a.motivo === "Vacaciones" && new Date(fecha + "T00:00:00").getDay() === 6) return;
       dias.add(fecha);
     });
   });
