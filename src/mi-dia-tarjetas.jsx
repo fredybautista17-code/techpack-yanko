@@ -13,6 +13,7 @@ import { claveCierreDeArea, IDS_CIERRE, IDS_PLANEACION, IDS_ORDENES_COMPRA, IDS_
 import BloqueOrdenesCompra from "./mi-dia-costos";
 import { BloqueCumpleanos } from "./cumpleanos";
 import { BloqueGastosTalento } from "./talento-gastos";
+import { BloqueDisenoSinCapsula } from "./diseno-sin-capsula";
 import { MiDiaPlaneacionBloque, ProgramadorProcesosStandalone, MiDiaNominaStandalone, ListaPorProgramarBloque } from "./modulo-planeacion";
 
 const C = {
@@ -463,6 +464,9 @@ export default function MiDiaTarjetasStandalone({ db, currentUser, onVolver, onL
   }
   if (marcadas.includes("gastos_talento")) {
     secciones.push({ id: "gastos_talento", icon: "💜", label: "Gastos de Talento Humano", render: () => <BloqueGastosTalento db={db} /> });
+  }
+  if (marcadas.includes("diseno_sin_capsula")) {
+    secciones.push({ id: "diseno_sin_capsula", icon: "📭", label: "Aprobados sin cápsula", render: () => <BloqueDisenoSinCapsula db={db} currentUser={currentUser} /> });
   }
   if (marcadas.includes("auditoria_nomina")) {
     secciones.push({ id: "auditoria", icon: "🔍", label: "Auditoría Nómina", render: () => <MiDiaNominaStandalone currentUser={currentUser} incrustado /> });

@@ -72,6 +72,13 @@ export const GRUPOS_MI_DIA = [
       { id: "gastos_talento", label: "Gastos de Talento Humano: lo gastado en el año, presupuesto del año siguiente y últimas facturas" },
     ],
   },
+  {
+    // (2026-11-12, a pedido de Fredy) Para Diseño y la Dirección Creativa: prototipos aprobados a los que nadie les ha creado cápsula (su «línea de trabajo»).
+    id: "diseno", titulo: "Diseño",
+    tarjetas: [
+      { id: "diseno_sin_capsula", label: "Prototipos aprobados sin cápsula: su línea de trabajo, con días parados e informe en Excel" },
+    ],
+  },
 ];
 
 const ids = (grupo) => GRUPOS_MI_DIA.find((g) => g.id === grupo).tarjetas.map((t) => t.id);
