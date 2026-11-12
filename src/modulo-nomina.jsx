@@ -7419,11 +7419,15 @@ function diasCalendarioPorMotivos(ausencias, trabajadorId, motivos, desde, hasta
 // usa el Reporte de Asistencia (diaEsperado/resolverTurnoDeTrabajador),
 // asi que un sabado si cuenta como laboral cuando esa semana tuvo un
 // festivo entre semana (regla de reposicion ya confirmada 09/09/2026).
-function diasLaboralesEnIntervalo(desde, hasta, turno) {
+// (2026-11-12, a pedido de Fredy) sinSabado: para VACACIONES el sabado nunca cuenta como dia de vacaciones, ni siquiera el
+// "sabado puente" (el que se trabaja por un festivo): es un arreglo interno de la fabrica. Solo cuenta lunes a viernes, sin
+// festivos y laborales en el turno del trabajador. (Licencia No Remunerada sigue igual.)
+function diasLaboralesEnIntervalo(desde, hasta, turno, sinSabado = false) {
   let dias = 0;
   let cursor = desde;
   while (cursor <= hasta) {
-    if (!esFestivoColombia(cursor) && diaEsperado(cursor, turno)) dias++;
+    const esSabado = sinSabado && new Date(cursor + "T00:00:00").getDay() === 6;
+    if (!esSabado && !esFestivoColombia(cursor) && diaEsperado(cursor, turno)) dias++;
     cursor = siguienteDiaISO(cursor);
   }
   return dias;
@@ -7461,7 +7465,8 @@ function diasHabilesPorMotivos(ausencias, trabajador, areasNomina, turnos, motiv
     }
   });
   const turno = resolverTurnoDeTrabajador(trabajador, areasNomina, turnos);
-  return fusionados.reduce((s, [inicio, fin]) => s + diasLaboralesEnIntervalo(inicio, fin, turno), 0);
+  const soloVacaciones = motivos.length === 1 && motivos[0] === "Vacaciones";
+  return fusionados.reduce((s, [inicio, fin]) => s + diasLaboralesEnIntervalo(inicio, fin, turno, soloVacaciones), 0);
 }
 function diasCalendarioSinSueldo(ausencias, trabajador, areasNomina, turnos, desde, hasta) {
   return diasHabilesPorMotivos(ausencias, trabajador, areasNomina, turnos, MOTIVOS_SIN_SUELDO, desde, hasta);
@@ -14845,6 +14850,110 @@ function estadoVacaciones(pendientes) {
   if (pendientes > VACACIONES_UMBRAL_PROGRAMAR) return { key: "programar", label: "Por programar", color: C.amber, bg: C.amberBg };
   return { key: "aldia", label: "Al día", color: C.green, bg: C.greenBg };
 }
+const DIAS_CORTOS_VAC = ["dom", "lun", "mar", "mié", "jue", "vie", "sáb"];
+function etiquetaDiaVac(iso) {
+  const dow = new Date(iso + "T00:00:00").getDay();
+  return `${DIAS_CORTOS_VAC[dow]} ${iso.slice(8, 10)}/${iso.slice(5, 7)}`;
+}
+// null si el día cuenta como día de vacaciones; si no, el motivo por el que no cuenta.
+function motivoNoCuentaVacaciones(iso, turno) {
+  const dow = new Date(iso + "T00:00:00").getDay();
+  if (dow === 0) return "domingo";
+  if (dow === 6) return "sábado";
+  if (esFestivoColombia(iso)) return "festivo";
+  if (!diaEsperado(iso, turno)) return "no laboral en su turno";
+  return null;
+}
+// Períodos de vacaciones de un trabajador (rangos fusionados), con los días que cuentan y los que no.
+function periodosVacaciones(trabajador, ausencias, areasNomina, turnos) {
+  if (!trabajador) return [];
+  const turno = resolverTurnoDeTrabajador(trabajador, areasNomina, turnos);
+  const intervalos = (ausencias || [])
+    .filter((a) => a.trabajadorId === trabajador.id && a.motivo === "Vacaciones" && a.fechaInicio && a.fechaFin && a.fechaInicio <= a.fechaFin)
+    .map((a) => [a.fechaInicio, a.fechaFin])
+    .sort((x, y) => x[0].localeCompare(y[0]));
+  const fusionados = [];
+  intervalos.forEach(([ini, fin]) => {
+    const ult = fusionados[fusionados.length - 1];
+    if (ult && ini <= ult[1]) { if (fin > ult[1]) ult[1] = fin; } else fusionados.push([ini, fin]);
+  });
+  return fusionados.map(([desde, hasta]) => {
+    const contados = [];
+    const noCuentan = [];
+    let cursor = desde;
+    while (cursor <= hasta) {
+      const motivo = motivoNoCuentaVacaciones(cursor, turno);
+      if (motivo) noCuentan.push({ iso: cursor, motivo }); else contados.push(cursor);
+      cursor = siguienteDiaISO(cursor);
+    }
+    return { id: desde, desde, hasta, dias: contados.length, contados, noCuentan };
+  });
+}
+function escVac(v) {
+  return String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+const ESTILOS_DESPRENDIBLE_VAC = `
+*{box-sizing:border-box}body{margin:0;background:#F7F4F0;color:#1A1A2E;font-family:'Inter',-apple-system,Segoe UI,sans-serif;padding:24px}
+.page{max-width:780px;margin:0 auto 28px;background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 6px 28px rgba(20,20,40,.12);page-break-after:always;break-after:page}
+.head{background:#1A1A2E;color:#fff;padding:18px 26px}.head h1{margin:0;font-size:18px}.head p{margin:4px 0 0;font-size:12px;color:#C8B8A2}
+.body{padding:18px 26px 24px}.datos{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-bottom:12px}
+.datos div{background:#F7F4F0;border-radius:8px;padding:8px 10px}.datos span{display:block;font-size:10px;letter-spacing:.5px;text-transform:uppercase;color:#5A5A7A;font-weight:700}.datos b{font-size:13px}
+.res{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin:10px 0 4px}.res div{border-radius:10px;padding:10px 12px}.res span{display:block;font-size:10.5px;font-weight:700;margin-bottom:2px}.res b{font-size:19px}
+h2{font-size:13px;margin:18px 0 6px}table{width:100%;border-collapse:collapse;font-size:12.5px}td,th{padding:7px 9px;text-align:left;vertical-align:top;border-bottom:1px solid #E8E2DB}
+th{background:#1A1A2E;color:#C8B8A2;font-size:11px}.r{text-align:right}.chip{display:inline-block;margin:1px 3px 1px 0;padding:1px 8px;border-radius:99px;background:#EBF7F2;color:#1D7A50;font-weight:700;font-size:11.5px;border:1px solid #A9D8C2}
+.chip.prog{background:#fff;border:1px dashed #2D9E6B}.no{color:#5A5A7A;font-size:11.5px}.tot td{font-weight:800;border-top:2px solid #1A1A2E}.nota{font-size:11px;color:#5A5A7A;margin-top:8px;line-height:1.5}
+.firmas{display:grid;grid-template-columns:1fr 1fr;gap:40px;margin-top:46px}.firmas div{border-top:1px solid #1A1A2E;padding-top:6px;font-size:12px;text-align:center}
+.barra{max-width:780px;margin:0 auto 16px;text-align:right}.barra button{background:#1A1A2E;color:#C8B8A2;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700}
+@media print{body{background:#fff;padding:0}.page{box-shadow:none;border-radius:0;margin:0}.barra{display:none}}`;
+// d = { nombre, cedula, area, tipo, ingreso, antiguedad, hoy, sueldo, ganados, tomados, programados, pendientes, valorPendiente, aniosServicio[], periodos[], diasNoRemunerados }
+function armarDesprendibleVacacionesHTML(d) {
+  const valorDia = d.sueldo / 30;
+  const filas = d.periodos.length
+    ? d.periodos.map((p) => `<tr>
+      <td>${fmtFechaISO(p.desde)}<br>al ${fmtFechaISO(p.hasta)}</td>
+      <td>${p.contados.length ? p.contados.map((iso) => `<span class="chip${iso > d.hoy ? " prog" : ""}">${etiquetaDiaVac(iso)}${iso > d.hoy ? "*" : ""}</span>`).join("") : "—"}</td>
+      <td class="no">${p.noCuentan.length ? p.noCuentan.map((x) => `${etiquetaDiaVac(x.iso)} (${x.motivo})`).join(" · ") : "—"}</td>
+      <td class="r"><b>${p.contados.length}</b></td>
+      <td class="r">${fmtMoney(p.contados.length * valorDia)}</td></tr>`).join("")
+    : `<tr><td colspan="5" class="no" style="text-align:center;padding:16px">Aún no registra vacaciones.</td></tr>`;
+  const totalDias = d.periodos.reduce((sum, p) => sum + p.contados.length, 0);
+  const anios = d.aniosServicio.map((a) => `<tr><td>${escVac(a.label)}</td><td class="r">${fmtNum(Math.round(a.dias * 10) / 10)} días</td></tr>`).join("");
+  return `<div class="page">
+  <div class="head"><h1>🏖️ Desprendible de Vacaciones</h1><p>Industrias Yanko · Corte al ${fmtFechaISO(d.hoy)}</p></div>
+  <div class="body">
+    <div class="datos">
+      <div><span>Trabajador</span><b>${escVac(d.nombre)}</b></div>
+      <div><span>Cédula</span><b>${escVac(d.cedula || "—")}</b></div>
+      <div><span>Área</span><b>${escVac(d.area)}</b></div>
+      <div><span>Tipo de nómina</span><b>${escVac(d.tipo || "—")}</b></div>
+      <div><span>Ingreso</span><b>${fmtFechaISO(d.ingreso)} (${escVac(d.antiguedad)})</b></div>
+      <div><span>Sueldo mensual</span><b>${fmtMoney(d.sueldo)}</b></div>
+    </div>
+    <div class="res">
+      <div style="background:#EBF1F7;color:#3D6B9E"><span>Ganados</span><b>${fmtNum(Math.round(d.ganados * 10) / 10)}</b></div>
+      <div style="background:#EBF7F2;color:#2D9E6B"><span>Disfrutados a hoy</span><b>${fmtNum(d.tomados)}</b></div>
+      <div style="background:#FDF5E6;color:#C47C1A"><span>Programados</span><b>${fmtNum(d.programados)}</b></div>
+      <div style="background:#F3EEF9;color:#7B5EA7"><span>Pendientes</span><b>${fmtNum(Math.round(d.pendientes * 10) / 10)}</b></div>
+    </div>
+    <div class="nota">Valor de un día: ${fmtMoney(valorDia)} (sueldo ÷ 30) · Valor pendiente: <b>${fmtMoney(d.valorPendiente)}</b></div>
+    <h2>Cómo se ganaron</h2>
+    <table><tbody>${anios || `<tr><td class="no">Todavía no cumple tiempo para generar días.</td></tr>`}</tbody></table>
+    ${d.diasNoRemunerados > 0 ? `<div class="nota">Se descontaron ${fmtNum(d.diasNoRemunerados)} días de licencia no remunerada o sin justificar del tiempo trabajado.</div>` : ""}
+    <h2>Vacaciones tomadas, día por día</h2>
+    <table><thead><tr><th>Período</th><th>Días que cuentan</th><th>No cuentan</th><th class="r">Hábiles</th><th class="r">Valor</th></tr></thead>
+    <tbody>${filas}
+    <tr class="tot"><td colspan="3">Total registrado</td><td class="r">${totalDias}</td><td class="r">${fmtMoney(totalDias * valorDia)}</td></tr></tbody></table>
+    <div class="nota">Cuentan lunes a viernes que no sean festivo. El sábado nunca cuenta como día de vacaciones (arreglo interno de la fábrica). * Día programado, todavía no disfrutado.</div>
+    <div class="firmas"><div>Firma del trabajador</div><div>Talento Humano</div></div>
+  </div></div>`;
+}
+function abrirDesprendiblesVacaciones(docs, titulo) {
+  if (!docs.length) return false;
+  const html = `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"/><title>${escVac(titulo)}</title><style>${ESTILOS_DESPRENDIBLE_VAC}</style></head><body><div class="barra"><button onclick="window.print()">🖨 Imprimir / PDF</button></div>${docs.join("\n")}</body></html>`;
+  const url = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8;" }));
+  const w = window.open(url, "_blank");
+  return !!w;
+}
 function VacacionesView({ trabajadores, ausencias, faltas, areasNomina, turnos }) {
   const [busqueda, setBusqueda] = useState("");
   const [areaFiltro, setAreaFiltro] = useState("");
@@ -14881,13 +14990,25 @@ function VacacionesView({ trabajadores, ausencias, faltas, areasNomina, turnos }
   const fmtD = (n) => Number(n || 0).toLocaleString("es-CO", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
   const antiguedad = (dias) => `${Math.floor(dias / 360)} a ${Math.floor((dias % 360) / 30)} m`;
   const detalle = detalleId ? filasBase.find((f) => f.id === detalleId) : null;
-  const periodos = useMemo(() => {
-    if (!detalle) return [];
-    return (ausencias || [])
-      .filter((a) => a.trabajadorId === detalle.id && a.motivo === "Vacaciones")
-      .map((a) => ({ id: a.id, desde: a.fechaInicio, hasta: a.fechaFin, dias: diasHabilesPorMotivos([a], detalle.t, areasNomina, turnos, ["Vacaciones"], "0000-01-01", "9999-12-31") }))
-      .sort((a, b) => (b.desde || "").localeCompare(a.desde || ""));
-  }, [detalle, ausencias, areasNomina, turnos]);
+  const periodos = useMemo(() => (detalle ? periodosVacaciones(detalle.t, ausencias, areasNomina, turnos).reverse() : []), [detalle, ausencias, areasNomina, turnos]);
+  function datosDesprendible(f) {
+    const per = periodosVacaciones(f.t, ausencias, areasNomina, turnos);
+    const anios = Math.floor(f.calculo.diasBase / 360);
+    const resto = f.calculo.diasBase % 360;
+    const aniosServicio = [];
+    for (let k = 1; k <= anios; k++) aniosServicio.push({ label: `Año ${k} de servicio`, dias: VACACIONES_DIAS_POR_ANIO });
+    if (resto > 0) aniosServicio.push({ label: `Año ${anios + 1} (en curso, ${resto} días trabajados)`, dias: (resto / 360) * VACACIONES_DIAS_POR_ANIO });
+    const registrados = per.reduce((sum, p) => sum + p.dias, 0);
+    return {
+      nombre: f.nombre, cedula: f.t.cedula, area: f.area, tipo: f.tipo, ingreso: f.ingreso, antiguedad: antiguedad(f.calculo.diasBase), hoy,
+      sueldo: f.sueldo, ganados: f.ganados, tomados: f.tomados, programados: Math.max(0, registrados - f.tomados), pendientes: f.pendientes,
+      valorPendiente: f.valor, aniosServicio, periodos: per, diasNoRemunerados: f.calculo.diasNoRemunerados,
+    };
+  }
+  function imprimirDesprendibles(lista) {
+    const docs = lista.filter((f) => !f.sinIngreso).map((f) => armarDesprendibleVacacionesHTML(datosDesprendible(f)));
+    if (!abrirDesprendiblesVacaciones(docs, "Desprendibles de vacaciones")) window.alert("No hay desprendibles para imprimir o el navegador bloqueó la ventana emergente. Permite las ventanas de ATLAS e intenta de nuevo.");
+  }
   const columnas = [
     { key: "nombre", label: "Trabajador", render: (f) => (<div><div style={{ fontWeight: 700 }}>{f.nombre}</div><div style={{ fontSize: 10, color: C.slate }}>{f.area} · {f.tipo || "Sin clasificar"}</div></div>) },
     { key: "ingreso", label: "Ingreso", align: "right", render: (f) => (f.sinIngreso ? <span style={{ color: C.amber, fontWeight: 700 }}>Sin fecha</span> : <div><div>{fmtFechaISO(f.ingreso)}</div><div style={{ fontSize: 10, color: C.slate }}>{antiguedad(f.calculo.diasBase)}</div></div>) },
@@ -14901,7 +15022,7 @@ function VacacionesView({ trabajadores, ausencias, faltas, areasNomina, turnos }
   return (
     <div>
       <div style={{ fontSize: 13, color: C.slate, marginBottom: 14, lineHeight: 1.5 }}>
-        Cuánto ha ganado, cuánto ha tomado y cuánto le queda a cada trabajador activo. Los días ganados son 15 hábiles por año trabajado; los tomados salen de <b>Motivos de Ausencia</b> con motivo «Vacaciones». Es la misma cuenta de la Liquidación de Trabajador, calculada a hoy.
+        Cuánto ha ganado, cuánto ha tomado y cuánto le queda a cada trabajador activo. Los días ganados son 15 hábiles por año trabajado; los tomados salen de <b>Motivos de Ausencia</b> con motivo «Vacaciones»: cuentan lunes a viernes sin festivos; el sábado nunca cuenta (arreglo interno de la fábrica). Es la misma cuenta de la Liquidación de Trabajador, calculada a hoy.
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10, marginBottom: 14 }}>
         <KPI icon="🏖️" label="Con vacaciones pendientes" value={fmtNum(conPendientes)} color={C.blue} bg={C.blueBg} sub={`de ${fmtNum(filas.length)} trabajadores`} />
@@ -14925,6 +15046,7 @@ function VacacionesView({ trabajadores, ausencias, faltas, areasNomina, turnos }
           <input type="checkbox" checked={verTodos} onChange={(e) => setVerTodos(e.target.checked)} />
           Incluir destajo y prestación de servicios
         </label>
+        <button onClick={() => imprimirDesprendibles(filas)} disabled={!filas.length} style={{ marginLeft: "auto", padding: "8px 12px", borderRadius: 8, border: `1.5px solid ${C.border}`, background: C.white, color: C.ink, fontWeight: 700, fontSize: 12, fontFamily: "inherit", cursor: filas.length ? "pointer" : "default", opacity: filas.length ? 1 : 0.5 }}>🖨 Imprimir desprendibles ({filas.filter((f) => !f.sinIngreso).length})</button>
       </div>
       <Tabla columnas={columnas} filas={filas} onRowClick={(f) => setDetalleId(f.id)} vacio="Nadie coincide con el filtro." />
       <div style={{ fontSize: 11.5, color: C.slate, marginTop: 10, lineHeight: 1.6 }}>
@@ -14937,11 +15059,19 @@ function VacacionesView({ trabajadores, ausencias, faltas, areasNomina, turnos }
           <div style={{ fontSize: 12, color: C.slate, marginBottom: 12 }}>
             {detalle.area} · {detalle.tipo || "Sin clasificar"} · ingresó el {fmtFechaISO(detalle.ingreso)} ({antiguedad(detalle.calculo.diasBase)} trabajados)
           </div>
+          <div style={{ marginBottom: 12 }}>
+            <Btn small onClick={() => imprimirDesprendibles([detalle])}>🖨 Desprendible de vacaciones</Btn>
+          </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 14 }}>
             <KPI icon="➕" label="Ganados" value={fmtD(detalle.ganados)} color={C.blue} bg={C.blueBg} />
             <KPI icon="✅" label="Tomados" value={fmtNum(detalle.tomados)} color={C.green} bg={C.greenBg} />
             <KPI icon="⏳" label="Pendientes" value={fmtD(detalle.pendientes)} color={detalle.estado.color} bg={detalle.estado.bg} sub={detalle.estado.label} />
           </div>
+          {periodos.length > 0 && (
+            <div style={{ fontSize: 12, color: C.slate, marginBottom: 10 }}>
+              Registrados: <b>{fmtNum(periodos.reduce((sum, p) => sum + p.dias, 0))}</b> días hábiles · <b>{fmtNum(detalle.tomados)}</b> ya disfrutados a hoy · <b>{fmtNum(Math.max(0, periodos.reduce((sum, p) => sum + p.dias, 0) - detalle.tomados))}</b> programados
+            </div>
+          )}
           {[
             ["Sueldo mensual actual", fmtMoney(detalle.sueldo)],
             ["Valor de un día (sueldo ÷ 30)", fmtMoney(detalle.sueldo / 30)],
@@ -14955,7 +15085,7 @@ function VacacionesView({ trabajadores, ausencias, faltas, areasNomina, turnos }
           {periodos.length === 0 && <div style={{ fontSize: 13, color: C.slate }}>Aún no registra vacaciones en Motivos de Ausencia.</div>}
           {periodos.map((p) => (
             <div key={p.id || p.desde} style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 13, padding: "7px 0", borderBottom: `1px solid ${C.border}` }}>
-              <span style={{ color: C.slate }}>{fmtFechaISO(p.desde)} al {fmtFechaISO(p.hasta)}</span><b>{fmtNum(p.dias)} días hábiles</b>
+              <span style={{ color: C.slate }}>{fmtFechaISO(p.desde)} al {fmtFechaISO(p.hasta)}{p.noCuentan.length > 0 && <span style={{ fontSize: 11 }}> · no cuentan: {p.noCuentan.map((x) => `${etiquetaDiaVac(x.iso)} (${x.motivo})`).join(", ")}</span>}</span><b>{fmtNum(p.dias)} días hábiles</b>
             </div>
           ))}
           <div style={{ fontSize: 11.5, color: C.slate, background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", marginTop: 14, lineHeight: 1.55 }}>
