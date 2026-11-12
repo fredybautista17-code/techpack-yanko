@@ -711,6 +711,7 @@ function FormularioDevolucionesCliente({ db, functionsClient, T: Tp, currentUser
   const [mFecha, setMFecha] = useState(hoyBogotaISO());
   // Varias devoluciones, un solo envío: se marcan las que no tienen guía y se les pone una guía a todas.
   const [selG, setSelG] = useState([]);
+  const [vistaLista, setVistaLista] = useState("proceso"); // (2026-11-11) «proceso» o «historial» (despachadas de nuevo y las de segundas)
   const [envio, setEnvio] = useState({ guia: "", transp: "", fecha: new Date().toISOString().slice(0, 10) });
   const [guardandoEnvio, setGuardandoEnvio] = useState(false);
   const [msgEnvio, setMsgEnvio] = useState("");
@@ -723,6 +724,9 @@ function FormularioDevolucionesCliente({ db, functionsClient, T: Tp, currentUser
   const elegirTipo = (t) => { setTipo(t); setDocOrig(t === "factura" && facturasBusint.length === 1 ? facturasBusint[0] : ""); };
   const sinGuia = (d) => d.estado === "reportada" && !String(d.guia || "").trim();
   const listaTipo = lista === null ? null : lista;
+  const listaProceso = (lista || []).filter((d) => !estaCerrada(d));
+  const listaHistorial = (lista || []).filter(estaCerrada).sort((a, b) => String(b.actualizadoEn || b.creadoEn || "").localeCompare(String(a.actualizadoEn || a.creadoEn || "")));
+  const listaVista = vistaLista === "historial" ? listaHistorial : listaProceso;
   const selValidas = selG.filter((id) => (lista || []).some((d) => d.id === id && sinGuia(d)));
   async function guardarEnvio() {
     const elegidas = (lista || []).filter((d) => selValidas.includes(d.id));
@@ -1077,6 +1081,11 @@ function FormularioDevolucionesCliente({ db, functionsClient, T: Tp, currentUser
       </div>
       <div style={tarjeta}>
         <div style={{ fontSize: 14, fontWeight: 800, color: T.ink, marginBottom: 8 }}>{esCliente ? "Tus devoluciones" : "Devoluciones reportadas"}</div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+          {[["proceso", `En proceso (${listaProceso.length})`], ["historial", `Historial (${listaHistorial.length})`]].map(([k, txt]) => (
+            <button key={k} onClick={() => setVistaLista(k)} style={{ ...btn(T), background: vistaLista === k ? T.denimBg : T.white, color: vistaLista === k ? T.denim : T.ink, borderColor: vistaLista === k ? T.denim : T.border }}>{txt}</button>
+          ))}
+        </div>
         {errLista && <div style={{ color: T.coral, fontSize: 13 }}>{errLista}</div>}
         {msgEnvio && selValidas.length === 0 && <div style={{ background: msgEnvio.startsWith("Listo") ? T.jadeBg : T.coralBg, color: msgEnvio.startsWith("Listo") ? T.jade : T.coral, borderRadius: 8, padding: "8px 12px", fontSize: 13, marginBottom: 10 }}>{msgEnvio}</div>}
         {(listaTipo || []).some(sinGuia) && (
@@ -1104,7 +1113,8 @@ function FormularioDevolucionesCliente({ db, functionsClient, T: Tp, currentUser
         )}
         {lista === null ? <div style={{ fontSize: 13, color: T.slate }}>Cargando…</div>
           : !lista.length ? <div style={{ fontSize: 13, color: T.slate }}>Todavía no has reportado devoluciones.</div>
-          : lista.map((d) => (
+          : !listaVista.length ? <div style={{ fontSize: 13, color: T.slate }}>{vistaLista === "historial" ? "Todavía no hay devoluciones resueltas en el historial." : "No tienes devoluciones en proceso."}</div>
+          : listaVista.map((d) => (
             <div key={d.id} style={{ borderTop: `1px solid ${T.border}`, padding: "10px 0" }}>
               <div onClick={() => setAbierto(abierto === d.id ? null : d.id)} style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", cursor: "pointer", fontSize: 13 }}>
                 <span>
@@ -1256,9 +1266,15 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, tipo, o
 
   const pendiente = (d) => (modo === "bodega" ? ["reportada", "en_camino", "lista"].includes(d.estado) : ["recibida", "revisada"].includes(d.estado));
   const pideDespacho = (d) => !!d.solicitaDespacho && !estaCerrada(d);
-  const cuantosPiden = base.filter(pideDespacho).length;
-  const atrasadas = base.filter((d) => tiempoDevolucion(d).atrasada).length;
+  // (2026-11-11, a pedido de Fredy) Historial de cada menú: lo que ya no le toca a esa persona. Bodega: las ya despachadas de nuevo y las de segundas.
+  // Calidad: todo lo que ya decidió (en facturación, listas, despachadas y segundas). Sin botones nuevos: se cierran solas al cambiar de estado.
+  const esHistorial = (d) => (modo === "bodega" ? estaCerrada(d) : ["facturacion", "lista", "redespachada", "segundas"].includes(d.estado));
+  const cuantosPiden = base.filter((d) => !esHistorial(d) && pideDespacho(d)).length;
+  const atrasadas = base.filter((d) => !esHistorial(d) && tiempoDevolucion(d).atrasada).length;
+  const cuantosPendientes = base.filter((d) => !esHistorial(d) && pendiente(d)).length;
+  const cuantosHistorial = base.filter(esHistorial).length;
   const visiblesBase = base.filter((d) => {
+    if (filtro === "historial" ? !esHistorial(d) : esHistorial(d)) return false;
     if (filtro === "pendientes" && !pendiente(d)) return false;
     if (filtro === "atrasadas" && !tiempoDevolucion(d).atrasada) return false;
     if (filtro === "piden" && !pideDespacho(d)) return false;
@@ -1267,7 +1283,8 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, tipo, o
     return [d.numero, d.lote, d.ref, d.cliente, d.guia, d.documentoOriginal, d.redespacho?.documentoNuevo].some((x) => String(x || "").toLowerCase().includes(t));
   });
   // Lo pendiente y lo atrasado se muestra con la más vieja primero; «Todas» sigue de la más nueva a la más vieja.
-  const visibles = filtro === "todas" || filtro === "piden" ? visiblesBase : [...visiblesBase].sort((a, b) => (a.creadoEn || "").localeCompare(b.creadoEn || ""));
+  const visibles = filtro === "historial" ? [...visiblesBase].sort((a, b) => String(b.actualizadoEn || b.creadoEn || "").localeCompare(String(a.actualizadoEn || a.creadoEn || "")))
+    : filtro === "todas" || filtro === "piden" ? visiblesBase : [...visiblesBase].sort((a, b) => (a.creadoEn || "").localeCompare(b.creadoEn || ""));
   const selValidas = sel.filter((id) => (lista || []).some((d) => d.id === id && d.estado === "lista"));
   const clienteSel = (lista || []).find((d) => d.id === selValidas[0])?.cliente;
   async function despacharJuntas() {
@@ -1407,7 +1424,7 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, tipo, o
         {modo === "bodega" ? "Marca cada devolución como recibida cuando llega la mercancía, y como despachada de nuevo cuando vuelve a salir." : "Cuenta por color y talla lo que llegó; ATLAS lo compara con lo que declaró el cliente."}
       </div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12, alignItems: "center" }}>
-        {[["pendientes", modo === "bodega" ? "Por atender" : "Por revisar"], ["atrasadas", `Atrasadas (${atrasadas})`], ["piden", `Piden despacho (${cuantosPiden})`], ["todas", "Todas"]].map(([k, t]) => (
+        {[["pendientes", `${modo === "bodega" ? "Por atender" : "Por revisar"} (${cuantosPendientes})`], ["atrasadas", `Atrasadas (${atrasadas})`], ["piden", `Piden despacho (${cuantosPiden})`], ["todas", "En proceso"], ["historial", `Historial (${cuantosHistorial})`]].map(([k, t]) => (
           <button key={k} onClick={() => setFiltro(k)} style={{ ...btn(T), background: filtro === k ? T.denimBg : T.white, color: filtro === k ? T.denim : T.ink, borderColor: filtro === k ? T.denim : T.border }}>{t}</button>
         ))}
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar por número, lote, ref, cliente o guía" style={{ ...campo(T), width: 300 }} />
@@ -1447,7 +1464,7 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, tipo, o
         );
       })()}
       {lista === null ? <div style={{ fontSize: 13, color: T.slate }}>Cargando…</div>
-        : !visibles.length ? <div style={{ ...tarjeta, fontSize: 13, color: T.slate }}>{filtro === "pendientes" ? "No hay devoluciones pendientes." : filtro === "piden" ? "Ningún cliente tiene un despacho de nuevo por atender." : "No hay devoluciones."}</div>
+        : !visibles.length ? <div style={{ ...tarjeta, fontSize: 13, color: T.slate }}>{filtro === "pendientes" ? "No hay devoluciones pendientes." : filtro === "piden" ? "Ningún cliente tiene un despacho de nuevo por atender." : filtro === "historial" ? "Todavía no hay devoluciones en el historial." : "No hay devoluciones en proceso."}</div>
         : visibles.map((d) => (
           <div key={d.id} style={{ ...tarjeta, marginBottom: 10 }}>
             <div onClick={() => abrir(d)} style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", cursor: "pointer", alignItems: "center" }}>
@@ -1664,14 +1681,14 @@ export function DevolucionesFacturacionView({ db, T: Tp, currentUser }) {
       <div style={{ fontSize: 22, fontWeight: 800, color: T.ink, marginBottom: 4 }}>🔁 Devoluciones por facturar</div>
       <div style={{ fontSize: 13, color: T.slate, marginBottom: 14 }}>Calidad ya las revisó y van a un nuevo despacho. Define con qué remisión sale cada una y se la entregas a Bodega.</div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12, alignItems: "center" }}>
-        {[["por", `Por facturar (${porFacturar.length})`], ["hechas", `Ya pasadas a despacho (${hechas.length})`]].map(([k, txt]) => (
+        {[["por", `Por facturar (${porFacturar.length})`], ["hechas", `Historial (${hechas.length})`]].map(([k, txt]) => (
           <button key={k} onClick={() => setFiltro(k)} style={{ ...btn(T), background: filtro === k ? T.denimBg : T.white, color: filtro === k ? T.denim : T.ink, borderColor: filtro === k ? T.denim : T.border }}>{txt}</button>
         ))}
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar por número, lote, ref, cliente o remisión" style={{ ...campo(T), width: 320 }} />
       </div>
       {error && <div style={{ color: T.coral, fontSize: 13, marginBottom: 8 }}>{error}</div>}
       {lista === null ? <div style={{ fontSize: 13, color: T.slate }}>Cargando…</div>
-        : !visibles.length ? <div style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, padding: "14px 18px", fontSize: 13, color: T.slate }}>{filtro === "por" ? "No hay devoluciones por facturar." : "Todavía no hay devoluciones pasadas a despacho."}</div>
+        : !visibles.length ? <div style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, padding: "14px 18px", fontSize: 13, color: T.slate }}>{filtro === "por" ? "No hay devoluciones por facturar." : "Todavía no hay devoluciones en el historial."}</div>
         : filtro === "por" ? visibles.map((d) => <FilaFacturacion key={d.id} db={db} T={T} d={d} usuario={usuario} />)
         : visibles.map((d) => (
           <div key={d.id} style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, padding: "12px 18px", marginBottom: 10, display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
