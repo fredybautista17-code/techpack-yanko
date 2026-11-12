@@ -9186,6 +9186,43 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
     </div>
   );
 }
+// ─── VACACIONES EN LA TIRILLA (2026-11-12, a pedido de Fredy) ───────────────────────────────────────────────
+// La tirilla de pago (Recibo de Liquidación y Desprendible de Pago, impreso y por correo) muestra los días de
+// vacaciones que el trabajador tomó DENTRO de la quincena y, en Fiscal / Fiscal Destajo, cuánto se le pagó por
+// ellos (días × sueldo mensual / 30; es solo el desglose: ya está dentro del sueldo de la quincena, no se suma).
+// Los días salen de Ausencias con motivo «Vacaciones» (días hábiles según su turno, igual que la Liquidación de
+// Trabajador). Como los recibos se arman en muchas pantallas (y en Financiera) sin recibir las ausencias, estas
+// se dejan en un contexto del módulo que llena ModuloNomina (o useContextoVacaciones en Financiera).
+let CONTEXTO_VACACIONES = { ausencias: [], areasNomina: [], turnos: [] };
+export function fijarContextoVacaciones(ctx) {
+  CONTEXTO_VACACIONES = { ausencias: ctx?.ausencias || [], areasNomina: ctx?.areasNomina || [], turnos: ctx?.turnos || [] };
+}
+export function useContextoVacaciones(db) {
+  useEffect(() => {
+    if (!db) return undefined;
+    const ctx = { ausencias: [], areasNomina: [], turnos: [] };
+    const publicar = () => fijarContextoVacaciones({ ...ctx });
+    const leer = (col, clave) => onSnapshot(collection(db, col), (snap) => { ctx[clave] = snap.docs.map((d) => ({ ...d.data(), id: d.id })); publicar(); }, () => {});
+    const desuscribir = [leer("nomina_ausencias", "ausencias"), leer("nomina_areas", "areasNomina"), leer("nomina_turnos", "turnos")];
+    return () => desuscribir.forEach((f) => f());
+  }, [db]);
+}
+function calcularVacacionesPeriodo(trabajador, inicio, fin) {
+  const vacio = { dias: 0, rangos: [], valorDia: 0, valor: 0 };
+  if (!trabajador || !trabajador.id || !inicio || !fin) return vacio;
+  const { ausencias, areasNomina, turnos } = CONTEXTO_VACACIONES;
+  const dias = diasHabilesPorMotivos(ausencias, trabajador, areasNomina, turnos, ["Vacaciones"], inicio, fin);
+  if (!(dias > 0)) return vacio;
+  const rangos = (ausencias || [])
+    .filter((a) => a.trabajadorId === trabajador.id && a.motivo === "Vacaciones" && a.fechaInicio && a.fechaFin && a.fechaInicio <= fin && a.fechaFin >= inicio)
+    .map((a) => [a.fechaInicio > inicio ? a.fechaInicio : inicio, a.fechaFin < fin ? a.fechaFin : fin])
+    .sort((x, y) => x[0].localeCompare(y[0]));
+  const valorDia = (Number(trabajador.sueldo) || 0) / 30;
+  return { dias, rangos, valorDia, valor: dias * valorDia };
+}
+function textoRangosVacaciones(rangos) {
+  return (rangos || []).slice(0, 3).map(([a, b]) => (a === b ? fmtFechaISO(a) : `${fmtFechaISO(a)} al ${fmtFechaISO(b)}`)).join(" y ");
+}
 function armarReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
   const fechaGen = new Date().toISOString().slice(0, 10);
   const esFiscal = tipoNomina === "Fiscal Destajo";
@@ -9202,12 +9239,20 @@ function armarReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
   const filasIncap = (liquidacion.incapDias || 0) > 0 ? `
       <tr><td>Incapacidad (${liquidacion.incapDias} día${liquidacion.incapDias !== 1 ? "s" : ""})</td><td style="text-align:right">${fmtMoney(liquidacion.incapDevengado)}</td></tr>
       <tr><td colspan="2" style="font-size:11px;color:#5A5A7A;padding-top:0">Empresa ${fmtMoney(liquidacion.incapEmpresa)} · EPS ${fmtMoney(liquidacion.incapEps)} · ARL ${fmtMoney(liquidacion.incapArl)} · Garantía del mínimo ${fmtMoney(liquidacion.incapGarantia)}</td></tr>` : "";
+  // Vacaciones tomadas dentro de la quincena (solo informativo). Fiscal / Fiscal Destajo: desglose con valor dentro del sueldo; el resto, solo los días.
+  const vacPeriodo = calcularVacacionesPeriodo(trabajador, liquidacion.inicio, liquidacion.fin);
+  const rangoVac = textoRangosVacaciones(vacPeriodo.rangos);
+  const filaVacDias = vacPeriodo.dias > 0 ? `
+      <tr><td style="background:#EBF7F2;color:#1D7A50;font-weight:700">🏖️ Días de vacaciones en la quincena${rangoVac ? ` <span style="font-weight:400;font-size:11px">(${rangoVac})</span>` : ""}</td><td style="text-align:right;background:#EBF7F2;color:#1D7A50;font-weight:700">${vacPeriodo.dias}</td></tr>` : "";
+  const filaVacValor = vacPeriodo.dias > 0 && vacPeriodo.valorDia > 0 ? `
+      <tr><td style="background:#EBF7F2;color:#1D7A50;font-weight:700">&nbsp;&nbsp;↳ 🏖️ de los cuales, vacaciones: ${vacPeriodo.dias} día${vacPeriodo.dias !== 1 ? "s" : ""} × ${fmtMoney(vacPeriodo.valorDia)}${rangoVac ? ` <span style="font-weight:400;font-size:11px">(${rangoVac})</span>` : ""}</td><td style="text-align:right;background:#EBF7F2;color:#1D7A50;font-weight:700">${fmtMoney(vacPeriodo.valor)}</td></tr>
+      <tr><td colspan="2" style="font-size:11px;color:#5A5A7A;padding-top:0">Ya está incluido en el sueldo de la quincena (no se suma otra vez).</td></tr>` : filaVacDias;
   const filaDescIncap = (liquidacion.descuentoIncap || 0) > 0 ? `
       <tr><td>Descuento días de incapacidad (se pagan aparte)</td><td style="text-align:right;color:#B23A48">-${fmtMoney(liquidacion.descuentoIncap)}</td></tr>` : "";
   const filasPago = esPrestacionServicios
     ? `
       <tr><td>Valor mensual del contrato</td><td style="text-align:right">${fmtMoney(sueldoBasico)}</td></tr>
-      <tr><td>Valor quincena</td><td style="text-align:right">${fmtMoney(liquidacion.valorQuincena)}</td></tr>`
+      <tr><td>Valor quincena</td><td style="text-align:right">${fmtMoney(liquidacion.valorQuincena)}</td></tr>${filaVacDias}`
     : esFiscalConSegSocial
     ? `
       <tr><td>Sueldo básico (mensual)</td><td style="text-align:right">${fmtMoney(sueldoBasico)}</td></tr>
@@ -9216,7 +9261,7 @@ function armarReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
       ${(liquidacion.fechasFalta && liquidacion.fechasFalta.length) ? `<tr><td colspan="2" style="font-size:11px;color:#5A5A7A;padding-top:0">${liquidacion.fechasFalta.map((f) => fmtFechaISO(f)).join(" · ")}</td></tr>` : ""}
       <tr><td>Días trabajados (huellero)</td><td style="text-align:right">${liquidacion.diasTrabajados == null ? "—" : liquidacion.diasTrabajados}</td></tr>
       <tr><td>Descuento por inasistencia</td><td style="text-align:right;color:#B23A48">-${fmtMoney((liquidacion.descuentoSueldo || 0) + (liquidacion.descuentoAuxilio || 0))}</td></tr>
-      <tr><td>Sueldo quincena</td><td style="text-align:right">${fmtMoney(liquidacion.sueldoQuincena)}</td></tr>
+      <tr><td>Sueldo quincena</td><td style="text-align:right">${fmtMoney(liquidacion.sueldoQuincena)}</td></tr>${filaVacValor}
       <tr><td>Auxilio quincena</td><td style="text-align:right">${fmtMoney(liquidacion.auxilioQuincena)}</td></tr>${filaDescIncap}${filasIncap}
       <tr><td>EPS trabajador (4%)</td><td style="text-align:right;color:#B23A48">-${fmtMoney(liquidacion.epsTrabajador)}</td></tr>
       <tr><td>Pensión trabajador (4%)</td><td style="text-align:right;color:#B23A48">-${fmtMoney(liquidacion.pensionTrabajador)}</td></tr>`
@@ -9228,15 +9273,15 @@ function armarReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
       ${(liquidacion.fechasFalta && liquidacion.fechasFalta.length) ? `<tr><td colspan="2" style="font-size:11px;color:#5A5A7A;padding-top:0">${liquidacion.fechasFalta.map((f) => fmtFechaISO(f)).join(" · ")}</td></tr>` : ""}
       <tr><td>Días trabajados (huellero)</td><td style="text-align:right">${liquidacion.diasTrabajados == null ? "—" : liquidacion.diasTrabajados}</td></tr>
       <tr><td>Descuento por inasistencia</td><td style="text-align:right;color:#B23A48">-${fmtMoney((liquidacion.descuentoSueldo || 0) + (liquidacion.descuentoAuxilio || 0))}</td></tr>
-      <tr><td>Sueldo quincena</td><td style="text-align:right">${fmtMoney(liquidacion.sueldoQuincena)}</td></tr>
+      <tr><td>Sueldo quincena</td><td style="text-align:right">${fmtMoney(liquidacion.sueldoQuincena)}</td></tr>${filaVacValor}
       <tr><td>Auxilio quincena</td><td style="text-align:right">${fmtMoney(liquidacion.auxilioQuincena)}</td></tr>${filaDescIncap}${filasIncap}`
     : liquidacion.pagoPorDia
     ? `
       <tr><td>Días trabajados (huellero)</td><td style="text-align:right">${liquidacion.diasPagados == null ? "—" : liquidacion.diasPagados}</td></tr>
       <tr><td>Valor día</td><td style="text-align:right">${fmtMoney(liquidacion.valorDia)}</td></tr>
-      <tr><td>Subtotal pago por día</td><td style="text-align:right">${fmtMoney(liquidacion.pagoDias)}</td></tr>${filasIncap}`
+      <tr><td>Subtotal pago por día</td><td style="text-align:right">${fmtMoney(liquidacion.pagoDias)}</td></tr>${filaVacDias}${filasIncap}`
     : `
-      <tr><td>Producción registrada en la quincena</td><td style="text-align:right">${fmtMoney((liquidacion.netoAPagar || 0) - (liquidacion.incapDevengado || 0))}</td></tr>${filasIncap}
+      <tr><td>Producción registrada en la quincena</td><td style="text-align:right">${fmtMoney((liquidacion.netoAPagar || 0) - (liquidacion.incapDevengado || 0))}</td></tr>${filaVacDias}${filasIncap}
       <tr><td>Días trabajados (huellero)</td><td style="text-align:right">${liquidacion.diasTrabajados == null ? "—" : liquidacion.diasTrabajados}</td></tr>
       <tr><td colspan="2" style="color:#5A5A7A;font-size:11px;padding-top:2px">Sueldo básico de referencia: ${fmtMoney(sueldoBasico)} · Auxilio de referencia: ${fmtMoney(auxilioBasico)} — solo se usan para calcular las prestaciones sociales, no hacen parte del pago.</td></tr>`;
   const seccionAportesPatronales = esFiscalConSegSocial ? `
@@ -13420,6 +13465,11 @@ function armarCorreoDesprendibleHTML({
   const seccionAjuste = !salarioMinimoGarantizado && ajusteValor
     ? `${titulo("🛠 Ajuste de nómina")}<div style="font-size:13px"><b>${e(ajusteObservacion || "Ajuste")}</b>: ${ajusteValor > 0 ? "+" : ""}${fmtMoney(ajusteValor)}</div>`
     : "";
+  const vacCorreo = calcularVacacionesPeriodo(trabajador, desde, hasta);
+  const rangoVacCorreo = textoRangosVacaciones(vacCorreo.rangos);
+  const seccionVac = vacCorreo.dias > 0
+    ? `<table width="100%" cellpadding="0" cellspacing="0" style="margin:16px 0"><tr><td style="background:#EBF7F2;border:1px solid #A9D8C2;border-radius:10px;padding:10px 14px;font-size:13px;color:#1D7A50"><b>🏖️ Vacaciones del período: ${vacCorreo.dias} día${vacCorreo.dias !== 1 ? "s" : ""}</b>${rangoVacCorreo ? `<div style="font-size:11.5px;color:#5A5A7A;margin-top:2px">${rangoVacCorreo}</div>` : ""}</td></tr></table>`
+    : "";
   const seccionIncap = incapInfo && incapInfo.dias > 0
     ? `${titulo(`🩺 Incapacidad (${incapInfo.dias} día${incapInfo.dias !== 1 ? "s" : ""})`)}<div style="font-size:13px">Devengado por incapacidad: <b>${fmtMoney(incapInfo.devengado)}</b></div><div style="font-size:11px;color:#5A5A7A;margin-top:3px">Empresa ${fmtMoney(incapInfo.empresa)} · EPS ${fmtMoney(incapInfo.eps)} · ARL ${fmtMoney(incapInfo.arl)} · Garantía del mínimo ${fmtMoney(incapInfo.garantia)}</div>`
     : "";
@@ -13435,7 +13485,7 @@ function armarCorreoDesprendibleHTML({
 <table width="100%" cellpadding="0" cellspacing="0" style="max-width:720px;margin:0 auto;background:#fff;border-collapse:collapse"><tr><td style="background:#1A1A2E;padding:20px 24px"><div style="color:#fff;font-size:19px;font-weight:800">👷 Desprendible de pago</div><div style="color:#C8B8A2;font-size:12px;margin-top:4px">Industrias Yanko · ${e(label)}</div></td></tr>
 <tr><td style="padding:20px 24px">
 <table width="100%" cellpadding="0" cellspacing="6"><tr>${tarjeta("Trabajador", e(trabajador?.nombre || "—"))}${tarjeta("Cédula", e(trabajador?.cedula || "—"))}${tarjeta("Área", e(trabajador?.area || "—"))}</tr></table>
-${seccion}${seccionDed}${seccionAjuste}${seccionIncap}${totalesHTML}
+${seccionVac}${seccion}${seccionDed}${seccionAjuste}${seccionIncap}${totalesHTML}
 <div style="margin-top:22px;font-size:11px;color:#5A5A7A">Período: ${fechaCortaDed(desde)} — ${fechaCortaDed(hasta)}. Si algo no coincide con tu pago, comunícate con Nómina.</div>
 </td></tr></table></body></html>`;
 }
@@ -13556,6 +13606,12 @@ function exportDesprendiblePagoHTML({
       <span>${ajusteValor > 0 ? "+" : ""}${fmtMoney(ajusteValor)}</span>
     </div>`
     : "";
+  // Vacaciones tomadas dentro de la quincena (solo los días; el valor en pesos va en el Recibo de Liquidación de Fiscal).
+  const vacDesp = calcularVacacionesPeriodo(trabajador, desde, hasta);
+  const rangoVacDesp = textoRangosVacaciones(vacDesp.rangos);
+  const seccionVac = vacDesp.dias > 0
+    ? `<div style="margin:16px 0;padding:10px 14px;border:1.5px solid #A9D8C2;background:#EBF7F2;border-radius:10px;display:flex;gap:12px;align-items:center"><div style="font-size:26px;font-weight:900;color:#2D9E6B;line-height:1">${vacDesp.dias}</div><div><div style="font-size:13px;font-weight:800;color:#1D7A50">🏖️ Vacaciones del período: ${vacDesp.dias} día${vacDesp.dias !== 1 ? "s" : ""}</div>${rangoVacDesp ? `<div style="font-size:11.5px;color:#5A5A7A;margin-top:2px">${rangoVacDesp}</div>` : ""}</div></div>`
+    : "";
   const seccionIncap = (incapInfo && incapInfo.dias > 0)
     ? `<div class="section-title">🩺 Incapacidad (${incapInfo.dias} día${incapInfo.dias !== 1 ? "s" : ""})</div>
     <table><tbody>
@@ -13631,6 +13687,7 @@ function exportDesprendiblePagoHTML({
       <div class="info-card"><label>Cédula</label><span>${trabajador.cedula || "—"}</span></div>
       <div class="info-card"><label>Área</label><span>${trabajador.area || "—"}</span></div>
     </div>
+    ${seccionVac}
     ${seccionProduccionYHoras}
     ${seccionDeducciones}
     ${seccionAjuste}
@@ -15644,6 +15701,8 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   const [cierres, setCierres] = useState([]);
   const [costosTeoricoProceso, setCostosTeoricoProceso] = useState([]);
   const [ausencias, setAusencias] = useState([]);
+  // (2026-11-12) Las tirillas de pago leen de aquí los días de vacaciones de la quincena (ver calcularVacacionesPeriodo).
+  useEffect(() => { fijarContextoVacaciones({ ausencias, areasNomina, turnos }); }, [ausencias, areasNomina, turnos]);
   // (2026-10-28) Tope de permisos al mes sin código de gerencia (config/nomina_permisos).
   const [topePermisos, setTopePermisos] = useState(TOPE_PERMISOS_POR_MES);
   const [faltasSinJustificar, setFaltasSinJustificar] = useState([]);

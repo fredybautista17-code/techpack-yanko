@@ -2,7 +2,7 @@ import { useState, useEffect, Fragment } from "react";
 import { initializeApp, getApps } from "firebase/app";
 import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, query, where, writeBatch } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
-import { abrirRecibosLiquidacionLote } from "./modulo-nomina";
+import { abrirRecibosLiquidacionLote, useContextoVacaciones } from "./modulo-nomina";
 import { CuantoPagarMesView, EndeudamientoView } from "./financiera-cuanto-pagar";
 import QuePagarPrimero from "./financiera-que-pagar";
 import { IngresosView } from "./financiera-ingresos";
@@ -380,6 +380,8 @@ tr.tot td{font-weight:bold;border-top:2px solid #222;border-bottom:none}.k{displ
   return !!w;
 }
 function NominaPorAreaSection({ porTipo, trabajadores, tipoPeriodo, rangoTexto, anio, mes, currentUser, matrizPago, columnasPago }) {
+  // (2026-11-12) Los desprendibles que se imprimen aquí muestran las vacaciones de la quincena: necesitan las ausencias.
+  useContextoVacaciones(db);
   const isAdmin = !!currentUser?.isAdmin;
   const puedePagar = tipoPeriodo === "quincena";
   const quienRegistra = currentUser?.name || currentUser?.username || currentUser?.email || "";
