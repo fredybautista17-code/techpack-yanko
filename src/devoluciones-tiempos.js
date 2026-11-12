@@ -49,8 +49,8 @@ export function fechaDePaso(d, paso) {
 // {dias, cerrada, nivel: "verde"|"ambar"|"rojo"|"cerrada", atrasada, tardo}
 export function tiempoDevolucion(d, hoy = hoyBogota()) {
   const inicio = fechaBogota(d?.creadoEn || d?.historial?.[0]?.fecha);
-  const cerrada = d?.estado === "redespachada";
-  const fin = cerrada ? fechaBogota(ultimoEvento(d, "redespachada")?.fecha || d?.actualizadoEn) || hoy : hoy;
+  const cerrada = d?.estado === "redespachada" || d?.estado === "segundas"; // «segundas» también cierra el reloj: no se reenvía
+  const fin = cerrada ? fechaBogota(ultimoEvento(d, d.estado)?.fecha || d?.actualizadoEn) || hoy : hoy;
   const dias = diasHabilesEntre(inicio, fin);
   const nivel = cerrada ? "cerrada" : dias > LIMITE_DIAS_DEVOLUCION ? "rojo" : dias > DIAS_VERDE ? "ambar" : "verde";
   return { dias, cerrada, nivel, atrasada: !cerrada && dias > LIMITE_DIAS_DEVOLUCION, tardo: cerrada && dias > LIMITE_DIAS_DEVOLUCION };

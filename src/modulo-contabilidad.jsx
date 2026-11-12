@@ -14,6 +14,7 @@ import {
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { rangoMeses, rangoSugerido, gruposDesdeBusint, nombresConocidos } from "./compras-busint-traer";
 import OrdenesCompraView from "./contabilidad-ordenes-compra";
+import { DevolucionesFacturacionView } from "./devoluciones-cliente";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
   authDomain: "techpack-yanko-f37b8.firebaseapp.com",
@@ -9238,6 +9239,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
     { id: "facturacion_clientes", icon: "🧾", label: "Facturación Clientes" },
     { id: "cartera_clientes", icon: "🏷️", label: "Cartera Clientes" },
     { id: "dado_por_cumplido", icon: "✅", label: "Dado por Cumplido" },
+    { id: "devoluciones_facturar", icon: "🔁", label: "Devoluciones por facturar" },
     { id: "cxp", icon: "🧾", label: "Cuentas por Pagar" },
     ...(isAdmin || puedeVerOrdenesCompra ? [{ id: "ordenes_compra", icon: "🛒", label: "Órdenes de compra" }] : []),
     { id: "administracion", icon: "🗂️", label: "Administración" },
@@ -9454,6 +9456,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
           )}
           {subView === "facturacion_clientes" && <FacturacionClientesView />}
           {subView === "cartera_clientes" && <CarteraClientesView currentUser={currentUser} pedidos={pedidos} />}
+          {subView === "devoluciones_facturar" && <DevolucionesFacturacionView db={db} currentUser={currentUser} />}
           {subView === "dado_por_cumplido" && <DadoPorCumplidoView currentUser={currentUser} puedeAdministrarBases={puedeAdministrarBasesDadoPorCumplido} puedeSincronizar={puedeSincronizarDadoPorCumplido} puedeEditarAprobados={puedeEditarAprobadosDadoPorCumplido} />}
           {subView === "ordenes_compra" && (isAdmin || puedeVerOrdenesCompra) && <OrdenesCompraView db={db} functionsClient={functionsClient} currentUser={currentUser} C={C} Btn={Btn} />}
           {subView === "cxp" && (
