@@ -14,6 +14,7 @@ import ModuloNomina from "./modulo-nomina";
 import ModuloInformes from "./modulo-informes";
 import CotizadorView from "./modulo-cotizador";
 import DisponibleDespacharView from "./disponible-despachar";
+import { telasProgramadasYaCortadas } from "./tela-programada-cortada";
 import VigentesPorEtapaView from "./vigentes-por-etapa";
 import ExplosionMaterialesView from "./explosion-materiales";
 import LotesPorIntegrarView from "./lotes-por-integrar";
@@ -6739,10 +6740,10 @@ function RegistrarEntregaTelaModal({ config, referenciasDisponibles, onClose, on
 // llegado a la fabrica (a diferencia de "Tela de Inventario", que es
 // cuando ya esta fisicamente acá). Solo pide lo minimo (Proveedor y
 // Fecha esperada) ya que no hay factura ni rollos recibidos todavia.
-function TelaProgramadaModal({ referencia, onClose, onGuardar }) {
-  const [proveedor, setProveedor] = useState("");
-  const [fechaEsperada, setFechaEsperada] = useState("");
-  const [observaciones, setObservaciones] = useState("");
+function TelaProgramadaModal({ referencia, inicial, onClose, onGuardar }) {
+  const [proveedor, setProveedor] = useState(inicial?.proveedor || "");
+  const [fechaEsperada, setFechaEsperada] = useState(inicial?.fechaEsperada || "");
+  const [observaciones, setObservaciones] = useState(inicial?.observaciones || "");
   const [guardando, setGuardando] = useState(false);
   const puedeGuardar = proveedor.trim() && fechaEsperada;
   async function guardar() {
@@ -6800,6 +6801,19 @@ function IngresoTelasPreordenModal({ preorden, entregas, currentUser, puedeConfi
       onActualizarItemPreorden(preorden.id, it.itemId, { telaComprada: true, telaCompradaEn: nowISO(), telaCompradaPor: currentUser?.name || "" });
     }
   }
+  // (2026-11-13, a pedido de Fredy) Una tela programada se podía programar pero no cerrar: «Ya llegó» (queda confirmada), «Cambiar fecha» y «Quitar programación».
+  function marcarLlego(it) {
+    if (window.confirm(`¿La tela de la referencia "${it.referencia}" ya llegó (o ya se cortó)? Pasa a tela confirmada y sale de «en camino».`)) {
+      onActualizarItemPreorden(preorden.id, it.itemId, { telaComprada: true, telaCompradaEn: nowISO(), telaCompradaPor: currentUser?.name || "", telaProgramada: false, telaLlegoManual: true });
+    }
+  }
+  function quitarProgramada(it) {
+    if (window.confirm(`¿Quitar la programación de tela de "${it.referencia}"? Vuelve a «Referencias pendientes de tela».`)) {
+      onActualizarItemPreorden(preorden.id, it.itemId, { telaProgramada: false, telaProgramadaInfo: null, telaProgramadaEn: null, telaProgramadaPor: null });
+    }
+  }
+  const hoyTela = new Date().toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
+  const diasVencida = (f) => (f && f < hoyTela ? Math.round((Date.parse(`${hoyTela}T00:00:00Z`) - Date.parse(`${f}T00:00:00Z`)) / 86400000) : 0);
   async function guardarProgramada(datos) {
     await onActualizarItemPreorden(preorden.id, programando.itemId, {
       telaProgramada: true, telaProgramadaInfo: datos,
@@ -6809,7 +6823,7 @@ function IngresoTelasPreordenModal({ preorden, entregas, currentUser, puedeConfi
   return (
     <Modal title={`🧵 Tela de la Orden — ${preorden.cliente || "(Sin cliente)"}${preorden.numPedido ? ` · Pedido ${preorden.numPedido}` : ""}`} onClose={onClose} width={760}>
       {programando && (
-        <TelaProgramadaModal referencia={programando.referencia} onClose={() => setProgramando(null)} onGuardar={guardarProgramada} />
+        <TelaProgramadaModal referencia={programando.referencia} inicial={programando.telaProgramada ? programando.telaProgramadaInfo : null} onClose={() => setProgramando(null)} onGuardar={guardarProgramada} />
       )}
       <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Entregas asignadas a esta orden</div>
       {!entregasDeEsta.length ? (
@@ -6842,12 +6856,24 @@ function IngresoTelasPreordenModal({ preorden, entregas, currentUser, puedeConfi
         <div style={{ marginBottom: 20 }}>
           <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Tela programada (en camino)</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {programadas.map((it) => (
-              <div key={it.itemId} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 10px", borderRadius: 6, border: `1px solid ${T.border}`, fontSize: 12 }}>
-                <span><b>{it.referencia}</b>{it.telaProgramadaInfo?.proveedor ? ` · ${it.telaProgramadaInfo.proveedor}` : ""}</span>
-                <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.amberBg, color: T.amber, whiteSpace: "nowrap" }}>📅 Programada — esperada {it.telaProgramadaInfo?.fechaEsperada || "—"}</span>
-              </div>
-            ))}
+            {programadas.map((it) => {
+              const atraso = diasVencida(it.telaProgramadaInfo?.fechaEsperada);
+              return (
+                <div key={it.itemId} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap", padding: "6px 10px", borderRadius: 6, border: `1px solid ${atraso ? T.coral : T.border}`, fontSize: 12 }}>
+                  <span><b>{it.referencia}</b>{it.telaProgramadaInfo?.proveedor ? ` · ${it.telaProgramadaInfo.proveedor}` : ""}</span>
+                  <span style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                    <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: atraso ? T.coralBg : T.amberBg, color: atraso ? T.coral : T.amber, whiteSpace: "nowrap" }}>📅 Programada — esperada {it.telaProgramadaInfo?.fechaEsperada || "—"}{atraso ? ` · hace ${atraso} día${atraso === 1 ? "" : "s"}` : ""}</span>
+                    {puedeConfirmarTela && (
+                      <>
+                        <button onClick={() => marcarLlego(it)} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.jade}`, background: T.jadeBg, color: T.jade, fontWeight: 700, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap" }}>✅ Ya llegó</button>
+                        <button onClick={() => setProgramando(it)} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.ink, fontWeight: 700, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap" }}>📅 Cambiar fecha</button>
+                        <button onClick={() => quitarProgramada(it)} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.slate, fontWeight: 700, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap" }}>Quitar</button>
+                      </>
+                    )}
+                  </span>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -8448,6 +8474,21 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
   const esCliente = currentUser?.role === "Cliente";
   const puedeIngresarTela = canAccessBodega || canAccessContabilidad;
   const puedeConfirmarTela = canAccessDiseno;
+  // (2026-11-13, a pedido de Fredy) Si una referencia con «Tela programada» ya se cortó (Corte registró un corte después de programarla), la tela llegó:
+  // se confirma sola, para que no dependa de que alguien se acuerde. Una preorden por pasada (cada guardado vuelve a disparar este efecto con la siguiente).
+  const telaAutoIntentada = useRef(new Set());
+  useEffect(() => {
+    if (!puedeConfirmarTela || !onActualizarItemsPreorden) return;
+    const nuevas = telasProgramadasYaCortadas(preordenes, pedidos).filter((x) => !telaAutoIntentada.current.has(`${x.preordenId}|${x.itemId}`));
+    if (!nuevas.length) return;
+    const idOrden = nuevas[0].preordenId;
+    const deEsta = nuevas.filter((x) => x.preordenId === idOrden);
+    deEsta.forEach((x) => telaAutoIntentada.current.add(`${x.preordenId}|${x.itemId}`));
+    onActualizarItemsPreorden(idOrden, deEsta.map((x) => ({ itemId: x.itemId, patch: {
+      telaComprada: true, telaCompradaEn: nowISO(), telaCompradaPor: `Automático · ya cortada (pedido ${x.pedido})`,
+      telaProgramada: false, telaLlegoAuto: { pedido: x.pedido, cortadas: x.cortadas, en: nowISO() },
+    } })), { silencioso: true });
+  }, [preordenes, pedidos, puedeConfirmarTela]); // eslint-disable-line
   const clienteDePreorden = (id) => ((preordenes || []).find((x) => x.id === id) || {}).cliente || "";
   const columnasPreorden = ["Foto", "Ref", "Nombre", "Estado", "Consumo", "Tipo", "Categoría", "Silueta", "Rango", "Tela", ...(esCliente ? [] : ["Recepción de Tela"]), "Curva Col.", "Cant. Col.", "Curva Ven.", "Cant. Ven.", "Precio", "Total", "Carta Colores", "Pedido", "Acciones"];
   // (2026-09-29, a pedido de Fredy) Antes esto marcaba un ítem como "ya
