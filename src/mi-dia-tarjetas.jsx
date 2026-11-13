@@ -432,7 +432,7 @@ function BloqueCierreAreas({ db, currentUser, ids }) {
 
 // Pantalla «☀️ Mi Día» por tarjetas: una barra de pestañas con UNA sección a la vez (en vez de apilar todo y obligar a bajar),
 // solo con las piezas que el administrador marcó para este usuario.
-export default function MiDiaTarjetasStandalone({ db, currentUser, onVolver, onLogout }) {
+export default function MiDiaTarjetasStandalone({ db, currentUser, onVolver, onLogout, onAbrirItem, puedeAbrir, tabInicial }) {
   const marcadas = currentUser?.tarjetasMiDia || [];
   const hayCierre = marcadas.some((id) => IDS_CIERRE.includes(id));
   const idsPlaneacion = marcadas.filter((id) => IDS_PLANEACION.includes(id));
@@ -467,18 +467,18 @@ export default function MiDiaTarjetasStandalone({ db, currentUser, onVolver, onL
     secciones.push({ id: "gastos_talento", icon: "💜", label: "Gastos de Talento Humano", render: () => <BloqueGastosTalento db={db} /> });
   }
   if (marcadas.includes("diseno_sin_capsula")) {
-    secciones.push({ id: "diseno_sin_capsula", icon: "📭", label: "Aprobados sin cápsula", render: () => <BloqueDisenoSinCapsula db={db} currentUser={currentUser} /> });
+    secciones.push({ id: "diseno_sin_capsula", icon: "📭", label: "Aprobados sin cápsula", render: () => <BloqueDisenoSinCapsula db={db} currentUser={currentUser} onAbrir={(it) => onAbrirItem && onAbrirItem(it, "diseno_sin_capsula")} puedeAbrir={puedeAbrir} /> });
   }
   if (marcadas.includes("diseno_muestras")) {
-    secciones.push({ id: "diseno_muestras", icon: "🧵", label: "Muestras por diseñadora", render: () => <BloqueMuestrasDisenadoras db={db} currentUser={currentUser} /> });
+    secciones.push({ id: "diseno_muestras", icon: "🧵", label: "Muestras por diseñadora", render: () => <BloqueMuestrasDisenadoras db={db} currentUser={currentUser} onAbrir={(it) => onAbrirItem && onAbrirItem(it, "diseno_muestras")} puedeAbrir={puedeAbrir} /> });
   }
   if (marcadas.includes("diseno_solicitudes_tela")) {
-    secciones.push({ id: "diseno_solicitudes_tela", icon: "🧶", label: "Solicitudes de tela", render: () => <BloqueSolicitudesTela db={db} /> });
+    secciones.push({ id: "diseno_solicitudes_tela", icon: "🧶", label: "Solicitudes de tela", render: () => <BloqueSolicitudesTela db={db} onAbrir={(it) => onAbrirItem && onAbrirItem(it, "diseno_solicitudes_tela")} puedeAbrir={puedeAbrir} /> });
   }
   if (marcadas.includes("auditoria_nomina")) {
     secciones.push({ id: "auditoria", icon: "🔍", label: "Auditoría Nómina", render: () => <MiDiaNominaStandalone currentUser={currentUser} incrustado /> });
   }
-  const [elegida, setElegida] = useState(null);
+  const [elegida, setElegida] = useState(tabInicial || null);
   const actual = secciones.find((x) => x.id === elegida) || secciones[0];
   return (
     <div style={{ minHeight: "100vh", background: C.canvas, fontFamily: "'Inter',-apple-system,sans-serif" }}>

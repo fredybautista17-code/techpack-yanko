@@ -58,13 +58,17 @@ function useColeccion(db, nombre) {
   return [datos, error];
 }
 
-export function BloqueMuestrasDisenadoras({ db, currentUser }) {
+export function BloqueMuestrasDisenadoras({ db, currentUser, onAbrir, puedeAbrir }) {
   const [muestras, e1] = useColeccion(db, "cronograma_muestras");
   const [protos, e2] = useColeccion(db, "prototipos");
   const [capsulas, e3] = useColeccion(db, "capsulas");
   const [soloMias, setSoloMias] = useState(false);
   const error = e1 || e2 || e3;
   const hoy = isoLocal(new Date());
+  // Clic para llegar a donde está la muestra (prototipo, referencia de cápsula o, si no tiene vínculo, el Cronograma de Muestras).
+  const destino = (m) => (m.kind === "ref" && m.itemId && m.capsulaId ? { kind: "ref", itemId: m.itemId, capsulaId: m.capsulaId } : m.kind === "proto" && m.itemId ? { kind: "proto", itemId: m.itemId } : { kind: "cronograma" });
+  const puedeClic = (m) => !!(onAbrir && puedeAbrir && puedeAbrir[destino(m).kind]);
+  const atributosClic = (m) => (puedeClic(m) ? { onClick: () => onAbrir(destino(m)), role: "button", tabIndex: 0, title: "Abrir en Diseño", onKeyDown: (e) => { if (e.key === "Enter") onAbrir(destino(m)); } } : {});
 
   const porDisenadora = useMemo(() => {
     if (!muestras || !protos || !capsulas) return null;
@@ -108,6 +112,7 @@ export function BloqueMuestrasDisenadoras({ db, currentUser }) {
         <Kpi icon="🔴" label={`Revisión con más de ${DIAS_REVISION} días`} value={revisionAtrasada} color={C.red} bg={C.redBg} />
         <Kpi icon="⏰" label="Entrega vencida (en taller)" value={vencidas} color={C.amber} bg={C.amberBg} />
       </div>
+      {onAbrir && puedeAbrir && !puedeAbrir.proto && !puedeAbrir.ref && <div style={{ fontSize: 12, color: C.amber, fontWeight: 700, marginBottom: 10 }}>Sin acceso a Diseño: desde aquí no se pueden abrir las muestras.</div>}
       {hayMias && (
         <button onClick={() => setSoloMias(!soloMias)} style={{ marginBottom: 12, padding: "5px 13px", borderRadius: 20, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", border: `1.5px solid ${soloMias ? C.ink : C.border}`, background: soloMias ? C.ink : C.white, color: soloMias ? C.white : C.ink }}>Solo las mías</button>
       )}
@@ -124,11 +129,12 @@ export function BloqueMuestrasDisenadoras({ db, currentUser }) {
                   <span style={{ fontSize: 12, color: C.slate }}>{d.items.length} en curso · {cuenta("asignado") + cuenta("pendiente")} en taller · {cuenta("recibida")} por revisar · {cuenta("modificar")} a modificar</span>
                 </div>
                 {d.items.map((m) => (
-                  <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 14px", borderTop: `1px solid ${C.border}`, flexWrap: "wrap", fontSize: 13 }}>
+                  <div key={m.id} {...atributosClic(m)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 14px", borderTop: `1px solid ${C.border}`, flexWrap: "wrap", fontSize: 13, cursor: puedeClic(m) ? "pointer" : "default" }}>
                     <div style={{ flex: "1 1 160px", minWidth: 0 }}>
                       <b>{m.referencia || "—"}</b> <span style={{ color: C.slate }}>{m.nombre}</span>
                       <div style={{ fontSize: 11, color: C.slate }}>{m.taller || "Sin taller"}{m.cliente ? ` · ${m.cliente}` : ""}</div>
                     </div>
+                    {puedeClic(m) && <span style={{ fontSize: 12, fontWeight: 800, color: C.blue }}>Abrir ›</span>}
                     <Pill def={ESTADO[m.estado] || ESTADO.pendiente} />
                     {m.estado === "recibida" ? (
                       <span style={{ fontSize: 12, fontWeight: 800, color: m.atrasadaRevision ? C.red : C.violet }}>{m.esperando === 0 ? "hoy" : `${m.esperando} d`} esperando</span>
@@ -146,7 +152,7 @@ export function BloqueMuestrasDisenadoras({ db, currentUser }) {
   );
 }
 
-export function BloqueSolicitudesTela({ db }) {
+export function BloqueSolicitudesTela({ db, onAbrir, puedeAbrir }) {
   const [solicitudes, error] = useColeccion(db, "solicitudes_tela");
   const [verLlegaron, setVerLlegaron] = useState(false);
   if (error) return <div style={{ padding: 16, color: C.red, fontSize: 13 }}>{error}</div>;
@@ -164,6 +170,7 @@ export function BloqueSolicitudesTela({ db }) {
         <Kpi icon="🟠" label="Por programar" value={porProgramar} color={C.amber} bg={C.amberBg} />
         <Kpi icon="🚚" label="Tela en camino" value={pendientes.filter((x) => x.estado === "en_camino").length} color={C.blue} bg={C.blueBg} />
       </div>
+      {onAbrir && puedeAbrir && !puedeAbrir.proto && <div style={{ fontSize: 12, color: C.amber, fontWeight: 700, marginBottom: 10 }}>Sin acceso a Diseño: desde aquí no se puede abrir el prototipo.</div>}
       <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
         {[[false, "Abiertas"], [true, "Ya llegaron"]].map(([v, l]) => (
           <button key={l} onClick={() => setVerLlegaron(v)} style={{ padding: "5px 13px", borderRadius: 20, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", border: `1.5px solid ${verLlegaron === v ? C.ink : C.border}`, background: verLlegaron === v ? C.ink : C.white, color: verLlegaron === v ? C.white : C.ink }}>{l}</button>
@@ -177,8 +184,8 @@ export function BloqueSolicitudesTela({ db }) {
             <thead><tr><th style={th}>Prototipo</th><th style={th}>Cliente</th><th style={th}>Tela</th><th style={th}>Proveedor · país</th><th style={th}>Fecha esperada</th><th style={th}>Estado</th><th style={th}>Solicitada</th></tr></thead>
             <tbody>
               {filas.map((x) => (
-                <tr key={x.id}>
-                  <td style={td}><b>{x.referencia || x.numPrototipo || "—"}</b><div style={{ fontSize: 11, color: C.slate }}>{x.nombre}</div></td>
+                <tr key={x.id} onClick={onAbrir && puedeAbrir?.proto && x.protoId ? () => onAbrir({ kind: "proto", itemId: x.protoId }) : undefined} title={onAbrir && puedeAbrir?.proto && x.protoId ? "Abrir el prototipo en Diseño" : undefined} style={{ cursor: onAbrir && puedeAbrir?.proto && x.protoId ? "pointer" : "default" }}>
+                  <td style={td}><b style={{ color: onAbrir && puedeAbrir?.proto && x.protoId ? C.blue : C.ink }}>{x.referencia || x.numPrototipo || "—"}</b><div style={{ fontSize: 11, color: C.slate }}>{x.nombre}</div></td>
                   <td style={td}>{x.cliente || "—"}</td>
                   <td style={td}>{x.tela || "—"}</td>
                   <td style={td}>{[x.proveedor, x.pais].filter(Boolean).join(" · ") || "—"}</td>

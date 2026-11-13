@@ -67,13 +67,13 @@ function Chip({ activo, onClick, children }) {
     <button onClick={onClick} style={{ padding: "6px 13px", border: `1.5px solid ${activo ? C.ink : C.border}`, background: activo ? C.ink : C.white, color: activo ? C.white : C.ink, borderRadius: 9, fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>{children}</button>
   );
 }
-function Fila({ p, marcado, onMarcar, nombres, onResponsable, onFecha, sinCliente }) {
+function Fila({ p, marcado, onMarcar, nombres, onResponsable, onFecha, sinCliente, onAbrir }) {
   return (
     <div style={{ display: "grid", gridTemplateColumns: COLUMNAS, gap: 12, alignItems: "center", padding: "8px 14px", borderTop: `1px solid ${C.border}`, fontSize: 13, minWidth: 760 }}>
       <input type="checkbox" checked={marcado} onChange={onMarcar} aria-label="Seleccionar prototipo" />
       {p.image ? <img src={p.image} alt="" style={{ width: 36, height: 36, borderRadius: 7, objectFit: "cover", border: `1px solid ${C.border}` }} /> : <div style={{ width: 36, height: 36, borderRadius: 7, background: C.canvas, border: `1px solid ${C.border}` }} />}
-      <div style={{ minWidth: 0 }}>
-        <b>{referenciaUtil(p.reference) ? `${p.reference} · ` : ""}{p.name}</b>
+      <div onClick={onAbrir || undefined} title={onAbrir ? "Abrir el prototipo en Diseño" : undefined} style={{ minWidth: 0, cursor: onAbrir ? "pointer" : "default" }}>
+        <b style={{ color: onAbrir ? C.blue : C.ink }}>{referenciaUtil(p.reference) ? `${p.reference} · ` : ""}{p.name}{onAbrir ? " ›" : ""}</b>
         <div style={{ fontSize: 11, color: C.slate }}>{[p.categoria, p.linea, sinCliente ? null : p.clienteTxt].filter(Boolean).join(" · ")}</div>
       </div>
       <select value={p.responsable} onChange={(e) => onResponsable(e.target.value)} style={CAMPO} aria-label="Responsable">
@@ -89,7 +89,7 @@ function Fila({ p, marcado, onMarcar, nombres, onResponsable, onFecha, sinClient
   );
 }
 
-export function BloqueDisenoSinCapsula({ db, currentUser }) {
+export function BloqueDisenoSinCapsula({ db, currentUser, onAbrir, puedeAbrir }) {
   const [protos, setProtos] = useState(null);
   const [error, setError] = useState("");
   const [crono, setCrono] = useState({});
@@ -188,8 +188,9 @@ export function BloqueDisenoSinCapsula({ db, currentUser }) {
   if (!protos) return <div style={{ padding: 16, color: C.slate, fontSize: 13 }}>Cargando prototipos…</div>;
 
   const alternar = (id) => setSel((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
+  const puedeAbrirProto = !!(onAbrir && puedeAbrir && puedeAbrir.proto);
   const fila = (p, sinCliente) => (
-    <Fila key={p.id} p={p} sinCliente={sinCliente} marcado={sel.includes(p.id)} onMarcar={() => alternar(p.id)} nombres={nombres}
+    <Fila key={p.id} p={p} sinCliente={sinCliente} onAbrir={puedeAbrirProto ? () => onAbrir({ kind: "proto", itemId: p.id }) : null} marcado={sel.includes(p.id)} onMarcar={() => alternar(p.id)} nombres={nombres}
       onResponsable={(v) => guardarCrono(p.id, { responsable: v })} onFecha={(v) => guardarCrono(p.id, { fechaObjetivo: v })} />
   );
 
@@ -226,7 +227,7 @@ export function BloqueDisenoSinCapsula({ db, currentUser }) {
           </div>
           {g.items.map((p) => (
             <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 14px", borderTop: `1px solid ${C.border}`, flexWrap: "wrap", fontSize: 13 }}>
-              <div style={{ flex: "1 1 190px", minWidth: 0 }}><b>{referenciaUtil(p.reference) ? `${p.reference} · ` : ""}{p.name}</b><div style={{ fontSize: 11, color: C.slate }}>{p.clienteTxt}</div></div>
+              <div onClick={puedeAbrirProto ? () => onAbrir({ kind: "proto", itemId: p.id }) : undefined} style={{ flex: "1 1 190px", minWidth: 0, cursor: puedeAbrirProto ? "pointer" : "default" }}><b style={{ color: puedeAbrirProto ? C.blue : C.ink }}>{referenciaUtil(p.reference) ? `${p.reference} · ` : ""}{p.name}{puedeAbrirProto ? " ›" : ""}</b><div style={{ fontSize: 11, color: C.slate }}>{p.clienteTxt}</div></div>
               <div style={{ fontSize: 12, color: C.slate }}>{p.responsable || "Sin responsable"}</div>
               <div style={{ fontSize: 12, fontWeight: 700, color: p.vencido ? C.red : C.ink, minWidth: 80, textAlign: "right" }}>{p.objetivo ? fechaCorta(p.objetivo) : "—"}</div>
             </div>
@@ -298,6 +299,7 @@ export function BloqueDisenoSinCapsula({ db, currentUser }) {
         </div>
         <button onClick={exportar} disabled={!filas.length} style={{ ...BOTON, marginLeft: "auto", opacity: filas.length ? 1 : 0.5, cursor: filas.length ? "pointer" : "default" }}>📥 Excel</button>
       </div>
+      {onAbrir && puedeAbrir && !puedeAbrir.proto && <div style={{ fontSize: 12, color: C.amber, fontWeight: 700, marginBottom: 10 }}>Sin acceso a Diseño: desde aquí no se pueden abrir los prototipos.</div>}
       {sel.length > 0 && (
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", padding: "9px 12px", borderRadius: 10, background: C.blueBg, color: C.blue, fontWeight: 700, fontSize: 12.5, marginBottom: 10 }}>
           <span>{sel.length} seleccionado{sel.length === 1 ? "" : "s"}</span>

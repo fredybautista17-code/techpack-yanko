@@ -21289,6 +21289,52 @@ function AppInner() {
   // el flujo de diseño/aprobación.
   const canAccessPedidosArea = canAccessPedidos || canAccessPedidosClientes || canAccessPreordenes || canAccessExplosionMateriales || canAccessLotesPorIntegrar || canAccessCorte || canAccessProduccion || canAccessDevoluciones || !!currentUser?.isAdmin;
   const [moduloActivo, setModuloActivo] = useState("diseno");
+  // Navegación con «origen» (2026-11-13, a pedido de Fredy): al abrir un prototipo/referencia/cronograma desde una tarjeta de Mi Día (o un
+  // prototipo desde el Cronograma de Muestras), «← Volver» y el botón «atrás» del navegador regresan a ese origen y no al listado por defecto.
+  // origenNav = null | {tipo: "mi_dia", tab} | {tipo: "cronograma"}. Solo estos recorridos empujan historial; el resto de la app no cambia.
+  const [origenNav, setOrigenNav] = useState(null);
+  const [miDiaTab, setMiDiaTab] = useState(null);
+  const origenNavRef = useRef(null);
+  origenNavRef.current = origenNav;
+  const empujoHistorial = useRef(false);
+  function empujarHistorial() {
+    try { window.history.pushState({ atlasOrigen: true }, ""); empujoHistorial.current = true; } catch (e) { empujoHistorial.current = false; }
+  }
+  function irAlOrigen(origen) {
+    if (!origen) return;
+    setOrigenNav(null);
+    if (origen.tipo === "mi_dia") { setMiDiaTab(origen.tab || null); setModuloActivo("mi_dia"); }
+    else if (origen.tipo === "cronograma") { setView("cronograma_muestras"); }
+  }
+  function volverAlOrigen(vistaPorDefecto) {
+    if (origenNav && empujoHistorial.current) { window.history.back(); return; } // el listener de popstate hace el regreso
+    if (origenNav) { irAlOrigen(origenNav); return; }
+    setView(vistaPorDefecto);
+  }
+  function abrirDesdeMiDia(it, tab) {
+    let ok = false;
+    if (it.kind === "proto") {
+      if (protos.some((x) => x.id === it.itemId)) { setSelProtoId(it.itemId); setView("proto-detail"); ok = true; }
+    } else if (it.kind === "ref") {
+      const cap = capsulas.find((c) => c.id === it.capsulaId);
+      if (cap && (cap.referencias || []).some((r) => r.id === it.itemId)) { setSelCapId(it.capsulaId); setSelRefId(it.itemId); setView("ref-detail"); ok = true; }
+    } else { setView("cronograma_muestras"); ok = true; }
+    if (!ok) { notify({ id: uid(), icon: "ℹ", title: "No se encontró", msg: "Ese prototipo o referencia ya no existe (puede estar en la Papelera)." }); return; }
+    setOrigenNav({ tipo: "mi_dia", tab });
+    empujarHistorial();
+    setModuloActivo("diseno");
+  }
+  useEffect(() => {
+    function alAtras() {
+      empujoHistorial.current = false;
+      if (origenNavRef.current) irAlOrigen(origenNavRef.current);
+    }
+    window.addEventListener("popstate", alAtras);
+    return () => window.removeEventListener("popstate", alAtras);
+  }, []); // eslint-disable-line
+  useEffect(() => {
+    if (origenNav && view !== "proto-detail" && view !== "ref-detail" && !(origenNav.tipo === "mi_dia" && view === "cronograma_muestras")) setOrigenNav(null);
+  }, [view]); // eslint-disable-line
   const AREAS = [
     ...(canAccessDiseno
       ? [{
@@ -21473,7 +21519,7 @@ function AppInner() {
     // (2026-10-26, a pedido de Fredy) Con tarjetas marcadas en Usuarios (tarjetasMiDia) se muestra su Mi Día por
     // tarjetas; sin ninguna marcada todo sigue como antes.
     if ((currentUser?.tarjetasMiDia || []).length > 0) {
-      return <MiDiaTarjetasStandalone db={db} currentUser={currentUser} onVolver={onVolverMiDia} onLogout={onLogoutMiDia} />;
+      return <MiDiaTarjetasStandalone db={db} currentUser={currentUser} onVolver={onVolverMiDia} onLogout={onLogoutMiDia} onAbrirItem={abrirDesdeMiDia} tabInicial={miDiaTab} puedeAbrir={{ proto: !!canAccessProtos, ref: !!canAccessCapsulas, cronograma: !!canAccessCronograma }} />;
     }
     if ((currentUser?.procesosPlaneacion || []).length > 0) {
       return <ProgramadorProcesosStandalone currentUser={currentUser} onVolver={onVolverMiDia} onLogout={onLogoutMiDia} />;
@@ -21705,7 +21751,7 @@ function AppInner() {
             )}
             {view === "proto-detail" && selProto && (
               <DetailView item={selProto} kind="proto" onCotizar={canAccessCotizador && !esClienteCot ? abrirCotizadorDesde : undefined} role={role} perms={perms} capsulas={capsulas}
-                onBack={() => setView("protos")}
+                onBack={() => volverAlOrigen("protos")}
                 onUpdateItem={(p) => updateProto(selProto.id, p)}
                 onPromote={(p) => { setPromoteProto(p); setModal("promote"); }}
                 onLogHistorial={logHistorial}
@@ -21716,7 +21762,7 @@ function AppInner() {
             )}
             {view === "ref-detail" && selRef && selCap && (
               <DetailView item={selRef} kind="ref" onCotizar={canAccessCotizador && !esClienteCot ? abrirCotizadorDesde : undefined} role={role} perms={perms} capsulas={capsulas} capsula={selCap} protos={protos}
-                onBack={() => setView("capsulas")}
+                onBack={() => volverAlOrigen("capsulas")}
                 onUpdateItem={(p) => updateRef(selCap.id, selRef.id, p)}
                 onPasarAPreorden={(ref) => pasarAPreorden(selCap, ref)}
                 onLogHistorial={logHistorial}
@@ -21840,8 +21886,8 @@ function AppInner() {
                 onAdd={addCronogramaMuestra} onUpdate={updateCronogramaMuestra} onDelete={deleteCronogramaMuestra}
                 onModificarNota={addObservacionCronograma}
                 onGoToItem={(entry) => {
-                  if (entry.kind === "proto") { setSelProtoId(entry.itemId); setView("proto-detail"); }
-                  else if (entry.kind === "ref") { setSelCapId(entry.capsulaId); setSelRefId(entry.itemId); setView("ref-detail"); }
+                  if (entry.kind === "proto") { setOrigenNav({ tipo: "cronograma" }); empujarHistorial(); setSelProtoId(entry.itemId); setView("proto-detail"); }
+                  else if (entry.kind === "ref") { setOrigenNav({ tipo: "cronograma" }); empujarHistorial(); setSelCapId(entry.capsulaId); setSelRefId(entry.itemId); setView("ref-detail"); }
                 }}
               />
             )}
