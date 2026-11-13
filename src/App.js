@@ -849,6 +849,9 @@ const ESTADO_MUESTRA = {
   aprobado: { label: "Aprobado", color: T.jade, bg: T.jadeBg },
   modificar: { label: "Modificar", color: T.coral, bg: T.coralBg },
   enviado: { label: "Enviado", color: "#0369A1", bg: "#EFF6FF" },
+  // «Terminada» (2026-11-13, a pedido de Fredy): se cierra a mano una muestra que ya cumplió su ciclo (por ejemplo la referencia ya se despachó);
+  // sale del cronograma activo, de las vencidas, de la carga por taller y del aviso de planta sin trabajo, y pasa al historial.
+  terminada: { label: "Terminada", color: T.slate, bg: "#EDEDF2" },
 };
 // La lista de prioridades (Media, Urgente, etc.) ahora vive en
 // config.prioridadesMuestra — editable en Administrador General, igual que
@@ -2563,7 +2566,7 @@ function EnviarTallerModal({ item, existing, ultimoTaller, config, cronogramaMue
       </div>
       <Field label="Estado (Aprobada / Modificar se decide en la Revisión de diseño)">
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {Object.entries(ESTADO_MUESTRA).filter(([v]) => v === form.estado || (v !== "aprobado" && v !== "modificar")).map(([v, def]) => (
+          {Object.entries(ESTADO_MUESTRA).filter(([v]) => v === form.estado || (v !== "aprobado" && v !== "modificar" && v !== "terminada")).map(([v, def]) => (
             <button key={v} type="button" onClick={() => set("estado")(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${form.estado === v ? def.color : T.border}`, background: form.estado === v ? def.bg : T.white, color: form.estado === v ? def.color : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{def.label}</button>
           ))}
         </div>
@@ -2891,7 +2894,7 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
       patch({ observations: [...item.observations, obs] });
       setTab("chat");
     }
-    if (tallerMasReciente && tallerMasReciente.estado !== "enviado") {
+    if (tallerMasReciente && !["enviado", "terminada"].includes(tallerMasReciente.estado)) {
       onUpdateTaller(tallerMasReciente.id, data);
       return;
     }
@@ -2929,12 +2932,21 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
     if (iCorte >= 0 && stageIdx <= iCorte && iNext > iCorte && !tallerMasReciente) {
       return "Falta marcar «Enviado a Taller de Muestra»: elige el taller con el botón «🧵 Enviar a Taller de Muestra» antes de pasar de Corte a Confección.";
     }
-    if (iCot >= 0 && stageIdx < iCot && iNext >= iCot && tallerMasReciente && !["aprobado", "enviado"].includes(tallerMasReciente.estado)) {
+    if (iCot >= 0 && stageIdx < iCot && iNext >= iCot && tallerMasReciente && !["aprobado", "enviado", "terminada"].includes(tallerMasReciente.estado)) {
       return tallerMasReciente.estado === "modificar"
         ? "La muestra se devolvió al taller para modificar. Cuando vuelva, hay que repetir la Revisión de diseño y dejarla aprobada."
         : "La muestra del taller falta por Revisión de diseño. Usa el botón «🔍 Revisión de diseño» (checklist) y apruébala para poder avanzar.";
     }
     return "";
+  }
+  const ultimaRevAprobada = (e) => { const r = e?.revisiones || []; return r.length > 0 && r[r.length - 1].resultado === "aprobada"; };
+  // Una muestra de PROTOTIPO solo se cierra como terminada si ya pasó la Revisión de diseño (o si lo hace un administrador).
+  const puedeCerrarMuestra = canEdit && (kind !== "proto" || ultimaRevAprobada(tallerMasReciente) || canAdmin);
+  function cerrarMuestraTerminada() {
+    if (!tallerMasReciente || !puedeCerrarMuestra) return;
+    if (!window.confirm("¿Marcar esta muestra como terminada? Sale del cronograma activo y pasa al historial.")) return;
+    onUpdateTaller(tallerMasReciente.id, { estado: "terminada", fechaTerminada: today(), cerradaPor: currentUser || "" });
+    patch({ observations: [...item.observations, { id: uid(), user: currentUser, role, text: `✓ Muestra terminada (taller ${tallerMasReciente.taller || "—"}).`, date: nowISO(), type: "info", done: false }] });
   }
   function marcarRecibidaTaller() {
     if (!tallerMasReciente) return;
@@ -2998,7 +3010,7 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
       {showEdit && kind === "proto" && <EditProtoModal proto={item} protos={protos} capsulas={capsulas} config={config} onSave={(p) => onUpdateItem(p)} onClose={() => setShowEdit(false)} />}
       {showEdit && kind === "ref" && <EditRefModal refData={item} config={config} protos={protos} onSave={(p) => onUpdateItem(p)} onClose={() => setShowEdit(false)} />}
       {showEnviado && <EnviadoModal onSave={handleEnviado} onClose={() => setShowEnviado(false)} />}
-      {showTaller && <EnviarTallerModal item={item} existing={tallerMasReciente?.estado !== "enviado" ? tallerMasReciente : null} ultimoTaller={tallerMasReciente} config={config} cronogramaMuestras={cronogramaMuestras} onSave={handleGuardarTaller} onClose={() => setShowTaller(false)} />}
+      {showTaller && <EnviarTallerModal item={item} existing={!["enviado", "terminada"].includes(tallerMasReciente?.estado) ? tallerMasReciente : null} ultimoTaller={tallerMasReciente} config={config} cronogramaMuestras={cronogramaMuestras} onSave={handleGuardarTaller} onClose={() => setShowTaller(false)} />}
       {showRevisarTaller && tallerMasReciente && <RevisionDisenoModal nombre={`${item.name} — ${item.reference}`} taller={tallerMasReciente.taller} onSave={guardarRevisionTaller} onClose={() => setShowRevisarTaller(false)} />}
       {showRevision && <NotaRevisionModal onSave={handleMarcarRevision} onClose={() => setShowRevision(false)} />}
       {showPrecioCotizacion && <PrecioCotizacionModal item={item} onSave={(precio) => { patch({ precioCotizacion: precio }); setShowPrecioCotizacion(false); }} onClose={() => setShowPrecioCotizacion(false)} />}
@@ -3127,7 +3139,7 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
                 {canEdit && <Btn variant="ghost" onClick={() => onUpdateItem({ enviadoAPreorden: null })}>↺ Deshacer</Btn>}
               </>
             )}
-            {canEdit && <Btn variant="ghost" onClick={() => setShowTaller(true)}>🧵 {tallerMasReciente && tallerMasReciente.estado !== "enviado" ? "Actualizar Taller de Muestra" : "Enviar a Taller de Muestra"}</Btn>}
+            {canEdit && <Btn variant="ghost" onClick={() => setShowTaller(true)}>🧵 {tallerMasReciente && !["enviado", "terminada"].includes(tallerMasReciente.estado) ? "Actualizar Taller de Muestra" : "Enviar a Taller de Muestra"}</Btn>}
           </div>
           {kind === "proto" && item.promoTela && (
             <div style={{ marginTop: 10, padding: "10px 14px", background: T.violetBg, borderRadius: 8, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
@@ -3151,10 +3163,11 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
               <span style={{ fontSize: 12, color: T.slate }}>Taller: <strong style={{ color: T.ink }}>{tallerMasReciente.taller}</strong></span>
               {tallerMasReciente.fechaEntrega && <span style={{ fontSize: 12, color: T.slate }}>Entrega: <strong style={{ color: T.ink }}>{tallerMasReciente.fechaEntrega}</strong></span>}
               {tallerMasReciente.revisiones?.length > 0 && (() => { const ur = tallerMasReciente.revisiones[tallerMasReciente.revisiones.length - 1]; return <span style={{ fontSize: 11, color: T.slate }}>Última revisión: {String(ur.fecha).slice(0, 10)}{ur.por ? ` · ${ur.por}` : ""}</span>; })()}
-              {tallerMasReciente.estado !== "enviado" && canEdit && (
+              {!["enviado", "terminada"].includes(tallerMasReciente.estado) && canEdit && (
                 <div style={{ display: "flex", gap: 6, marginLeft: "auto", flexWrap: "wrap" }}>
                   {["pendiente", "asignado"].includes(tallerMasReciente.estado) && <button onClick={marcarRecibidaTaller} style={{ padding: "4px 10px", background: T.violet, color: T.white, border: "none", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>📥 Recibida del taller</button>}
                   {puedeRevisarDiseno && ["pendiente", "asignado", "recibida"].includes(tallerMasReciente.estado) && <button onClick={() => setShowRevisarTaller(true)} style={{ padding: "4px 10px", background: T.jade, color: T.white, border: "none", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>🔍 Revisión de diseño</button>}
+                  {puedeCerrarMuestra && ["pendiente", "asignado", "recibida", "modificar"].includes(tallerMasReciente.estado) && <button onClick={cerrarMuestraTerminada} style={{ padding: "4px 10px", background: T.white, color: T.ink, border: `1.5px solid ${T.border}`, borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>✓ Muestra terminada</button>}
                 </div>
               )}
             </div>
@@ -3939,6 +3952,55 @@ function NuevoCronogramaLibreModal({ config, onSave, onClose }) {
     </Modal>
   );
 }
+// Cierre en bloque de muestras «terminadas» (2026-11-13): lista las que siguen Sin asignar / En taller y deja marcar las que ya cumplieron su ciclo
+// (por ejemplo la referencia ya se despachó). Las de PROTOTIPO solo se cierran si ya pasaron la Revisión de diseño (o si lo hace un administrador).
+function CerrarMuestrasModal({ muestras, isAdmin, usuario, onUpdate, onClose }) {
+  const hoy = today();
+  const candidatas = muestras.filter((c) => ["pendiente", "asignado"].includes(c.estado || "pendiente")).sort((a, b) => (a.fechaEntrega || "9999").localeCompare(b.fechaEntrega || "9999"));
+  const puede = (c) => c.kind !== "proto" || ((c.revisiones || []).slice(-1)[0]?.resultado === "aprobada") || isAdmin;
+  const vencida = (c) => !!c.fechaEntrega && c.fechaEntrega < hoy;
+  const [sel, setSel] = useState([]);
+  const [guardando, setGuardando] = useState(false);
+  const toggle = (id) => setSel((x) => (x.includes(id) ? x.filter((i) => i !== id) : [...x, id]));
+  async function cerrar() {
+    setGuardando(true);
+    for (const id of sel) {
+      // eslint-disable-next-line no-await-in-loop
+      await onUpdate(id, { estado: "terminada", fechaTerminada: hoy, cerradaPor: usuario || "" });
+    }
+    setGuardando(false);
+    onClose();
+  }
+  return (
+    <Modal title="🧹 Cerrar muestras terminadas" onClose={onClose} width={760}>
+      <div style={{ fontSize: 13, color: T.slate, marginBottom: 12, lineHeight: 1.5 }}>Marca las muestras que ya cumplieron su ciclo (por ejemplo, la referencia ya se despachó). Salen del cronograma activo, de las entregas vencidas y del aviso de planta sin trabajo, y pasan al historial.</div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+        <Btn small variant="secondary" onClick={() => setSel(candidatas.filter((c) => vencida(c) && puede(c)).map((c) => c.id))}>Marcar las vencidas ({candidatas.filter((c) => vencida(c) && puede(c)).length})</Btn>
+        <Btn small variant="secondary" onClick={() => setSel([])}>Quitar selección</Btn>
+      </div>
+      <div style={{ maxHeight: "50vh", overflow: "auto", border: `1px solid ${T.border}`, borderRadius: 10 }}>
+        {!candidatas.length && <div style={{ padding: 24, textAlign: "center", color: T.slate, fontSize: 13 }}>No hay muestras abiertas. ✅</div>}
+        {candidatas.map((c) => {
+          const ok = puede(c);
+          return (
+            <label key={c.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderBottom: `1px solid ${T.border}`, opacity: ok ? 1 : 0.5, cursor: ok ? "pointer" : "not-allowed" }}>
+              <input type="checkbox" disabled={!ok} checked={sel.includes(c.id)} onChange={() => toggle(c.id)} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: T.ink }}>{c.referencia || "—"} <span style={{ fontWeight: 500, color: T.slate }}>{c.nombre}</span></div>
+                <div style={{ fontSize: 11, color: T.slate }}>{c.taller || "Sin taller"}{c.cliente ? ` · ${c.cliente}` : ""}{!ok ? " · primero necesita la revisión de diseño" : ""}</div>
+              </div>
+              <span style={{ fontSize: 12, fontWeight: 700, color: vencida(c) ? T.coral : T.slate }}>{c.fechaEntrega ? `Entrega ${c.fechaEntrega}${vencida(c) ? " · vencida" : ""}` : "Sin fecha"}</span>
+            </label>
+          );
+        })}
+      </div>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 14 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={cerrar} disabled={!sel.length || guardando}>{guardando ? "Cerrando…" : `✓ Cerrar ${sel.length} muestra${sel.length === 1 ? "" : "s"} como terminada${sel.length === 1 ? "" : "s"}`}</Btn>
+      </div>
+    </Modal>
+  );
+}
 // Detalle/edición rápida de una entrada del Cronograma de Muestras: cambiar
 // taller/fecha/prioridad, marcar Aprobado/Modificar, ir al prototipo o
 // referencia vinculado (si lo tiene), o borrarla (solo administrador).
@@ -3947,6 +4009,7 @@ function CronogramaDetalleModal({ entry, config, isAdmin, usuario, puedeRevisar,
   const [form, setForm] = useState({ taller: entry.taller || "", fechaEntrega: entry.fechaEntrega || "", prioridad: entry.prioridad || "Media", estado: entry.estado || "pendiente", notaModificar: entry.notaModificar || "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   const est = ESTADO_MUESTRA[entry.estado] || ESTADO_MUESTRA.pendiente;
+  const puedeCerrar = entry.kind !== "proto" || ((entry.revisiones || []).slice(-1)[0]?.resultado === "aprobada") || isAdmin;
   // Igual que en "Enviar a Taller": si elige "Modificar" tiene que escribir
   // qué sucedió — y si esta entrada está vinculada a un prototipo/referencia,
   // esa nota también queda como Observación ahí (onModificarNota).
@@ -3972,10 +4035,10 @@ function CronogramaDetalleModal({ entry, config, isAdmin, usuario, puedeRevisar,
         </Field>
         <Field label="Prioridad"><FSel value={form.prioridad} onChange={set("prioridad")} options={config?.prioridadesMuestra || []} /></Field>
       </div>
-      {entry.estado !== "enviado" && (
+      {!["enviado", "terminada"].includes(entry.estado) && (
         <Field label="Estado (Aprobada / Modificar se decide en la Revisión de diseño)">
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            {Object.entries(ESTADO_MUESTRA).filter(([v]) => v === form.estado || (v !== "aprobado" && v !== "modificar")).map(([v, def]) => (
+            {Object.entries(ESTADO_MUESTRA).filter(([v]) => v === form.estado || (v !== "aprobado" && v !== "modificar" && v !== "terminada")).map(([v, def]) => (
               <button key={v} type="button" onClick={() => set("estado")(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${form.estado === v ? def.color : T.border}`, background: form.estado === v ? def.bg : T.white, color: form.estado === v ? def.color : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{def.label}</button>
             ))}
           </div>
@@ -3986,10 +4049,11 @@ function CronogramaDetalleModal({ entry, config, isAdmin, usuario, puedeRevisar,
           <textarea value={form.notaModificar} onChange={(e) => set("notaModificar")(e.target.value)} rows={3} placeholder="Escribe el detalle de la modificación..." style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.coral}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit", resize: "vertical" }} />
         </Field>
       )}
-      {["pendiente", "asignado", "recibida"].includes(entry.estado) && (
-        <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
-          {entry.estado !== "recibida" && <Btn variant="ghost" small onClick={() => { onUpdate(entry.id, { estado: "recibida", fechaRecibida: entry.fechaRecibida || today() }); onClose(); }}>📥 Marcar recibida del taller</Btn>}
-          {puedeRevisar ? <Btn small onClick={() => setRevisando(true)}>🔍 Revisión de diseño</Btn> : <span style={{ fontSize: 11, color: T.slate }}>La revisión de diseño la hace quien tenga el rol de revisión (Dayana / Juliana).</span>}
+      {["pendiente", "asignado", "recibida", "modificar"].includes(entry.estado) && (
+        <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
+          {["pendiente", "asignado"].includes(entry.estado) && <Btn variant="ghost" small onClick={() => { onUpdate(entry.id, { estado: "recibida", fechaRecibida: entry.fechaRecibida || today() }); onClose(); }}>📥 Marcar recibida del taller</Btn>}
+          {entry.estado !== "modificar" && (puedeRevisar ? <Btn small onClick={() => setRevisando(true)}>🔍 Revisión de diseño</Btn> : <span style={{ fontSize: 11, color: T.slate }}>La revisión de diseño la hace quien tenga el rol de revisión (Dayana / Juliana).</span>)}
+          {puedeCerrar && <Btn variant="ghost" small onClick={() => { if (window.confirm("¿Marcar esta muestra como terminada? Sale del cronograma activo y pasa al historial.")) { onUpdate(entry.id, { estado: "terminada", fechaTerminada: today(), cerradaPor: usuario || "" }); onClose(); } }}>✓ Muestra terminada</Btn>}
         </div>
       )}
       {entry.revisiones?.length > 0 && (() => { const ur = entry.revisiones[entry.revisiones.length - 1]; return <div style={{ fontSize: 11, color: T.slate, marginBottom: 10 }}>Última revisión de diseño: {String(ur.fecha).slice(0, 10)}{ur.por ? ` · ${ur.por}` : ""} — {ur.resultado === "aprobada" ? "Aprobada" : "Modificar"}</div>; })()}
@@ -4023,6 +4087,7 @@ function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, usuarioNo
   const [monthOffset, setMonthOffset] = useState(0);
   const [tab, setTab] = useState("activas");
   const [showNuevo, setShowNuevo] = useState(false);
+  const [showCerrar, setShowCerrar] = useState(false);
   const [detalle, setDetalle] = useState(null);
   const DIA_LABELS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
   function mondayOf(d) {
@@ -4036,14 +4101,14 @@ function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, usuarioNo
   function isoDate(d) { return d.toISOString().slice(0, 10); }
   const hoy = new Date();
   const hoyIso = isoDate(hoy);
-  const visibles = cronogramaMuestras.filter((c) => (tab === "activas" ? c.estado !== "aprobado" : c.estado === "aprobado"));
+  const visibles = cronogramaMuestras.filter((c) => (tab === "activas" ? !["aprobado", "terminada"].includes(c.estado) : ["aprobado", "terminada"].includes(c.estado)));
   function itemsForDay(ds) { return visibles.filter((c) => c.fechaEntrega === ds).sort((a, b) => (a.prioridad || "").localeCompare(b.prioridad || "")); }
   const sinFecha = visibles.filter((c) => !c.fechaEntrega);
   // Cuántas muestras tiene cada taller en este momento (ni aprobadas ni ya
   // enviadas al cliente) — para ver de un vistazo qué taller está saturado
   // antes de mandarle una muestra nueva.
   const cargaPorTaller = (() => {
-    const activos = cronogramaMuestras.filter((c) => c.estado !== "aprobado" && c.estado !== "enviado");
+    const activos = cronogramaMuestras.filter((c) => c.estado !== "aprobado" && c.estado !== "enviado" && c.estado !== "terminada");
     const mapa = new Map();
     activos.forEach((c) => {
       const t = c.taller || "(Sin taller)";
@@ -4093,7 +4158,7 @@ function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, usuarioNo
   // de esa columna, sin importar fecha ni la pestaña Activas/Aprobadas
   // (por eso esa pestaña se oculta mientras esta vista está activa).
   function renderTablero() {
-    const cols = Object.entries(ESTADO_MUESTRA);
+    const cols = Object.entries(ESTADO_MUESTRA).filter(([k]) => k !== "terminada");
     return (
       <div style={{ display: "grid", gridTemplateColumns: `repeat(${cols.length},1fr)`, gap: 12, alignItems: "start" }}>
         {cols.map(([estKey, def]) => {
@@ -4125,6 +4190,7 @@ function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, usuarioNo
     : mesBase.toLocaleDateString("es-CO", { month: "long", year: "numeric" });
   return (
     <div>
+      {showCerrar && <CerrarMuestrasModal muestras={cronogramaMuestras} isAdmin={isAdmin} usuario={usuarioNombre} onUpdate={onUpdate} onClose={() => setShowCerrar(false)} />}
       {showNuevo && <NuevoCronogramaLibreModal config={config} onSave={onAdd} onClose={() => setShowNuevo(false)} />}
       {detalle && <CronogramaDetalleModal entry={detalle} config={config} isAdmin={isAdmin} usuario={usuarioNombre} puedeRevisar={puedeRevisar} onUpdate={onUpdate} onDelete={onDelete} onGoToItem={onGoToItem} onModificarNota={onModificarNota} onClose={() => setDetalle(null)} />}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
@@ -4132,7 +4198,10 @@ function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, usuarioNo
           <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Cronograma de Muestras</h2>
           <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Prototipos y referencias enviados a taller de muestra</p>
         </div>
-        <Btn onClick={() => setShowNuevo(true)}>🧵 + Agregar al Cronograma</Btn>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <Btn variant="secondary" onClick={() => setShowCerrar(true)}>🧹 Cerrar muestras terminadas</Btn>
+          <Btn onClick={() => setShowNuevo(true)}>🧵 + Agregar al Cronograma</Btn>
+        </div>
       </div>
       {cargaPorTaller.length > 0 && (
         <div style={{ marginBottom: 16, padding: "12px 16px", background: T.white, borderRadius: 12, border: `1px solid ${T.border}` }}>
@@ -4149,7 +4218,7 @@ function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, usuarioNo
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
         {vista !== "tablero" && vista !== "talleres" ? (
           <div style={{ display: "flex", gap: 6 }}>
-            {[["activas", "Activas"], ["aprobadas", "✓ Aprobadas (Historial)"]].map(([v, label]) => (
+            {[["activas", "Activas"], ["aprobadas", "✓ Aprobadas y terminadas (Historial)"]].map(([v, label]) => (
               <button key={v} onClick={() => setTab(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${tab === v ? T.denim : T.border}`, background: tab === v ? T.denimBg : T.white, color: tab === v ? T.denim : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{label}</button>
             ))}
           </div>
@@ -20778,7 +20847,7 @@ function AppInner() {
   // "enviado") se actualiza sola — sin tener que ir a cambiarla a mano en
   // las dos pantallas.
   function syncCronogramaEnviado(itemId) {
-    const activa = cronogramaMuestras.find((c) => c.itemId === itemId && c.estado !== "enviado");
+    const activa = cronogramaMuestras.find((c) => c.itemId === itemId && c.estado !== "enviado" && c.estado !== "terminada");
     if (activa) updateCronogramaMuestra(activa.id, { estado: "enviado" });
   }
   // Cuando desde el Cronograma (no desde el detalle del prototipo/capsula)
