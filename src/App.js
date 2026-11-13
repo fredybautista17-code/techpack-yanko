@@ -845,6 +845,7 @@ const STATUS = {
 const ESTADO_MUESTRA = {
   pendiente: { label: "Sin asignar", color: T.slate, bg: "#EDEDF2" },
   asignado: { label: "Asignado", color: T.amber, bg: T.amberBg },
+  recibida: { label: "Recibida · por revisar", color: T.violet, bg: T.violetBg },
   aprobado: { label: "Aprobado", color: T.jade, bg: T.jadeBg },
   modificar: { label: "Modificar", color: T.coral, bg: T.coralBg },
   enviado: { label: "Enviado", color: "#0369A1", bg: "#EFF6FF" },
@@ -2283,12 +2284,171 @@ function NuevoEnvioModal({ items, config, onSave, onClose }) {
     </Modal>
   );
 }
-function PromoteModal({ proto, capsulas, onSave, onClose, config }) {
+// Estado de la tela de un prototipo promovido «para programación de tela»
+// (a pedido de Fredy, 2026-11-13): a veces la tela se programa en otro país y
+// el prototipo no va todavía a una cápsula. Cuando la tela «llegó», el
+// prototipo vuelve a quedar sin promover ("listo para cápsula").
+const TELA_ESTADOS = {
+  por_programar: { label: "Por programar", color: T.amber, bg: T.amberBg },
+  programada: { label: "Programada", color: T.denim, bg: T.denimBg },
+  en_camino: { label: "Tela en camino", color: T.violet, bg: T.violetBg },
+  llego: { label: "Llegó", color: T.jade, bg: T.jadeBg },
+};
+// REVISIÓN DE DISEÑO de la muestra que vuelve de un taller (a pedido de
+// Fredy, 2026-11-13): checklist + Aprobada/Modificar, guardada por taller en
+// cronograma_muestras.revisiones — de ahí sale la ficha de talleres.
+const CHECKLIST_REVISION = ["Medidas y tallas", "Tela, color y caída", "Costuras y acabados", "Bordado, estampado y detalles", "Ajuste y patrón", "Etiquetas y empaque"];
+function armarPatchRevision(entry, rev, usuario) {
+  const aprobada = rev.resultado === "aprobada";
+  const registro = { id: uid(), fecha: nowISO(), por: usuario || "", resultado: rev.resultado, checklist: rev.checklist, nota: rev.nota || "", taller: entry.taller || "" };
+  return {
+    estado: aprobada ? "aprobado" : "modificar",
+    notaModificar: aprobada ? (entry.notaModificar || "") : rev.nota,
+    fechaRecibida: entry.fechaRecibida || today(),
+    fechaRevision: today(),
+    revisiones: [...(entry.revisiones || []), registro],
+  };
+}
+function textoRevision(rev, taller) {
+  const malos = (rev.checklist || []).filter((x) => !x.ok).map((x) => x.punto);
+  if (rev.resultado === "aprobada") return `🔍 Revisión de diseño (${taller || "taller"}): muestra APROBADA.${rev.nota ? ` Nota: ${rev.nota}` : ""}`;
+  return `🔍 Revisión de diseño (${taller || "taller"}): MODIFICAR — ${rev.nota}${malos.length ? ` · Corregir: ${malos.join(", ")}.` : ""}`;
+}
+function RevisionDisenoModal({ nombre, taller, onSave, onClose }) {
+  const [marcas, setMarcas] = useState({});
+  const [nota, setNota] = useState("");
+  const completo = CHECKLIST_REVISION.every((pt) => marcas[pt] === 1 || marcas[pt] === 0);
+  const hayCorregir = CHECKLIST_REVISION.some((pt) => marcas[pt] === 0);
+  function guardar(resultado) {
+    if (!completo) return;
+    if (resultado === "aprobada" && hayCorregir) return;
+    if (resultado === "modificar" && !nota.trim()) return;
+    onSave({ resultado, nota: nota.trim(), checklist: CHECKLIST_REVISION.map((pt) => ({ punto: pt, ok: marcas[pt] === 1 })) });
+    onClose();
+  }
+  const bt = (activo, color, bg) => ({ padding: "5px 12px", borderRadius: 6, border: `1.5px solid ${activo ? color : T.border}`, background: activo ? bg : T.white, color: activo ? color : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" });
+  return (
+    <Modal title="🔍 Revisión de diseño" onClose={onClose} width={520}>
+      <div style={{ padding: "10px 14px", background: T.denimBg, borderRadius: 8, marginBottom: 16, fontSize: 13, color: T.denim, fontWeight: 600 }}>🧵 {nombre}{taller ? ` — taller: ${taller}` : ""}</div>
+      <div style={{ fontSize: 12, color: T.slate, marginBottom: 10 }}>Marca cada punto como <strong>Bien</strong> o <strong>Corregir</strong>. Lo que quede en «Corregir» alimenta la ficha del taller.</div>
+      {CHECKLIST_REVISION.map((pt) => (
+        <div key={pt} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "7px 0", borderBottom: `1px solid ${T.border}` }}>
+          <span style={{ fontSize: 13, color: T.ink }}>{pt}</span>
+          <span style={{ display: "flex", gap: 6 }}>
+            <button type="button" onClick={() => setMarcas((m) => ({ ...m, [pt]: 1 }))} style={bt(marcas[pt] === 1, T.jade, T.jadeBg)}>✓ Bien</button>
+            <button type="button" onClick={() => setMarcas((m) => ({ ...m, [pt]: 0 }))} style={bt(marcas[pt] === 0, T.coral, T.coralBg)}>✗ Corregir</button>
+          </span>
+        </div>
+      ))}
+      <div style={{ marginTop: 14 }}>
+        <Field label={hayCorregir ? "¿Qué hay que cambiar? (obligatorio para devolverla al taller)" : "Nota para el taller (opcional si la aprueba)"}>
+          <textarea value={nota} onChange={(e) => setNota(e.target.value)} rows={3} placeholder="Ej: el bordado quedó 1 cm abajo del patrón; la costura del hombro se frunce..." style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${hayCorregir ? T.coral : T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit", resize: "vertical", boxSizing: "border-box" }} />
+        </Field>
+      </div>
+      {!completo && <div style={{ fontSize: 12, color: T.amber, fontWeight: 600, marginBottom: 8 }}>Marca los {CHECKLIST_REVISION.length} puntos para poder guardar.</div>}
+      {completo && hayCorregir && <div style={{ fontSize: 12, color: T.coral, fontWeight: 600, marginBottom: 8 }}>Hay puntos por corregir: solo se puede devolver al taller (Modificar).</div>}
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8, flexWrap: "wrap" }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn variant="danger" onClick={() => guardar("modificar")} disabled={!completo || !nota.trim()}>↩ Modificar (vuelve al taller)</Btn>
+        <Btn variant="success" onClick={() => guardar("aprobada")} disabled={!completo || hayCorregir}>✓ Aprobada</Btn>
+      </div>
+    </Modal>
+  );
+}
+// Ficha de cada taller de muestra, calculada con las revisiones de diseño.
+function calcularFichaTalleres(entries) {
+  const mapa = {};
+  (entries || []).forEach((c) => {
+    const revs = c.revisiones || [];
+    if (!revs.length || !c.taller) return;
+    const f = mapa[c.taller] || (mapa[c.taller] = { taller: c.taller, muestras: 0, revisiones: 0, primera: 0, dias: [], fallas: {}, porCat: {} });
+    f.muestras += 1;
+    f.revisiones += revs.length;
+    const okPrimera = revs[0].resultado === "aprobada";
+    if (okPrimera) f.primera += 1;
+    revs.forEach((r) => (r.checklist || []).forEach((x) => { if (!x.ok) f.fallas[x.punto] = (f.fallas[x.punto] || 0) + 1; }));
+    if (c.fechaRecibida && c.createdAt) {
+      const d = Math.round((new Date(c.fechaRecibida + "T00:00:00") - new Date(c.createdAt + "T00:00:00")) / 86400000);
+      if (d >= 0) f.dias.push(d);
+    }
+    const cat = c.categoria || "Sin categoría";
+    const pc = f.porCat[cat] || (f.porCat[cat] = { n: 0, ok: 0 });
+    pc.n += 1;
+    if (okPrimera) pc.ok += 1;
+  });
+  return Object.values(mapa).map((f) => ({
+    ...f,
+    pct: Math.round((f.primera / f.muestras) * 100),
+    diasProm: f.dias.length ? f.dias.reduce((a, b) => a + b, 0) / f.dias.length : null,
+    fallasTop: Object.entries(f.fallas).sort((a, b) => b[1] - a[1]).slice(0, 3).map((x) => x[0]),
+    mejorEn: Object.entries(f.porCat).filter(([, v]) => v.n >= 2 && v.ok / v.n >= 0.6).sort((a, b) => b[1].ok / b[1].n - a[1].ok / a[1].n).slice(0, 2).map((x) => x[0]),
+  })).sort((a, b) => b.pct - a.pct || (a.diasProm ?? 99) - (b.diasProm ?? 99));
+}
+function sugerirTaller(fichas, categoria) {
+  let mejor = null;
+  fichas.forEach((f) => {
+    const pc = categoria ? f.porCat[categoria] : null;
+    const usaCat = pc && pc.n >= 2;
+    if (!usaCat && f.muestras < 3) return;
+    const pct = usaCat ? Math.round((pc.ok / pc.n) * 100) : f.pct;
+    const n = usaCat ? pc.n : f.muestras;
+    if (!mejor || pct > mejor.pct) mejor = { taller: f.taller, pct, n, porCategoria: !!usaCat };
+  });
+  return mejor;
+}
+function FichaTalleresView({ cronogramaMuestras }) {
+  const fichas = calcularFichaTalleres(cronogramaMuestras);
+  const mejor = fichas.find((f) => f.muestras >= 3);
+  if (!fichas.length) {
+    return <div style={{ textAlign: "center", padding: 40, color: T.slate, fontSize: 14 }}>Todavía no hay revisiones de diseño. Cada vez que Diseño revise una muestra que vuelve del taller, aquí se arma la ficha de cada taller.</div>;
+  }
+  return (
+    <div>
+      <div style={{ fontSize: 13, color: T.slate, marginBottom: 12 }}>Datos sacados de las revisiones de diseño: sirven para decidir a qué taller enviar cada prototipo.</div>
+      <div style={{ overflowX: "auto", border: `1px solid ${T.border}`, borderRadius: 10, background: T.white }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <thead>
+            <tr style={{ background: T.canvas }}>
+              {["Taller", "Muestras revisadas", "Aprobadas a la primera", "Días de entrega (prom.)", "Lo que más hay que corregir"].map((h) => (
+                <th key={h} style={{ textAlign: "left", padding: "8px 12px", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.04em", color: T.slate, borderBottom: `1px solid ${T.border}` }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {fichas.map((f) => (
+              <tr key={f.taller}>
+                <td style={{ padding: "9px 12px", borderBottom: `1px solid ${T.border}` }}>
+                  <strong>{f.taller}</strong> {mejor && mejor.taller === f.taller && <span style={{ padding: "2px 8px", borderRadius: 10, background: T.jadeBg, color: T.jade, fontSize: 11, fontWeight: 700 }}>⭐ Mejor resultado</span>}
+                  {f.mejorEn.length > 0 && <div style={{ fontSize: 11, color: T.slate }}>Mejor en: {f.mejorEn.join(", ")}</div>}
+                </td>
+                <td style={{ padding: "9px 12px", borderBottom: `1px solid ${T.border}` }}>{f.muestras}</td>
+                <td style={{ padding: "9px 12px", borderBottom: `1px solid ${T.border}` }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <div style={{ width: 90, height: 7, borderRadius: 5, background: T.border, overflow: "hidden" }}><div style={{ width: `${f.pct}%`, height: "100%", background: f.pct >= 60 ? T.denim : T.coral }} /></div>
+                    <strong>{f.pct}%</strong>
+                  </div>
+                </td>
+                <td style={{ padding: "9px 12px", borderBottom: `1px solid ${T.border}` }}>{f.diasProm == null ? "—" : `${f.diasProm.toFixed(1).replace(".", ",")} días`}</td>
+                <td style={{ padding: "9px 12px", borderBottom: `1px solid ${T.border}` }}>{f.fallasTop.length ? f.fallasTop.map((x) => <span key={x} style={{ display: "inline-block", margin: 1, padding: "2px 8px", borderRadius: 10, background: T.amberBg, color: T.amber, fontSize: 11, fontWeight: 700 }}>{x}</span>) : <span style={{ color: T.slate }}>Nada por ahora</span>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ fontSize: 11, color: T.slate, marginTop: 8 }}>Cuenta cada muestra una vez: «a la primera» es la que se aprobó en su primera revisión. Los días van de la fecha de envío a la fecha de recibida del taller. «Mejor resultado» necesita al menos 3 muestras revisadas.</div>
+    </div>
+  );
+}
+
+function PromoteModal({ proto, capsulas, onSave, onSaveTela, onClose, config }) {
   // Solo se puede promover a una cápsula cuya ilustración/concepto ya haya
   // sido aprobado por la Dirección Creativa (las creadas antes de este
   // control se tratan como aprobadas, ver ilustracionAprobada).
   const capsulasDisponibles = capsulas.filter(ilustracionAprobada);
   const [capId, setCapId] = useState(capsulasDisponibles[0]?.id || "");
+  const [destino, setDestino] = useState("capsula");
+  const [tela, setTela] = useState({ proveedor: "", pais: "", fechaEsperada: "", nota: "" });
+  function saveTela() { if (onSaveTela) onSaveTela(proto.id, tela); onClose(); }
   const [refName, setRefName] = useState(proto.name);
   const [refCode, setRefCode] = useState("");
   const [cliente, setCliente] = useState("");
@@ -2302,7 +2462,13 @@ function PromoteModal({ proto, capsulas, onSave, onClose, config }) {
     onClose();
   }
   return (
-    <Modal title={`Promover "${proto.name}" → Referencia`} onClose={onClose} width={520}>
+    <Modal title={`Promover "${proto.name}"`} onClose={onClose} width={520}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+        {[["capsula", "🗂 Promover para cápsula"], ["tela", "🧵 Promover para programación de tela"]].map(([v, l]) => (
+          <button key={v} type="button" onClick={() => setDestino(v)} style={{ padding: "8px 14px", borderRadius: 8, border: `1.5px solid ${destino === v ? T.ink : T.border}`, background: destino === v ? T.ink : T.white, color: destino === v ? T.white : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{l}</button>
+        ))}
+      </div>
+      {destino === "capsula" && (<>
       <div style={{ padding: "10px 14px", background: T.jadeBg, borderRadius: 8, marginBottom: 20, fontSize: 13, color: T.jade, fontWeight: 600 }}>✓ BOM, POM, Especificaciones, Categoría y Silueta se copiarán automáticamente</div>
       {!capsulasDisponibles.length ? (
         <div style={{ padding: "10px 14px", background: T.coralBg, borderRadius: 8, marginBottom: 20, fontSize: 13, color: T.coral, fontWeight: 600 }}>⚠ No hay cápsulas con ilustración aprobada todavía. Pide a la Dirección Creativa que apruebe una cápsula antes de promover.</div>
@@ -2319,9 +2485,25 @@ function PromoteModal({ proto, capsulas, onSave, onClose, config }) {
         <Field label="Cliente"><FSel value={cliente} onChange={setCliente} options={(config.clientes || []).map((c) => c.nombre)} /></Field>
         <Field label="Rango de Tallas"><FSel value={rangoTallas} onChange={setRangoTallas} options={config.rangos} /></Field>
       </div>
+      </>)}
+      {destino === "tela" && (
+        <>
+          <div style={{ padding: "10px 14px", background: T.violetBg, borderRadius: 8, marginBottom: 16, fontSize: 13, color: T.violet, fontWeight: 600 }}>🧵 Para cuando la tela se programa antes de armar la cápsula (por ejemplo en otro país). Queda marcado con el avance de la tela: Por programar → Programada → Tela en camino → Llegó.</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field label="Proveedor / fábrica de tela"><FInput value={tela.proveedor} onChange={(v) => setTela((t) => ({ ...t, proveedor: v }))} placeholder="Opcional" /></Field>
+            <Field label="País"><FInput value={tela.pais} onChange={(v) => setTela((t) => ({ ...t, pais: v }))} placeholder="Ej: China" /></Field>
+          </div>
+          <Field label="Fecha esperada de la tela">
+            <input type="date" value={tela.fechaEsperada} onChange={(e) => setTela((t) => ({ ...t, fechaEsperada: e.target.value }))} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit", boxSizing: "border-box" }} />
+          </Field>
+          <Field label="Nota"><FInput value={tela.nota} onChange={(v) => setTela((t) => ({ ...t, nota: v }))} placeholder="Opcional" /></Field>
+        </>
+      )}
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
-        <Btn variant="success" onClick={save} disabled={!capsulasDisponibles.length}>⬆ Promover</Btn>
+        {destino === "capsula"
+          ? <Btn variant="success" onClick={save} disabled={!capsulasDisponibles.length}>⬆ Promover a cápsula</Btn>
+          : <Btn variant="success" onClick={saveTela}>🧵 Promover para tela</Btn>}
       </div>
     </Modal>
   );
@@ -2332,7 +2514,8 @@ function PromoteModal({ proto, capsulas, onSave, onClose, config }) {
 // prioridad, tipo (género) y tipo de desarrollo. Si ya existe un registro
 // activo para este ítem (`existing`), edita esos datos en vez de crear uno
 // nuevo.
-function EnviarTallerModal({ item, existing, ultimoTaller, config, onSave, onClose }) {
+function EnviarTallerModal({ item, existing, ultimoTaller, config, cronogramaMuestras, onSave, onClose }) {
+  const sugerido = sugerirTaller(calcularFichaTalleres(cronogramaMuestras), item.categoria);
   // "existing" es null cuando el registro anterior ya quedó en "Enviado"
   // (se va a crear una ronda nueva). Aun así, el Taller/Prioridad/Tipo se
   // rellenan con lo último conocido (ultimoTaller) para no dejar el campo
@@ -2362,6 +2545,12 @@ function EnviarTallerModal({ item, existing, ultimoTaller, config, onSave, onClo
     <Modal title={existing ? "Actualizar Taller de Muestra" : "Enviar a Taller de Muestra"} onClose={onClose} width={480}>
       <div style={{ padding: "10px 14px", background: T.denimBg, borderRadius: 8, marginBottom: 20, fontSize: 13, color: T.denim, fontWeight: 600 }}>🧵 {item.name} — {item.reference}</div>
       <Field label="Taller de Muestra"><FSel value={form.taller} onChange={set("taller")} options={config?.talleresMuestra || []} /></Field>
+      {sugerido && (
+        <div style={{ margin: "-6px 0 14px", padding: "8px 12px", background: T.jadeBg, borderRadius: 8, fontSize: 12, color: T.jade, fontWeight: 600, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <span>⭐ Mejor resultado{sugerido.porCategoria ? ` en ${item.categoria}` : ""}: <strong>{sugerido.taller}</strong> · {sugerido.pct}% aprobadas a la primera ({sugerido.n} muestras)</span>
+          {form.taller !== sugerido.taller && <button type="button" onClick={() => set("taller")(sugerido.taller)} style={{ padding: "3px 10px", borderRadius: 6, border: `1px solid ${T.jade}`, background: T.white, color: T.jade, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Usar</button>}
+        </div>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Fecha de Entrega Esperada">
           <input type="date" value={form.fechaEntrega} onChange={(e) => set("fechaEntrega")(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
@@ -2372,9 +2561,9 @@ function EnviarTallerModal({ item, existing, ultimoTaller, config, onSave, onClo
         <Field label="Tipo"><FSel value={form.tipo} onChange={set("tipo")} options={TIPO_GENERO_MUESTRA} /></Field>
         <Field label="Tipo de Desarrollo"><FSel value={form.tipoDesarrollo} onChange={set("tipoDesarrollo")} options={TIPO_DESARROLLO_MUESTRA} /></Field>
       </div>
-      <Field label="Estado">
+      <Field label="Estado (Aprobada / Modificar se decide en la Revisión de diseño)">
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {Object.entries(ESTADO_MUESTRA).map(([v, def]) => (
+          {Object.entries(ESTADO_MUESTRA).filter(([v]) => v === form.estado || (v !== "aprobado" && v !== "modificar")).map(([v, def]) => (
             <button key={v} type="button" onClick={() => set("estado")(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${form.estado === v ? def.color : T.border}`, background: form.estado === v ? def.bg : T.white, color: form.estado === v ? def.color : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{def.label}</button>
           ))}
         </div>
@@ -2569,6 +2758,7 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
   const [showEdit, setShowEdit] = useState(false);
   const [showEnviado, setShowEnviado] = useState(false);
   const [showTaller, setShowTaller] = useState(false);
+  const [showRevisarTaller, setShowRevisarTaller] = useState(false);
   const [showRevision, setShowRevision] = useState(false);
   const [showPrecioCotizacion, setShowPrecioCotizacion] = useState(false);
   // Registro más reciente de este ítem en el Cronograma de Muestras (si
@@ -2617,6 +2807,8 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
   // barra y la insignia de Estado (arriba a la derecha) cambian juntos, con
   // un solo clic.
   function handleMarcarCotizacion() {
+    const bloqueoCot = mensajeBloqueoEtapa("cotizacion");
+    if (bloqueoCot) { notify({ id: uid(), icon: "⛔", title: "No puede pasar a Cotización", msg: bloqueoCot }); return; }
     const targetIdx = stages.findIndex((s) => s.id === "cotizacion");
     const curIdx = stages.findIndex((s) => s.id === item.currentStage);
     const avanzaEtapa = targetIdx >= 0 && targetIdx > curIdx;
@@ -2719,14 +2911,53 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
     });
   }
   const canAdmin = currentUser?.isAdmin || perms.admin;
+  const puedeRevisarDiseno = canAdmin || perms.revisionDiseno;
   // Igual que canAdminIlustracion en CapsulasView: permiso dedicado para
   // aprobar/devolver ilustración, independiente de "admin", pensado para un
   // rol tipo "Directora Creativa". El dueño del sistema conserva respaldo.
   const canRevisarIlustracion = currentUser?.isAdmin || perms.ilustracion;
+  // Bloqueos de etapa de los prototipos (a pedido de Fredy, 2026-11-13):
+  // (1) de Corte a Confección solo si ya se envió a Taller de Muestra;
+  // (2) a Cotización solo si la muestra del taller ya pasó la Revisión de
+  // diseño y quedó aprobada.
+  function mensajeBloqueoEtapa(nextId) {
+    if (kind !== "proto") return "";
+    const iNext = stages.findIndex((s) => s.id === nextId);
+    const iCorte = stages.findIndex((s) => s.id === "corte");
+    const iCot = stages.findIndex((s) => s.id === "cotizacion");
+    if (iNext < 0) return "";
+    if (iCorte >= 0 && stageIdx <= iCorte && iNext > iCorte && !tallerMasReciente) {
+      return "Falta marcar «Enviado a Taller de Muestra»: elige el taller con el botón «🧵 Enviar a Taller de Muestra» antes de pasar de Corte a Confección.";
+    }
+    if (iCot >= 0 && stageIdx < iCot && iNext >= iCot && tallerMasReciente && !["aprobado", "enviado"].includes(tallerMasReciente.estado)) {
+      return tallerMasReciente.estado === "modificar"
+        ? "La muestra se devolvió al taller para modificar. Cuando vuelva, hay que repetir la Revisión de diseño y dejarla aprobada."
+        : "La muestra del taller falta por Revisión de diseño. Usa el botón «🔍 Revisión de diseño» (checklist) y apruébala para poder avanzar.";
+    }
+    return "";
+  }
+  function marcarRecibidaTaller() {
+    if (!tallerMasReciente) return;
+    onUpdateTaller(tallerMasReciente.id, { estado: "recibida", fechaRecibida: today() });
+    patch({ observations: [...item.observations, { id: uid(), user: currentUser, role, text: `📥 Muestra recibida del taller (${tallerMasReciente.taller}). Pendiente de Revisión de diseño.`, date: nowISO(), type: "info", done: false }] });
+  }
+  function guardarRevisionTaller(rev) {
+    if (!tallerMasReciente) return;
+    onUpdateTaller(tallerMasReciente.id, armarPatchRevision(tallerMasReciente, rev, currentUser));
+    patch({ observations: [...item.observations, { id: uid(), user: currentUser, role, text: textoRevision(rev, tallerMasReciente.taller), date: nowISO(), type: "info", done: false }] });
+    if (rev.resultado === "modificar") setTab("chat");
+  }
+  function cambiarTelaEstado(estado) {
+    const prev = item.promoTela || {};
+    const obs = { id: uid(), user: currentUser, role, text: `🧵 Programación de tela: ${TELA_ESTADOS[estado].label}.`, date: nowISO(), type: "info", done: false };
+    patch({ promoTela: { ...prev, estado, fechaEstado: today() }, promotedTo: estado === "llego" ? null : "tela", observations: [...item.observations, obs] });
+  }
   function advanceStage() {
     if (!canAdmin) return;
     if (stageIdx >= stages.length - 1) return;
     const next = stages[stageIdx + 1];
+    const bloqueo = mensajeBloqueoEtapa(next.id);
+    if (bloqueo) { notify({ id: uid(), icon: "⛔", title: "No puede avanzar", msg: bloqueo }); return; }
     // Llegar a la etapa de Cotización con "Avanzar →" hace lo mismo que el
     // botón "📤 Cotización" de abajo — así el letrero de Ruta Crítica y la
     // insignia de Estado (arriba a la derecha) siempre quedan sincronizados,
@@ -2767,7 +2998,8 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
       {showEdit && kind === "proto" && <EditProtoModal proto={item} protos={protos} capsulas={capsulas} config={config} onSave={(p) => onUpdateItem(p)} onClose={() => setShowEdit(false)} />}
       {showEdit && kind === "ref" && <EditRefModal refData={item} config={config} protos={protos} onSave={(p) => onUpdateItem(p)} onClose={() => setShowEdit(false)} />}
       {showEnviado && <EnviadoModal onSave={handleEnviado} onClose={() => setShowEnviado(false)} />}
-      {showTaller && <EnviarTallerModal item={item} existing={tallerMasReciente?.estado !== "enviado" ? tallerMasReciente : null} ultimoTaller={tallerMasReciente} config={config} onSave={handleGuardarTaller} onClose={() => setShowTaller(false)} />}
+      {showTaller && <EnviarTallerModal item={item} existing={tallerMasReciente?.estado !== "enviado" ? tallerMasReciente : null} ultimoTaller={tallerMasReciente} config={config} cronogramaMuestras={cronogramaMuestras} onSave={handleGuardarTaller} onClose={() => setShowTaller(false)} />}
+      {showRevisarTaller && tallerMasReciente && <RevisionDisenoModal nombre={`${item.name} — ${item.reference}`} taller={tallerMasReciente.taller} onSave={guardarRevisionTaller} onClose={() => setShowRevisarTaller(false)} />}
       {showRevision && <NotaRevisionModal onSave={handleMarcarRevision} onClose={() => setShowRevision(false)} />}
       {showPrecioCotizacion && <PrecioCotizacionModal item={item} onSave={(precio) => { patch({ precioCotizacion: precio }); setShowPrecioCotizacion(false); }} onClose={() => setShowPrecioCotizacion(false)} />}
       <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 16 }}>
@@ -2802,7 +3034,7 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
               {canAdmin && (
                 <div style={{ display: "flex", gap: 6 }}>
                   {stageIdx > 0 && <Btn small variant="secondary" onClick={retreatStage}>← Retroceder</Btn>}
-                  {stageIdx < stages.length - 1 && <Btn small onClick={advanceStage}>Avanzar →</Btn>}
+                  {stageIdx < stages.length - 1 && <Btn small onClick={advanceStage} disabled={!!mensajeBloqueoEtapa(stages[stageIdx + 1]?.id)}>Avanzar →</Btn>}
                 </div>
               )}
             </div>
@@ -2811,6 +3043,7 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
               <span style={{ color: T.slate }}>Etapa: <strong style={{ color: T.denim }}>{stages.find((s) => s.id === item.currentStage)?.label}</strong></span>
               <span style={{ color: T.slate }}>Días: <strong>{daysAgo(item.stageStartedAt)}d</strong></span>
             </div>
+            {(() => { const bl = mensajeBloqueoEtapa(stages[stageIdx + 1]?.id); return bl ? <div style={{ marginTop: 10, padding: "8px 12px", background: T.coralBg, border: `1.5px solid ${T.coral}`, borderRadius: 6, fontSize: 12, color: T.coral, fontWeight: 700 }}>⛔ No puede avanzar todavía: {bl}</div> : null; })()}
             {overdue && <div style={{ marginTop: 10, padding: "8px 12px", background: T.coralBg, borderRadius: 6, fontSize: 12, color: T.coral, fontWeight: 600 }}>⚑ Vencida — {daysAgo(item.stageStartedAt)}d (límite {stages.find((s) => s.id === item.currentStage)?.days}d)</div>}
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -2873,7 +3106,7 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
                     <Btn variant="ghost" onClick={handleDesmarcarPreparada}>← Deshacer</Btn>
                   </>
                 )}
-                {kind === "proto" && item.status === "aprobado" && !item.promotedTo && capsulas.length > 0 && <Btn variant="success" onClick={() => onPromote(item)}>⬆ Promover</Btn>}
+                {kind === "proto" && item.status === "aprobado" && !item.promotedTo && <Btn variant="success" onClick={() => onPromote(item)}>⬆ Promover</Btn>}
                 {kind === "ref" && item.status === "aprobado" && !item.enviadoAPreorden && <Btn variant="success" onClick={() => onPasarAPreorden(item)}>🧾 Pasar a Preorden</Btn>}
               </>
             )}
@@ -2884,8 +3117,9 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
             {canRevisarIlustracion && item.currentStage === "ilustracion" && noFinalState && !["enviado_cotizacion", "enviar_cliente", "enviado"].includes(st) && (
               <Btn variant="amber" onClick={() => setShowRevision(true)}>En revisión</Btn>
             )}
-            {!canAdmin && canEdit && kind === "proto" && item.status === "aprobado" && !item.promotedTo && capsulas.length > 0 && <Btn variant="success" onClick={() => onPromote(item)}>⬆ Promover</Btn>}
-            {kind === "proto" && item.promotedTo && <span style={{ padding: "6px 12px", background: T.jadeBg, color: T.jade, borderRadius: 8, fontSize: 12, fontWeight: 700 }}>✓ Promovido</span>}
+            {!canAdmin && canEdit && kind === "proto" && item.status === "aprobado" && !item.promotedTo && <Btn variant="success" onClick={() => onPromote(item)}>⬆ Promover</Btn>}
+            {kind === "proto" && item.promotedTo && item.promotedTo !== "tela" && <span style={{ padding: "6px 12px", background: T.jadeBg, color: T.jade, borderRadius: 8, fontSize: 12, fontWeight: 700 }}>✓ Promovido</span>}
+            {kind === "proto" && item.promotedTo === "tela" && <span style={{ padding: "6px 12px", background: T.violetBg, color: T.violet, borderRadius: 8, fontSize: 12, fontWeight: 700 }}>🧵 En programación de tela</span>}
             {!canAdmin && canEdit && kind === "ref" && item.status === "aprobado" && !item.enviadoAPreorden && <Btn variant="success" onClick={() => onPasarAPreorden(item)}>🧾 Pasar a Preorden</Btn>}
             {kind === "ref" && item.enviadoAPreorden && (
               <>
@@ -2895,18 +3129,32 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
             )}
             {canEdit && <Btn variant="ghost" onClick={() => setShowTaller(true)}>🧵 {tallerMasReciente && tallerMasReciente.estado !== "enviado" ? "Actualizar Taller de Muestra" : "Enviar a Taller de Muestra"}</Btn>}
           </div>
+          {kind === "proto" && item.promoTela && (
+            <div style={{ marginTop: 10, padding: "10px 14px", background: T.violetBg, borderRadius: 8, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: T.violet }}>🧵 Programación de tela</span>
+              {item.promoTela.proveedor && <span style={{ fontSize: 12, color: T.slate }}>Proveedor: <strong style={{ color: T.ink }}>{item.promoTela.proveedor}</strong></span>}
+              {item.promoTela.pais && <span style={{ fontSize: 12, color: T.slate }}>País: <strong style={{ color: T.ink }}>{item.promoTela.pais}</strong></span>}
+              {item.promoTela.fechaEsperada && <span style={{ fontSize: 12, color: T.slate }}>Fecha esperada: <strong style={{ color: T.ink }}>{item.promoTela.fechaEsperada}</strong></span>}
+              {item.promoTela.estado === "llego" && !item.promotedTo && <span style={{ fontSize: 12, fontWeight: 700, color: T.jade }}>✓ Tela llegó — listo para cápsula</span>}
+              {canEdit && (
+                <div style={{ display: "flex", gap: 6, marginLeft: "auto", flexWrap: "wrap" }}>
+                  {Object.entries(TELA_ESTADOS).map(([v, d]) => (
+                    <button key={v} onClick={() => cambiarTelaEstado(v)} style={{ padding: "4px 10px", borderRadius: 6, border: `1.5px solid ${item.promoTela.estado === v ? d.color : T.border}`, background: item.promoTela.estado === v ? d.bg : T.white, color: item.promoTela.estado === v ? d.color : T.ink, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>{d.label}</button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           {tallerMasReciente && (
             <div style={{ marginTop: 10, padding: "10px 14px", background: ESTADO_MUESTRA[tallerMasReciente.estado]?.bg, borderRadius: 8, display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
               <span style={{ fontSize: 12, fontWeight: 700, color: ESTADO_MUESTRA[tallerMasReciente.estado]?.color }}>🧵 {ESTADO_MUESTRA[tallerMasReciente.estado]?.label}</span>
               <span style={{ fontSize: 12, color: T.slate }}>Taller: <strong style={{ color: T.ink }}>{tallerMasReciente.taller}</strong></span>
               {tallerMasReciente.fechaEntrega && <span style={{ fontSize: 12, color: T.slate }}>Entrega: <strong style={{ color: T.ink }}>{tallerMasReciente.fechaEntrega}</strong></span>}
-              {tallerMasReciente.estado !== "enviado" && (
-                <div style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
-                  <button onClick={() => onUpdateTaller(tallerMasReciente.id, { estado: "aprobado" })} style={{ padding: "4px 10px", background: T.jade, color: T.white, border: "none", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>✓ Aprobar muestra</button>
-                  {/* "Modificar" siempre pasa por el modal (botón de arriba) porque
-                      exige escribir qué sucedió — no es un cambio de un solo clic
-                      como Aprobar, para no perder ese detalle. */}
-                  <button onClick={() => setShowTaller(true)} style={{ padding: "4px 10px", background: T.coral, color: T.white, border: "none", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>✕ Modificar</button>
+              {tallerMasReciente.revisiones?.length > 0 && (() => { const ur = tallerMasReciente.revisiones[tallerMasReciente.revisiones.length - 1]; return <span style={{ fontSize: 11, color: T.slate }}>Última revisión: {String(ur.fecha).slice(0, 10)}{ur.por ? ` · ${ur.por}` : ""}</span>; })()}
+              {tallerMasReciente.estado !== "enviado" && canEdit && (
+                <div style={{ display: "flex", gap: 6, marginLeft: "auto", flexWrap: "wrap" }}>
+                  {["pendiente", "asignado"].includes(tallerMasReciente.estado) && <button onClick={marcarRecibidaTaller} style={{ padding: "4px 10px", background: T.violet, color: T.white, border: "none", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>📥 Recibida del taller</button>}
+                  {puedeRevisarDiseno && ["pendiente", "asignado", "recibida"].includes(tallerMasReciente.estado) && <button onClick={() => setShowRevisarTaller(true)} style={{ padding: "4px 10px", background: T.jade, color: T.white, border: "none", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>🔍 Revisión de diseño</button>}
                 </div>
               )}
             </div>
@@ -3118,7 +3366,14 @@ function Card({ item, kind, onClick, onPromote, onPasarAPreorden, onDeshacerEnvi
           <button onClick={(e) => { e.stopPropagation(); onPromote(item); }} style={{ width: "100%", padding: "7px", background: T.jadeBg, border: `1px dashed ${T.jade}`, borderRadius: 8, color: T.jade, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>⬆ Promover a Cápsula</button>
         </div>
       )}
-      {kind === "proto" && item.promotedTo && <div style={{ marginTop: 8, fontSize: 11, color: T.jade, fontWeight: 700 }}>✓ Promovido</div>}
+      {kind === "proto" && item.promotedTo && item.promotedTo !== "tela" && <div style={{ marginTop: 8, fontSize: 11, color: T.jade, fontWeight: 700 }}>✓ Promovido</div>}
+      {kind === "proto" && item.promotedTo === "tela" && (
+        <div style={{ marginTop: 8, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+          <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 10, background: T.violetBg, color: T.violet }}>🧵 En programación de tela</span>
+          {item.promoTela?.estado && <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 10, background: TELA_ESTADOS[item.promoTela.estado]?.bg, color: TELA_ESTADOS[item.promoTela.estado]?.color }}>{TELA_ESTADOS[item.promoTela.estado]?.label}</span>}
+        </div>
+      )}
+      {kind === "proto" && !item.promotedTo && item.promoTela?.estado === "llego" && <div style={{ marginTop: 8, fontSize: 11, color: T.jade, fontWeight: 700 }}>🧵 Tela llegó · listo para cápsula</div>}
       {kind === "ref" && item.status === "aprobado" && !item.enviadoAPreorden && perms?.editar && (
         <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${T.border}` }}>
           <button onClick={(e) => { e.stopPropagation(); onPasarAPreorden(item); }} style={{ width: "100%", padding: "7px", background: T.jadeBg, border: `1px dashed ${T.jade}`, borderRadius: 8, color: T.jade, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>🧾 Pasar a Preorden</button>
@@ -3174,7 +3429,18 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
   // "Todos" oculta Aprobados/Promovidos/Declinados para no saturar el tablero
   // (un prototipo promovido sigue con status "aprobado", así que basta con
   // excluir aprobado/declinado). Siguen disponibles en sus propias pestañas.
-  const porEstado = filter === "todos" ? protos.filter((p) => !["aprobado", "declinado"].includes(p.status)) : protos.filter((p) => p.status === filter);
+  // Aprobados se dividen (2026-11-13): promovidos a cápsula, en programación de tela y sin promover.
+  const esApr = (p) => p.status === "aprobado";
+  const aprProm = protos.filter((p) => esApr(p) && p.promotedTo && p.promotedTo !== "tela").length;
+  const aprTela = protos.filter((p) => esApr(p) && p.promotedTo === "tela").length;
+  const aprSin = protos.filter((p) => esApr(p) && !p.promotedTo).length;
+  const porEstado = protos.filter((p) => (
+    filter === "todos" ? !["aprobado", "declinado"].includes(p.status)
+      : filter === "aprobado_prom" ? esApr(p) && p.promotedTo && p.promotedTo !== "tela"
+        : filter === "aprobado_tela" ? esApr(p) && p.promotedTo === "tela"
+          : filter === "aprobado_sin" ? esApr(p) && !p.promotedTo
+            : p.status === filter
+  ));
   const porCliente = clienteFiltro === "todos" ? porEstado : porEstado.filter((p) => (p.cliente || p.colores?.[0]) === clienteFiltro);
   const porMes = mesFiltro === "todos" ? porCliente : porCliente.filter((p) => p.mes === mesFiltro);
   // (2026-10-21, a pedido de Fredy) Buscador de Prototipos: cuando hay texto, busca en TODOS los prototipos
@@ -3258,7 +3524,7 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
         )}
       </div>
       <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap", alignItems: "center", opacity: buscandoP ? 0.45 : 1 }}>
-        {[["todos", "Todos"], ["aprobado", "Aprobados"], ["declinado", "Declinados"], ["en_proceso", "En proceso"], ["en_revision", "En revisión"], ["enviado_cotizacion", "En cotización"], ["enviar_cliente", "Enviar al Cliente"], ["enviado", "Enviado"]].map(([v, label]) => (
+        {[["todos", "Todos"], ["aprobado", "Aprobados"], ["aprobado_prom", `✓ Aprobados promovidos (${aprProm})`], ["aprobado_tela", `🧵 En programación de tela (${aprTela})`], ["aprobado_sin", `📭 Aprobados sin promover (${aprSin})`], ["declinado", "Declinados"], ["en_proceso", "En proceso"], ["en_revision", "En revisión"], ["enviado_cotizacion", "En cotización"], ["enviar_cliente", "Enviar al Cliente"], ["enviado", "Enviado"]].map(([v, label]) => (
           <button key={v} onClick={() => cambiarFiltro(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${filter === v ? T.ink : T.border}`, background: filter === v ? T.ink : T.white, color: filter === v ? T.white : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
         ))}
         {filter === "enviar_cliente" && seleccionados.length > 0 && (
@@ -3676,7 +3942,8 @@ function NuevoCronogramaLibreModal({ config, onSave, onClose }) {
 // Detalle/edición rápida de una entrada del Cronograma de Muestras: cambiar
 // taller/fecha/prioridad, marcar Aprobado/Modificar, ir al prototipo o
 // referencia vinculado (si lo tiene), o borrarla (solo administrador).
-function CronogramaDetalleModal({ entry, config, isAdmin, onUpdate, onDelete, onGoToItem, onModificarNota, onClose }) {
+function CronogramaDetalleModal({ entry, config, isAdmin, usuario, puedeRevisar, onUpdate, onDelete, onGoToItem, onModificarNota, onClose }) {
+  const [revisando, setRevisando] = useState(false);
   const [form, setForm] = useState({ taller: entry.taller || "", fechaEntrega: entry.fechaEntrega || "", prioridad: entry.prioridad || "Media", estado: entry.estado || "pendiente", notaModificar: entry.notaModificar || "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   const est = ESTADO_MUESTRA[entry.estado] || ESTADO_MUESTRA.pendiente;
@@ -3706,9 +3973,9 @@ function CronogramaDetalleModal({ entry, config, isAdmin, onUpdate, onDelete, on
         <Field label="Prioridad"><FSel value={form.prioridad} onChange={set("prioridad")} options={config?.prioridadesMuestra || []} /></Field>
       </div>
       {entry.estado !== "enviado" && (
-        <Field label="Estado">
+        <Field label="Estado (Aprobada / Modificar se decide en la Revisión de diseño)">
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            {Object.entries(ESTADO_MUESTRA).map(([v, def]) => (
+            {Object.entries(ESTADO_MUESTRA).filter(([v]) => v === form.estado || (v !== "aprobado" && v !== "modificar")).map(([v, def]) => (
               <button key={v} type="button" onClick={() => set("estado")(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${form.estado === v ? def.color : T.border}`, background: form.estado === v ? def.bg : T.white, color: form.estado === v ? def.color : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{def.label}</button>
             ))}
           </div>
@@ -3719,6 +3986,18 @@ function CronogramaDetalleModal({ entry, config, isAdmin, onUpdate, onDelete, on
           <textarea value={form.notaModificar} onChange={(e) => set("notaModificar")(e.target.value)} rows={3} placeholder="Escribe el detalle de la modificación..." style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.coral}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit", resize: "vertical" }} />
         </Field>
       )}
+      {["pendiente", "asignado", "recibida"].includes(entry.estado) && (
+        <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+          {entry.estado !== "recibida" && <Btn variant="ghost" small onClick={() => { onUpdate(entry.id, { estado: "recibida", fechaRecibida: entry.fechaRecibida || today() }); onClose(); }}>📥 Marcar recibida del taller</Btn>}
+          {puedeRevisar ? <Btn small onClick={() => setRevisando(true)}>🔍 Revisión de diseño</Btn> : <span style={{ fontSize: 11, color: T.slate }}>La revisión de diseño la hace quien tenga el rol de revisión (Dayana / Juliana).</span>}
+        </div>
+      )}
+      {entry.revisiones?.length > 0 && (() => { const ur = entry.revisiones[entry.revisiones.length - 1]; return <div style={{ fontSize: 11, color: T.slate, marginBottom: 10 }}>Última revisión de diseño: {String(ur.fecha).slice(0, 10)}{ur.por ? ` · ${ur.por}` : ""} — {ur.resultado === "aprobada" ? "Aprobada" : "Modificar"}</div>; })()}
+      {revisando && <RevisionDisenoModal nombre={entry.nombre || entry.referencia || "Muestra"} taller={entry.taller} onClose={() => setRevisando(false)} onSave={(rev) => {
+        onUpdate(entry.id, armarPatchRevision(entry, rev, usuario));
+        if (entry.itemId && onModificarNota) onModificarNota(entry, textoRevision(rev, entry.taller), true);
+        onClose();
+      }} />}
       <div style={{ display: "flex", gap: 10, justifyContent: "space-between", alignItems: "center", marginTop: 8 }}>
         <div style={{ display: "flex", gap: 8 }}>
           {entry.itemId && <Btn variant="ghost" small onClick={() => { onGoToItem(entry); onClose(); }}>→ Ver prototipo/referencia</Btn>}
@@ -3738,7 +4017,7 @@ function CronogramaDetalleModal({ entry, config, isAdmin, onUpdate, onDelete, on
 // entradas "Aprobadas" se separan a su propia pestaña (funcionan como
 // historial de muestras ya resueltas); "Sin fecha" agrupa lo que aún no
 // tiene fecha de entrega asignada, para que nada quede invisible.
-function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, onAdd, onUpdate, onDelete, onGoToItem, onModificarNota }) {
+function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, usuarioNombre, puedeRevisar, onAdd, onUpdate, onDelete, onGoToItem, onModificarNota }) {
   const [vista, setVista] = useState("semana");
   const [weekOffset, setWeekOffset] = useState(0);
   const [monthOffset, setMonthOffset] = useState(0);
@@ -3847,7 +4126,7 @@ function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, onAdd, on
   return (
     <div>
       {showNuevo && <NuevoCronogramaLibreModal config={config} onSave={onAdd} onClose={() => setShowNuevo(false)} />}
-      {detalle && <CronogramaDetalleModal entry={detalle} config={config} isAdmin={isAdmin} onUpdate={onUpdate} onDelete={onDelete} onGoToItem={onGoToItem} onModificarNota={onModificarNota} onClose={() => setDetalle(null)} />}
+      {detalle && <CronogramaDetalleModal entry={detalle} config={config} isAdmin={isAdmin} usuario={usuarioNombre} puedeRevisar={puedeRevisar} onUpdate={onUpdate} onDelete={onDelete} onGoToItem={onGoToItem} onModificarNota={onModificarNota} onClose={() => setDetalle(null)} />}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Cronograma de Muestras</h2>
@@ -3868,7 +4147,7 @@ function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, onAdd, on
         </div>
       )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
-        {vista !== "tablero" ? (
+        {vista !== "tablero" && vista !== "talleres" ? (
           <div style={{ display: "flex", gap: 6 }}>
             {[["activas", "Activas"], ["aprobadas", "✓ Aprobadas (Historial)"]].map(([v, label]) => (
               <button key={v} onClick={() => setTab(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${tab === v ? T.denim : T.border}`, background: tab === v ? T.denimBg : T.white, color: tab === v ? T.denim : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{label}</button>
@@ -3876,20 +4155,20 @@ function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, onAdd, on
           </div>
         ) : <div />}
         <div style={{ display: "flex", gap: 6 }}>
-          {[["semana", "Semana"], ["mes", "Mes"], ["tablero", "🗂 Tablero"]].map(([v, label]) => (
+          {[["semana", "Semana"], ["mes", "Mes"], ["tablero", "🗂 Tablero"], ["talleres", "📊 Talleres"]].map(([v, label]) => (
             <button key={v} onClick={() => setVista(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${vista === v ? T.ink : T.border}`, background: vista === v ? T.ink : T.white, color: vista === v ? T.white : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{label}</button>
           ))}
         </div>
       </div>
-      {vista !== "tablero" && (
+      {vista !== "tablero" && vista !== "talleres" && (
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
           <button onClick={() => (vista === "semana" ? setWeekOffset((o) => o - 1) : setMonthOffset((o) => o - 1))} style={{ padding: "6px 12px", background: T.white, border: `1px solid ${T.border}`, borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13, color: T.ink }}>← Anterior</button>
           <div style={{ fontWeight: 800, fontSize: 14, color: T.ink, textTransform: "capitalize" }}>{rangoLabel}</div>
           <button onClick={() => (vista === "semana" ? setWeekOffset((o) => o + 1) : setMonthOffset((o) => o + 1))} style={{ padding: "6px 12px", background: T.white, border: `1px solid ${T.border}`, borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13, color: T.ink }}>Siguiente →</button>
         </div>
       )}
-      {vista === "tablero" ? renderTablero() : vista === "semana" ? renderWeekRow(semanaMonday, "w") : semanasDelMes.map((m, i) => renderWeekRow(m, i))}
-      {vista !== "tablero" && sinFecha.length > 0 && (
+      {vista === "talleres" ? <FichaTalleresView cronogramaMuestras={cronogramaMuestras} /> : vista === "tablero" ? renderTablero() : vista === "semana" ? renderWeekRow(semanaMonday, "w") : semanasDelMes.map((m, i) => renderWeekRow(m, i))}
+      {vista !== "tablero" && vista !== "talleres" && sinFecha.length > 0 && (
         <div style={{ marginTop: 20 }}>
           <div style={{ fontWeight: 800, fontSize: 13, color: T.slate, marginBottom: 10 }}>🗓 Sin fecha de entrega asignada ({sinFecha.length})</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: 10 }}>
@@ -3897,7 +4176,7 @@ function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, onAdd, on
           </div>
         </div>
       )}
-      {vista !== "tablero" && !visibles.length && <div style={{ textAlign: "center", padding: 40, color: T.slate, fontSize: 14 }}>{tab === "activas" ? "No hay muestras activas." : "Todavía no hay muestras aprobadas."}</div>}
+      {vista !== "tablero" && vista !== "talleres" && !visibles.length && <div style={{ textAlign: "center", padding: 40, color: T.slate, fontSize: 14 }}>{tab === "activas" ? "No hay muestras activas." : "Todavía no hay muestras aprobadas."}</div>}
       {vista === "tablero" && !cronogramaMuestras.length && <div style={{ textAlign: "center", padding: 40, color: T.slate, fontSize: 14 }}>No hay muestras en el cronograma.</div>}
     </div>
   );
@@ -14666,7 +14945,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
                       <div style={{ fontWeight: 700, fontSize: 14, color: T.ink }}>{r.name}</div>
                       <div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase", letterSpacing: "0.06em", marginTop: 10, marginBottom: 4 }}>Permisos de flujo de trabajo</div>
                       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                        {["editar", "aprobar", "declinar", "admin", "corte", "ilustracion", "aprobar_corte", "aprobar_despacho", "control_despacho", "editar_kpis", "marcar_observaciones"].map((perm) => (
+                        {["editar", "aprobar", "declinar", "admin", "corte", "ilustracion", "aprobar_corte", "aprobar_despacho", "control_despacho", "editar_kpis", "marcar_observaciones", "revision_diseno"].map((perm) => (
                           <span key={perm} onClick={() => onUpdateConfig({ roles: config.roles.map((x) => (x.id !== r.id ? x : { ...x, perms: x.perms.includes(perm) ? x.perms.filter((p) => p !== perm) : [...x.perms, perm] })) })}
                             style={{ padding: "3px 10px", borderRadius: 4, fontSize: 11, fontWeight: 700, cursor: "pointer", background: r.perms.includes(perm) ? T.jadeBg : "#EDEDF2", color: r.perms.includes(perm) ? T.jade : T.slate, border: `1px solid ${r.perms.includes(perm) ? T.jade : T.border}` }}
                           >{perm}</span>
@@ -19961,7 +20240,7 @@ function AppInner() {
     notify({ id: uid(), icon: "🧪", title: "Prototipo creado", msg: p.name });
     sincronizarBitacoraTela(p.tipoTela, { tipo: "Prototipo", nombre: p.name, id: p.id, fecha: today() });
   }
-  async function updateProto(id, patch) { const updated = protos.map((x) => (x.id === id ? { ...x, ...patch } : x)); setProtos(updated); const item = updated.find((x) => x.id === id); await fsSave("prototipos", id, item); if (patch.status === "enviado") syncCronogramaEnviado(id); }
+  async function updateProto(id, patch) { if (patch.promoTela?.solicitudId) fsUpdate("solicitudes_tela", patch.promoTela.solicitudId, { estado: patch.promoTela.estado, fechaEstado: patch.promoTela.fechaEstado || today() }); const updated = protos.map((x) => (x.id === id ? { ...x, ...patch } : x)); setProtos(updated); const item = updated.find((x) => x.id === id); await fsSave("prototipos", id, item); if (patch.status === "enviado") syncCronogramaEnviado(id); }
   async function addCapsula(c) {
     const updated = [...capsulas, c];
     setCapsulas(updated);
@@ -20440,8 +20719,8 @@ function AppInner() {
   // marcan una entrada vinculada como "Modificar", la nota también se deja
   // como Observación en el prototipo/referencia — mismo formato que
   // DetailView.handleGuardarTaller, para que quede en un solo lugar.
-  function addObservacionCronograma(entry, texto) {
-    const obs = { id: uid(), user: currentUser?.name, role, text: `🧵 Modificar (Taller de Muestra): ${texto}`, date: nowISO(), type: "info", done: false };
+  function addObservacionCronograma(entry, texto, textoCompleto) {
+    const obs = { id: uid(), user: currentUser?.name, role, text: textoCompleto ? texto : `🧵 Modificar (Taller de Muestra): ${texto}`, date: nowISO(), type: "info", done: false };
     if (entry.kind === "proto") {
       const item = protos.find((p) => p.id === entry.itemId);
       if (item) updateProto(item.id, { observations: [...(item.observations || []), obs] });
@@ -20539,6 +20818,18 @@ function AppInner() {
     setHistorial((h) => [...h, ...nuevos]);
     await Promise.all(nuevos.map((n) => fsSave("historial_diseno", n.id, n)));
     notify({ id: uid(), icon: "🕘", title: "Historial completado", msg: `${nuevos.length} ítem(s) agregado(s) al historial.` });
+  }
+  // Promover para programación de tela (2026-11-13): el prototipo queda marcado
+  // (promotedTo = "tela") con el avance de la tela; no pasa a ninguna cápsula.
+  async function promoverATela(protoId, info) {
+    const pr = protos.find((x) => x.id === protoId);
+    if (!pr) return;
+    const por = currentUser?.name || "";
+    const obs = { id: uid(), user: por, role, text: `🧵 Promovido para programación de tela${info.proveedor ? ` · ${info.proveedor}` : ""}${info.pais ? ` (${info.pais})` : ""}.`, date: nowISO(), type: "info", done: false };
+    const sol = { id: uid(), protoId, numPrototipo: pr.numPrototipo || "", referencia: pr.reference || "", nombre: pr.name || "", cliente: pr.cliente || pr.colores?.[0] || "", categoria: pr.categoria || "", tela: pr.tipoTela || "", proveedor: info.proveedor || "", pais: info.pais || "", fechaEsperada: info.fechaEsperada || "", nota: info.nota || "", estado: "por_programar", solicitadoPor: por, fecha: today(), fechaEstado: today() };
+    await fsSave("solicitudes_tela", sol.id, sol);
+    await updateProto(protoId, { promotedTo: "tela", promoTela: { estado: "por_programar", solicitudId: sol.id, proveedor: info.proveedor || "", pais: info.pais || "", fechaEsperada: info.fechaEsperada || "", nota: info.nota || "", fecha: today(), por }, observations: [...(pr.observations || []), obs] });
+    notify({ id: uid(), icon: "🧵", title: "Solicitud de tela creada", msg: `${pr.name} quedó en programación de tela.` });
   }
   async function promoteToCapsula(capId, ref, protoId) {
     await addRef(capId, ref);
@@ -20655,6 +20946,10 @@ function AppInner() {
     // Prototipos/Referencias en etapa Ilustración), pensado para un rol tipo
     // "Directora Creativa" sin darle el resto de permisos de "admin".
     ilustracion: !esClienteSoloLectura && (userRoleData?.perms?.includes("ilustracion") ?? false),
+    // Permiso dedicado revision_diseno (2026-11-13): quien puede hacer la
+    // Revisión de diseño de las muestras que vuelven de taller (Dayana y
+    // Juliana). Administrador también puede.
+    revisionDiseno: !esClienteSoloLectura && (userRoleData?.perms?.includes("revision_diseno") ?? false),
     // Permiso dedicado para aprobar la Programación de Mesones en Corte (el
     // "analista" que revisa lo que el cortador ingresó como datos teóricos
     // antes de que cuente como confirmado) — separado de "aprobar" genérico
@@ -21095,7 +21390,7 @@ function AppInner() {
       {modal === "new-proto" && <NewProtoModal onSave={addProto} onClose={() => setModal(null)} config={config} protos={protos} capsulas={capsulas} />}
       {modal === "new-capsula" && <NewCapsulaModal onSave={addCapsula} onClose={() => setModal(null)} config={config} />}
       {modal === "new-ref" && newRefCap && <NewRefModal capsula={newRefCap} onSave={addRef} onClose={() => { setModal(null); setNewRefCap(null); }} config={config} protos={protos} capsulas={capsulas} />}
-      {modal === "promote" && promoteProto && <PromoteModal proto={promoteProto} capsulas={capsulas} onSave={promoteToCapsula} onClose={() => { setModal(null); setPromoteProto(null); }} config={config} />}
+      {modal === "promote" && promoteProto && <PromoteModal proto={promoteProto} capsulas={capsulas} onSave={promoteToCapsula} onSaveTela={promoverATela} onClose={() => { setModal(null); setPromoteProto(null); }} config={config} />}
       {modal === "new-pedido" && <SubirPedidoModal2 onSave={addPedido} onClose={() => setModal(null)} pedidoConfig={pedidoConfig} pedidos={pedidos} clientes={config.clientes} />}
       <div style={{ display: "flex", minHeight: "100vh" }}>
         <div style={{ width: 230, background: T.ink, color: T.white, padding: "20px 12px", display: "flex", flexDirection: "column", flexShrink: 0 }}>
@@ -21406,7 +21701,7 @@ function AppInner() {
               />
             )}
             {view === "cronograma_muestras" && (
-              <CronogramaMuestrasView cronogramaMuestras={cronogramaMuestrasVisibles} config={config} isAdmin={currentUser?.isAdmin}
+              <CronogramaMuestrasView cronogramaMuestras={cronogramaMuestrasVisibles} config={config} isAdmin={currentUser?.isAdmin} usuarioNombre={currentUser?.name} puedeRevisar={!!(currentUser?.isAdmin || perms.admin || perms.revisionDiseno)}
                 onAdd={addCronogramaMuestra} onUpdate={updateCronogramaMuestra} onDelete={deleteCronogramaMuestra}
                 onModificarNota={addObservacionCronograma}
                 onGoToItem={(entry) => {
