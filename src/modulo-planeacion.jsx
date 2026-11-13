@@ -19,6 +19,7 @@ import ProyeccionAreasView from "./proyeccion-areas";
 import TableroCostosView from "./tablero-costos";
 import { num as numCotizador } from "./cotizador-calculo";
 import { DevolucionesCalidadView } from "./devoluciones-cliente";
+import { EmpacadorasEstadisticasView } from "./devoluciones-empacadoras";
 import { claveArea as claveAreaHistorico } from "./centro-costo-historico-parser";
 import { diasDeTrabajoDelMes, esDiaDeTrabajoISO, sabadoSeTrabajaISO } from "./dias-habiles";
 import { armarListaPorProgramar, estadisticasPedidos, prioridadPedido } from "./lista-programar-calculo";
@@ -8178,11 +8179,11 @@ function ControlCalidadView({ reclamos, onGuardar, onCambiarEstado, onBorrar, is
         <p style={{ margin: "6px 0 0", fontSize: 14, color: C.slate }}>Devoluciones y reclamos de cliente por calidad.</p>
       </div>
       <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
-        {[["reclamos", "📋 Reclamos"], ["devoluciones", "↩️ Devoluciones de clientes"]].map(([k, t]) => (
+        {[["reclamos", "📋 Reclamos"], ["devoluciones", "↩️ Devoluciones de clientes"], ["empacadoras", "📦 Empacadoras"]].map(([k, t]) => (
           <button key={k} onClick={() => setPestanaCalidad(k)} style={{ padding: "8px 14px", borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", border: `1.5px solid ${pestanaCalidad === k ? C.blue : C.border}`, background: pestanaCalidad === k ? C.blueBg : C.white, color: pestanaCalidad === k ? C.blue : C.ink }}>{t}</button>
         ))}
       </div>
-      {pestanaCalidad === "devoluciones" ? <DevolucionesCalidadView db={db} currentUser={currentUser} /> : (<>
+      {pestanaCalidad === "devoluciones" ? <DevolucionesCalidadView db={db} currentUser={currentUser} /> : pestanaCalidad === "empacadoras" ? <EmpacadorasEstadisticasView db={db} currentUser={currentUser} /> : (<>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 24 }}>
         <KPI icon="📋" label="Reclamos abiertos" value={abiertos.length} color={C.red} bg={C.redBg} />
         <KPI icon="📦" label="Unidades afectadas (abiertos)" value={fmtNum(totalUnidadesAbiertas)} color={C.amber} bg={C.amberBg} />

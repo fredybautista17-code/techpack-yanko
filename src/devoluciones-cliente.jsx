@@ -4,6 +4,7 @@ import { getAuth } from "firebase/auth";
 import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, query, where, writeBatch } from "firebase/firestore";
 import { grupoOrigen, origenElegidoPorCliente, fechaDePaso, tiempoDevolucion, textoTiempo, etiquetaOrigen, origenDeFacturacion, resumenDespachoJunto, ORIGENES, ORIGENES_ELEGIBLES } from "./devoluciones-tiempos";
 import { httpsCallable, getFunctions } from "firebase/functions";
+import { BloqueEmpacadoras, LineaEmpacadoras } from "./devoluciones-empacadoras";
 
 // ─── DEVOLUCIONES DE CLIENTES ────────────────────────────────────────────
 // (2026-10-20, a pedido de Fredy) El cliente (primero Kamila Colombia, pero sirve
@@ -1346,6 +1347,7 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, puedeFa
   const [msg, setMsg] = useState("");
   const [redes, setRedes] = useState({ fecha: new Date().toISOString().slice(0, 10), guia: "", nuevo: "" });
   const [conteo, setConteo] = useState({});
+  const [empaque, setEmpaque] = useState({ lista: [], origen: "", cargando: false }); // quién empacó el lote (de Nómina), lo llena BloqueEmpacadoras
   const [sel, setSel] = useState([]); // devoluciones marcadas para despacharlas juntas (solo Bodega, «Lista para despachar»)
   const [juntas, setJuntas] = useState({ fecha: new Date().toISOString().slice(0, 10), guia: "", nuevo: "" });
   const [msgJunto, setMsgJunto] = useState("");
@@ -1445,7 +1447,7 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, puedeFa
       if (dif) diferencias.push({ color: c.color, colorNombre: c.nombre || "", talla: t, dif });
     }));
     const resultado = diferencias.length ? "diferencias" : "completa";
-    await accion(d, "revisada", { conteo: lineasContadas, diferencias, resultado, totalContado: totalLineas(lineasContadas), revisadoPor: usuario, revisadoEn: nowISO() },
+    await accion(d, "revisada", { conteo: lineasContadas, diferencias, resultado, totalContado: totalLineas(lineasContadas), revisadoPor: usuario, revisadoEn: nowISO(), empacadoras: empaque.lista || [], empacadorasOrigen: empaque.origen || "sin_dato" },
       resultado === "completa" ? "Conteo completo" : "Conteo con diferencias");
   }
 
@@ -1613,6 +1615,7 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, puedeFa
               <>
                 <LineaTiempoDev T={T} d={d} />
                 <Detalle T={T} d={d} mostrarConteo />
+                <LineaEmpacadoras T={T} d={d} />
                 {modo === "bodega" && ["revisada", "facturacion", "lista"].includes(d.estado) && d.conteo?.length ? <ResumenBodega T={T} d={d} /> : null}
                 {msg && <div style={{ color: T.coral, fontSize: 13, marginTop: 8 }}>{msg}</div>}
                 {modo === "calidad" && d.estado === "recibida" && (
@@ -1623,7 +1626,8 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, puedeFa
                       valores={conteo} comparar={valoresDeLineas(d.lineas)} infantil={esInfantilDev(d)}
                       onCambiar={(k, v) => setConteo((c) => ({ ...c, [k]: v === "" ? "" : entero(v) }))}
                     />
-                    <div style={{ marginTop: 10 }}><button disabled={trabajando === d.id} onClick={() => guardarConteo(d)} style={btn(T, "primario")}>Guardar conteo y marcar como revisada</button></div>
+                    <BloqueEmpacadoras key={d.id} db={db} T={T} lote={d.lote} devueltas={Object.values(conteo).reduce((a, v) => a + (Number(v) || 0), 0)} onCambio={setEmpaque} />
+                    <div style={{ marginTop: 10 }}><button disabled={trabajando === d.id || empaque.cargando} onClick={() => guardarConteo(d)} style={btn(T, "primario")}>Guardar conteo y marcar como revisada</button></div>
                   </div>
                 )}
                 {modo === "bodega" && (puedeFacturar || puedeCambiarEstado || currentUser?.isAdmin) && d.estado === "facturacion" && <FilaFacturacion db={db} T={T} d={d} usuario={usuario} otras={lista} embebida />}
