@@ -2443,19 +2443,40 @@ function FichaTalleresView({ cronogramaMuestras }) {
   );
 }
 
-function PromoteModal({ proto, capsulas, onSave, onSaveTela, onClose, config }) {
+// Cápsula «contenedor» (2026-11-13, a pedido de Fredy): una por cliente y por trimestre, para las referencias que salen sueltas
+// (reposiciones, pedidos puntuales, referencias que ya se cortaron sin cápsula). La crea el sistema la primera vez que se usa.
+const TRIMESTRES_ES = ["Ene-Mar", "Abr-Jun", "Jul-Sep", "Oct-Dic"];
+function periodoContenedor(fecha = new Date()) {
+  const q = Math.floor(fecha.getMonth() / 3);
+  return { key: `${fecha.getFullYear()}-T${q + 1}`, etiqueta: `${TRIMESTRES_ES[q]} ${fecha.getFullYear()}` };
+}
+const nombreContenedor = (cliente, per) => `${cliente} – ${per.etiqueta}`;
+const buscarContenedor = (capsulas, cliente, per) => capsulas.find((c) => c.esContenedor && !c.eliminado && c.cliente === cliente && c.periodoContenedor === per.key);
+
+function PromoteModal({ proto, capsulas, onSave, onSaveTela, onSaveContenedor, onClose, config }) {
   // Solo se puede promover a una cápsula cuya ilustración/concepto ya haya
   // sido aprobado por la Dirección Creativa (las creadas antes de este
   // control se tratan como aprobadas, ver ilustracionAprobada).
-  const capsulasDisponibles = capsulas.filter(ilustracionAprobada);
-  const [capId, setCapId] = useState(capsulasDisponibles[0]?.id || "");
+  const capsulasDisponibles = capsulas.filter((c) => ilustracionAprobada(c) && !c.esContenedor);
+  // Sin cápsula preseleccionada: hay que elegirla a propósito para no promover a la equivocada sin darse cuenta.
+  const [capId, setCapId] = useState("");
   const [destino, setDestino] = useState("capsula");
   const [tela, setTela] = useState({ proveedor: "", pais: "", fechaEsperada: "", nota: "" });
   function saveTela() { if (onSaveTela) onSaveTela(proto.id, tela); onClose(); }
   const [refName, setRefName] = useState(proto.name);
   const [refCode, setRefCode] = useState("");
-  const [cliente, setCliente] = useState("");
+  const [cliente, setCliente] = useState(proto.cliente || "");
   const [rangoTallas, setRangoTallas] = useState("");
+  const [yaProd, setYaProd] = useState(!!proto.enProduccion);
+  const [fechaCorte, setFechaCorte] = useState(today());
+  const [lote, setLote] = useState("");
+  const per = periodoContenedor();
+  const contExistente = cliente ? buscarContenedor(capsulas, cliente, per) : null;
+  function saveContenedor() {
+    if (!cliente || !refName || !refCode) return;
+    onSaveContenedor(proto, { refName, refCode, cliente, rangoTallas, yaProd, fechaCorte, lote: lote.trim() });
+    onClose();
+  }
   function save() {
     if (!capId || !refName || !refCode) return;
     onSave(capId, {
@@ -2467,27 +2488,51 @@ function PromoteModal({ proto, capsulas, onSave, onSaveTela, onClose, config }) 
   return (
     <Modal title={`Promover "${proto.name}"`} onClose={onClose} width={520}>
       <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
-        {[["capsula", "🗂 Promover para cápsula"], ["tela", "🧵 Promover para programación de tela"]].map(([v, l]) => (
+        {[["capsula", "🗂 Promover para cápsula"], ["tela", "🧵 Programación de tela"], ["contenedor", "📦 Contenedor del cliente"]].map(([v, l]) => (
           <button key={v} type="button" onClick={() => setDestino(v)} style={{ padding: "8px 14px", borderRadius: 8, border: `1.5px solid ${destino === v ? T.ink : T.border}`, background: destino === v ? T.ink : T.white, color: destino === v ? T.white : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{l}</button>
         ))}
       </div>
+      {destino !== "tela" && (<>
+      <div style={{ padding: "10px 14px", background: T.jadeBg, borderRadius: 8, marginBottom: destino === "contenedor" ? 8 : 20, fontSize: 13, color: T.jade, fontWeight: 600 }}>✓ BOM, POM, Especificaciones, Categoría y Silueta se copiarán automáticamente</div>
+      <div style={{ fontSize: 12, color: T.slate, marginBottom: 14 }}><b>Cuándo:</b> {destino === "capsula" ? "la referencia hace parte de una colección que se produce junta." : "la referencia sale suelta, es una reposición o ya se cortó y no tiene colección."}</div>
+      {destino === "contenedor" && (
+        <div style={{ padding: "10px 14px", background: T.jadeBg, border: `1px solid ${T.jade}`, borderRadius: 8, marginBottom: 14, fontSize: 13, color: T.ink }}>
+          <b style={{ color: T.jade }}>Contenedor del cliente:</b> {cliente ? nombreContenedor(cliente, per) : "elige primero el cliente"}
+          {cliente && <div style={{ fontSize: 12, color: T.slate, marginTop: 3 }}>{contExistente ? `Ya existe (${(contExistente.referencias || []).length} referencia${(contExistente.referencias || []).length === 1 ? "" : "s"}); se agrega ahí.` : "Todavía no existe; se crea solo al promover."}</div>}
+        </div>
+      )}
       {destino === "capsula" && (<>
-      <div style={{ padding: "10px 14px", background: T.jadeBg, borderRadius: 8, marginBottom: 20, fontSize: 13, color: T.jade, fontWeight: 600 }}>✓ BOM, POM, Especificaciones, Categoría y Silueta se copiarán automáticamente</div>
       {!capsulasDisponibles.length ? (
         <div style={{ padding: "10px 14px", background: T.coralBg, borderRadius: 8, marginBottom: 20, fontSize: 13, color: T.coral, fontWeight: 600 }}>⚠ No hay cápsulas con ilustración aprobada todavía. Pide a la Dirección Creativa que apruebe una cápsula antes de promover.</div>
       ) : (
         <Field label="Cápsula destino">
           <select value={capId} onChange={(e) => setCapId(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }}>
+            <option value="">— Elige una cápsula (obligatorio) —</option>
             {capsulasDisponibles.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.season})</option>)}
           </select>
         </Field>
       )}
+      </>)}
       <Field label="Nombre de la referencia"><FInput value={refName} onChange={setRefName} placeholder="Nombre final" /></Field>
       <Field label="Código de referencia"><FInput value={refCode} onChange={setRefCode} placeholder="Ej: BC-002" /></Field>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Cliente"><FSel value={cliente} onChange={setCliente} options={(config.clientes || []).map((c) => c.nombre)} /></Field>
         <Field label="Rango de Tallas"><FSel value={rangoTallas} onChange={setRangoTallas} options={config.rangos} /></Field>
       </div>
+      {destino === "contenedor" && (
+        <>
+          <label style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: 12, border: `1px solid ${T.amber}`, background: T.amberBg, borderRadius: 10, cursor: "pointer", marginBottom: 10 }}>
+            <input type="checkbox" checked={yaProd} onChange={(e) => setYaProd(e.target.checked)} style={{ marginTop: 3, width: 16, height: 16 }} />
+            <span style={{ fontSize: 13, color: T.ink }}><b>Ya está en producción</b><br /><span style={{ fontSize: 12, color: T.slate }}>La referencia nace en la etapa de Corte y no al inicio de la ruta.</span></span>
+          </label>
+          {yaProd && (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              <Field label="Fecha de corte"><input type="date" value={fechaCorte} onChange={(e) => setFechaCorte(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit", boxSizing: "border-box" }} /></Field>
+              <Field label="Lote (opcional)"><FInput value={lote} onChange={setLote} placeholder="Ej: 2411-018" /></Field>
+            </div>
+          )}
+        </>
+      )}
       </>)}
       {destino === "tela" && (
         <>
@@ -2504,9 +2549,9 @@ function PromoteModal({ proto, capsulas, onSave, onSaveTela, onClose, config }) 
       )}
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
-        {destino === "capsula"
-          ? <Btn variant="success" onClick={save} disabled={!capsulasDisponibles.length}>⬆ Promover a cápsula</Btn>
-          : <Btn variant="success" onClick={saveTela}>🧵 Promover para tela</Btn>}
+        {destino === "capsula" && <Btn variant="success" onClick={save} disabled={!capsulasDisponibles.length || !capId || !refName || !refCode}>⬆ Promover a cápsula</Btn>}
+        {destino === "contenedor" && <Btn variant="success" onClick={saveContenedor} disabled={!cliente || !refName || !refCode}>⬆ Promover al contenedor</Btn>}
+        {destino === "tela" && <Btn variant="success" onClick={saveTela}>🧵 Promover para tela</Btn>}
       </div>
     </Modal>
   );
@@ -3119,6 +3164,7 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
                   </>
                 )}
                 {kind === "proto" && item.status === "aprobado" && !item.promotedTo && <Btn variant="success" onClick={() => onPromote(item)}>⬆ Promover</Btn>}
+                {kind === "proto" && item.status === "aprobado" && !item.promotedTo && <Btn variant="secondary" onClick={() => patch({ enProduccion: !item.enProduccion, enProduccionFecha: item.enProduccion ? null : today() })}>{item.enProduccion ? "↩ Quitar «ya en producción»" : "📦 Marcar ya en producción"}</Btn>}
                 {kind === "ref" && item.status === "aprobado" && !item.enviadoAPreorden && <Btn variant="success" onClick={() => onPasarAPreorden(item)}>🧾 Pasar a Preorden</Btn>}
               </>
             )}
@@ -3130,6 +3176,7 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
               <Btn variant="amber" onClick={() => setShowRevision(true)}>En revisión</Btn>
             )}
             {!canAdmin && canEdit && kind === "proto" && item.status === "aprobado" && !item.promotedTo && <Btn variant="success" onClick={() => onPromote(item)}>⬆ Promover</Btn>}
+            {!canAdmin && canEdit && kind === "proto" && item.status === "aprobado" && !item.promotedTo && <Btn variant="secondary" onClick={() => patch({ enProduccion: !item.enProduccion, enProduccionFecha: item.enProduccion ? null : today() })}>{item.enProduccion ? "↩ Quitar «ya en producción»" : "📦 Marcar ya en producción"}</Btn>}
             {kind === "proto" && item.promotedTo && item.promotedTo !== "tela" && <span style={{ padding: "6px 12px", background: T.jadeBg, color: T.jade, borderRadius: 8, fontSize: 12, fontWeight: 700 }}>✓ Promovido</span>}
             {kind === "proto" && item.promotedTo === "tela" && <span style={{ padding: "6px 12px", background: T.violetBg, color: T.violet, borderRadius: 8, fontSize: 12, fontWeight: 700 }}>🧵 En programación de tela</span>}
             {!canAdmin && canEdit && kind === "ref" && item.status === "aprobado" && !item.enviadoAPreorden && <Btn variant="success" onClick={() => onPasarAPreorden(item)}>🧾 Pasar a Preorden</Btn>}
@@ -3374,9 +3421,10 @@ function Card({ item, kind, onClick, onPromote, onPasarAPreorden, onDeshacerEnvi
       {item.precioCotizacion != null && (
         <div style={{ marginTop: 8, fontSize: 12, fontWeight: 700, color: T.jade }}>💲 {fmtCOP(item.precioCotizacion)}</div>
       )}
+      {kind === "proto" && item.status === "aprobado" && !item.promotedTo && item.enProduccion && <div style={{ marginTop: 8, fontSize: 11, fontWeight: 800, color: T.coral }}>⚠ Ya en producción, sin cápsula</div>}
       {kind === "proto" && item.status === "aprobado" && !item.promotedTo && perms?.editar && (
         <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${T.border}` }}>
-          <button onClick={(e) => { e.stopPropagation(); onPromote(item); }} style={{ width: "100%", padding: "7px", background: T.jadeBg, border: `1px dashed ${T.jade}`, borderRadius: 8, color: T.jade, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>⬆ Promover a Cápsula</button>
+          <button onClick={(e) => { e.stopPropagation(); onPromote(item); }} style={{ width: "100%", padding: "7px", background: T.jadeBg, border: `1px dashed ${T.jade}`, borderRadius: 8, color: T.jade, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>⬆ Promover</button>
         </div>
       )}
       {kind === "proto" && item.promotedTo && item.promotedTo !== "tela" && <div style={{ marginTop: 8, fontSize: 11, color: T.jade, fontWeight: 700 }}>✓ Promovido</div>}
@@ -20966,6 +21014,30 @@ function AppInner() {
     await updateProto(protoId, { promotedTo: "tela", promoTela: { estado: "por_programar", solicitudId: sol.id, proveedor: info.proveedor || "", pais: info.pais || "", fechaEsperada: info.fechaEsperada || "", nota: info.nota || "", fecha: today(), por }, observations: [...(pr.observations || []), obs] });
     notify({ id: uid(), icon: "🧵", title: "Solicitud de tela creada", msg: `${pr.name} quedó en programación de tela.` });
   }
+  // Promover al contenedor del cliente (2026-11-13): busca la cápsula «contenedor» del cliente para el trimestre en curso (o la crea) y agrega ahí la referencia.
+  async function promoverAContenedor(pr, d) {
+    const per = periodoContenedor();
+    const por = currentUser?.name || "";
+    const stageInicial = d.yaProd ? "corte" : pr.currentStage;
+    const textoProd = d.yaProd ? ` Ya estaba en producción (corte ${d.fechaCorte || today()}${d.lote ? `, lote ${d.lote}` : ""}).` : "";
+    const ref = {
+      id: uid(), name: d.refName, reference: d.refCode, categoria: pr.categoria, silueta: pr.silueta, rango: pr.rango, fromProtoId: pr.id, numPrototipo: pr.numPrototipo || "", status: "en_proceso", currentStage: stageInicial, stageStartedAt: d.yaProd ? (d.fechaCorte || today()) : today(), assignedTo: pr.assignedTo, createdAt: today(), image: pr.image, colores: d.cliente ? [d.cliente] : [], tallas: d.rangoTallas ? [d.rangoTallas] : [], bom: [...(pr.bom || [])], pom: [...(pr.pom || [])], approvals: [], especificaciones: pr.especificaciones || null,
+      ...(d.yaProd ? { enProduccionDirecta: true, fechaCorte: d.fechaCorte || today(), loteCorte: d.lote || "" } : {}),
+      observations: [{ id: uid(), user: "Sistema", role: "Sistema", text: `Promovida desde ${pr.reference} al contenedor del cliente.${textoProd}`, date: nowISO(), type: "info", done: false }],
+    };
+    let cap = buscarContenedor(capsulas, d.cliente, per);
+    if (cap) {
+      await addRef(cap.id, ref);
+    } else {
+      cap = { id: uid(), name: nombreContenedor(d.cliente, per), season: per.etiqueta, cliente: d.cliente, mes: "", assignedTo: "", createdAt: today(), referencias: [ref], ilustracionEstado: "aprobado", observacionesIlustracion: [], esContenedor: true, periodoContenedor: per.key };
+      const updated = [...capsulas, cap];
+      setCapsulas(updated);
+      await fsSave("capsulas", cap.id, cap);
+    }
+    const obs = { id: uid(), user: por, role, text: `📦 Promovido al contenedor ${cap.name}.${textoProd}`, date: nowISO(), type: "info", done: false };
+    await updateProto(pr.id, { promotedTo: cap.id, observations: [...(pr.observations || []), obs] });
+    notify({ id: uid(), icon: "📦", title: "Promovido al contenedor", msg: `${ref.name} quedó en ${cap.name}.` });
+  }
   async function promoteToCapsula(capId, ref, protoId) {
     await addRef(capId, ref);
     await updateProto(protoId, { promotedTo: capId });
@@ -21571,7 +21643,7 @@ function AppInner() {
       {modal === "new-proto" && <NewProtoModal onSave={addProto} onClose={() => setModal(null)} config={config} protos={protos} capsulas={capsulas} />}
       {modal === "new-capsula" && <NewCapsulaModal onSave={addCapsula} onClose={() => setModal(null)} config={config} />}
       {modal === "new-ref" && newRefCap && <NewRefModal capsula={newRefCap} onSave={addRef} onClose={() => { setModal(null); setNewRefCap(null); }} config={config} protos={protos} capsulas={capsulas} />}
-      {modal === "promote" && promoteProto && <PromoteModal proto={promoteProto} capsulas={capsulas} onSave={promoteToCapsula} onSaveTela={promoverATela} onClose={() => { setModal(null); setPromoteProto(null); }} config={config} />}
+      {modal === "promote" && promoteProto && <PromoteModal proto={promoteProto} capsulas={capsulas} onSave={promoteToCapsula} onSaveTela={promoverATela} onSaveContenedor={promoverAContenedor} onClose={() => { setModal(null); setPromoteProto(null); }} config={config} />}
       {modal === "new-pedido" && <SubirPedidoModal2 onSave={addPedido} onClose={() => setModal(null)} pedidoConfig={pedidoConfig} pedidos={pedidos} clientes={config.clientes} />}
       <div style={{ display: "flex", minHeight: "100vh" }}>
         <div style={{ width: 230, background: T.ink, color: T.white, padding: "20px 12px", display: "flex", flexDirection: "column", flexShrink: 0 }}>

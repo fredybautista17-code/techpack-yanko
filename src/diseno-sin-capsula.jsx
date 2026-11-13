@@ -74,6 +74,7 @@ function Fila({ p, marcado, onMarcar, nombres, onResponsable, onFecha, sinClient
       {p.image ? <img src={p.image} alt="" style={{ width: 36, height: 36, borderRadius: 7, objectFit: "cover", border: `1px solid ${C.border}` }} /> : <div style={{ width: 36, height: 36, borderRadius: 7, background: C.canvas, border: `1px solid ${C.border}` }} />}
       <div onClick={onAbrir || undefined} title={onAbrir ? "Abrir el prototipo en Diseño" : undefined} style={{ minWidth: 0, cursor: onAbrir ? "pointer" : "default" }}>
         <b style={{ color: onAbrir ? C.blue : C.ink }}>{referenciaUtil(p.reference) ? `${p.reference} · ` : ""}{p.name}{onAbrir ? " ›" : ""}</b>
+        {p.enProduccion && <span style={{ marginLeft: 8, padding: "1px 8px", borderRadius: 99, background: C.redBg, color: C.red, fontSize: 11, fontWeight: 800 }}>⚠ ya en producción</span>}
         <div style={{ fontSize: 11, color: C.slate }}>{[p.categoria, p.linea, sinCliente ? null : p.clienteTxt].filter(Boolean).join(" · ")}</div>
       </div>
       <select value={p.responsable} onChange={(e) => onResponsable(e.target.value)} style={CAMPO} aria-label="Responsable">
@@ -227,7 +228,7 @@ export function BloqueDisenoSinCapsula({ db, currentUser, onAbrir, puedeAbrir })
           </div>
           {g.items.map((p) => (
             <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 14px", borderTop: `1px solid ${C.border}`, flexWrap: "wrap", fontSize: 13 }}>
-              <div onClick={puedeAbrirProto ? () => onAbrir({ kind: "proto", itemId: p.id }) : undefined} style={{ flex: "1 1 190px", minWidth: 0, cursor: puedeAbrirProto ? "pointer" : "default" }}><b style={{ color: puedeAbrirProto ? C.blue : C.ink }}>{referenciaUtil(p.reference) ? `${p.reference} · ` : ""}{p.name}{puedeAbrirProto ? " ›" : ""}</b><div style={{ fontSize: 11, color: C.slate }}>{p.clienteTxt}</div></div>
+              <div onClick={puedeAbrirProto ? () => onAbrir({ kind: "proto", itemId: p.id }) : undefined} style={{ flex: "1 1 190px", minWidth: 0, cursor: puedeAbrirProto ? "pointer" : "default" }}><b style={{ color: puedeAbrirProto ? C.blue : C.ink }}>{referenciaUtil(p.reference) ? `${p.reference} · ` : ""}{p.name}{puedeAbrirProto ? " ›" : ""}</b>{p.enProduccion && <span style={{ marginLeft: 8, padding: "1px 8px", borderRadius: 99, background: C.redBg, color: C.red, fontSize: 11, fontWeight: 800 }}>⚠ ya en producción</span>}<div style={{ fontSize: 11, color: C.slate }}>{p.clienteTxt}</div></div>
               <div style={{ fontSize: 12, color: C.slate }}>{p.responsable || "Sin responsable"}</div>
               <div style={{ fontSize: 12, fontWeight: 700, color: p.vencido ? C.red : C.ink, minWidth: 80, textAlign: "right" }}>{p.objetivo ? fechaCorta(p.objetivo) : "—"}</div>
             </div>
