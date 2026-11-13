@@ -1624,6 +1624,7 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, puedeFa
                 )}
                 {modo === "bodega" && (puedeFacturar || puedeCambiarEstado || currentUser?.isAdmin) && d.estado === "facturacion" && <FilaFacturacion db={db} T={T} d={d} usuario={usuario} otras={lista} embebida />}
                 {modo === "bodega" && (puedeFacturar || puedeCambiarEstado || currentUser?.isAdmin) && d.estado === "lista" && !d.redespacho && d.facturacion?.documentoSale && <FilaFacturacion key={`c-${d.id}-${d.facturacion.documentoSale}`} db={db} T={T} d={d} usuario={usuario} otras={lista} corregir embebida />}
+                {modo === "bodega" && (puedeFacturar || puedeCambiarEstado || currentUser?.isAdmin) && d.estado === "lista" && !d.redespacho && !d.facturacion?.documentoSale && <FilaFacturacion key={`d-${d.id}`} db={db} T={T} d={d} usuario={usuario} otras={lista} corregir definir embebida />}
                 <div style={{ marginTop: 12 }}>{botones(d)}</div>
                 {modo === "bodega" && (puedeCambiarEstado || currentUser?.isAdmin) && (
                   <CambiarEstadoDev key={`${d.id}-${d.estado}`} T={T} d={d} ocupado={trabajando === d.id}
@@ -1717,9 +1718,10 @@ function HubDevolucionesBodega({ db, T: Tp, onElegir }) {
 
 // (2026-11-11, a pedido de Fredy) Pantalla de Diego (Contabilidad): las devoluciones que Calidad mandó a «nuevo despacho». Él define si salen con la
 // misma remisión o con una nueva; al guardar pasan a «Lista para despachar» y Bodega las ve con la remisión antigua y la nueva.
-function FilaFacturacion({ db, T, d, usuario, otras, corregir = false, embebida = false }) {
+// `corregir`: no cambia el estado (devolución ya «Lista»). `definir`: igual, pero para las que llegaron a «Lista» sin pasar por Facturación (cambio de estado manual).
+function FilaFacturacion({ db, T, d, usuario, otras, corregir = false, definir = false, embebida = false }) {
   const [abierto, setAbierto] = useState(false);
-  const [mostrar, setMostrar] = useState(!corregir);
+  const [mostrar, setMostrar] = useState(!corregir || definir);
   const f0 = d.facturacion || {};
   const orig = String(d.documentoOriginal || "").trim();
   const tipoOrig = tipoDocDe(d);
@@ -1740,9 +1742,9 @@ function FilaFacturacion({ db, T, d, usuario, otras, corregir = false, embebida 
     setGuardando(true); setMsg("");
     try {
       const sale = decision === "misma" ? orig : nuevo.trim();
-      const nota = (corregir ? "Facturación corregida: " : "") + (decision === "misma" ? `Sale con la misma ${NOMBRE_DOC[tipoOrig]} ${orig}` : `Nueva ${nombreSale} ${sale}${orig ? ` (antes ${NOMBRE_DOC[tipoOrig]} ${orig})` : ""}`);
+      const nota = (definir ? "Facturación definida: " : corregir ? "Facturación corregida: " : "") + (decision === "misma" ? `Sale con la misma ${NOMBRE_DOC[tipoOrig]} ${orig}` : `Nueva ${nombreSale} ${sale}${orig ? ` (antes ${NOMBRE_DOC[tipoOrig]} ${orig})` : ""}`);
       await cambiarEstado(db, d, corregir ? d.estado : "lista", { facturacion: { decision, tipoOriginal: tipoOrig, tipoSale, documentoOriginal: orig, documentoNuevo: decision === "nueva" ? sale : "", documentoSale: sale, por: usuario, fecha: nowISO(), ...(corregir && f0.documentoSale ? { corrigeA: f0.documentoSale } : {}) } }, usuario, nota);
-      if (corregir) setMostrar(false);
+      if (corregir && !definir) setMostrar(false);
     } catch (e) {
       setMsg(e?.message || "No se pudo guardar.");
     } finally {
@@ -1780,7 +1782,7 @@ function FilaFacturacion({ db, T, d, usuario, otras, corregir = false, embebida 
           <EstadoPill T={T} d={d} />
         </div>
       )}
-      {embebida || corregir ? <div style={{ fontSize: 14, fontWeight: 800, color: T.ink, marginBottom: 6 }}>🧾 {corregir ? "Corregir facturación" : "Facturación"}</div> : null}
+      {embebida || corregir ? <div style={{ fontSize: 14, fontWeight: 800, color: T.ink, marginBottom: 6 }}>🧾 {definir ? "Definir facturación" : corregir ? "Corregir facturación" : "Facturación"}</div> : null}
       {declaradas !== contadas && contadas > 0 ? <div style={{ background: T.amberBg, color: T.amber, borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 600, marginTop: 8 }}>Calidad contó {contadas} und y la cliente declaró {declaradas}. Se envía solo lo contado.</div> : null}
       <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", background: T.canvas, border: `1px solid ${T.border}`, borderRadius: 12, padding: "12px 14px", margin: "12px 0" }}>
         <div>
@@ -1815,8 +1817,8 @@ function FilaFacturacion({ db, T, d, usuario, otras, corregir = false, embebida 
       )}
       {msg && <div style={{ color: T.coral, fontSize: 13, marginTop: 8 }}>{msg}</div>}
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
-        <button disabled={guardando || !listo} onClick={pasar} style={{ ...btn(T, "primario"), background: T.jade, opacity: guardando || !listo ? 0.45 : 1 }}>{guardando ? "Guardando…" : corregir ? "Guardar corrección" : "Pasar a despacho"}</button>
-        {corregir && <button onClick={() => setMostrar(false)} style={btn(T)}>Cancelar</button>}
+        <button disabled={guardando || !listo} onClick={pasar} style={{ ...btn(T, "primario"), background: T.jade, opacity: guardando || !listo ? 0.45 : 1 }}>{guardando ? "Guardando…" : definir ? "Guardar facturación" : corregir ? "Guardar corrección" : "Pasar a despacho"}</button>
+        {corregir && !definir && <button onClick={() => setMostrar(false)} style={btn(T)}>Cancelar</button>}
         {!embebida && !corregir && <button onClick={() => setAbierto((v) => !v)} style={btn(T)}>{abierto ? "Ocultar detalle" : "Ver detalle"}</button>}
       </div>
       {abierto && !embebida && <Detalle T={T} d={d} mostrarConteo />}
