@@ -14,6 +14,7 @@ import BloqueOrdenesCompra from "./mi-dia-costos";
 import { BloqueCumpleanos } from "./cumpleanos";
 import { BloqueGastosTalento } from "./talento-gastos";
 import { BloqueDisenoSinCapsula } from "./diseno-sin-capsula";
+import { BloqueMuestrasDisenadoras, BloqueSolicitudesTela } from "./diseno-muestras";
 import { MiDiaPlaneacionBloque, ProgramadorProcesosStandalone, MiDiaNominaStandalone, ListaPorProgramarBloque } from "./modulo-planeacion";
 
 const C = {
@@ -467,6 +468,12 @@ export default function MiDiaTarjetasStandalone({ db, currentUser, onVolver, onL
   }
   if (marcadas.includes("diseno_sin_capsula")) {
     secciones.push({ id: "diseno_sin_capsula", icon: "📭", label: "Aprobados sin cápsula", render: () => <BloqueDisenoSinCapsula db={db} currentUser={currentUser} /> });
+  }
+  if (marcadas.includes("diseno_muestras")) {
+    secciones.push({ id: "diseno_muestras", icon: "🧵", label: "Muestras por diseñadora", render: () => <BloqueMuestrasDisenadoras db={db} currentUser={currentUser} /> });
+  }
+  if (marcadas.includes("diseno_solicitudes_tela")) {
+    secciones.push({ id: "diseno_solicitudes_tela", icon: "🧶", label: "Solicitudes de tela", render: () => <BloqueSolicitudesTela db={db} /> });
   }
   if (marcadas.includes("auditoria_nomina")) {
     secciones.push({ id: "auditoria", icon: "🔍", label: "Auditoría Nómina", render: () => <MiDiaNominaStandalone currentUser={currentUser} incrustado /> });

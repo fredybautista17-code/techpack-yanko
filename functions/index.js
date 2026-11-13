@@ -15258,6 +15258,38 @@ exports.avisarCumpleanos = onSchedule(
     }
   }
 );
+// (2026-11-13, a pedido de Fredy) Aviso «planta de muestras sin trabajo»: cada día de trabajo a las 8:00 a. m. (hora de Colombia) manda UN correo con
+// los talleres de muestra que no tienen ninguna muestra pendiente/asignada/por modificar en el Cronograma de Muestras. Quién lo recibe y qué
+// talleres se vigilan se define en Administración → Notificaciones (config/correos_planta_muestras {destinatarios, talleresVigilados}).
+// diseno_avisos_planta_muestras/{AAAA-MM-DD} marca el día ya avisado para no repetir el correo.
+const plantaMuestras = require("./planta-muestras");
+exports.avisarPlantaMuestrasSinTrabajo = onSchedule(
+  { schedule: "every day 08:00", timeZone: "America/Bogota", secrets: [EMAIL_USER, EMAIL_APP_PASSWORD], timeoutSeconds: 120, memory: "256MiB" },
+  async () => {
+    const hoy = fechaHoyBogota();
+    try {
+      const sinTrabajar = await diasSinTrabajarCP();
+      if (!(await esDiaDeTrabajoCP(hoy, sinTrabajar))) { logger.info("avisarPlantaMuestrasSinTrabajo: hoy no es día de trabajo", { hoy }); return; }
+      const marca = db.collection("diseno_avisos_planta_muestras").doc(hoy);
+      if ((await marca.get()).exists) { logger.info("avisarPlantaMuestrasSinTrabajo: ya se avisó hoy", { hoy }); return; }
+      const cfgCorreos = (await db.collection("config").doc("correos_planta_muestras").get()).data() || {};
+      const correos = plantaMuestras.destinatariosPlantaMuestras(cfgCorreos);
+      if (!correos.length) { logger.warn("avisarPlantaMuestrasSinTrabajo: nadie recibe el correo (se define en Administración → Notificaciones)", { hoy }); return; }
+      const cfgMain = (await db.collection("config").doc("main").get()).data() || {};
+      const muestras = (await db.collection("cronograma_muestras").get()).docs.map((x) => x.data());
+      const sinTrabajo = plantaMuestras.talleresSinTrabajo(cfgMain.talleresMuestra || [], muestras, cfgCorreos.talleresVigilados || []);
+      if (!sinTrabajo.length) { logger.info("avisarPlantaMuestrasSinTrabajo: todos los talleres tienen trabajo", { hoy }); return; }
+      const protos = (await db.collection("prototipos").get()).docs.map((x) => x.data());
+      const aprobadosSinCapsula = protos.filter((p) => !p.eliminado && p.status === "aprobado" && !p.promotedTo).length;
+      const correo = plantaMuestras.armarCorreoPlantaMuestras({ sinTrabajo, hoyISO: hoy, aprobadosSinCapsula });
+      await mandarCorreo(crearTransporte(), correos, correo.asunto, correo.html);
+      await marca.set({ enviadoEn: new Date().toISOString(), destinatarios: correos.length, sinTrabajo });
+      logger.info("avisarPlantaMuestrasSinTrabajo enviado", { hoy, destinatarios: correos.length, sinTrabajo });
+    } catch (err) {
+      logger.error("avisarPlantaMuestrasSinTrabajo falló", { hoy, error: err?.message || String(err) });
+    }
+  }
+);
 exports.getLotesPorIntegrarBusint = onCallAuth(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],

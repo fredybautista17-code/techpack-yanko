@@ -14355,6 +14355,71 @@ const AREAS_CORREO_PROG = [
   { id: "calidad", nombre: "Control de calidad", detalle: "Correos de las 7 p. m. y 10 a. m. solo con lo de Calidad + avisos de cambio o cancelación" },
   { id: "zonacalor", nombre: "Zona calor", detalle: "Correos de las 7 p. m. y 10 a. m. solo con lo de Zona calor + avisos de cambio o cancelación" },
 ];
+// (2026-11-13, a pedido de Fredy) Quién recibe el correo «planta de muestras sin trabajo» y qué talleres se vigilan. Se guarda en
+// config/correos_planta_muestras { destinatarios: [], talleresVigilados: [] } (talleresVigilados vacío = todos los talleres de muestra).
+function CorreosPlantaMuestrasPanel({ config }) {
+  const [dest, setDest] = useState([]);
+  const [vig, setVig] = useState([]);
+  const [nuevo, setNuevo] = useState("");
+  const [msg, setMsg] = useState("");
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, "config", "correos_planta_muestras"), (snap) => {
+      const d = snap.exists() ? snap.data() : {};
+      setDest(Array.isArray(d.destinatarios) ? d.destinatarios : []);
+      setVig(Array.isArray(d.talleresVigilados) ? d.talleresVigilados : []);
+    }, () => {});
+    return unsub;
+  }, []);
+  async function guardarCfg(cambio) { await setDoc(doc(db, "config", "correos_planta_muestras"), cambio, { merge: true }); }
+  async function agregar() {
+    const c = String(nuevo || "").trim().toLowerCase();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(c)) { setMsg("Escribe un correo válido, por ejemplo nombre@empresa.com."); return; }
+    setMsg("");
+    setNuevo("");
+    if (dest.includes(c)) return;
+    const lista = [...dest, c];
+    setDest(lista);
+    await guardarCfg({ destinatarios: lista });
+  }
+  async function quitar(c) { const lista = dest.filter((x) => x !== c); setDest(lista); await guardarCfg({ destinatarios: lista }); }
+  async function alternarTaller(t) { const lista = vig.includes(t) ? vig.filter((x) => x !== t) : [...vig, t]; setVig(lista); await guardarCfg({ talleresVigilados: lista }); }
+  const talleres = config?.talleresMuestra || [];
+  return (
+    <div style={{ marginBottom: 28, paddingBottom: 22, borderBottom: `1px solid ${T.border}` }}>
+      <div style={{ fontWeight: 700, fontSize: 15, color: T.ink }}>Aviso: planta de muestras sin trabajo</div>
+      <div style={{ fontSize: 12.5, color: T.slate, marginTop: 4, marginBottom: 14, lineHeight: 1.5 }}>
+        Cada día de trabajo a las 8:00 a. m. sale UN correo si algún taller de muestra no tiene ninguna muestra pendiente, asignada o por modificar en el Cronograma de Muestras. Aquí eliges quién lo recibe (por ejemplo planta de confección, Dayana y Juliana) y qué talleres se vigilan.
+      </div>
+      <div style={{ border: `1px solid ${T.border}`, borderRadius: 12, padding: 14, background: T.white, marginBottom: 14 }}>
+        <div style={{ fontWeight: 800, fontSize: 13.5, color: T.ink, marginBottom: 8 }}>Quién recibe el correo</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+          {dest.map((c) => (
+            <div key={c} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 6px 4px 10px", background: T.white, borderRadius: 20, border: `1px solid ${T.border}` }}>
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: T.ink }}>{c}</span>
+              <button onClick={() => quitar(c)} title="Quitar" style={{ width: 18, height: 18, borderRadius: "50%", border: "none", background: "transparent", color: T.coral, fontWeight: 800, fontSize: 12, cursor: "pointer" }}>✕</button>
+            </div>
+          ))}
+          {!dest.length && <span style={{ fontSize: 12, color: T.coral, fontStyle: "italic" }}>Sin destinatarios: no se manda ningún correo.</span>}
+        </div>
+        <div style={{ display: "flex", gap: 6, maxWidth: 420 }}>
+          <input type="email" value={nuevo} onChange={(e) => setNuevo(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") agregar(); }} placeholder="correo@empresa.com" style={{ flex: 1, minWidth: 0, padding: "7px 10px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 12.5, color: T.ink, outline: "none", fontFamily: "inherit" }} />
+          <Btn small variant="secondary" onClick={agregar}>Agregar</Btn>
+        </div>
+        {msg && <div style={{ fontSize: 12, color: T.coral, marginTop: 6 }}>{msg}</div>}
+      </div>
+      <div style={{ border: `1px solid ${T.border}`, borderRadius: 12, padding: 14, background: T.white }}>
+        <div style={{ fontWeight: 800, fontSize: 13.5, color: T.ink }}>Talleres que se vigilan</div>
+        <div style={{ fontSize: 11.5, color: T.slate, marginBottom: 10 }}>{vig.length ? "Solo los marcados." : "Ninguno marcado: se vigilan todos los talleres de muestra."}</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {talleres.map((t) => (
+            <button key={t} onClick={() => alternarTaller(t)} style={{ padding: "5px 12px", borderRadius: 20, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", border: `1.5px solid ${vig.includes(t) ? T.ink : T.border}`, background: vig.includes(t) ? T.ink : T.white, color: vig.includes(t) ? T.white : T.ink }}>{t}</button>
+          ))}
+          {!talleres.length && <span style={{ fontSize: 12, color: T.slate, fontStyle: "italic" }}>No hay talleres de muestra en la lista (Administración → Talleres de Muestra).</span>}
+        </div>
+      </div>
+    </div>
+  );
+}
 function CorreosProgramacionPanel() {
   const [listas, setListas] = useState({ todas: [], planta: [], calidad: [], zonacalor: [] });
   const [diasSin, setDiasSin] = useState([]); // días que la empresa no trabaja y no son festivo (correo no sale)
@@ -15030,6 +15095,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
         {tab === "notificaciones" && (
           <>
             <CorreosProgramacionPanel />
+            <CorreosPlantaMuestrasPanel config={config} />
             <NotificacionesProgramadasPanel users={users} config={config} onUpdateConfig={onUpdateConfig} />
           </>
         )}
