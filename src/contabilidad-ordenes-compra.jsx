@@ -2,7 +2,9 @@
 // Trae de Busint las órdenes de compra (cabecera + líneas) con la función
 // getOrdenesCompraBusint y muestra: vigentes y vencidas (por recibir), historial,
 // historial de precio por insumo y control de costo (sube o baja frente a la compra anterior).
-// Busint NO dice si la mercancía ya llegó, así que "recibida" se marca a mano
+// (2026-11-13) Sí se sabe cuánto llegó: la función trae las entradas de mercancía de Busint (bmp - entrada planta comp, por NumOC) en `eb`
+// ({f: fecha de la última entrada, c: ya entró todo lo pedido, r: [[Codcomp, cantidad]]}); con todo recibido la orden se da por llegada sola.
+// Aun así "recibida" se puede marcar a mano (por ejemplo si el proveedor entregó de menos y se acepta así)
 // (colección contabilidad_ordenes_compra_recibidas, un documento por orden). Para no llenar
 // la pantalla de "vencidas" con años de órdenes viejas, solo se vigilan las que vencieron
 // dentro de la ventana elegida (60 días por defecto); las anteriores quedan en el Historial.
@@ -74,14 +76,17 @@ export default function OrdenesCompraView({ db, functionsClient, currentUser, C,
   const ordenes = useMemo(() => {
     const nombres = datos?.insumos || {};
     return (datos?.ordenes || []).map((o) => {
-      let bruto = 0, desc = 0, unidades = 0;
+      let bruto = 0, desc = 0, unidades = 0, llegoTotal = 0;
+      const rec = new Map((o.eb?.r || []).map(([c, q]) => [String(c), q]));
       const lineas = o.l.map(([cod, cant, costo, dsc, und]) => {
         const b = cant * costo, d = (b * dsc) / 100;
         bruto += b; desc += d; unidades += cant;
-        return { cod, nombre: nombres[cod] || `Insumo cód. ${cod}`, cant, costo, dsc, und: und || "", neto: costo * (1 - dsc / 100), total: b - d };
+        const llego = o.eb ? rec.get(String(cod)) || 0 : null; // lo que ya entró en Busint de este insumo (null = Busint no tiene entradas de la orden)
+        if (llego) llegoTotal += llego;
+        return { cod, nombre: nombres[cod] || `Insumo cód. ${cod}`, cant, costo, dsc, und: und || "", neto: costo * (1 - dsc / 100), total: b - d, llego };
       });
       const base = bruto - desc;
-      return { ...o, lineas, unidades, bruto, desc, base, iva: base * IVA, total: base * (1 + IVA) };
+      return { ...o, lineas, unidades, llegoTotal, bruto, desc, base, iva: base * IVA, total: base * (1 + IVA) };
     });
   }, [datos]);
 
@@ -119,6 +124,13 @@ export default function OrdenesCompraView({ db, functionsClient, currentUser, C,
       return { clave: "recibida", txt, bg: C.canvas, color: C.slate, borde: C.border, dias: 0 };
     }
     if (o.dx) return { clave: "cumplida", txt: `Cumplida en Busint${o.dx.f ? ` ${fmtF(o.dx.f)}` : ""}`, bg: C.blueBg, color: C.blue, borde: "#C9D9EA", dias: 0 };
+    // (2026-11-13, a pedido de Fredy) Ya entró toda la mercancía en Busint (remisión/entrada con este número de orden): no hace falta marcarla a mano.
+    if (o.eb?.c) {
+      const dif = o.ff && o.eb.f ? diasEntre(o.ff, o.eb.f) : null;
+      const cuando = o.eb.f ? ` ${fmtF(o.eb.f)}` : "";
+      const txt = dif === null || dif === 0 ? `Llegó en Busint${cuando}` : dif > 0 ? `Llegó en Busint${cuando} · ${plural(dif, "día", "días")} tarde` : `Llegó en Busint${cuando} · ${plural(-dif, "día", "días")} antes`;
+      return { clave: "cumplida", txt, bg: C.blueBg, color: C.blue, borde: "#C9D9EA", dias: 0 };
+    }
     if (!o.ff) return { clave: "sinfecha", txt: "Sin fecha de entrega", bg: C.canvas, color: C.slate, borde: C.border, dias: 0 };
     const d = diasEntre(hoy, o.ff); // >0 faltan, <0 vencida
     if (d < 0) {
@@ -209,21 +221,23 @@ export default function OrdenesCompraView({ db, functionsClient, currentUser, C,
     return (
       <div style={{ border: "1.5px solid #C9D9EA", borderRadius: 14, background: C.white, overflow: "hidden" }}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 14, padding: "14px 18px", background: "#F6F9FC", borderBottom: "1px solid #D9E4F0" }}>
-          {[["Proveedor", o.pn || "—", `Código ${o.p || "—"}`], ["Fecha de la orden", fmtF(o.fi)], ["Fecha de entrega", fmtF(o.ff), o.est.clave === "vencida" ? o.est.txt : ""], ["Elaboró", o.u || "—"], ...(o.dx ? [["Cumplida en Busint", o.dx.f ? fmtF(o.dx.f) : "Sí", o.dx.u ? `por ${o.dx.u}` : ""]] : [])].map(([l, v, s]) => (
+          {[["Proveedor", o.pn || "—", `Código ${o.p || "—"}`], ["Fecha de la orden", fmtF(o.fi)], ["Fecha de entrega", fmtF(o.ff), o.est.clave === "vencida" ? o.est.txt : ""], ["Elaboró", o.u || "—"], ...(o.dx ? [["Cumplida en Busint", o.dx.f ? fmtF(o.dx.f) : "Sí", o.dx.u ? `por ${o.dx.u}` : ""]] : []), ...(o.eb ? [["Entradas en Busint", `${o.llegoTotal.toLocaleString("es-CO")} de ${o.unidades.toLocaleString("es-CO")} und`, o.eb.c ? `completa${o.eb.f ? ` · ${fmtF(o.eb.f)}` : ""}` : `incompleta${o.eb.f ? ` · última ${fmtF(o.eb.f)}` : ""}`]] : [])].map(([l, v, s]) => (
             <div key={l}><div style={{ fontSize: 11, letterSpacing: 0.5, textTransform: "uppercase", color: C.slate, fontWeight: 700 }}>{l}</div><div style={{ fontSize: 14, fontWeight: 700, color: l === "Fecha de entrega" && o.est.clave === "vencida" ? C.red : C.ink }}>{v}</div>{s ? <div style={{ fontSize: 11.5, color: l === "Fecha de entrega" ? C.red : C.slate }}>{s}</div> : null}</div>
           ))}
         </div>
         {!o.lineas.length && <div style={{ padding: "18px", color: C.slate, fontSize: 13 }}>Esta orden no tiene líneas registradas en Busint (0 unidades, $0).</div>}
         <div style={{ overflowX: "auto", display: o.lineas.length ? "block" : "none" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead><tr><th style={th}>Cód.</th><th style={th}>Insumo</th><th style={{ ...th, textAlign: "right" }}>Cant.</th><th style={{ ...th, textAlign: "right" }}>Precio unit.</th><th style={{ ...th, textAlign: "right" }}>Desc.</th><th style={{ ...th, textAlign: "right" }}>Precio neto</th><th style={{ ...th, textAlign: "right" }}>Total línea</th><th style={th}>Frente a la compra anterior</th></tr></thead>
+            <thead><tr><th style={th}>Cód.</th><th style={th}>Insumo</th><th style={{ ...th, textAlign: "right" }}>Cant.</th><th style={{ ...th, textAlign: "right" }} title="Lo que ya entró en Busint con el número de esta orden">Llegó</th><th style={{ ...th, textAlign: "right" }}>Precio unit.</th><th style={{ ...th, textAlign: "right" }}>Desc.</th><th style={{ ...th, textAlign: "right" }}>Precio neto</th><th style={{ ...th, textAlign: "right" }}>Total línea</th><th style={th}>Frente a la compra anterior</th></tr></thead>
             <tbody>
               {o.lineas.map((l, i) => {
                 const a = anteriorDeLinea.get(`${o.n}|${l.cod}`);
                 return (
                   <tr key={i}>
                     <td style={td}>{l.cod}</td><td style={td}>{l.nombre}</td>
-                    <td style={{ ...td, ...num }}>{l.cant.toLocaleString("es-CO")}{l.und ? ` ${etqUnidad(l.und)}` : ""}</td><td style={{ ...td, ...num }}>{fmtCOP(l.costo)}{l.und ? ` /${etqUnidad(l.und)}` : ""}</td>
+                    <td style={{ ...td, ...num }}>{l.cant.toLocaleString("es-CO")}{l.und ? ` ${etqUnidad(l.und)}` : ""}</td>
+                    <td style={{ ...td, ...num, color: l.llego === null || l.llego === 0 ? C.slate : l.llego >= l.cant - 0.001 ? C.green : C.amber, fontWeight: l.llego ? 700 : 400 }}>{l.llego === null || l.llego === 0 ? "—" : l.llego.toLocaleString("es-CO")}</td>
+                    <td style={{ ...td, ...num }}>{fmtCOP(l.costo)}{l.und ? ` /${etqUnidad(l.und)}` : ""}</td>
                     <td style={{ ...td, ...num }}>{l.dsc ? `${l.dsc} %` : "—"}</td><td style={{ ...td, ...num }}>{fmtCOP(l.neto)}</td><td style={{ ...td, ...num }}>{fmtCOP(l.total)}</td>
                     <td style={td}>{a ? (a.cambioUnidad ? <><CambioUnidad ahora={a.und} antes={a.undAnt} /> <span style={{ fontSize: 11.5, color: C.slate }}>antes {fmtCOP(a.neto)} · {fmtF(a.fecha)}</span></> : <><Cambio pct={a.pct} /> <span style={{ fontSize: 11.5, color: C.slate }}>antes {fmtCOP(a.neto)} · {fmtF(a.fecha)}</span></>) : <span style={{ fontSize: 12, color: C.slate }}>primera compra registrada</span>}</td>
                   </tr>
@@ -302,7 +316,7 @@ export default function OrdenesCompraView({ db, functionsClient, currentUser, C,
                 <tr key={o.n} onClick={() => setAbierta(abierta === o.n ? null : o.n)} style={{ cursor: "pointer", background: abierta === o.n ? "#EEF4FA" : o.est.clave === "vencida" ? "#FFF8F6" : "transparent" }}>
                   {seleccionable && <td style={td} onClick={(e) => e.stopPropagation()}><input type="checkbox" aria-label={`Seleccionar orden ${o.n}`} checked={!!seleccion[o.n]} onChange={(e) => setSeleccion({ ...seleccion, [o.n]: e.target.checked })} /></td>}
                   <td style={{ ...td, fontWeight: 800 }}>{o.n}</td><td style={td}>{o.pn || "—"}</td><td style={td}>{fmtF(o.fi)}</td><td style={td}>{fmtF(o.ff)}</td>
-                  <td style={td}><Pastilla est={o.est} /></td>
+                  <td style={td}><Pastilla est={o.est} />{o.eb && !o.eb.c && o.est.clave !== "recibida" ? <div style={{ fontSize: 11, color: C.amber, fontWeight: 700, marginTop: 3 }}>Llegó {o.llegoTotal.toLocaleString("es-CO")} de {o.unidades.toLocaleString("es-CO")}</div> : null}</td>
                   <td style={{ ...td, ...num }}>{o.unidades.toLocaleString("es-CO")}</td><td style={{ ...td, ...num }}>{fmtCOP(o.base)}</td><td style={{ ...td, ...num }}>{fmtCOP(o.iva)}</td><td style={{ ...td, ...num, fontWeight: 800 }}>{fmtCOP(o.total)}</td>
                   <td style={td} onClick={(e) => e.stopPropagation()}>
                     {marcas[String(o.n)] ? <Btn variant="ghost" small onClick={() => quitarMarca(o)}>Quitar recibida</Btn> : o.est.clave === "cumplida" ? null : <Btn variant="secondary" small onClick={() => marcarRecibida(o)}>✔ Marcar recibida</Btn>}
@@ -516,7 +530,7 @@ export default function OrdenesCompraView({ db, functionsClient, currentUser, C,
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
               {marcas[String(ordenAbierta.n)]
                 ? <Btn variant="ghost" onClick={() => quitarMarca(ordenAbierta)}>Quitar recibida</Btn>
-                : ordenAbierta.est.clave === "cumplida" ? <span style={{ alignSelf: "center", fontSize: 12.5, color: C.blue, fontWeight: 700 }}>Busint ya la dio por cumplida</span>
+                : ordenAbierta.est.clave === "cumplida" ? <span style={{ alignSelf: "center", fontSize: 12.5, color: C.blue, fontWeight: 700 }}>{ordenAbierta.dx ? "Busint ya la dio por cumplida" : "Ya llegó según las entradas de Busint"}</span>
                 : <Btn variant="success" onClick={() => marcarRecibida(ordenAbierta)}>✔ Marcar recibida</Btn>}
               <Btn variant="secondary" onClick={() => setAbierta(null)}>Cerrar</Btn>
             </div>

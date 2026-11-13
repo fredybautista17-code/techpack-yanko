@@ -33,7 +33,7 @@ export function armarOrdenes(datos) {
 // marcas = { [numeroOrden]: {fecha,...} } de contabilidad_ordenes_compra_recibidas.
 export function estadoOrden(o, marcas, hoy, ventana = VENTANA_DEFECTO) {
   if (marcas && marcas[String(o.n)]) return { clave: "recibida", dias: 0 };
-  if (o.dx) return { clave: "cumplida", dias: 0 };
+  if (o.dx || o.eb?.c) return { clave: "cumplida", dias: 0 }; // «cumplida» en Busint, o ya entró toda la mercancía (entradas de Busint)
   if (!o.ff) return { clave: "sinfecha", dias: 0 };
   const d = diasEntre(hoy, o.ff); // >0 faltan, <0 vencida
   if (d < 0) return { clave: o.ff < sumarDias(hoy, -ventana) ? "antigua" : "vencida", dias: d };

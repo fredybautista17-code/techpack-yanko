@@ -14614,14 +14614,17 @@ exports.depurarOrdenCompraBusint = onCallAuth(
 // Respuesta compacta: l = [[Codcomp, Cant, Costo, Dsc], ...]. Las fechas son AAAA-MM-DD.
 // (2026-11-05) Lógica de órdenes de compra de Busint separada para usarla también en el correo del lunes (correoCumplimientoPresupuesto).
 async function ordenesCompraBusintDatos() {
-  let cabeceras, detalles, proveedores, componentes, detallesDxc;
+  let cabeceras, detalles, proveedores, componentes, detallesDxc, entradasComp, entradasCab;
   try {
-    [cabeceras, detalles, proveedores, componentes, detallesDxc] = await Promise.all([
+    [cabeceras, detalles, proveedores, componentes, detallesDxc, entradasComp, entradasCab] = await Promise.all([
       consultarTablaBusintBDCompleta("orden de compra"),
       consultarTablaBusintBDCompleta("orden de compra detalles"),
       consultarTablaBusintBDCompleta("maestro de proveedores"),
       consultarTablaBusintBDCompleta("estandar componentes prod"),
       consultarTablaBusintBDCompleta("orden de compra detallesdxc"),
+      // (2026-11-13, a pedido de Fredy) Entradas de mercancía (la remisión del proveedor entra a Busint): si fallan, las órdenes se traen igual, sin «llegó».
+      consultarTablaBusintBDCompleta("bmp - entrada planta comp").catch((e) => { logger.warn("getOrdenesCompraBusint: no se pudo leer bmp - entrada planta comp", { error: String(e) }); return []; }),
+      consultarTablaBusintBDCompleta("bmp - entrada planta").catch(() => []),
     ]);
   } catch (err) {
     logger.error("Error consultando Busint BD (getOrdenesCompraBusint)", { error: String(err) });
@@ -14655,6 +14658,38 @@ async function ordenesCompraBusintDatos() {
   // una marca en DadoPorCumplido (que no sea 0/N/NO/FALSE) o aparece en esa tabla. `dx` lleva el valor crudo para poder verificarlo.
   const enDxc = new Set();
   detallesDxc.forEach((d) => { const k = clave(d?.NumOC); if (k) enDxc.add(k); });
+  // (2026-11-13, a pedido de Fredy) «Llegó» según Busint: las entradas de mercancía ("bmp - entrada planta comp": NumOC, Codcomp, Cant) se suman por orden
+  // e insumo; la fecha sale de la cabecera ("bmp - entrada planta", por Entrada). Una orden se da por recibida cuando, en TODAS sus líneas,
+  // lo recibido alcanza lo pedido. Los nombres de columna se buscan sin importar mayúsculas.
+  const colDe = (f, nombre) => { const k = Object.keys(f || {}).find((x) => x.toLowerCase() === nombre); return k === undefined ? undefined : f[k]; };
+  const fechaDeEntrada = new Map();
+  entradasCab.forEach((c) => {
+    const e = clave(colDe(c, "entrada"));
+    const f = fechaBDaISO(colDe(c, "fechafin")) || fechaBDaISO(colDe(c, "fechaini")) || fechaBDaISO(colDe(c, "fecha"));
+    if (e && f) fechaDeEntrada.set(e, f);
+  });
+  const recibidoPorOrden = new Map();
+  const ultimaEntradaPorOrden = new Map();
+  entradasComp.forEach((f) => {
+    const oc = clave(colDe(f, "numoc"));
+    if (!oc || oc === "0") return;
+    const cod = clave(f?.Codcomp);
+    if (!cod) return;
+    if (!recibidoPorOrden.has(oc)) recibidoPorOrden.set(oc, new Map());
+    const m = recibidoPorOrden.get(oc);
+    m.set(cod, (m.get(cod) || 0) + num(f.Cant));
+    const fe = fechaDeEntrada.get(clave(colDe(f, "entrada")));
+    if (fe && (!ultimaEntradaPorOrden.get(oc) || fe > ultimaEntradaPorOrden.get(oc))) ultimaEntradaPorOrden.set(oc, fe);
+  });
+  const entradaDeOrden = (n) => {
+    const rec = recibidoPorOrden.get(n);
+    if (!rec) return null;
+    const pedido = new Map();
+    (lineasPorOrden.get(n) || []).forEach(([cod, cant]) => pedido.set(cod, (pedido.get(cod) || 0) + cant));
+    let completa = pedido.size > 0;
+    pedido.forEach((cant, cod) => { if (cant > 0 && (rec.get(cod) || 0) < cant - 0.001) completa = false; });
+    return { f: ultimaEntradaPorOrden.get(n) || null, c: completa, r: [...rec.entries()].map(([cod, cant]) => [cod, Math.round(cant * 100) / 100]) };
+  };
   const ordenes = [];
   let cumplidas = 0;
   cabeceras.forEach((c) => {
@@ -14671,6 +14706,7 @@ async function ordenesCompraBusintDatos() {
     if (dx) cumplidas += 1;
     ordenes.push({
       dx,
+      eb: entradaDeOrden(n),
       n: Number(n),
       p: prov,
       pn: nombreProv.get(prov) || (prov ? `Proveedor ${prov}` : ""),
@@ -14689,7 +14725,7 @@ async function ordenesCompraBusintDatos() {
   });
   ordenes.sort((a, b) => b.n - a.n);
   const valoresDxc = [...new Set(ordenes.filter((o) => o.dx).map((o) => o.dx.v || (o.dx.f ? "(fecha)" : o.dx.t ? "(en detallesdxc)" : "")))];
-  logger.info("getOrdenesCompraBusint", { ordenes: ordenes.length, lineas: detalles.length, cumplidas, valoresDxc, insumosConNombre: Object.keys(insumos).length, insumosUsados: codigosUsados.size });
+  logger.info("getOrdenesCompraBusint", { ordenes: ordenes.length, lineas: detalles.length, cumplidas, conEntradas: ordenes.filter((o) => o.eb).length, recibidasCompletas: ordenes.filter((o) => o.eb?.c).length, filasEntradas: entradasComp.length, valoresDxc, insumosConNombre: Object.keys(insumos).length, insumosUsados: codigosUsados.size });
   return { ok: true, generado: new Date().toISOString(), ordenes, insumos };
 }
 
@@ -16704,7 +16740,7 @@ function finOrdenesPendientes(ordenes, recibidas, hoyISO) {
   const dias = (a, b) => Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86400000);
   const grupos = { vencida: [], porvencer: [], atiempo: [] };
   (ordenes || []).forEach((o) => {
-    if (recibidas.has(String(o.n)) || o.dx || !o.ff) return;
+    if (recibidas.has(String(o.n)) || o.dx || o.eb?.c || !o.ff) return;
     const d = dias(hoyISO, o.ff);
     if (d < 0 && o.ff < sumarDiasISOCP(hoyISO, -60)) return;
     const base = (o.l || []).reduce((s, [, cant, costo, dsc]) => s + cant * costo * (1 - dsc / 100), 0);
