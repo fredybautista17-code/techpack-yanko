@@ -1245,6 +1245,84 @@ function ResumenBodega({ T, d }) {
 }
 
 // ─── LISTA PARA EL EQUIPO (Bodega y Calidad) ─────────────────────────────
+// ─── Fila compacta del panel de Bodega/Calidad (2026-11-13, a pedido de Fredy: dashboard más moderno) ───
+const PASOS_DEV = [["reportada", "Reportada"], ["en_camino", "En camino"], ["recibida", "Recibida"], ["revisada", "Revisada"], ["facturacion", "En facturación"], ["lista", "Lista"], ["redespachada", "Despachada"]];
+const idxPasoDev = (estado) => (estado === "segundas" ? 6 : Math.max(0, PASOS_DEV.findIndex(([k]) => k === estado)));
+function BarraPasosDev({ T, estado }) {
+  const h = idxPasoDev(estado);
+  const fin = estado === "redespachada" || estado === "segundas";
+  return (
+    <span style={{ display: "inline-flex", gap: 3 }} title={`Paso ${h + 1} de ${PASOS_DEV.length}`}>
+      {PASOS_DEV.map(([k], i) => <i key={k} style={{ width: 16, height: 4, borderRadius: 3, background: i < h || (fin && i === h) ? T.jade : i === h ? T.denim : T.border }} />)}
+    </span>
+  );
+}
+function LineaTiempoDev({ T, d }) {
+  const h = idxPasoDev(d.estado);
+  const fin = d.estado === "redespachada" || d.estado === "segundas";
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", margin: "4px 0 14px" }}>
+      {PASOS_DEV.map(([k, t], i) => {
+        const hecho = i < h || (fin && i === h);
+        const f = fechaDePaso(d, k === "redespachada" && d.estado === "segundas" ? "segundas" : k);
+        return (
+          <div key={k} style={{ flex: "1 1 84px", textAlign: "center", position: "relative", paddingTop: 18, fontSize: 11, fontWeight: 700, color: i === h && !fin ? T.ink : T.slate }}>
+            {i > 0 && <span style={{ position: "absolute", top: 8, left: "-50%", width: "100%", height: 2, background: i <= h ? T.jade : T.border }} />}
+            <span style={{ position: "absolute", top: 4, left: "50%", transform: "translateX(-50%)", width: 10, height: 10, borderRadius: "50%", background: hecho ? T.jade : i === h ? T.denim : T.border, boxShadow: i === h && !fin ? `0 0 0 4px ${T.denimBg}` : "none" }} />
+            {k === "redespachada" && d.estado === "segundas" ? "Segundas" : t}
+            {f ? <div style={{ fontWeight: 600, fontSize: 10.5 }}>{fmtFecha(f)}</div> : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+function FilaDevolucion({ T, d, modo, abierto, onAbrir, ocupado, puedeMarcar, marcado, deshabilitarMarca, onMarcar, onRecibida }) {
+  const e = estadoInfo(T, d.estado);
+  const t = tiempoDevolucion(d);
+  const col = t.cerrada ? T.slate : t.nivel === "rojo" ? T.coral : t.nivel === "ambar" ? T.amber : T.jade;
+  const pct = t.cerrada ? 100 : Math.min(100, t.dias * 20);
+  const guia = String(d.guia || "").trim();
+  let accion = null;
+  if (modo === "bodega" && (d.estado === "reportada" || d.estado === "en_camino")) accion = <button disabled={ocupado} onClick={(ev) => { ev.stopPropagation(); onRecibida(); }} style={btn(T, "primario")}>Recibida</button>;
+  else if (modo === "bodega" && d.estado === "lista") accion = <button onClick={(ev) => { ev.stopPropagation(); onAbrir(); }} style={btn(T, "primario")}>{abierto ? "Cerrar" : "Despachar"}</button>;
+  else if (modo === "calidad" && d.estado === "recibida") accion = <button onClick={(ev) => { ev.stopPropagation(); onAbrir(); }} style={btn(T, "primario")}>{abierto ? "Cerrar" : "Contar"}</button>;
+  else if (modo === "calidad" && d.estado === "revisada") accion = <button onClick={(ev) => { ev.stopPropagation(); onAbrir(); }} style={btn(T, "primario")}>{abierto ? "Cerrar" : "Decidir"}</button>;
+  else accion = <span style={{ color: T.slate, fontSize: 18, fontWeight: 800 }}>{abierto ? "⌃" : "›"}</span>;
+  return (
+    <div onClick={onAbrir} style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", cursor: "pointer" }}>
+      <span style={{ width: 20, flex: "0 0 20px" }}>
+        {puedeMarcar && <input type="checkbox" title="Marcar para despachar junto con otras" checked={marcado} disabled={deshabilitarMarca} onClick={(ev) => ev.stopPropagation()} onChange={(ev) => onMarcar(ev.target.checked)} style={{ width: 16, height: 16, cursor: "pointer" }} />}
+      </span>
+      <div style={{ flex: "0 0 130px" }}>
+        <div style={{ fontWeight: 800, fontSize: 13 }}>{d.numero}</div>
+        <div style={{ marginTop: 5 }}><BarraPasosDev T={T} estado={d.estado} /></div>
+      </div>
+      <div style={{ flex: "1 1 200px", minWidth: 0, fontSize: 13, lineHeight: 1.35 }}>
+        <div><b>lote {d.lote}</b> · ref {d.ref || "—"}{String(d.documentoOriginal || "").trim() ? ` · ${d.documentoOriginal}` : ""}</div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 3, alignItems: "center", fontSize: 11.5, color: T.slate }}>
+          <span>{fmtFecha(d.creadoEn)}</span>
+          {d.solicitaDespacho && !estaCerrada(d) && <Pill bg={T.violetBg} fg={T.violet}>Pide despacho</Pill>}
+          {d.origen?.tipo ? <span>{d.origen.tipo === "factura" ? "🧾 " : d.origen.tipo === "sin_dato" ? "" : "🚚 "}{etiquetaOrigen(d.origen)}{d.origen.confirmar ? " · por confirmar" : ""}</span> : null}
+          {guia ? <span>· Guía {guia}</span> : null}
+          {d.registroManual && <Pill bg={T.denimBg} fg={T.denim}>Registro manual</Pill>}
+        </div>
+      </div>
+      <div style={{ flex: "0 0 56px", textAlign: "right", fontWeight: 800, fontSize: 15 }}>{d.total}<div style={{ fontSize: 11, fontWeight: 600, color: T.slate }}>und</div></div>
+      <div style={{ flex: "0 0 168px", display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-start" }}>
+        <Pill bg={e.bg} fg={e.fg}>{ICONO_ESTADO[d.estado] ? `${ICONO_ESTADO[d.estado]} ` : ""}{e.txt}</Pill>
+        {d.resultado === "diferencias" && <Pill bg={T.coralBg} fg={T.coral}>Con diferencias</Pill>}
+        {d.resultado === "completa" && <Pill bg={T.jadeBg} fg={T.jade}>Completa</Pill>}
+      </div>
+      <div style={{ flex: "0 0 124px", fontSize: 12, fontWeight: 700, color: col }}>
+        {textoTiempo(t)}
+        <div style={{ height: 4, borderRadius: 3, background: T.border, marginTop: 4, overflow: "hidden" }}><div style={{ width: `${pct}%`, height: "100%", background: col, borderRadius: 3 }} /></div>
+      </div>
+      <div style={{ flex: "0 0 auto", marginLeft: "auto", display: "flex", justifyContent: "flex-end", minWidth: 84 }}>{accion}</div>
+    </div>
+  );
+}
+
 function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, tipo, onVolverHub }) {
   const T = Tp || TEMA_DEFECTO;
   const { lista, error } = useDevoluciones(db, null);
@@ -1254,6 +1332,8 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, tipo, o
   const [filtro, setFiltro] = useState(tipo === "clasificar" || tipo === "despachar" ? "todas" : "pendientes");
   const [q, setQ] = useState("");
   const [abierto, setAbierto] = useState(null);
+  const [vista, setVista] = useState("cli"); // «cli» = agrupado por cliente · «lis» = lista simple
+  const [fCli, setFCli] = useState("");
   const [trabajando, setTrabajando] = useState("");
   const [msg, setMsg] = useState("");
   const [redes, setRedes] = useState({ fecha: new Date().toISOString().slice(0, 10), guia: "", nuevo: "" });
@@ -1278,6 +1358,8 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, tipo, o
     if (filtro === "pendientes" && !pendiente(d)) return false;
     if (filtro === "atrasadas" && !tiempoDevolucion(d).atrasada) return false;
     if (filtro === "piden" && !pideDespacho(d)) return false;
+    if (filtro === "listas" && d.estado !== "lista") return false;
+    if (fCli && d.cliente !== fCli) return false;
     const t = q.trim().toLowerCase();
     if (!t) return true;
     return [d.numero, d.lote, d.ref, d.cliente, d.guia, d.documentoOriginal, d.redespacho?.documentoNuevo].some((x) => String(x || "").toLowerCase().includes(t));
@@ -1285,6 +1367,11 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, tipo, o
   // Lo pendiente y lo atrasado se muestra con la más vieja primero; «Todas» sigue de la más nueva a la más vieja.
   const visibles = filtro === "historial" ? [...visiblesBase].sort((a, b) => String(b.actualizadoEn || b.creadoEn || "").localeCompare(String(a.actualizadoEn || a.creadoEn || "")))
     : filtro === "todas" || filtro === "piden" ? visiblesBase : [...visiblesBase].sort((a, b) => (a.creadoEn || "").localeCompare(b.creadoEn || ""));
+  // Agrupado por cliente (orden estable: dentro de cada cliente se conserva el orden de arriba).
+  const visiblesOrden = vista === "cli" ? [...visibles].sort((x, y) => String(x.cliente || "").localeCompare(String(y.cliente || ""))) : visibles;
+  const clientesBase = [...new Set(base.map((d) => d.cliente).filter(Boolean))].sort();
+  const cuantasListas = base.filter((d) => !esHistorial(d) && d.estado === "lista").length;
+  const unidadesPend = base.filter((d) => !esHistorial(d) && pendiente(d)).reduce((n, d) => n + (Number(d.total) || 0), 0);
   const selValidas = sel.filter((id) => (lista || []).some((d) => d.id === id && d.estado === "lista"));
   const clienteSel = (lista || []).find((d) => d.id === selValidas[0])?.cliente;
   async function despacharJuntas() {
@@ -1417,17 +1504,42 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, tipo, o
 
   const tarjeta = { background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, padding: "14px 18px" };
   return (
-    <div style={{ maxWidth: 940 }}>
+    <div style={{ maxWidth: 1000, paddingBottom: selValidas.length ? 300 : 0 }}>
       {onVolverHub && <button onClick={onVolverHub} style={{ background: "none", border: "none", color: T.slate, fontSize: 12, cursor: "pointer", fontFamily: "inherit", padding: 0, marginBottom: 10 }}>← Volver a Devoluciones</button>}
       <div style={{ fontSize: 18, fontWeight: 800, color: T.ink, marginBottom: 4 }}>{(tipo && TITULOS_TIPO[tipo]) || "Devoluciones de clientes"}</div>
       <div style={{ fontSize: 13, color: T.slate, marginBottom: 12 }}>
         {modo === "bodega" ? "Marca cada devolución como recibida cuando llega la mercancía, y como despachada de nuevo cuando vuelve a salir." : "Cuenta por color y talla lo que llegó; ATLAS lo compara con lo que declaró el cliente."}
       </div>
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12, alignItems: "center" }}>
-        {[["pendientes", `${modo === "bodega" ? "Por atender" : "Por revisar"} (${cuantosPendientes})`], ["atrasadas", `Atrasadas (${atrasadas})`], ["piden", `Piden despacho (${cuantosPiden})`], ["todas", "En proceso"], ["historial", `Historial (${cuantosHistorial})`]].map(([k, t]) => (
-          <button key={k} onClick={() => setFiltro(k)} style={{ ...btn(T), background: filtro === k ? T.denimBg : T.white, color: filtro === k ? T.denim : T.ink, borderColor: filtro === k ? T.denim : T.border }}>{t}</button>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginBottom: 12 }}>
+        {[
+          ["pendientes", modo === "bodega" ? "Por atender" : "Por revisar", cuantosPendientes, T.denim, T.denimBg, "📥", `${unidadesPend} und`],
+          ["atrasadas", "Atrasadas", atrasadas, T.coral, T.coralBg, "⏰", "más de 4 días hábiles"],
+          ["piden", "Piden despacho", cuantosPiden, T.violet, T.violetBg, "🚚", "el cliente lo solicitó"],
+          ...(modo === "bodega" ? [["listas", "Listas para despachar", cuantasListas, T.jade, T.jadeBg, "📦", "con documento definido"]] : []),
+          ["todas", "En proceso", base.filter((d) => !esHistorial(d)).length, T.ink, T.canvas, "⚙️", "todas las abiertas"],
+          ["historial", "Historial", cuantosHistorial, T.slate, T.canvas, "🗂", "ya resueltas"],
+        ].map(([k, t, n, fg, bg, ic, sub]) => (
+          <button key={k} onClick={() => setFiltro(k)} style={{ textAlign: "left", fontFamily: "inherit", cursor: "pointer", background: T.white, border: `1.5px solid ${filtro === k ? T.ink : T.border}`, borderRadius: 14, padding: "10px 14px", color: T.ink }}>
+            <span style={{ float: "right", width: 28, height: 28, borderRadius: 8, background: bg, display: "grid", placeItems: "center", fontSize: 14 }}>{ic}</span>
+            <span style={{ display: "block", fontSize: 26, fontWeight: 800, lineHeight: 1.1, color: n && (k === "atrasadas" || k === "piden" || k === "pendientes" || k === "listas") ? fg : T.ink }}>{n}</span>
+            <span style={{ display: "block", fontSize: 12, fontWeight: 800, color: T.ink }}>{t}</span>
+            <span style={{ display: "block", fontSize: 11, color: T.slate }}>{sub}</span>
+          </button>
         ))}
-        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar por número, lote, ref, cliente o guía" style={{ ...campo(T), width: 300 }} />
+      </div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12, alignItems: "center" }}>
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="🔎 Buscar por número, lote, ref, cliente o guía" style={{ ...campo(T), flex: "1 1 260px", minWidth: 0, height: 38 }} />
+        {clientesBase.length > 1 && (
+          <select value={fCli} onChange={(e) => setFCli(e.target.value)} style={{ ...campo(T), height: 38 }}>
+            <option value="">Todos los clientes</option>
+            {clientesBase.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+        )}
+        <div style={{ display: "flex", border: `1.5px solid ${T.border}`, borderRadius: 10, overflow: "hidden", background: T.white }}>
+          {[["cli", "Por cliente"], ["lis", "Lista"]].map(([v, l]) => (
+            <button key={v} onClick={() => setVista(v)} style={{ border: "none", padding: "0 14px", height: 35, fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit", background: vista === v ? T.ink : "transparent", color: vista === v ? T.white : T.slate }}>{l}</button>
+          ))}
+        </div>
       </div>
       {error && <div style={{ color: T.coral, fontSize: 13, marginBottom: 8 }}>{error}</div>}
       {modo === "bodega" && msgJunto && selValidas.length === 0 && <div style={{ fontSize: 13, color: msgJunto.startsWith("Despachadas") ? T.jade : T.coral, marginBottom: 10 }}>{msgJunto}</div>}
@@ -1436,7 +1548,7 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, tipo, o
         const grupos = resumenDespachoJunto(elegidas);
         const unidades = elegidas.reduce((s, d) => s + (Number(d.total) || 0), 0);
         return (
-          <div style={{ background: T.white, border: `1px solid ${T.denim}`, borderRadius: 14, padding: "14px 18px", marginBottom: 12 }}>
+          <div style={{ position: "fixed", left: "50%", transform: "translateX(-50%)", bottom: 14, width: "min(940px, 94vw)", maxHeight: "62vh", overflowY: "auto", zIndex: 50, background: T.white, border: `1.5px solid ${T.denim}`, borderRadius: 16, padding: "14px 18px", boxShadow: "0 12px 36px rgba(0,0,0,.25)" }}>
             <div style={{ fontSize: 14, fontWeight: 800, color: T.ink, marginBottom: 6 }}>Despachar juntas · {elegidas.length} {elegidas.length === 1 ? "devolución" : "devoluciones"} · {unidades} und · {clienteSel || "—"}</div>
             {elegidas.length < 2 ? (
               <div style={{ fontSize: 13, color: T.slate }}>Marca al menos otra devolución «Lista para despachar» del mismo cliente para despacharlas juntas.</div>
@@ -1465,22 +1577,31 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, tipo, o
       })()}
       {lista === null ? <div style={{ fontSize: 13, color: T.slate }}>Cargando…</div>
         : !visibles.length ? <div style={{ ...tarjeta, fontSize: 13, color: T.slate }}>{filtro === "pendientes" ? "No hay devoluciones pendientes." : filtro === "piden" ? "Ningún cliente tiene un despacho de nuevo por atender." : filtro === "historial" ? "Todavía no hay devoluciones en el historial." : "No hay devoluciones en proceso."}</div>
-        : visibles.map((d) => (
-          <div key={d.id} style={{ ...tarjeta, marginBottom: 10 }}>
-            <div onClick={() => abrir(d)} style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", cursor: "pointer", alignItems: "center" }}>
-              <span style={{ fontSize: 14 }}>
-                {d.estado === "lista" && modo === "bodega" && (
-                  <input type="checkbox" title="Marcar para despachar junto con otras" checked={selValidas.includes(d.id)}
-                    disabled={!selValidas.includes(d.id) && selValidas.length > 0 && clienteSel !== d.cliente}
-                    onClick={(e) => e.stopPropagation()}
-                    onChange={(e) => setSel((a) => (e.target.checked ? [...a.filter((x) => x !== d.id), d.id] : a.filter((x) => x !== d.id)))}
-                    style={{ marginRight: 8 }} />
-                )}
-                <b>{d.numero}</b> · {d.cliente || "—"} · lote {d.lote} · ref {d.ref || "—"} · {d.total} und{String(d.documentoOriginal || "").trim() ? ` · ${d.documentoOriginal}` : ""} · {fmtFecha(d.creadoEn)}</span>
-              <EstadoPill T={T} d={d} />
-            </div>
+        : visiblesOrden.map((d, idx) => (
+          <React.Fragment key={d.id}>
+          {vista === "cli" && (idx === 0 || visiblesOrden[idx - 1].cliente !== d.cliente) && (() => {
+            const delCli = visiblesOrden.filter((x) => x.cliente === d.cliente);
+            const listasCli = delCli.filter((x) => x.estado === "lista");
+            const und = delCli.reduce((n, x) => n + (Number(x.total) || 0), 0);
+            return (
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", margin: idx === 0 ? "0 0 8px" : "16px 0 8px" }}>
+                <b style={{ fontSize: 14, color: T.ink }}>{d.cliente || "Sin cliente"}</b>
+                <Pill T={T} bg={T.canvas} fg={T.slate}>{delCli.length} {delCli.length === 1 ? "devolución" : "devoluciones"} · {und} und</Pill>
+                {listasCli.length > 0 && <Pill T={T} bg={T.jadeBg} fg={T.jade}>{listasCli.length} {listasCli.length === 1 ? "lista" : "listas"}</Pill>}
+                <span style={{ flex: 1 }} />
+                {modo === "bodega" && listasCli.length > 1 && <button onClick={() => setSel(listasCli.map((x) => x.id))} style={btn(T)}>☑ Marcar las {listasCli.length} listas</button>}
+              </div>
+            );
+          })()}
+          <div style={{ ...tarjeta, padding: "10px 16px", borderRadius: 12, marginBottom: 8, borderColor: abierto === d.id ? T.denim : selValidas.includes(d.id) ? T.denim : T.border, background: selValidas.includes(d.id) ? T.denimBg : T.white }}>
+            <FilaDevolucion T={T} d={d} modo={modo} abierto={abierto === d.id} onAbrir={() => abrir(d)} ocupado={trabajando === d.id}
+              puedeMarcar={d.estado === "lista" && modo === "bodega"} marcado={selValidas.includes(d.id)}
+              deshabilitarMarca={!selValidas.includes(d.id) && selValidas.length > 0 && clienteSel !== d.cliente}
+              onMarcar={(v) => setSel((a) => (v ? [...a.filter((x) => x !== d.id), d.id] : a.filter((x) => x !== d.id)))}
+              onRecibida={() => accion(d, "recibida", { recibidaPor: usuario, recibidaEn: nowISO() })} />
             {abierto === d.id && (
               <>
+                <LineaTiempoDev T={T} d={d} />
                 <Detalle T={T} d={d} mostrarConteo />
                 {modo === "bodega" && ["revisada", "facturacion", "lista"].includes(d.estado) && d.conteo?.length ? <ResumenBodega T={T} d={d} /> : null}
                 {msg && <div style={{ color: T.coral, fontSize: 13, marginTop: 8 }}>{msg}</div>}
@@ -1504,6 +1625,7 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, tipo, o
               </>
             )}
           </div>
+          </React.Fragment>
         ))}
     </div>
   );
