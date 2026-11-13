@@ -14,7 +14,8 @@ import BloqueOrdenesCompra from "./mi-dia-costos";
 import { BloqueCumpleanos } from "./cumpleanos";
 import { BloqueGastosTalento } from "./talento-gastos";
 import { BloqueDisenoSinCapsula } from "./diseno-sin-capsula";
-import { BloqueMuestrasDisenadoras, BloqueSolicitudesTela, BloqueCronogramaMuestras } from "./diseno-muestras";
+import { BloqueMuestrasDisenadoras, BloqueCronogramaMuestras } from "./diseno-muestras";
+import BloqueQueDisenar from "./diseno-que-disenar";
 import { MiDiaPlaneacionBloque, ProgramadorProcesosStandalone, MiDiaNominaStandalone, ListaPorProgramarBloque } from "./modulo-planeacion";
 
 const C = {
@@ -475,9 +476,10 @@ export default function MiDiaTarjetasStandalone({ db, currentUser, onVolver, onL
   if (marcadas.includes("diseno_muestras")) {
     secciones.push({ id: "diseno_muestras", icon: "🧵", label: "Muestras por diseñadora", render: () => <BloqueMuestrasDisenadoras db={db} currentUser={currentUser} onAbrir={(it) => onAbrirItem && onAbrirItem(it, "diseno_muestras")} puedeAbrir={puedeAbrir} /> });
   }
-  if (marcadas.includes("diseno_solicitudes_tela")) {
-    secciones.push({ id: "diseno_solicitudes_tela", icon: "🧶", label: "Solicitudes de tela", render: () => <BloqueSolicitudesTela db={db} onAbrir={(it) => onAbrirItem && onAbrirItem(it, "diseno_solicitudes_tela")} puedeAbrir={puedeAbrir} /> });
+  if (marcadas.includes("diseno_que_disenar")) {
+    secciones.push({ id: "diseno_que_disenar", icon: "🎯", label: "Qué diseñar", render: () => <BloqueQueDisenar db={db} /> });
   }
+
   if (marcadas.includes("auditoria_nomina")) {
     secciones.push({ id: "auditoria", icon: "🔍", label: "Auditoría Nómina", render: () => <MiDiaNominaStandalone currentUser={currentUser} incrustado /> });
   }

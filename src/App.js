@@ -18,6 +18,7 @@ import VigentesPorEtapaView from "./vigentes-por-etapa";
 import ExplosionMaterialesView from "./explosion-materiales";
 import LotesPorIntegrarView from "./lotes-por-integrar";
 import { DevolucionesClienteView } from "./devoluciones-cliente";
+import { BloqueSolicitudesTela } from "./diseno-muestras";
 import PatronCodigosReferencia, { buscarPorPatron, PrefijosDeCliente } from "./codigos-patron";
 import { initializeApp } from "firebase/app";
 import {
@@ -4962,16 +4963,21 @@ async function exportarTodaBitacoraEnviosExcel(filas, sufijoNombre = "") {
 // dentro de un solo ítem de menú "Bitácoras" — antes eran dos entradas
 // sueltas, ahora comparten pantalla como ya hace Historial con sus propias
 // pestañas internas.
+// (2026-11-13, a pedido de Fredy) «Fabricación de telas»: lo que antes era «Solicitudes de tela» del Mi Día. Aquí se cambia el estado de la tela
+// (Por programar → Programada → En camino → Llegó) sin tener que abrir cada prototipo. El cambio pasa por updateProto (App) para no pisar datos.
+function FabricacionTelasView({ db, onCambiarEstado, onAbrirProto }) {
+  return <BloqueSolicitudesTela db={db} onCambiarEstado={onCambiarEstado} onAbrir={(it) => onAbrirProto && it?.itemId && onAbrirProto(it.itemId)} puedeAbrir={{ proto: !!onAbrirProto }} />;
+}
 function BitacorasView(props) {
   const [tab, setTab] = useState("envios");
   return (
     <div>
       <div style={{ display: "flex", gap: 6, marginBottom: 20 }}>
-        {[["envios", "📦 Bitácora de Envíos"], ["sin_pedido", "🚫 Bitácora de Aprobados sin Pedido"], ["telas", "🧵 Bitácora de Telas"]].map(([v, label]) => (
+        {[["envios", "📦 Bitácora de Envíos"], ["sin_pedido", "🚫 Bitácora de Aprobados sin Pedido"], ["telas", "🧵 Bitácora de Telas"], ["fabricacion", "🪡 Fabricación de telas"]].map(([v, label]) => (
           <button key={v} onClick={() => setTab(v)} style={{ padding: "8px 16px", borderRadius: 8, border: `1.5px solid ${tab === v ? T.ink : T.border}`, background: tab === v ? T.ink : T.white, color: tab === v ? T.white : T.ink, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>{label}</button>
         ))}
       </div>
-      {tab === "envios" ? <BitacoraEnviosView {...props} /> : tab === "sin_pedido" ? <BitacoraAprobadosSinPedidoView {...props} /> : <BitacoraTelasView />}
+      {tab === "envios" ? <BitacoraEnviosView {...props} /> : tab === "sin_pedido" ? <BitacoraAprobadosSinPedidoView {...props} /> : tab === "fabricacion" ? <FabricacionTelasView db={props.db} onCambiarEstado={props.soloLectura ? undefined : props.onCambiarEstadoTela} onAbrirProto={props.onSelectProto} /> : <BitacoraTelasView />}
     </div>
   );
 }
@@ -21236,6 +21242,18 @@ function AppInner() {
     await updateCapsulasAndSave(updated);
   }
   async function updateProtoName(id, patch) { await updateProto(id, patch); }
+  // «Fabricación de telas» (Bitácoras): cambia el estado de la tela de una solicitud. Mismo efecto que el botón del prototipo (cambiarTelaEstado en DetailView).
+  async function cambiarEstadoTelaDesdeBitacora(sol, estado) {
+    const def = TELA_ESTADOS[estado];
+    if (!def || !sol) return;
+    const hoyISO = today();
+    const p = protos.find((x) => x.id === sol.protoId);
+    if (!p) { await fsUpdate("solicitudes_tela", sol.id, { estado, fechaEstado: hoyISO }); return; }
+    const prev = p.promoTela || {};
+    const obs = { id: uid(), user: currentUser?.name, role, text: `🧵 Programación de tela: ${def.label}.`, date: nowISO(), type: "info", done: false };
+    await updateProto(p.id, { promoTela: { ...prev, estado, fechaEstado: hoyISO }, promotedTo: estado === "llego" ? null : "tela", observations: [...(p.observations || []), obs] });
+    if (!prev.solicitudId) await fsUpdate("solicitudes_tela", sol.id, { estado, fechaEstado: hoyISO });
+  }
   async function updateCapsulaName(id, patch) { const updated = capsulas.map((c) => (c.id !== id ? c : { ...c, ...patch })); setCapsulas(updated); const cap = updated.find((c) => c.id === id); await fsSave("capsulas", id, cap); }
   async function addPedido(p) {
     const updated = [...pedidos, p];
@@ -21928,6 +21946,8 @@ function AppInner() {
                 onSelectProto={(id) => { setSelProtoId(id); setView("proto-detail"); }}
                 onVincularPedido={(capId, refId, patch) => updateRef(capId, refId, patch)}
                 onVincularProto={(id, patch) => updateProto(id, patch)}
+                db={db}
+                onCambiarEstadoTela={cambiarEstadoTelaDesdeBitacora}
                 currentUser={currentUser}
                 soloLectura={esClienteSoloLectura}
               />

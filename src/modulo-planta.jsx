@@ -2491,9 +2491,29 @@ function FilaMatricular({ lote, modulos, onMatricular }) {
     </tr>
   );
 }
-function ConfigModulosPanel({ modulos, horizonteDias, asignaciones, onGuardar, onCerrar }) {
-  const [borrador, setBorrador] = useState(modulos.map((m) => ({ ...m })));
+function ConfigModulosPanel({ modulos, horizonteDias, asignaciones, onGuardar, onCerrar, categoriasDisponibles = [], paramsDiseno = {} }) {
+  const [borrador, setBorrador] = useState(modulos.map((m) => ({ ...m, categorias: Array.isArray(m.categorias) ? [...m.categorias] : [] })));
   const [horizonte, setHorizonte] = useState(String(horizonteDias));
+  // (2026-11-13, a pedido de Fredy) Para la tarjeta «Qué diseñar» del Mi Día: qué categorías hace cada módulo y los 3 parámetros de Diseño.
+  const [pDiseno, setPDiseno] = useState({ poco: String(paramsDiseno.disenoPocoDias || 10), lead: String(paramsDiseno.disenoLeadDias || 45), minEnCamino: String(paramsDiseno.disenoMinEnCamino || 3) });
+  const [otraCat, setOtraCat] = useState("");
+  const todasCats = useMemo(() => {
+    const vistos = new Map();
+    [...categoriasDisponibles, ...borrador.flatMap((b) => b.categorias || [])].forEach((c) => {
+      const t = String(c || "").trim();
+      const k = t.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+      if (t && !k.startsWith("(sin") && !vistos.has(k)) vistos.set(k, t);
+    });
+    return [...vistos.values()].sort((a, b) => a.localeCompare(b));
+  }, [categoriasDisponibles, borrador]);
+  function alternarCategoria(id, cat) {
+    setBorrador((bs) => bs.map((b) => {
+      if (b.id !== id) return b;
+      const k = (x) => String(x).normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
+      const tiene = (b.categorias || []).some((c) => k(c) === k(cat));
+      return { ...b, categorias: tiene ? b.categorias.filter((c) => k(c) !== k(cat)) : [...(b.categorias || []), cat] };
+    }));
+  }
   function cambiar(id, campo, valor) {
     setBorrador((bs) => bs.map((b) => (b.id === id ? { ...b, [campo]: valor } : b)));
   }
@@ -2502,9 +2522,10 @@ function ConfigModulosPanel({ modulos, horizonteDias, asignaciones, onGuardar, o
     setBorrador((bs) => bs.filter((b) => b.id !== id));
   }
   async function guardar() {
-    const limpios = borrador.map((b) => ({ id: b.id, nombre: String(b.nombre || "").trim(), lider: String(b.lider || "").trim(), capacidadDia: Math.max(0, Math.floor(Number(b.capacidadDia) || 0)) }));
+    const limpios = borrador.map((b) => ({ id: b.id, nombre: String(b.nombre || "").trim(), lider: String(b.lider || "").trim(), capacidadDia: Math.max(0, Math.floor(Number(b.capacidadDia) || 0)), categorias: (b.categorias || []).filter(Boolean) }));
     if (limpios.some((b) => !b.nombre)) return alert("Todos los módulos necesitan un nombre.");
-    await onGuardar(limpios, Math.max(1, Math.floor(Number(horizonte) || 5)));
+    const entero = (v, d) => Math.max(1, Math.floor(Number(v) || d));
+    await onGuardar(limpios, Math.max(1, Math.floor(Number(horizonte) || 5)), { disenoPocoDias: entero(pDiseno.poco, 10), disenoLeadDias: entero(pDiseno.lead, 45), disenoMinEnCamino: entero(pDiseno.minEnCamino, 3) });
     onCerrar();
   }
   const inp = { padding: "7px 9px", borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 13, width: "100%" };
@@ -2525,12 +2546,36 @@ function ConfigModulosPanel({ modulos, horizonteDias, asignaciones, onGuardar, o
             <input value={b.lider} onChange={(e) => cambiar(b.id, "lider", e.target.value)} style={inp} placeholder="Nombre del líder" />
             <input value={b.capacidadDia || ""} onChange={(e) => cambiar(b.id, "capacidadDia", e.target.value.replace(/[^0-9]/g, ""))} inputMode="numeric" style={{ ...inp, textAlign: "right" }} placeholder="0" />
             <button onClick={() => quitar(b.id)} style={{ border: "none", background: "transparent", color: C.red, cursor: "pointer", fontSize: 14 }} title="Quitar módulo">🗑</button>
+            <div style={{ gridColumn: "1 / -1", display: "flex", flexWrap: "wrap", gap: 5, alignItems: "center", paddingBottom: 8, borderBottom: `1px solid ${C.border}`, marginBottom: 2 }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: C.slate, marginRight: 2 }}>Categorías que hace:</span>
+              {todasCats.map((cat) => {
+                const k = (x) => String(x).normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
+                const on = (b.categorias || []).some((c) => k(c) === k(cat));
+                return <button key={cat} onClick={() => alternarCategoria(b.id, cat)} style={{ padding: "3px 10px", borderRadius: 14, fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", border: `1.5px solid ${on ? C.green : C.border}`, background: on ? C.green : C.white, color: on ? C.white : C.slate }}>{on ? "✓ " : ""}{cat}</button>;
+              })}
+              {!todasCats.length && <span style={{ fontSize: 11, color: C.slate }}>Aún no hay categorías en la carga; agrega una abajo.</span>}
+            </div>
           </FragmentoFila>
         ))}
       </div>
       <button onClick={() => setBorrador((bs) => [...bs, { id: `m${uid()}`, nombre: `Módulo ${bs.length + 1}`, lider: "", capacidadDia: 0 }])} style={{ border: `1px dashed ${C.seam}`, background: "transparent", color: C.ink, fontWeight: 700, fontSize: 12, padding: "7px 14px", borderRadius: 8, cursor: "pointer", marginBottom: 14 }}>
         + Agregar módulo
       </button>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14, fontSize: 12, color: C.slate, flexWrap: "wrap" }}>
+        ¿Falta una categoría en la lista?
+        <input value={otraCat} onChange={(e) => setOtraCat(e.target.value)} placeholder="Nueva categoría" style={{ ...inp, width: 170 }} />
+        <button onClick={() => { const t = otraCat.trim(); if (!t) return; setBorrador((bs) => (bs.length ? bs.map((b, i) => (i === 0 ? { ...b, categorias: [...(b.categorias || []), t] } : b)) : bs)); setOtraCat(""); }} style={{ border: `1px solid ${C.seam}`, background: C.white, color: C.ink, fontWeight: 700, fontSize: 12, padding: "6px 12px", borderRadius: 8, cursor: "pointer" }}>Agregar al primer módulo</button>
+      </div>
+      <div style={{ background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 10, padding: 12, marginBottom: 16 }}>
+        <div style={{ fontWeight: 800, fontSize: 12, color: C.ink, marginBottom: 6 }}>🎯 Para «Qué diseñar» (Mi Día de Diseño)</div>
+        <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 12, color: C.slate, alignItems: "center" }}>
+          {[["poco", "Poco trabajo = menos de", "días de trabajo"], ["lead", "Un diseño tarda en llegar a planta", "días"], ["minEnCamino", "Diseño «ya cubre» con", "diseños en camino"]].map(([k, a, b2]) => (
+            <label key={k} style={{ display: "flex", alignItems: "center", gap: 6 }}>{a}
+              <input value={pDiseno[k]} onChange={(e) => setPDiseno((d) => ({ ...d, [k]: e.target.value.replace(/[^0-9]/g, "") }))} inputMode="numeric" style={{ ...inp, width: 56, textAlign: "right" }} />{b2}
+            </label>
+          ))}
+        </div>
+      </div>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16, fontSize: 12, color: C.slate }}>
         Días de carga que se consideran «llenos»:
         <input value={horizonte} onChange={(e) => setHorizonte(e.target.value.replace(/[^0-9]/g, ""))} inputMode="numeric" style={{ ...inp, width: 60, textAlign: "right" }} />
@@ -2622,7 +2667,7 @@ function CargaModulosView({ cargaActiva, asignaciones, configModulos, currentUse
           Estos son módulos de ejemplo.{isAdmin ? " Entra a «Configurar módulos» para poner los nombres, los líderes y la capacidad reales." : " Un administrador debe configurar los nombres, líderes y capacidad reales."}
         </div>
       )}
-      {editando && <ConfigModulosPanel modulos={modulos} horizonteDias={horizonteDias} asignaciones={asignaciones} onGuardar={onGuardarConfig} onCerrar={() => setEditando(false)} />}
+      {editando && <ConfigModulosPanel modulos={modulos} horizonteDias={horizonteDias} asignaciones={asignaciones} onGuardar={onGuardarConfig} onCerrar={() => setEditando(false)} categoriasDisponibles={(cargaActiva?.lotes || []).map((l) => l.categoria)} paramsDiseno={configModulos || {}} />}
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 20 }}>
         {kpi("En Planta Yanko", `${fmtNum(totalEnPlanta)} und`)}
         {kpi("Matriculado en módulos", `${fmtNum(totalPendiente)} und`, C.green)}
@@ -3038,10 +3083,10 @@ export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
     setAsignaciones((as) => as.filter((a) => a.id !== asig.id));
     await fsDelete("planta_modulos_asignacion", asig.id);
   }
-  async function guardarConfigModulos(modulos, horizonteDias) {
-    const nuevo = { modulos, horizonteDias, actualizadoPor: currentUser?.name || currentUser?.username || "", actualizadoEn: new Date().toISOString() };
-    setConfigModulos(nuevo);
-    await setDoc(doc(db, "config", "planta_modulos"), nuevo);
+  async function guardarConfigModulos(modulos, horizonteDias, paramsDiseno) {
+    const nuevo = { modulos, horizonteDias, ...(paramsDiseno || {}), actualizadoPor: currentUser?.name || currentUser?.username || "", actualizadoEn: new Date().toISOString() };
+    setConfigModulos((prev) => ({ ...(prev || {}), ...nuevo }));
+    await setDoc(doc(db, "config", "planta_modulos"), nuevo, { merge: true });
   }
   const isAdmin = currentUser?.isAdmin;
   const NAV = [

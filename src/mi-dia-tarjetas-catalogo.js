@@ -79,7 +79,7 @@ export const GRUPOS_MI_DIA = [
       { id: "diseno_sin_capsula", label: "Prototipos aprobados sin cápsula: su línea de trabajo, con fecha objetivo, responsable, cronograma por semanas e informe en Excel" },
       { id: "diseno_cronograma_muestras", label: "Cronograma de muestras: lo que cada taller tiene en curso y lo que se entrega cada semana (solo consulta)" },
       { id: "diseno_muestras", label: "Muestras por diseñadora: en taller, por revisar, a modificar y vencidas" },
-      { id: "diseno_solicitudes_tela", label: "Solicitudes de tela: prototipos promovidos para programación de tela y avance de la tela" },
+      { id: "diseno_que_disenar", label: "Qué diseñar: categorías con poco trabajo en los módulos de Planta, descontando lo que Diseño ya tiene en camino (45 días a planta)" },
     ],
   },
 ];

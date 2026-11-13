@@ -4,7 +4,7 @@
 //    Lee «cronograma_muestras» y la diseñadora sale del prototipo / referencia (assignedTo). Solo lectura.
 //  · BloqueCronogramaMuestras (2026-11-13): el Cronograma de Muestras en el Mi Día, por taller o por semana de entrega. Solo consulta.
 //  · BloqueSolicitudesTela: solicitudes creadas al «Promover para programación de tela» (colección «solicitudes_tela»).
-//    Solo lectura: el estado de la tela se cambia desde el prototipo (Diseño → Prototipos).
+//    En el Mi Día era solo lectura; ahora vive en Bitácoras → «Fabricación de telas» (con `onCambiarEstado` el estado se cambia ahí mismo).
 import React, { useState, useEffect, useMemo } from "react";
 import { collection, doc, onSnapshot } from "firebase/firestore";
 
@@ -153,7 +153,7 @@ export function BloqueMuestrasDisenadoras({ db, currentUser, onAbrir, puedeAbrir
   );
 }
 
-export function BloqueSolicitudesTela({ db, onAbrir, puedeAbrir }) {
+export function BloqueSolicitudesTela({ db, onAbrir, puedeAbrir, onCambiarEstado }) {
   const [solicitudes, error] = useColeccion(db, "solicitudes_tela");
   const [verLlegaron, setVerLlegaron] = useState(false);
   if (error) return <div style={{ padding: 16, color: C.red, fontSize: 13 }}>{error}</div>;
@@ -164,7 +164,9 @@ export function BloqueSolicitudesTela({ db, onAbrir, puedeAbrir }) {
   return (
     <div>
       <div style={{ fontSize: 13, color: C.slate, marginBottom: 14, lineHeight: 1.5 }}>
-        Solicitudes de tela que salen cuando Diseño promueve un prototipo «para programación de tela». El estado de la tela se actualiza desde el prototipo (Diseño → Prototipos → En programación de tela).
+        {onCambiarEstado
+          ? "Fabricación de telas: lo que Diseño promovió «para programación de tela». Cambie aquí el estado de cada tela (Por programar → Programada → En camino → Llegó); al marcar «Llegó» el prototipo queda listo para cápsula."
+          : "Solicitudes de tela que salen cuando Diseño promueve un prototipo «para programación de tela». El estado de la tela se actualiza desde el prototipo (Diseño → Prototipos → En programación de tela)."}
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10, marginBottom: 14 }}>
         <Kpi icon="🧵" label="Solicitudes abiertas" value={pendientes.length} color={C.violet} bg={C.violetBg} />
@@ -191,7 +193,16 @@ export function BloqueSolicitudesTela({ db, onAbrir, puedeAbrir }) {
                   <td style={td}>{x.tela || "—"}</td>
                   <td style={td}>{[x.proveedor, x.pais].filter(Boolean).join(" · ") || "—"}</td>
                   <td style={td}>{fechaCorta(x.fechaEsperada)}</td>
-                  <td style={td}><Pill def={TELA[x.estado] || TELA.por_programar} /></td>
+                  <td style={td} onClick={onCambiarEstado ? (e) => e.stopPropagation() : undefined}>
+                    {onCambiarEstado ? (
+                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                        {Object.entries(TELA).map(([v, d]) => {
+                          const activo = (x.estado || "por_programar") === v;
+                          return <button key={v} onClick={() => !activo && onCambiarEstado(x, v)} title={activo ? "Estado actual" : `Cambiar a «${d.label}»`} style={{ padding: "3px 9px", borderRadius: 6, border: `1.5px solid ${activo ? d.color : C.border}`, background: activo ? d.bg : C.white, color: activo ? d.color : C.slate, fontSize: 11, fontWeight: 700, cursor: activo ? "default" : "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>{d.label}</button>;
+                        })}
+                      </div>
+                    ) : <Pill def={TELA[x.estado] || TELA.por_programar} />}
+                  </td>
                   <td style={td}>{fechaCorta(x.fecha)}{x.solicitadoPor ? <div style={{ fontSize: 11, color: C.slate }}>{x.solicitadoPor}</div> : null}</td>
                 </tr>
               ))}
