@@ -1624,7 +1624,7 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, puedeFa
                 )}
                 {modo === "bodega" && (puedeFacturar || puedeCambiarEstado || currentUser?.isAdmin) && d.estado === "facturacion" && <FilaFacturacion db={db} T={T} d={d} usuario={usuario} otras={lista} embebida />}
                 {modo === "bodega" && (puedeFacturar || puedeCambiarEstado || currentUser?.isAdmin) && d.estado === "lista" && !d.redespacho && d.facturacion?.documentoSale && <FilaFacturacion key={`c-${d.id}-${d.facturacion.documentoSale}`} db={db} T={T} d={d} usuario={usuario} otras={lista} corregir embebida />}
-                {modo === "bodega" && (puedeFacturar || puedeCambiarEstado || currentUser?.isAdmin) && d.estado === "lista" && !d.redespacho && !d.facturacion?.documentoSale && <FilaFacturacion key={`d-${d.id}`} db={db} T={T} d={d} usuario={usuario} otras={lista} corregir definir embebida />}
+                {modo === "bodega" && d.estado === "lista" && !d.redespacho && !d.facturacion?.documentoSale && <FilaFacturacion key={`d-${d.id}`} db={db} T={T} d={d} usuario={usuario} otras={lista} corregir definir embebida />}
                 <div style={{ marginTop: 12 }}>{botones(d)}</div>
                 {modo === "bodega" && (puedeCambiarEstado || currentUser?.isAdmin) && (
                   <CambiarEstadoDev key={`${d.id}-${d.estado}`} T={T} d={d} ocupado={trabajando === d.id}
