@@ -4130,7 +4130,12 @@ function CronogramaDetalleModal({ entry, config, isAdmin, usuario, puedeRevisar,
 // historial de muestras ya resueltas); "Sin fecha" agrupa lo que aún no
 // tiene fecha de entrega asignada, para que nada quede invisible.
 function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, usuarioNombre, puedeRevisar, onAdd, onUpdate, onDelete, onGoToItem, onModificarNota }) {
-  const [vista, setVista] = useState("semana");
+  const [vista, setVista] = useState("agenda");
+  // Agenda por día (2026-11-13, a pedido de Fredy): filtros propios de esa vista.
+  const [aQ, setAQ] = useState("");
+  const [aTaller, setATaller] = useState("");
+  const [aK, setAK] = useState("");
+  const [aCerr, setACerr] = useState({});
   const [weekOffset, setWeekOffset] = useState(0);
   const [monthOffset, setMonthOffset] = useState(0);
   const [tab, setTab] = useState("activas");
@@ -4227,6 +4232,132 @@ function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, usuarioNo
       </div>
     );
   }
+  // ── Agenda por día: se lee de arriba abajo (vencidas, por revisar, a modificar, hoy, mañana, esta semana, próxima, más adelante, sin fecha).
+  function renderAgenda() {
+    const dParse = (iso) => new Date(`${String(iso).slice(0, 10)}T00:00:00`);
+    const difDias = (x, y) => Math.round((dParse(x) - dParse(y)) / 86400000);
+    const fCorta = (iso) => { const d = dParse(iso); return `${d.getDate()} ${MONTHS_SHORT[d.getMonth()]}`; };
+    const emoji = (c) => { const k = String(c.categoria || c.nombre || "").toLowerCase(); return /short|pantaloneta|bóxer|boxer/.test(k) ? "🩳" : /jogger|leggin|byker|capry|cachetero|pantal/.test(k) ? "👖" : /buso|chaqueta|sudadera/.test(k) ? "🧥" : /vestido|enterizo|body|traje|blusa/.test(k) ? "👚" : /top/.test(k) ? "🎽" : /camis|polo/.test(k) ? "👕" : "🧵"; };
+    const activas = cronogramaMuestras.filter((c) => ["pendiente", "asignado", "recibida", "modificar"].includes(c.estado || "pendiente")).map((c) => {
+      const e = c.estado || "pendiente";
+      const d = c.fechaEntrega ? difDias(c.fechaEntrega, hoyIso) : null;
+      const venc = (e === "pendiente" || e === "asignado") && d !== null && d < 0;
+      const sec = venc ? "venc" : e === "recibida" ? "rev" : e === "modificar" ? "mod" : d === null ? "sin" : d === 0 ? "hoy" : d === 1 ? "man" : d <= 7 ? "sem" : d <= 14 ? "prox" : "mas";
+      return { ...c, _e: e, _d: d, _venc: venc, _sec: sec };
+    });
+    const SEC = [
+      ["venc", "Vencidas", T.coral, T.coralBg, "Ninguna vencida. ✅", "Todo lo que se prometió está a tiempo."],
+      ["rev", "Por revisar (recibidas del taller)", T.violet, T.violetBg, "No hay muestras esperando revisión de diseño.", ""],
+      ["mod", "A modificar (devueltas al taller)", T.coral, T.coralBg, "No hay muestras devueltas para modificar.", ""],
+      ["hoy", "Hoy", T.denim, T.denimBg, "No tienes muestras para hoy.", "Buen momento para adelantar revisiones o programar una muestra."],
+      ["man", "Mañana", T.amber, T.amberBg, "No tienes muestras para mañana.", ""],
+      ["sem", "Esta semana", T.amber, T.amberBg, "No tienes más muestras para esta semana.", ""],
+      ["prox", "Próxima semana", T.slate, T.canvas, "No hay muestras para la próxima semana.", "Hay talleres libres: es un buen momento para mandar muestras nuevas."],
+      ["mas", "Más adelante", T.slate, T.canvas, "Nada programado más adelante.", ""],
+      ["sin", "Sin fecha de entrega", T.slate, T.canvas, "Todas las muestras tienen fecha de entrega.", ""],
+    ];
+    const enFiltro = (c) => (!aTaller || (c.taller || "Sin taller") === aTaller) && (!aQ || `${c.referencia} ${c.nombre} ${c.cliente} ${c.taller}`.toLowerCase().includes(aQ.toLowerCase()));
+    const L = activas.filter(enFiltro);
+    const cuenta = (k) => activas.filter((c) => (k === "semana" ? ["hoy", "man", "sem"].includes(c._sec) : c._sec === k)).length;
+    const talleresCfg = config?.talleresMuestra || [];
+    const libres = talleresCfg.filter((t) => !activas.some((c) => c.taller === t && ["pendiente", "asignado", "modificar"].includes(c._e)));
+    const chipK = (k, label, n, color) => (
+      <button key={k || "todas"} onClick={() => setAK(k)} style={{ display: "flex", alignItems: "center", gap: 8, background: T.white, border: `1.5px solid ${aK === k ? T.ink : T.border}`, borderRadius: 99, padding: "5px 14px 5px 7px", fontSize: 13, fontWeight: 700, cursor: "pointer", color: T.ink, fontFamily: "inherit" }}>
+        <span style={{ minWidth: 26, height: 26, borderRadius: 99, display: "grid", placeItems: "center", fontSize: 13, color: "#fff", background: color }}>{n}</span>{label}
+      </button>
+    );
+    const tarjeta = (c) => {
+      const tot = Math.max(1, c.fechaEntrega && c.createdAt ? difDias(c.fechaEntrega, c.createdAt) : 1);
+      const avance = Math.min(100, Math.max(0, c.createdAt ? (difDias(hoyIso, c.createdAt) / tot) * 100 : 0));
+      const est = ESTADO_MUESTRA[c._e] || ESTADO_MUESTRA.pendiente;
+      let grande, chica, col = T.ink;
+      if (c._venc) { grande = `${-c._d} d`; chica = "de atraso"; col = T.coral; }
+      else if (c._e === "recibida") { grande = `${c.fechaRecibida ? Math.max(0, difDias(hoyIso, c.fechaRecibida)) : 0} d`; chica = "esperando revisión"; col = T.violet; }
+      else if (c._e === "modificar") { grande = "↩"; chica = "devuelta al taller"; col = T.coral; }
+      else if (c._d === null) { grande = "—"; chica = "sin fecha"; }
+      else { grande = c._d === 0 ? "Hoy" : c._d === 1 ? "Mañana" : `en ${c._d} d`; chica = `entrega ${fCorta(c.fechaEntrega)}`; col = c._d <= 1 ? T.amber : T.ink; }
+      return (
+        <div key={c.id} onClick={() => setDetalle(c)} style={{ display: "grid", gridTemplateColumns: "52px 1fr auto", gap: 14, alignItems: "center", background: T.white, border: `1px solid ${T.border}`, borderLeft: `5px solid ${PRIORIDAD_MUESTRA_COLOR[c.prioridad] || T.border}`, borderRadius: 14, padding: "11px 14px", marginBottom: 8, cursor: "pointer" }}
+          onMouseEnter={(e) => (e.currentTarget.style.boxShadow = "0 6px 18px rgba(26,26,46,0.12)")} onMouseLeave={(e) => (e.currentTarget.style.boxShadow = "none")}>
+          <div style={{ width: 52, height: 52, borderRadius: 12, background: T.canvas, display: "grid", placeItems: "center", fontSize: 22 }}>{emoji(c)}</div>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
+              <b style={{ fontSize: 14.5, color: T.ink }}>{c.nombre}</b>
+              <span style={{ fontSize: 12.5, color: T.slate }}>{c.referencia}{c.cliente ? ` · ${c.cliente}` : ""}</span>
+            </div>
+            <div style={{ fontSize: 12.5, color: T.slate, marginTop: 2, display: "flex", gap: "4px 14px", flexWrap: "wrap" }}>
+              <span>🧵 {c.taller || "Sin taller"}</span>
+              {c.prioridad && <span>{c.prioridad}</span>}
+              {c.createdAt && <span>Enviada {fCorta(c.createdAt)}</span>}
+            </div>
+            {["pendiente", "asignado"].includes(c._e) && c.fechaEntrega && (
+              <div title="Avance hacia la entrega" style={{ height: 5, borderRadius: 4, background: T.border, marginTop: 8, overflow: "hidden", maxWidth: 340 }}>
+                <div style={{ width: `${c._venc ? 100 : avance}%`, height: "100%", borderRadius: 4, background: c._venc ? T.coral : T.amber }} />
+              </div>
+            )}
+          </div>
+          <div style={{ textAlign: "right", minWidth: 118 }}>
+            <div style={{ fontSize: 20, fontWeight: 800, lineHeight: 1, color: col }}>{grande}<div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginTop: 3 }}>{chica}</div></div>
+            <span style={{ display: "inline-block", marginTop: 6, padding: "2px 10px", borderRadius: 99, fontSize: 11, fontWeight: 800, background: est.bg, color: est.color }}>{est.label}</span>
+          </div>
+        </div>
+      );
+    };
+    return (
+      <div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+          {chipK("venc", "Vencidas", cuenta("venc"), T.coral)}
+          {chipK("semana", "Esta semana", cuenta("semana"), T.amber)}
+          {chipK("rev", "Por revisar", cuenta("rev"), T.violet)}
+          {chipK("mod", "A modificar", cuenta("mod"), T.coral)}
+          {chipK("", "En curso", activas.length, T.denim)}
+        </div>
+        {libres.length > 0 && (
+          <div style={{ background: T.jadeBg, color: T.jade, borderRadius: 12, padding: "10px 14px", marginBottom: 12, fontWeight: 700, fontSize: 13, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <span>🪑 Talleres libres: {libres.join(", ")}</span>
+            <button onClick={() => setShowNuevo(true)} style={{ marginLeft: "auto", padding: "6px 12px", borderRadius: 8, border: `1.5px solid ${T.jade}`, background: T.white, color: T.jade, fontWeight: 800, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>Mandarles una muestra</button>
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+          <input value={aQ} onChange={(e) => setAQ(e.target.value)} placeholder="🔎 Buscar referencia, nombre o cliente…" style={{ flex: "1 1 200px", minWidth: 0, padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 10, fontSize: 13, fontFamily: "inherit", background: T.white, color: T.ink }} />
+          <select value={aTaller} onChange={(e) => setATaller(e.target.value)} style={{ padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 10, fontSize: 13, fontFamily: "inherit", background: T.white, color: T.ink }}>
+            <option value="">Todos los talleres</option>
+            {[...new Set([...talleresCfg, ...activas.map((c) => c.taller).filter(Boolean)])].sort().map((t) => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </div>
+        {SEC.map(([k, titulo, color, bg, vacio, ayuda]) => {
+          if (aK && (aK === "semana" ? !["hoy", "man", "sem"].includes(k) : aK !== k)) return null;
+          const ms = L.filter((c) => c._sec === k).sort((a, b2) => (a.fechaEntrega || "9999").localeCompare(b2.fechaEntrega || "9999"));
+          if (k === "sin" && !ms.length) return null;
+          const cerrada = !!aCerr[k];
+          const tituloFull = k === "hoy" ? `Hoy · ${fCorta(hoyIso)}` : k === "man" ? `Mañana · ${fCorta(isoDate(addDays(hoy, 1)))}` : titulo;
+          return (
+            <div key={k} style={{ marginBottom: 18 }}>
+              <div onClick={() => setACerr({ ...aCerr, [k]: !cerrada })} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, cursor: "pointer" }}>
+                <h3 style={{ margin: 0, fontSize: 13, textTransform: "uppercase", letterSpacing: "0.07em", color }}>{cerrada ? "▸" : "▾"} {tituloFull}</h3>
+                <span style={{ padding: "1px 10px", borderRadius: 99, fontSize: 12, fontWeight: 800, background: bg, color }}>{ms.length}</span>
+                <span style={{ flex: 1, height: 1, background: T.border }} />
+              </div>
+              {!cerrada && (ms.length === 0 ? (
+                <div style={{ background: T.white, border: `1.5px dashed ${T.border}`, borderRadius: 14, padding: 16, display: "flex", gap: 12, alignItems: "center", color: T.slate, fontSize: 13, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 22 }}>📭</span>
+                  <div><b style={{ color: T.ink }}>{vacio}</b>{ayuda && <div>{ayuda}</div>}</div>
+                  {["hoy", "sem", "prox"].includes(k) && <button onClick={() => setShowNuevo(true)} style={{ marginLeft: "auto", padding: "7px 12px", borderRadius: 8, border: `1.5px solid ${T.border}`, background: T.white, color: T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>+ Programar muestra</button>}
+                </div>
+              ) : k === "sem" ? (
+                ms.map((c, i) => (
+                  <React.Fragment key={c.id}>
+                    {(i === 0 || ms[i - 1].fechaEntrega !== c.fechaEntrega) && <div style={{ fontSize: 12, fontWeight: 800, color: T.slate, margin: "10px 0 6px", textTransform: "capitalize" }}>{dParse(c.fechaEntrega).toLocaleDateString("es-CO", { weekday: "long", day: "numeric", month: "long" })}</div>}
+                    {tarjeta(c)}
+                  </React.Fragment>
+                ))
+              ) : ms.map(tarjeta))}
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
   const semanaMonday = addDays(mondayOf(hoy), weekOffset * 7);
   const mesBase = new Date(hoy.getFullYear(), hoy.getMonth() + monthOffset, 1);
   const mesInicioLunes = mondayOf(mesBase);
@@ -4264,7 +4395,7 @@ function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, usuarioNo
         </div>
       )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
-        {vista !== "tablero" && vista !== "talleres" ? (
+        {vista !== "tablero" && vista !== "talleres" && vista !== "agenda" ? (
           <div style={{ display: "flex", gap: 6 }}>
             {[["activas", "Activas"], ["aprobadas", "✓ Aprobadas y terminadas (Historial)"]].map(([v, label]) => (
               <button key={v} onClick={() => setTab(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${tab === v ? T.denim : T.border}`, background: tab === v ? T.denimBg : T.white, color: tab === v ? T.denim : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{label}</button>
@@ -4272,20 +4403,20 @@ function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, usuarioNo
           </div>
         ) : <div />}
         <div style={{ display: "flex", gap: 6 }}>
-          {[["semana", "Semana"], ["mes", "Mes"], ["tablero", "🗂 Tablero"], ["talleres", "📊 Talleres"]].map(([v, label]) => (
+          {[["agenda", "📋 Agenda"], ["semana", "Semana"], ["mes", "Mes"], ["tablero", "🗂 Tablero"], ["talleres", "📊 Talleres"]].map(([v, label]) => (
             <button key={v} onClick={() => setVista(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${vista === v ? T.ink : T.border}`, background: vista === v ? T.ink : T.white, color: vista === v ? T.white : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{label}</button>
           ))}
         </div>
       </div>
-      {vista !== "tablero" && vista !== "talleres" && (
+      {vista !== "tablero" && vista !== "talleres" && vista !== "agenda" && (
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
           <button onClick={() => (vista === "semana" ? setWeekOffset((o) => o - 1) : setMonthOffset((o) => o - 1))} style={{ padding: "6px 12px", background: T.white, border: `1px solid ${T.border}`, borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13, color: T.ink }}>← Anterior</button>
           <div style={{ fontWeight: 800, fontSize: 14, color: T.ink, textTransform: "capitalize" }}>{rangoLabel}</div>
           <button onClick={() => (vista === "semana" ? setWeekOffset((o) => o + 1) : setMonthOffset((o) => o + 1))} style={{ padding: "6px 12px", background: T.white, border: `1px solid ${T.border}`, borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13, color: T.ink }}>Siguiente →</button>
         </div>
       )}
-      {vista === "talleres" ? <FichaTalleresView cronogramaMuestras={cronogramaMuestras} /> : vista === "tablero" ? renderTablero() : vista === "semana" ? renderWeekRow(semanaMonday, "w") : semanasDelMes.map((m, i) => renderWeekRow(m, i))}
-      {vista !== "tablero" && vista !== "talleres" && sinFecha.length > 0 && (
+      {vista === "agenda" ? renderAgenda() : vista === "talleres" ? <FichaTalleresView cronogramaMuestras={cronogramaMuestras} /> : vista === "tablero" ? renderTablero() : vista === "semana" ? renderWeekRow(semanaMonday, "w") : semanasDelMes.map((m, i) => renderWeekRow(m, i))}
+      {vista !== "tablero" && vista !== "talleres" && vista !== "agenda" && sinFecha.length > 0 && (
         <div style={{ marginTop: 20 }}>
           <div style={{ fontWeight: 800, fontSize: 13, color: T.slate, marginBottom: 10 }}>🗓 Sin fecha de entrega asignada ({sinFecha.length})</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: 10 }}>
@@ -4293,7 +4424,7 @@ function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, usuarioNo
           </div>
         </div>
       )}
-      {vista !== "tablero" && vista !== "talleres" && !visibles.length && <div style={{ textAlign: "center", padding: 40, color: T.slate, fontSize: 14 }}>{tab === "activas" ? "No hay muestras activas." : "Todavía no hay muestras aprobadas."}</div>}
+      {vista !== "tablero" && vista !== "talleres" && vista !== "agenda" && !visibles.length && <div style={{ textAlign: "center", padding: 40, color: T.slate, fontSize: 14 }}>{tab === "activas" ? "No hay muestras activas." : "Todavía no hay muestras aprobadas."}</div>}
       {vista === "tablero" && !cronogramaMuestras.length && <div style={{ textAlign: "center", padding: 40, color: T.slate, fontSize: 14 }}>No hay muestras en el cronograma.</div>}
     </div>
   );
