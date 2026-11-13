@@ -14,7 +14,7 @@ import BloqueOrdenesCompra from "./mi-dia-costos";
 import { BloqueCumpleanos } from "./cumpleanos";
 import { BloqueGastosTalento } from "./talento-gastos";
 import { BloqueDisenoSinCapsula } from "./diseno-sin-capsula";
-import { BloqueMuestrasDisenadoras, BloqueSolicitudesTela } from "./diseno-muestras";
+import { BloqueMuestrasDisenadoras, BloqueSolicitudesTela, BloqueCronogramaMuestras } from "./diseno-muestras";
 import { MiDiaPlaneacionBloque, ProgramadorProcesosStandalone, MiDiaNominaStandalone, ListaPorProgramarBloque } from "./modulo-planeacion";
 
 const C = {
@@ -468,6 +468,9 @@ export default function MiDiaTarjetasStandalone({ db, currentUser, onVolver, onL
   }
   if (marcadas.includes("diseno_sin_capsula")) {
     secciones.push({ id: "diseno_sin_capsula", icon: "📭", label: "Aprobados sin cápsula", render: () => <BloqueDisenoSinCapsula db={db} currentUser={currentUser} onAbrir={(it) => onAbrirItem && onAbrirItem(it, "diseno_sin_capsula")} puedeAbrir={puedeAbrir} /> });
+  }
+  if (marcadas.includes("diseno_cronograma_muestras")) {
+    secciones.push({ id: "diseno_cronograma_muestras", icon: "📅", label: "Cronograma de muestras", render: () => <BloqueCronogramaMuestras db={db} currentUser={currentUser} onAbrir={(it) => onAbrirItem && onAbrirItem(it, "diseno_cronograma_muestras")} puedeAbrir={puedeAbrir} /> });
   }
   if (marcadas.includes("diseno_muestras")) {
     secciones.push({ id: "diseno_muestras", icon: "🧵", label: "Muestras por diseñadora", render: () => <BloqueMuestrasDisenadoras db={db} currentUser={currentUser} onAbrir={(it) => onAbrirItem && onAbrirItem(it, "diseno_muestras")} puedeAbrir={puedeAbrir} /> });
