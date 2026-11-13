@@ -2688,9 +2688,18 @@ function CargaModulosView({ cargaActiva, asignaciones, configModulos, currentUse
                 <div style={{ fontWeight: 900, fontSize: 15, color: C.ink }}>{m.nombre}{esMio && <span style={{ marginLeft: 8, fontSize: 10, background: C.amberBg, color: C.amber, padding: "2px 8px", borderRadius: 20, fontWeight: 800 }}>Tuyo</span>}</div>
                 <div style={{ fontSize: 11, color: C.slate }}>{m.lider || "Sin líder"}</div>
               </div>
-              <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginTop: 10 }}>
-                <span style={{ fontSize: 26, fontWeight: 900, color }}>{fmtNum(d.pendiente)}</span>
-                <span style={{ fontSize: 12, color: C.slate }}>und por coser</span>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 10, marginTop: 10 }}>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                  <span style={{ fontSize: 26, fontWeight: 900, color }}>{fmtNum(d.pendiente)}</span>
+                  <span style={{ fontSize: 12, color: C.slate }}>und por coser</span>
+                </div>
+                {/* (2026-11-13, a pedido de Fredy) La capacidad como segundo número grande, a la derecha. */}
+                <div style={{ textAlign: "right", lineHeight: 1.1 }}>
+                  <div style={{ fontSize: 10, fontWeight: 800, color: C.slate, textTransform: "uppercase", letterSpacing: 0.4 }}>Capacidad</div>
+                  {cap > 0
+                    ? <div><span style={{ fontSize: 26, fontWeight: 900, color: C.ink }}>{fmtNum(cap)}</span> <span style={{ fontSize: 12, color: C.slate }}>und/día</span></div>
+                    : <div style={{ fontSize: 13, fontWeight: 800, color: C.amber }}>— sin capacidad</div>}
+                </div>
               </div>
               {cap > 0 ? (
                 <>
@@ -2698,7 +2707,7 @@ function CargaModulosView({ cargaActiva, asignaciones, configModulos, currentUse
                     <div style={{ width: `${pct}%`, height: "100%", background: color }} />
                   </div>
                   <div style={{ fontSize: 11, color: C.slate }}>
-                    {dias.toFixed(1)} días de carga · capacidad {fmtNum(cap)} und/día
+                    {dias.toFixed(1)} días de carga
                     {dias <= horizonteDias ? ` · cabe más: ~${fmtNum(Math.max(0, Math.round((horizonteDias - dias) * cap)))} und` : ` · pasado por ~${(dias - horizonteDias).toFixed(1)} días`}
                   </div>
                 </>
