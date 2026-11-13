@@ -71,6 +71,10 @@ const entero = (v) => { const n = Math.floor(Number(v)); return Number.isFinite(
 // y Jesús escribe el documento NUEVO al despachar de nuevo. Se guardan como documentoOriginal y redespacho.documentoNuevo.
 const DOC_MIN = 3;
 const docValido = (v) => String(v || "").trim().length >= DOC_MIN;
+// (2026-11-13, a pedido de Fredy) Facturación elige si lo que sale de nuevo es factura o remisión. Lo guardado antes de este cambio no trae `tipoSale`: se asume el tipo del original.
+const NOMBRE_DOC = { factura: "factura", remision: "remisión" };
+const tipoDocDe = (d) => ((d.documentoTipo || d.origen?.tipo) === "factura" ? "factura" : "remision");
+const tipoSaleDe = (d) => (d.facturacion?.tipoSale === "factura" || d.facturacion?.tipoSale === "remision" ? d.facturacion.tipoSale : tipoDocDe(d));
 const etiquetaDocOriginal = (origenTipo) => (origenTipo === "factura" ? "Número de factura" : "Número de remisión de TNS");
 const MONO = { fontFamily: "ui-monospace, Menlo, Consolas, monospace" };
 const totalLineas = (lineas) => (lineas || []).reduce((s, l) => s + Object.values(l.cantidades || {}).reduce((a, b) => a + (Number(b) || 0), 0), 0);
@@ -414,8 +418,8 @@ function Detalle({ T, d, mostrarConteo }) {
       {mostrarConteo && d.facturacion?.documentoSale ? (
         <div style={{ fontSize: 12, color: "#1D8A8A", background: "#E3F4F4", borderRadius: 8, padding: "8px 12px", marginTop: 10, fontWeight: 600 }}>
           🧾 Facturación{d.facturacion.por ? ` (${d.facturacion.por})` : ""}: {d.facturacion.decision === "misma"
-            ? <>sale con la misma remisión <b style={MONO}>{d.facturacion.documentoSale}</b></>
-            : <>nueva remisión <b style={MONO}>{d.facturacion.documentoSale}</b>{d.facturacion.documentoOriginal ? <> (antes <span style={MONO}>{d.facturacion.documentoOriginal}</span>)</> : null}</>}
+            ? <>sale con la misma {NOMBRE_DOC[tipoSaleDe(d)]} <b style={MONO}>{d.facturacion.documentoSale}</b></>
+            : <>nueva {NOMBRE_DOC[tipoSaleDe(d)]} <b style={MONO}>{d.facturacion.documentoSale}</b>{d.facturacion.documentoOriginal ? <> (antes {NOMBRE_DOC[d.facturacion.tipoOriginal || tipoDocDe(d)]} <span style={MONO}>{d.facturacion.documentoOriginal}</span>)</> : null}</>}
         </div>
       ) : null}
       {d.redespacho ? (
@@ -1233,7 +1237,7 @@ function ResumenBodega({ T, d }) {
           <div style={caja(T.jade)}>
             <div style={{ fontSize: 14, fontWeight: 800, color: T.ink }}>② Enviar otra vez a la cliente</div>
             <div style={{ fontSize: 12, color: T.slate, margin: "4px 0 8px" }}>
-              {mismaRem ? "Sale con la misma remisión" : "Nueva remisión"}: {docNuevo ? <span style={chip(T.jadeBg, T.jade)}>{docNuevo}</span> : <span style={chip(T.amberBg, T.amber)}>{d.estado === "facturacion" ? "pendiente: Diego (Contabilidad) la define" : "pendiente: se anota al despachar"}</span>}
+              {mismaRem ? `Sale con la misma ${NOMBRE_DOC[tipoSaleDe(d)]}` : `Nueva ${NOMBRE_DOC[tipoSaleDe(d)]}`}: {docNuevo ? <span style={chip(T.jadeBg, T.jade)}>{docNuevo}</span> : <span style={chip(T.amberBg, T.amber)}>{d.estado === "facturacion" ? "pendiente: Diego (Contabilidad) la define" : "pendiente: se anota al despachar"}</span>}
             </div>
             <GrillaColorTalla T={T} colores={colores} tallas={tallas} valores={valores} editable={false} infantil={infantil} />
             <div style={{ fontSize: 12, color: T.slate, marginTop: 6 }}>Lote {d.lote} · <b style={{ color: T.ink }}>{contadas} und</b></div>
@@ -1277,7 +1281,7 @@ function LineaTiempoDev({ T, d }) {
     </div>
   );
 }
-function FilaDevolucion({ T, d, modo, abierto, onAbrir, ocupado, puedeMarcar, marcado, deshabilitarMarca, onMarcar, onRecibida }) {
+function FilaDevolucion({ T, d, modo, abierto, onAbrir, ocupado, puedeMarcar, marcado, deshabilitarMarca, onMarcar, onRecibida, puedeFacturar }) {
   const e = estadoInfo(T, d.estado);
   const t = tiempoDevolucion(d);
   const col = t.cerrada ? T.slate : t.nivel === "rojo" ? T.coral : t.nivel === "ambar" ? T.amber : T.jade;
@@ -1288,6 +1292,7 @@ function FilaDevolucion({ T, d, modo, abierto, onAbrir, ocupado, puedeMarcar, ma
   else if (modo === "bodega" && d.estado === "lista") accion = <button onClick={(ev) => { ev.stopPropagation(); onAbrir(); }} style={btn(T, "primario")}>{abierto ? "Cerrar" : "Despachar"}</button>;
   else if (modo === "calidad" && d.estado === "recibida") accion = <button onClick={(ev) => { ev.stopPropagation(); onAbrir(); }} style={btn(T, "primario")}>{abierto ? "Cerrar" : "Contar"}</button>;
   else if (modo === "calidad" && d.estado === "revisada") accion = <button onClick={(ev) => { ev.stopPropagation(); onAbrir(); }} style={btn(T, "primario")}>{abierto ? "Cerrar" : "Decidir"}</button>;
+  else if (modo === "bodega" && puedeFacturar && d.estado === "facturacion") accion = <button onClick={(ev) => { ev.stopPropagation(); onAbrir(); }} style={{ ...btn(T, "primario"), background: "#1D8A8A" }}>{abierto ? "Cerrar" : "🧾 Facturar"}</button>;
   else accion = <span style={{ color: T.slate, fontSize: 18, fontWeight: 800 }}>{abierto ? "⌃" : "›"}</span>;
   return (
     <div onClick={onAbrir} style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", cursor: "pointer" }}>
@@ -1323,7 +1328,7 @@ function FilaDevolucion({ T, d, modo, abierto, onAbrir, ocupado, puedeMarcar, ma
   );
 }
 
-function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, tipo, onVolverHub }) {
+function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, puedeFacturar, tipo, onVolverHub }) {
   const T = Tp || TEMA_DEFECTO;
   const { lista, error } = useDevoluciones(db, null);
   // `tipo` (solo Bodega): la tarjeta elegida en el menú de Devoluciones. null = todas, como antes.
@@ -1462,7 +1467,7 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, tipo, o
             <div><div style={{ fontSize: 11, color: T.slate, marginBottom: 3 }}>Fecha</div><input type="date" value={redes.fecha} onChange={(e) => setRedes({ ...redes, fecha: e.target.value })} style={campo(T)} /></div>
             <div><div style={{ fontSize: 11, color: T.slate, marginBottom: 3 }}>Guía</div><input value={redes.guia} onChange={(e) => setRedes({ ...redes, guia: e.target.value })} placeholder="Número de guía" style={campo(T)} /></div>
             {docSale
-              ? <div style={{ fontSize: 12, color: T.slate }}>Sale con <b style={{ ...MONO, color: T.ink }}>{docSale}</b>{d.facturacion?.decision === "misma" ? " (la misma remisión)" : ""}</div>
+              ? <div style={{ fontSize: 12, color: T.slate }}>Sale con {NOMBRE_DOC[tipoSaleDe(d)]} <b style={{ ...MONO, color: T.ink }}>{docSale}</b>{d.facturacion?.decision === "misma" ? ` (la misma ${NOMBRE_DOC[tipoSaleDe(d)]})` : ""}</div>
               : <div><div style={{ fontSize: 11, color: T.slate, marginBottom: 3 }}>Nueva remisión o factura *</div><input value={redes.nuevo} onChange={(e) => setRedes({ ...redes, nuevo: e.target.value })} placeholder="Número nuevo de TNS" style={{ ...campo(T), width: 180 }} /></div>}
             <button disabled={ocupado || !redes.fecha || (!docSale && !docValido(redes.nuevo))} onClick={async () => { const ok = await accion(d, "redespachada", { redespacho: { fecha: redes.fecha, guia: redes.guia.trim(), documentoNuevo: docSale || redes.nuevo.trim(), por: usuario } }); if (ok) setRedes((r) => ({ ...r, guia: "", nuevo: "" })); }} style={btn(T, "primario")}>Despachada de nuevo</button>
             {!docSale && <div style={{ flexBasis: "100%", fontSize: 11, color: T.slate }}>Crea primero la nueva remisión en TNS; aquí solo anotas el número (si son varios documentos, sepáralos con coma).</div>}
@@ -1598,6 +1603,7 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, tipo, o
               puedeMarcar={d.estado === "lista" && modo === "bodega"} marcado={selValidas.includes(d.id)}
               deshabilitarMarca={!selValidas.includes(d.id) && selValidas.length > 0 && clienteSel !== d.cliente}
               onMarcar={(v) => setSel((a) => (v ? [...a.filter((x) => x !== d.id), d.id] : a.filter((x) => x !== d.id)))}
+              puedeFacturar={!!(puedeFacturar || puedeCambiarEstado || currentUser?.isAdmin)}
               onRecibida={() => accion(d, "recibida", { recibidaPor: usuario, recibidaEn: nowISO() })} />
             {abierto === d.id && (
               <>
@@ -1616,6 +1622,8 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, tipo, o
                     <div style={{ marginTop: 10 }}><button disabled={trabajando === d.id} onClick={() => guardarConteo(d)} style={btn(T, "primario")}>Guardar conteo y marcar como revisada</button></div>
                   </div>
                 )}
+                {modo === "bodega" && (puedeFacturar || puedeCambiarEstado || currentUser?.isAdmin) && d.estado === "facturacion" && <FilaFacturacion db={db} T={T} d={d} usuario={usuario} otras={lista} embebida />}
+                {modo === "bodega" && (puedeFacturar || puedeCambiarEstado || currentUser?.isAdmin) && d.estado === "lista" && !d.redespacho && d.facturacion?.documentoSale && <FilaFacturacion key={`c-${d.id}-${d.facturacion.documentoSale}`} db={db} T={T} d={d} usuario={usuario} otras={lista} corregir embebida />}
                 <div style={{ marginTop: 12 }}>{botones(d)}</div>
                 {modo === "bodega" && (puedeCambiarEstado || currentUser?.isAdmin) && (
                   <CambiarEstadoDev key={`${d.id}-${d.estado}`} T={T} d={d} ocupado={trabajando === d.id}
@@ -1709,25 +1717,32 @@ function HubDevolucionesBodega({ db, T: Tp, onElegir }) {
 
 // (2026-11-11, a pedido de Fredy) Pantalla de Diego (Contabilidad): las devoluciones que Calidad mandó a «nuevo despacho». Él define si salen con la
 // misma remisión o con una nueva; al guardar pasan a «Lista para despachar» y Bodega las ve con la remisión antigua y la nueva.
-function FilaFacturacion({ db, T, d, usuario }) {
+function FilaFacturacion({ db, T, d, usuario, otras, corregir = false, embebida = false }) {
   const [abierto, setAbierto] = useState(false);
-  const [decision, setDecision] = useState("");
-  const [nuevo, setNuevo] = useState("");
+  const [mostrar, setMostrar] = useState(!corregir);
+  const f0 = d.facturacion || {};
+  const orig = String(d.documentoOriginal || "").trim();
+  const tipoOrig = tipoDocDe(d);
+  const [decision, setDecision] = useState(corregir ? f0.decision || "" : "");
+  const [tipoNuevo, setTipoNuevo] = useState(corregir ? tipoSaleDe(d) : tipoOrig);
+  const [nuevo, setNuevo] = useState(corregir && f0.decision === "nueva" ? String(f0.documentoNuevo || "") : "");
   const [guardando, setGuardando] = useState(false);
   const [msg, setMsg] = useState("");
-  const orig = String(d.documentoOriginal || "").trim();
-  const esFactura = (d.documentoTipo || d.origen?.tipo) === "factura";
-  const nombreDoc = esFactura ? "factura" : "remisión";
   const contadas = totalLineas(d.conteo);
   const declaradas = totalLineas(d.lineas);
-  const listo = decision === "misma" ? docValido(orig) : decision === "nueva" ? docValido(nuevo) : false;
+  const tipoSale = decision === "misma" ? tipoOrig : tipoNuevo;
+  const nombreSale = NOMBRE_DOC[tipoSale];
+  const igualAlOriginal = decision === "nueva" && tipoNuevo === tipoOrig && nuevo.trim().toLowerCase() === orig.toLowerCase();
+  const yaUsado = decision === "nueva" && docValido(nuevo) ? (otras || []).find((x) => x.id !== d.id && String(x.facturacion?.documentoSale || "").trim().toLowerCase() === nuevo.trim().toLowerCase()) : null;
+  const listo = decision === "misma" ? docValido(orig) : decision === "nueva" ? docValido(nuevo) && !igualAlOriginal : false;
   async function pasar() {
     if (!listo) return;
     setGuardando(true); setMsg("");
     try {
       const sale = decision === "misma" ? orig : nuevo.trim();
-      const nota = decision === "misma" ? `Sale con la misma ${nombreDoc} ${orig}` : `Nueva ${nombreDoc} ${sale}${orig ? ` (antes ${orig})` : ""}`;
-      await cambiarEstado(db, d, "lista", { facturacion: { decision, documentoOriginal: orig, documentoNuevo: decision === "nueva" ? sale : "", documentoSale: sale, por: usuario, fecha: nowISO() } }, usuario, nota);
+      const nota = (corregir ? "Facturación corregida: " : "") + (decision === "misma" ? `Sale con la misma ${NOMBRE_DOC[tipoOrig]} ${orig}` : `Nueva ${nombreSale} ${sale}${orig ? ` (antes ${NOMBRE_DOC[tipoOrig]} ${orig})` : ""}`);
+      await cambiarEstado(db, d, corregir ? d.estado : "lista", { facturacion: { decision, tipoOriginal: tipoOrig, tipoSale, documentoOriginal: orig, documentoNuevo: decision === "nueva" ? sale : "", documentoSale: sale, por: usuario, fecha: nowISO(), ...(corregir && f0.documentoSale ? { corrigeA: f0.documentoSale } : {}) } }, usuario, nota);
+      if (corregir) setMostrar(false);
     } catch (e) {
       setMsg(e?.message || "No se pudo guardar.");
     } finally {
@@ -1735,32 +1750,49 @@ function FilaFacturacion({ db, T, d, usuario }) {
     }
   }
   const chip = (bg, fg) => ({ ...MONO, fontWeight: 800, fontSize: 15, borderRadius: 8, padding: "3px 10px", background: bg, color: fg });
+  const etiqueta = { fontSize: 10.5, fontWeight: 800, letterSpacing: "0.05em", color: T.slate, textTransform: "uppercase", marginBottom: 3 };
   const opcion = (k, titulo, sub, deshabilitada) => (
     <label key={k} style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", borderRadius: 12, cursor: deshabilitada ? "not-allowed" : "pointer", opacity: deshabilitada ? 0.5 : 1, background: T.white, border: `2px solid ${decision === k ? "#1D8A8A" : T.border}` }}>
-      <input type="radio" disabled={deshabilitada} name={`dec-${d.id}`} checked={decision === k} onChange={() => setDecision(k)} style={{ width: 18, height: 18, margin: 0 }} />
+      <input type="radio" disabled={deshabilitada} name={`dec-${d.id}${corregir ? "-c" : ""}`} checked={decision === k} onChange={() => setDecision(k)} style={{ width: 18, height: 18, margin: 0 }} />
       <span style={{ fontSize: 13.5, fontWeight: 700, color: T.ink }}>{titulo}<span style={{ display: "block", fontWeight: 400, fontSize: 11.5, color: T.slate }}>{sub}</span></span>
     </label>
   );
-  return (
-    <div style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, padding: "16px 18px", marginBottom: 12 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "flex-start" }}>
-        <div>
-          <div style={{ fontSize: 15, fontWeight: 800, color: T.ink }}>{d.numero} · lote {d.lote} · {contadas || d.total} und</div>
-          <div style={{ fontSize: 12, color: T.slate, marginTop: 2 }}>{d.cliente || "—"} · ref {d.ref || "—"}{d.revisadoPor ? ` · revisada por ${d.revisadoPor}` : ""}{d.revisadoEn ? ` el ${fmtFecha(d.revisadoEn)}` : ""}</div>
-        </div>
-        <EstadoPill T={T} d={d} />
+  const botonTipo = (k) => (
+    <button key={k} type="button" onClick={() => setTipoNuevo(k)} style={{ padding: "8px 16px", borderRadius: 10, fontFamily: "inherit", fontSize: 13.5, fontWeight: 800, cursor: "pointer", border: `2px solid ${tipoNuevo === k ? "#1D8A8A" : T.border}`, background: tipoNuevo === k ? "#E3F4F4" : T.white, color: tipoNuevo === k ? "#1D8A8A" : T.slate }}>
+      {k === "factura" ? "🧾 Factura" : "🚚 Remisión"}{k === tipoOrig ? <span style={{ fontWeight: 600, fontSize: 11 }}> · como la original</span> : null}
+    </button>
+  );
+  if (!mostrar) {
+    return (
+      <div style={{ marginTop: 12, borderTop: `1px solid ${T.border}`, paddingTop: 10, fontSize: 12.5, color: T.slate }}>
+        <button onClick={() => setMostrar(true)} style={btn(T)}>✏️ Corregir facturación</button> Bodega aún no la despacha: se puede cambiar el documento y queda anotado quién y cuándo.
       </div>
-      {declaradas !== contadas && contadas > 0 ? <div style={{ background: T.amberBg, color: T.amber, borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 600, marginTop: 8 }}>Calidad contó {contadas} und y la cliente declaró {declaradas}. Se envía lo contado.</div> : null}
+    );
+  }
+  return (
+    <div style={embebida ? { marginTop: 12, borderTop: `1px solid ${T.border}`, paddingTop: 12 } : { background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, padding: "16px 18px", marginBottom: 12 }}>
+      {!embebida && (
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "flex-start" }}>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 800, color: T.ink }}>{d.numero} · lote {d.lote} · {contadas || d.total} und</div>
+            <div style={{ fontSize: 12, color: T.slate, marginTop: 2 }}>{d.cliente || "—"} · ref {d.ref || "—"}{d.revisadoPor ? ` · revisada por ${d.revisadoPor}` : ""}{d.revisadoEn ? ` el ${fmtFecha(d.revisadoEn)}` : ""}</div>
+          </div>
+          <EstadoPill T={T} d={d} />
+        </div>
+      )}
+      {embebida || corregir ? <div style={{ fontSize: 14, fontWeight: 800, color: T.ink, marginBottom: 6 }}>🧾 {corregir ? "Corregir facturación" : "Facturación"}</div> : null}
+      {declaradas !== contadas && contadas > 0 ? <div style={{ background: T.amberBg, color: T.amber, borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 600, marginTop: 8 }}>Calidad contó {contadas} und y la cliente declaró {declaradas}. Se envía solo lo contado.</div> : null}
       <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", background: T.canvas, border: `1px solid ${T.border}`, borderRadius: 12, padding: "12px 14px", margin: "12px 0" }}>
         <div>
-          <div style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: "0.05em", color: T.slate, textTransform: "uppercase" }}>{esFactura ? "Factura original" : "Remisión original"}</div>
+          <div style={etiqueta}>{tipoOrig === "factura" ? "Factura original" : "Remisión original"}</div>
           {orig ? <span style={chip(T.violetBg, T.violet)}>{orig}</span> : <span style={{ ...chip(T.amberBg, T.amber), fontSize: 12 }}>falta: anótala con ✎ Editar en Bodega o pídela a la cliente</span>}
+          {d.origen?.tipo ? <div style={{ fontSize: 11, color: T.slate, marginTop: 3 }}>{etiquetaOrigen(d.origen)}</div> : null}
         </div>
         {decision && listo ? (
           <>
             <span style={{ fontSize: 22, fontWeight: 900, color: "#1D8A8A" }}>{decision === "misma" ? "=" : "→"}</span>
             <div>
-              <div style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: "0.05em", color: T.slate, textTransform: "uppercase" }}>{decision === "misma" ? "Sale con la misma" : `Nueva ${nombreDoc}`}</div>
+              <div style={etiqueta}>{decision === "misma" ? `Sale con la misma ${nombreSale}` : `Nueva ${nombreSale}`}</div>
               <span style={chip("#E3F4F4", "#1D8A8A")}>{decision === "misma" ? orig : nuevo.trim()}</span>
             </div>
           </>
@@ -1768,21 +1800,26 @@ function FilaFacturacion({ db, T, d, usuario }) {
       </div>
       <div style={{ fontSize: 12, fontWeight: 700, color: T.ink, marginBottom: 8 }}>¿Con qué documento sale de nuevo?</div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 10 }}>
-        {opcion("misma", `Se envía con la misma ${nombreDoc}`, orig ? `Sigue siendo ${orig}` : "Necesita el número original", !docValido(orig))}
-        {opcion("nueva", `Nueva ${nombreDoc}`, "Escribes el número nuevo", false)}
+        {opcion("misma", `Se envía con la misma ${NOMBRE_DOC[tipoOrig]}`, orig ? `Sigue siendo ${orig}` : "Necesita el número original", !docValido(orig))}
+        {opcion("nueva", "Documento nuevo", "Eliges si es factura o remisión y escribes el número", false)}
       </div>
       {decision === "nueva" && (
         <div style={{ marginTop: 10 }}>
-          <div style={{ fontSize: 12, color: T.ink, fontWeight: 700, marginBottom: 6 }}>Número de la nueva {nombreDoc} <span style={{ color: T.coral }}>*</span></div>
-          <input value={nuevo} onChange={(e) => setNuevo(e.target.value)} placeholder="Número nuevo de TNS" aria-label={`Nueva ${nombreDoc}`} style={{ ...campo(T), width: 260 }} />
+          <div style={{ fontSize: 12, color: T.ink, fontWeight: 700, marginBottom: 6 }}>Tipo del documento nuevo</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>{["remision", "factura"].map(botonTipo)}</div>
+          <div style={{ fontSize: 12, color: T.ink, fontWeight: 700, marginBottom: 6 }}>Número de la nueva {nombreSale} <span style={{ color: T.coral }}>*</span></div>
+          <input value={nuevo} onChange={(e) => setNuevo(e.target.value)} placeholder="Número nuevo de TNS" aria-label={`Nueva ${nombreSale}`} style={{ ...campo(T), width: 260 }} />
+          {igualAlOriginal && <div style={{ color: T.coral, fontSize: 12, marginTop: 6 }}>Es el mismo número de la {NOMBRE_DOC[tipoOrig]} original. Si sale con ese mismo documento, elige «Se envía con la misma».</div>}
+          {yaUsado && <div style={{ background: T.amberBg, color: T.amber, borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 600, marginTop: 8 }}>Ojo: el número {nuevo.trim()} ya está en la devolución {yaUsado.numero} (lote {yaUsado.lote}). Confírmalo antes de guardar.</div>}
         </div>
       )}
       {msg && <div style={{ color: T.coral, fontSize: 13, marginTop: 8 }}>{msg}</div>}
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
-        <button disabled={guardando || !listo} onClick={pasar} style={{ ...btn(T, "primario"), background: T.jade, opacity: guardando || !listo ? 0.45 : 1 }}>{guardando ? "Guardando…" : "Pasar a despacho"}</button>
-        <button onClick={() => setAbierto((v) => !v)} style={btn(T)}>{abierto ? "Ocultar detalle" : "Ver detalle"}</button>
+        <button disabled={guardando || !listo} onClick={pasar} style={{ ...btn(T, "primario"), background: T.jade, opacity: guardando || !listo ? 0.45 : 1 }}>{guardando ? "Guardando…" : corregir ? "Guardar corrección" : "Pasar a despacho"}</button>
+        {corregir && <button onClick={() => setMostrar(false)} style={btn(T)}>Cancelar</button>}
+        {!embebida && !corregir && <button onClick={() => setAbierto((v) => !v)} style={btn(T)}>{abierto ? "Ocultar detalle" : "Ver detalle"}</button>}
       </div>
-      {abierto && <Detalle T={T} d={d} mostrarConteo />}
+      {abierto && !embebida && <Detalle T={T} d={d} mostrarConteo />}
     </div>
   );
 }
@@ -1811,13 +1848,13 @@ export function DevolucionesFacturacionView({ db, T: Tp, currentUser }) {
       {error && <div style={{ color: T.coral, fontSize: 13, marginBottom: 8 }}>{error}</div>}
       {lista === null ? <div style={{ fontSize: 13, color: T.slate }}>Cargando…</div>
         : !visibles.length ? <div style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, padding: "14px 18px", fontSize: 13, color: T.slate }}>{filtro === "por" ? "No hay devoluciones por facturar." : "Todavía no hay devoluciones en el historial."}</div>
-        : filtro === "por" ? visibles.map((d) => <FilaFacturacion key={d.id} db={db} T={T} d={d} usuario={usuario} />)
+        : filtro === "por" ? visibles.map((d) => <FilaFacturacion key={d.id} db={db} T={T} d={d} usuario={usuario} otras={lista} />)
         : visibles.map((d) => (
           <div key={d.id} style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, padding: "12px 18px", marginBottom: 10, display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
             <span style={{ fontSize: 13.5 }}>
               <b>{d.numero}</b> · {d.cliente || "—"} · lote {d.lote} · {d.total} und · {d.facturacion.decision === "misma"
-                ? <>sale con la misma <b style={MONO}>{d.facturacion.documentoSale}</b></>
-                : <><span style={{ ...MONO, textDecoration: "line-through", color: T.slate }}>{d.facturacion.documentoOriginal || "—"}</span> → <b style={{ ...MONO, color: "#1D8A8A" }}>{d.facturacion.documentoSale}</b></>}
+                ? <>sale con la misma {NOMBRE_DOC[tipoSaleDe(d)]} <b style={MONO}>{d.facturacion.documentoSale}</b></>
+                : <><span style={{ ...MONO, textDecoration: "line-through", color: T.slate }}>{d.facturacion.documentoOriginal || "—"}</span> → {NOMBRE_DOC[tipoSaleDe(d)]} <b style={{ ...MONO, color: "#1D8A8A" }}>{d.facturacion.documentoSale}</b></>}
               {d.facturacion.por ? <span style={{ color: T.slate }}> · {d.facturacion.por}, {fmtFecha(d.facturacion.fecha)}</span> : null}
             </span>
             <EstadoPill T={T} d={d} />
