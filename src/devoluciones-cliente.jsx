@@ -74,6 +74,7 @@ const docValido = (v) => String(v || "").trim().length >= DOC_MIN;
 // (2026-11-13, a pedido de Fredy) Facturación elige si lo que sale de nuevo es factura o remisión. Lo guardado antes de este cambio no trae `tipoSale`: se asume el tipo del original.
 const NOMBRE_DOC = { factura: "factura", remision: "remisión" };
 const tipoDocDe = (d) => ((d.documentoTipo || d.origen?.tipo) === "factura" ? "factura" : "remision");
+const docSaleDe = (d) => String(d.facturacion?.documentoSale || "").trim();
 const tipoSaleDe = (d) => (d.facturacion?.tipoSale === "factura" || d.facturacion?.tipoSale === "remision" ? d.facturacion.tipoSale : tipoDocDe(d));
 const etiquetaDocOriginal = (origenTipo) => (origenTipo === "factura" ? "Número de factura" : "Número de remisión de TNS");
 const MONO = { fontFamily: "ui-monospace, Menlo, Consolas, monospace" };
@@ -1281,7 +1282,7 @@ function LineaTiempoDev({ T, d }) {
     </div>
   );
 }
-function FilaDevolucion({ T, d, modo, abierto, onAbrir, ocupado, puedeMarcar, marcado, deshabilitarMarca, onMarcar, onRecibida, puedeFacturar }) {
+function FilaDevolucion({ T, d, modo, abierto, onAbrir, ocupado, puedeMarcar, marcado, deshabilitarMarca, onMarcar, onRecibida, puedeFacturar, nJuntas = 0 }) {
   const e = estadoInfo(T, d.estado);
   const t = tiempoDevolucion(d);
   const col = t.cerrada ? T.slate : t.nivel === "rojo" ? T.coral : t.nivel === "ambar" ? T.amber : T.jade;
@@ -1308,6 +1309,8 @@ function FilaDevolucion({ T, d, modo, abierto, onAbrir, ocupado, puedeMarcar, ma
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 3, alignItems: "center", fontSize: 11.5, color: T.slate }}>
           <span>{fmtFecha(d.creadoEn)}</span>
           {d.solicitaDespacho && !estaCerrada(d) && <Pill bg={T.violetBg} fg={T.violet}>Pide despacho</Pill>}
+          {nJuntas > 1 && <Pill bg="#E3F4F4" fg="#1D8A8A">🧾 Facturada junto con {nJuntas - 1} más</Pill>}
+          {modo === "bodega" && d.estado === "lista" && !docSaleDe(d) && <Pill bg={T.amberBg} fg={T.amber}>⏳ Esperando facturación</Pill>}
           {d.origen?.tipo ? <span>{d.origen.tipo === "factura" ? "🧾 " : d.origen.tipo === "sin_dato" ? "" : "🚚 "}{etiquetaOrigen(d.origen)}{d.origen.confirmar ? " · por confirmar" : ""}</span> : null}
           {guia ? <span>· Guía {guia}</span> : null}
           {d.registroManual && <Pill bg={T.denimBg} fg={T.denim}>Registro manual</Pill>}
@@ -1375,14 +1378,13 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, puedeFa
   // Agrupado por cliente (orden estable: dentro de cada cliente se conserva el orden de arriba).
   const visiblesOrden = vista === "cli" ? [...visibles].sort((x, y) => String(x.cliente || "").localeCompare(String(y.cliente || ""))) : visibles;
   const clientesBase = [...new Set(base.map((d) => d.cliente).filter(Boolean))].sort();
-  const cuantasListas = base.filter((d) => !esHistorial(d) && d.estado === "lista").length;
+  const cuantasListas = base.filter((d) => !esHistorial(d) && d.estado === "lista" && docSaleDe(d)).length;
   const unidadesPend = base.filter((d) => !esHistorial(d) && pendiente(d)).reduce((n, d) => n + (Number(d.total) || 0), 0);
-  const selValidas = sel.filter((id) => (lista || []).some((d) => d.id === id && d.estado === "lista"));
+  const selValidas = sel.filter((id) => (lista || []).some((d) => d.id === id && d.estado === "lista" && docSaleDe(d)));
   const clienteSel = (lista || []).find((d) => d.id === selValidas[0])?.cliente;
   async function despacharJuntas() {
     const elegidas = (lista || []).filter((d) => selValidas.includes(d.id));
-    const algunaSinDoc = elegidas.some((d) => !String(d.facturacion?.documentoSale || "").trim());
-    if (elegidas.length < 2 || !juntas.fecha || (algunaSinDoc && !docValido(juntas.nuevo))) return;
+    if (elegidas.length < 2 || !juntas.fecha) return;
     setTrabajando("junto"); setMsgJunto("");
     try {
       const batch = writeBatch(db);
@@ -1391,7 +1393,7 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, puedeFa
         const otras = elegidas.filter((x) => x.id !== d.id).map((x) => x.numero);
         const ev = { estado: "redespachada", fecha: nowISO(), usuario, nota: `Despachada junto con ${otras.join(", ")}` };
         batch.update(doc(db, COL, d.id), limpio({
-          redespacho: { fecha: juntas.fecha, guia: juntas.guia.trim(), documentoNuevo: String(d.facturacion?.documentoSale || "").trim() || juntas.nuevo.trim(), por: usuario, despachoId, junto: otras },
+          redespacho: { fecha: juntas.fecha, guia: juntas.guia.trim(), documentoNuevo: docSaleDe(d), por: usuario, despachoId, junto: otras },
           estado: "redespachada", historial: [...(d.historial || []), ev], actualizadoEn: nowISO(),
         }));
       });
@@ -1460,17 +1462,16 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, puedeFa
         );
       }
       if (d.estado === "lista") {
-        // (2026-11-11) Si Facturación (Diego) ya definió con qué documento sale, Jesús solo pone la fecha y la guía.
-        const docSale = String(d.facturacion?.documentoSale || "").trim();
+        // (2026-11-13, a pedido de Fredy) Bodega ya no escribe el número del documento: lo define Facturación (Diego). Sin documento, no se despacha.
+        const docSale = docSaleDe(d);
+        if (!docSale) return <div style={{ background: T.amberBg, color: T.amber, borderRadius: 10, padding: "10px 14px", fontSize: 13, fontWeight: 600 }}>⏳ Esperando facturación: todavía no tiene el documento con el que sale. Diego lo define en Contabilidad → «Devoluciones por facturar».</div>;
         return (
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
             <div><div style={{ fontSize: 11, color: T.slate, marginBottom: 3 }}>Fecha</div><input type="date" value={redes.fecha} onChange={(e) => setRedes({ ...redes, fecha: e.target.value })} style={campo(T)} /></div>
             <div><div style={{ fontSize: 11, color: T.slate, marginBottom: 3 }}>Guía</div><input value={redes.guia} onChange={(e) => setRedes({ ...redes, guia: e.target.value })} placeholder="Número de guía" style={campo(T)} /></div>
-            {docSale
-              ? <div style={{ fontSize: 12, color: T.slate }}>Sale con {NOMBRE_DOC[tipoSaleDe(d)]} <b style={{ ...MONO, color: T.ink }}>{docSale}</b>{d.facturacion?.decision === "misma" ? ` (la misma ${NOMBRE_DOC[tipoSaleDe(d)]})` : ""}</div>
-              : <div><div style={{ fontSize: 11, color: T.slate, marginBottom: 3 }}>Nueva remisión o factura *</div><input value={redes.nuevo} onChange={(e) => setRedes({ ...redes, nuevo: e.target.value })} placeholder="Número nuevo de TNS" style={{ ...campo(T), width: 180 }} /></div>}
-            <button disabled={ocupado || !redes.fecha || (!docSale && !docValido(redes.nuevo))} onClick={async () => { const ok = await accion(d, "redespachada", { redespacho: { fecha: redes.fecha, guia: redes.guia.trim(), documentoNuevo: docSale || redes.nuevo.trim(), por: usuario } }); if (ok) setRedes((r) => ({ ...r, guia: "", nuevo: "" })); }} style={btn(T, "primario")}>Despachada de nuevo</button>
-            {!docSale && <div style={{ flexBasis: "100%", fontSize: 11, color: T.slate }}>Crea primero la nueva remisión en TNS; aquí solo anotas el número (si son varios documentos, sepáralos con coma).</div>}
+            <div style={{ fontSize: 12, color: T.slate }}>Sale con {NOMBRE_DOC[tipoSaleDe(d)]} <b style={{ ...MONO, color: T.ink }}>{docSale}</b>{d.facturacion?.decision === "misma" ? ` (la misma ${NOMBRE_DOC[tipoSaleDe(d)]})` : ""}</div>
+            <button disabled={ocupado || !redes.fecha} onClick={async () => { const ok = await accion(d, "redespachada", { redespacho: { fecha: redes.fecha, guia: redes.guia.trim(), documentoNuevo: docSale, por: usuario } }); if (ok) setRedes((r) => ({ ...r, guia: "", nuevo: "" })); }} style={btn(T, "primario")}>Despachada de nuevo</button>
+            {d.facturacion?.grupoId && <div style={{ flexBasis: "100%", fontSize: 11, color: T.slate }}>Se facturó junto con otras devoluciones: márcala con la casilla de la izquierda y se marcan todas para despacharlas juntas.</div>}
           </div>
         );
       }
@@ -1568,10 +1569,8 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, puedeFa
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end", marginTop: 8 }}>
                   <div><div style={{ fontSize: 11, color: T.slate, marginBottom: 3 }}>Fecha</div><input type="date" value={juntas.fecha} onChange={(e) => setJuntas({ ...juntas, fecha: e.target.value })} style={campo(T)} /></div>
                   <div><div style={{ fontSize: 11, color: T.slate, marginBottom: 3 }}>Guía</div><input value={juntas.guia} onChange={(e) => setJuntas({ ...juntas, guia: e.target.value })} placeholder="Número de guía" style={campo(T)} /></div>
-                  {elegidas.some((d) => !String(d.facturacion?.documentoSale || "").trim())
-                    ? <div><div style={{ fontSize: 11, color: T.slate, marginBottom: 3 }}>Nueva remisión o factura *</div><input value={juntas.nuevo} onChange={(e) => setJuntas({ ...juntas, nuevo: e.target.value })} placeholder="Número nuevo de TNS" style={{ ...campo(T), width: 180 }} /></div>
-                    : <div style={{ fontSize: 12, color: T.slate, alignSelf: "center" }}>Cada una sale con el documento que definió Facturación.</div>}
-                  <button disabled={trabajando === "junto" || !juntas.fecha || (elegidas.some((d) => !String(d.facturacion?.documentoSale || "").trim()) && !docValido(juntas.nuevo))} onClick={despacharJuntas} style={btn(T, "primario")}>{trabajando === "junto" ? "Guardando…" : "Despachar juntas"}</button>
+                  <div style={{ fontSize: 12, color: T.slate, alignSelf: "center" }}>Cada una sale con el documento que definió Facturación.</div>
+                  <button disabled={trabajando === "junto" || !juntas.fecha} onClick={despacharJuntas} style={btn(T, "primario")}>{trabajando === "junto" ? "Guardando…" : "Despachar juntas"}</button>
                 </div>
               </>
             )}
@@ -1586,7 +1585,7 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, puedeFa
           <React.Fragment key={d.id}>
           {vista === "cli" && (idx === 0 || visiblesOrden[idx - 1].cliente !== d.cliente) && (() => {
             const delCli = visiblesOrden.filter((x) => x.cliente === d.cliente);
-            const listasCli = delCli.filter((x) => x.estado === "lista");
+            const listasCli = delCli.filter((x) => x.estado === "lista" && docSaleDe(x));
             const und = delCli.reduce((n, x) => n + (Number(x.total) || 0), 0);
             return (
               <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", margin: idx === 0 ? "0 0 8px" : "16px 0 8px" }}>
@@ -1600,9 +1599,14 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, puedeFa
           })()}
           <div style={{ ...tarjeta, padding: "10px 16px", borderRadius: 12, marginBottom: 8, borderColor: abierto === d.id ? T.denim : selValidas.includes(d.id) ? T.denim : T.border, background: selValidas.includes(d.id) ? T.denimBg : T.white }}>
             <FilaDevolucion T={T} d={d} modo={modo} abierto={abierto === d.id} onAbrir={() => abrir(d)} ocupado={trabajando === d.id}
-              puedeMarcar={d.estado === "lista" && modo === "bodega"} marcado={selValidas.includes(d.id)}
+              puedeMarcar={d.estado === "lista" && modo === "bodega" && !!docSaleDe(d)} marcado={selValidas.includes(d.id)}
+              nJuntas={d.facturacion?.grupoId ? (lista || []).filter((x) => x.facturacion?.grupoId === d.facturacion.grupoId && x.estado === "lista").length : 0}
               deshabilitarMarca={!selValidas.includes(d.id) && selValidas.length > 0 && clienteSel !== d.cliente}
-              onMarcar={(v) => setSel((a) => (v ? [...a.filter((x) => x !== d.id), d.id] : a.filter((x) => x !== d.id)))}
+              onMarcar={(v) => {
+                // Las facturadas juntas (mismo grupo de Facturación) se marcan y se quitan todas a la vez: es un despacho total.
+                const grupo = d.facturacion?.grupoId ? (lista || []).filter((x) => x.facturacion?.grupoId === d.facturacion.grupoId && x.estado === "lista").map((x) => x.id) : [d.id];
+                setSel((a) => (v ? [...a.filter((x) => !grupo.includes(x)), ...grupo] : a.filter((x) => !grupo.includes(x))));
+              }}
               puedeFacturar={!!(puedeFacturar || puedeCambiarEstado || currentUser?.isAdmin)}
               onRecibida={() => accion(d, "recibida", { recibidaPor: usuario, recibidaEn: nowISO() })} />
             {abierto === d.id && (
@@ -1624,7 +1628,15 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, puedeFa
                 )}
                 {modo === "bodega" && (puedeFacturar || puedeCambiarEstado || currentUser?.isAdmin) && d.estado === "facturacion" && <FilaFacturacion db={db} T={T} d={d} usuario={usuario} otras={lista} embebida />}
                 {modo === "bodega" && (puedeFacturar || puedeCambiarEstado || currentUser?.isAdmin) && d.estado === "lista" && !d.redespacho && d.facturacion?.documentoSale && <FilaFacturacion key={`c-${d.id}-${d.facturacion.documentoSale}`} db={db} T={T} d={d} usuario={usuario} otras={lista} corregir embebida />}
-                {modo === "bodega" && d.estado === "lista" && !d.redespacho && !d.facturacion?.documentoSale && <FilaFacturacion key={`d-${d.id}`} db={db} T={T} d={d} usuario={usuario} otras={lista} corregir definir embebida />}
+                {modo === "bodega" && (puedeFacturar || puedeCambiarEstado || currentUser?.isAdmin) && d.estado === "lista" && !d.redespacho && !d.facturacion?.documentoSale && (
+                  <div>
+                    <div style={{ marginTop: 12, background: T.amberBg, color: T.amber, borderRadius: 10, padding: "10px 14px", fontSize: 13, fontWeight: 600, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                      <span>Llegó a «Lista» sin pasar por facturación (cambio de estado manual). Diego puede definirla en su lista, o la defines tú aquí abajo.</span>
+                      <button disabled={trabajando === d.id} onClick={() => accion(d, "facturacion", { destino: "despacho" }, "Devuelta a facturación")} style={btn(T)}>↩ Devolver a facturación (Diego)</button>
+                    </div>
+                    <FilaFacturacion key={`d-${d.id}`} db={db} T={T} d={d} usuario={usuario} otras={lista} corregir definir embebida />
+                  </div>
+                )}
                 <div style={{ marginTop: 12 }}>{botones(d)}</div>
                 {modo === "bodega" && (puedeCambiarEstado || currentUser?.isAdmin) && (
                   <CambiarEstadoDev key={`${d.id}-${d.estado}`} T={T} d={d} ocupado={trabajando === d.id}
@@ -1719,11 +1731,13 @@ function HubDevolucionesBodega({ db, T: Tp, onElegir }) {
 // (2026-11-11, a pedido de Fredy) Pantalla de Diego (Contabilidad): las devoluciones que Calidad mandó a «nuevo despacho». Él define si salen con la
 // misma remisión o con una nueva; al guardar pasan a «Lista para despachar» y Bodega las ve con la remisión antigua y la nueva.
 // `corregir`: no cambia el estado (devolución ya «Lista»). `definir`: igual, pero para las que llegaron a «Lista» sin pasar por Facturación (cambio de estado manual).
-function FilaFacturacion({ db, T, d, usuario, otras, corregir = false, definir = false, embebida = false }) {
+function FilaFacturacion({ db, T, d, usuario, otras, corregir = false, definir = false, embebida = false, marca }) {
   const [abierto, setAbierto] = useState(false);
   const [mostrar, setMostrar] = useState(!corregir || definir);
   const f0 = d.facturacion || {};
-  const orig = String(d.documentoOriginal || "").trim();
+  const origGuardado = String(d.documentoOriginal || "").trim();
+  const [origNuevo, setOrigNuevo] = useState(""); // (2026-11-13) si la devolución no trae el documento original, Facturación lo anota aquí mismo
+  const orig = origGuardado || origNuevo.trim();
   const tipoOrig = tipoDocDe(d);
   const [decision, setDecision] = useState(corregir ? f0.decision || "" : "");
   const [tipoNuevo, setTipoNuevo] = useState(corregir ? tipoSaleDe(d) : tipoOrig);
@@ -1743,7 +1757,7 @@ function FilaFacturacion({ db, T, d, usuario, otras, corregir = false, definir =
     try {
       const sale = decision === "misma" ? orig : nuevo.trim();
       const nota = (definir ? "Facturación definida: " : corregir ? "Facturación corregida: " : "") + (decision === "misma" ? `Sale con la misma ${NOMBRE_DOC[tipoOrig]} ${orig}` : `Nueva ${nombreSale} ${sale}${orig ? ` (antes ${NOMBRE_DOC[tipoOrig]} ${orig})` : ""}`);
-      await cambiarEstado(db, d, corregir ? d.estado : "lista", { facturacion: { decision, tipoOriginal: tipoOrig, tipoSale, documentoOriginal: orig, documentoNuevo: decision === "nueva" ? sale : "", documentoSale: sale, por: usuario, fecha: nowISO(), ...(corregir && f0.documentoSale ? { corrigeA: f0.documentoSale } : {}) } }, usuario, nota);
+      await cambiarEstado(db, d, corregir ? d.estado : "lista", { ...(!origGuardado && orig ? { documentoOriginal: orig } : {}), facturacion: { decision, tipoOriginal: tipoOrig, tipoSale, documentoOriginal: orig, documentoNuevo: decision === "nueva" ? sale : "", documentoSale: sale, por: usuario, fecha: nowISO(), ...(corregir && f0.documentoSale ? { corrigeA: f0.documentoSale } : {}) } }, usuario, nota);
       if (corregir && !definir) setMostrar(false);
     } catch (e) {
       setMsg(e?.message || "No se pudo guardar.");
@@ -1775,7 +1789,8 @@ function FilaFacturacion({ db, T, d, usuario, otras, corregir = false, definir =
     <div style={embebida ? { marginTop: 12, borderTop: `1px solid ${T.border}`, paddingTop: 12 } : { background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, padding: "16px 18px", marginBottom: 12 }}>
       {!embebida && (
         <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "flex-start" }}>
-          <div>
+          {marca && <input type="checkbox" checked={!!marca.marcada} disabled={!!marca.bloqueada} onChange={(e) => marca.onMarcar(e.target.checked)} title={marca.bloqueada ? "Solo se juntan devoluciones del mismo cliente" : "Marcar para facturar junto con otras"} style={{ width: 18, height: 18, marginTop: 3 }} />}
+          <div style={{ flex: 1 }}>
             <div style={{ fontSize: 15, fontWeight: 800, color: T.ink }}>{d.numero} · lote {d.lote} · {contadas || d.total} und</div>
             <div style={{ fontSize: 12, color: T.slate, marginTop: 2 }}>{d.cliente || "—"} · ref {d.ref || "—"}{d.revisadoPor ? ` · revisada por ${d.revisadoPor}` : ""}{d.revisadoEn ? ` el ${fmtFecha(d.revisadoEn)}` : ""}</div>
           </div>
@@ -1787,7 +1802,7 @@ function FilaFacturacion({ db, T, d, usuario, otras, corregir = false, definir =
       <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", background: T.canvas, border: `1px solid ${T.border}`, borderRadius: 12, padding: "12px 14px", margin: "12px 0" }}>
         <div>
           <div style={etiqueta}>{tipoOrig === "factura" ? "Factura original" : "Remisión original"}</div>
-          {orig ? <span style={chip(T.violetBg, T.violet)}>{orig}</span> : <span style={{ ...chip(T.amberBg, T.amber), fontSize: 12 }}>falta: anótala con ✎ Editar en Bodega o pídela a la cliente</span>}
+          {origGuardado ? <span style={chip(T.violetBg, T.violet)}>{origGuardado}</span> : <input value={origNuevo} onChange={(e) => setOrigNuevo(e.target.value)} placeholder="Anota el número original (lo trae la cliente)" aria-label="Documento original" style={{ ...campo(T), width: 280 }} />}
           {d.origen?.tipo ? <div style={{ fontSize: 11, color: T.slate, marginTop: 3 }}>{etiquetaOrigen(d.origen)}</div> : null}
         </div>
         {decision && listo ? (
@@ -1826,21 +1841,93 @@ function FilaFacturacion({ db, T, d, usuario, otras, corregir = false, definir =
   );
 }
 
+// (2026-11-13, a pedido de Fredy) Facturar varias devoluciones del mismo cliente con UN solo documento (despacho total). Cada una guarda el mismo
+// documentoSale y un `grupoId`; Bodega las ve agrupadas y las despacha juntas con una sola guía.
+function PanelFacturarJuntas({ db, T, docs, usuario, otras, onHecho, onCancelar }) {
+  const [tipo, setTipo] = useState(tipoDocDe(docs[0]));
+  const [num, setNum] = useState("");
+  const [origs, setOrigs] = useState({});
+  const [guardando, setGuardando] = useState(false);
+  const [msg, setMsg] = useState("");
+  const sale = num.trim();
+  const origDe = (d) => String(d.documentoOriginal || origs[d.id] || "").trim();
+  const total = docs.reduce((n, d) => n + (Number(totalLineas(d.conteo)) || Number(d.total) || 0), 0);
+  const igual = docs.some((d) => origDe(d) && tipoDocDe(d) === tipo && origDe(d).toLowerCase() === sale.toLowerCase());
+  const ids = new Set(docs.map((d) => d.id));
+  const yaUsado = docValido(sale) ? (otras || []).find((x) => !ids.has(x.id) && String(x.facturacion?.documentoSale || "").trim().toLowerCase() === sale.toLowerCase()) : null;
+  const listo = docValido(sale) && !igual;
+  async function guardar() {
+    if (!listo) return;
+    setGuardando(true); setMsg("");
+    try {
+      const grupoId = docs.length > 1 ? `fg_${Date.now()}` : "";
+      await Promise.all(docs.map((d) => {
+        const o = origDe(d);
+        const otros = docs.filter((x) => x.id !== d.id).map((x) => x.numero);
+        const nota = `Nueva ${NOMBRE_DOC[tipo]} ${sale}${o ? ` (antes ${NOMBRE_DOC[tipoDocDe(d)]} ${o})` : ""}${otros.length ? ` · facturada junto con ${otros.join(", ")}` : ""}`;
+        return cambiarEstado(db, d, "lista", { ...(!d.documentoOriginal && o ? { documentoOriginal: o } : {}), facturacion: { decision: "nueva", tipoOriginal: tipoDocDe(d), tipoSale: tipo, documentoOriginal: o, documentoNuevo: sale, documentoSale: sale, por: usuario, fecha: nowISO(), ...(grupoId ? { grupoId, junto: otros } : {}) } }, usuario, nota);
+      }));
+      onHecho();
+    } catch (e) {
+      setMsg(e?.message || "No se pudo guardar. Revisa cuáles quedaron facturadas antes de repetir.");
+    } finally {
+      setGuardando(false);
+    }
+  }
+  const botonTipo = (k) => (
+    <button key={k} type="button" onClick={() => setTipo(k)} style={{ padding: "8px 16px", borderRadius: 10, fontFamily: "inherit", fontSize: 13.5, fontWeight: 800, cursor: "pointer", border: `2px solid ${tipo === k ? "#1D8A8A" : T.border}`, background: tipo === k ? "#E3F4F4" : T.white, color: tipo === k ? "#1D8A8A" : T.slate }}>{k === "factura" ? "🧾 Factura" : "🚚 Remisión"}</button>
+  );
+  return (
+    <div style={{ border: "2px solid #1D8A8A", borderRadius: 14, padding: 16, background: T.white, margin: "14px 0 90px" }}>
+      <div style={{ fontSize: 15, fontWeight: 800, color: T.ink }}>🧾 Facturar {docs.length > 1 ? "juntas" : "esta devolución"} · {docs[0].cliente || "—"}</div>
+      <div style={{ fontSize: 12, color: T.slate, margin: "2px 0 8px" }}>Documentos originales que traen:</div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+        {docs.map((d) => (
+          <div key={d.id} style={{ background: T.canvas, border: `1px solid ${T.border}`, borderRadius: 10, padding: "8px 12px" }}>
+            <div style={{ fontSize: 11.5, color: T.slate }}>{d.numero} · ref {d.ref || "—"} · {totalLineas(d.conteo) || d.total} und</div>
+            {String(d.documentoOriginal || "").trim()
+              ? <span style={{ ...MONO, fontWeight: 700 }}>{NOMBRE_DOC[tipoDocDe(d)]} {d.documentoOriginal}</span>
+              : <input value={origs[d.id] || ""} onChange={(e) => setOrigs((o) => ({ ...o, [d.id]: e.target.value }))} placeholder="Anota el original" aria-label={`Original de ${d.numero}`} style={{ ...campo(T), width: 170, marginTop: 2 }} />}
+          </div>
+        ))}
+      </div>
+      <div style={{ fontSize: 12, fontWeight: 700, color: T.ink, marginBottom: 4 }}>Tipo del documento nuevo</div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>{["remision", "factura"].map(botonTipo)}</div>
+      <div style={{ fontSize: 12, fontWeight: 700, color: T.ink, marginBottom: 4 }}>Número de la nueva {NOMBRE_DOC[tipo]} <span style={{ color: T.coral }}>*</span></div>
+      <input value={num} onChange={(e) => setNum(e.target.value)} placeholder="Número nuevo de TNS" aria-label={`Nueva ${NOMBRE_DOC[tipo]}`} style={{ ...campo(T), width: 260 }} />
+      {docs.length > 1 && <div style={{ background: "#E3F4F4", color: "#1D8A8A", borderRadius: 8, padding: "8px 12px", fontSize: 12.5, fontWeight: 600, marginTop: 10 }}>Este mismo documento se guarda en las {docs.length} devoluciones ({total} und en total). Bodega las verá juntas y las despacha con una sola guía.</div>}
+      {igual && <div style={{ color: T.coral, fontSize: 12, marginTop: 6 }}>Es el mismo número de una de las originales (del mismo tipo). Si sale con ese documento, factúrala sola con «Se envía con la misma».</div>}
+      {yaUsado && <div style={{ background: T.amberBg, color: T.amber, borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 600, marginTop: 8 }}>Ojo: el número {sale} ya está en la devolución {yaUsado.numero}. Confírmalo antes de guardar.</div>}
+      {msg && <div style={{ color: T.coral, fontSize: 13, marginTop: 8 }}>{msg}</div>}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+        <button disabled={guardando || !listo} onClick={guardar} style={{ ...btn(T, "primario"), background: T.jade, opacity: guardando || !listo ? 0.45 : 1 }}>{guardando ? "Guardando…" : `Guardar para ${docs.length > 1 ? `las ${docs.length}` : "esta"}`}</button>
+        <button onClick={onCancelar} style={btn(T)}>Cancelar</button>
+      </div>
+    </div>
+  );
+}
+
 export function DevolucionesFacturacionView({ db, T: Tp, currentUser }) {
   const T = Tp || TEMA_DEFECTO;
   const { lista, error } = useDevoluciones(db, null);
   const [filtro, setFiltro] = useState("por");
   const [q, setQ] = useState("");
+  const [sel, setSel] = useState([]);
+  const [panel, setPanel] = useState(false);
   const usuario = usuarioActual(currentUser);
   const porFacturar = (lista || []).filter((d) => d.estado === "facturacion");
   const hechas = (lista || []).filter((d) => d.facturacion?.documentoSale && d.estado !== "facturacion").sort((a, b) => String(b.facturacion?.fecha || "").localeCompare(String(a.facturacion?.fecha || "")));
   const t = q.trim().toLowerCase();
   const coincide = (d) => !t || [d.numero, d.lote, d.ref, d.cliente, d.documentoOriginal, d.facturacion?.documentoSale].some((x) => String(x || "").toLowerCase().includes(t));
-  const visibles = (filtro === "por" ? [...porFacturar].sort((a, b) => String(a.revisadoEn || a.creadoEn || "").localeCompare(String(b.revisadoEn || b.creadoEn || ""))) : hechas).filter(coincide);
+  const visibles = (filtro === "por" ? [...porFacturar].sort((a, b) => String(a.cliente || "").localeCompare(String(b.cliente || "")) || String(a.revisadoEn || a.creadoEn || "").localeCompare(String(b.revisadoEn || b.creadoEn || ""))) : hechas).filter(coincide);
+  const selValidas = sel.filter((id) => porFacturar.some((d) => d.id === id));
+  const docsSel = porFacturar.filter((d) => selValidas.includes(d.id));
+  const clienteSel = docsSel[0]?.cliente;
+  const undSel = docsSel.reduce((n, d) => n + (Number(totalLineas(d.conteo)) || Number(d.total) || 0), 0);
   return (
     <div style={{ maxWidth: 940 }}>
       <div style={{ fontSize: 22, fontWeight: 800, color: T.ink, marginBottom: 4 }}>🔁 Devoluciones por facturar</div>
-      <div style={{ fontSize: 13, color: T.slate, marginBottom: 14 }}>Calidad ya las revisó y van a un nuevo despacho. Define con qué remisión sale cada una y se la entregas a Bodega.</div>
+      <div style={{ fontSize: 13, color: T.slate, marginBottom: 14 }}>Calidad ya las revisó y van a un nuevo despacho. Define con qué documento sale cada una y se la entregas a Bodega. Marca varias del mismo cliente para darles un solo documento.</div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12, alignItems: "center" }}>
         {[["por", `Por facturar (${porFacturar.length})`], ["hechas", `Historial (${hechas.length})`]].map(([k, txt]) => (
           <button key={k} onClick={() => setFiltro(k)} style={{ ...btn(T), background: filtro === k ? T.denimBg : T.white, color: filtro === k ? T.denim : T.ink, borderColor: filtro === k ? T.denim : T.border }}>{txt}</button>
@@ -1849,19 +1936,40 @@ export function DevolucionesFacturacionView({ db, T: Tp, currentUser }) {
       </div>
       {error && <div style={{ color: T.coral, fontSize: 13, marginBottom: 8 }}>{error}</div>}
       {lista === null ? <div style={{ fontSize: 13, color: T.slate }}>Cargando…</div>
-        : !visibles.length ? <div style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, padding: "14px 18px", fontSize: 13, color: T.slate }}>{filtro === "por" ? "No hay devoluciones por facturar." : "Todavía no hay devoluciones en el historial."}</div>
-        : filtro === "por" ? visibles.map((d) => <FilaFacturacion key={d.id} db={db} T={T} d={d} usuario={usuario} otras={lista} />)
-        : visibles.map((d) => (
+        : !visibles.length ? <div style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, padding: "14px 18px", fontSize: 13, color: T.slate }}>{filtro === "por" ? "No hay devoluciones por facturar. ✅" : "Todavía no hay devoluciones en el historial."}</div>
+        : filtro === "por" ? visibles.map((d, idx) => (
+          <React.Fragment key={d.id}>
+            {(idx === 0 || visibles[idx - 1].cliente !== d.cliente) && (() => {
+              const delCli = visibles.filter((x) => x.cliente === d.cliente);
+              return <div style={{ margin: idx === 0 ? "0 0 8px" : "16px 0 8px", fontWeight: 800, fontSize: 14, color: T.ink }}>{d.cliente || "Sin cliente"} <span style={{ fontWeight: 600, fontSize: 12, color: T.slate }}>· {delCli.length} {delCli.length === 1 ? "devolución" : "devoluciones"} · {delCli.reduce((n, x) => n + (Number(x.total) || 0), 0)} und</span></div>;
+            })()}
+            <FilaFacturacion db={db} T={T} d={d} usuario={usuario} otras={lista}
+              marca={{ marcada: selValidas.includes(d.id), bloqueada: selValidas.length > 0 && !selValidas.includes(d.id) && clienteSel !== d.cliente, onMarcar: (v) => { setPanel(false); setSel((a) => (v ? [...a.filter((x) => x !== d.id), d.id] : a.filter((x) => x !== d.id))); } }} />
+          </React.Fragment>
+        ))
+        : visibles.map((d) => {
+          const nJunto = d.facturacion.grupoId ? hechas.filter((x) => x.facturacion?.grupoId === d.facturacion.grupoId).length : 0;
+          return (
           <div key={d.id} style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, padding: "12px 18px", marginBottom: 10, display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
             <span style={{ fontSize: 13.5 }}>
               <b>{d.numero}</b> · {d.cliente || "—"} · lote {d.lote} · {d.total} und · {d.facturacion.decision === "misma"
                 ? <>sale con la misma {NOMBRE_DOC[tipoSaleDe(d)]} <b style={MONO}>{d.facturacion.documentoSale}</b></>
                 : <><span style={{ ...MONO, textDecoration: "line-through", color: T.slate }}>{d.facturacion.documentoOriginal || "—"}</span> → {NOMBRE_DOC[tipoSaleDe(d)]} <b style={{ ...MONO, color: "#1D8A8A" }}>{d.facturacion.documentoSale}</b></>}
               {d.facturacion.por ? <span style={{ color: T.slate }}> · {d.facturacion.por}, {fmtFecha(d.facturacion.fecha)}</span> : null}
+              {nJunto > 1 ? <b style={{ color: "#1D8A8A" }}> · junto con {nJunto - 1} más</b> : null}
             </span>
             <EstadoPill T={T} d={d} />
           </div>
-        ))}
+          );
+        })}
+      {filtro === "por" && selValidas.length >= 2 && !panel && (
+        <div style={{ position: "sticky", bottom: 12, background: T.ink, color: "#fff", borderRadius: 14, padding: "12px 16px", display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginTop: 14, boxShadow: "0 6px 24px rgba(0,0,0,.25)" }}>
+          <span><b>{selValidas.length} marcadas</b> · {undSel} und · {clienteSel || "—"}</span>
+          <button onClick={() => setPanel(true)} style={{ ...btn(T, "primario"), background: T.jade, marginLeft: "auto" }}>🧾 Facturar juntas</button>
+          <button onClick={() => setSel([])} style={btn(T)}>Quitar marcas</button>
+        </div>
+      )}
+      {filtro === "por" && panel && docsSel.length >= 2 && <PanelFacturarJuntas key={selValidas.join("|")} db={db} T={T} docs={docsSel} usuario={usuario} otras={lista} onHecho={() => { setPanel(false); setSel([]); }} onCancelar={() => setPanel(false)} />}
     </div>
   );
 }
