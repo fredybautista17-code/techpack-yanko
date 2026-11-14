@@ -9371,7 +9371,7 @@ function armarReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
       <tr><td style="background:#EBF7F2;color:#1D7A50;font-weight:700">🏖️ Días de vacaciones en la quincena${rangoVac ? ` <span style="font-weight:400;font-size:11px">(${rangoVac})</span>` : ""}</td><td style="text-align:right;background:#EBF7F2;color:#1D7A50;font-weight:700">${vacPeriodo.dias}</td></tr>` : "";
   const filaVacValor = vacPeriodo.dias > 0 && vacPeriodo.valorDia > 0 ? `
       <tr><td style="background:#EBF7F2;color:#1D7A50;font-weight:700">&nbsp;&nbsp;↳ 🏖️ de los cuales, vacaciones: ${vacPeriodo.dias} día${vacPeriodo.dias !== 1 ? "s" : ""} × ${fmtMoney(vacPeriodo.valorDia)}${rangoVac ? ` <span style="font-weight:400;font-size:11px">(${rangoVac})</span>` : ""}</td><td style="text-align:right;background:#EBF7F2;color:#1D7A50;font-weight:700">${fmtMoney(vacPeriodo.valor)}</td></tr>
-      <tr><td colspan="2" style="font-size:11px;color:#5A5A7A;padding-top:0">Ya está incluido en el sueldo de la quincena (no se suma otra vez): ${fmtMoney((liquidacion.sueldoQuincena || 0) - vacPeriodo.valor)} por los días trabajados + ${fmtMoney(vacPeriodo.valor)} por las vacaciones.${esFiscalConSegSocial ? ` Del 8 % de salud y pensión de la quincena, ${fmtMoney(Math.round(vacPeriodo.valor * 0.08))} corresponden a las vacaciones.` : ""} Detalle en el desprendible de vacaciones (página siguiente).</td></tr>` : filaVacDias;
+      <tr><td colspan="2" style="font-size:11px;color:#5A5A7A;padding-top:0">Ya está incluido en el sueldo de la quincena (no se suma otra vez). Detalle en el cuadro «Vacaciones de la quincena» y en el desprendible de vacaciones (página siguiente).</td></tr>` : filaVacDias;
   // (2026-11-14) Destajo y pago por día: el valor de las vacaciones no está en el neto de la quincena; va en el desprendible de vacaciones (página siguiente).
   const filaVacAparte = vacPeriodo.dias > 0 && vacPeriodo.valorDia > 0 && !esPrestacionServicios && !esFiscalConSegSocial && !esFiscal ? `
       <tr><td colspan="2" style="font-size:11px;color:#5A5A7A;padding-top:0">Valor de las vacaciones: ${vacPeriodo.dias} día${vacPeriodo.dias !== 1 ? "s" : ""} × ${fmtMoney(vacPeriodo.valorDia)} = <b>${fmtMoney(vacPeriodo.valor)}</b>. Está en el desprendible de vacaciones (página siguiente) y no se suma al neto de esta quincena.</td></tr>` : "";
@@ -9379,6 +9379,24 @@ function armarReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
   const paginaVacaciones = periodosVacQuincena.length
     ? paginaDesprendiblePagoVacaciones({ tipoNomina, trabajador, periodos: periodosVacQuincena, inicio: liquidacion.inicio, fin: liquidacion.fin, periodoId: liquidacion.periodoId, nombreFallback: liquidacion.nombre })
     : "";
+  // (2026-11-14, a pedido de RR.HH.) Cuadro verde bajo «Pago de la quincena»: la parte del sueldo por los días trabajados y la parte de las vacaciones.
+  const conSueldoPartido = esFiscalConSegSocial || esFiscal;
+  const vacBruto = Math.round(vacPeriodo.valor);
+  const epsVac = esFiscalConSegSocial ? Math.round(vacBruto * 0.04) : 0;
+  const pensionVac = esFiscalConSegSocial ? Math.round(vacBruto * 0.04) : 0;
+  const diasSueldoVac = Math.max(0, 15 - vacPeriodo.dias);
+  const celda = (t, der, extra) => `<td style="padding:4px 0;text-align:${der ? "right" : "left"};${extra || ""}">${t}</td>`;
+  const cajaVacaciones = !esPrestacionServicios && vacPeriodo.dias > 0 && vacPeriodo.valorDia > 0 ? `
+    <div style="margin-top:14px;border:1.5px solid #2D9E6B;border-radius:10px;padding:12px 14px;background:#EBF7F2;color:#1A1A2E">
+      <div style="font-weight:800;color:#1D7A50;font-size:13px;margin-bottom:6px">🏖️ Vacaciones de la quincena</div>
+      <table style="width:100%;border-collapse:collapse;font-size:12.5px"><tbody>
+        ${conSueldoPartido ? `<tr>${celda(`Sueldo por los ${diasSueldoVac} día${diasSueldoVac !== 1 ? "s" : ""} trabajados`)}${celda(fmtMoney((liquidacion.sueldoQuincena || 0) - vacBruto), true, "font-weight:700")}</tr>` : ""}
+        <tr>${celda(`Vacaciones disfrutadas${rangoVac ? ` (${rangoVac})` : ""} · ${vacPeriodo.dias} día${vacPeriodo.dias !== 1 ? "s" : ""} × ${fmtMoney(vacPeriodo.valorDia)}`)}${celda(fmtMoney(vacBruto), true, "font-weight:700")}</tr>
+        ${esFiscalConSegSocial ? `<tr>${celda("Salud y pensión sobre las vacaciones (4 % + 4 %)", false, "color:#5A5A7A")}${celda(`-${fmtMoney(epsVac + pensionVac)}`, true, "color:#B23A48")}</tr>
+        <tr>${celda("Neto de las vacaciones", false, "border-top:1px solid #A9D8C2;font-weight:800")}${celda(fmtMoney(vacBruto - epsVac - pensionVac), true, "border-top:1px solid #A9D8C2;font-weight:800")}</tr>` : ""}
+      </tbody></table>
+      ${conSueldoPartido ? `<div style="font-size:11.5px;color:#5A5A7A;margin-top:6px">Total de la quincena: ${diasSueldoVac} día${diasSueldoVac !== 1 ? "s" : ""} de sueldo + ${vacPeriodo.dias} día${vacPeriodo.dias !== 1 ? "s" : ""} de vacaciones = 15 días. El neto a pagar no cambia.</div>` : `<div style="font-size:11.5px;color:#5A5A7A;margin-top:6px">El valor de las vacaciones va en el desprendible de vacaciones (página siguiente) y no se suma al neto de esta quincena.</div>`}
+    </div>` : "";
   const filaDescIncap = (liquidacion.descuentoIncap || 0) > 0 ? `
       <tr><td>Descuento días de incapacidad (se pagan aparte)</td><td style="text-align:right;color:#B23A48">-${fmtMoney(liquidacion.descuentoIncap)}</td></tr>` : "";
   const filasPago = esPrestacionServicios
@@ -9455,6 +9473,7 @@ function armarReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
     </div>
     <div class="section-title">💰 Pago de la quincena</div>
     <table><tbody>${filasPago}</tbody></table>
+    ${cajaVacaciones}
     ${seccionAportesPatronales}
     ${esPrestacionServicios ? "" : `
     <div class="section-title">📦 Prestaciones sociales (provisión de esta quincena)</div>
