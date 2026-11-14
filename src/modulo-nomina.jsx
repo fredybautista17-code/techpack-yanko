@@ -13583,7 +13583,7 @@ function armarCorreoDesprendibleHTML({
   const vacCorreo = calcularVacacionesPeriodo(trabajador, desde, hasta);
   const rangoVacCorreo = textoRangosVacaciones(vacCorreo.rangos);
   const seccionVac = vacCorreo.dias > 0
-    ? `<table width="100%" cellpadding="0" cellspacing="0" style="margin:16px 0"><tr><td style="background:#EBF7F2;border:1px solid #A9D8C2;border-radius:10px;padding:10px 14px;font-size:13px;color:#1D7A50"><b>🏖️ Vacaciones del período: ${vacCorreo.dias} día${vacCorreo.dias !== 1 ? "s" : ""}</b>${rangoVacCorreo ? `<div style="font-size:11.5px;color:#5A5A7A;margin-top:2px">${rangoVacCorreo}</div>` : ""}</td></tr></table>`
+    ? `<table width="100%" cellpadding="0" cellspacing="0" style="margin:16px 0"><tr><td style="background:#EBF7F2;border:1px solid #A9D8C2;border-radius:10px;padding:10px 14px;font-size:13px;color:#1D7A50"><b>🏖️ Vacaciones del período: ${vacCorreo.dias} día${vacCorreo.dias !== 1 ? "s" : ""}</b>${rangoVacCorreo ? `<div style="font-size:11.5px;color:#5A5A7A;margin-top:2px">${rangoVacCorreo}</div>` : ""}${vacCorreo.valorDia > 0 ? `<div style="font-size:11.5px;color:#5A5A7A;margin-top:2px">Valor de las vacaciones: ${vacCorreo.dias} día${vacCorreo.dias !== 1 ? "s" : ""} × ${fmtMoney(vacCorreo.valorDia)} = <b>${fmtMoney(vacCorreo.valor)}</b> (desprendible de vacaciones aparte; no está sumado al total a pagar)</div>` : ""}</td></tr></table>`
     : "";
   const seccionIncap = incapInfo && incapInfo.dias > 0
     ? `${titulo(`🩺 Incapacidad (${incapInfo.dias} día${incapInfo.dias !== 1 ? "s" : ""})`)}<div style="font-size:13px">Devengado por incapacidad: <b>${fmtMoney(incapInfo.devengado)}</b></div><div style="font-size:11px;color:#5A5A7A;margin-top:3px">Empresa ${fmtMoney(incapInfo.empresa)} · EPS ${fmtMoney(incapInfo.eps)} · ARL ${fmtMoney(incapInfo.arl)} · Garantía del mínimo ${fmtMoney(incapInfo.garantia)}</div>`
@@ -13724,6 +13724,11 @@ function exportDesprendiblePagoHTML({
   // Vacaciones tomadas dentro de la quincena (solo los días; el valor en pesos va en el Recibo de Liquidación de Fiscal).
   const vacDesp = calcularVacacionesPeriodo(trabajador, desde, hasta);
   const rangoVacDesp = textoRangosVacaciones(vacDesp.rangos);
+  // (2026-11-14) Segunda página con el desprendible de vacaciones (días, valor del día, valor y descuentos) cuando hay vacaciones en el período.
+  const periodosVacDesp = vacDesp.dias > 0 ? periodosVacacionesEnRango(trabajador, desde, hasta) : [];
+  const paginaVacDesp = periodosVacDesp.length
+    ? paginaDesprendiblePagoVacaciones({ tipoNomina: trabajador?.tipoNomina, trabajador, periodos: periodosVacDesp, inicio: desde, fin: hasta, periodoId: label, nombreFallback: trabajador?.nombre })
+    : "";
   const seccionVac = vacDesp.dias > 0
     ? `<div style="margin:16px 0;padding:10px 14px;border:1.5px solid #A9D8C2;background:#EBF7F2;border-radius:10px;display:flex;gap:12px;align-items:center"><div style="font-size:26px;font-weight:900;color:#2D9E6B;line-height:1">${vacDesp.dias}</div><div><div style="font-size:13px;font-weight:800;color:#1D7A50">🏖️ Vacaciones del período: ${vacDesp.dias} día${vacDesp.dias !== 1 ? "s" : ""}</div>${rangoVacDesp ? `<div style="font-size:11.5px;color:#5A5A7A;margin-top:2px">${rangoVacDesp}</div>` : ""}</div></div>`
     : "";
@@ -13821,6 +13826,7 @@ function exportDesprendiblePagoHTML({
     <button onclick="window.print()" style="background:#1A1A2E;color:#C8B8A2;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:12px;font-weight:700">🖨 Imprimir / PDF</button>
   </div>
 </div>
+${paginaVacDesp}
 </body>
 </html>`;
   const blob = new Blob([html], { type: "text/html;charset=utf-8;" });
