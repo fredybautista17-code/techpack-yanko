@@ -3979,6 +3979,11 @@ function AdminCorte({ config, onSave, onReiniciarCortes, currentUser, ultimaCarg
   });
   const [subiendoNomina, setSubiendoNomina] = useState(false);
   const [resultNomina, setResultNomina] = useState(null);
+  // (2026-11-14, a pedido de Fredy) Traer a las personas de Corte desde Nómina → Personal cuando la lista de Corte quedó vacía.
+  const [personalLista, setPersonalLista] = useState(null);
+  const [personalSel, setPersonalSel] = useState({});
+  const [cargandoPersonal, setCargandoPersonal] = useState(false);
+  const [resultPersonal, setResultPersonal] = useState(null);
   const [subiendoPrecios, setSubiendoPrecios] = useState(false);
   const [resultPrecios, setResultPrecios] = useState(null);
   const [mesonForms, setMesonForms] = useState({});
@@ -4099,6 +4104,38 @@ function AdminCorte({ config, onSave, onReiniciarCortes, currentUser, ultimaCarg
   }
   function delCortador(id) {
     onSave({ ...config, cortadores: cortadores.filter((c) => c.id !== id) });
+  }
+  async function abrirPersonal() {
+    setCargandoPersonal(true);
+    setResultPersonal(null);
+    try {
+      const snap = await getDocs(collection(db, "nomina_trabajadores"));
+      const alias = config.nomina?.nombresAnteriores || {};
+      const existentes = new Set(trabajadores.map((t) => normTexto(t.nombre)));
+      const lista = snap.docs
+        .map((d) => ({ ...d.data(), id: d.id }))
+        .filter((t) => t.activo !== false && t.nombre)
+        .map((t) => {
+          const nombre = String(resolverNombre(t.nombre, alias)).trim().toUpperCase();
+          return { id: t.id, nombre, area: String(t.area || "").trim(), sueldo: Number(t.sueldo) || 0, fechaRetiro: t.fechaRetiro || "", yaEsta: existentes.has(normTexto(nombre)), esCorte: /\bCORTE\b/.test(normTexto(t.area || "")) };
+        })
+        .sort((a, b) => Number(b.esCorte) - Number(a.esCorte) || a.nombre.localeCompare(b.nombre));
+      const sel = {};
+      lista.forEach((t) => { sel[t.id] = t.esCorte && !t.yaEsta; });
+      setPersonalSel(sel);
+      setPersonalLista(lista);
+    } catch (err) {
+      setResultPersonal({ error: err?.message || "No se pudo leer Personal." });
+    }
+    setCargandoPersonal(false);
+  }
+  function agregarDesdePersonal() {
+    const elegidos = (personalLista || []).filter((t) => personalSel[t.id] && !t.yaEsta);
+    if (!elegidos.length) return;
+    const nuevos = elegidos.map((t) => ({ id: uid(), nombre: t.nombre, sueldo: t.sueldo, ...(t.fechaRetiro ? { fechaSalida: t.fechaRetiro } : {}) }));
+    onSave({ ...config, nomina: { ...config.nomina, trabajadores: [...trabajadores, ...nuevos] } });
+    setResultPersonal({ agregados: nuevos.length });
+    setPersonalLista(null);
   }
   function addTrabajador() {
     if (!newTrabajador.nombre.trim() || !newTrabajador.sueldo) return;
@@ -4551,6 +4588,42 @@ function AdminCorte({ config, onSave, onReiniciarCortes, currentUser, ultimaCarg
                 {resultNomina.error
                   ? `⚠ ${resultNomina.error}`
                   : `✓ ${resultNomina.total} trabajador(es) leídos — ${resultNomina.actualizados} actualizado(s), ${resultNomina.nuevos} nuevo(s).`}
+              </div>
+            )}
+          </div>
+          <div style={{ border: `1px dashed ${C.border}`, borderRadius: 10, padding: 14, marginBottom: 20, background: C.canvas }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, marginBottom: 4 }}>👥 Traer personal desde Nómina → Personal</div>
+            <div style={{ fontSize: 11, color: C.slate, marginBottom: 10 }}>
+              Agrega a la lista de Corte a las personas que ya están en Personal (por defecto, las del área Corte), con su sueldo básico. No borra ni cambia a quien ya esté. Para que el costo incluya prestaciones, sube después el archivo de nómina: actualiza el sueldo de quien ya está en la lista.
+            </div>
+            <Btn variant="secondary" small onClick={abrirPersonal} disabled={cargandoPersonal}>
+              {cargandoPersonal ? "Buscando..." : "👥 Traer desde Personal"}
+            </Btn>
+            {resultPersonal && (
+              <div style={{ marginTop: 10, fontSize: 12, fontWeight: 700, color: resultPersonal.error ? C.red : C.green }}>
+                {resultPersonal.error ? `⚠ ${resultPersonal.error}` : `✓ ${resultPersonal.agregados} persona(s) agregada(s) a la nómina de Corte.`}
+              </div>
+            )}
+            {personalLista && (
+              <div style={{ marginTop: 12 }}>
+                {!personalLista.length && <div style={{ fontSize: 12, color: C.slate }}>No hay personal activo en Personal.</div>}
+                <div style={{ maxHeight: 320, overflowY: "auto", display: "grid", gap: 4 }}>
+                  {personalLista.map((t) => (
+                    <label key={t.id} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12.5, padding: "6px 10px", background: C.white, border: `1px solid ${C.border}`, borderRadius: 8, opacity: t.yaEsta ? 0.5 : 1, cursor: t.yaEsta ? "default" : "pointer" }}>
+                      <input type="checkbox" disabled={t.yaEsta} checked={!!personalSel[t.id] && !t.yaEsta} onChange={(e) => setPersonalSel((m) => ({ ...m, [t.id]: e.target.checked }))} />
+                      <span style={{ fontWeight: 700, color: C.ink, flex: 1 }}>{t.nombre}</span>
+                      <span style={{ color: C.slate }}>{t.area || "Sin área"}</span>
+                      <span style={{ color: C.slate, minWidth: 90, textAlign: "right" }}>${t.sueldo.toLocaleString("es-CO")}</span>
+                      {t.yaEsta && <span style={{ fontSize: 11, color: C.green, fontWeight: 700 }}>ya está</span>}
+                    </label>
+                  ))}
+                </div>
+                <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                  <Btn small onClick={agregarDesdePersonal} disabled={!personalLista.some((t) => personalSel[t.id] && !t.yaEsta)}>
+                    Agregar {personalLista.filter((t) => personalSel[t.id] && !t.yaEsta).length} seleccionada(s)
+                  </Btn>
+                  <Btn variant="secondary" small onClick={() => setPersonalLista(null)}>Cancelar</Btn>
+                </div>
               </div>
             )}
           </div>
@@ -9282,6 +9355,9 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
   const [view, setView] = useState("dashboard");
   const [pedidos, setPedidos] = useState([]);
   const [selPedidoId, setSelPedidoId] = useState(null);
+  // (2026-11-14) La configuración de Corte (plantas, cortadores, nómina, telas) volvió a los valores por defecto y se perdió la nómina. Desde ahora
+  // no se guarda nada mientras la configuración real no haya cargado, y antes de cada cambio se deja un respaldo del día (corte_config/respaldo_AAAA-MM-DD).
+  const [configCargada, setConfigCargada] = useState(false);
   const [corteConfig, setCorteConfig] = useState({
     plantas: [
       {
@@ -9435,9 +9511,21 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
         });
         unsubs.push(unsubBloqueos);
         const cfgDocs = await fsGet("corte_config");
-        if (cfgDocs.length)
-          setCorteConfig((prev) => ({ ...prev, ...cfgDocs[0] }));
-        else await fsSave("corte_config", "main", corteConfig);
+        // Siempre el documento «main» (no el primero que devuelva Firebase) y nunca un respaldo.
+        const cfgMain = cfgDocs.find((d) => d.id === "main") || cfgDocs.find((d) => !String(d.id).startsWith("respaldo_"));
+        if (cfgMain) {
+          setCorteConfig((prev) => ({ ...prev, ...cfgMain }));
+          setConfigCargada(true);
+        } else {
+          // Solo se crea con los valores por defecto si de verdad no existe «main» (se confirma con una lectura directa).
+          const snapMain = await getDoc(doc(db, "corte_config", "main"));
+          if (snapMain.exists()) {
+            setCorteConfig((prev) => ({ ...prev, ...snapMain.data() }));
+          } else {
+            await fsSave("corte_config", "main", corteConfig);
+          }
+          setConfigCargada(true);
+        }
       } catch (e) {
         console.error(e);
       }
@@ -10114,7 +10202,26 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
       }
     });
   }, [pedidos, programacionCorte, ventasPerdidasCargas, planeacionCargas]);
+  // Respaldo del estado anterior, una vez al día (el primero del día), solo si tenía datos. Nunca bloquea el guardado.
+  async function respaldarConfigCorte(previa) {
+    try {
+      const tieneDatos = (previa?.nomina?.trabajadores || []).length || (previa?.cortadores || []).length || (previa?.telas || []).length;
+      if (!tieneDatos) return;
+      const ref = doc(db, "corte_config", `respaldo_${today()}`);
+      const ya = await getDoc(ref);
+      if (ya.exists()) return;
+      const { id: _omitido, ...datos } = previa;
+      await setDoc(ref, { ...datos, respaldoDe: "main", respaldoEn: new Date().toISOString() });
+    } catch (e) {
+      console.warn("No se pudo guardar el respaldo de la configuración de Corte", e);
+    }
+  }
   async function saveConfig(cfg) {
+    if (!configCargada) {
+      window.alert("La configuración de Corte todavía no terminó de cargar (o falló la carga). No se guardó nada para no borrar los datos. Recarga la página con Ctrl+Shift+R e inténtalo de nuevo.");
+      return;
+    }
+    await respaldarConfigCorte(corteConfig);
     setCorteConfig(cfg);
     await fsSave("corte_config", "main", cfg);
   }
