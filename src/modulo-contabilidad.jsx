@@ -15,6 +15,7 @@ import { getFunctions, httpsCallable } from "firebase/functions";
 import { rangoMeses, rangoSugerido, gruposDesdeBusint, nombresConocidos } from "./compras-busint-traer";
 import OrdenesCompraView from "./contabilidad-ordenes-compra";
 import { DevolucionesFacturacionView } from "./devoluciones-cliente";
+import { precioVendidoDe, versionVendidaDe, redondeaPrecio } from "./precio-vendido";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
   authDomain: "techpack-yanko-f37b8.firebaseapp.com",
@@ -3285,6 +3286,23 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases, puedeSincroni
   const [loading, setLoading] = useState(true);
   const [sincronizando, setSincronizando] = useState(false);
   const [aprobandoId, setAprobandoId] = useState(null);
+  const [preciosVendidos, setPreciosVendidos] = useState({}); // (2026-11-14) referencia normalizada -> precio vendido de su cotización (para avisar si Busint factura distinto)
+  useEffect(() => {
+    let vivo = true;
+    getDocs(collection(db, "cotizaciones")).then((snap) => {
+      if (!vivo) return;
+      const m = {};
+      snap.docs.forEach((d) => {
+        const c = { ...d.data(), id: d.id };
+        if (c.eliminado) return;
+        const pv = precioVendidoDe(c);
+        if (!pv || !(c.versiones || []).some((v) => v.estado === "aprobada")) return;
+        [c.referencia, c.vinculo?.reference].map(normalizarRefComparacion).filter(Boolean).forEach((k) => { if (!m[k]) m[k] = { valor: pv.valor, version: pv.version }; });
+      });
+      setPreciosVendidos(m);
+    }).catch(() => {});
+    return () => { vivo = false; };
+  }, []);
   const [guardandoDefId, setGuardandoDefId] = useState(null); // lote cuya cotización definitiva se está subiendo a Dropbox
   const [mostrarConfig, setMostrarConfig] = useState(false);
   const [vistaDadoPorCumplido, setVistaDadoPorCumplido] = useState("pendientes");
@@ -3678,7 +3696,9 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases, puedeSincroni
     const cot = candidatas[0];
     if (!cot) return { ok: false, mensaje: `no encontré una cotización aprobada para la referencia ${lote.referencia}` };
     const aprobadas = (cot.versiones || []).filter((v) => v.estado === "aprobada");
-    const ver = aprobadas.reduce((a, b) => (b.numero > a.numero ? b : a));
+    // (2026-11-14, a pedido de Fredy) La definitiva es la versión que tiene el PRECIO VENDIDO (no «la última aprobada»): una versión
+    // posterior con otro precio no la reemplaza si ese cambio no se autorizó con código.
+    const ver = versionVendidaDe(cot) || aprobadas.reduce((a, b) => (b.numero > a.numero ? b : a));
     const m = await import("./cotizador-excel");
     const fecha = fechaIso || new Date().toISOString();
     // (2026-11-02, a pedido de Fredy) El libro de COTIZACIONES APROBADAS acumula una definitiva POR LOTE: hoja
@@ -4061,6 +4081,16 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases, puedeSincroni
                         </span>
                       </div>
                     </div>
+                    {(() => {
+                      const pvc = preciosVendidos[normalizarRefComparacion(l.referencia)];
+                      const pb = Number(l.precioVentaUnitario) || 0;
+                      if (!pvc || !(pb > 0) || Math.abs(redondeaPrecio(pb) - redondeaPrecio(pvc.valor)) <= 1) return null;
+                      return (
+                        <div style={{ fontSize: 11, color: C.amber, fontWeight: 700, marginBottom: 10 }}>
+                          🔒 El precio vendido de la cotización (V{pvc.version}) es ${redondeaPrecio(pvc.valor).toLocaleString("es-CO")} y aquí el Precio Venta U. es ${redondeaPrecio(pb).toLocaleString("es-CO")}. Revisa si se facturó mal o si hubo un acuerdo con el cliente sin código de autorización.
+                        </div>
+                      );
+                    })()}
                     {despachadaSospechosa && (
                       <div style={{ fontSize: 11, color: C.red, fontWeight: 700, marginBottom: 10 }}>
                         ⚠ Cant. Despachada ({fmtNum(despachadaMostrada)}) es mayor que Cant. Cortada ({fmtNum(l.cantCortada)}) — puede que Busint haya juntado varios lotes en una sola factura. Corrígela arriba, o espera a que Bodega la registre en Despachos Generales.

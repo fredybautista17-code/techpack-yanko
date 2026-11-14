@@ -14934,7 +14934,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
   const GRUPOS_MODULOS_DEF = [
     { area: "💰 Contabilidad", items: [["contabilidad", "Contabilidad"], ["contabilidad_bases_dado_por_cumplido", "Puede crear y configurar Bases (Dado por Cumplido)"], ["contabilidad_sincronizar_dado_por_cumplido", "Puede sincronizar con Busint (Buscar lotes nuevos)"], ["contabilidad_editar_dado_por_cumplido", "✎ Puede editar lotes ya aprobados (Dado por Cumplido)"], ["contabilidad_ordenes_compra", "🛒 Puede ver Órdenes de compra"]] },
     // (2026-10-16, a pedido de Fredy) El acceso al módulo sigue en la lista de Diseño ("cotizador"); estos dos son permisos extra por rol.
-    { area: "🧮 Cotizaciones", items: [["cotizador_editar", "Puede crear y editar cotizaciones (sin esto, solo consulta)"], ["cotizador_borrar", "Puede borrar cotizaciones"], ["cotizador_aprobar", "Puede aprobar cotizaciones (y aplicar el precio)"], ["cotizador_deshabilitar", "Puede deshabilitar cotizaciones aprobadas"], ["cotizador_costos_reales", "Puede ajustar costos reales de cotizaciones aprobadas (sin cambiar el precio aprobado)"], ["cotizador_enviar_facturar", "Puede enviar cotizaciones aprobadas a facturar"], ["cotizador_facturar", "Facturación: ve Por facturar y registra el documento y su número"]] },
+    { area: "🧮 Cotizaciones", items: [["cotizador_editar", "Puede crear y editar cotizaciones (sin esto, solo consulta)"], ["cotizador_borrar", "Puede borrar cotizaciones"], ["cotizador_aprobar", "Puede aprobar cotizaciones (y aplicar el precio)"], ["cotizador_deshabilitar", "Puede deshabilitar cotizaciones aprobadas"], ["cotizador_costos_reales", "Puede ajustar costos reales de cotizaciones aprobadas (sin cambiar el precio aprobado)"], ["cotizador_autorizar_precio", "Puede autorizar cambios del precio vendido (genera el código para aprobar otro precio)"], ["cotizador_enviar_facturar", "Puede enviar cotizaciones aprobadas a facturar"], ["cotizador_facturar", "Facturación: ve Por facturar y registra el documento y su número"]] },
     // (2026-10-28, a pedido de Fredy) Vincular referencias a pedidos en Preórdenes/Órdenes estaba solo para el administrador.
     { area: "🧾 Preórdenes y Órdenes", items: [["preordenes_vincular_pedido", "Puede vincular referencias a pedidos (aunque la preorden esté aprobada)"], ["preordenes_pasar_a_orden", "Puede pasar referencias con tela confirmada a Órdenes (botón «Pasar a Orden»)"]] },
     { area: "📋 Planeación", items: [["planeacion", "Planeación"]] },
@@ -21403,6 +21403,8 @@ function AppInner() {
   const canDeshabilitarCotizacion = canAccessCotizador && !esClienteCot && moduloVisible(userRoleData, "cotizador_deshabilitar", currentUser?.isAdmin);
   // (2026-10-19, a pedido de Fredy) Crear/editar cotizaciones: permiso aparte. Con solo "cotizador" el usuario queda en SOLO CONSULTA (el admin siempre edita).
   const canCostosRealesCotizacion = canAccessCotizador && !esClienteCot && moduloVisible(userRoleData, "cotizador_costos_reales", currentUser?.isAdmin);
+  // (2026-11-14, a pedido de Fredy) Autorizar un cambio del precio vendido (genera el código de un solo uso): permiso aparte, por defecto solo el administrador.
+  const canAutorizarPrecioCotizacion = canAccessCotizador && !esClienteCot && moduloVisible(userRoleData, "cotizador_autorizar_precio", currentUser?.isAdmin);
   // (2026-10-21, a pedido de Fredy) Facturación de cotizaciones aprobadas: quien las envía a facturar (María Fernanda Páez) y quien registra el documento y su número.
   const canEnviarFacturarCotizacion = canAccessCotizador && !esClienteCot && moduloVisible(userRoleData, "cotizador_enviar_facturar", currentUser?.isAdmin);
   const canFacturarCotizacion = canAccessCotizador && !esClienteCot && moduloVisible(userRoleData, "cotizador_facturar", currentUser?.isAdmin);
@@ -21760,7 +21762,7 @@ function AppInner() {
       <CotizadorView currentUser={currentUser} config={config} protos={protosVisibles} capsulas={capsulasVisibles}
         iniciarDesde={cotizadorInicio} onIniciarConsumido={() => setCotizadorInicio(null)}
         onAplicarPrecio={aplicarPrecioCotizador} onVolver={() => setModuloActivo("diseno")}
-        puedeBorrar={canBorrarCotizacion} puedeAprobar={canAprobarCotizacion} puedeDeshabilitar={canDeshabilitarCotizacion} puedeCostosReales={canCostosRealesCotizacion} puedeEnviarFacturar={canEnviarFacturarCotizacion} puedeFacturar={canFacturarCotizacion} puedeEditar={canEditarCotizacion} clientesPermitidos={esClienteCot ? clientesDeUsuario(currentUser) : null}
+        puedeBorrar={canBorrarCotizacion} puedeAprobar={canAprobarCotizacion} puedeDeshabilitar={canDeshabilitarCotizacion} puedeCostosReales={canCostosRealesCotizacion} puedeAutorizarPrecio={canAutorizarPrecioCotizacion} puedeEnviarFacturar={canEnviarFacturarCotizacion} puedeFacturar={canFacturarCotizacion} puedeEditar={canEditarCotizacion} clientesPermitidos={esClienteCot ? clientesDeUsuario(currentUser) : null}
         onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }}
         notify={(msg) => notify({ id: uid(), icon: "🧮", title: "Cotizador", msg })} />
     );

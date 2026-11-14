@@ -8,6 +8,7 @@ import {
 } from "./cotizador-calculo";
 import { descargarCotizacionesExcel, excelLibroBase64, CARPETA_DISENO } from "./cotizador-excel";
 import TraerRealesBusintModal from "./costos-reales-busint-vista";
+import { precioVendidoDe, versionVendidaDe, cambiaPrecioVendido, precioDistintoAlVendido, crearAutorizacionPrecio, validarCodigoPrecio, autorizacionesVigentes, normalizaCodigo, redondeaPrecio, HORAS_VIGENCIA_CODIGO } from "./precio-vendido";
 import {
   FILAS_VINILO, IMPREVISTOS_PCT, filasViniloVacias, calcularVinilo, aplicarInsumoAFila,
   tituloVinilo, mesLargo, descargarViniloExcel, baseVigente, aplicarBases, normalizarFilas, grupoFila,
@@ -339,8 +340,114 @@ function planActualizar(cot, destinos, nombresBusint, ocupados) {
 }
 const textoPlan = (pl) => [pl.cambios.cliente && `cliente → ${pl.cambios.cliente}`, pl.cambios.nombre && `nombre → ${pl.cambios.nombre}`, pl.cambios.vinculo && `vinculada a ${pl.cambios.vinculo.label}`].filter(Boolean).join(" · ");
 
+// ─── CÓDIGO DE AUTORIZACIÓN DE CAMBIO DE PRECIO (2026-11-14, a pedido de Fredy) ───────────────
+// Ver precio-vendido.js. ModalCodigoPrecio: quien aprueba escribe el código para aprobar una versión con otro precio.
+// ModalAutorizarPrecio: quien tiene el permiso cotizador_autorizar_precio genera el código (precio, motivo y con quién del cliente se acordó).
+function ModalCodigoPrecio({ cot, valor, vendido, inicial = "", puedeAutorizar, onValidado, onGenerar, onClose }) {
+  const [txt, setTxt] = useState(inicial);
+  const [error, setError] = useState("");
+  const [ocupado, setOcupado] = useState(false);
+  async function validar() {
+    setOcupado(true); setError("");
+    try {
+      const r = await validarCodigoPrecio(cot, txt, valor);
+      if (!r.ok) setError(r.error); else await onValidado(r.aut, normalizaCodigo(txt));
+    } catch (e) { setError("No se pudo validar el código: " + (e?.message || e)); }
+    finally { setOcupado(false); }
+  }
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,.55)", zIndex: 1000, display: "grid", placeItems: "center", padding: 16 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: C.white, borderRadius: 14, width: "min(480px, 100%)", padding: 20 }}>
+        <div style={{ fontWeight: 800, fontSize: 16 }}>🔑 Esta versión cambia el precio vendido</div>
+        <div style={{ display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap", margin: "10px 0", fontVariantNumeric: "tabular-nums" }}>
+          <span style={{ fontSize: 13, color: C.slate }}>Vendido</span><b style={{ fontSize: 18 }}>{fmtCOP(vendido.valor)}</b>
+          <span style={{ color: C.slate }}>→</span>
+          <span style={{ fontSize: 13, color: C.slate }}>esta versión</span><b style={{ fontSize: 18, color: C.red }}>{fmtCOP(valor)}</b>
+        </div>
+        <div style={{ fontSize: 12, color: C.slate, marginBottom: 10 }}>Para aprobarla escribe el código de autorización. Lo genera quien tiene el permiso, con el precio, el motivo y con quién del cliente se acordó. Sirve una sola vez.</div>
+        <input autoFocus value={txt} onChange={(e) => setTxt(e.target.value.toUpperCase())} onKeyDown={(e) => { if (e.key === "Enter") validar(); }} placeholder="PV-XXXXXX" maxLength={12} style={{ ...inp, fontFamily: "ui-monospace, Consolas, monospace", fontSize: 18, letterSpacing: 2 }} />
+        {error && <div style={{ color: C.red, fontSize: 12.5, marginTop: 8 }}>{error}</div>}
+        <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
+          <button onClick={onClose} style={btn(C.white, C.slate, C.border)}>Cancelar</button>
+          {puedeAutorizar && <button onClick={onGenerar} style={btn(C.white, C.amber, C.amber)}>Generar un código nuevo</button>}
+          <div style={{ flex: 1 }} />
+          <button onClick={validar} disabled={ocupado} style={{ ...btn(C.green, C.white), opacity: ocupado ? 0.6 : 1 }}>{ocupado ? "Validando…" : "Aprobar con este código"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+function ModalAutorizarPrecio({ cot, usuario, vendido, precioInicial, crearVersion, precioVersion, onCrear, onClose }) {
+  const [precio, setPrecio] = useState(String(Math.round(precioInicial || 0)));
+  const [motivo, setMotivo] = useState("");
+  const [acordado, setAcordado] = useState("");
+  const [ok, setOk] = useState(false);
+  const [res, setRes] = useState(null);
+  const [ocupado, setOcupado] = useState(false);
+  const [err, setErr] = useState("");
+  const valor = Number(String(precio).replace(/[^\d]/g, "")) || 0;
+  async function generar() {
+    setErr("");
+    if (!(valor > 0)) { setErr("Escribe el precio nuevo."); return; }
+    if (redondeaPrecio(valor) === redondeaPrecio(vendido.valor)) { setErr("Es el mismo precio vendido: no necesita código."); return; }
+    if (!motivo.trim()) { setErr("Escribe el motivo del cambio."); return; }
+    if (!acordado.trim()) { setErr("Escribe con quién del cliente se acordó."); return; }
+    if (!ok) { setErr("Confirma que el precio ya se acordó con el cliente."); return; }
+    setOcupado(true);
+    try {
+      const r = await crearAutorizacionPrecio(cot.id, { precio: valor, motivo, acordadoCon: acordado, por: usuario, precioAnterior: vendido.valor });
+      await onCrear({ aut: r.aut, crearVersion, precio: valor });
+      setRes(r);
+    } catch (e) { setErr("No se pudo generar el código: " + (e?.message || e)); }
+    finally { setOcupado(false); }
+  }
+  return (
+    <div onClick={() => onClose(res?.codigo)} style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,.55)", zIndex: 1100, display: "grid", placeItems: "center", padding: 16 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: C.white, borderRadius: 14, width: "min(480px, 100%)", padding: 20, maxHeight: "92vh", overflowY: "auto" }}>
+        {!res ? (
+          <>
+            <div style={{ fontWeight: 800, fontSize: 16 }}>🔑 Autorizar cambio de precio</div>
+            <div style={{ fontSize: 12, color: C.slate, margin: "2px 0 8px" }}>{cot.referencia} · precio vendido actual <b>{fmtCOP(vendido.valor)}</b></div>
+            <Campo label="Precio nuevo (con IVA)"><input value={precio} onChange={(e) => setPrecio(e.target.value)} inputMode="numeric" style={inp} /></Campo>
+            {crearVersion && precioVersion > 0 && redondeaPrecio(valor) !== redondeaPrecio(precioVersion) && valor > 0 && (
+              <div style={{ fontSize: 12, color: C.amber, marginTop: 6 }}>Con los costos reales la versión nueva dará {fmtCOP(precioVersion)}. Antes de aprobarla ajusta el margen hasta llegar a {fmtCOP(valor)}.</div>
+            )}
+            <div style={{ height: 8 }} />
+            <Campo label="Motivo"><textarea rows={2} value={motivo} onChange={(e) => setMotivo(e.target.value)} placeholder="Ej.: subió el costo de la tela; se renegoció con el cliente" style={{ ...inp, resize: "vertical" }} /></Campo>
+            <div style={{ height: 8 }} />
+            <Campo label="Acordado con (persona del cliente)"><input value={acordado} onChange={(e) => setAcordado(e.target.value)} placeholder="Nombre y cargo" style={inp} /></Campo>
+            <label style={{ display: "flex", gap: 8, alignItems: "flex-start", marginTop: 12, padding: "10px 12px", borderRadius: 10, background: C.amberBg, fontSize: 12.5, cursor: "pointer" }}>
+              <input type="checkbox" checked={ok} onChange={(e) => setOk(e.target.checked)} style={{ marginTop: 2 }} />
+              <span>Confirmo que este precio ya se acordó con el cliente. El código sirve una vez, solo para este precio y vence en {HORAS_VIGENCIA_CODIGO} horas.</span>
+            </label>
+            {crearVersion && <div style={{ fontSize: 12, color: C.slate, marginTop: 8 }}>Se creará una versión nueva con los costos reales que pasa a aprobación.</div>}
+            {err && <div style={{ color: C.red, fontSize: 12.5, marginTop: 8 }}>{err}</div>}
+            <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+              <button onClick={() => onClose()} style={{ ...btn(C.white, C.slate, C.border), flex: 1 }}>Cancelar</button>
+              <button onClick={generar} disabled={ocupado} style={{ ...btn(C.amber, C.white), flex: 1, opacity: ocupado ? 0.6 : 1 }}>{ocupado ? "Generando…" : "Generar código"}</button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={{ fontWeight: 800, fontSize: 16 }}>Código generado</div>
+            <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>Entrégalo a quien va a aprobar la versión. Solo se muestra ahora: si lo pierdes, genera otro.</div>
+            <div style={{ background: "#F2ECFB", border: "2px dashed #7B5CC9", borderRadius: 12, padding: 16, textAlign: "center", marginTop: 14 }}>
+              <div style={{ fontSize: 30, fontWeight: 800, letterSpacing: 4, fontFamily: "ui-monospace, Consolas, monospace", color: "#4B2E9A" }}>{res.codigo}</div>
+              <div style={{ fontSize: 12, color: "#4B2E9A", marginTop: 4 }}>{cot.referencia} · {fmtCOP(res.aut.precio)} · un solo uso · vence {new Date(res.aut.vence).toLocaleString("es-CO", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</div>
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+              <button onClick={() => { try { navigator.clipboard.writeText(res.codigo); } catch (e) { /* sin portapapeles */ } }} style={{ ...btn(C.white, C.slate, C.border), flex: 1 }}>Copiar código</button>
+              <button onClick={() => onClose(res.codigo)} style={{ ...btn(C.green, C.white), flex: 1 }}>Listo</button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── EDITOR DE UNA COTIZACIÓN ────────────────────────────────────────────────
-function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsulas, cotizaciones, onGuardar, onVolver, onEliminar, onAplicar, onSucio, puedeBorrar, puedeAprobar, puedeDeshabilitar, puedeCostosReales = false, puedeEditar = true, puedeEnviarFacturar = false, puedeFacturar = false, usuario, notify }) {
+function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsulas, cotizaciones, onGuardar, onVolver, onEliminar, onAplicar, onSucio, puedeBorrar, puedeAprobar, puedeDeshabilitar, puedeCostosReales = false, puedeAutorizarPrecio = false, puedeEditar = true, puedeEnviarFacturar = false, puedeFacturar = false, usuario, notify }) {
   const [cot, setCot] = useState(inicial);
   const [sucio, setSucio] = useState(false);
   useEffect(() => { onSucio?.(sucio); }, [sucio]); // eslint-disable-line
@@ -355,6 +462,9 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
   const [factTipo, setFactTipo] = useState(inicial.facturacion?.tipo || "facturacion"); // formulario de facturación
   const [factNum, setFactNum] = useState(inicial.facturacion?.numero || "");
   const [modoReal, setModoReal] = useState(false); // viendo / editando los costos reales de la versión aprobada
+  const [modalCodigo, setModalCodigo] = useState(null); // {destino}: pide el código para aprobar una versión que cambia el precio vendido
+  const [modalAutorizar, setModalAutorizar] = useState(null); // {crearVersion, precio}: genera el código de autorización
+  const [codigoPrefill, setCodigoPrefill] = useState("");
   const [realesBusint, setRealesBusint] = useState(false); // ventana "Traer costos reales de Busint" (precarga desde el informe de Gerencia)
   const [viniloGrande, setViniloGrande] = useState(() => { try { return localStorage.getItem("cotizador_vinilo_grande") === "1"; } catch (e) { return false; } }); // ventana de Vinilo / DTF en pantalla casi completa
   const alternarViniloGrande = () => setViniloGrande((g) => { try { localStorage.setItem("cotizador_vinilo_grande", g ? "0" : "1"); } catch (e) { /* sin almacenamiento */ } return !g; });
@@ -365,6 +475,11 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
   const calc = useMemo(() => calcularCotizacion(ver.v), [ver.v]);
   const estadoV = ver.estado || "borrador";
   const factActual = facturacionDe(cot);
+  const vendido = precioVendidoDe(cot); // precio vendido bloqueado (cot.precioVendido o, en las anteriores, el último aplicado)
+  const versionVendida = versionVendidaDe(cot);
+  const difVig = cot.precioVendido?.confirmado ? null : precioDistintoAlVendido(cot);
+  const cambiaPrecio = !enReal && estadoV !== "aprobada" && estadoV !== "deshabilitada" && cambiaPrecioVendido(cot, calc.precioAplicar);
+  const textoAprobar = cambiaPrecio ? "🔑 Aprobar con cambio de precio y aplicar" : "✔ Aprobar y aplicar";
   const esUltimaAprobada = estadoV === "aprobada" && !enReal && ver.numero === ultimaVersion(cot)?.numero;
   const bloqueada = enReal ? !puedeCostosReales : ((estadoV === "aprobacion" && !puedeAprobar) || estadoV === "aprobada" || estadoV === "deshabilitada" || !puedeEditar); // (2026-10-19) sin permiso de editar = solo consulta; quien envía no edita mientras espera; el aprobador sí; una aprobada se cambia con versión nueva
 
@@ -437,7 +552,7 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
       envioAuto = true;
       a = limpio(cot);
       const va = a.versiones[a.activa];
-      va.estado = "aprobacion"; va.envio = { por: usuario || "", fecha: new Date().toISOString() }; va.precio = calc.precioAplicar; delete va.decision;
+      va.estado = "aprobacion"; va.envio = { por: usuario || "", fecha: new Date().toISOString() }; va.precio = calc.precioAplicar; va.precioPropuesto = calc.precioAplicar; delete va.decision;
       a.historial = [...(a.historial || []), { fecha: new Date().toISOString(), quien: usuario || "—", v: va.numero, txt: `envió la V${va.numero} a aprobación automáticamente (${fmtCOP(calc.precioAplicar)} con IVA)` }];
       setCot(a);
     }
@@ -582,7 +697,7 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
     if (!(valor > 0)) { notify?.("El precio es 0 — completa los costos primero"); return; }
     const n = limpio(cot);
     const vv = n.versiones[n.activa];
-    vv.estado = "aprobacion"; vv.envio = { por: usuario || "", fecha: new Date().toISOString() }; vv.precio = valor; delete vv.decision;
+    vv.estado = "aprobacion"; vv.envio = { por: usuario || "", fecha: new Date().toISOString() }; vv.precio = valor; vv.precioPropuesto = valor; delete vv.decision;
     conEvento(n, `envió la V${vv.numero} a aprobación (${fmtCOP(valor)} con IVA)`);
     await persistir(n, `V${vv.numero} enviada a aprobación`);
   }
@@ -660,30 +775,44 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
     }
   }
   // Aprueba la versión activa y, si hay destino, aplica el precio con IVA a ese prototipo / referencia.
-  async function aprobarYAplicar(destino) {
+  async function aprobarYAplicar(destino, aut = null, codigoTxt = "") {
     const valor = calc.precioAplicar;
     if (!(valor > 0)) { notify?.("El precio es 0 — completa los costos primero"); return; }
+    // (2026-11-14, a pedido de Fredy) El precio vendido está bloqueado: una versión con otro precio solo se aprueba con un código de autorización válido.
+    const previo = precioVendidoDe(cot);
+    const cambia = cambiaPrecioVendido(cot, valor);
+    if (cambia && !aut) { setModalCodigo({ destino }); return; }
     const mismoDestino = destino && cot.vinculo && cot.vinculo.id === destino.id && cot.vinculo.kind === destino.kind;
     const campos = destino && !mismoDestino ? camposDeDestino(destino) : {};
     const clienteNuevo = destino && !mismoDestino ? decidirCliente(destino) : null;
     const n = { ...limpio(cot), ...campos };
     ponerCliente(n, clienteNuevo);
     const vv = n.versiones[n.activa];
-    vv.estado = "aprobada"; vv.decision = { por: usuario || "", fecha: new Date().toISOString(), comentario: "" }; vv.precio = valor;
+    const propuesto = Number(vv.precioPropuesto) || 0;
+    const corrigio = propuesto > 0 && redondeaPrecio(propuesto) !== redondeaPrecio(valor);
+    const ahora = new Date().toISOString();
+    vv.estado = "aprobada"; vv.decision = { por: usuario || "", fecha: ahora, comentario: "", ...(corrigio ? { propuesto } : {}) }; vv.precio = valor;
+    n.precioVendido = { valor, version: vv.numero, fecha: ahora, por: usuario || "", ...(cambia ? { anterior: previo.valor, autorizacion: aut.id, acordadoCon: aut.acordadoCon || "", motivo: aut.motivo || "" } : {}) };
+    if (aut) n.autorizacionesPrecio = (n.autorizacionesPrecio || []).map((a) => (a.id === aut.id ? { ...a, usado: { por: usuario || "", fecha: ahora, version: vv.numero } } : a));
     if (destino) {
       n.vinculo = destino;
       n.precioAplicado = { valor, fecha: hoyISO(), version: vv.numero, destino: destino.label };
     }
-    conEvento(n, destino ? `aprobó la V${vv.numero} y aplicó ${fmtCOP(valor)} a ${destino.label}` : `aprobó la V${vv.numero} (${fmtCOP(valor)}, sin destino para aplicar)`);
+    const extra = cambia
+      ? ` · cambio de precio autorizado con el código ${codigoTxt}: ${fmtCOP(previo.valor)} → ${fmtCOP(valor)}${aut.acordadoCon ? `, acordado con ${aut.acordadoCon}` : ""}${aut.motivo ? `. Motivo: ${aut.motivo}` : ""}`
+      : corrigio ? ` (lo propuesto era ${fmtCOP(propuesto)} y se aprobó ${fmtCOP(valor)})` : "";
+    conEvento(n, (destino ? `aprobó la V${vv.numero} y aplicó ${fmtCOP(valor)} a ${destino.label}` : `aprobó la V${vv.numero} (${fmtCOP(valor)}, sin destino para aplicar)`) + extra);
     await onGuardar(n);
     if (destino) await onAplicar(destino, valor);
     setCot(n);
     setSucio(false);
     setVincular(false);
+    setModalCodigo(null);
     notify?.(destino ? `${fmtCOP(valor)} (con IVA) aprobado y aplicado a ${destino.label}` : `V${vv.numero} aprobada`);
     await enviarDropbox(n); // la cotización aprobada queda guardada en Dropbox
   }
   function pedirAprobar(destino) {
+    if (cambiaPrecioVendido(cot, calc.precioAplicar)) { setVincular(false); setModalCodigo({ destino }); return; } // pide el código de autorización
     const txt = destino ? `¿Aprobar la V${ver.numero} y aplicar ${fmtCOP(calc.precioAplicar)} (con IVA) a ${destino.label}?` : `¿Aprobar la V${ver.numero} sin aplicar el precio a ningún prototipo?`;
     const aviso = !(calc.telasTotal > 0) ? "\n\nOjo: esta versión no tiene costo de telas cargado." : "";
     if (window.confirm(txt + aviso)) aprobarYAplicar(destino);
@@ -752,20 +881,47 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
     setRealesBusint(false);
     notify?.(`Costos reales cargados del lote ${info.lote}. Revísalos y pulsa «Guardar versión».`);
   }
-  async function proponerNuevoPrecio() {
-    const rr1 = resumenCostosReales(cot, verBase, umbralDeCliente(parametros, cot.cliente));
-    if (!rr1 || !(rr1.nuevo > 0)) return;
-    if (!window.confirm(`Se crea una versión nueva con los costos reales y un precio de ${fmtCOP(rr1.nuevo)} (con IVA) que pasa a aprobación.\n\nEl precio vigente (${fmtCOP(rr1.fijo)}) sigue igual hasta que se apruebe la nueva versión. ¿Continuar?`)) return;
+  // (2026-11-14, a pedido de Fredy) Guarda la autorización (solo su huella) y, si viene de los costos reales, crea la versión
+  // nueva en aprobación con el precio autorizado. El precio vendido NO cambia hasta que esa versión se apruebe con el código.
+  async function guardarAutorizacion({ aut, crearVersion, precio }) {
     const n = limpio(cot);
-    const base = n.versiones[n.activa];
-    const ultima = n.versiones[n.versiones.length - 1];
-    const numero = ultima.numero + 1;
-    n.versiones.push({ id: uid(), numero, fecha: hoyISO(), nota: `Precio propuesto por los costos reales de la V${base.numero}`, v: limpio(base.real.v), estado: "aprobacion", envio: { por: usuario || "", fecha: new Date().toISOString() }, precio: rr1.nuevo });
-    base.real.revisada = { por: usuario || "", fecha: new Date().toISOString(), decision: `propuso un nuevo precio (V${numero})` };
-    n.activa = n.versiones.length - 1;
-    conEvento(n, `propuso un nuevo precio de ${fmtCOP(rr1.nuevo)} (V${numero}) por costos reales; el vigente era ${fmtCOP(rr1.fijo)}`);
-    setModoReal(false);
-    await persistir(n, `V${numero} enviada a aprobación con el precio ${fmtCOP(rr1.nuevo)}`);
+    const prev = precioVendidoDe(cot);
+    n.autorizacionesPrecio = [...(n.autorizacionesPrecio || []), aut];
+    let msg = "Código generado. El precio vendido sigue igual hasta que se apruebe un cambio con ese código.";
+    if (crearVersion && verBase.real?.v) {
+      const base = n.versiones[n.activa];
+      const ultima = n.versiones[n.versiones.length - 1];
+      const numero = ultima.numero + 1;
+      n.versiones.push({ id: uid(), numero, fecha: hoyISO(), nota: `Cambio de precio autorizado (costos reales de la V${base.numero})`, v: limpio(base.real.v), estado: "aprobacion", envio: { por: usuario || "", fecha: new Date().toISOString() }, precio, precioPropuesto: precio });
+      base.real.revisada = { por: usuario || "", fecha: new Date().toISOString(), decision: `autorizó un cambio de precio (V${numero})` };
+      n.activa = n.versiones.length - 1;
+      setModoReal(false);
+      msg = `Código generado y V${numero} enviada a aprobación. Se aprueba con ese código.`;
+    }
+    conEvento(n, `generó un código de autorización para cambiar el precio vendido de ${fmtCOP(prev?.valor)} a ${fmtCOP(aut.precio)}${aut.acordadoCon ? `, acordado con ${aut.acordadoCon}` : ""}. Motivo: ${aut.motivo}. Vence ${new Date(aut.vence).toLocaleString("es-CO")}`);
+    await persistir(n, msg);
+  }
+  // Cotizaciones anteriores a esta función cuyo precio vigente difiere del primero que se vendió: Fredy decide cuál es el correcto.
+  async function confirmarVigente() {
+    if (!difVig) return;
+    if (!window.confirm(`¿Confirmar ${fmtCOP(difVig.vigente)} (V${difVig.versionVigente}) como el precio vendido? Queda bloqueado desde ahora.`)) return;
+    const n = limpio(cot);
+    n.precioVendido = { valor: difVig.vigente, version: difVig.versionVigente, fecha: new Date().toISOString(), por: usuario || "", confirmado: true };
+    conEvento(n, `confirmó ${fmtCOP(difVig.vigente)} (V${difVig.versionVigente}) como el precio vendido; el primero era ${fmtCOP(difVig.vendido)} (V${difVig.versionVendida})`);
+    await persistir(n, "Precio vendido confirmado y bloqueado");
+  }
+  async function volverAlVendido() {
+    if (!difVig) return;
+    const dest = cot.vinculo;
+    if (!window.confirm(`¿Dejar ${fmtCOP(difVig.vendido)} (V${difVig.versionVendida}) como el precio vendido${dest ? ` y volver a aplicarlo a ${dest.label}` : ""}? La V${difVig.versionVigente} sigue aprobada, pero ya no es la del precio vendido.`)) return;
+    const n = limpio(cot);
+    n.precioVendido = { valor: difVig.vendido, version: difVig.versionVendida, fecha: new Date().toISOString(), por: usuario || "", confirmado: true };
+    if (dest) n.precioAplicado = { valor: difVig.vendido, fecha: hoyISO(), version: difVig.versionVendida, destino: dest.label };
+    conEvento(n, `volvió al precio vendido ${fmtCOP(difVig.vendido)} (V${difVig.versionVendida})${dest ? ` y lo aplicó de nuevo a ${dest.label}` : ""}; el vigente era ${fmtCOP(difVig.vigente)} (V${difVig.versionVigente})`);
+    await onGuardar(n);
+    if (dest) await onAplicar(dest, difVig.vendido);
+    setCot(n); setSucio(false);
+    notify?.("Volviste al precio vendido");
   }
   async function mantenerPrecio() {
     const rr1 = resumenCostosReales(cot, verBase, umbralDeCliente(parametros, cot.cliente));
@@ -836,6 +992,35 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
         </Campo>
       </div>
 
+      {vendido && (
+        <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", background: C.greenBg, border: "1.5px solid #B9E3CF", borderRadius: 14, padding: "12px 16px", marginBottom: 14 }}>
+          <span style={{ fontSize: 24 }}>🔒</span>
+          <div style={{ flex: 1, minWidth: 240 }}>
+            <div style={{ fontSize: 11, color: C.slate, fontWeight: 700, letterSpacing: 0.4 }}>PRECIO VENDIDO (CON IVA) · BLOQUEADO</div>
+            <div style={{ fontSize: 26, fontWeight: 800, color: C.green, letterSpacing: -0.5 }}>{fmtCOP(vendido.valor)}</div>
+            <div style={{ fontSize: 12, color: C.slate }}>V{vendido.version}{vendido.por ? ` · aprobado por ${vendido.por}` : ""}{vendido.fecha ? ` el ${fmtFecha(String(vendido.fecha).slice(0, 10))}` : ""}{vendido.heredado ? " · tomado del último precio aplicado" : ""}{vendido.anterior ? ` · antes ${fmtCOP(vendido.anterior)}` : ""}</div>
+            {vendido.acordadoCon && <div style={{ fontSize: 12, color: C.slate }}>Cambio acordado con {vendido.acordadoCon}{vendido.motivo ? ` · ${vendido.motivo}` : ""}</div>}
+          </div>
+          {puedeAutorizarPrecio && <button onClick={() => setModalAutorizar({ crearVersion: false, precio: calc.precioAplicar })} title="Genera un código de un solo uso para poder aprobar una versión con otro precio" style={btn(C.white, C.amber, C.amber)}>🔑 Autorizar cambio de precio</button>}
+        </div>
+      )}
+      {cambiaPrecio && (
+        <div style={{ background: C.amberBg, border: "1.5px solid #F0CF95", borderRadius: 14, padding: "12px 16px", marginBottom: 14, fontSize: 13 }}>
+          <b style={{ color: C.amber }}>Precio propuesto{ver.envio?.por ? ` por ${ver.envio.por}` : ""}: {fmtCOP(calc.precioAplicar)}</b> ({calc.precioAplicar >= vendido.valor ? "+" : "−"}{fmtCOP(Math.abs(calc.precioAplicar - vendido.valor))} frente al vendido). Aún no es precio de venta: para aprobarlo hace falta un código de autorización{puedeAutorizarPrecio ? " (lo generas con «Autorizar cambio de precio»)" : " que genera Fredy"}.
+        </div>
+      )}
+      {puedeAutorizarPrecio && autorizacionesVigentes(cot).length > 0 && (
+        <div style={{ background: "#F2ECFB", border: "1.5px solid #D9CCEB", borderRadius: 14, padding: "10px 16px", marginBottom: 14, fontSize: 12.5 }}>
+          🔑 Códigos vigentes sin usar: {autorizacionesVigentes(cot).map((a) => `${fmtCOP(a.precio)} (vence ${new Date(a.vence).toLocaleString("es-CO", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })})`).join(" · ")}
+        </div>
+      )}
+      {puedeAutorizarPrecio && difVig && (
+        <div style={{ background: C.redBg, border: "1.5px solid #F3B9B1", borderRadius: 14, padding: "12px 16px", marginBottom: 14, fontSize: 13, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <div style={{ flex: 1, minWidth: 260 }}><b style={{ color: C.red }}>El precio vigente no es el primero que se vendió.</b> Se vendió {fmtCOP(difVig.vendido)} (V{difVig.versionVendida}) y hoy el vigente es {fmtCOP(difVig.vigente)} (V{difVig.versionVigente}). Decide cuál es el correcto.</div>
+          <button onClick={volverAlVendido} style={btn(C.white, C.green, C.green)}>Dejar el vendido {fmtCOP(difVig.vendido)}</button>
+          <button onClick={confirmarVigente} style={btn(C.white, C.amber, C.amber)}>Confirmar el vigente {fmtCOP(difVig.vigente)}</button>
+        </div>
+      )}
       {estadoV === "aprobacion" && (
         <div style={{ display: "flex", alignItems: "center", gap: 12, background: C.amberBg, border: "1.5px solid #F0CF95", borderRadius: 14, padding: "12px 16px", marginBottom: 14 }}>
           <span style={{ fontSize: 20 }}>⏳</span>
@@ -869,7 +1054,7 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
           <span style={{ fontSize: 20 }}>✔</span>
           <div style={{ flex: 1, fontSize: 13 }}>
             <b style={{ color: C.green }}>Versión aprobada</b>{ver.decision?.por ? ` por ${ver.decision.por}` : ""}{ver.decision?.fecha ? ` el ${fmtFecha(ver.decision.fecha.slice(0, 10))}` : ""}.
-            {cot.precioAplicado && cot.precioAplicado.version === ver.numero ? ` ${fmtCOP(cot.precioAplicado.valor)} aplicado a ${cot.precioAplicado.destino}.` : ""} Para cambiar algo, crea una versión nueva (volverá a pasar por aprobación).
+            {cot.precioAplicado && cot.precioAplicado.version === ver.numero ? ` ${fmtCOP(cot.precioAplicado.valor)} aplicado a ${cot.precioAplicado.destino}.` : ""} Para cambiar algo, crea una versión nueva (volverá a pasar por aprobación). Si cambia el precio vendido, se necesita un código de autorización.
             {ver.dropbox && <div style={{ marginTop: 4, color: C.slate }}>☁ En Dropbox: {ver.dropbox.ruta}</div>}
           </div>
           {puedeEditar && <button onClick={() => enviarDropbox()} disabled={subiendoDropbox} title={ver.dropbox ? `Ya está en Dropbox: ${ver.dropbox.ruta}` : `Guarda el libro con las versiones aprobadas (una hoja por versión) en la carpeta ${CARPETA_DISENO}`} style={{ ...btn(C.white, C.blue, C.blue), opacity: subiendoDropbox ? 0.5 : 1 }}>{subiendoDropbox ? "Subiendo…" : ver.dropbox ? "☁ Reenviar a Dropbox" : "☁ Enviar a Dropbox"}</button>}
@@ -958,7 +1143,7 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
         {cot.versiones.map((vv, i) => (
           <button key={vv.id} onClick={() => mutar((n) => { n.activa = i; })}
             style={{ padding: "7px 14px", borderRadius: 20, cursor: "pointer", fontWeight: 700, fontSize: 13, fontFamily: "inherit", border: `1.5px solid ${i === cot.activa ? C.navy : C.border}`, background: i === cot.activa ? C.navy : C.white, color: i === cot.activa ? C.white : C.slate }}>
-            V{vv.numero} <span style={{ fontWeight: 500, opacity: 0.8 }}>· {fmtFecha(vv.fecha)}</span>{ICONO_ESTADO[vv.estado] ? ` ${ICONO_ESTADO[vv.estado]}` : ""}
+            V{vv.numero} <span style={{ fontWeight: 500, opacity: 0.8 }}>· {fmtFecha(vv.fecha)}</span>{ICONO_ESTADO[vv.estado] ? ` ${ICONO_ESTADO[vv.estado]}` : ""}{versionVendida && vv.numero === versionVendida.numero && vv.estado === "aprobada" ? " 🔒" : ""}
           </button>
         ))}
         {puedeEditar && <button onClick={nuevaVersion} style={btn(C.blueBg, C.blue, C.blue)}>+ Nueva versión</button>}
@@ -1126,8 +1311,9 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
               )}
               {(puedeCostosReales || puedeAprobar) && (
                 <>
-                  <button onClick={proponerNuevoPrecio} style={{ ...btn(C.seam, C.ink), width: "100%", marginTop: 14, padding: "12px 14px" }}>Proponer nuevo precio {fmtCOP(rr.nuevo)}</button>
-                  <div style={{ fontSize: 11, opacity: 0.7, marginTop: 6 }}>Crea una versión nueva con estos costos que pasa a aprobación. El precio vigente no cambia hasta que se apruebe.</div>
+                  <div style={{ fontSize: 11, opacity: 0.75, marginTop: 14 }}>🔒 Los costos reales solo informan: el precio vendido no cambia. Si el cliente acepta un precio nuevo, se autoriza con un código.</div>
+                  {puedeAutorizarPrecio && <button onClick={() => setModalAutorizar({ crearVersion: true, precio: rr.nuevo })} style={{ ...btn(C.seam, C.ink), width: "100%", marginTop: 10, padding: "12px 14px" }}>🔑 Autorizar cambio de precio ({fmtCOP(rr.nuevo)})</button>}
+                  {!puedeAutorizarPrecio && <div style={{ fontSize: 11, opacity: 0.75, marginTop: 6 }}>Quien tiene el permiso «Autorizar cambio de precio» genera el código.</div>}
                   {(rr.supera || !rr.revisada) && <button onClick={mantenerPrecio} style={{ ...btn("transparent", C.white, "rgba(255,255,255,.3)"), width: "100%", marginTop: 8, fontWeight: 500, fontSize: 12 }}>Mantener el precio aprobado (ya lo revisé)</button>}
                 </>
               )}
@@ -1173,7 +1359,7 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
                 <>
                   <button onClick={() => (vinculoActual ? pedirAprobar(vinculoActual) : setVincular("aprobar"))}
                     style={{ ...btn(C.seam, C.ink), width: "100%", marginTop: 16, padding: "12px 14px" }}>
-                    {vinculoActual ? `✔ Aprobar y aplicar ${fmtCOP(calc.precioAplicar)} a ${vinculoActual.label.length > 24 ? vinculoActual.label.slice(0, 24) + "…" : vinculoActual.label}` : `✔ Aprobar y aplicar ${fmtCOP(calc.precioAplicar)} a un prototipo / cápsula`}
+                    {vinculoActual ? `${textoAprobar} ${fmtCOP(calc.precioAplicar)} a ${vinculoActual.label.length > 24 ? vinculoActual.label.slice(0, 24) + "…" : vinculoActual.label}` : `${textoAprobar} ${fmtCOP(calc.precioAplicar)} a un prototipo / cápsula`}
                   </button>
                   {!vinculoActual && <button onClick={() => pedirAprobar(null)} style={{ ...btn("transparent", C.white, "rgba(255,255,255,.3)"), width: "100%", marginTop: 8, fontWeight: 500, fontSize: 12 }}>Aprobar sin aplicar el precio</button>}
                   {estadoV === "aprobacion" && <button onClick={() => setDevolviendo(true)} style={{ ...btn("transparent", "#E4E1F5", "#6a6a90"), width: "100%", marginTop: 8 }}>↩ Devolver con comentario</button>}
@@ -1249,6 +1435,17 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
       {telaBusint !== null && telas[telaBusint] && (
         <ModalTelaBusint inicial={telas[telaBusint].material} rendimiento={telas[telaBusint].rendimiento} onClose={() => setTelaBusint(null)}
           onElegir={(r) => { setV((v) => { Object.assign(v.telas[telaBusint], r); }); setTelaBusint(null); }} />
+      )}
+      {modalCodigo && vendido && (
+        <ModalCodigoPrecio key={codigoPrefill} cot={cot} valor={calc.precioAplicar} vendido={vendido} inicial={codigoPrefill} puedeAutorizar={puedeAutorizarPrecio}
+          onValidado={(aut, cod) => { setCodigoPrefill(""); return aprobarYAplicar(modalCodigo.destino, aut, cod); }}
+          onGenerar={() => setModalAutorizar({ crearVersion: false, precio: calc.precioAplicar, desdeAprobar: true })}
+          onClose={() => { setModalCodigo(null); setCodigoPrefill(""); }} />
+      )}
+      {modalAutorizar && vendido && (
+        <ModalAutorizarPrecio cot={cot} usuario={usuario} vendido={vendido} precioInicial={modalAutorizar.precio} crearVersion={modalAutorizar.crearVersion} precioVersion={rr?.nuevo || 0}
+          onCrear={modalAutorizar.desdeAprobar ? async ({ aut }) => { const n = limpio(cot); n.autorizacionesPrecio = [...(n.autorizacionesPrecio || []), aut]; conEvento(n, `generó un código de autorización para cambiar el precio vendido de ${fmtCOP(vendido.valor)} a ${fmtCOP(aut.precio)}${aut.acordadoCon ? `, acordado con ${aut.acordadoCon}` : ""}. Motivo: ${aut.motivo}. Vence ${new Date(aut.vence).toLocaleString("es-CO")}`); await onGuardar(n); setCot((c) => ({ ...c, autorizacionesPrecio: n.autorizacionesPrecio, historial: n.historial })); } : guardarAutorizacion}
+          onClose={(codigo) => { setModalAutorizar(null); if (codigo) setCodigoPrefill(codigo); }} />
       )}
       {vincular && (
         <ModalVincular cot={cot} protos={protos} capsulas={capsulas} cotizaciones={cotizaciones} precio={calc.precioAplicar} onClose={() => setVincular(false)}
@@ -2019,6 +2216,7 @@ const FragmentFila = ({ children }) => <>{children}</>;
 const DIAS_SIN_CAMBIOS = 30;
 const ESTADO_POR_APROBAR = "__por_aprobar__"; // enviadas a aprobación, esperando decisión
 const ESTADO_SIN_APROBAR = "__sin_aprobar__"; // valor especial del filtro Estado del Historial
+const ESTADO_PRECIO_DIF = "__precio_dif__"; // (2026-11-14) el precio vigente ya no es el que se vendió
 function estadoCotizacion(c) {
   const e = estadoUltima(c);
   if (e === "aprobacion") return { txt: "En aprobación", bg: C.amberBg, color: C.amber };
@@ -2236,7 +2434,7 @@ function HistorialCotizaciones({ cotizaciones, protos, capsulas, parametros, car
     // Dropbox: "ok" = todas sus versiones aprobadas ya están en Dropbox; "falta" = alguna aprobada sin subir; "" = ninguna aprobada.
     const aprobadas = (c.versiones || []).filter((v) => v.estado === "aprobada");
     const dbx = !aprobadas.length ? "" : aprobadas.every((v) => v.dropbox) ? "ok" : "falta";
-    return { c, fecha, numProto, refProto, precio, est, dbx, ultNum: ult?.numero, nVer: c.versiones?.length || 0, cliente: c.cliente || "General", reneg: renegociacionDe(c, parametros) };
+    return { c, fecha, numProto, refProto, precio, est, dbx, ultNum: ult?.numero, nVer: c.versiones?.length || 0, cliente: c.cliente || "General", reneg: renegociacionDe(c, parametros), difPrecio: c.precioVendido?.confirmado ? null : precioDistintoAlVendido(c) };
   }), [cotizaciones, protos, capsulas, parametros]);
 
   const clientes = useMemo(() => [...new Set(filas.map((f) => f.cliente))].sort((a, b) => a.localeCompare(b, "es")), [filas]);
@@ -2247,7 +2445,7 @@ function HistorialCotizaciones({ cotizaciones, protos, capsulas, parametros, car
   const filtradas = useMemo(() => filas
     .filter((f) => !cliente || f.cliente === cliente)
     // (2026-10-20, a pedido de Fredy) "Sin aprobar" = la última versión vigente NO está aprobada (borrador, en aprobación o devuelta).
-    .filter((f) => !estado || (estado === ESTADO_SIN_APROBAR ? !["aprobada", "deshabilitada"].includes(estadoUltima(f.c)) : estado === ESTADO_POR_APROBAR ? estadoUltima(f.c) === "aprobacion" : estado === ESTADO_RENEGOCIAR ? !!f.reneg?.supera : f.est.txt === estado))
+    .filter((f) => !estado || (estado === ESTADO_SIN_APROBAR ? !["aprobada", "deshabilitada"].includes(estadoUltima(f.c)) : estado === ESTADO_POR_APROBAR ? estadoUltima(f.c) === "aprobacion" : estado === ESTADO_RENEGOCIAR ? !!f.reneg?.supera : estado === ESTADO_PRECIO_DIF ? !!f.difPrecio : f.est.txt === estado))
     .filter((f) => !desde || f.fecha >= desde)
     .filter((f) => !hasta || f.fecha <= hasta)
     .filter((f) => !dropbox || f.dbx === dropbox)
@@ -2274,7 +2472,7 @@ function HistorialCotizaciones({ cotizaciones, protos, capsulas, parametros, car
       <div style={{ display: "flex", gap: 10, marginBottom: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
         <div style={{ flex: "1 1 260px", maxWidth: 360 }}><Campo label="Buscar"><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Referencia, # prototipo, REF, nombre o cliente…" style={inp} /></Campo></div>
         <Campo label="Cliente"><select value={cliente} onChange={(e) => setCliente(e.target.value)} style={selFiltro}><option value="">Todos</option>{clientes.map((x) => <option key={x} value={x}>{x}</option>)}</select></Campo>
-        <Campo label="Estado"><select value={estado} onChange={(e) => setEstado(e.target.value)} style={selFiltro}><option value="">Todos</option><option value={ESTADO_POR_APROBAR}>Por aprobar</option><option value={ESTADO_RENEGOCIAR}>Para renegociar</option><option value={ESTADO_SIN_APROBAR}>Sin aprobar</option>{estados.map((x) => <option key={x} value={x}>{x}</option>)}</select></Campo>
+        <Campo label="Estado"><select value={estado} onChange={(e) => setEstado(e.target.value)} style={selFiltro}><option value="">Todos</option><option value={ESTADO_POR_APROBAR}>Por aprobar</option><option value={ESTADO_RENEGOCIAR}>Para renegociar</option><option value={ESTADO_PRECIO_DIF}>Precio distinto al vendido</option><option value={ESTADO_SIN_APROBAR}>Sin aprobar</option>{estados.map((x) => <option key={x} value={x}>{x}</option>)}</select></Campo>
         <Campo label="Desde"><input type="date" value={desde} onChange={(e) => setDesde(e.target.value)} style={{ ...inp, width: 150 }} /></Campo>
         <Campo label="Hasta"><input type="date" value={hasta} onChange={(e) => setHasta(e.target.value)} style={{ ...inp, width: 150 }} /></Campo>
         <Campo label="Dropbox"><select value={dropbox} onChange={(e) => setDropbox(e.target.value)} style={selFiltro}><option value="">Todas</option><option value="ok">Aprobadas en Dropbox</option><option value="falta">Aprobadas sin subir</option></select></Campo>
@@ -2300,7 +2498,7 @@ function HistorialCotizaciones({ cotizaciones, protos, capsulas, parametros, car
                 <td style={{ ...td, fontSize: 13, color: f.refProto ? C.ink : C.slate }}>{f.refProto || "—"}</td>
                 <td style={{ ...td, fontSize: 13 }}>{f.c.nombre || "—"}</td>
                 <td style={{ ...td, fontSize: 13 }}>{f.cliente}</td>
-                <td style={td}><Pastilla bg={f.est.bg} color={f.est.color}>{f.est.txt}</Pastilla>{f.reneg?.supera && <div style={{ marginTop: 4 }}><Pastilla bg={C.redBg} color={C.red}>Renegociar {fmtPctDif(f.reneg.pct)}</Pastilla></div>}</td>
+                <td style={td}><Pastilla bg={f.est.bg} color={f.est.color}>{f.est.txt}</Pastilla>{f.reneg?.supera && <div style={{ marginTop: 4 }}><Pastilla bg={C.redBg} color={C.red}>Renegociar {fmtPctDif(f.reneg.pct)}</Pastilla></div>}{f.difPrecio && <div style={{ marginTop: 4 }} title={`Se vendió ${fmtCOP(f.difPrecio.vendido)} (V${f.difPrecio.versionVendida}) y el vigente es ${fmtCOP(f.difPrecio.vigente)} (V${f.difPrecio.versionVigente})`}><Pastilla bg={C.amberBg} color={C.amber}>🔒 Vendido {fmtCOP(f.difPrecio.vendido)}</Pastilla></div>}</td>
                 <td style={{ ...td, textAlign: "right", fontWeight: 800 }}>{f.precio > 0 ? fmtCOP(f.precio) : "—"}</td>
                 <td style={{ ...td, fontSize: 12, color: C.slate, whiteSpace: "nowrap" }}>V{f.ultNum} · {f.nVer} en total</td>
                 <td style={td}><div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>{f.dbx === "ok" ? <Pastilla bg={C.greenBg} color={C.green}>☁ Diseño</Pastilla> : f.dbx === "falta" ? <Pastilla bg={C.amberBg} color={C.amber}>Sin subir</Pastilla> : <span style={{ fontSize: 12, color: C.slate }}>—</span>}{f.c.definitiva && <Pastilla bg={C.blueBg} color={C.blue}>✔ Definitiva V{f.c.definitiva.version}</Pastilla>}</div></td>
@@ -2455,7 +2653,7 @@ function MenuCotizaciones({ activo, onIr, onVolver, onLogout, currentUser, nApro
   );
 }
 
-export default function CotizadorView({ currentUser, config, protos, capsulas, iniciarDesde, onIniciarConsumido, onAplicarPrecio, onVolver, onLogout, puedeBorrar, puedeAprobar, puedeDeshabilitar, puedeCostosReales = false, puedeEditar = true, puedeEnviarFacturar = false, puedeFacturar = false, clientesPermitidos = null, notify }) {
+export default function CotizadorView({ currentUser, config, protos, capsulas, iniciarDesde, onIniciarConsumido, onAplicarPrecio, onVolver, onLogout, puedeBorrar, puedeAprobar, puedeDeshabilitar, puedeCostosReales = false, puedeAutorizarPrecio = false, puedeEditar = true, puedeEnviarFacturar = false, puedeFacturar = false, clientesPermitidos = null, notify }) {
   // (2026-10-19, a pedido de Fredy) Usuario de rol Cliente: solo ve (y descarga) las cotizaciones APROBADAS de sus clientes asociados.
   const esCliente = Array.isArray(clientesPermitidos);
   const [edSucio, setEdSucio] = useState(false); // el editor abierto tiene cambios sin guardar
@@ -2722,7 +2920,7 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
       <div style={{ flex: 1, minWidth: 0, padding: "24px 34px", boxSizing: "border-box" }}>
       {edit ? (
         <CotizacionEditor key={edit.id} inicial={edit} minis={minis} parametros={parametros} clientes={clientesApp} protos={protos} capsulas={capsulas} cotizaciones={cotizaciones}
-          onGuardar={guardar} onVolver={() => { setEdit(null); setEdSucio(false); }} onEliminar={pedirBorrar} puedeBorrar={puedeBorrar} onSucio={setEdSucio} puedeAprobar={puedeAprobar} puedeDeshabilitar={puedeDeshabilitar} puedeCostosReales={puedeCostosReales} puedeEditar={puedeEditar} puedeEnviarFacturar={puedeEnviarFacturar} puedeFacturar={puedeFacturar} usuario={currentUser?.name || ""} notify={notify}
+          onGuardar={guardar} onVolver={() => { setEdit(null); setEdSucio(false); }} onEliminar={pedirBorrar} puedeBorrar={puedeBorrar} onSucio={setEdSucio} puedeAprobar={puedeAprobar} puedeDeshabilitar={puedeDeshabilitar} puedeCostosReales={puedeCostosReales} puedeAutorizarPrecio={puedeAutorizarPrecio} puedeEditar={puedeEditar} puedeEnviarFacturar={puedeEnviarFacturar} puedeFacturar={puedeFacturar} usuario={currentUser?.name || ""} notify={notify}
           onAplicar={(destino, valor) => onAplicarPrecio(destino, valor)} />
       ) : (
       <>
