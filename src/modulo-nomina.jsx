@@ -9230,6 +9230,132 @@ function calcularVacacionesPeriodo(trabajador, inicio, fin) {
 function textoRangosVacaciones(rangos) {
   return (rangos || []).slice(0, 3).map(([a, b]) => (a === b ? fmtFechaISO(a) : `${fmtFechaISO(a)} al ${fmtFechaISO(b)}`)).join(" y ");
 }
+// ─── DESPRENDIBLE DE VACACIONES (PAGO) ──────────────────────────────────────────────────────────────────────
+// (2026-11-14, a pedido de Fredy / Recursos Humanos) Cuando un trabajador toma vacaciones, además de verse en la tirilla de la quincena se
+// necesita un desprendible propio: período disfrutado día por día, regreso a labores, valor del día (sueldo ÷ 30), valor de las vacaciones y,
+// en nómina Fiscal, los descuentos de salud y pensión (4 % + 4 %, como el resto de la tirilla). Se saca desde Novedades → Vacaciones
+// (por período) y sale solo como página extra al imprimir el Recibo de Liquidación de una quincena con vacaciones. No cambia el neto de nadie.
+const ESTILOS_RECIBO_LIQUIDACION = `  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Segoe UI',Arial,sans-serif;background:#F7F4F0;color:#1A1A2E;padding:32px}
+  @media print{body{padding:0;background:#fff}}
+  .page{max-width:820px;margin:0 auto;background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 4px 32px rgba(26,26,46,0.1)}
+  .header{background:linear-gradient(135deg,#1A1A2E 0%,#2D1B69 100%);padding:28px 32px;display:flex;justify-content:space-between;align-items:center}
+  .header-left h1{color:#fff;font-size:20px;font-weight:800;letter-spacing:-0.3px}
+  .header-left p{color:#C8B8A2;font-size:12px;margin-top:4px}
+  .header-right{text-align:right}
+  .header-right .badge{background:rgba(200,184,162,0.2);border:1px solid #C8B8A2;border-radius:8px;padding:8px 16px;color:#C8B8A2;font-size:13px;font-weight:700}
+  .body{padding:28px 32px}
+  .info-row{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px;margin-bottom:20px}
+  .info-card{background:#F7F4F0;border-radius:8px;padding:12px 14px;border:1px solid #E8E2DB}
+  .info-card label{display:block;font-size:10px;font-weight:700;color:#5A5A7A;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px}
+  .info-card span{font-size:14px;font-weight:700;color:#1A1A2E}
+  .section-title{font-size:14px;font-weight:800;color:#1A1A2E;margin:22px 0 10px;padding-bottom:8px;border-bottom:2px solid #E8E2DB}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  table td{padding:8px 10px;border-bottom:1px solid #F0ECE6}
+  table td:first-child{color:#5A5A7A}
+  .totales{margin-top:22px;display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .total-card{border-radius:10px;padding:14px 16px;text-align:center}
+  .total-card label{display:block;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;opacity:0.85}
+  .total-card .val{font-size:19px;font-weight:900}
+  .firma{margin-top:44px;display:grid;grid-template-columns:1fr 1fr;gap:40px}
+  .firma div{border-top:1px solid #1A1A2E;padding-top:8px;text-align:center;font-size:11px;color:#5A5A7A}
+  .footer{background:#F7F4F0;padding:16px 32px;display:flex;justify-content:space-between;align-items:center;border-top:1px solid #E8E2DB;font-size:12px;color:#5A5A7A}`;
+function periodosVacacionesEnRango(trabajador, inicio, fin) {
+  if (!trabajador || !inicio || !fin) return [];
+  const { ausencias, areasNomina, turnos } = CONTEXTO_VACACIONES;
+  return periodosVacaciones(trabajador, ausencias, areasNomina, turnos).filter((p) => p.hasta >= inicio && p.desde <= fin);
+}
+// Primer día esperado de trabajo (según su turno, sin festivos) después de la última fecha de vacaciones.
+function regresoDeVacaciones(trabajador, hasta) {
+  const { areasNomina, turnos } = CONTEXTO_VACACIONES;
+  const turno = resolverTurnoDeTrabajador(trabajador, areasNomina, turnos);
+  let cursor = siguienteDiaISO(hasta);
+  for (let i = 0; i < 14; i++) {
+    if (!esFestivoColombia(cursor) && diaEsperado(cursor, turno)) return cursor;
+    cursor = siguienteDiaISO(cursor);
+  }
+  return "";
+}
+// Una página (div.page) con los mismos estilos del Recibo de Liquidación. `separada` = documento solo (sin salto de página previo).
+// periodos = períodos de periodosVacaciones(); resumen (opcional) = { ganados, tomados, pendientes, valorPendiente }.
+function paginaDesprendiblePagoVacaciones({ tipoNomina, trabajador, periodos, inicio, fin, periodoId, resumen, separada, nombreFallback }) {
+  if (!periodos || !periodos.length) return "";
+  const nombre = escVac(trabajador?.nombre || nombreFallback || "—");
+  const sueldo = Number(trabajador?.sueldo) || 0;
+  const valorDia = sueldo / 30;
+  const diasTotal = periodos.reduce((sum, p) => sum + p.contados.length, 0);
+  const valor = Math.round(diasTotal * valorDia);
+  const conSegSocial = tipoNomina === "Fiscal";
+  const eps = conSegSocial ? Math.round(valor * 0.04) : 0;
+  const pension = conSegSocial ? Math.round(valor * 0.04) : 0;
+  const neto = valor - eps - pension;
+  const diasEnQuincena = inicio && fin ? periodos.reduce((sum, p) => sum + p.contados.filter((iso) => iso >= inicio && iso <= fin).length, 0) : null;
+  const regreso = regresoDeVacaciones(trabajador, periodos[periodos.length - 1].hasta);
+  const chip = (iso, prog) => `<span style="display:inline-block;margin:1px 3px 1px 0;padding:1px 8px;border-radius:99px;background:#EBF7F2;color:#1D7A50;font-weight:700;font-size:11px;border:1px ${prog ? "dashed" : "solid"} #A9D8C2">${etiquetaDiaVac(iso)}${prog ? "*" : ""}</span>`;
+  const hoyISO = today();
+  const hayProgramados = periodos.some((p) => p.contados.some((iso) => iso > hoyISO));
+  const filasPeriodos = periodos.map((p) => `
+      <tr><td><b style="color:#1A1A2E">Del ${fmtFechaISO(p.desde)} al ${fmtFechaISO(p.hasta)}</b><div style="margin-top:4px">${p.contados.map((iso) => chip(iso, iso > hoyISO)).join("") || "—"}</div>${p.noCuentan.length ? `<div style="font-size:11px;color:#5A5A7A;margin-top:3px">No cuentan: ${p.noCuentan.map((x) => `${etiquetaDiaVac(x.iso)} (${escVac(x.motivo)})`).join(" · ")}</div>` : ""}</td>
+      <td style="text-align:right;white-space:nowrap">${p.contados.length} día${p.contados.length === 1 ? "" : "s"} hábil${p.contados.length === 1 ? "" : "es"}<div style="font-size:11px;color:#5A5A7A">${fmtMoney(p.contados.length * valorDia)}</div></td></tr>`).join("");
+  const filasResumen = resumen ? `
+    <div class="section-title">📅 Resumen de vacaciones</div>
+    <table><tbody>
+      <tr><td>Días ganados</td><td style="text-align:right">${fmtNum(Math.round(resumen.ganados * 10) / 10)}</td></tr>
+      <tr><td>Disfrutados a hoy</td><td style="text-align:right">${fmtNum(resumen.tomados)}</td></tr>
+      <tr><td>Pendientes</td><td style="text-align:right"><b>${fmtNum(Math.round(resumen.pendientes * 10) / 10)}</b> · ${fmtMoney(resumen.valorPendiente)}</td></tr>
+    </tbody></table>` : "";
+  return `<div class="page"${separada ? "" : ' style="margin-top:28px;page-break-before:always;break-before:page"'}>
+  <div class="header">
+    <div class="header-left"><h1>🏖️ Desprendible de Vacaciones</h1><p>Industrias Yanko · Nómina ${escVac(tipoNomina || "—")}</p></div>
+    <div class="header-right"><div class="badge">${escVac(periodoId || "Vacaciones")}</div><div style="color:#C8B8A2;font-size:11px;margin-top:8px">${new Date().toISOString().slice(0, 10)}</div></div>
+  </div>
+  <div class="body">
+    <div class="info-row">
+      <div class="info-card"><label>Trabajador</label><span>${nombre}</span></div>
+      <div class="info-card"><label>Cédula</label><span>${escVac(trabajador?.cedula || "—")}</span></div>
+      <div class="info-card"><label>Área</label><span>${escVac(trabajador?.area || "—")}</span></div>
+      <div class="info-card"><label>Tipo de nómina</label><span>${escVac(tipoNomina || "—")}</span></div>
+    </div>
+    <div class="section-title">🏖️ Vacaciones disfrutadas</div>
+    <table><tbody>${filasPeriodos}
+      ${regreso ? `<tr><td>Regresa a labores</td><td style="text-align:right"><b>${fmtFechaISO(regreso)}</b></td></tr>` : ""}
+    </tbody></table>
+    ${hayProgramados ? `<div style="font-size:11px;color:#5A5A7A;margin-top:6px">* Día programado, todavía no disfrutado.</div>` : ""}
+    <div class="section-title">💰 Pago de las vacaciones</div>
+    <table><tbody>
+      <tr><td>Sueldo básico (mensual)</td><td style="text-align:right">${fmtMoney(sueldo)}</td></tr>
+      <tr><td>Valor del día (sueldo ÷ 30)</td><td style="text-align:right">${fmtMoney(valorDia)}</td></tr>
+      <tr><td>Días de vacaciones (hábiles)</td><td style="text-align:right">${diasTotal}</td></tr>
+      <tr><td><b style="color:#1A1A2E">Valor de las vacaciones</b></td><td style="text-align:right"><b>${fmtMoney(valor)}</b></td></tr>
+      ${conSegSocial ? `<tr><td>EPS trabajador (4%)</td><td style="text-align:right;color:#B23A48">-${fmtMoney(eps)}</td></tr>
+      <tr><td>Pensión trabajador (4%)</td><td style="text-align:right;color:#B23A48">-${fmtMoney(pension)}</td></tr>` : ""}
+      ${diasEnQuincena != null ? `<tr><td colspan="2" style="font-size:11px;color:#5A5A7A;padding-top:2px">De estos días, ${diasEnQuincena} caen en la quincena ${escVac(periodoId || "")}${inicio && fin ? ` (${fmtFechaISO(inicio)} — ${fmtFechaISO(fin)})` : ""}.</td></tr>` : ""}
+    </tbody></table>
+    ${filasResumen}
+    <div class="totales">
+      <div class="total-card" style="background:#EBF7F2;color:#2D9E6B"><label>${conSegSocial ? "Neto vacaciones" : "Valor de las vacaciones"}</label><div class="val">${fmtMoney(neto)}</div></div>
+      <div class="total-card" style="background:#FDF5E6;color:#C47C1A"><label>Días hábiles de vacaciones</label><div class="val">${diasTotal}</div></div>
+    </div>
+    <div class="firma"><div>Firma del Trabajador</div><div>Talento Humano</div></div>
+  </div>
+  <div class="footer">
+    <span>ATLAS · Industrias Yanko</span>
+    <span>Generado el ${new Date().toLocaleDateString("es-CO", { dateStyle: "long" })}</span>
+    <button onclick="window.print()" style="background:#1A1A2E;color:#C8B8A2;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:12px;font-weight:700">🖨 Imprimir / PDF</button>
+  </div>
+</div>`;
+}
+// Abre el desprendible de vacaciones (uno o varios períodos de un trabajador) en una pestaña para imprimir. Devuelve false si no hay nada o el navegador bloqueó la ventana.
+function abrirDesprendiblePagoVacaciones({ tipoNomina, trabajador, periodos, resumen }) {
+  const pagina = paginaDesprendiblePagoVacaciones({ tipoNomina, trabajador, periodos, resumen, separada: true });
+  if (!pagina) return false;
+  const html = `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"/><title>Desprendible de vacaciones — ${escVac(trabajador?.nombre || "")}</title><style>${ESTILOS_RECIBO_LIQUIDACION}
+@media print{.footer button{display:none}}</style></head><body>${pagina}</body></html>`;
+  const url = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8;" }));
+  const w = window.open(url, "_blank");
+  setTimeout(() => URL.revokeObjectURL(url), 120000);
+  return !!w;
+}
 function armarReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
   const fechaGen = new Date().toISOString().slice(0, 10);
   const esFiscal = tipoNomina === "Fiscal Destajo";
@@ -9253,7 +9379,14 @@ function armarReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
       <tr><td style="background:#EBF7F2;color:#1D7A50;font-weight:700">🏖️ Días de vacaciones en la quincena${rangoVac ? ` <span style="font-weight:400;font-size:11px">(${rangoVac})</span>` : ""}</td><td style="text-align:right;background:#EBF7F2;color:#1D7A50;font-weight:700">${vacPeriodo.dias}</td></tr>` : "";
   const filaVacValor = vacPeriodo.dias > 0 && vacPeriodo.valorDia > 0 ? `
       <tr><td style="background:#EBF7F2;color:#1D7A50;font-weight:700">&nbsp;&nbsp;↳ 🏖️ de los cuales, vacaciones: ${vacPeriodo.dias} día${vacPeriodo.dias !== 1 ? "s" : ""} × ${fmtMoney(vacPeriodo.valorDia)}${rangoVac ? ` <span style="font-weight:400;font-size:11px">(${rangoVac})</span>` : ""}</td><td style="text-align:right;background:#EBF7F2;color:#1D7A50;font-weight:700">${fmtMoney(vacPeriodo.valor)}</td></tr>
-      <tr><td colspan="2" style="font-size:11px;color:#5A5A7A;padding-top:0">Ya está incluido en el sueldo de la quincena (no se suma otra vez).</td></tr>` : filaVacDias;
+      <tr><td colspan="2" style="font-size:11px;color:#5A5A7A;padding-top:0">Ya está incluido en el sueldo de la quincena (no se suma otra vez). Detalle en el desprendible de vacaciones (página siguiente).</td></tr>` : filaVacDias;
+  // (2026-11-14) Destajo y pago por día: el valor de las vacaciones no está en el neto de la quincena; va en el desprendible de vacaciones (página siguiente).
+  const filaVacAparte = vacPeriodo.dias > 0 && vacPeriodo.valorDia > 0 && !esPrestacionServicios && !esFiscalConSegSocial && !esFiscal ? `
+      <tr><td colspan="2" style="font-size:11px;color:#5A5A7A;padding-top:0">Valor de las vacaciones: ${vacPeriodo.dias} día${vacPeriodo.dias !== 1 ? "s" : ""} × ${fmtMoney(vacPeriodo.valorDia)} = <b>${fmtMoney(vacPeriodo.valor)}</b>. Está en el desprendible de vacaciones (página siguiente) y no se suma al neto de esta quincena.</td></tr>` : "";
+  const periodosVacQuincena = !esPrestacionServicios && vacPeriodo.dias > 0 ? periodosVacacionesEnRango(trabajador, liquidacion.inicio, liquidacion.fin) : [];
+  const paginaVacaciones = periodosVacQuincena.length
+    ? paginaDesprendiblePagoVacaciones({ tipoNomina, trabajador, periodos: periodosVacQuincena, inicio: liquidacion.inicio, fin: liquidacion.fin, periodoId: liquidacion.periodoId, nombreFallback: liquidacion.nombre })
+    : "";
   const filaDescIncap = (liquidacion.descuentoIncap || 0) > 0 ? `
       <tr><td>Descuento días de incapacidad (se pagan aparte)</td><td style="text-align:right;color:#B23A48">-${fmtMoney(liquidacion.descuentoIncap)}</td></tr>` : "";
   const filasPago = esPrestacionServicios
@@ -9286,9 +9419,9 @@ function armarReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
     ? `
       <tr><td>Días trabajados (huellero)</td><td style="text-align:right">${liquidacion.diasPagados == null ? "—" : liquidacion.diasPagados}</td></tr>
       <tr><td>Valor día</td><td style="text-align:right">${fmtMoney(liquidacion.valorDia)}</td></tr>
-      <tr><td>Subtotal pago por día</td><td style="text-align:right">${fmtMoney(liquidacion.pagoDias)}</td></tr>${filaVacDias}${filasIncap}`
+      <tr><td>Subtotal pago por día</td><td style="text-align:right">${fmtMoney(liquidacion.pagoDias)}</td></tr>${filaVacDias}${filaVacAparte}${filasIncap}`
     : `
-      <tr><td>Producción registrada en la quincena</td><td style="text-align:right">${fmtMoney((liquidacion.netoAPagar || 0) - (liquidacion.incapDevengado || 0))}</td></tr>${filaVacDias}${filasIncap}
+      <tr><td>Producción registrada en la quincena</td><td style="text-align:right">${fmtMoney((liquidacion.netoAPagar || 0) - (liquidacion.incapDevengado || 0))}</td></tr>${filaVacDias}${filaVacAparte}${filasIncap}
       <tr><td>Días trabajados (huellero)</td><td style="text-align:right">${liquidacion.diasTrabajados == null ? "—" : liquidacion.diasTrabajados}</td></tr>
       <tr><td colspan="2" style="color:#5A5A7A;font-size:11px;padding-top:2px">Sueldo básico de referencia: ${fmtMoney(sueldoBasico)} · Auxilio de referencia: ${fmtMoney(auxilioBasico)} — solo se usan para calcular las prestaciones sociales, no hacen parte del pago.</td></tr>`;
   const seccionAportesPatronales = esFiscalConSegSocial ? `
@@ -9307,33 +9440,7 @@ function armarReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
 <head>
 <meta charset="UTF-8"/>
 <title>Recibo de Liquidación — ${nombre}</title>
-<style>
-  *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:'Segoe UI',Arial,sans-serif;background:#F7F4F0;color:#1A1A2E;padding:32px}
-  @media print{body{padding:0;background:#fff}}
-  .page{max-width:820px;margin:0 auto;background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 4px 32px rgba(26,26,46,0.1)}
-  .header{background:linear-gradient(135deg,#1A1A2E 0%,#2D1B69 100%);padding:28px 32px;display:flex;justify-content:space-between;align-items:center}
-  .header-left h1{color:#fff;font-size:20px;font-weight:800;letter-spacing:-0.3px}
-  .header-left p{color:#C8B8A2;font-size:12px;margin-top:4px}
-  .header-right{text-align:right}
-  .header-right .badge{background:rgba(200,184,162,0.2);border:1px solid #C8B8A2;border-radius:8px;padding:8px 16px;color:#C8B8A2;font-size:13px;font-weight:700}
-  .body{padding:28px 32px}
-  .info-row{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px;margin-bottom:20px}
-  .info-card{background:#F7F4F0;border-radius:8px;padding:12px 14px;border:1px solid #E8E2DB}
-  .info-card label{display:block;font-size:10px;font-weight:700;color:#5A5A7A;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px}
-  .info-card span{font-size:14px;font-weight:700;color:#1A1A2E}
-  .section-title{font-size:14px;font-weight:800;color:#1A1A2E;margin:22px 0 10px;padding-bottom:8px;border-bottom:2px solid #E8E2DB}
-  table{width:100%;border-collapse:collapse;font-size:13px}
-  table td{padding:8px 10px;border-bottom:1px solid #F0ECE6}
-  table td:first-child{color:#5A5A7A}
-  .totales{margin-top:22px;display:grid;grid-template-columns:1fr 1fr;gap:12px}
-  .total-card{border-radius:10px;padding:14px 16px;text-align:center}
-  .total-card label{display:block;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;opacity:0.85}
-  .total-card .val{font-size:19px;font-weight:900}
-  .firma{margin-top:44px;display:grid;grid-template-columns:1fr 1fr;gap:40px}
-  .firma div{border-top:1px solid #1A1A2E;padding-top:8px;text-align:center;font-size:11px;color:#5A5A7A}
-  .footer{background:#F7F4F0;padding:16px 32px;display:flex;justify-content:space-between;align-items:center;border-top:1px solid #E8E2DB;font-size:12px;color:#5A5A7A}
-</style>
+<style>${ESTILOS_RECIBO_LIQUIDACION}</style>
 </head>
 <body>
 <div class="page">
@@ -9397,6 +9504,7 @@ function armarReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
     <button onclick="window.print()" style="background:#1A1A2E;color:#C8B8A2;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:12px;font-weight:700">🖨 Imprimir / PDF</button>
   </div>
 </div>
+${paginaVacaciones}
 </body>
 </html>`;
   return { html, nombre };
@@ -15087,7 +15195,11 @@ function VacacionesView({ trabajadores, ausencias, faltas, areasNomina, turnos }
           {periodos.length === 0 && <div style={{ fontSize: 13, color: C.slate }}>Aún no registra vacaciones en Motivos de Ausencia.</div>}
           {periodos.map((p) => (
             <div key={p.id || p.desde} style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 13, padding: "7px 0", borderBottom: `1px solid ${C.border}` }}>
-              <span style={{ color: C.slate }}>{fmtFechaISO(p.desde)} al {fmtFechaISO(p.hasta)}{p.noCuentan.length > 0 && <span style={{ fontSize: 11 }}> · no cuentan: {p.noCuentan.map((x) => `${etiquetaDiaVac(x.iso)} (${x.motivo})`).join(", ")}</span>}</span><b>{fmtNum(p.dias)} días hábiles</b>
+              <span style={{ color: C.slate }}>{fmtFechaISO(p.desde)} al {fmtFechaISO(p.hasta)}{p.noCuentan.length > 0 && <span style={{ fontSize: 11 }}> · no cuentan: {p.noCuentan.map((x) => `${etiquetaDiaVac(x.iso)} (${x.motivo})`).join(", ")}</span>}</span>
+              <span style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+                <b>{fmtNum(p.dias)} días hábiles</b>
+                <Btn small onClick={() => { if (!abrirDesprendiblePagoVacaciones({ tipoNomina: detalle.tipo, trabajador: detalle.t, periodos: [p], resumen: { ganados: detalle.ganados, tomados: detalle.tomados, pendientes: detalle.pendientes, valorPendiente: detalle.valor } })) window.alert("No se pudo abrir el desprendible: el navegador bloqueó la ventana emergente. Permite las ventanas de ATLAS e intenta de nuevo."); }}>🖨 Desprendible de pago</Btn>
+              </span>
             </div>
           ))}
           <div style={{ fontSize: 11.5, color: C.slate, background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", marginTop: 14, lineHeight: 1.55 }}>
