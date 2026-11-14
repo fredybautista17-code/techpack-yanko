@@ -909,6 +909,7 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
     n.precioVendido = { valor: difVig.vigente, version: difVig.versionVigente, fecha: new Date().toISOString(), por: usuario || "", confirmado: true };
     conEvento(n, `confirmó ${fmtCOP(difVig.vigente)} (V${difVig.versionVigente}) como el precio vendido; el primero era ${fmtCOP(difVig.vendido)} (V${difVig.versionVendida})`);
     await persistir(n, "Precio vendido confirmado y bloqueado");
+    await enviarDropbox(n); // el libro de Dropbox marca la hoja vendida
   }
   async function volverAlVendido() {
     if (!difVig) return;
@@ -922,6 +923,7 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
     if (dest) await onAplicar(dest, difVig.vendido);
     setCot(n); setSucio(false);
     notify?.("Volviste al precio vendido");
+    await enviarDropbox(n); // el libro de Dropbox marca la hoja vendida
   }
   async function mantenerPrecio() {
     const rr1 = resumenCostosReales(cot, verBase, umbralDeCliente(parametros, cot.cliente));

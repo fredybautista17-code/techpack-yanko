@@ -8,6 +8,7 @@
 // en su hoja están escritas DENTRO de las fórmulas, así que aquí se reescriben
 // esas fórmulas con las tasas de la versión (ficha del cliente).
 import { TASAS_BASE, FIJOS_BASE, num, calcularCotizacion, tasasYFijosEfectivos } from "./cotizador-calculo";
+import { precioVendidoDe, versionVendidaDe } from "./precio-vendido";
 
 // Posiciones de la hoja de Fredy (las mismas que lee el importador).
 const FILAS_TELA = [6, 7, 8, 9]; // consumo de cada tela: fila + 5
@@ -185,14 +186,27 @@ export async function generarLibroCotizaciones(ExcelJS, plantilla, lista, opcion
   (lista || []).forEach((cot) => trabajosDe(cot).forEach((trabajo) => {
     const { ver, esDef, entrada, cr, antigua } = trabajo;
     const sufijo = entrada ? ` lote ${entrada.lote}` : "";
-    const base = lista.length === 1 ? `V${ver.numero}${esDef ? " DEFINITIVA" : ""}${sufijo}` : `${cot.referencia || "cot"} V${ver.numero}`;
+    // (2026-11-14, a pedido de Fredy) La hoja de la versión que tiene el PRECIO VENDIDO se marca («V1 VENDIDA») y su encabezado
+    // dice el precio vendido y, si el precio se cambió con un código de autorización, quién lo autorizó y con quién del cliente se acordó.
+    const verVendida = versionVendidaDe(cot);
+    const pvCot = precioVendidoDe(cot);
+    const esVendida = !!verVendida && !!pvCot && String(ver.estado || "aprobada") === "aprobada" && Number(ver.numero) === Number(verVendida.numero);
+    const pesos = (n) => "$" + Math.round(Number(n) || 0).toLocaleString("es-CO");
+    const base = lista.length === 1 ? `V${ver.numero}${esDef ? " DEFINITIVA" : esVendida ? " VENDIDA" : ""}${sufijo}` : `${cot.referencia || "cot"} V${ver.numero}`;
     const nombre = nombreHojaUnico(base, usados);
     const ws = wb.addWorksheet(nombre);
     ws.model = Object.assign(structuredClone(modelo), { mergeCells: modelo.merges, name: nombre });
     const av = llenarHoja(ws, cot, ver);
     av.forEach((a) => { if (!avisos.includes(a)) avisos.push(a); });
     // Línea de encabezado: versión, fecha de aprobación y carpeta de Dropbox donde queda guardada.
-    const leyenda = opciones.leyenda ? opciones.leyenda(cot, ver, esDef, entrada, trabajo.maxDef) : "";
+    let leyenda = opciones.leyenda ? opciones.leyenda(cot, ver, esDef, entrada, trabajo.maxDef) : "";
+    if (leyenda && esVendida) {
+      leyenda = `🔒 PRECIO VENDIDO ${pesos(pvCot.valor)} · ${leyenda}`;
+      const mv = cot.precioVendido;
+      if (mv && mv.anterior && Number(mv.version) === Number(ver.numero)) {
+        leyenda += ` · CAMBIO DE PRECIO AUTORIZADO: ${pesos(mv.anterior)} → ${pesos(mv.valor)}${mv.por ? `, por ${mv.por}` : ""}${mv.fecha ? ` el ${fechaColombia(mv.fecha)}` : ""}${mv.acordadoCon ? `, acordado con ${mv.acordadoCon}` : ""}${mv.motivo ? `. Motivo: ${mv.motivo}` : ""}`;
+      }
+    }
     if (leyenda) {
       const c = ws.getCell("D1");
       c.value = leyenda;
@@ -206,7 +220,7 @@ export async function generarLibroCotizaciones(ExcelJS, plantilla, lista, opcion
       const w = 560;
       ws.addImage(idImg, { tl: { col: 13.1, row: 0.5 }, ext: { width: w, height: Math.round(w * (opciones.imagen.alto / opciones.imagen.ancho)) } });
     }
-    hojas.push({ cot, ver, nombre, entrada, tipo: entrada ? "Definitiva" : "Aprobada (sin lote cerrado)" });
+    hojas.push({ cot, ver, nombre, entrada, vendida: esVendida, tipo: entrada ? "Definitiva" : "Aprobada (sin lote cerrado)" });
     // (2026-10-21) Libro DEFINITIVO: si la versión tiene "costos reales", va una hoja extra con esos costos,
     // el precio aprobado FIJO (el que se vendió) y la utilidad/margen real que quedó.
     // (2026-10-27, a pedido de Fredy) También sale en el libro de Diseño cuando los costos reales se cargaron desde
@@ -284,7 +298,7 @@ export async function generarLibroCotizaciones(ExcelJS, plantilla, lista, opcion
       rs.getCell(`E${r}`).value = h.tipo || "";
       rs.getCell(`L${r}`).value = h.ver.nota || "";
     } else {
-      rs.getCell(`E${r}`).value = h.ver.nota || "";
+      rs.getCell(`E${r}`).value = (h.vendida ? "PRECIO VENDIDO · " : "") + (h.ver.nota || "");
     }
     const formulas = [q + "K72", q + "K73", q + "K75", "ROUND(" + q + "K75,0)", q + "K74"];
     colsPrecio.forEach((c, k) => {
