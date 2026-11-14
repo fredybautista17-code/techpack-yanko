@@ -12,7 +12,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import { collection, doc, getDoc, getDocs, query, setDoc, where } from "firebase/firestore";
 import { getApps } from "firebase/app";
 import { getFunctions, httpsCallable } from "firebase/functions";
-import { useCentroCostoDatos, filasCorteVivo } from "./centro-costo-historico";
+import { useCentroCostoDatos, filasCorteMes } from "./centro-costo-historico";
 import { AREAS_HISTORICO, normTexto } from "./centro-costo-historico-parser";
 import { ayudaQuincenasPorPersona } from "./ayuda-quincena";
 import { mismoNombre } from "./corte-equipos";
@@ -288,7 +288,7 @@ export default function CostosGeneralView({ db }) {
   const [anio, setAnio] = useState(hoy.getUTCFullYear());
   const [mes, setMes] = useState(hoy.getUTCMonth() + 1);
   const ym = `${anio}-${String(mes).padStart(2, "0")}`;
-  const { cierresResueltos, datosArea, pedidos: pedidosCorte, trabajadoresCorte, cargando: cargandoCC } = useCentroCostoDatos(anio, "CORTE");
+  const { cierresResueltos, datosArea, pedidos: pedidosCorte, trabajadoresCorte, congelados: congeladosCorte, cargando: cargandoCC } = useCentroCostoDatos(anio, "CORTE");
 
   const [recarga, setRecarga] = useState(0);
   const [areasFuera, setAreasFuera] = useState(AREAS_FUERA_DEFECTO);
@@ -461,13 +461,13 @@ export default function CostosGeneralView({ db }) {
     const r = cierresResueltos.get(`${a.clave}|${ym}`);
     const m = datosArea[a.clave]?.meses?.[mes];
     if (a.clave === "CORTE" && m?.fuente === "vivo") {
-      const filas = filasCorteVivo(pedidosCorte, trabajadoresCorte, ym);
+      const filas = filasCorteMes(pedidosCorte, trabajadoresCorte, ym, congeladosCorte);
       if (filas.length) return { clave: a.clave, nombre: a.nombre, trabajadores: filas, dias: 0, fuente: "vivo" };
     }
     if (m?.fuente !== "historico" && r && r.trabajadores?.length) return { clave: a.clave, nombre: a.nombre, trabajadores: a.clave === "CORTE" ? unirPorAlias(r.trabajadores, aliasCorte) : r.trabajadores, dias: r.dias, fuente: "cierre" };
     if (m && (m.valor > 0 || m.costo > 0)) return { clave: a.clave, nombre: a.nombre, agregado: { valor: m.valor, costo: m.costo }, fuente: m.fuente };
     return null;
-  }).filter(Boolean), [cierresResueltos, datosArea, ym, mes, aliasCorte, pedidosCorte, trabajadoresCorte]);
+  }).filter(Boolean), [cierresResueltos, datosArea, ym, mes, aliasCorte, pedidosCorte, trabajadoresCorte, congeladosCorte]);
 
   // Toda la nómina que no es destajo puro, con su tipo: Fiscal, Fiscal Destajo y Prestación de Servicios.
   const liqTodas = useMemo(() => [

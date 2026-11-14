@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import { initializeApp, getApps } from "firebase/app";
 import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc } from "firebase/firestore";
 import { calcularEquiposCorte } from "./corte-equipos";
@@ -597,6 +597,30 @@ export function filasCorteVivo(pedidos, trabajadoresCorte, mk) {
   return filas.filter((x) => x.costo > 0);
 }
 
+// (2026-11-14, a pedido de Fredy) Cierre automático de cada mes pasado de CORTE: una «foto» con lo producido, el costo de nómina y las filas por
+// persona, guardada en centro_costo_cierres_mes/CORTE_AAAA-MM la primera vez que alguien abre una pantalla de costos después de terminar el mes.
+// Los meses pasados salen de esa foto y ya no cambian si la nómina de Corte se modifica o se pierde; solo el mes en curso se calcula en vivo.
+// Para volver a calcular un mes basta borrar su documento (se vuelve a congelar solo).
+export const COL_CIERRES_MES = "centro_costo_cierres_mes";
+export function fotoMesCorte(pedidos, trabajadoresCorte, mk) {
+  let valor = 0, unidades = 0;
+  (pedidos || []).forEach((p) => (p.cortesRealizados || []).forEach((c) => {
+    if (String(c.fecha || "").slice(0, 7) !== mk) return;
+    valor += Number(c.ingresoCorte) || 0;
+    unidades += Number(c.totalUnidades) || 0;
+  }));
+  const costo = (trabajadoresCorte || []).filter((t) => !t.fechaSalida || mk <= String(t.fechaSalida).slice(0, 7)).reduce((s, t) => s + (Number(t.sueldo) || 0), 0);
+  const filas = filasCorteVivo(pedidos, trabajadoresCorte, mk).map((f) => ({ id: f.id, nombre: f.nombre, valor: Math.round(f.valor), costo: Math.round(f.costo) }));
+  if (!(valor > 0) || !(costo > 0) || !filas.length) return null; // sin cortes o sin nómina cargada: no se congela
+  return { clave: "CORTE", mk, anio: Number(mk.slice(0, 4)), mes: Number(mk.slice(5, 7)), valor: Math.round(valor), costo: Math.round(costo), unidades, filas };
+}
+// Filas por persona de un mes de CORTE: la foto si existe; si no, en vivo.
+export function filasCorteMes(pedidos, trabajadoresCorte, mk, congelados) {
+  const foto = congelados && congelados.get ? congelados.get(mk) : null;
+  if (foto && Array.isArray(foto.filas) && foto.filas.length) return foto.filas.map((f) => ({ id: f.id, nombre: f.nombre, valor: f.valor, costo: f.costo }));
+  return filasCorteVivo(pedidos, trabajadoresCorte, mk);
+}
+
 // ─── PANEL "AÑO" ─────────────────────────────────────────────────────────────
 // (2026-10-26) Lectura compartida del Centro de Costo: la usan el panel «Año» y el Tablero de costos.
 // Devuelve, por área y mes, lo producido y el costo de nómina (histórico cargado, CORTE en vivo o cierres guardados).
@@ -607,8 +631,17 @@ export function useCentroCostoDatos(anioSel, claveSel) {
   const [trabajadoresCorte, setTrabajadoresCorte] = useState([]);
   const [fichas, setFichas] = useState([]);
   const [cargando, setCargando] = useState(true);
+  const [congelados, setCongelados] = useState(() => new Map());
+  const [congeladosListos, setCongeladosListos] = useState(false);
+  const congelando = useRef(new Set());
   useEffect(() => {
     const unsubs = [
+      onSnapshot(collection(db, COL_CIERRES_MES), (snap) => {
+        const m = new Map();
+        snap.docs.forEach((d) => { const x = d.data(); if (x.clave === "CORTE" && x.mk) m.set(x.mk, { ...x, id: d.id }); });
+        setCongelados(m);
+        setCongeladosListos(true);
+      }, () => { setCongeladosListos(false); }),
       onSnapshot(collection(db, "centro_costo_historico_mes"), (snap) => { setHistorico(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); setCargando(false); }, () => setCargando(false)),
       onSnapshot(collection(db, "centro_costo_historial_ayuda"), (snap) => setCierres(snap.docs.map((d) => ({ ...d.data(), id: d.id }))), () => {}),
       onSnapshot(collection(db, "pedidos_activos"), (snap) => setPedidos(snap.docs.map((d) => ({ ...d.data(), id: d.id }))), () => {}),
@@ -621,6 +654,24 @@ export function useCentroCostoDatos(anioSel, claveSel) {
     ];
     return () => unsubs.forEach((u) => u());
   }, []);
+  // Congela los meses pasados de CORTE que todavía no tienen foto (solo con cortes y nómina cargada; nunca el mes en curso).
+  useEffect(() => {
+    if (!congeladosListos || !(pedidos || []).length || !(trabajadoresCorte || []).length) return;
+    const ahora = new Date();
+    const mkHoy = `${ahora.getFullYear()}-${String(ahora.getMonth() + 1).padStart(2, "0")}`;
+    const meses = new Set();
+    pedidos.forEach((p) => (p.cortesRealizados || []).forEach((c) => {
+      const mk = String(c.fecha || "").slice(0, 7);
+      if (/^\d{4}-\d{2}$/.test(mk) && mk < mkHoy) meses.add(mk);
+    }));
+    meses.forEach((mk) => {
+      if (congelados.has(mk) || congelando.current.has(mk)) return;
+      const foto = fotoMesCorte(pedidos, trabajadoresCorte, mk);
+      if (!foto) return;
+      congelando.current.add(mk);
+      setDoc(doc(db, COL_CIERRES_MES, `CORTE_${mk}`), { ...foto, congeladoEn: new Date().toISOString(), origen: "automatico" }).catch(() => congelando.current.delete(mk));
+    });
+  }, [congeladosListos, congelados, pedidos, trabajadoresCorte]);
   // Solo cuentan los trabajadores de destajo (Destajo y Fiscal Destajo); los Fiscal (sueldo fijo)
   // no se comparan. La nómina de CORTE no tiene ficha de tipo de nómina, así que entra completa.
   const tiposDestajo = useMemo(() => new Set(fichas.filter((f) => f.tipoNomina === "Destajo" || f.tipoNomina === "Fiscal Destajo").map((f) => f.id)), [fichas]);
@@ -655,9 +706,11 @@ export function useCentroCostoDatos(anioSel, claveSel) {
       for (let m = 1; m <= 12; m++) {
         const mk = `${anio}-${String(m).padStart(2, "0")}`;
         const vivo = clave === "CORTE" ? corteVivo[m] : null;
+        const foto = clave === "CORTE" ? congelados.get(mk) : null;
         const h = historico.find((x) => x.clave === clave && x.anio === Number(anio) && x.mes === m);
         const cierre = cierresResueltos.get(`${clave}|${mk}`);
         if (h && h.prioridad) meses[m] = { valor: Number(h.valor) || 0, costo: Number(h.costo) || 0, unidades: h.unidades, fuente: "historico" };
+        else if (foto && foto.valor > 0) meses[m] = { valor: Number(foto.valor) || 0, costo: Number(foto.costo) || 0, unidades: foto.unidades, fuente: "vivo", congelado: true };
         else if (vivo && vivo.valor > 0) meses[m] = { valor: vivo.valor, costo: vivo.costo, unidades: vivo.unidades, fuente: "vivo" };
         else if (h) meses[m] = { valor: Number(h.valor) || 0, costo: Number(h.costo) || 0, unidades: h.unidades, fuente: "historico" };
         else if (cierre && (cierre.valor > 0 || cierre.costo > 0)) meses[m] = { valor: cierre.valor, costo: cierre.costo, fuente: "cierre", parcial: !cierre.esMes ? cierre.dias : 0 };
@@ -668,9 +721,9 @@ export function useCentroCostoDatos(anioSel, claveSel) {
       out[clave] = { meses, valor, costo, cobertura: costo > 0 ? (valor / costo) * 100 : 0, mesesConDato: lista.length };
     });
     return out;
-  }, [historico, cierresResueltos, pedidos, trabajadoresCorte]);
+  }, [historico, cierresResueltos, pedidos, trabajadoresCorte, congelados]);
   const datosArea = useMemo(() => construirDatosArea(anioSel, claveSel), [construirDatosArea, anioSel, claveSel]);
-  return { historico, cierres, pedidos, trabajadoresCorte, fichas, cargando, cierresResueltos, datosArea, construirDatosArea, incluirTrabajador: incluir };
+  return { historico, cierres, pedidos, trabajadoresCorte, fichas, cargando, cierresResueltos, datosArea, construirDatosArea, incluirTrabajador: incluir, congelados };
 }
 
 export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentUser, puedeCargar }) {
@@ -683,7 +736,7 @@ export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentU
 
 
   const claveSel = claveArea(areaNombre || "CORTE");
-  const { historico, pedidos, trabajadoresCorte, cargando, cierresResueltos, datosArea } = useCentroCostoDatos(anioSel, claveSel);
+  const { historico, pedidos, trabajadoresCorte, cargando, cierresResueltos, datosArea, congelados } = useCentroCostoDatos(anioSel, claveSel);
   // Roles de los equipos de Corte (se arman en Corte → Centro de Costo).
   const [aliasCorte, setAliasCorte] = useState({});
   useEffect(() => {
@@ -739,15 +792,15 @@ export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentU
     if (!f) return [];
     if (f.fuente === "cierre") return cierresResueltos.get(`${claveSel}|${anioSel}-${String(mesAbierto).padStart(2, "0")}`)?.trabajadores || [];
     if (f.fuente !== "vivo") return [];
-    return filasCorteVivo(pedidos, trabajadoresCorte, `${anioSel}-${String(mesAbierto).padStart(2, "0")}`);
-  }, [mesAbierto, sel, cierresResueltos, claveSel, anioSel, pedidos, trabajadoresCorte]);
+    return filasCorteMes(pedidos, trabajadoresCorte, `${anioSel}-${String(mesAbierto).padStart(2, "0")}`, congelados);
+  }, [mesAbierto, sel, cierresResueltos, claveSel, anioSel, pedidos, trabajadoresCorte, congelados]);
 
   const hoy = new Date();
   const mesActual = hoy.getFullYear() === Number(anioSel) ? hoy.getMonth() + 1 : hoy.getFullYear() > Number(anioSel) ? 12 : 0;
   const maxMonto = Math.max(1, ...Object.values(sel.meses).map((x) => Math.max(x.valor, x.costo)));
   const th = (txt, right) => <th style={{ textAlign: right ? "right" : "left", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>{txt}</th>;
   const etiquetaFuente = (f) => {
-    if (f.fuente === "vivo") return { txt: "en vivo (ATLAS)", color: C.green, bg: C.greenBg };
+    if (f.fuente === "vivo") return { txt: f.congelado ? "cierre del mes (ATLAS)" : "en vivo (ATLAS)", color: C.green, bg: C.greenBg };
     if (f.fuente === "historico") return { txt: "histórico cargado", color: C.violet, bg: C.violetBg };
     return { txt: f.parcial ? `cierres diarios (${f.parcial} días, costo solo hábiles)` : "cierre guardado", color: C.teal, bg: C.tealBg };
   };

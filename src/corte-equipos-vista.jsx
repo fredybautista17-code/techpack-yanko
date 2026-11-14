@@ -4,7 +4,7 @@
 // (marras y segundas); lo que quede sin cubrir es la ayuda general de Corte. Quién es quién se guarda en
 // costos_config/corte_equipos. No toca nada más: solo lee `filas` (lo que ya calcula la pantalla) y escribe esa configuración.
 import React, { useState, useEffect, useMemo } from "react";
-import { doc, onSnapshot, setDoc } from "firebase/firestore";
+import { doc, getDoc, onSnapshot, setDoc } from "firebase/firestore";
 import { calcularEquiposCorte, ROLES_EQUIPO, mismoNombre } from "./corte-equipos";
 
 const K = {
@@ -65,12 +65,28 @@ export default function EquiposCorteVista({ db, filas }) {
   function cambiar(i, campo, valor) {
     setBorrador(borrador.map((b, k) => (k === i ? { ...b, [campo]: valor, ...(campo === "rol" && valor !== "ayudante" ? { ayudanteDe: "" } : {}) } : b)));
   }
+  // Respaldo del estado anterior: el primero de cada día, solo si había roles. Nunca bloquea el guardado.
+  async function respaldarEquipos(previos) {
+    try {
+      if (!previos.length) return;
+      const ref = doc(db, "costos_config", `respaldo_corte_equipos_${new Date().toISOString().slice(0, 10)}`);
+      if ((await getDoc(ref)).exists()) return;
+      await setDoc(ref, { miembros: previos, respaldoEn: new Date().toISOString() });
+    } catch (e) {
+      console.warn("No se pudo guardar el respaldo de los equipos de Corte", e);
+    }
+  }
   async function guardar() {
     setGuardando(true);
     setMsg("");
     try {
       const limpio = borrador.filter((b) => b.rol).map((b) => ({ nombre: b.nombre, rol: b.rol, ...(b.rol === "ayudante" && b.ayudanteDe ? { ayudanteDe: b.ayudanteDe } : {}) }));
-      await setDoc(doc(db, "costos_config", "corte_equipos"), { miembros: limpio, actualizadoEn: new Date().toISOString() });
+      // (2026-11-14) El editor solo lista a quien aparece hoy en pantalla (nómina de Corte). Si esa lista venía incompleta, guardar borraba los roles de
+      // todos los demás. Ahora se conservan los roles de quien NO está en pantalla, y antes de guardar se deja un respaldo del día.
+      const previos = Array.isArray(miembros) ? miembros : [];
+      const ausentes = previos.filter((m) => !borrador.some((b) => mismoNombre(b.nombre, m.nombre)));
+      await respaldarEquipos(previos);
+      await setDoc(doc(db, "costos_config", "corte_equipos"), { miembros: [...limpio, ...ausentes], actualizadoEn: new Date().toISOString() });
       setEditando(false);
     } catch (e) {
       setMsg(`No se pudo guardar: ${e?.message || e}`);
