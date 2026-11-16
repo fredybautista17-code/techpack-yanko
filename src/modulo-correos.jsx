@@ -286,7 +286,8 @@ function FacturasRecibidas({ filas, errorCxp, fechaCorte, colorDe, nombreDe, onV
   );
 }
 
-export default function CorreosView({ currentUser, onVolver, onLogout, notify }) {
+// (2026-11-16, a pedido de Fredy) `incrustado`: se muestra dentro de Financiera, sin «Volver a ATLAS» ni «Salir» y sin ocupar toda la pantalla.
+export default function CorreosView({ currentUser, onVolver, onLogout, notify, incrustado = false }) {
   const [cuentas, setCuentas] = useState([]);
   const [mensajes, setMensajes] = useState([]);
   const [cargado, setCargado] = useState(false);
@@ -424,9 +425,9 @@ export default function CorreosView({ currentUser, onVolver, onLogout, notify })
   }
 
   return (
-    <div style={{ minHeight: "100vh", background: C.canvas, fontFamily: FUENTE, color: C.ink }}>
+    <div style={{ minHeight: incrustado ? undefined : "100vh", background: C.canvas, fontFamily: FUENTE, color: C.ink, borderRadius: incrustado ? 14 : 0, overflow: incrustado ? "hidden" : "visible" }}>
       <div style={{ background: C.navy, color: C.white, padding: "14px 24px", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
-        <button onClick={onVolver} style={btn("transparent", C.white, "rgba(255,255,255,.35)")}>← Volver a ATLAS</button>
+        {!incrustado && <button onClick={onVolver} style={btn("transparent", C.white, "rgba(255,255,255,.35)")}>← Volver a ATLAS</button>}
         <div style={{ fontWeight: 800, fontSize: 20, letterSpacing: -0.3 }}>✉ Correos</div>
         {totalNuevos > 0 && <Pastilla bg={C.amberBg} color={C.amber}>{totalNuevos} sin leer</Pastilla>}
         <div style={{ display: "flex", gap: 6, marginLeft: 6 }}>
@@ -437,7 +438,7 @@ export default function CorreosView({ currentUser, onVolver, onLogout, notify })
         <button onClick={sincronizar} disabled={sincronizando || !cuentas.length} style={{ ...btn("transparent", C.white, "rgba(255,255,255,.35)"), opacity: sincronizando || !cuentas.length ? 0.6 : 1 }}>{sincronizando ? "Leyendo…" : "↻ Sincronizar ahora"}</button>
         <button onClick={clasificar} disabled={clasificando || !cuentas.length} title="La IA le pone categoría, prioridad y resumen a cada correo. Solo clasifica: no responde ni envía nada." style={{ ...btn("transparent", C.white, "rgba(255,255,255,.35)"), opacity: clasificando || !cuentas.length ? 0.6 : 1 }}>{clasificando ? "Clasificando…" : `✨ Clasificar con IA${pendientesIA ? ` (${pendientesIA})` : ""}`}</button>
         <button onClick={() => setPanelCuentas(true)} style={btn("#C8B8A2", C.ink)}>⚙ Cuentas</button>
-        {onLogout && <button onClick={onLogout} style={btn("transparent", "#B9BBDA", "rgba(255,255,255,.2)")}>Salir</button>}
+        {onLogout && !incrustado && <button onClick={onLogout} style={btn("transparent", "#B9BBDA", "rgba(255,255,255,.2)")}>Salir</button>}
       </div>
 
       <div style={{ maxWidth: 1280, margin: "0 auto", padding: "18px 24px" }}>

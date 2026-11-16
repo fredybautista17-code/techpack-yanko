@@ -17,7 +17,6 @@ import { cargaEntradasActivaDe } from "./entradas-planta-util";
 import { DashboardEntregasView, EstadisticasPlantaView } from "./plantas-vistas";
 import { SelectorMotivo, pedirMotivoIncumplimiento, registrarIncumplimiento, claveAreaMotivo, NOMBRE_AREA_MOTIVO } from "./motivos-incumplimiento";
 import ProyeccionAreasView from "./proyeccion-areas";
-import TableroCostosView from "./tablero-costos";
 import { num as numCotizador } from "./cotizador-calculo";
 import { DevolucionesCalidadView } from "./devoluciones-cliente";
 import { EmpacadorasEstadisticasView } from "./devoluciones-empacadoras";
@@ -6568,6 +6567,17 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
     return [...porQuincena.values()].sort((a, b) => a.pid.localeCompare(b.pid));
   }, [trabajadoresArea, periodosDestajoSeleccionados, liquidacionesDestajo, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC, hoy]);
   const totalAyudaQuincenas = detalleQuincenasDestajoCC.reduce((s, q) => s + q.ayudaTotal, 0);
+  // (2026-11-16, a pedido de Fredy) Por persona, para el resumen «Todas las áreas»: horas trabajadas (costo indirecto) y ayuda adicional (lo puesto en Nómina), sin netear.
+  const horasPorIdCC = useMemo(() => {
+    const m = {};
+    detalleQuincenasDestajoCC.forEach((q) => q.costoIndirectoDetalle.forEach((d) => { m[d.id] = (m[d.id] || 0) + (Number(d.valor) || 0); }));
+    return m;
+  }, [detalleQuincenasDestajoCC]);
+  const ayudaAdicionalPorIdCC = useMemo(() => {
+    const m = {};
+    detalleQuincenasDestajoCC.forEach((q) => q.ayudaDetalle.forEach((d) => { m[d.id] = (m[d.id] || 0) - (Number(d.diferencia) || 0); }));
+    return m;
+  }, [detalleQuincenasDestajoCC]);
   const totalCostoIndirectoQuincenas = detalleQuincenasDestajoCC.reduce((s, q) => s + q.costoIndirectoTotal, 0);
   // (2026-11-16, a pedido de Fredy) Total de la tarjeta 🆘 = ayuda de nómina (tarjeta 🩹) + costo indirecto (tarjeta ⏱️).
   // Antes se usaba «ayudado» (garantizado − producido), que ya traía las horas dentro del garantizado, y al sumarle el costo indirecto
@@ -7452,6 +7462,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
                   filas={filasProduccionCC} garantizadoDe={garantizadoDe} etiquetaPeriodo={etiquetaPeriodo}
                   estructura={estructuraCC} unidadesTerminadas={unidadesTerminadasPeriodo}
                   totalAyudaQuincenas={totalAyudaQuincenas} totalCostoIndirecto={totalCostoIndirectoQuincenas}
+                  horasPorId={horasPorIdCC} ayudaAdicionalPorId={ayudaAdicionalPorIdCC}
                   hayCausado={filasProduccionCC.some((f) => f.huboCausado)} vista={vistaCC} onVista={setVistaCC}
                   onVerTrabajador={setTrabajadorDetalleAbierto} onExcel={filas.length > 0 ? exportarCentroCostoExcel : null}
                 />
@@ -11333,7 +11344,6 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
     { id: "plantas", icon: "🏭", label: "Plantas" },
     { id: "lotes_por_dia", icon: "📅", label: "Lotes por Día" },
     { id: "proyeccion_areas", icon: "🗓", label: "Proyección por Área" },
-    ...(isAdmin ? [{ id: "tablero_costos", icon: "💹", label: "Tablero de Costos" }] : []),
     { id: "control_calidad", icon: "🔍", label: "Control de Calidad" },
   ];
   if (loading) {
@@ -11440,7 +11450,6 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
               entradas={entradasTalleres}
             />
           )}
-          {subView === "tablero_costos" && isAdmin && <TableroCostosView db={db} />}
           {subView === "estadisticas" && (
             <EstadisticasPlaneacionView
               programaciones={programacionesProcesosTodas}

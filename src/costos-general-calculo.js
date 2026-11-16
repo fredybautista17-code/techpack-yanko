@@ -201,7 +201,8 @@ export function resumenFiscal(liquidaciones, fichas, areasFuera, excepciones) {
 // su ayuda es la ayuda general de Corte (lo que los equipos y doña Berta juntos no alcanzaron a cubrir) y sus excedentes se suman entre sí.
 // Interruptores de destajo (2026-11-05): cada área y cada persona decide por separado si su AYUDA cuenta y si su PROVISIÓN cuenta.
 // CORTE arranca con la provisión fuera (su sueldo y prestaciones ya van en el costo del lote) y la ayuda dentro.
-export const DESTAJO_AYUDA_FUERA_DEFECTO = [];
+// (2026-11-16, a pedido de Fredy) MAQUILA tampoco interviene en el punto de equilibrio de la fábrica: su ayuda arranca fuera (se puede encender).
+export const DESTAJO_AYUDA_FUERA_DEFECTO = ["MAQUILA"];
 // (2026-11-16) MAQUILA: su nómina ya se cubre con sus ventas; solo cuenta su ayuda de las quincenas, y su provisión arranca fuera.
 export const DESTAJO_PROVISION_FUERA_DEFECTO = ["CORTE", "MAQUILA"];
 export const clavePersonaDestajo = (claveArea, id, nombre) => `${claveArea}|${id ?? nombre}`;

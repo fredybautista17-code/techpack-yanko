@@ -314,8 +314,11 @@ export default function CostosGeneralView({ db }) {
         setDestajoCfg((c) => {
           // (2026-11-16) Maquila arranca con la provisión fuera, también si ya había una elección guardada (una sola vez: luego manda lo que elija).
           const provG = Array.isArray(g.destajoProvisionFuera) ? g.destajoProvisionFuera : c.provisionFuera;
+          const ayudaBase = Array.isArray(g.destajoAyudaFuera) ? g.destajoAyudaFuera : c.ayudaFuera;
+          const ayudaG = g.destajoMaquilaAyudaInicial || ayudaBase.some((x) => normTexto(x) === "MAQUILA") ? ayudaBase : [...ayudaBase, "MAQUILA"];
           return {
-          ayudaFuera: Array.isArray(g.destajoAyudaFuera) ? g.destajoAyudaFuera : c.ayudaFuera,
+          // (2026-11-16) Maquila arranca con la ayuda fuera del equilibrio de la fábrica, también si ya había una elección guardada (una sola vez).
+          ayudaFuera: ayudaG,
           provisionFuera: g.destajoMaquilaProvInicial || provG.some((x) => normTexto(x) === "MAQUILA") ? provG : [...provG, "MAQUILA"],
           ayudaExc: obj(g.destajoAyudaExc),
           provisionExc: obj(g.destajoProvisionExc),
@@ -364,7 +367,7 @@ export default function CostosGeneralView({ db }) {
   async function guardarDestajo(nuevo) {
     setDestajoCfg(nuevo);
     setMsgAreas("");
-    try { await setDoc(doc(db, "costos_config", "general"), { destajoAyudaFuera: nuevo.ayudaFuera, destajoProvisionFuera: nuevo.provisionFuera, destajoAyudaExc: nuevo.ayudaExc, destajoProvisionExc: nuevo.provisionExc, destajoMaquilaProvInicial: true, actualizadoEn: new Date().toISOString() }, { merge: true }); }
+    try { await setDoc(doc(db, "costos_config", "general"), { destajoAyudaFuera: nuevo.ayudaFuera, destajoProvisionFuera: nuevo.provisionFuera, destajoAyudaExc: nuevo.ayudaExc, destajoProvisionExc: nuevo.provisionExc, destajoMaquilaProvInicial: true, destajoMaquilaAyudaInicial: true, actualizadoEn: new Date().toISOString() }, { merge: true }); }
     catch (e) { setMsgAreas(`No se pudo guardar la elección: ${e?.message || e}`); }
   }
   // tipo: "ayuda" | "provision". Interruptor del área: si todo cuenta lo apaga; si no, lo enciende. Borra las excepciones de sus personas.

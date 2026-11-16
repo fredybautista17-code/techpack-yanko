@@ -11,6 +11,8 @@ import ProyeccionDeudaView, { useProyeccionMensual } from "./financiera-proyecci
 import InsumosOperarView from "./financiera-insumos";
 import DireccionFinancieraView from "./financiera-direccion";
 import LoQueCuestaOperarView from "./financiera-operar";
+import CostosEquilibrioView from "./financiera-costos-equilibrio";
+import CorreosView from "./modulo-correos";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
@@ -3376,6 +3378,7 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
   const NAV = [
     { id: "direccion_financiera", icon: "📊", label: "Dirección financiera" },
     { id: "lo_que_cuesta_operar", icon: "🎯", label: "Lo que cuesta operar" },
+    { id: "costos_equilibrio", icon: "⚖️", label: "Costos y equilibrio" },
     { id: "pago_nomina", icon: "💰", label: "Pago de Nómina" },
     { id: "cuanto_pagar", icon: "🧮", label: "Cuánto debo pagar" },
     { id: "endeudamiento", icon: "🏦", label: "Endeudamiento" },
@@ -3385,6 +3388,7 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
     { id: "insumos_operar", icon: "🧵", label: "Insumos y telas" },
     { id: "pagos_proveedores", icon: "🧾", label: "Pagos a Proveedores" },
     { id: "administracion", icon: "🗂️", label: "Administración" },
+    ...(isAdmin ? [{ id: "correos", icon: "✉", label: "Correos" }] : []),
   ];
 
   if (loading)
@@ -3467,9 +3471,11 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
       </div>
       {/* Main */}
       <div style={{ flex: 1, padding: "28px 32px", overflow: "auto" }}>
-        <div style={{ maxWidth: 1100, margin: "0 auto" }}>
+        <div style={{ maxWidth: subView === "costos_equilibrio" || subView === "correos" ? 1400 : 1100, margin: "0 auto" }}>
           {subView === "direccion_financiera" && <DireccionFinancieraView db={db} isAdmin={isAdmin} />}
           {subView === "lo_que_cuesta_operar" && <LoQueCuestaOperarView db={db} isAdmin={isAdmin} usuario={currentUser?.name || currentUser?.username || currentUser?.email || ""} onIr={setSubView} />}
+          {subView === "costos_equilibrio" && <CostosEquilibrioView db={db} currentUser={currentUser} />}
+          {subView === "correos" && isAdmin && <CorreosView currentUser={currentUser} incrustado notify={(msg) => alert(msg)} />}
           {subView === "pago_nomina" && <PagoNominaView currentUser={currentUser} />}
           {subView === "cuanto_pagar" && <CuantoPagarMesView db={db} functionsClient={functionsClient} isAdmin={isAdmin} onIrEndeudamiento={() => setSubView("endeudamiento")} />}
           {subView === "endeudamiento" && <EndeudamientoView db={db} isAdmin={isAdmin} />}

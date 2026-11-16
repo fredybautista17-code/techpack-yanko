@@ -271,16 +271,18 @@ function ManoDeObraYCotizaciones({ db }) {
 // (2026-11-04) Tercera pestaña «¿Cubro mis costos?» (costos-general.jsx).
 // (2026-10-26) Dos pestañas: el cierre diario por área (para la persona encargada de costos) y lo que ya había
 // (mano de obra por mes y cotizado frente a real).
-export default function TableroCostosView({ db }) {
-  const [pestana, setPestana] = useState("cierre");
+// (2026-11-16, a pedido de Fredy) `extra` = { id, label, render } agrega una pestaña al inicio (Financiera → Costos y equilibrio le pone «Por área»).
+export default function TableroCostosView({ db, extra }) {
+  const [pestana, setPestana] = useState(extra ? extra.id : "cierre");
   return (
     <div>
-      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+        {extra ? <Chip activo={pestana === extra.id} onClick={() => setPestana(extra.id)}>{extra.label}</Chip> : null}
         <Chip activo={pestana === "cierre"} onClick={() => setPestana("cierre")}>Cierre diario</Chip>
         <Chip activo={pestana === "analisis"} onClick={() => setPestana("analisis")}>Mano de obra y cotizaciones</Chip>
         <Chip activo={pestana === "cubro"} onClick={() => setPestana("cubro")}>¿Cubro mis costos?</Chip>
       </div>
-      {pestana === "cierre" ? <CierreDiarioView db={db} /> : pestana === "cubro" ? <CostosGeneralView db={db} /> : <ManoDeObraYCotizaciones db={db} />}
+      {extra && pestana === extra.id ? extra.render() : pestana === "cierre" ? <CierreDiarioView db={db} /> : pestana === "cubro" ? <CostosGeneralView db={db} /> : <ManoDeObraYCotizaciones db={db} />}
     </div>
   );
 }
