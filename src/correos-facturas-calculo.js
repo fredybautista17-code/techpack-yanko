@@ -77,6 +77,7 @@ export function diagnosticoBusint(datos, cxpDocs) {
   const docs = cxpDocs.filter((d) => comparteNombre(datos.proveedor, d.nombre));
   if (!docs.length) return { tipo: "sin_proveedor" };
   const todas = docs.flatMap((d) => (d.facturas || []).map((f) => ({ proveedor: d.nombre, nfact: f.nfact, facTotal: Number(f.facTotal) || 0, saldo: Number(f.saldo) || 0, vence: String(f.fechaVctoISO || "").slice(0, 10) })));
+  if (!todas.length) return { tipo: "proveedor_sin_abiertas", proveedor: docs[0].nombre }; // el proveedor existe pero todo lo suyo está pagado
   const dist = (f) => (datos.valor > 0 ? Math.abs(f.facTotal - datos.valor) : 0);
   const cercanas = [...todas].sort((a, b) => dist(a) - dist(b) || String(b.vence).localeCompare(String(a.vence))).slice(0, 3)
     .map((f) => ({ ...f, parecida: datos.valor > 0 && Math.abs(f.facTotal - datos.valor) <= datos.valor * 0.02 }));
@@ -104,6 +105,12 @@ export function estadoGrupo(mensajes, coincidencia) {
   return coincidencia ? "registrada" : "por_registrar";
 }
 
+// Última revisión en vivo contra Busint (botón «Revisar en Busint ahora»): la más reciente entre los correos del grupo, o null.
+export function revisionDe(mensajes) {
+  const rev = mensajes.filter((m) => m.revisionBusint && m.revisionBusint.en).sort((a, b) => String(b.revisionBusint.en).localeCompare(String(a.revisionBusint.en)));
+  return rev.length ? rev[0].revisionBusint : null;
+}
+
 // Arma las filas de «Facturas recibidas» a partir de los correos clasificados como factura de proveedor.
 //  m = el correo más reciente del grupo (el que abre «Ver correo»); primera = fecha del primer correo (desde cuándo espera).
 export function agruparFacturas(mensajes, cxpDocs, hoy = new Date()) {
@@ -121,6 +128,6 @@ export function agruparFacturas(mensajes, cxpDocs, hoy = new Date()) {
     const primera = ordenados[ordenados.length - 1].fecha;
     const coincidencia = cxpDocs ? buscarEnBusint(base, cxpDocs) : null;
     const estado = estadoGrupo(ordenados, coincidencia);
-    return { clave, m: ordenados[0], mensajes: ordenados, n: ordenados.length, datos: base, primera, coincidencia, estado, diagnostico: estado === "por_registrar" ? diagnosticoBusint(base, cxpDocs) : null, urg: estado === "por_registrar" ? urgenciaFactura(base, primera, hoy) : "normal" };
+    return { clave, m: ordenados[0], mensajes: ordenados, n: ordenados.length, datos: base, primera, coincidencia, revision: revisionDe(ordenados), estado, diagnostico: estado === "por_registrar" ? diagnosticoBusint(base, cxpDocs) : null, urg: estado === "por_registrar" ? urgenciaFactura(base, primera, hoy) : "normal" };
   });
 }

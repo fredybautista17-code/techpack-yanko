@@ -17316,6 +17316,7 @@ exports.correosGuardarCuenta = onCallAuth(
 // Solo CLASIFICA: no responde, no envía y no toca Gmail. Publicar:
 //   firebase deploy --only functions:clasificarCorreos,functions:correosClasificarAhora
 const CorreosIA = require("./correos-ia");
+const CorreosBusint = require("./correos-busint");
 
 // Los correos que ya estaban guardados antes de la Fase 2 no tienen el campo `clasificacion`; una sola vez se les
 // pone null para poder pedir «los pendientes» con una consulta simple. La marca vive en un documento solo-servidor.
@@ -17404,6 +17405,58 @@ exports.correosClasificarAhora = onCallAuth(
   async (request) => {
     await exigirAdminCorreos(request);
     return clasificarCorreosPendientes(120);
+  }
+);
+
+// (2026-11-16, a pedido de Fredy) «🔎 Revisar en Busint ahora»: busca cada factura recibida por correo en la tabla COMPLETA de facturas de
+// proveedores de Busint (incluye pagadas y recién registradas) para saber si contabilidad ya la cargó. SOLO LEE Busint. Las que se
+// encuentran por número + (proveedor o valor) se guardan solas como «registrada» (origen busint); las dudosas quedan como «posible».
+exports.correosRevisarFacturasBusint = onCallAuth(
+  { secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY], timeoutSeconds: 540, memory: "1GiB" },
+  async (request) => {
+    await exigirAdminCorreos(request);
+    const entrada = Array.isArray((request.data || {}).facturas) ? request.data.facturas.slice(0, 100) : [];
+    const pedidas = entrada
+      .map((f) => ({ clave: String((f && f.clave) || "").slice(0, 300), proveedor: String((f && f.proveedor) || "").slice(0, 200), numero: String((f && f.numero) || "").slice(0, 80), valor: Number(f && f.valor) || 0, ids: Array.isArray(f && f.ids) ? f.ids.map(String).slice(0, 50) : [] }))
+      .filter((f) => f.clave && (f.numero || f.valor));
+    if (!pedidas.length) return { revisadas: 0, resultados: {}, marcadas: 0 };
+    let facturas, proveedores, pagos, pagosOtros, notasDescuento, devoluciones, notasContables;
+    try {
+      [facturas, proveedores, pagos, pagosOtros, notasDescuento, devoluciones, notasContables] = await Promise.all([
+        consultarTablaBusintBDCompleta("cartera cxp-fact"),
+        consultarTablaBusintBDCompleta("maestro de proveedores"),
+        consultarTablaBusintBDCompleta("cxp-pagos detalles"),
+        consultarTablaBusintBDCompleta("cxp-pagosotros detalles"),
+        consultarTablaBusintBDCompleta("notas detalles-d"),
+        consultarTablaBusintBDCompleta("cartera cxp-dev"),
+        consultarTablaBusintBDCompleta("notascontable detalles").catch(() => []),
+      ]);
+    } catch (err) {
+      logger.error("correosRevisarFacturasBusint: no se pudo leer Busint", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar Busint: ${err?.message || String(err)}`);
+    }
+    const resultados = CorreosBusint.revisar(pedidas, { facturas, proveedores, pagos, pagosOtros, notasDescuento, devoluciones, notasContables }, { normalizarCodigoCxp, fechaADia: fechaBusintBDaDateSoloDia });
+    // Cada correo guarda el resultado de la revisión (se muestra en la fila). Las coincidencias fuertes pasan además solas a «registrada»
+    // (la última decisión manual del usuario gana: solo se toca lo que está en automático o ya vino de Busint).
+    const ahora = new Date().toISOString();
+    let marcadas = 0;
+    for (const f of pedidas) {
+      const r = resultados[f.clave];
+      if (!r) continue;
+      for (const id of f.ids) {
+        const ref = db.collection("correos_mensajes").doc(id);
+        const snap = await ref.get();
+        if (!snap.exists) continue;
+        const cambio = { revisionBusint: { estado: r.estado, en: ahora, coincidencia: r.coincidencia || null } };
+        const actual = snap.data().factura;
+        if (r.estado === "encontrada" && !(actual && actual.estado && actual.origen !== "busint")) {
+          cambio.factura = { estado: "registrada", en: ahora, origen: "busint", busint: { proveedor: r.coincidencia.proveedor, nfact: r.coincidencia.nfact, saldo: r.coincidencia.saldo, pagada: r.coincidencia.pagada } };
+          marcadas++;
+        }
+        await ref.set(cambio, { merge: true });
+      }
+    }
+    return { revisadas: pedidas.length, resultados, marcadas, en: ahora };
   }
 );
 

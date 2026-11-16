@@ -172,7 +172,7 @@ const fechaDia = (aaaammdd) => { const p = /^(\d{4})-(\d{2})-(\d{2})$/.exec(Stri
 const URGENCIA = { alta: { color: C.red, bg: C.redBg }, media: { color: C.amber, bg: C.amberBg }, normal: { color: "transparent", bg: C.white } };
 
 // ── Control de facturas de proveedores recibidas por correo ──
-function FacturasRecibidas({ filas, errorCxp, fechaCorte, colorDe, nombreDe, onVer, onEstado }) {
+function FacturasRecibidas({ filas, errorCxp, fechaCorte, colorDe, nombreDe, onVer, onEstado, onRevisar, revisando }) {
   const [filtro, setFiltro] = useState("por_registrar");
   const cuenta = (e) => filas.filter((f) => f.estado === e).length;
   const porRegistrar = filas.filter((f) => f.estado === "por_registrar");
@@ -199,6 +199,10 @@ function FacturasRecibidas({ filas, errorCxp, fechaCorte, colorDe, nombreDe, onV
       </div>
       <div style={{ fontSize: 12.5, color: C.slate, marginBottom: 12, lineHeight: 1.5 }}>
         {errorCxp ? <span style={{ color: C.red }}>No se pudo leer Cuentas por Pagar ({errorCxp}); el estado se maneja a mano.</span> : fechaCorte ? `Se compara con el corte de Cuentas por Pagar de Busint del ${fechaDia(String(fechaCorte).slice(0, 10))}. Cuando contabilidad registre la factura en Busint, aquí pasa sola a «Registrada».` : "Todavía no hay un corte de Cuentas por Pagar para comparar; el estado se maneja a mano."} Esta lista no crea deuda ni escribe en Busint. Los datos los detecta la IA: verifícalos con el correo.
+      </div>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
+        <button onClick={() => onRevisar(porRegistrar)} disabled={revisando || !porRegistrar.length} title="Busca cada factura por registrar en TODAS las facturas de proveedores de Busint (incluye pagadas y recién cargadas). Solo lee; no escribe nada en Busint." style={{ ...btn(C.navy, C.white), opacity: revisando || !porRegistrar.length ? 0.6 : 1 }}>{revisando ? "Revisando en Busint… (1–2 min)" : `🔎 Revisar en Busint ahora (${Math.min(porRegistrar.length, 100)})`}</button>
+        <span style={{ fontSize: 12, color: C.slate }}>Las que Busint ya tiene (aunque estén pagadas) pasan solas a «Registrada».</span>
       </div>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
         {[["por_registrar", "Por registrar"], ["registrada", "Registradas"], ["descartada", "Descartadas"], ["todas", "Todas"]].map(([k, t]) => (
@@ -235,7 +239,19 @@ function FacturasRecibidas({ filas, errorCxp, fechaCorte, colorDe, nombreDe, onV
                 <div style={{ flex: "2 1 230px", fontSize: 12.5 }}>
                   {f.estado === "por_registrar" && <Pastilla bg={C.amberBg} color={C.amber}>Por registrar</Pastilla>}
                   {f.estado === "por_registrar" && f.diagnostico && f.diagnostico.tipo === "sin_proveedor" && (
-                    <div style={{ color: C.slate, marginTop: 3, lineHeight: 1.45 }}>No hay facturas abiertas de este proveedor en el corte de Busint: o aún no está registrada, o ya está pagada.</div>
+                    <div style={{ color: C.slate, marginTop: 3, lineHeight: 1.45 }}>Este proveedor no aparece con facturas abiertas en el corte de Busint: o contabilidad aún no la carga, o ya está pagada. «Revisar en Busint ahora» lo confirma.</div>
+                  )}
+                  {f.estado === "por_registrar" && f.diagnostico && f.diagnostico.tipo === "proveedor_sin_abiertas" && (
+                    <div style={{ color: C.slate, marginTop: 3, lineHeight: 1.45 }}>«{f.diagnostico.proveedor}» no tiene ninguna factura abierta en el corte: todo lo suyo está pagado, o esta factura aún no se carga. «Revisar en Busint ahora» lo confirma.</div>
+                  )}
+                  {f.estado === "por_registrar" && f.revision && f.revision.estado === "no_encontrada" && (
+                    <div style={{ color: C.red, marginTop: 4, lineHeight: 1.45, fontWeight: 600 }}>Revisada en Busint el {fechaCorta(f.revision.en)}: no aparece con este número ni este valor, ni pagada. Contabilidad aún no la ha cargado.</div>
+                  )}
+                  {f.estado === "por_registrar" && f.revision && f.revision.estado === "posible" && f.revision.coincidencia && (
+                    <div style={{ color: C.amber, marginTop: 4, lineHeight: 1.45 }}>
+                      <b>Posible coincidencia en Busint</b> (revisada el {fechaCorta(f.revision.en)}): {f.revision.coincidencia.proveedor} · factura {f.revision.coincidencia.nfact} · {pesos(f.revision.coincidencia.facTotal)} · {f.revision.coincidencia.pagada ? "pagada" : `saldo ${pesos(f.revision.coincidencia.saldo)}`}
+                      {f.revision.coincidencia.tipo === "valor" ? " — mismo valor y proveedor, otro número." : " — mismo número pero otro proveedor y valor."} Si es la misma, pulsa «Ya está registrada».
+                    </div>
                   )}
                   {f.estado === "por_registrar" && f.diagnostico && f.diagnostico.tipo === "proveedor_sin_factura" && (
                     <details style={{ color: C.slate, marginTop: 3, lineHeight: 1.45 }}>
@@ -252,7 +268,8 @@ function FacturasRecibidas({ filas, errorCxp, fechaCorte, colorDe, nombreDe, onV
                   )}
                   {f.estado === "descartada" && <Pastilla bg={C.canvas} color={C.slate}>Descartada</Pastilla>}
                   {f.estado === "registrada" && <Pastilla bg={C.greenBg} color={C.green}>Registrada</Pastilla>}
-                  {f.estado === "registrada" && (f.coincidencia && !f.mensajes.some((m) => m.factura?.estado === "registrada") ? <div style={{ color: C.slate, marginTop: 3 }}>En Busint: {f.coincidencia.proveedor} · factura {f.coincidencia.nfact}{f.coincidencia.tipo === "valor" ? " (coincide por valor y proveedor)" : ""}</div> : <div style={{ color: C.slate, marginTop: 3 }}>Marcada por ti</div>)}
+                  {f.estado === "registrada" && f.mensajes.some((m) => m.factura?.origen === "busint" && m.factura?.estado === "registrada") && (() => { const b = f.mensajes.find((m) => m.factura?.origen === "busint")?.factura; return <div style={{ color: C.slate, marginTop: 3 }}>Revisada en Busint el {fechaCorta(b.en)}: {b.busint?.proveedor} · factura {b.busint?.nfact} · {b.busint?.pagada ? "ya pagada" : `saldo ${pesos(b.busint?.saldo)}`}</div>; })()}
+                  {f.estado === "registrada" && !f.mensajes.some((m) => m.factura?.origen === "busint" && m.factura?.estado === "registrada") && (f.coincidencia && !f.mensajes.some((m) => m.factura?.estado === "registrada") ? <div style={{ color: C.slate, marginTop: 3 }}>En Busint: {f.coincidencia.proveedor} · factura {f.coincidencia.nfact}{f.coincidencia.tipo === "valor" ? " (coincide por valor y proveedor)" : ""}</div> : <div style={{ color: C.slate, marginTop: 3 }}>Marcada por ti</div>)}
                 </div>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                   <button onClick={() => onVer(f.m)} style={btn(C.white, C.blue, C.blue)}>Ver correo</button>
@@ -284,6 +301,7 @@ export default function CorreosView({ currentUser, onVolver, onLogout, notify })
   const [catSel, setCatSel] = useState("todas");
   const [soloAccion, setSoloAccion] = useState(false);
   const [clasificando, setClasificando] = useState(false);
+  const [revisando, setRevisando] = useState(false);
   const [vista, setVista] = useState("bandeja");
   const [bajandoAdj, setBajandoAdj] = useState("");
   const [cxp, setCxp] = useState(null);
@@ -372,6 +390,20 @@ export default function CorreosView({ currentUser, onVolver, onLogout, notify })
       notify?.("No se pudo abrir el adjunto: " + mensajeError(e));
     } finally { setBajandoAdj(""); }
   }
+  // Busca las facturas por registrar en Busint (solo lectura). La función guarda el resultado en cada correo y marca sola las que sí están.
+  async function revisarEnBusint(filas) {
+    const lote = filas.slice(0, 100);
+    if (!lote.length) return;
+    setRevisando(true);
+    try {
+      const pedidas = lote.map((f) => ({ clave: f.clave, proveedor: f.datos.proveedor || "", numero: f.datos.numero || "", valor: f.datos.valor || 0, ids: f.mensajes.map((m) => m.id) }));
+      const r = (await httpsCallable(functionsClient, "correosRevisarFacturasBusint", { timeout: 540000 })({ facturas: pedidas })).data || {};
+      const res = Object.values(r.resultados || {});
+      const enc = res.filter((x) => x.estado === "encontrada").length, pos = res.filter((x) => x.estado === "posible").length, no = res.filter((x) => x.estado === "no_encontrada").length;
+      notify?.(`Revisadas ${r.revisadas || 0} en Busint: ${enc} ya estaban cargadas (pasaron a Registrada), ${pos} con posible coincidencia, ${no} sin aparecer.${filas.length > lote.length ? ` Faltan ${filas.length - lote.length}: vuelve a pulsar.` : ""}`);
+    } catch (e) { notify?.("No se pudo revisar en Busint: " + mensajeError(e)); }
+    finally { setRevisando(false); }
+  }
   // La decisión vale para todos los correos repetidos de la misma factura.
   async function marcarFactura(fila, estado) {
     const en = new Date().toISOString();
@@ -411,7 +443,7 @@ export default function CorreosView({ currentUser, onVolver, onLogout, notify })
       <div style={{ maxWidth: 1280, margin: "0 auto", padding: "18px 24px" }}>
         {errorCarga && <div style={{ background: C.redBg, color: C.red, borderRadius: 12, padding: "10px 14px", marginBottom: 14, fontSize: 13 }}>No se pudieron cargar los correos: {errorCarga}. Si es un error de permisos, falta publicar las reglas de Firestore (<code>firebase deploy --only firestore:rules</code>).</div>}
         {vista === "facturas" ? (
-          <FacturasRecibidas filas={filasFactura} errorCxp={errorCxp} fechaCorte={fechaCorteCxp} colorDe={colorDe} nombreDe={nombreDe} onVer={verCorreo} onEstado={marcarFactura} />
+          <FacturasRecibidas filas={filasFactura} errorCxp={errorCxp} fechaCorte={fechaCorteCxp} colorDe={colorDe} nombreDe={nombreDe} onVer={verCorreo} onEstado={marcarFactura} onRevisar={revisarEnBusint} revisando={revisando} />
         ) : cargado && !cuentas.length && !errorCarga ? (
           <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 16, padding: 28, maxWidth: 620, margin: "40px auto", textAlign: "center" }}>
             <div style={{ fontSize: 34 }}>✉</div>
