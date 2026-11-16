@@ -465,8 +465,9 @@ export default function CostosGeneralView({ db }) {
   // Misma regla de fuentes que el panel «Año» de Centro de Costo: histórico con prioridad > CORTE en vivo (cortes de ATLAS) > histórico > cierres diarios.
   // (2026-11-16, a pedido de Fredy) Zona Calor y Control de Calidad usan el cierre guardado con la base correcta (sueldo de la ficha ÷ días de
   // trabajo reales del mes, ver normalizarCierresDiarios). MAQUILA no registra producción por persona en el cierre, así que, como destajo que es,
-  // se mide igual pero con la nómina: «Produjo» = producción (+ horas) de sus liquidaciones confirmadas y «Le pagamos» = la base del sueldo de la
-  // ficha repartida por días de trabajo, solo de las quincenas ya liquidadas (una sin liquidar no cuenta, ni su base ni su producción).
+  // se mide igual pero con la nómina: «Produjo» = producción (+ horas) de sus liquidaciones confirmadas y «Le pagamos» = lo realmente pagado (neto a
+  // pagar + descuentos de bodega). La ayuda y el excedente se miden contra la base garantizada (sueldo de la ficha repartido por días de trabajo, `baseGarantizada`),
+  // solo con las quincenas ya liquidadas (una sin liquidar no cuenta, ni su base ni su producción).
   // La columna «Ayuda por quincena (Nómina)» aparte sigue siendo lo realmente puesto (Ajuste manual + Ayuda salario mínimo).
   const ayudaQMaqNomina = useMemo(() => {
     const m = new Map();
@@ -487,13 +488,16 @@ export default function CostosGeneralView({ db }) {
     const total = diasDeTrabajoDelMes(anio, mm);
     const dQ1 = diasDeTrabajoDelMes(anio, mm, 15);
     let valor = 0;
-    let costo = 0;
+    let pagado = 0;
+    let base = 0;
     (nominaQ.liquidaciones || []).forEach((l) => {
       if (l.trabajadorId !== t.id || (l.periodoId !== `${ym}-Q1` && l.periodoId !== `${ym}-Q2`)) return;
       valor += (Number(l.produccionReal) || 0) + (Number(l.totalHoras) || 0);
-      costo += total ? (mensual * (l.periodoId === `${ym}-Q1` ? dQ1 : total - dQ1)) / total : 0;
+      // Pagado = neto a pagar + descuentos de bodega: los descuentos se le cobran al trabajador, no bajan lo que puso la empresa.
+      pagado += (Number(l.netoAPagar) || 0) + (Number(l.descuentoCobros) || 0);
+      base += total ? (mensual * (l.periodoId === `${ym}-Q1` ? dQ1 : total - dQ1)) / total : 0;
     });
-    return { ...t, valor, costo };
+    return { ...t, valor, costo: pagado, baseGarantizada: base };
   };
   const areasDestajo = useMemo(() => AREAS_HISTORICO.map((a) => {
     const r = cierresResueltos.get(`${a.clave}|${ym}`);
@@ -749,7 +753,7 @@ export default function CostosGeneralView({ db }) {
       if (delArea) {
         return {
           titulo: `${nombreArea} — ${mesTxt}`,
-          sub: "Cada trabajador del área: lo que produjo, lo que se le pagó, su ayuda o excedente y su provisión. Extra = ayuda del mes + provisión (solo lo que cuenta). «Ayuda por quincena (Nómina)» es lo que se puso de verdad en cada quincena de Nómina Destajo (Ajuste manual + Ayuda salario mínimo); no netea entre quincenas y no se suma al extra. En Maquila, «Produjo» sale de las liquidaciones confirmadas del mes y «Le pagamos» es el sueldo de la ficha repartido por días de trabajo (solo de las quincenas ya liquidadas).",
+          sub: "Cada trabajador del área: lo que produjo, lo que se le pagó, su ayuda o excedente y su provisión. Extra = ayuda del mes + provisión (solo lo que cuenta). «Ayuda por quincena (Nómina)» es lo que se puso de verdad en cada quincena de Nómina Destajo (Ajuste manual + Ayuda salario mínimo); no netea entre quincenas y no se suma al extra. En Maquila, «Produjo» sale de las liquidaciones confirmadas del mes y «Le pagamos» es lo realmente pagado, antes de los descuentos de bodega (solo de las quincenas ya liquidadas); la ayuda y el excedente se miden contra el sueldo de la ficha repartido por días de trabajo.",
           total: money(filas.reduce((s, f) => s + f.extra, 0)),
           columnas: [
             { k: "nombre", label: "Trabajador", izq: true }, { k: "valor", label: "Produjo", suma: true }, { k: "costo", label: "Le pagamos", suma: true }, colAyuda("Ayuda del mes"), colSw("ayuda"), { k: "ayudaQ", label: "Ayuda por quincena (Nómina)", suma: true, resalta: true, ver: (f) => (f.ayudaQ == null ? "—" : money(f.ayudaQ)) }, { k: "excedente", label: "Excedente (no se resta)", suma: true }, colProv("provision", "Provisión"), colSw("provision"), { k: "extra", label: "Extra total", suma: true }, colFiscal,

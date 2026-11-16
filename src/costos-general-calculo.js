@@ -232,7 +232,9 @@ export function destajoDelMes(areas, fichas, equiposCorte, opc) {
         const costo = num(t.costo);
         // `ayudaFija` (solo MAQUILA): la ayuda ya viene calculada de las quincenas de la nómina; pagado − producido no sirve porque su producción
         // no se mide por trabajador. Se expresa como resultado negativo para que toda la pantalla la trate igual que cualquier otra ayuda.
-        const resultado = t.ayudaFija != null ? -Math.max(0, num(t.ayudaFija)) : valor - costo;
+        // `baseGarantizada` (solo MAQUILA): «Le pagamos» es lo realmente pagado (antes de descuentos de bodega) pero la ayuda y el excedente se miden contra la
+        // base garantizada (sueldo de la ficha repartido por días de trabajo), no contra lo pagado, que varía.
+        const resultado = t.ayudaFija != null ? -Math.max(0, num(t.ayudaFija)) : t.baseGarantizada != null ? valor - num(t.baseGarantizada) : valor - costo;
         const prov = provisionDeTrabajador(costo, ficha);
         const key = clavePersonaDestajo(a.clave, t.id, t.nombre);
         const cuentaAyuda = cuentaDestajo(o.ayudaFuera, o.ayudaExc, a.clave, key);
