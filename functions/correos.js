@@ -54,6 +54,7 @@ function mensajeDesdeParsed(parsed, meta) {
     leidoGmail: !!meta.leido,
     leidoAtlas: false,
     estado: "nuevo",
+    clasificacion: null, // la llena la IA (correos-ia.js); null = pendiente de clasificar
     creadoEn: new Date().toISOString(),
   };
 }

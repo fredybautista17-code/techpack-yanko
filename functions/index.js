@@ -17309,3 +17309,81 @@ exports.correosGuardarCuenta = onCallAuth(
     return { id };
   }
 );
+
+// ─── CORREOS · FASE 2: CLASIFICAR CON IA (2026-11-16, a pedido de Fredy) ─────────────────────────
+// La lógica (qué le pedimos al modelo y cómo se valida) está en correos-ia.js. Usa el secreto ANTHROPIC_API_KEY
+// (el mismo del asistente de ATLAS). Si no está creado:  firebase functions:secrets:set ANTHROPIC_API_KEY
+// Solo CLASIFICA: no responde, no envía y no toca Gmail. Publicar:
+//   firebase deploy --only functions:clasificarCorreos,functions:correosClasificarAhora
+const CorreosIA = require("./correos-ia");
+
+// Los correos que ya estaban guardados antes de la Fase 2 no tienen el campo `clasificacion`; una sola vez se les
+// pone null para poder pedir «los pendientes» con una consulta simple. La marca vive en un documento solo-servidor.
+async function prepararPendientesCorreosIA() {
+  const marca = db.collection("correos_secretos").doc("_estado_ia");
+  const est = await marca.get();
+  if (est.exists && est.data().migrado) return 0;
+  const snap = await db.collection("correos_mensajes").select("clasificacion").get();
+  let actualizados = 0, enLote = 0, lote = db.batch();
+  for (const d of snap.docs) {
+    if (d.get("clasificacion") !== undefined) continue;
+    lote.update(d.ref, { clasificacion: null });
+    actualizados++;
+    if (++enLote === 400) { await lote.commit(); lote = db.batch(); enLote = 0; }
+  }
+  if (enLote) await lote.commit();
+  await marca.set({ migrado: true, en: new Date().toISOString(), actualizados }, { merge: true });
+  return actualizados;
+}
+
+async function clasificarCorreosPendientes(limite) {
+  const apiKey = String(ANTHROPIC_API_KEY.value() || "").replace(/[\s"']/g, "");
+  if (!apiKey) return { clasificados: 0, fallidos: 0, pendientes: 0, error: "Falta el secreto ANTHROPIC_API_KEY en Firebase." };
+  await prepararPendientesCorreosIA();
+  const cuentas = {};
+  (await db.collection("correos_cuentas").get()).docs.forEach((d) => { cuentas[d.id] = d.data(); });
+  const docs = (await db.collection("correos_mensajes").where("clasificacion", "==", null).limit(limite).get()).docs;
+  let clasificados = 0, fallidos = 0, fatal = "", sig = 0;
+  async function trabajador() {
+    while (!fatal) {
+      const i = sig++;
+      if (i >= docs.length) return;
+      const d = docs[i];
+      const m = d.data();
+      try {
+        const c = await CorreosIA.clasificar({ apiKey, mensaje: m, cuenta: cuentas[m.cuentaId] || {} });
+        await d.ref.update({ clasificacion: c });
+        clasificados++;
+      } catch (e) {
+        if (e.fatal) { fatal = e.message; return; }
+        fallidos++;
+        const intentos = (Number(m.iaIntentos) || 0) + 1;
+        logger.warn(`correos IA: ${d.id}: ${String(e.message || e).slice(0, 200)} (intento ${intentos})`);
+        // A los 3 intentos se deja con una etiqueta neutra para que no se reintente para siempre.
+        await d.ref.update(intentos >= 3 ? { iaIntentos: intentos, clasificacion: { ...CorreosIA.porDefecto(), error: true, resumen: "No se pudo clasificar este correo." } } : { iaIntentos: intentos });
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: 5 }, trabajador));
+  const cuenta = await db.collection("correos_mensajes").where("clasificacion", "==", null).count().get();
+  return { clasificados, fallidos, pendientes: cuenta.data().count, error: fatal };
+}
+
+exports.clasificarCorreos = onSchedule(
+  { schedule: "every 10 minutes", timeZone: "America/Bogota", secrets: [ANTHROPIC_API_KEY], timeoutSeconds: 300, memory: "512MiB" },
+  async () => {
+    try {
+      const r = await clasificarCorreosPendientes(60);
+      if (r.error) logger.warn(`correos IA: ${r.error}`);
+      else if (r.clasificados || r.fallidos) logger.info(`correos IA: ${r.clasificados} clasificados, ${r.fallidos} fallidos, ${r.pendientes} pendientes`);
+    } catch (e) { logger.error("correos IA: la corrida falló", { error: String(e) }); }
+  }
+);
+
+exports.correosClasificarAhora = onCallAuth(
+  { secrets: [ANTHROPIC_API_KEY], timeoutSeconds: 300, memory: "512MiB" },
+  async (request) => {
+    await exigirAdminCorreos(request);
+    return clasificarCorreosPendientes(120);
+  }
+);

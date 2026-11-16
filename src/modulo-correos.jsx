@@ -9,6 +9,9 @@ import { getFunctions, httpsCallable } from "firebase/functions";
 // búsqueda y detalle. Solo el administrador (reglas de Firestore). ATLAS no marca nada como leído en Gmail ni envía
 // ni borra correos: «leído» aquí es solo de ATLAS. Las cuentas y sus contraseñas de aplicación se administran en «Cuentas».
 // Colecciones: correos_cuentas, correos_mensajes (y correos_secretos, solo servidor).
+// Fase 2: una función (functions/correos-ia.js) clasifica cada correo con IA y guarda `clasificacion` {categoria, prioridad,
+// requiereAccion, accion, resumen, datos}. Aquí se ve como etiqueta, se filtra por categoría / «requieren acción» y el
+// administrador puede corregir la categoría. Solo clasifica: no responde ni envía nada.
 
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
@@ -26,6 +29,16 @@ const C = {
   ink: "#1A1A2E", slate: "#6B6B88", border: "#E9E3DB", canvas: "#F6F3EF", white: "#FFFFFF", navy: "#1E2142", field: "#FAF8F5",
   green: "#2D9E6B", greenBg: "#EBF7F2", red: "#E85D4A", redBg: "#FDF0EE", blue: "#3D6B9E", blueBg: "#EBF1F7",
   amber: "#C47C1A", amberBg: "#FDF5E6", violet: "#7B5EA7", violetBg: "#F3EEF9",
+};
+// Categorías de la clasificación con IA (las mismas claves de functions/correos-ia.js).
+const CATEGORIAS = {
+  factura_proveedor: { nombre: "Facturas", color: C.amber, bg: C.amberBg },
+  cartera_descuentos: { nombre: "Cartera y descuentos", color: C.violet, bg: C.violetBg },
+  despacho_proveedor: { nombre: "Despachos", color: C.blue, bg: C.blueBg },
+  banco_dian: { nombre: "Banco / DIAN", color: C.red, bg: C.redBg },
+  cliente_pedido: { nombre: "Clientes", color: C.green, bg: C.greenBg },
+  publicidad: { nombre: "Publicidad", color: C.slate, bg: "#F1EEE9" },
+  otro: { nombre: "Otro", color: C.slate, bg: "#F1EEE9" },
 };
 const FUENTE = "'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif";
 const COLORES_CUENTA = [[C.blue, C.blueBg], [C.violet, C.violetBg], [C.green, C.greenBg], [C.amber, C.amberBg], [C.red, C.redBg]];
@@ -141,6 +154,7 @@ function PanelCuentas({ cuentas, colorDe, onCerrar, onSincronizar, sincronizando
     </div>
   );
 }
+const chipCat = (activo, color) => ({ padding: "4px 12px", borderRadius: 16, cursor: "pointer", fontWeight: 700, fontSize: 12, fontFamily: "inherit", border: `1.5px solid ${activo ? color : C.border}`, background: activo ? color : C.white, color: activo ? C.white : C.slate });
 const etiqueta = { fontSize: 11, color: C.slate, fontWeight: 700, marginBottom: 3, textTransform: "uppercase", letterSpacing: 0.4 };
 
 export default function CorreosView({ currentUser, onVolver, onLogout, notify }) {
@@ -155,6 +169,9 @@ export default function CorreosView({ currentUser, onVolver, onLogout, notify })
   const [selId, setSelId] = useState(null);
   const [panelCuentas, setPanelCuentas] = useState(false);
   const [sincronizando, setSincronizando] = useState(false);
+  const [catSel, setCatSel] = useState("todas");
+  const [soloAccion, setSoloAccion] = useState(false);
+  const [clasificando, setClasificando] = useState(false);
 
   useEffect(() => onSnapshot(collection(db, "correos_cuentas"), (s) => setCuentas(s.docs.map((d) => ({ ...d.data(), id: d.id })).sort((a, b) => String(a.creadoEn || "").localeCompare(String(b.creadoEn || "")))), (e) => setErrorCarga(mensajeError(e))), []);
   useEffect(() => onSnapshot(query(collection(db, "correos_mensajes"), orderBy("fecha", "desc"), limit(400)), (s) => { setMensajes(s.docs.map((d) => ({ ...d.data(), id: d.id }))); setCargado(true); }, (e) => { setErrorCarga(mensajeError(e)); setCargado(true); }), []);
@@ -168,9 +185,16 @@ export default function CorreosView({ currentUser, onVolver, onLogout, notify })
     return mensajes
       .filter((m) => cuentaSel === "todas" || m.cuentaId === cuentaSel)
       .filter((m) => !soloNuevos || !m.leidoAtlas)
-      .filter((m) => !ocultarMasivos || !m.esMasivo)
+      .filter((m) => catSel === "todas" || m.clasificacion?.categoria === catSel)
+      .filter((m) => !soloAccion || m.clasificacion?.requiereAccion)
+      // «Ocultar publicidad»: con IA se esconde solo lo clasificado como publicidad (así las facturas que llegan por
+      // plataformas automáticas no se pierden); si el correo aún no está clasificado se usa la marca de envío masivo.
+      .filter((m) => !ocultarMasivos || (m.clasificacion ? m.clasificacion.categoria !== "publicidad" : !m.esMasivo))
       .filter((m) => !qn || norm(`${m.asunto} ${m.de?.nombre} ${m.de?.correo} ${m.resumenCorto} ${m.texto}`).includes(qn));
-  }, [mensajes, cuentaSel, soloNuevos, ocultarMasivos, q]);
+  }, [mensajes, cuentaSel, soloNuevos, ocultarMasivos, q, catSel, soloAccion]);
+  const pendientesIA = mensajes.filter((m) => !m.clasificacion).length;
+  const conteoCat = useMemo(() => { const o = {}; mensajes.filter((m) => cuentaSel === "todas" || m.cuentaId === cuentaSel).forEach((m) => { const k = m.clasificacion?.categoria; if (k) o[k] = (o[k] || 0) + 1; }); return o; }, [mensajes, cuentaSel]);
+  const nAccion = mensajes.filter((m) => (cuentaSel === "todas" || m.cuentaId === cuentaSel) && m.clasificacion?.requiereAccion).length;
   const sel = mensajes.find((m) => m.id === selId) || null;
   const nuevosPorCuenta = useMemo(() => { const o = {}; mensajes.forEach((m) => { if (!m.leidoAtlas) o[m.cuentaId] = (o[m.cuentaId] || 0) + 1; }); return o; }, [mensajes]);
   const totalNuevos = mensajes.filter((m) => !m.leidoAtlas).length;
@@ -192,6 +216,20 @@ export default function CorreosView({ currentUser, onVolver, onLogout, notify })
     finally { setSincronizando(false); }
   }
 
+  async function clasificar() {
+    setClasificando(true);
+    try {
+      const r = (await httpsCallable(functionsClient, "correosClasificarAhora")({})).data || {};
+      if (r.error) notify?.("No se pudo clasificar: " + r.error);
+      else notify?.(`Listo: ${r.clasificados || 0} correo(s) clasificado(s)${r.pendientes ? `; faltan ${r.pendientes} (se siguen clasificando solos cada 10 minutos)` : ""}.`);
+    } catch (e) { notify?.("No se pudo clasificar: " + mensajeError(e)); }
+    finally { setClasificando(false); }
+  }
+  async function corregirCategoria(m, categoria) {
+    try { await updateDoc(doc(db, "correos_mensajes", m.id), { "clasificacion.categoria": categoria, "clasificacion.corregida": true }); }
+    catch (e) { notify?.("No se pudo cambiar la categoría: " + mensajeError(e)); }
+  }
+
   if (!currentUser?.isAdmin) {
     return <div style={{ padding: 40, fontFamily: FUENTE }}><button onClick={onVolver} style={btn(C.white, C.slate, C.border)}>← Volver a ATLAS</button><p style={{ marginTop: 20, color: C.slate }}>Por ahora solo un administrador puede ver los correos.</p></div>;
   }
@@ -204,6 +242,7 @@ export default function CorreosView({ currentUser, onVolver, onLogout, notify })
         {totalNuevos > 0 && <Pastilla bg={C.amberBg} color={C.amber}>{totalNuevos} sin leer</Pastilla>}
         <div style={{ flex: 1 }} />
         <button onClick={sincronizar} disabled={sincronizando || !cuentas.length} style={{ ...btn("transparent", C.white, "rgba(255,255,255,.35)"), opacity: sincronizando || !cuentas.length ? 0.6 : 1 }}>{sincronizando ? "Leyendo…" : "↻ Sincronizar ahora"}</button>
+        <button onClick={clasificar} disabled={clasificando || !cuentas.length} title="La IA le pone categoría, prioridad y resumen a cada correo. Solo clasifica: no responde ni envía nada." style={{ ...btn("transparent", C.white, "rgba(255,255,255,.35)"), opacity: clasificando || !cuentas.length ? 0.6 : 1 }}>{clasificando ? "Clasificando…" : `✨ Clasificar con IA${pendientesIA ? ` (${pendientesIA})` : ""}`}</button>
         <button onClick={() => setPanelCuentas(true)} style={btn("#C8B8A2", C.ink)}>⚙ Cuentas</button>
         {onLogout && <button onClick={onLogout} style={btn("transparent", "#B9BBDA", "rgba(255,255,255,.2)")}>Salir</button>}
       </div>
@@ -232,9 +271,20 @@ export default function CorreosView({ currentUser, onVolver, onLogout, notify })
               })}
               <div style={{ flex: 1 }} />
               <label style={{ fontSize: 12.5, color: C.slate, display: "flex", gap: 5, alignItems: "center", cursor: "pointer" }}><input type="checkbox" checked={soloNuevos} onChange={(e) => setSoloNuevos(e.target.checked)} /> Solo sin leer</label>
-              <label title="Esconde boletines y correos masivos (los que traen opción de darse de baja)" style={{ fontSize: 12.5, color: C.slate, display: "flex", gap: 5, alignItems: "center", cursor: "pointer" }}><input type="checkbox" checked={ocultarMasivos} onChange={(e) => setOcultarMasivos(e.target.checked)} /> Ocultar boletines</label>
+              <label title="Esconde lo que la IA clasificó como publicidad. Las facturas de proveedores no se esconden." style={{ fontSize: 12.5, color: C.slate, display: "flex", gap: 5, alignItems: "center", cursor: "pointer" }}><input type="checkbox" checked={ocultarMasivos} onChange={(e) => setOcultarMasivos(e.target.checked)} /> Ocultar publicidad</label>
               <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar por remitente, asunto o texto…" style={{ ...inp, width: 280 }} />
             </div>
+
+            {(Object.keys(conteoCat).length > 0 || nAccion > 0) && (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12, alignItems: "center" }}>
+                <button onClick={() => setCatSel("todas")} style={chipCat(catSel === "todas", C.navy)}>Todas las categorías</button>
+                {Object.keys(CATEGORIAS).filter((k) => conteoCat[k]).map((k) => (
+                  <button key={k} onClick={() => setCatSel(catSel === k ? "todas" : k)} style={chipCat(catSel === k, CATEGORIAS[k].color)}>{CATEGORIAS[k].nombre} <span style={{ opacity: 0.75 }}>{conteoCat[k]}</span></button>
+                ))}
+                <div style={{ flex: 1 }} />
+                <label style={{ fontSize: 12.5, color: C.slate, display: "flex", gap: 5, alignItems: "center", cursor: "pointer" }}><input type="checkbox" checked={soloAccion} onChange={(e) => setSoloAccion(e.target.checked)} /> Solo los que requieren acción ({nAccion})</label>
+              </div>
+            )}
 
             <div style={{ display: "grid", gridTemplateColumns: "minmax(320px, 440px) 1fr", gap: 14, alignItems: "start" }}>
               <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, overflow: "hidden", maxHeight: "calc(100vh - 190px)", overflowY: "auto" }}>
@@ -250,10 +300,13 @@ export default function CorreosView({ currentUser, onVolver, onLogout, notify })
                         <div style={{ fontSize: 11.5, color: C.slate, whiteSpace: "nowrap" }}>{fechaCorta(m.fecha)}</div>
                       </div>
                       <div style={{ fontWeight: m.leidoAtlas ? 500 : 700, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.adjuntos?.length ? "📎 " : ""}{m.asunto}</div>
-                      <div style={{ fontSize: 12, color: C.slate, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", margin: "2px 0 5px" }}>{m.resumenCorto}</div>
+                      <div style={{ fontSize: 12, color: C.slate, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", margin: "2px 0 5px" }}>{m.clasificacion?.resumen || m.resumenCorto}</div>
+                      {m.clasificacion?.requiereAccion && m.clasificacion.accion && <div style={{ fontSize: 12, fontWeight: 700, color: m.clasificacion.prioridad === "alta" ? C.red : C.amber, margin: "0 0 5px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>➜ {m.clasificacion.accion}</div>}
                       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                         <span style={{ fontSize: 10.5, fontWeight: 700, padding: "1px 8px", borderRadius: 10, background: bg, color: col }}>{nombreDe(m.cuentaId)}</span>
-                        {m.esMasivo && <Pastilla bg={C.canvas} color={C.slate}>Boletín</Pastilla>}
+                        {m.clasificacion?.categoria && <Pastilla bg={(CATEGORIAS[m.clasificacion.categoria] || CATEGORIAS.otro).bg} color={(CATEGORIAS[m.clasificacion.categoria] || CATEGORIAS.otro).color}>{(CATEGORIAS[m.clasificacion.categoria] || CATEGORIAS.otro).nombre}</Pastilla>}
+                        {m.clasificacion?.prioridad === "alta" && <Pastilla bg={C.redBg} color={C.red}>Prioridad alta</Pastilla>}
+                        {!m.clasificacion && m.esMasivo && <Pastilla bg={C.canvas} color={C.slate}>Boletín</Pastilla>}
                       </div>
                     </div>
                   );
@@ -273,6 +326,27 @@ export default function CorreosView({ currentUser, onVolver, onLogout, notify })
                       {sel.copia?.length > 0 && <div><b style={{ color: C.ink }}>Cc:</b> {sel.copia.map(quien).join(", ")}</div>}
                       <div><b style={{ color: C.ink }}>Fecha:</b> {fechaLarga(sel.fecha)} · <span style={{ color: colorDe(sel.cuentaId)[0], fontWeight: 700 }}>{nombreDe(sel.cuentaId)}</span> ({sel.cuenta})</div>
                     </div>
+                    {sel.clasificacion ? (
+                      <div style={{ background: C.blueBg, borderRadius: 10, padding: "10px 12px", marginBottom: 12, fontSize: 13, lineHeight: 1.55 }}>
+                        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 4 }}>
+                          <b style={{ color: C.blue, fontSize: 12 }}>✨ Clasificado por IA</b>
+                          <select value={sel.clasificacion.categoria || "otro"} onChange={(e) => corregirCategoria(sel, e.target.value)} title="Si la IA se equivocó, corrige la categoría" style={{ ...inp, width: "auto", padding: "3px 8px", fontSize: 12 }}>
+                            {Object.keys(CATEGORIAS).map((k) => <option key={k} value={k}>{CATEGORIAS[k].nombre}</option>)}
+                          </select>
+                          <Pastilla bg={sel.clasificacion.prioridad === "alta" ? C.redBg : C.white} color={sel.clasificacion.prioridad === "alta" ? C.red : C.slate}>Prioridad {sel.clasificacion.prioridad || "media"}</Pastilla>
+                          {sel.clasificacion.corregida && <Pastilla bg={C.greenBg} color={C.green}>Corregida por ti</Pastilla>}
+                        </div>
+                        {sel.clasificacion.resumen && <div>{sel.clasificacion.resumen}</div>}
+                        {sel.clasificacion.requiereAccion && sel.clasificacion.accion && <div style={{ fontWeight: 700, color: C.amber }}>➜ {sel.clasificacion.accion}</div>}
+                        {(sel.clasificacion.datos?.proveedor || sel.clasificacion.datos?.valor || sel.clasificacion.datos?.vence) && (
+                          <div style={{ fontSize: 12, color: C.slate, marginTop: 4 }}>
+                            Datos detectados (verifícalos): {[sel.clasificacion.datos.proveedor, sel.clasificacion.datos.valor ? `$${Number(sel.clasificacion.datos.valor).toLocaleString("es-CO")}` : "", sel.clasificacion.datos.vence ? `vence ${sel.clasificacion.datos.vence}` : ""].filter(Boolean).join(" · ")}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div style={{ background: C.field, borderRadius: 10, padding: "8px 12px", marginBottom: 12, fontSize: 12.5, color: C.slate }}>Este correo aún no está clasificado. Pulsa «✨ Clasificar con IA» arriba (o espera: se clasifica solo cada 10 minutos).</div>
+                    )}
                     {sel.adjuntos?.length > 0 && (
                       <div style={{ background: C.field, borderRadius: 10, padding: "8px 12px", marginBottom: 12, fontSize: 12.5 }}>
                         {sel.adjuntos.map((a, i) => <div key={i}>📎 {a.nombre}{a.tamano ? <span style={{ color: C.slate }}> · {tamanoTxt(a.tamano)}</span> : null}</div>)}
