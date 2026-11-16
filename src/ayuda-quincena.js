@@ -7,6 +7,8 @@
 //     está confirmada: causación manual de la quincena o, si no hay, la suma de Registrar Producción en las fechas.
 //   · Horas: suma de «nomina_horas» (campo total) de la persona en las fechas de la quincena.
 //   · Una quincena que aún no termina NO se cuenta (queda marcada «en curso»): el prorrateo por días hábiles solo existe en Planeación.
+//   · (2026-11-16, a pedido de Fredy) Una quincena que YA terminó pero no tiene liquidación confirmada, ni causación manual, ni producción
+//     registrada, ni horas, NO se cuenta (queda «sin liquidar»): sin datos todo el mínimo salía como ayuda (ej. 48 personas × $1.000.000 a inicio de mes).
 const num = (v) => {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
@@ -23,7 +25,7 @@ export function quincenasDelMes(ym) {
 
 // personas: [{ id, nombre, tipoNomina }] — tipoNomina viene de la ficha. hoyISO: "YYYY-MM-DD" (hora de Colombia).
 // datos: { fichas, liquidaciones, horas, produccion, causaciones }
-// Devuelve Map(id → { total, enCurso, quincenas: [{ pid, esperado, produjo, horas, ayuda, fuente }] }) solo para personas de destajo.
+// Devuelve Map(id → { total, enCurso, sinLiquidar, quincenas: [{ pid, esperado, produjo, horas, ayuda, fuente }] }) solo para personas de destajo.
 export function ayudaQuincenasPorPersona(ym, personas, datos, hoyISO) {
   const { fichas = [], liquidaciones = [], horas = [], produccion = [], causaciones = [] } = datos || {};
   const out = new Map();
@@ -37,6 +39,7 @@ export function ayudaQuincenasPorPersona(ym, personas, datos, hoyISO) {
     const esperado = (sueldo + aux) / 2;
     let total = 0;
     let enCurso = false;
+    let sinLiquidar = false;
     const detalle = quincenas.map((q) => {
       if (q.fin >= hoyISO) {
         enCurso = true;
@@ -50,15 +53,23 @@ export function ayudaQuincenasPorPersona(ym, personas, datos, hoyISO) {
         fuente = "liquidación";
       } else {
         const caus = causaciones.find((c) => c.id === `${p.id}__${q.pid}`);
-        produjo = caus ? num(caus.valor) : produccion.filter((r) => r.trabajadorId === p.id && r.fecha >= q.inicio && r.fecha <= q.fin).reduce((s, r) => s + num(r.total), 0);
+        const filasProd = produccion.filter((r) => r.trabajadorId === p.id && r.fecha >= q.inicio && r.fecha <= q.fin);
+        produjo = caus ? num(caus.valor) : filasProd.reduce((s, r) => s + num(r.total), 0);
         fuente = caus ? "causación manual" : "registro de producción";
+        if (!caus && !filasProd.length) fuente = "sin liquidar";
       }
-      const h = horas.filter((r) => r.trabajadorId === p.id && r.fecha >= q.inicio && r.fecha <= q.fin).reduce((s, r) => s + num(r.total), 0);
+      const filasHoras = horas.filter((r) => r.trabajadorId === p.id && r.fecha >= q.inicio && r.fecha <= q.fin);
+      const h = filasHoras.reduce((s, r) => s + num(r.total), 0);
+      if (fuente === "sin liquidar" && !filasHoras.length) {
+        sinLiquidar = true;
+        return { pid: q.pid, esperado, produjo: 0, horas: 0, ayuda: 0, fuente };
+      }
+      if (fuente === "sin liquidar") fuente = "horas registradas";
       const ayuda = Math.max(0, esperado - (produjo + h));
       total += ayuda;
       return { pid: q.pid, esperado, produjo, horas: h, ayuda, fuente };
     });
-    out.set(p.id, { total, enCurso, quincenas: detalle });
+    out.set(p.id, { total, enCurso, sinLiquidar, quincenas: detalle });
   });
   return out;
 }

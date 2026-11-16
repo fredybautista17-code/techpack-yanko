@@ -728,7 +728,7 @@ export default function CostosGeneralView({ db }) {
           ],
           filas, nombreExcel: `${nombreArea.replace(/ /g, "_")}_${ym}`, vacio: "Sin trabajadores para este mes.", onClose: cerrar,
           accion: areaV ? <ControlesArea areas={[areaV]} onAlternar={alternarAreaDestajo} /> : null,
-          nota: `${avisoApagado} ${[...ayudaQ.values()].some((x) => x.enCurso) ? "La «Ayuda por quincena» solo cuenta quincenas ya terminadas; la que sigue en curso se suma cuando termine. «—» = persona que no es de destajo o que se mide por equipos." : "«—» = persona que no es de destajo o que se mide por equipos (Corte). Las quincenas sin liquidación confirmada usan la causación manual o el registro de producción."}${msgAreas ? ` ${msgAreas}` : ""}`,
+          nota: `${avisoApagado} ${[...ayudaQ.values()].some((x) => x.enCurso) ? "La «Ayuda por quincena» solo cuenta quincenas ya terminadas; la que sigue en curso se suma cuando termine. «—» = persona que no es de destajo o que se mide por equipos." : "«—» = persona que no es de destajo o que se mide por equipos (Corte). Las quincenas sin liquidación confirmada usan la causación manual o el registro de producción."}${[...ayudaQ.values()].some((x) => x.sinLiquidar) ? " Una quincena ya terminada que todavía no tiene liquidación, causación ni producción registrada queda «sin liquidar» y no suma ayuda hasta que se confirme en Nómina." : ""}${msgAreas ? ` ${msgAreas}` : ""}`,
         };
       }
       return {
