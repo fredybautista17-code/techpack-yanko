@@ -13,7 +13,6 @@ import ModuloBodega from "./modulo-bodega";
 import ModuloNomina from "./modulo-nomina";
 import ModuloInformes from "./modulo-informes";
 import CotizadorView from "./modulo-cotizador";
-import CorreosView from "./modulo-correos";
 import DisponibleDespacharView from "./disponible-despachar";
 import { telasProgramadasYaCortadas } from "./tela-programada-cortada";
 import VigentesPorEtapaView from "./vigentes-por-etapa";
@@ -11844,7 +11843,7 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
     </div>
   );
 }
-function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, canAccessPlaneacion, canAccessPlanta, canAccessBodega, canAccessNomina, canAccessDiseno, canAccessPedidosArea, canAccessKpis, canAccessInformes, canAccessAreas, canAccessCotizador, canAccessCorreos, cotPorAprobar, onGoArea, protos, capsulas, pedidos }) {
+function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, canAccessPlaneacion, canAccessPlanta, canAccessBodega, canAccessNomina, canAccessDiseno, canAccessPedidosArea, canAccessKpis, canAccessInformes, canAccessAreas, canAccessCotizador, cotPorAprobar, onGoArea, protos, capsulas, pedidos }) {
   const hoy = new Date();
   const protosEnProceso = protos.filter((p) => p.status === "en_proceso").length;
   const pedidosActivos = pedidos.filter((p) => p.estado === "activo" || p.estado === "terminado").length;
@@ -11874,11 +11873,6 @@ function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, c
       id: "cotizaciones_area", icon: "🧮", label: "Cotizaciones", desc: "Cotizar prototipos y referencias, aplicar precios y el minicotizador de Vinilo / DTF", color: T.denim, bg: T.denimBg,
       stats: cotPorAprobar > 0 ? [{ label: "Por aprobar", value: cotPorAprobar, alert: true }] : [],
       permiso: canAccessCotizador,
-    },
-    {
-      id: "correos_area", icon: "✉", label: "Correos", desc: "Las bandejas de Gmail de la empresa en un solo lugar (solo administradores)", color: T.denim, bg: T.denimBg,
-      stats: [],
-      permiso: canAccessCorreos,
     },
     {
       id: "planeacion_area", icon: "📋", label: "Planeación", desc: "Informes de producción de planta a partir de Hoja1", color: T.violet, bg: T.violetBg,
@@ -21539,8 +21533,7 @@ function AppInner() {
   // liquidaciones YA CONFIRMADAS de las 4 nóminas. Ver FinancieraStandalone
   // en modulo-financiera.jsx.
   const canAccessFinanciera = moduloVisible(userRoleData, "financiera", currentUser?.isAdmin);
-  // (2026-11-16, a pedido de Fredy) Correos de la empresa: por ahora solo administradores (las reglas de Firestore también lo exigen).
-  const canAccessCorreos = !!currentUser?.isAdmin;
+  // (2026-11-16, a pedido de Fredy) Correos de la empresa vive solo en Financiera → «✉ Correos» (solo administradores); ya no es módulo del menú principal.
   // "admin_diseno" es un permiso aparte del admin general: da entrada al panel
   // de Administración de Diseño (etapas, categorías, roles, usuarios...) sin
   // necesidad de marcar al usuario como Admin general del sistema.
@@ -21654,9 +21647,6 @@ function AppInner() {
     ...(canAccessCotizador
       ? [{ id: "cotizaciones_area", icon: "🧮", label: "Cotizaciones", items: [{ id: "cotizaciones", icon: "🧮", label: "Módulo de Cotizaciones" }] }]
       : []),
-    ...(canAccessCorreos
-      ? [{ id: "correos_area", icon: "✉", label: "Correos", items: [{ id: "correos_area", icon: "✉", label: "Módulo Correos" }] }]
-      : []),
     ...(canAccessPlaneacion
       ? [{ id: "planeacion_area", icon: "📋", label: "Planeación", items: [{ id: "planeacion_area", icon: "📋", label: "Módulo Planeación" }] }]
       : []),
@@ -21709,7 +21699,6 @@ function AppInner() {
     if (itemId === "__corte__") return moduloActivo === "corte";
     if (itemId === "contabilidad_area") return moduloActivo === "contabilidad";
     if (itemId === "cotizaciones") return moduloActivo === "cotizaciones";
-    if (itemId === "correos_area") return moduloActivo === "correos";
     if (itemId === "planeacion_area") return moduloActivo === "planeacion";
     if (itemId === "planta_area") return moduloActivo === "planta";
     if (itemId === "bodega_area") return moduloActivo === "bodega";
@@ -21723,7 +21712,6 @@ function AppInner() {
     if (itemId === "__corte__") { setModuloActivo("corte"); return; }
     if (itemId === "contabilidad_area") { setModuloActivo("contabilidad"); return; }
     if (itemId === "cotizaciones") { setModuloActivo("cotizaciones"); return; }
-    if (itemId === "correos_area") { setModuloActivo("correos"); return; }
     if (itemId === "planeacion_area") { setModuloActivo("planeacion"); return; }
     if (itemId === "planta_area") { setModuloActivo("planta"); return; }
     if (itemId === "bodega_area") { setModuloActivo("bodega"); return; }
@@ -21779,9 +21767,6 @@ function AppInner() {
         onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }}
         notify={(msg) => notify({ id: uid(), icon: "🧮", title: "Cotizador", msg })} />
     );
-  }
-  if (moduloActivo === "correos" && canAccessCorreos) {
-    return <CorreosView currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} notify={(msg) => notify({ id: uid(), icon: "✉", title: "Correos", msg })} />;
   }
   if (moduloActivo === "planeacion") {
     return <ModuloPlaneacion currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
@@ -21924,11 +21909,10 @@ function AppInner() {
         <div style={{ flex: 1, padding: "28px 32px", overflow: "auto" }}>
           <div style={{ maxWidth: 1020, margin: "0 auto" }}>
             {view === "dashboard" && (
-              <HomeView cotPorAprobar={cotPorAprobar} currentUser={currentUser} perms={perms} canAccessCorte={canAccessCorte} canAccessContabilidad={verAreaContabilidad} canAccessPlaneacion={canAccessPlaneacion} canAccessPlanta={canAccessPlanta} canAccessBodega={canAccessBodega} canAccessNomina={canAccessNomina} canAccessDiseno={canAccessDiseno} canAccessPedidosArea={canAccessPedidosArea} canAccessKpis={canAccessKpis} canAccessInformes={canAccessInformes} canAccessAreas={canAccessAreas} canAccessCotizador={canAccessCotizador} canAccessCorreos={canAccessCorreos}
+              <HomeView cotPorAprobar={cotPorAprobar} currentUser={currentUser} perms={perms} canAccessCorte={canAccessCorte} canAccessContabilidad={verAreaContabilidad} canAccessPlaneacion={canAccessPlaneacion} canAccessPlanta={canAccessPlanta} canAccessBodega={canAccessBodega} canAccessNomina={canAccessNomina} canAccessDiseno={canAccessDiseno} canAccessPedidosArea={canAccessPedidosArea} canAccessKpis={canAccessKpis} canAccessInformes={canAccessInformes} canAccessAreas={canAccessAreas} canAccessCotizador={canAccessCotizador}
                 onGoArea={(id) => {
                   if (id === "contabilidad_area") { setModuloActivo("contabilidad"); }
                   else if (id === "cotizaciones_area") { setModuloActivo("cotizaciones"); }
-                  else if (id === "correos_area") { setModuloActivo("correos"); }
                   else if (id === "planeacion_area") { setModuloActivo("planeacion"); }
                   else if (id === "planta_area") { setModuloActivo("planta"); }
                   else if (id === "bodega_area") { setModuloActivo("bodega"); }
