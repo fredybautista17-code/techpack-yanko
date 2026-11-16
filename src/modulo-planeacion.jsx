@@ -7303,7 +7303,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
           </Btn>
         )}
       </div>
-      {periodo === "anio" && ["ZONACALOR", "CONTROLCALIDAD"].includes(claveAreaHistorico(areaSel)) && (
+      {periodo === "anio" && ["ZONACALOR", "CONTROLCALIDAD", "MAQUILA"].includes(claveAreaHistorico(areaSel)) && (
         <CentroCostoAnioPanel key={anioSel} areaNombre={areaSel} anioInicial={anioSel} currentUser={currentUser} puedeCargar={!!currentUser?.isAdmin} />
       )}
       {!soloCostoReal && algunoSinSueldo && (

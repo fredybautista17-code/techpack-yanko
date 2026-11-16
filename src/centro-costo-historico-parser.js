@@ -16,6 +16,8 @@ export const AREAS_HISTORICO = [
   { clave: "CORTE", nombre: "CORTE", alias: ["CORTE"] },
   { clave: "ZONACALOR", nombre: "ZONA CALOR", alias: ["TERMOFIJACION", "TERMOFIJADO", "ZONA CALOR", "ZONA DE CALOR"] },
   { clave: "CONTROLCALIDAD", nombre: "CONTROL DE CALIDAD", alias: ["EMPAQUE PROCESOS", "EMPAQUE Y PROCESOS", "EMPAQUE", "CONTROL DE CALIDAD", "CONTROL CALIDAD"] },
+  // (2026-11-16, a pedido de Fredy) Maquila entra al histórico para ver sus ayudas de los meses anteriores (mismo formato del Excel).
+  { clave: "MAQUILA", nombre: "MAQUILA", alias: ["MAQUILA", "NOMINA MAQUILA", "MAQUILA YANKO", "PLANTA MAQUILA", "PLANTA YANKO MAQUILA", "MAQUILA PLANTA YANKO"] },
 ];
 
 export function normTexto(s) {

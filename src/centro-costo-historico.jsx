@@ -403,7 +403,7 @@ function CargarHistoricoModal({ onClose, currentUser, anioInicial }) {
       const ok = {};
       Object.keys(r.areas).forEach((k) => { ok[k] = true; });
       setAreasOk(ok);
-      if (!Object.keys(r.areas).length) setError("No encontré ningún bloque de área con meses. Revisa que el archivo tenga los títulos CORTE / TERMOFIJACION / EMPAQUE PROCESOS y una fila con ENERO, FEBRERO…");
+      if (!Object.keys(r.areas).length) setError("No encontré ningún bloque de área con meses. Revisa que el archivo tenga los títulos CORTE / TERMOFIJACION / EMPAQUE PROCESOS / MAQUILA y una fila con ENERO, FEBRERO…");
     } catch (e) {
       setError(`No pude leer el archivo: ${e.message || e}`);
     } finally {
@@ -466,8 +466,8 @@ function CargarHistoricoModal({ onClose, currentUser, anioInicial }) {
           <div>
             <h3 style={{ margin: 0, fontSize: 18, fontWeight: 900, color: C.ink }}>📤 Cargar histórico del año</h3>
             <p style={{ margin: "4px 0 14px", fontSize: 13, color: C.slate, maxWidth: 720 }}>
-              Sube tu Excel (bloques CORTE, EMPAQUE PROCESOS y TERMOFIJACION con los meses en columnas). Primero ves la vista previa; no se guarda nada hasta que le des "Guardar".
-              Equivalencias: <strong>TERMOFIJACION → ZONA CALOR</strong> y <strong>EMPAQUE PROCESOS → CONTROL DE CALIDAD</strong>.
+              Sube tu Excel (bloques CORTE, EMPAQUE PROCESOS, TERMOFIJACION y MAQUILA con los meses en columnas). Primero ves la vista previa; no se guarda nada hasta que le des "Guardar".
+              Equivalencias: <strong>TERMOFIJACION → ZONA CALOR</strong> y <strong>EMPAQUE PROCESOS → CONTROL DE CALIDAD</strong>. El bloque <strong>MAQUILA</strong> guarda las ayudas de maquila de los meses anteriores.
             </p>
           </div>
           <button onClick={onClose} style={{ border: "none", background: "transparent", fontSize: 22, cursor: "pointer", color: C.slate }}>✕</button>
