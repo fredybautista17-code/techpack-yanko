@@ -17322,17 +17322,35 @@ const CorreosIA = require("./correos-ia");
 async function prepararPendientesCorreosIA() {
   const marca = db.collection("correos_secretos").doc("_estado_ia");
   const est = await marca.get();
-  if (est.exists && est.data().migrado) return 0;
-  const snap = await db.collection("correos_mensajes").select("clasificacion").get();
-  let actualizados = 0, enLote = 0, lote = db.batch();
-  for (const d of snap.docs) {
-    if (d.get("clasificacion") !== undefined) continue;
-    lote.update(d.ref, { clasificacion: null });
-    actualizados++;
-    if (++enLote === 400) { await lote.commit(); lote = db.batch(); enLote = 0; }
+  const previo = est.exists ? est.data() : {};
+  let actualizados = 0;
+  if (!previo.migrado) {
+    const snap = await db.collection("correos_mensajes").select("clasificacion").get();
+    let enLote = 0, lote = db.batch();
+    for (const d of snap.docs) {
+      if (d.get("clasificacion") !== undefined) continue;
+      lote.update(d.ref, { clasificacion: null });
+      actualizados++;
+      if (++enLote === 400) { await lote.commit(); lote = db.batch(); enLote = 0; }
+    }
+    if (enLote) await lote.commit();
+    await marca.set({ migrado: true, en: new Date().toISOString(), actualizados }, { merge: true });
   }
-  if (enLote) await lote.commit();
-  await marca.set({ migrado: true, en: new Date().toISOString(), actualizados }, { merge: true });
+  // «Facturas recibidas»: la IA ahora también saca el número de la factura. Las facturas que se clasificaron antes de eso
+  // se vuelven a clasificar UNA vez (las que Fredy corrigió a mano no se tocan).
+  if (!previo.migradoNumeroFactura) {
+    const fac = await db.collection("correos_mensajes").where("clasificacion.categoria", "==", "factura_proveedor").get();
+    let enLote = 0, lote = db.batch();
+    for (const d of fac.docs) {
+      const c = d.get("clasificacion") || {};
+      if (c.corregida || (c.datos && c.datos.numero !== undefined)) continue;
+      lote.update(d.ref, { clasificacion: null, iaIntentos: 0 });
+      actualizados++;
+      if (++enLote === 400) { await lote.commit(); lote = db.batch(); enLote = 0; }
+    }
+    if (enLote) await lote.commit();
+    await marca.set({ migradoNumeroFactura: true, enNumeroFactura: new Date().toISOString() }, { merge: true });
+  }
   return actualizados;
 }
 

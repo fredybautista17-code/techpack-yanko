@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from "react";
 import { initializeApp, getApps } from "firebase/app";
 import { getFirestore, collection, doc, onSnapshot, query, orderBy, limit, updateDoc } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
+import { datosFactura, buscarEnBusint, estadoFactura, diasDesde, diasHasta, urgenciaFactura } from "./correos-facturas-calculo";
 
 // ─── CORREOS (2026-11-16, a pedido de Fredy) ─────────────────────────────────────────────────────
 // Fase 1: bandeja unificada de las cuentas de Gmail de la empresa. Una función de Firebase lee cada cuenta por IMAP
@@ -12,6 +13,9 @@ import { getFunctions, httpsCallable } from "firebase/functions";
 // Fase 2: una función (functions/correos-ia.js) clasifica cada correo con IA y guarda `clasificacion` {categoria, prioridad,
 // requiereAccion, accion, resumen, datos}. Aquí se ve como etiqueta, se filtra por categoría / «requieren acción» y el
 // administrador puede corregir la categoría. Solo clasifica: no responde ni envía nada.
+// «Facturas recibidas»: las facturas de proveedores que llegan por correo se listan con su estado (por registrar / registrada
+// en Busint / descartada). NO crean deuda: Cuentas por Pagar viene de Busint; aquí solo se compara con el último corte
+// (contabilidad_cxp_facturas) para saber si contabilidad ya la registró y avisar de las que se acercan a vencer.
 
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
@@ -157,6 +161,91 @@ function PanelCuentas({ cuentas, colorDe, onCerrar, onSincronizar, sincronizando
 const chipCat = (activo, color) => ({ padding: "4px 12px", borderRadius: 16, cursor: "pointer", fontWeight: 700, fontSize: 12, fontFamily: "inherit", border: `1.5px solid ${activo ? color : C.border}`, background: activo ? color : C.white, color: activo ? C.white : C.slate });
 const etiqueta = { fontSize: 11, color: C.slate, fontWeight: 700, marginBottom: 3, textTransform: "uppercase", letterSpacing: 0.4 };
 
+const pesos = (v) => (v ? `$${Math.round(v).toLocaleString("es-CO")}` : "—");
+const fechaDia = (aaaammdd) => { const p = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(aaaammdd || "")); return p ? new Date(Number(p[1]), Number(p[2]) - 1, Number(p[3])).toLocaleDateString("es-CO", { day: "numeric", month: "short", year: "numeric" }) : "—"; };
+const URGENCIA = { alta: { color: C.red, bg: C.redBg }, media: { color: C.amber, bg: C.amberBg }, normal: { color: "transparent", bg: C.white } };
+
+// ── Control de facturas de proveedores recibidas por correo ──
+function FacturasRecibidas({ filas, errorCxp, fechaCorte, colorDe, nombreDe, onVer, onEstado }) {
+  const [filtro, setFiltro] = useState("por_registrar");
+  const cuenta = (e) => filas.filter((f) => f.estado === e).length;
+  const porRegistrar = filas.filter((f) => f.estado === "por_registrar");
+  const suma = porRegistrar.reduce((a, f) => a + (f.datos.valor || 0), 0);
+  const nPronto = porRegistrar.filter((f) => { const h = diasHasta(f.datos.vence); return h !== null && h <= 7; }).length;
+  const nViejas = porRegistrar.filter((f) => { const d = diasDesde(f.m.fecha); return d !== null && d >= 3; }).length;
+  const peso = { alta: 0, media: 1, normal: 2 };
+  const visibles = filas
+    .filter((f) => filtro === "todas" || f.estado === filtro)
+    .sort((a, b) => (a.estado === "por_registrar" && b.estado === "por_registrar" ? (peso[a.urg] - peso[b.urg]) || String(a.datos.vence || "9999").localeCompare(String(b.datos.vence || "9999")) : 0) || String(b.m.fecha).localeCompare(String(a.m.fecha)));
+  const tile = (titulo, valor, sub, color, bg) => (
+    <div style={{ background: bg, borderRadius: 12, padding: "12px 16px", minWidth: 190, flex: "1 1 190px" }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", letterSpacing: 0.4 }}>{titulo}</div>
+      <div style={{ fontSize: 24, fontWeight: 800, color }}>{valor}</div>
+      <div style={{ fontSize: 12, color: C.slate }}>{sub}</div>
+    </div>
+  );
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
+        {tile("Por registrar", porRegistrar.length, suma ? `${pesos(suma)} en facturas` : "Facturas recibidas que contabilidad aún no registra", C.amber, C.amberBg)}
+        {tile("Vencen en 7 días o ya vencieron", nPronto, "Entre las que aún están por registrar", nPronto ? C.red : C.green, nPronto ? C.redBg : C.greenBg)}
+        {tile("Llevan 3 días o más sin registrar", nViejas, "Desde que llegó el correo", nViejas ? C.amber : C.green, nViejas ? C.amberBg : C.greenBg)}
+      </div>
+      <div style={{ fontSize: 12.5, color: C.slate, marginBottom: 12, lineHeight: 1.5 }}>
+        {errorCxp ? <span style={{ color: C.red }}>No se pudo leer Cuentas por Pagar ({errorCxp}); el estado se maneja a mano.</span> : fechaCorte ? `Se compara con el corte de Cuentas por Pagar de Busint del ${fechaDia(String(fechaCorte).slice(0, 10))}. Cuando contabilidad registre la factura en Busint, aquí pasa sola a «Registrada».` : "Todavía no hay un corte de Cuentas por Pagar para comparar; el estado se maneja a mano."} Esta lista no crea deuda ni escribe en Busint. Los datos los detecta la IA: verifícalos con el correo.
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+        {[["por_registrar", "Por registrar"], ["registrada", "Registradas"], ["descartada", "Descartadas"], ["todas", "Todas"]].map(([k, t]) => (
+          <button key={k} onClick={() => setFiltro(k)} style={chipCat(filtro === k, C.navy)}>{t} <span style={{ opacity: 0.75 }}>{k === "todas" ? filas.length : cuenta(k)}</span></button>
+        ))}
+      </div>
+      {!visibles.length ? (
+        <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: 28, color: C.slate, textAlign: "center", fontSize: 13.5 }}>
+          {filas.length ? "No hay facturas en este filtro." : "Todavía no hay facturas detectadas. Pulsa «✨ Clasificar con IA» en la bandeja: las facturas de proveedores aparecen aquí solas."}
+        </div>
+      ) : (
+        <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, overflowX: "auto" }}>
+          {visibles.map((f) => {
+            const u = URGENCIA[f.urg] || URGENCIA.normal;
+            const h = diasHasta(f.datos.vence);
+            const d = diasDesde(f.m.fecha);
+            const col = colorDe(f.m.cuentaId)[0];
+            return (
+              <div key={f.m.id} style={{ display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap", padding: "11px 14px", borderBottom: `1px solid ${C.border}`, borderLeft: `4px solid ${f.estado === "por_registrar" ? u.color : "transparent"}`, background: f.estado === "por_registrar" ? u.bg : C.white, opacity: f.estado === "descartada" ? 0.65 : 1 }}>
+                <div style={{ flex: "2 1 220px", minWidth: 200 }}>
+                  <div style={{ fontWeight: 800, fontSize: 13.5 }}>{f.datos.proveedor || "Proveedor sin identificar"}</div>
+                  <div style={{ fontSize: 12, color: C.slate }}>{f.datos.numero ? `Factura ${f.datos.numero}` : "Sin número detectado"} · <span style={{ color: col, fontWeight: 700 }}>{nombreDe(f.m.cuentaId)}</span></div>
+                </div>
+                <div style={{ flex: "1 1 110px", fontWeight: 800, fontSize: 14, fontVariantNumeric: "tabular-nums" }}>{pesos(f.datos.valor)}</div>
+                <div style={{ flex: "1 1 130px", fontSize: 12.5 }}>
+                  <div>{f.datos.vence ? `Vence ${fechaDia(f.datos.vence)}` : "Sin fecha de pago"}</div>
+                  {f.estado === "por_registrar" && h !== null && <div style={{ fontWeight: 700, color: h <= 3 ? C.red : h <= 7 ? C.amber : C.slate }}>{h < 0 ? `Venció hace ${-h} día(s)` : h === 0 ? "Vence hoy" : `En ${h} día(s)`}</div>}
+                </div>
+                <div style={{ flex: "1 1 130px", fontSize: 12.5, color: C.slate }}>
+                  <div>Llegó {fechaCorta(f.m.fecha)}</div>
+                  {f.estado === "por_registrar" && d !== null && d >= 1 && <div style={{ fontWeight: 700, color: d >= 3 ? C.amber : C.slate }}>Hace {d} día(s)</div>}
+                </div>
+                <div style={{ flex: "2 1 230px", fontSize: 12.5 }}>
+                  {f.estado === "por_registrar" && <Pastilla bg={C.amberBg} color={C.amber}>Por registrar</Pastilla>}
+                  {f.estado === "descartada" && <Pastilla bg={C.canvas} color={C.slate}>Descartada</Pastilla>}
+                  {f.estado === "registrada" && <Pastilla bg={C.greenBg} color={C.green}>Registrada</Pastilla>}
+                  {f.estado === "registrada" && (f.coincidencia ? <div style={{ color: C.slate, marginTop: 3 }}>En Busint: {f.coincidencia.proveedor} · factura {f.coincidencia.nfact}{f.coincidencia.tipo === "valor" ? " (coincide por valor y proveedor)" : ""}</div> : <div style={{ color: C.slate, marginTop: 3 }}>Marcada por ti</div>)}
+                </div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  <button onClick={() => onVer(f.m)} style={btn(C.white, C.blue, C.blue)}>Ver correo</button>
+                  {f.estado === "por_registrar" && <button onClick={() => onEstado(f.m, "registrada")} style={btn(C.white, C.green, C.green)}>Ya está registrada</button>}
+                  {f.estado === "por_registrar" && <button onClick={() => onEstado(f.m, "descartada")} style={btn(C.white, C.slate, C.border)}>Descartar</button>}
+                  {f.estado !== "por_registrar" && !f.coincidencia && <button onClick={() => onEstado(f.m, null)} style={btn(C.white, C.slate, C.border)}>Volver a por registrar</button>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function CorreosView({ currentUser, onVolver, onLogout, notify }) {
   const [cuentas, setCuentas] = useState([]);
   const [mensajes, setMensajes] = useState([]);
@@ -172,9 +261,15 @@ export default function CorreosView({ currentUser, onVolver, onLogout, notify })
   const [catSel, setCatSel] = useState("todas");
   const [soloAccion, setSoloAccion] = useState(false);
   const [clasificando, setClasificando] = useState(false);
+  const [vista, setVista] = useState("bandeja");
+  const [cxp, setCxp] = useState(null);
+  const [errorCxp, setErrorCxp] = useState("");
 
   useEffect(() => onSnapshot(collection(db, "correos_cuentas"), (s) => setCuentas(s.docs.map((d) => ({ ...d.data(), id: d.id })).sort((a, b) => String(a.creadoEn || "").localeCompare(String(b.creadoEn || "")))), (e) => setErrorCarga(mensajeError(e))), []);
   useEffect(() => onSnapshot(query(collection(db, "correos_mensajes"), orderBy("fecha", "desc"), limit(400)), (s) => { setMensajes(s.docs.map((d) => ({ ...d.data(), id: d.id }))); setCargado(true); }, (e) => { setErrorCarga(mensajeError(e)); setCargado(true); }), []);
+
+  // Facturas abiertas del último corte de Cuentas por Pagar (Busint), para saber si contabilidad ya registró cada factura.
+  useEffect(() => onSnapshot(collection(db, "contabilidad_cxp_facturas"), (s) => { setCxp(s.docs.map((d) => d.data())); setErrorCxp(""); }, (e) => { setCxp([]); setErrorCxp(mensajeError(e)); }), []);
 
   const colorDe = (id) => COLORES_CUENTA[Math.max(0, cuentas.findIndex((c) => c.id === id)) % COLORES_CUENTA.length];
   const nombreDe = (id) => { const c = cuentas.find((x) => x.id === id); return c ? (c.nombre || c.email) : id; };
@@ -193,6 +288,14 @@ export default function CorreosView({ currentUser, onVolver, onLogout, notify })
       .filter((m) => !qn || norm(`${m.asunto} ${m.de?.nombre} ${m.de?.correo} ${m.resumenCorto} ${m.texto}`).includes(qn));
   }, [mensajes, cuentaSel, soloNuevos, ocultarMasivos, q, catSel, soloAccion]);
   const pendientesIA = mensajes.filter((m) => !m.clasificacion).length;
+  const filasFactura = useMemo(() => mensajes.filter((m) => m.clasificacion?.categoria === "factura_proveedor").map((m) => {
+    const datos = datosFactura(m);
+    const coincidencia = cxp ? buscarEnBusint(datos, cxp) : null;
+    const estado = estadoFactura(m, coincidencia);
+    return { m, datos, coincidencia, estado, urg: estado === "por_registrar" ? urgenciaFactura(datos, m.fecha) : "normal" };
+  }), [mensajes, cxp]);
+  const nFacturasPorRegistrar = filasFactura.filter((f) => f.estado === "por_registrar").length;
+  const fechaCorteCxp = (cxp || []).reduce((a, d) => (String(d.fechaCorte || "") > a ? String(d.fechaCorte) : a), "");
   const conteoCat = useMemo(() => { const o = {}; mensajes.filter((m) => cuentaSel === "todas" || m.cuentaId === cuentaSel).forEach((m) => { const k = m.clasificacion?.categoria; if (k) o[k] = (o[k] || 0) + 1; }); return o; }, [mensajes, cuentaSel]);
   const nAccion = mensajes.filter((m) => (cuentaSel === "todas" || m.cuentaId === cuentaSel) && m.clasificacion?.requiereAccion).length;
   const sel = mensajes.find((m) => m.id === selId) || null;
@@ -225,6 +328,14 @@ export default function CorreosView({ currentUser, onVolver, onLogout, notify })
     } catch (e) { notify?.("No se pudo clasificar: " + mensajeError(e)); }
     finally { setClasificando(false); }
   }
+  async function marcarFactura(m, estado) {
+    try { await updateDoc(doc(db, "correos_mensajes", m.id), { factura: estado ? { estado, en: new Date().toISOString() } : null }); }
+    catch (e) { notify?.("No se pudo cambiar el estado: " + mensajeError(e)); }
+  }
+  function verCorreo(m) {
+    setVista("bandeja"); setCuentaSel("todas"); setCatSel("todas"); setSoloNuevos(false); setSoloAccion(false); setOcultarMasivos(false); setQ("");
+    abrir(m);
+  }
   async function corregirCategoria(m, categoria) {
     try { await updateDoc(doc(db, "correos_mensajes", m.id), { "clasificacion.categoria": categoria, "clasificacion.corregida": true }); }
     catch (e) { notify?.("No se pudo cambiar la categoría: " + mensajeError(e)); }
@@ -240,6 +351,10 @@ export default function CorreosView({ currentUser, onVolver, onLogout, notify })
         <button onClick={onVolver} style={btn("transparent", C.white, "rgba(255,255,255,.35)")}>← Volver a ATLAS</button>
         <div style={{ fontWeight: 800, fontSize: 20, letterSpacing: -0.3 }}>✉ Correos</div>
         {totalNuevos > 0 && <Pastilla bg={C.amberBg} color={C.amber}>{totalNuevos} sin leer</Pastilla>}
+        <div style={{ display: "flex", gap: 6, marginLeft: 6 }}>
+          <button onClick={() => setVista("bandeja")} style={btn(vista === "bandeja" ? "#C8B8A2" : "transparent", vista === "bandeja" ? C.ink : C.white, vista === "bandeja" ? "#C8B8A2" : "rgba(255,255,255,.35)")}>Bandeja</button>
+          <button onClick={() => setVista("facturas")} style={btn(vista === "facturas" ? "#C8B8A2" : "transparent", vista === "facturas" ? C.ink : C.white, vista === "facturas" ? "#C8B8A2" : "rgba(255,255,255,.35)")}>🧾 Facturas recibidas{nFacturasPorRegistrar > 0 ? ` (${nFacturasPorRegistrar})` : ""}</button>
+        </div>
         <div style={{ flex: 1 }} />
         <button onClick={sincronizar} disabled={sincronizando || !cuentas.length} style={{ ...btn("transparent", C.white, "rgba(255,255,255,.35)"), opacity: sincronizando || !cuentas.length ? 0.6 : 1 }}>{sincronizando ? "Leyendo…" : "↻ Sincronizar ahora"}</button>
         <button onClick={clasificar} disabled={clasificando || !cuentas.length} title="La IA le pone categoría, prioridad y resumen a cada correo. Solo clasifica: no responde ni envía nada." style={{ ...btn("transparent", C.white, "rgba(255,255,255,.35)"), opacity: clasificando || !cuentas.length ? 0.6 : 1 }}>{clasificando ? "Clasificando…" : `✨ Clasificar con IA${pendientesIA ? ` (${pendientesIA})` : ""}`}</button>
@@ -249,7 +364,9 @@ export default function CorreosView({ currentUser, onVolver, onLogout, notify })
 
       <div style={{ maxWidth: 1280, margin: "0 auto", padding: "18px 24px" }}>
         {errorCarga && <div style={{ background: C.redBg, color: C.red, borderRadius: 12, padding: "10px 14px", marginBottom: 14, fontSize: 13 }}>No se pudieron cargar los correos: {errorCarga}. Si es un error de permisos, falta publicar las reglas de Firestore (<code>firebase deploy --only firestore:rules</code>).</div>}
-        {cargado && !cuentas.length && !errorCarga ? (
+        {vista === "facturas" ? (
+          <FacturasRecibidas filas={filasFactura} errorCxp={errorCxp} fechaCorte={fechaCorteCxp} colorDe={colorDe} nombreDe={nombreDe} onVer={verCorreo} onEstado={marcarFactura} />
+        ) : cargado && !cuentas.length && !errorCarga ? (
           <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 16, padding: 28, maxWidth: 620, margin: "40px auto", textAlign: "center" }}>
             <div style={{ fontSize: 34 }}>✉</div>
             <div style={{ fontWeight: 800, fontSize: 18, margin: "6px 0" }}>Aún no hay cuentas conectadas</div>
@@ -338,9 +455,9 @@ export default function CorreosView({ currentUser, onVolver, onLogout, notify })
                         </div>
                         {sel.clasificacion.resumen && <div>{sel.clasificacion.resumen}</div>}
                         {sel.clasificacion.requiereAccion && sel.clasificacion.accion && <div style={{ fontWeight: 700, color: C.amber }}>➜ {sel.clasificacion.accion}</div>}
-                        {(sel.clasificacion.datos?.proveedor || sel.clasificacion.datos?.valor || sel.clasificacion.datos?.vence) && (
+                        {(sel.clasificacion.datos?.proveedor || sel.clasificacion.datos?.numero || sel.clasificacion.datos?.valor || sel.clasificacion.datos?.vence) && (
                           <div style={{ fontSize: 12, color: C.slate, marginTop: 4 }}>
-                            Datos detectados (verifícalos): {[sel.clasificacion.datos.proveedor, sel.clasificacion.datos.valor ? `$${Number(sel.clasificacion.datos.valor).toLocaleString("es-CO")}` : "", sel.clasificacion.datos.vence ? `vence ${sel.clasificacion.datos.vence}` : ""].filter(Boolean).join(" · ")}
+                            Datos detectados (verifícalos): {[sel.clasificacion.datos.proveedor, sel.clasificacion.datos.numero ? `factura ${sel.clasificacion.datos.numero}` : "", sel.clasificacion.datos.valor ? `$${Number(sel.clasificacion.datos.valor).toLocaleString("es-CO")}` : "", sel.clasificacion.datos.vence ? `vence ${sel.clasificacion.datos.vence}` : ""].filter(Boolean).join(" · ")}
                           </div>
                         )}
                       </div>

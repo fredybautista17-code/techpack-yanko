@@ -35,7 +35,7 @@ Categorías:
 Prioridad: alta = exige acción pronto (vencimientos, pagos, requerimientos de la DIAN o del banco, clientes esperando respuesta, reclamos); media = hay que revisarlo, sin urgencia; baja = informativo o publicidad.
 requiereAccion: true solo si alguien de la empresa debe hacer algo (pagar, responder, revisar, aprobar, enviar). accion: qué hay que hacer, en una frase corta (máximo 100 caracteres), o cadena vacía si no hay nada que hacer.
 resumen: de qué trata, en una frase de máximo 140 caracteres, en español, sin saludos.
-datos: llena proveedor, valor o vence SOLO si el correo lo dice de forma explícita; si no, déjalos en null. proveedor = quien emite o envía. valor = total en pesos colombianos, número entero sin símbolos ni puntos. vence = fecha límite de pago, formato AAAA-MM-DD. No inventes ni calcules nada.`;
+datos: llena proveedor, numero, valor o vence SOLO si el correo lo dice de forma explícita; si no, déjalos en null. proveedor = quien emite o envía la factura. numero = número de la factura tal como aparece, con su prefijo si lo tiene (por ejemplo FH-4728 o 12952); no uses el NIT ni el número de cliente. valor = total a pagar en pesos colombianos, número entero sin símbolos ni puntos. vence = fecha límite de pago, formato AAAA-MM-DD. No inventes ni calcules nada.`;
 
 const HERRAMIENTA = {
   name: "clasificar",
@@ -52,10 +52,11 @@ const HERRAMIENTA = {
         type: "object",
         properties: {
           proveedor: { type: ["string", "null"] },
+          numero: { type: ["string", "null"] },
           valor: { type: ["integer", "null"] },
           vence: { type: ["string", "null"] },
         },
-        required: ["proveedor", "valor", "vence"],
+        required: ["proveedor", "numero", "valor", "vence"],
       },
     },
     required: ["categoria", "prioridad", "requiereAccion", "accion", "resumen", "datos"],
@@ -92,19 +93,20 @@ function validar(x) {
   const valor = Number(d.valor);
   const vence = /^\d{4}-\d{2}-\d{2}$/.test(String(d.vence || "")) ? String(d.vence) : null;
   const proveedor = corto(d.proveedor, 120) || null;
+  const numero = corto(d.numero, 40) || null;
   return {
     categoria,
     prioridad,
     requiereAccion: x.requiereAccion === true,
     accion: corto(x.accion, 140),
     resumen: corto(x.resumen, 200),
-    datos: { proveedor, valor: Number.isFinite(valor) && valor > 0 ? Math.round(valor) : null, vence },
+    datos: { proveedor, numero, valor: Number.isFinite(valor) && valor > 0 ? Math.round(valor) : null, vence },
     modelo: MODELO,
     en: new Date().toISOString(),
   };
 }
 
-const porDefecto = () => ({ categoria: "otro", prioridad: "media", requiereAccion: false, accion: "", resumen: "", datos: { proveedor: null, valor: null, vence: null }, modelo: MODELO, en: new Date().toISOString() });
+const porDefecto = () => ({ categoria: "otro", prioridad: "media", requiereAccion: false, accion: "", resumen: "", datos: { proveedor: null, numero: null, valor: null, vence: null }, modelo: MODELO, en: new Date().toISOString() });
 
 // Clasifica UN correo. Los errores de clave o de modelo llevan `fatal: true` (no sirve seguir con los demás).
 async function clasificar({ apiKey, mensaje, cuenta, fetchFn }) {
