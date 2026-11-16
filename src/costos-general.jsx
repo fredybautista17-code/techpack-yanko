@@ -733,6 +733,31 @@ export default function CostosGeneralView({ db }) {
         nota: `Destajo y Fiscal Destajo: cesantías y prima sobre sueldo + auxilio, intereses 12 % de las cesantías, vacaciones solo sobre el sueldo. CORTE arranca apagada porque su sueldo y prestaciones ya van en el costo del lote. ${avisoApagado}${msgAreas ? ` ${msgAreas}` : ""}`,
       };
     }
+    // (2026-11-16, a pedido de Fredy) areasAyuda: las áreas que se están ayudando este mes; cada fila abre la ventana del área con los nombres.
+    if (v.tipo === "areasAyuda") {
+      const filasAreas = r.destajo.areas.filter((a) => a.ayudasTodas > 0).map((a) => {
+        const q = a.porEquipos ? [] : a.personas.map((p) => ayudaQ.get(p.id)).filter(Boolean);
+        return {
+          area: a.nombre,
+          quienes: a.porEquipos ? "medido por equipos" : a.detalle ? `${a.ayudados} de ${a.total}` : "total del área (sin nombres)",
+          ayuda: a.ayudas, ayudaRaw: a.ayudasTodas, ayudaCuenta: a.estadoAyuda !== "off",
+          ayudaQ: q.length ? q.reduce((t, x) => t + x.total, 0) : null,
+          abrir: { tipo: "area", clave: a.clave },
+        };
+      }).sort((x, y) => y.ayudaRaw - x.ayudaRaw);
+      return {
+        titulo: `Áreas que se están ayudando — ${mesTxt}`,
+        sub: "Ayuda = lo que se pagó de más frente a lo que produjeron (ajustes y mínimo garantizado). Haz clic en un área para ver a cada persona. Los excedentes no se restan.",
+        total: money(r.destajo.ayudas),
+        columnas: [
+          { k: "area", label: "Área", izq: true }, { k: "quienes", label: "Personas ayudadas", izq: true },
+          { k: "ayuda", label: "Ayuda del mes", suma: true, ver: (f) => <Cifra valor={f.ayuda} bruto={f.ayudaRaw} cuenta={f.ayudaCuenta} /> },
+          { k: "ayudaQ", label: "De las quincenas", suma: true, resalta: true, ver: (f) => (f.ayudaQ == null ? "—" : money(f.ayudaQ)) },
+        ],
+        filas: filasAreas, nombreExcel: `Areas_ayudadas_${ym}`, vacio: "Ningún área recibió ayuda este mes (o aún no hay cierres ni histórico cargado).", onClose: cerrar,
+        nota: "«De las quincenas» es la ayuda que ya aparece en la Nómina de destajo de este mes. Los meses anteriores de Maquila vienen del histórico cargado en Centro de Costo → Año.",
+      };
+    }
     // estructura: desglose de «Por pagar fuera de los lotes»
     const piezas = [
       { concepto: "Gastos del Excel", valor: r.gastos.total, abrir: { tipo: "gastos" } },
@@ -797,6 +822,7 @@ export default function CostosGeneralView({ db }) {
           fondo={alcanza ? C.greenBg : C.redBg}
           sub={`${r.cobertura === null ? "—" : Math.round(r.cobertura)} % cubierto${!alcanza && r.prendasQueFaltan ? ` · faltan ≈ ${fmt(r.prendasQueFaltan)} prendas` : ""}`}
         />
+        <Tile onClick={() => setVentana({ tipo: "areasAyuda" })} titulo="Ayudas del mes" valor={money(r.destajo.ayudas)} color={C.red} sub={`${r.destajo.areas.filter((a) => a.ayudasTodas > 0).length} área(s) ayudadas · ${r.destajo.areas.reduce((t, a) => t + (a.porEquipos ? 0 : a.ayudados), 0)} persona(s)`} />
         <Tile titulo="Punto de equilibrio" valor={r.prendasEquilibrio ? `${fmt(r.prendasEquilibrio)} und` : "—"} sub={r.aportePorPrenda ? `aporte por prenda ${money(r.aportePorPrenda)}` : "sin lotes aprobados en el mes"} />
       </div>
 
