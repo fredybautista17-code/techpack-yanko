@@ -27,6 +27,7 @@ import { CONCEPTOS_GASTOS_BUSINT, proveedoresDeTexto, candidatosGastos, gastoDeF
 import { MESES_HIST, COLECCION_HISTORICO_MAQUILA, textoAFilas, parsearHistorial, docHistoricoMes, resumenAnual } from "./historial-maquila-calculo";
 import { PLANTA_PROPIA_VENTAS, rangoDelPeriodo, plantasDeEntradas, clientePorLoteDeCargas, candidatosVentas, ventaDeEntrada, totalLineaVenta, SERVICIOS_VENTA, SIN_SERVICIO, servicioValido, etiquetaServicio, sugerirServicio, resumenPorServicio, bloqueoLinea, servicioDeVenta } from "./ventas-entradas-calculo";
 import ResumenAreasCC from "./centro-costo-resumen-areas";
+import { aporteDeLote } from "./costos-general-calculo";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
   authDomain: "techpack-yanko-f37b8.firebaseapp.com",
@@ -6756,6 +6757,8 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
         .filter((l) => l.estado === "aprobado" && !l.eliminado)
         .map((l) => ({
           total: Number(l.total) || 0,
+          // (2026-11-16, a pedido de Fredy) Lo recogido con los básicos = aporte del lote (básicos + porcentajes), la misma cifra de «¿Cubro mis costos?».
+          aporte: aporteDeLote(l).aporte,
           fechaAprobacion: l.fechaAprobacion?.toDate ? l.fechaAprobacion.toDate().toISOString().slice(0, 10) : null,
         }))
         .filter((l) => l.fechaAprobacion);
@@ -6771,19 +6774,30 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
     () => lotesDadoPorCumplido.filter((l) => enPeriodo(l.fechaAprobacion)).length,
     [lotesDadoPorCumplido, periodo, fechaDia, mesSel, anioSel, fechaRangoInicio, fechaRangoFin]
   );
+  const recogidoBasesPeriodo = useMemo(
+    () => lotesDadoPorCumplido.filter((l) => enPeriodo(l.fechaAprobacion)).reduce((s, l) => s + l.aporte, 0),
+    [lotesDadoPorCumplido, periodo, fechaDia, mesSel, anioSel, fechaRangoInicio, fechaRangoFin]
+  );
   const balanceBaseAdministrativa = baseAdministrativaPeriodo - costoAreaApoyo;
   const pctCoberturaBaseAdministrativa = costoAreaApoyo > 0 ? (baseAdministrativaPeriodo / costoAreaApoyo) * 100 : 0;
   // (2026-11-10, a pedido de Fredy) «Todas las áreas» por área: las áreas con modo «Base Administrativa» y los Líderes (marcados Base Administrativa)
   // no se miden por producción; se juntan en «Estructura» y se comparan contra la Base cobrada del Dado por Cumplido (un solo monto).
-  const areasBaseCC = new Set((areasNomina || []).filter((a) => a.modoMedicion === "base_dado_por_cumplido").map((a) => a.nombre));
+  // (2026-11-16, a pedido de Fredy) «Estructura» = todas las áreas de apoyo (Base Administrativa, Reparto por Despacho y las que se miden por unidades/despachado sin ser destajo):
+  // no son «ayuda», se pagan con lo recogido en las bases del Dado por Cumplido. Antes solo entraban las de Base Administrativa y las demás salían como «genera $0, necesita ayuda».
+  const modoDeAreaCC = new Map((areasNomina || []).map((a) => [a.nombre, a.modoMedicion || ""]));
+  const esApoyoCC = (t) => {
+    const modo = modoDeAreaCC.get(t.area) || "";
+    return !!t.medirComoBaseAdministrativa || modo === "base_dado_por_cumplido" || modo === "reparto_despacho"
+      || ((modo === "busint_unidades" || modo === "despachado") && t.tipoNomina !== "Destajo");
+  };
   const personasEstructuraCC = verPorAreaCC
-    ? (trabajadores || []).filter((t) => t.activo !== false && (t.medirComoBaseAdministrativa || areasBaseCC.has(t.area)))
+    ? (trabajadores || []).filter((t) => t.activo !== false && esApoyoCC(t))
     : [];
   const idsEstructuraCC = new Set(personasEstructuraCC.map((t) => t.id));
   const filasProduccionCC = verPorAreaCC ? filas.filter((f) => !idsEstructuraCC.has(f.id)) : filas;
   const estructuraCC = {
     personas: personasEstructuraCC.map((t) => ({ id: t.id, nombre: t.nombre, area: t.medirComoBaseAdministrativa ? "Líderes (Base Administrativa)" : (t.area || "Sin asignar"), costo: costoPeriodo(costoMensualCompletoCC(t)), sinSueldo: !t.sueldo })),
-    base: baseAdministrativaPeriodo, lotes: lotesBaseAdministrativaPeriodo,
+    base: recogidoBasesPeriodo, lotes: lotesBaseAdministrativaPeriodo,
   };
   // (2026-09-14, a pedido de Fredy) Modo "Reparto por Despacho": varias
   // areas de apoyo (Contabilidad, Diseno, Bodega, Gerencia, Mantenimiento,
