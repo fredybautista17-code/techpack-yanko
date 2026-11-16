@@ -6759,7 +6759,11 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
           total: Number(l.total) || 0,
           // (2026-11-16, a pedido de Fredy) Lo recogido con los básicos = aporte del lote (básicos + porcentajes), la misma cifra de «¿Cubro mis costos?».
           aporte: aporteDeLote(l).aporte,
-          fechaAprobacion: l.fechaAprobacion?.toDate ? l.fechaAprobacion.toDate().toISOString().slice(0, 10) : null,
+          // (2026-11-16, a pedido de Fredy) Unidades del mes = las del Dado por Cumplido (misma cifra de «¿Cubro mis costos?»).
+          cortadas: Number(l.cantCortada) || 0,
+          despachadas: Number(l.cantDespachada) || 0,
+          // Fecha en hora Colombia (UTC−5), igual que «¿Cubro mis costos?»: un lote aprobado el 31 por la noche no cambia de mes entre pantallas.
+          fechaAprobacion: l.fechaAprobacion?.toDate ? new Date(l.fechaAprobacion.toDate().getTime() - 5 * 3600 * 1000).toISOString().slice(0, 10) : null,
         }))
         .filter((l) => l.fechaAprobacion);
       setLotesDadoPorCumplido(filas);
@@ -6776,6 +6780,14 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
   );
   const recogidoBasesPeriodo = useMemo(
     () => lotesDadoPorCumplido.filter((l) => enPeriodo(l.fechaAprobacion)).reduce((s, l) => s + l.aporte, 0),
+    [lotesDadoPorCumplido, periodo, fechaDia, mesSel, anioSel, fechaRangoInicio, fechaRangoFin]
+  );
+  const unidadesDespachadasPeriodo = useMemo(
+    () => lotesDadoPorCumplido.filter((l) => enPeriodo(l.fechaAprobacion)).reduce((s, l) => s + l.despachadas, 0),
+    [lotesDadoPorCumplido, periodo, fechaDia, mesSel, anioSel, fechaRangoInicio, fechaRangoFin]
+  );
+  const unidadesCortadasPeriodo = useMemo(
+    () => lotesDadoPorCumplido.filter((l) => enPeriodo(l.fechaAprobacion)).reduce((s, l) => s + l.cortadas, 0),
     [lotesDadoPorCumplido, periodo, fechaDia, mesSel, anioSel, fechaRangoInicio, fechaRangoFin]
   );
   const balanceBaseAdministrativa = baseAdministrativaPeriodo - costoAreaApoyo;
@@ -7475,6 +7487,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
                 <ResumenAreasCC
                   filas={filasProduccionCC} garantizadoDe={garantizadoDe} etiquetaPeriodo={etiquetaPeriodo}
                   estructura={estructuraCC} unidadesTerminadas={unidadesTerminadasPeriodo}
+                  unidadesDespachadas={unidadesDespachadasPeriodo} unidadesCortadas={unidadesCortadasPeriodo} lotesAprobados={lotesBaseAdministrativaPeriodo}
                   totalAyudaQuincenas={totalAyudaQuincenas} totalCostoIndirecto={totalCostoIndirectoQuincenas}
                   horasPorId={horasPorIdCC} ayudaAdicionalPorId={ayudaAdicionalPorIdCC}
                   hayCausado={filasProduccionCC.some((f) => f.huboCausado)} vista={vistaCC} onVista={setVistaCC}
@@ -7483,7 +7496,8 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
               )}
               {!verPorAreaCC && (
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 24 }}>
-                <KPI icon="📦" label="Unidades producidas" value={fmtNum(totalUnidades)} color={C.blue} bg={C.blueBg} />
+                <KPI icon="🚚" label="Unidades despachadas" value={fmtNum(unidadesDespachadasPeriodo)} color={C.green} bg={C.greenBg} sub={`${lotesBaseAdministrativaPeriodo} lotes aprobados en Dado por Cumplido · toda la empresa`} />
+                <KPI icon="📦" label="Movimientos de proceso" value={fmtNum(totalUnidades)} color={C.blue} bg={C.blueBg} sub="cada prenda cuenta una vez por cada proceso; no son prendas" />
                 <KPI icon="✅" label="Unidades en Terminadas" value={fmtNum(unidadesTerminadasPeriodo)} color={C.amber} bg={C.amberBg} sub="proceso Terminación, toda la empresa" />
                 <KPI icon="💵" label="Valor producido" value={fmtMoney(totalValor)} color={C.green} bg={C.greenBg} sub={filas.some((f) => f.huboCausado) ? "🟡 incluye causado sin confirmar" : undefined} />
                 <KPI icon="🏦" label={`Costo nómina causado (${etiquetaPeriodo})`} value={fmtMoney(totalCosto)} color={C.violet} bg={C.violetBg} sub={filas.some((f) => f.huboCausado) ? "🟡 incluye causado sin confirmar" : undefined} />

@@ -153,7 +153,7 @@ function FilaEstructura({ estructura, extraProduccion }) {
 // filas = SOLO las personas de producción (las de la «Base» van aparte en `estructura`); los totales de la cinta salen de esas mismas filas.
 // estructura = { personas: [{ id, nombre, area, costo, sinSueldo }], base, lotes } — nómina de las áreas/personas que se pagan con la Base del Dado por Cumplido.
 export default function ResumenAreasCC({
-  filas, garantizadoDe, etiquetaPeriodo, unidadesTerminadas, estructura,
+  filas, garantizadoDe, etiquetaPeriodo, unidadesTerminadas, unidadesDespachadas, unidadesCortadas, lotesAprobados, estructura,
   totalAyudaQuincenas, totalCostoIndirecto, hayCausado, vista, onVista, onVerTrabajador, onExcel, horasPorId, ayudaAdicionalPorId,
 }) {
   // La fábrica (arriba) y las plantas externas (Maquila, abajo) se leen por separado: Maquila no interviene en el equilibrio de la fábrica.
@@ -180,19 +180,21 @@ export default function ResumenAreasCC({
     <div style={{ marginBottom: 20 }}>
       <div style={{ marginBottom: 10 }}>
         <div style={{ fontSize: 19, fontWeight: 900, color: K.ink }}>
-          {g.total.ayudadas > 0
-            ? <>En {etiquetaPeriodo} la fábrica se ayudó con <span style={{ color: K.red }}>{millones(totalAyuda)}</span> a {g.total.ayudadas} {g.total.ayudadas === 1 ? "persona" : "personas"}</>
-            : <>En {etiquetaPeriodo} nadie quedó por debajo de lo garantizado</>}
+          {totalHorasFab + totalAdicionalFab > 0
+            ? <>En {etiquetaPeriodo} la fábrica costó <span style={{ color: K.red }}>{millones(totalHorasFab + totalAdicionalFab)}</span> de más</>
+            : <>En {etiquetaPeriodo} la fábrica no tuvo costo extra por horas ni ayudas</>}
         </div>
         <div style={{ fontSize: 13, color: K.slate }}>
-          {cob === null ? "Todavía no hay sueldos cargados para comparar." : <>La producción cubrió el <b>{Math.round(cob * 100)} %</b> de lo garantizado ({millones(g.total.garantizado)}). Ayuda = lo garantizado menos lo producido de quien quedó por debajo.</>}
+          Horas trabajadas <b>{millones(totalHorasFab)}</b> + ayuda de Nómina <b>{millones(totalAdicionalFab)}</b>.{" "}
+          {cob === null ? "Todavía no hay sueldos cargados para comparar." : <>Contra lo garantizado ({millones(g.total.garantizado)}) la producción cubrió el <b>{Math.round(cob * 100)} %</b>; el faltante de {millones(totalAyuda)} es informativo ({g.total.ayudadas} {g.total.ayudadas === 1 ? "persona" : "personas"} por debajo).</>}
         </div>
       </div>
 
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "10px 28px", background: K.ink, color: "#fff", borderRadius: 14, padding: "14px 20px", marginBottom: 16 }}>
         <Cifra etiqueta="Costo nómina causado" valor={millones(totalCosto)} sub={hayCausado ? "🟡 incluye causado sin confirmar" : "áreas de producción (sin apoyo, Corte ni Maquila)"} />
-        <Cifra etiqueta="Valor producido" valor={millones(totalValor)} sub={`${entero(totalUnidades)} unidades`} />
-        <Cifra etiqueta="Total ayudado" valor={millones(totalAyuda)} sub="garantizado − producido" color="#FF9C8E" />
+        <Cifra etiqueta="Valor producido" valor={millones(totalValor)} sub={`${entero(totalUnidades)} movimientos de proceso`} />
+        <Cifra etiqueta="Unidades despachadas" valor={entero(unidadesDespachadas)} sub={`${entero(unidadesTerminadas)} terminadas · ${entero(lotesAprobados)} lotes aprobados`} />
+        <Cifra etiqueta="Faltante vs garantizado" valor={millones(totalAyuda)} sub="garantizado − producido · informativo" color="#FF9C8E" />
         <Cifra etiqueta="Total excedente" valor={millones(totalExcedente)} sub="no se resta" color="#7FD9AE" />
         <Cifra etiqueta="Horas + ayuda adicional" valor={millones(totalHorasFab + totalAdicionalFab)} sub={`horas ${millones(totalHorasFab)} · ayuda de Nómina ${millones(totalAdicionalFab)}`} color="#FFD27F" />
       </div>
@@ -235,11 +237,13 @@ export default function ResumenAreasCC({
       {vista === "area" && estructura && estructura.personas.length > 0 ? <FilaEstructura estructura={estructura} extraProduccion={totalHorasFab + totalAdicionalFab} /> : null}
 
       <details style={{ background: K.white, border: `1px solid ${K.border}`, borderRadius: 12, padding: "0 16px", marginTop: 6 }}>
-        <summary style={{ cursor: "pointer", padding: "12px 0", fontWeight: 800, fontSize: 13, color: K.ink }}>Más cifras del período (unidades, ayuda por quincena, costo indirecto)</summary>
+        <summary style={{ cursor: "pointer", padding: "12px 0", fontWeight: 800, fontSize: 13, color: K.ink }}>Más cifras del período (unidades, movimientos, ayuda por quincena, costo indirecto)</summary>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "10px 18px", paddingBottom: 14 }}>
           {[
-            [entero(totalUnidades), "Unidades producidas"],
+            [entero(unidadesDespachadas), "Unidades despachadas de los lotes aprobados en el período (Dado por Cumplido, igual que ¿Cubro mis costos?)"],
+            [entero(unidadesCortadas), "Unidades cortadas de esos mismos lotes"],
             [entero(unidadesTerminadas), "Unidades en Terminadas (proceso Terminación, toda la empresa)"],
+            [entero(totalUnidades), "Movimientos de proceso (cada prenda cuenta una vez por proceso; no son prendas)"],
             [dinero(totalAdicionalFab), "Ayuda adicional (Nómina): lo realmente puesto en Nómina por quincena, sin netear; solo la fábrica"],
             [dinero(totalHorasFab), "Costo indirecto: horas trabajadas causadas; no es costo del producto; solo la fábrica"],
           ].map(([v, t]) => (
