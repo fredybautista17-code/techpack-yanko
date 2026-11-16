@@ -16,6 +16,7 @@ import { rangoMeses, rangoSugerido, gruposDesdeBusint, nombresConocidos } from "
 import OrdenesCompraView from "./contabilidad-ordenes-compra";
 import { DevolucionesFacturacionView } from "./devoluciones-cliente";
 import { precioVendidoDe, versionVendidaDe, redondeaPrecio } from "./precio-vendido";
+import DadoPorCumplidoTablero from "./dado-por-cumplido-tablero";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
   authDomain: "techpack-yanko-f37b8.firebaseapp.com",
@@ -3881,11 +3882,16 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases, puedeSincroni
         <Btn variant={vistaDadoPorCumplido === "historicos" ? "primary" : "secondary"} small onClick={() => setVistaDadoPorCumplido("historicos")}>
           Históricos ({aprobados.length})
         </Btn>
+        <Btn variant={vistaDadoPorCumplido === "tablero" ? "primary" : "secondary"} small onClick={() => setVistaDadoPorCumplido("tablero")}>
+          📊 Tablero
+        </Btn>
       </div>
 
+      {vistaDadoPorCumplido !== "tablero" && (
       <div style={{ maxWidth: 360, marginBottom: 20 }}>
         <FInput value={busquedaDadoPorCumplido} onChange={setBusquedaDadoPorCumplido} placeholder="🔎 Buscar por lote, referencia o cliente..." />
       </div>
+      )}
 
       {vistaDadoPorCumplido === "pendientes" ? (
         <>
@@ -4180,6 +4186,9 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases, puedeSincroni
             </div>
           )}
         </>
+      ) : vistaDadoPorCumplido === "tablero" ? (
+        // (2026-11-16, a pedido de Fredy) Tablero: dinero recaudado con las bases (unidades despachadas × base) por mes, total / por base / por cliente, contra presupuesto.
+        <DadoPorCumplidoTablero lotes={lotes} bases={bases} db={db} isAdmin={isAdmin} currentUser={currentUser} />
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {isAdmin && aprobados.length > 0 && (
