@@ -300,7 +300,7 @@ export default function CostosGeneralView({ db }) {
   // Nombres anteriores de los trabajadores de Corte (se guardan al renombrar en Admin Corte → Nómina).
   const [aliasCorte, setAliasCorte] = useState({});
   // Datos de Nómina para la «Ayuda por quincena»: liquidaciones de destajo, horas, producción y causación manual del mes.
-  const [nominaQ, setNominaQ] = useState({ liquidaciones: [], horas: [], produccion: [], causaciones: [] });
+  const [nominaQ, setNominaQ] = useState({ liquidaciones: [], horas: [], produccion: [], causaciones: [], ajustes: [] });
   useEffect(() => {
     let vivo = true;
     getDoc(doc(db, "costos_config", "general"))
@@ -447,13 +447,14 @@ export default function CostosGeneralView({ db }) {
       getDocs(query(collection(db, "nomina_horas"), where("fecha", ">=", ini), where("fecha", "<=", fin))),
       getDocs(query(collection(db, "nomina_produccion"), where("fecha", ">=", ini), where("fecha", "<=", fin))),
       getDocs(collection(db, "nomina_causacion_manual")),
+      getDocs(query(collection(db, "nomina_ajustes_destajo"), where("periodoId", ">=", `${ym}-Q1`), where("periodoId", "<=", `${ym}-Q2`))).catch(() => ({ docs: [] })),
     ])
-      .then(([liq, hor, pro, cau]) => {
+      .then(([liq, hor, pro, cau, aju]) => {
         if (!vivo) return;
         const f = (s) => s.docs.map((d) => ({ ...d.data(), id: d.id }));
-        setNominaQ({ liquidaciones: f(liq), horas: f(hor), produccion: f(pro), causaciones: f(cau).filter((c) => String(c.id).includes(`__${ym}-Q`)) });
+        setNominaQ({ liquidaciones: f(liq), horas: f(hor), produccion: f(pro), causaciones: f(cau).filter((c) => String(c.id).includes(`__${ym}-Q`)), ajustes: f(aju) });
       })
-      .catch(() => { if (vivo) setNominaQ({ liquidaciones: [], horas: [], produccion: [], causaciones: [] }); });
+      .catch(() => { if (vivo) setNominaQ({ liquidaciones: [], horas: [], produccion: [], causaciones: [], ajustes: [] }); });
     return () => { vivo = false; };
   }, [db, ym]);
 
@@ -721,14 +722,14 @@ export default function CostosGeneralView({ db }) {
       if (delArea) {
         return {
           titulo: `${nombreArea} — ${mesTxt}`,
-          sub: "Cada trabajador del área: lo que produjo, lo que se le pagó, su ayuda o excedente y su provisión. Extra = ayuda del mes + provisión (solo lo que cuenta). «Ayuda por quincena (Nómina)» es la misma de Centro de Costo: cuenta las horas trabajadas y no netea entre quincenas; no se suma al extra.",
+          sub: "Cada trabajador del área: lo que produjo, lo que se le pagó, su ayuda o excedente y su provisión. Extra = ayuda del mes + provisión (solo lo que cuenta). «Ayuda por quincena (Nómina)» es lo que se puso de verdad en cada quincena de Nómina Destajo (Ajuste manual + Ayuda salario mínimo); no netea entre quincenas y no se suma al extra.",
           total: money(filas.reduce((s, f) => s + f.extra, 0)),
           columnas: [
             { k: "nombre", label: "Trabajador", izq: true }, { k: "valor", label: "Produjo", suma: true }, { k: "costo", label: "Le pagamos", suma: true }, colAyuda("Ayuda del mes"), colSw("ayuda"), { k: "ayudaQ", label: "Ayuda por quincena (Nómina)", suma: true, resalta: true, ver: (f) => (f.ayudaQ == null ? "—" : money(f.ayudaQ)) }, { k: "excedente", label: "Excedente (no se resta)", suma: true }, colProv("provision", "Provisión"), colSw("provision"), { k: "extra", label: "Extra total", suma: true }, colFiscal,
           ],
           filas, nombreExcel: `${nombreArea.replace(/ /g, "_")}_${ym}`, vacio: "Sin trabajadores para este mes.", onClose: cerrar,
           accion: areaV ? <ControlesArea areas={[areaV]} onAlternar={alternarAreaDestajo} /> : null,
-          nota: `${avisoApagado} ${[...ayudaQ.values()].some((x) => x.enCurso) ? "La «Ayuda por quincena» solo cuenta quincenas ya terminadas; la que sigue en curso se suma cuando termine. «—» = persona que no es de destajo o que se mide por equipos." : "«—» = persona que no es de destajo o que se mide por equipos (Corte). Las quincenas sin liquidación confirmada usan la causación manual o el registro de producción."}${[...ayudaQ.values()].some((x) => x.sinLiquidar) ? " Una quincena ya terminada que todavía no tiene liquidación, causación ni producción registrada queda «sin liquidar» y no suma ayuda hasta que se confirme en Nómina." : ""}${msgAreas ? ` ${msgAreas}` : ""}`,
+          nota: `${avisoApagado} ${[...ayudaQ.values()].some((x) => x.enCurso) ? "La «Ayuda por quincena» solo cuenta quincenas ya terminadas; la que sigue en curso se suma cuando termine. «—» = persona que no es de destajo o que se mide por equipos." : "«—» = persona que no es de destajo o que se mide por equipos (Corte). Una quincena sin liquidación confirmada usa su Ajuste manual si ya lo tiene; si hay producción u horas registradas, estima lo que falta para el mínimo de la ficha."}${[...ayudaQ.values()].some((x) => x.sinLiquidar) ? " Una quincena ya terminada que todavía no tiene liquidación, causación ni producción registrada queda «sin liquidar» y no suma ayuda hasta que se confirme en Nómina." : ""}${msgAreas ? ` ${msgAreas}` : ""}`,
         };
       }
       return {
