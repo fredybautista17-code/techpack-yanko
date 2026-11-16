@@ -6560,26 +6560,10 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
   }, [trabajadoresArea, periodosDestajoSeleccionados, liquidacionesDestajo, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC, hoy]);
   const totalAyudaQuincenas = detalleQuincenasDestajoCC.reduce((s, q) => s + q.ayudaTotal, 0);
   const totalCostoIndirectoQuincenas = detalleQuincenasDestajoCC.reduce((s, q) => s + q.costoIndirectoTotal, 0);
-  // (2026-11-16, a pedido de Fredy) Referencia para la tarjeta 🆘: lo que de verdad se puso en la nómina por encima de lo producido, en las
-  // quincenas ya liquidadas del periodo = Ajuste manual (nomina_ajustes_destajo, solo si es positivo) + Ayuda salario mínimo de la liquidación.
-  // Varía (unas veces se completa a $2.000.000 y otras a menos), por eso el número grande usa lo garantizado y esto solo se muestra como referencia.
-  const ayudaPagadaNomina = useMemo(() => {
-    let total = 0;
-    let liquidadas = 0;
-    let pendientes = 0;
-    (trabajadoresArea || []).filter((t) => t.tipoNomina === "Destajo").forEach((t) => (periodosDestajoSeleccionados || []).forEach((pid) => {
-      const liq = (liquidacionesDestajo || []).find((l) => l.trabajadorId === t.id && l.periodoId === pid);
-      if (!liq) { pendientes++; return; }
-      liquidadas++;
-      const aj = (ajustesDestajoCC || []).find((a) => a.id === `${t.id}__${pid}`);
-      const manual = liq.salarioMinimoGarantizado ? 0 : Math.max(0, Number(aj ? aj.valor : liq.ajusteValor) || 0);
-      total += manual + (Number(liq.ayudaSalarioMinimo) || 0);
-    }));
-    return { total, liquidadas, pendientes };
-  }, [trabajadoresArea, periodosDestajoSeleccionados, liquidacionesDestajo, ajustesDestajoCC]);
-  const refPagadaNomina = ayudaPagadaNomina.liquidadas > 0
-    ? ` · pagado en nómina ${fmtMoney(ayudaPagadaNomina.total)}${ayudaPagadaNomina.pendientes > 0 ? ` (faltan ${ayudaPagadaNomina.pendientes} sin liquidar)` : ""}`
-    : ayudaPagadaNomina.pendientes > 0 ? " · pagado en nómina: sin liquidar" : "";
+  // (2026-11-16, a pedido de Fredy) Total de la tarjeta 🆘 = ayuda de nómina (tarjeta 🩹) + costo indirecto (tarjeta ⏱️).
+  // Antes se usaba «ayudado» (garantizado − producido), que ya traía las horas dentro del garantizado, y al sumarle el costo indirecto
+  // las horas se contaban dos veces.
+  const totalSosAyudaMasIndirecto = totalAyudaQuincenas + totalCostoIndirectoQuincenas;
   const totalUnidades = filas.reduce((s, f) => s + f.unidades, 0);
   const totalValor = filas.reduce((s, f) => s + f.valorProducido, 0);
   const totalCosto = filas.reduce((s, f) => s + (f.sinSueldo ? 0 : f.costo), 0);
@@ -7473,7 +7457,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
                 {presupuestoPeriodoArea > 0 && (
                   <KPI icon={dentroPresupuesto ? "✅" : "⚠️"} label="Presupuesto nómina" value={`${pctPresupuesto.toFixed(0)}%`} color={dentroPresupuesto ? C.green : C.red} bg={dentroPresupuesto ? C.greenBg : C.redBg} sub={dentroPresupuesto ? "✓ Dentro del presupuesto" : "⚠ Se pasó del presupuesto"} />
                 )}
-                <KPI icon="🆘" label="Total ayudado + costo indirecto" value={fmtMoney(totalAyuda + totalCostoIndirectoQuincenas)} color={C.red} bg={C.redBg} sub={`ayudado ${fmtMoney(totalAyuda)} (garantizado − producido) + costo indirecto ${fmtMoney(totalCostoIndirectoQuincenas)} · ${textoAyudados}${refPagadaNomina}`} />
+                <KPI icon="🆘" label="Total ayudado + costo indirecto" value={fmtMoney(totalSosAyudaMasIndirecto)} color={C.red} bg={C.redBg} sub={`ayuda de nómina ${fmtMoney(totalAyudaQuincenas)} + costo indirecto ${fmtMoney(totalCostoIndirectoQuincenas)} · ${textoAyudados}`} />
                 <KPI icon="🩹" label="Ayuda por quincena (Nómina)" value={fmtMoney(totalAyudaQuincenas)} color={C.amber} bg={C.amberBg} sub="cuenta las horas trabajadas, sin netear entre quincenas -- ver detalle abajo" />
                 <KPI icon="📈" label="Total excedente" value={fmtMoney(totalExcedente)} color={C.green} bg={C.greenBg} sub="no se resta" />
                 <KPI icon="⏱️" label="Costo indirecto" value={fmtMoney(totalCostoIndirectoQuincenas)} color={C.amber} bg={C.amberBg} sub="horas trabajadas causadas -- no es costo del producto, ver detalle abajo" />
