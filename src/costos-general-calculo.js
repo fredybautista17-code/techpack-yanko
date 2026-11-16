@@ -202,7 +202,8 @@ export function resumenFiscal(liquidaciones, fichas, areasFuera, excepciones) {
 // Interruptores de destajo (2026-11-05): cada área y cada persona decide por separado si su AYUDA cuenta y si su PROVISIÓN cuenta.
 // CORTE arranca con la provisión fuera (su sueldo y prestaciones ya van en el costo del lote) y la ayuda dentro.
 export const DESTAJO_AYUDA_FUERA_DEFECTO = [];
-export const DESTAJO_PROVISION_FUERA_DEFECTO = ["CORTE"];
+// (2026-11-16) MAQUILA: su nómina ya se cubre con sus ventas; solo cuenta su ayuda de las quincenas, y su provisión arranca fuera.
+export const DESTAJO_PROVISION_FUERA_DEFECTO = ["CORTE", "MAQUILA"];
 export const clavePersonaDestajo = (claveArea, id, nombre) => `${claveArea}|${id ?? nombre}`;
 // ¿Cuenta? Una excepción propia (true/false) manda sobre la regla de su área.
 export function cuentaDestajo(areasFuera, excepciones, claveArea, clavePersona) {
@@ -229,7 +230,9 @@ export function destajoDelMes(areas, fichas, equiposCorte, opc) {
         const ficha = fichaDeTrabajador(t, fichas);
         const valor = num(t.valor);
         const costo = num(t.costo);
-        const resultado = valor - costo;
+        // `ayudaFija` (solo MAQUILA): la ayuda ya viene calculada de las quincenas de la nómina; pagado − producido no sirve porque su producción
+        // no se mide por trabajador. Se expresa como resultado negativo para que toda la pantalla la trate igual que cualquier otra ayuda.
+        const resultado = t.ayudaFija != null ? -Math.max(0, num(t.ayudaFija)) : valor - costo;
         const prov = provisionDeTrabajador(costo, ficha);
         const key = clavePersonaDestajo(a.clave, t.id, t.nombre);
         const cuentaAyuda = cuentaDestajo(o.ayudaFuera, o.ayudaExc, a.clave, key);

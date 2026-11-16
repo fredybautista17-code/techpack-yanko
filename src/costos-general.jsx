@@ -310,12 +310,16 @@ export default function CostosGeneralView({ db }) {
         if (d.data().excepciones && typeof d.data().excepciones === "object") setExcepciones(d.data().excepciones);
         const g = d.data();
         const obj = (x) => (x && typeof x === "object" && !Array.isArray(x) ? x : {});
-        setDestajoCfg((c) => ({
+        setDestajoCfg((c) => {
+          // (2026-11-16) Maquila arranca con la provisión fuera, también si ya había una elección guardada (una sola vez: luego manda lo que elija).
+          const provG = Array.isArray(g.destajoProvisionFuera) ? g.destajoProvisionFuera : c.provisionFuera;
+          return {
           ayudaFuera: Array.isArray(g.destajoAyudaFuera) ? g.destajoAyudaFuera : c.ayudaFuera,
-          provisionFuera: Array.isArray(g.destajoProvisionFuera) ? g.destajoProvisionFuera : c.provisionFuera,
+          provisionFuera: g.destajoMaquilaProvInicial || provG.some((x) => normTexto(x) === "MAQUILA") ? provG : [...provG, "MAQUILA"],
           ayudaExc: obj(g.destajoAyudaExc),
           provisionExc: obj(g.destajoProvisionExc),
-        }));
+          };
+        });
       })
       .catch(() => {});
     // Equipos de Corte (quién es cortador, ayudante o apoyo): se arman en Corte → Centro de Costo.
@@ -359,7 +363,7 @@ export default function CostosGeneralView({ db }) {
   async function guardarDestajo(nuevo) {
     setDestajoCfg(nuevo);
     setMsgAreas("");
-    try { await setDoc(doc(db, "costos_config", "general"), { destajoAyudaFuera: nuevo.ayudaFuera, destajoProvisionFuera: nuevo.provisionFuera, destajoAyudaExc: nuevo.ayudaExc, destajoProvisionExc: nuevo.provisionExc, actualizadoEn: new Date().toISOString() }, { merge: true }); }
+    try { await setDoc(doc(db, "costos_config", "general"), { destajoAyudaFuera: nuevo.ayudaFuera, destajoProvisionFuera: nuevo.provisionFuera, destajoAyudaExc: nuevo.ayudaExc, destajoProvisionExc: nuevo.provisionExc, destajoMaquilaProvInicial: true, actualizadoEn: new Date().toISOString() }, { merge: true }); }
     catch (e) { setMsgAreas(`No se pudo guardar la elección: ${e?.message || e}`); }
   }
   // tipo: "ayuda" | "provision". Interruptor del área: si todo cuenta lo apaga; si no, lo enciende. Borra las excepciones de sus personas.
@@ -457,6 +461,12 @@ export default function CostosGeneralView({ db }) {
   const lineasGastos = gastosEdit || datos.gastosMes?.lineas || datos.gastosAnterior?.lineas || [];
 
   // Misma regla de fuentes que el panel «Año» de Centro de Costo: histórico con prioridad > CORTE en vivo (cortes de ATLAS) > histórico > cierres diarios.
+  // (2026-11-16, a pedido de Fredy) MAQUILA: la ayuda es la «Ayuda por quincena (Nómina)» de cada persona, no pagado − producido (su producción
+  // no se mide por trabajador y toda la nómina saldría como ayuda).
+  const ayudaQMaquila = useMemo(() => {
+    const t = cierresResueltos.get(`MAQUILA|${ym}`)?.trabajadores || [];
+    return ayudaQuincenasPorPersona(ym, t.map((x) => ({ id: x.id, nombre: x.nombre, tipoNomina: x.tipoNomina || "" })), { fichas: datos.fichas, ...nominaQ }, hoy.toISOString().slice(0, 10));
+  }, [cierresResueltos, ym, datos.fichas, nominaQ, hoy]);
   const areasDestajo = useMemo(() => AREAS_HISTORICO.map((a) => {
     const r = cierresResueltos.get(`${a.clave}|${ym}`);
     const m = datosArea[a.clave]?.meses?.[mes];
@@ -464,10 +474,10 @@ export default function CostosGeneralView({ db }) {
       const filas = filasCorteMes(pedidosCorte, trabajadoresCorte, ym, congeladosCorte);
       if (filas.length) return { clave: a.clave, nombre: a.nombre, trabajadores: filas, dias: 0, fuente: "vivo" };
     }
-    if (m?.fuente !== "historico" && r && r.trabajadores?.length) return { clave: a.clave, nombre: a.nombre, trabajadores: a.clave === "CORTE" ? unirPorAlias(r.trabajadores, aliasCorte) : r.trabajadores, dias: r.dias, fuente: "cierre" };
+    if (m?.fuente !== "historico" && r && r.trabajadores?.length) return { clave: a.clave, nombre: a.nombre, trabajadores: a.clave === "CORTE" ? unirPorAlias(r.trabajadores, aliasCorte) : a.clave === "MAQUILA" ? r.trabajadores.map((t) => ({ ...t, ayudaFija: ayudaQMaquila.get(t.id)?.total ?? 0 })) : r.trabajadores, dias: r.dias, fuente: "cierre" };
     if (m && (m.valor > 0 || m.costo > 0)) return { clave: a.clave, nombre: a.nombre, agregado: { valor: m.valor, costo: m.costo }, fuente: m.fuente };
     return null;
-  }).filter(Boolean), [cierresResueltos, datosArea, ym, mes, aliasCorte, pedidosCorte, trabajadoresCorte, congeladosCorte]);
+  }).filter(Boolean), [cierresResueltos, datosArea, ym, mes, aliasCorte, pedidosCorte, trabajadoresCorte, congeladosCorte, ayudaQMaquila]);
 
   // Toda la nómina que no es destajo puro, con su tipo: Fiscal, Fiscal Destajo y Prestación de Servicios.
   const liqTodas = useMemo(() => [
