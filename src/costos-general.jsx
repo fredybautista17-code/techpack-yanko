@@ -15,6 +15,7 @@ import { getFunctions, httpsCallable } from "firebase/functions";
 import { useCentroCostoDatos, filasCorteMes } from "./centro-costo-historico";
 import { AREAS_HISTORICO, normTexto } from "./centro-costo-historico-parser";
 import { ayudaQuincenasPorPersona } from "./ayuda-quincena";
+import { diasDeTrabajoDelMes } from "./dias-habiles";
 import { mismoNombre } from "./corte-equipos";
 import { unirPorAlias } from "./nombres-alias";
 import { lineasDesdeBusint, fusionarBusint } from "./costos-gastos-busint";
@@ -462,10 +463,11 @@ export default function CostosGeneralView({ db }) {
   const lineasGastos = gastosEdit || datos.gastosMes?.lineas || datos.gastosAnterior?.lineas || [];
 
   // Misma regla de fuentes que el panel «Año» de Centro de Costo: histórico con prioridad > CORTE en vivo (cortes de ATLAS) > histórico > cierres diarios.
-  // (2026-11-16, a pedido de Fredy) Áreas de destajo que no son Corte (Zona Calor, Control de Calidad, Maquila): el cierre guardado en
-  // Planeación asigna a TODAS las personas el sueldo + auxilio de la ficha (≈ $2.090.909 iguales) y no lo que se les pagó en Nómina Destajo.
-  // Aquí, para quien es de destajo, «Produjo» y «Le pagamos» salen de sus liquidaciones confirmadas del mes (producción real y neto a pagar) y
-  // la ayuda es la de las quincenas de la nómina (Ajuste manual + Ayuda salario mínimo). Una quincena sin liquidar no suma. No toca los cierres guardados.
+  // (2026-11-16, a pedido de Fredy) Zona Calor y Control de Calidad usan el cierre guardado con la base correcta (sueldo de la ficha ÷ días de
+  // trabajo reales del mes, ver normalizarCierresDiarios). MAQUILA no registra producción por persona en el cierre, así que, como destajo que es,
+  // se mide igual pero con la nómina: «Produjo» = producción (+ horas) de sus liquidaciones confirmadas y «Le pagamos» = la base del sueldo de la
+  // ficha repartida por días de trabajo, solo de las quincenas ya liquidadas (una sin liquidar no cuenta, ni su base ni su producción).
+  // La columna «Ayuda por quincena (Nómina)» aparte sigue siendo lo realmente puesto (Ajuste manual + Ayuda salario mínimo).
   const ayudaQAreas = useMemo(() => {
     const m = new Map();
     AREAS_HISTORICO.forEach((a) => {
@@ -475,23 +477,23 @@ export default function CostosGeneralView({ db }) {
     });
     return m;
   }, [cierresResueltos, ym, datos.fichas, nominaQ, hoy]);
-  const realDestajoMes = (id) => {
+  const sobreNomina = (t, esMaquila) => {
+    if (!esMaquila) return t;
+    if (!ayudaQAreas.get(t.id)) return { ...t, ayudaFija: 0 };
+    if (!nominaQ.listo) return { ...t, valor: 0, costo: 0 };
+    const ficha = (datos.fichas || []).find((f) => f.id === t.id);
+    const mensual = (Number(ficha?.sueldo) || 0) + (Number(ficha?.auxilioTransporte) || 0);
+    const [anio, mm] = ym.split("-").map(Number);
+    const total = diasDeTrabajoDelMes(anio, mm);
+    const dQ1 = diasDeTrabajoDelMes(anio, mm, 15);
     let valor = 0;
     let costo = 0;
     (nominaQ.liquidaciones || []).forEach((l) => {
-      if (l.trabajadorId === id && l.periodoId >= `${ym}-Q1` && l.periodoId <= `${ym}-Q2`) {
-        valor += Number(l.produccionReal) || 0;
-        costo += Number(l.netoAPagar) || 0;
-      }
+      if (l.trabajadorId !== t.id || (l.periodoId !== `${ym}-Q1` && l.periodoId !== `${ym}-Q2`)) return;
+      valor += (Number(l.produccionReal) || 0) + (Number(l.totalHoras) || 0);
+      costo += total ? (mensual * (l.periodoId === `${ym}-Q1` ? dQ1 : total - dQ1)) / total : 0;
     });
-    return { valor, costo };
-  };
-  const sobreNomina = (t, esMaquila) => {
-    const q = ayudaQAreas.get(t.id);
-    if (!q) return esMaquila ? { ...t, ayudaFija: 0 } : t;
-    if (!nominaQ.listo) return esMaquila ? { ...t, ayudaFija: q.total } : t;
-    const real = realDestajoMes(t.id);
-    return { ...t, valor: real.valor, costo: real.costo, ayudaFija: q.total };
+    return { ...t, valor, costo };
   };
   const areasDestajo = useMemo(() => AREAS_HISTORICO.map((a) => {
     const r = cierresResueltos.get(`${a.clave}|${ym}`);
@@ -747,7 +749,7 @@ export default function CostosGeneralView({ db }) {
       if (delArea) {
         return {
           titulo: `${nombreArea} — ${mesTxt}`,
-          sub: "Cada trabajador del área: lo que produjo, lo que se le pagó, su ayuda o excedente y su provisión. Extra = ayuda del mes + provisión (solo lo que cuenta). «Ayuda por quincena (Nómina)» es lo que se puso de verdad en cada quincena de Nómina Destajo (Ajuste manual + Ayuda salario mínimo); no netea entre quincenas y no se suma al extra. En destajo, «Produjo» y «Le pagamos» salen de las liquidaciones confirmadas del mes (producción real y neto a pagar).",
+          sub: "Cada trabajador del área: lo que produjo, lo que se le pagó, su ayuda o excedente y su provisión. Extra = ayuda del mes + provisión (solo lo que cuenta). «Ayuda por quincena (Nómina)» es lo que se puso de verdad en cada quincena de Nómina Destajo (Ajuste manual + Ayuda salario mínimo); no netea entre quincenas y no se suma al extra. En Maquila, «Produjo» sale de las liquidaciones confirmadas del mes y «Le pagamos» es el sueldo de la ficha repartido por días de trabajo (solo de las quincenas ya liquidadas).",
           total: money(filas.reduce((s, f) => s + f.extra, 0)),
           columnas: [
             { k: "nombre", label: "Trabajador", izq: true }, { k: "valor", label: "Produjo", suma: true }, { k: "costo", label: "Le pagamos", suma: true }, colAyuda("Ayuda del mes"), colSw("ayuda"), { k: "ayudaQ", label: "Ayuda por quincena (Nómina)", suma: true, resalta: true, ver: (f) => (f.ayudaQ == null ? "—" : money(f.ayudaQ)) }, { k: "excedente", label: "Excedente (no se resta)", suma: true }, colProv("provision", "Provisión"), colSw("provision"), { k: "extra", label: "Extra total", suma: true }, colFiscal,

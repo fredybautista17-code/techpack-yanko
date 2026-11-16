@@ -3,7 +3,7 @@ import { initializeApp, getApps } from "firebase/app";
 import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc } from "firebase/firestore";
 import { calcularEquiposCorte } from "./corte-equipos";
 import { unirPorAlias } from "./nombres-alias";
-import { esDiaDeTrabajoISO } from "./dias-habiles";
+import { esDiaDeTrabajoISO, diasDeTrabajoDelMes } from "./dias-habiles";
 import { AREAS_HISTORICO, claveArea, nombreAreaPorClave, normTexto, parsearHojaHistorico, unirResultados } from "./centro-costo-historico-parser";
 
 // ─── CENTRO DE COSTO — HISTÓRICO DEL AÑO POR ÁREA ───────────────────────────
@@ -86,6 +86,32 @@ function nombreDia(dia) {
   return DIAS_SEMANA[new Date(y, m - 1, d).getDay()];
 }
 const claveFechaDia = (dia) => String(dia).split("/").reverse().join("");
+
+// (2026-11-16, a pedido de Fredy) El sueldo de la ficha (sueldo + auxilio) se reparte entre los días de trabajo REALES del mes: la base de un
+// día es sueldo ÷ días de trabajo, y la suma del mes da exactamente el sueldo. Los cierres diarios guardados usaron el divisor que había ese
+// día (octubre se guardó entre 22 y hoy el mes tiene 23 días de trabajo por los sábados puente: 23 × $90.909 = $2.090.909 en vez de $2.000.000).
+// Aquí se recalcula el costo de cada persona de cada cierre DIARIO con su ficha actual y los días reales del mes; no se reescribe nada en Firestore.
+// Si la persona no tiene ficha con sueldo (o es CORTE, que tiene su propia nómina) se deja el valor guardado.
+export function normalizarCierresDiarios(cierres, fichas) {
+  const porId = new Map((fichas || []).filter((f) => f.sueldo > 0).map((f) => [f.id, f]));
+  if (!porId.size) return cierres;
+  return (cierres || []).map((c) => {
+    if (c.periodo !== "dia" || !Array.isArray(c.detalle) || !c.detalle.length) return c;
+    const u = ubicarCierre(c);
+    if (!u) return c;
+    const dias = diasDeTrabajoDelMes(u.anio, u.mes);
+    if (!dias) return c;
+    let cambio = false;
+    const detalle = c.detalle.map((d) => {
+      const f = d.id ? porId.get(d.id) : null;
+      if (!f || claveArea(d.area || c.area) === "CORTE") return d;
+      cambio = true;
+      return { ...d, costo: (f.sueldo + f.auxilio) / dias };
+    });
+    if (!cambio) return c;
+    return { ...c, detalle, totalCosto: detalle.reduce((x, d) => x + (d.sinSueldo ? 0 : Number(d.costo) || 0), 0) };
+  });
+}
 
 // Junta los cierres guardados en una sola lectura por área y mes: si hay cierre
 // de MES se usa el último; si no, se juntan los cierres diarios del mes (el
@@ -645,7 +671,7 @@ export function useCentroCostoDatos(anioSel, claveSel) {
       onSnapshot(collection(db, "centro_costo_historico_mes"), (snap) => { setHistorico(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); setCargando(false); }, () => setCargando(false)),
       onSnapshot(collection(db, "centro_costo_historial_ayuda"), (snap) => setCierres(snap.docs.map((d) => ({ ...d.data(), id: d.id }))), () => {}),
       onSnapshot(collection(db, "pedidos_activos"), (snap) => setPedidos(snap.docs.map((d) => ({ ...d.data(), id: d.id }))), () => {}),
-      onSnapshot(collection(db, "nomina_trabajadores"), (snap) => setFichas(snap.docs.map((d) => ({ id: d.id, tipoNomina: d.data().tipoNomina }))), () => {}),
+      onSnapshot(collection(db, "nomina_trabajadores"), (snap) => setFichas(snap.docs.map((d) => ({ id: d.id, tipoNomina: d.data().tipoNomina, sueldo: Number(d.data().sueldo) || 0, auxilio: Number(d.data().auxilioTransporte) || 0 }))), () => {}),
       onSnapshot(collection(db, "corte_config"), (snap) => {
         const docs = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
         const cfg = docs.find((d) => d.id === "main") || docs[0];
@@ -676,7 +702,8 @@ export function useCentroCostoDatos(anioSel, claveSel) {
   // no se comparan. La nómina de CORTE no tiene ficha de tipo de nómina, así que entra completa.
   const tiposDestajo = useMemo(() => new Set(fichas.filter((f) => f.tipoNomina === "Destajo" || f.tipoNomina === "Fiscal Destajo").map((f) => f.id)), [fichas]);
   const incluir = useMemo(() => (t) => t.area === "CORTE" || !fichas.length || tiposDestajo.has(t.id), [fichas, tiposDestajo]);
-  const cierresResueltos = useMemo(() => unificarTrabajadoresRepetidos(resolverCierres(cierres, incluir)), [cierres, incluir]);
+  const cierresBase = useMemo(() => normalizarCierresDiarios(cierres, fichas), [cierres, fichas]);
+  const cierresResueltos = useMemo(() => unificarTrabajadoresRepetidos(resolverCierres(cierresBase, incluir)), [cierresBase, incluir]);
 
   // (2026-10-26) Se arma por año para que el Tablero de costos también pueda leer años anteriores (Total).
   // Para un año, devuelve una lectura por área y mes: { valor, costo, unidades, fuente }.
@@ -723,7 +750,7 @@ export function useCentroCostoDatos(anioSel, claveSel) {
     return out;
   }, [historico, cierresResueltos, pedidos, trabajadoresCorte, congelados]);
   const datosArea = useMemo(() => construirDatosArea(anioSel, claveSel), [construirDatosArea, anioSel, claveSel]);
-  return { historico, cierres, pedidos, trabajadoresCorte, fichas, cargando, cierresResueltos, datosArea, construirDatosArea, incluirTrabajador: incluir, congelados };
+  return { historico, cierres: cierresBase, pedidos, trabajadoresCorte, fichas, cargando, cierresResueltos, datosArea, construirDatosArea, incluirTrabajador: incluir, congelados };
 }
 
 export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentUser, puedeCargar }) {
