@@ -68,6 +68,21 @@ export function urgenciaFactura(datos, fechaCorreo, hoy = new Date()) {
   return "normal";
 }
 
+// ── Por qué una factura sigue «por registrar» ──
+// Devuelve null si no hay corte para comparar. Si no hay facturas abiertas del proveedor: { tipo: "sin_proveedor" }. Si el proveedor
+// aparece en el corte pero ninguna factura coincide: { tipo: "proveedor_sin_factura", proveedor, total, facturas: [las 3 más
+// parecidas por valor] } para que se vea a simple vista si es un tema de número, de valor o de nombre.
+export function diagnosticoBusint(datos, cxpDocs) {
+  if (!cxpDocs || !cxpDocs.length) return null;
+  const docs = cxpDocs.filter((d) => comparteNombre(datos.proveedor, d.nombre));
+  if (!docs.length) return { tipo: "sin_proveedor" };
+  const todas = docs.flatMap((d) => (d.facturas || []).map((f) => ({ proveedor: d.nombre, nfact: f.nfact, facTotal: Number(f.facTotal) || 0, saldo: Number(f.saldo) || 0, vence: String(f.fechaVctoISO || "").slice(0, 10) })));
+  const dist = (f) => (datos.valor > 0 ? Math.abs(f.facTotal - datos.valor) : 0);
+  const cercanas = [...todas].sort((a, b) => dist(a) - dist(b) || String(b.vence).localeCompare(String(a.vence))).slice(0, 3)
+    .map((f) => ({ ...f, parecida: datos.valor > 0 && Math.abs(f.facTotal - datos.valor) <= datos.valor * 0.02 }));
+  return { tipo: "proveedor_sin_factura", proveedor: docs[0].nombre, total: todas.length, facturas: cercanas };
+}
+
 // ── Agrupar los correos repetidos de la misma factura (recordatorios, reenvíos) en una sola fila ──
 // Misma factura = mismo proveedor (por las palabras de su nombre) y mismo número; si el correo no trae número, mismo
 // proveedor + mismo valor + misma fecha de pago; si tampoco, cada correo va aparte.
@@ -106,6 +121,6 @@ export function agruparFacturas(mensajes, cxpDocs, hoy = new Date()) {
     const primera = ordenados[ordenados.length - 1].fecha;
     const coincidencia = cxpDocs ? buscarEnBusint(base, cxpDocs) : null;
     const estado = estadoGrupo(ordenados, coincidencia);
-    return { clave, m: ordenados[0], mensajes: ordenados, n: ordenados.length, datos: base, primera, coincidencia, estado, urg: estado === "por_registrar" ? urgenciaFactura(base, primera, hoy) : "normal" };
+    return { clave, m: ordenados[0], mensajes: ordenados, n: ordenados.length, datos: base, primera, coincidencia, estado, diagnostico: estado === "por_registrar" ? diagnosticoBusint(base, cxpDocs) : null, urg: estado === "por_registrar" ? urgenciaFactura(base, primera, hoy) : "normal" };
   });
 }

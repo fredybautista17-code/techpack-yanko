@@ -16,7 +16,8 @@ import { agruparFacturas, diasDesde, diasHasta } from "./correos-facturas-calcul
 // «Facturas recibidas»: las facturas de proveedores que llegan por correo se listan con su estado (por registrar / registrada
 // en Busint / descartada). NO crean deuda: Cuentas por Pagar viene de Busint; aquí solo se compara con el último corte
 // (contabilidad_cxp_facturas) para saber si contabilidad ya la registró y avisar de las que se acercan a vencer. Los correos
-// repetidos de una misma factura (recordatorios, reenvíos) se agrupan en una sola fila y cuentan una vez.
+// repetidos de una misma factura (recordatorios, reenvíos) se agrupan en una sola fila y cuentan una vez. Cada fila «por
+// registrar» explica por qué (el proveedor no aparece en el corte, o aparece pero sin esa factura, con las 3 más parecidas).
 // Adjuntos: no se guardan en Firebase; «Ver» / «Descargar» se los pide a Gmail en ese momento (función correosAdjunto, hasta
 // 6 MB; PDF e imágenes se ven en una pestaña nueva, lo demás se descarga) y «Abrir en Gmail» lleva al correo original.
 
@@ -233,6 +234,22 @@ function FacturasRecibidas({ filas, errorCxp, fechaCorte, colorDe, nombreDe, onV
                 </div>
                 <div style={{ flex: "2 1 230px", fontSize: 12.5 }}>
                   {f.estado === "por_registrar" && <Pastilla bg={C.amberBg} color={C.amber}>Por registrar</Pastilla>}
+                  {f.estado === "por_registrar" && f.diagnostico && f.diagnostico.tipo === "sin_proveedor" && (
+                    <div style={{ color: C.slate, marginTop: 3, lineHeight: 1.45 }}>No hay facturas abiertas de este proveedor en el corte de Busint: o aún no está registrada, o ya está pagada.</div>
+                  )}
+                  {f.estado === "por_registrar" && f.diagnostico && f.diagnostico.tipo === "proveedor_sin_factura" && (
+                    <details style={{ color: C.slate, marginTop: 3, lineHeight: 1.45 }}>
+                      <summary style={{ cursor: "pointer" }}>En Busint hay {f.diagnostico.total} factura(s) abiertas de «{f.diagnostico.proveedor}», pero ninguna con este número ni este valor. <span style={{ color: C.blue, fontWeight: 700 }}>Ver las más parecidas</span></summary>
+                      <div style={{ marginTop: 4 }}>
+                        {f.diagnostico.facturas.map((x, i) => (
+                          <div key={i} style={{ fontVariantNumeric: "tabular-nums" }}>
+                            {x.nfact} · {pesos(x.facTotal)}{x.vence ? ` · vence ${fechaDia(x.vence)}` : ""}{x.parecida ? <b style={{ color: C.amber }}> · valor parecido</b> : null}
+                          </div>
+                        ))}
+                        <div style={{ fontSize: 11.5, marginTop: 3 }}>Si una es la misma con otro número o con IVA y retenciones distintos, pulsa «Ya está registrada».</div>
+                      </div>
+                    </details>
+                  )}
                   {f.estado === "descartada" && <Pastilla bg={C.canvas} color={C.slate}>Descartada</Pastilla>}
                   {f.estado === "registrada" && <Pastilla bg={C.greenBg} color={C.green}>Registrada</Pastilla>}
                   {f.estado === "registrada" && (f.coincidencia && !f.mensajes.some((m) => m.factura?.estado === "registrada") ? <div style={{ color: C.slate, marginTop: 3 }}>En Busint: {f.coincidencia.proveedor} · factura {f.coincidencia.nfact}{f.coincidencia.tipo === "valor" ? " (coincide por valor y proveedor)" : ""}</div> : <div style={{ color: C.slate, marginTop: 3 }}>Marcada por ti</div>)}
