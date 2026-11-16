@@ -468,7 +468,7 @@ export default function CostosGeneralView({ db }) {
   // se mide igual pero con la nómina: «Produjo» = producción (+ horas) de sus liquidaciones confirmadas y «Le pagamos» = la base del sueldo de la
   // ficha repartida por días de trabajo, solo de las quincenas ya liquidadas (una sin liquidar no cuenta, ni su base ni su producción).
   // La columna «Ayuda por quincena (Nómina)» aparte sigue siendo lo realmente puesto (Ajuste manual + Ayuda salario mínimo).
-  const ayudaQAreas = useMemo(() => {
+  const ayudaQMaqNomina = useMemo(() => {
     const m = new Map();
     AREAS_HISTORICO.forEach((a) => {
       if (a.clave === "CORTE") return;
@@ -479,7 +479,7 @@ export default function CostosGeneralView({ db }) {
   }, [cierresResueltos, ym, datos.fichas, nominaQ, hoy]);
   const sobreNomina = (t, esMaquila) => {
     if (!esMaquila) return t;
-    if (!ayudaQAreas.get(t.id)) return { ...t, ayudaFija: 0 };
+    if (!ayudaQMaqNomina.get(t.id)) return { ...t, ayudaFija: 0 };
     if (!nominaQ.listo) return { ...t, valor: 0, costo: 0 };
     const ficha = (datos.fichas || []).find((f) => f.id === t.id);
     const mensual = (Number(ficha?.sueldo) || 0) + (Number(ficha?.auxilioTransporte) || 0);
@@ -505,7 +505,7 @@ export default function CostosGeneralView({ db }) {
     if (m?.fuente !== "historico" && r && r.trabajadores?.length) return { clave: a.clave, nombre: a.nombre, trabajadores: a.clave === "CORTE" ? unirPorAlias(r.trabajadores, aliasCorte) : r.trabajadores.map((t) => sobreNomina(t, a.clave === "MAQUILA")), dias: r.dias, fuente: "cierre" };
     if (m && (m.valor > 0 || m.costo > 0)) return { clave: a.clave, nombre: a.nombre, agregado: { valor: m.valor, costo: m.costo }, fuente: m.fuente };
     return null;
-  }).filter(Boolean), [cierresResueltos, datosArea, ym, mes, aliasCorte, pedidosCorte, trabajadoresCorte, congeladosCorte, ayudaQAreas, nominaQ]);
+  }).filter(Boolean), [cierresResueltos, datosArea, ym, mes, aliasCorte, pedidosCorte, trabajadoresCorte, congeladosCorte, ayudaQMaqNomina, nominaQ]);
 
   // Toda la nómina que no es destajo puro, con su tipo: Fiscal, Fiscal Destajo y Prestación de Servicios.
   const liqTodas = useMemo(() => [
