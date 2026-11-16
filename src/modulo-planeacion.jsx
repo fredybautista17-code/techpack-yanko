@@ -6546,9 +6546,18 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
         const diferenciaQ = valorTotalQ - sueldoEsperadoQ;
         if (!porQuincena.has(pid)) porQuincena.set(pid, { pid, label: labelQuincenaCC(pid), ayudaTotal: 0, costoIndirectoTotal: 0, ayudaDetalle: [], costoIndirectoDetalle: [] });
         const acc = porQuincena.get(pid);
-        if (diferenciaQ < 0) {
-          acc.ayudaTotal += -diferenciaQ;
-          acc.ayudaDetalle.push({ id: t.id, nombre: t.nombre, sueldoEsperado: sueldoEsperadoQ, valorTotal: valorTotalQ, diferencia: diferenciaQ });
+        // (2026-11-16, a pedido de Fredy) Quincena con liquidación: la ayuda es LO QUE DE VERDAD SE PUSO en Nómina (Ajuste manual positivo +
+        // Ayuda salario mínimo), igual que «¿Cubro mis costos?»; sin liquidación se estima lo que le falta para el sueldo esperado.
+        let ayudaQ = diferenciaQ < 0 ? -diferenciaQ : 0;
+        if (liq) {
+          const ajusteQ = (ajustesDestajoCC || []).find((a) => a.id === `${t.id}__${pid}`);
+          ayudaQ = liq.salarioMinimoGarantizado
+            ? (Number(liq.ayudaSalarioMinimo) || 0)
+            : Math.max(0, Number(ajusteQ ? ajusteQ.valor : liq.ajusteValor) || 0);
+        }
+        if (ayudaQ > 0) {
+          acc.ayudaTotal += ayudaQ;
+          acc.ayudaDetalle.push({ id: t.id, nombre: t.nombre, sueldoEsperado: sueldoEsperadoQ, valorTotal: valorTotalQ, diferencia: -ayudaQ });
         }
         if (horasValorQ > 0) {
           acc.costoIndirectoTotal += horasValorQ;
@@ -7458,7 +7467,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
                   <KPI icon={dentroPresupuesto ? "✅" : "⚠️"} label="Presupuesto nómina" value={`${pctPresupuesto.toFixed(0)}%`} color={dentroPresupuesto ? C.green : C.red} bg={dentroPresupuesto ? C.greenBg : C.redBg} sub={dentroPresupuesto ? "✓ Dentro del presupuesto" : "⚠ Se pasó del presupuesto"} />
                 )}
                 <KPI icon="🆘" label="Total ayudado + costo indirecto" value={fmtMoney(totalSosAyudaMasIndirecto)} color={C.red} bg={C.redBg} sub={`ayuda de nómina ${fmtMoney(totalAyudaQuincenas)} + costo indirecto ${fmtMoney(totalCostoIndirectoQuincenas)} · ${textoAyudados}`} />
-                <KPI icon="🩹" label="Ayuda por quincena (Nómina)" value={fmtMoney(totalAyudaQuincenas)} color={C.amber} bg={C.amberBg} sub="cuenta las horas trabajadas, sin netear entre quincenas -- ver detalle abajo" />
+                <KPI icon="🩹" label="Ayuda por quincena (Nómina)" value={fmtMoney(totalAyudaQuincenas)} color={C.amber} bg={C.amberBg} sub="lo realmente puesto en Nómina por quincena (Ajuste manual + Ayuda salario mínimo), sin netear -- ver detalle abajo" />
                 <KPI icon="📈" label="Total excedente" value={fmtMoney(totalExcedente)} color={C.green} bg={C.greenBg} sub="no se resta" />
                 <KPI icon="⏱️" label="Costo indirecto" value={fmtMoney(totalCostoIndirectoQuincenas)} color={C.amber} bg={C.amberBg} sub="horas trabajadas causadas -- no es costo del producto, ver detalle abajo" />
               </div>

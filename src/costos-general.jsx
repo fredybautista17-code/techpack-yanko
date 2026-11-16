@@ -478,26 +478,36 @@ export default function CostosGeneralView({ db }) {
     });
     return m;
   }, [cierresResueltos, ym, datos.fichas, nominaQ, hoy]);
+  // (2026-11-16, a pedido de Fredy) Para TODAS las áreas de destajo (no solo Maquila) con quincenas liquidadas en Nómina:
+  //   «Produjo» = producción de las liquidaciones SIN horas · «Horas» = horas trabajadas (costo de la empresa, aparte) ·
+  //   «Le pagamos» = neto a pagar + descuentos de bodega (antes de descuentos) · «Ayuda adicional» = lo realmente puesto en Nómina por quincena
+  //   (Ajuste manual + Ayuda salario mínimo, SIN netear entre quincenas: así se paga hoy) · «Excedente» = (producción + horas) − base garantizada (informativo).
+  // Quien no tiene quincenas liquidadas en el mes conserva el cierre guardado (Maquila: queda en cero, como antes).
   const sobreNomina = (t, esMaquila) => {
-    if (!esMaquila) return t;
-    if (!ayudaQMaqNomina.get(t.id)) return { ...t, ayudaFija: 0 };
-    if (!nominaQ.listo) return { ...t, valor: 0, costo: 0 };
+    const aq = ayudaQMaqNomina.get(t.id);
+    if (!aq) return esMaquila ? { ...t, ayudaFija: 0 } : t;
+    if (!nominaQ.listo) return esMaquila ? { ...t, valor: 0, costo: 0 } : t;
     const ficha = (datos.fichas || []).find((f) => f.id === t.id);
     const mensual = (Number(ficha?.sueldo) || 0) + (Number(ficha?.auxilioTransporte) || 0);
     const [anio, mm] = ym.split("-").map(Number);
     const total = diasDeTrabajoDelMes(anio, mm);
     const dQ1 = diasDeTrabajoDelMes(anio, mm, 15);
     let valor = 0;
+    let horas = 0;
     let pagado = 0;
     let base = 0;
+    let liquidadas = 0;
     (nominaQ.liquidaciones || []).forEach((l) => {
       if (l.trabajadorId !== t.id || (l.periodoId !== `${ym}-Q1` && l.periodoId !== `${ym}-Q2`)) return;
-      valor += (Number(l.produccionReal) || 0) + (Number(l.totalHoras) || 0);
+      liquidadas++;
+      valor += Number(l.produccionReal) || 0;
+      horas += Number(l.totalHoras) || 0;
       // Pagado = neto a pagar + descuentos de bodega: los descuentos se le cobran al trabajador, no bajan lo que puso la empresa.
       pagado += (Number(l.netoAPagar) || 0) + (Number(l.descuentoCobros) || 0);
       base += total ? (mensual * (l.periodoId === `${ym}-Q1` ? dQ1 : total - dQ1)) / total : 0;
     });
-    return { ...t, valor, costo: pagado, baseGarantizada: base };
+    if (!liquidadas) return esMaquila ? { ...t, valor: 0, costo: 0, baseGarantizada: 0 } : t;
+    return { ...t, valor, horas, costo: pagado, baseGarantizada: base, ayudaFija: aq.total, excedenteBase: Math.max(0, valor + horas - base) };
   };
   const areasDestajo = useMemo(() => AREAS_HISTORICO.map((a) => {
     const r = cierresResueltos.get(`${a.clave}|${ym}`);
@@ -659,7 +669,7 @@ export default function CostosGeneralView({ db }) {
     const cerrar = () => setVentana(null);
     const sinDetalle = r.destajo.areas.filter((a) => !a.detalle);
     const porEquipos = r.destajo.areas.filter((a) => a.porEquipos);
-    const personasAyuda = r.destajo.personas.filter((p) => p.resultado < 0);
+    const personasAyuda = r.destajo.personas.filter((p) => p.resultado < 0 || p.horas > 0);
     if (v.tipo === "lotes") {
       const cat = v.categoria === undefined || v.categoria === null ? null : r.recogido.categorias.find((c) => c.id === v.categoria);
       const filas = detalleLotes(datos.lotes, datos.bases, v.categoria);
@@ -690,13 +700,13 @@ export default function CostosGeneralView({ db }) {
         nota: "Para cambiar qué gastos cuentan, usa las casillas de la sección «Gastos del mes».",
       };
     }
-    const nada = { ayuda: 0, ayudaRaw: 0, ayudaCuenta: true, excedente: 0, provision: 0, provisionRaw: 0, provCuenta: true, cesantias: 0, cesantiasRaw: 0, prima: 0, primaRaw: 0, intereses: 0, interesesRaw: 0, vacaciones: 0, vacacionesRaw: 0 };
+    const nada = { horas: 0, ayuda: 0, ayudaRaw: 0, ayudaCuenta: true, excedente: 0, provision: 0, provisionRaw: 0, provCuenta: true, cesantias: 0, cesantiasRaw: 0, prima: 0, primaRaw: 0, intereses: 0, interesesRaw: 0, vacaciones: 0, vacacionesRaw: 0 };
     const filasPersonas = (lista) => lista.map((p) => {
       const cp = p.cuentaProvision;
       return {
         ...nada, nombre: p.nombre, area: p.area, ayudaQ: p.porEquipos ? null : (ayudaQ.get(p.id)?.total ?? null),
         fiscalTxt: fiscalDePersona.has(p.id ?? p.nombre) ? (fiscalDePersona.get(p.id ?? p.nombre).cuenta ? "También en nómina fiscal · cuenta" : "En nómina fiscal · fuera") : "—", fiscalCuenta: !!fiscalDePersona.get(p.id ?? p.nombre)?.cuenta,
-        valor: p.valor, costo: p.costo, ayuda: p.ayuda, ayudaRaw: p.ayudaRaw, ayudaCuenta: p.cuentaAyuda, excedente: Math.max(0, p.resultado),
+        valor: p.valor, costo: p.costo, ayuda: p.ayuda, ayudaRaw: p.ayudaRaw, ayudaCuenta: p.cuentaAyuda, horas: p.horas || 0, excedente: p.excedente || 0,
         cesantias: cp ? p.cesantias : 0, cesantiasRaw: p.cesantias, prima: cp ? p.prima : 0, primaRaw: p.prima, intereses: cp ? p.intereses : 0, interesesRaw: p.intereses, vacaciones: cp ? p.vacaciones : 0, vacacionesRaw: p.vacaciones,
         provision: p.provisionCuenta, provisionRaw: p.provision, provCuenta: cp, extra: p.extra,
         swAyuda: p.porEquipos ? null : { estado: p.cuentaAyuda ? "on" : "off", onClick: () => alternarPersonaDestajo("ayuda", p) },
@@ -733,10 +743,10 @@ export default function CostosGeneralView({ db }) {
       const filas = [...filasPersonas(personasAyuda), ...filasAreaSinDetalle(sinDetalle.filter((a) => a.ayudasTodas > 0)), ...filasPorEquipos(porEquipos.filter((a) => a.ayudasTodas > 0))].sort((a, b) => b.ayudaRaw - a.ayudaRaw);
       return {
         titulo: `Destajo: ayudas — ${mesTxt}`,
-        sub: "Personas a las que se les pagó más de lo que produjeron. Ayuda = le pagamos − produjo. Los excedentes no se restan.",
+        sub: "Personas a las que se les pagó más de lo que produjeron. Ayuda adicional = lo que se puso en Nómina por quincena para completar su mínimo; las horas trabajadas son costo aparte. Los excedentes no se restan.",
         total: money(r.destajo.ayudas),
         columnas: [
-          { k: "nombre", label: "Trabajador", izq: true }, { k: "area", label: "Área", izq: true }, { k: "valor", label: "Produjo", suma: true }, { k: "costo", label: "Le pagamos", suma: true }, colAyuda("Ayuda"), colSw("ayuda"), colFiscal,
+          { k: "nombre", label: "Trabajador", izq: true }, { k: "area", label: "Área", izq: true }, { k: "valor", label: "Produjo", suma: true }, { k: "costo", label: "Le pagamos", suma: true }, { k: "horas", label: "Horas trabajadas", suma: true }, colAyuda("Ayuda adicional"), colSw("ayuda"), colFiscal,
         ],
         filas, nombreExcel: `Destajo_ayudas_${ym}`, vacio: "Nadie recibió ayuda este mes (o aún no hay cierres de Centro de Costo).", onClose: cerrar,
         accion: <ControlesArea areas={r.destajo.areas.filter((a) => a.ayudasTodas > 0)} cual="ayuda" onAlternar={alternarAreaDestajo} />,
@@ -753,10 +763,10 @@ export default function CostosGeneralView({ db }) {
       if (delArea) {
         return {
           titulo: `${nombreArea} — ${mesTxt}`,
-          sub: "Cada trabajador del área: lo que produjo, lo que se le pagó, su ayuda o excedente y su provisión. Extra = ayuda del mes + provisión (solo lo que cuenta). «Ayuda por quincena (Nómina)» es lo que se puso de verdad en cada quincena de Nómina Destajo (Ajuste manual + Ayuda salario mínimo); no netea entre quincenas y no se suma al extra. En Maquila, «Produjo» sale de las liquidaciones confirmadas del mes y «Le pagamos» es lo realmente pagado, antes de los descuentos de bodega (solo de las quincenas ya liquidadas); la ayuda y el excedente se miden contra el sueldo de la ficha repartido por días de trabajo.",
+          sub: "Cada trabajador del área: lo que produjo, lo que se le pagó, su ayuda o excedente y su provisión. Extra = horas trabajadas + ayuda adicional + provisión (solo lo que cuenta; el interruptor de la ayuda también apaga las horas). La ayuda adicional es lo que se puso de verdad en cada quincena de Nómina Destajo (Ajuste manual + Ayuda salario mínimo), sin netear entre quincenas, que es como se paga hoy. En las quincenas ya liquidadas, «Produjo» es la producción de Nómina sin horas y «Le pagamos» es lo realmente pagado, antes de los descuentos de bodega; el excedente (producción + horas sobre el sueldo de la ficha repartido por días de trabajo) es informativo y no se resta.",
           total: money(filas.reduce((s, f) => s + f.extra, 0)),
           columnas: [
-            { k: "nombre", label: "Trabajador", izq: true }, { k: "valor", label: "Produjo", suma: true }, { k: "costo", label: "Le pagamos", suma: true }, colAyuda("Ayuda del mes"), colSw("ayuda"), { k: "ayudaQ", label: "Ayuda por quincena (Nómina)", suma: true, resalta: true, ver: (f) => (f.ayudaQ == null ? "—" : money(f.ayudaQ)) }, { k: "excedente", label: "Excedente (no se resta)", suma: true }, colProv("provision", "Provisión"), colSw("provision"), { k: "extra", label: "Extra total", suma: true }, colFiscal,
+            { k: "nombre", label: "Trabajador", izq: true }, { k: "valor", label: "Produjo", suma: true }, { k: "costo", label: "Le pagamos", suma: true }, { k: "horas", label: "Horas trabajadas", suma: true }, colAyuda("Ayuda adicional"), colSw("ayuda"), { k: "ayudaQ", label: "Ayuda por quincena (Nómina)", suma: true, resalta: true, ver: (f) => (f.ayudaQ == null ? "—" : money(f.ayudaQ)) }, { k: "excedente", label: "Excedente (no se resta)", suma: true }, colProv("provision", "Provisión"), colSw("provision"), { k: "extra", label: "Extra total", suma: true }, colFiscal,
           ],
           filas, nombreExcel: `${nombreArea.replace(/ /g, "_")}_${ym}`, vacio: "Sin trabajadores para este mes.", onClose: cerrar,
           accion: areaV ? <ControlesArea areas={[areaV]} onAlternar={alternarAreaDestajo} /> : null,

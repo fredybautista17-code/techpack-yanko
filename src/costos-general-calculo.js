@@ -241,13 +241,19 @@ export function destajoDelMes(areas, fichas, equiposCorte, opc) {
         const cuentaProvision = cuentaDestajo(o.provisionFuera, o.provisionExc, a.clave, key);
         const ayudaRaw = Math.max(0, -resultado);
         const ayuda = cuentaAyuda ? ayudaRaw : 0;
+        // (2026-11-16, a pedido de Fredy) Horas trabajadas del mes: son costo de la empresa aparte de la ayuda adicional y van con el mismo interruptor.
+        // `ayuda` = ayuda adicional (lo puesto en Nómina por encima de lo producido + horas); `excedenteBase` = lo que supera la base garantizada (informativo).
+        const horas = Math.max(0, num(t.horas));
+        const horasCuenta = cuentaAyuda ? horas : 0;
+        const excedente = t.excedenteBase != null ? Math.max(0, num(t.excedenteBase)) : Math.max(0, resultado);
         const provisionCuenta = cuentaProvision ? prov.total : 0;
         // provision = valor completo (informativo); provisionCuenta = lo que suma. extra = lo que suma (ayuda + provisión que cuentan).
-        return { id: t.id, key, nombre: t.nombre, area: a.nombre, claveArea: a.clave, tipoNomina: ficha?.tipoNomina || "", valor, costo, resultado, provision: prov.total, provisionCuenta, cuentaProvision, ayudaRaw, ayuda, cuentaAyuda, cesantias: prov.cesantias, intereses: prov.intereses, prima: prov.prima, vacaciones: prov.vacaciones, sinFicha: prov.sinFicha, extra: ayuda + provisionCuenta };
+        return { id: t.id, key, nombre: t.nombre, area: a.nombre, claveArea: a.clave, tipoNomina: ficha?.tipoNomina || "", valor, costo, resultado, provision: prov.total, provisionCuenta, cuentaProvision, ayudaRaw, ayuda, cuentaAyuda, horas, horasCuenta, excedente, cesantias: prov.cesantias, intereses: prov.intereses, prima: prov.prima, vacaciones: prov.vacaciones, sinFicha: prov.sinFicha, extra: ayuda + horasCuenta + provisionCuenta };
       }).sort((x, y) => y.extra - x.extra || y.ayudaRaw + y.provision - (x.ayudaRaw + x.provision));
-      ayudas = personas.reduce((s, p) => s + p.ayuda, 0);
-      ayudasTodas = personas.reduce((s, p) => s + p.ayudaRaw, 0);
-      excedentes = personas.reduce((s, p) => s + Math.max(0, p.resultado), 0);
+      // `ayudas` del área = ayuda adicional + horas (lo que suma al extra); el detalle por persona los muestra en columnas separadas.
+      ayudas = personas.reduce((s, p) => s + p.ayuda + p.horasCuenta, 0);
+      ayudasTodas = personas.reduce((s, p) => s + p.ayudaRaw + p.horas, 0);
+      excedentes = personas.reduce((s, p) => s + p.excedente, 0);
       provision = personas.reduce((s, p) => s + p.provisionCuenta, 0);
       provisionTodas = personas.reduce((s, p) => s + p.provision, 0);
       if (a.clave === "CORTE") {
@@ -258,7 +264,7 @@ export function destajoDelMes(areas, fichas, equiposCorte, opc) {
           ayudas = areaAyuda ? eq.ayudaGeneral : 0;
           excedentes = eq.excedenteGeneral;
           // Cada persona deja de contar su propia ayuda: la ayuda se mide por equipos y queda en el total del área (su interruptor es el del área).
-          personas = personas.map((p) => ({ ...p, resultado: 0, ayudaRaw: 0, ayuda: 0, cuentaAyuda: areaAyuda, extra: p.provisionCuenta, porEquipos: true })).sort((x, y) => y.extra - x.extra || y.provision - x.provision);
+          personas = personas.map((p) => ({ ...p, resultado: 0, ayudaRaw: 0, ayuda: 0, horas: 0, horasCuenta: 0, excedente: 0, cuentaAyuda: areaAyuda, extra: p.provisionCuenta, porEquipos: true })).sort((x, y) => y.extra - x.extra || y.provision - x.provision);
         }
       }
     } else if (a.agregado) {
