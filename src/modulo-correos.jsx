@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from "react";
 import { initializeApp, getApps } from "firebase/app";
 import { getFirestore, collection, doc, onSnapshot, query, orderBy, limit, updateDoc } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
-import { datosFactura, buscarEnBusint, estadoFactura, diasDesde, diasHasta, urgenciaFactura } from "./correos-facturas-calculo";
+import { agruparFacturas, diasDesde, diasHasta } from "./correos-facturas-calculo";
 
 // ─── CORREOS (2026-11-16, a pedido de Fredy) ─────────────────────────────────────────────────────
 // Fase 1: bandeja unificada de las cuentas de Gmail de la empresa. Una función de Firebase lee cada cuenta por IMAP
@@ -15,7 +15,8 @@ import { datosFactura, buscarEnBusint, estadoFactura, diasDesde, diasHasta, urge
 // administrador puede corregir la categoría. Solo clasifica: no responde ni envía nada.
 // «Facturas recibidas»: las facturas de proveedores que llegan por correo se listan con su estado (por registrar / registrada
 // en Busint / descartada). NO crean deuda: Cuentas por Pagar viene de Busint; aquí solo se compara con el último corte
-// (contabilidad_cxp_facturas) para saber si contabilidad ya la registró y avisar de las que se acercan a vencer.
+// (contabilidad_cxp_facturas) para saber si contabilidad ya la registró y avisar de las que se acercan a vencer. Los correos
+// repetidos de una misma factura (recordatorios, reenvíos) se agrupan en una sola fila y cuentan una vez.
 // Adjuntos: no se guardan en Firebase; «Ver» / «Descargar» se los pide a Gmail en ese momento (función correosAdjunto, hasta
 // 6 MB; PDF e imágenes se ven en una pestaña nueva, lo demás se descarga) y «Abrir en Gmail» lleva al correo original.
 
@@ -176,7 +177,7 @@ function FacturasRecibidas({ filas, errorCxp, fechaCorte, colorDe, nombreDe, onV
   const porRegistrar = filas.filter((f) => f.estado === "por_registrar");
   const suma = porRegistrar.reduce((a, f) => a + (f.datos.tipo === "nota_credito" ? 0 : f.datos.valor || 0), 0);
   const nPronto = porRegistrar.filter((f) => { const h = diasHasta(f.datos.vence); return h !== null && h <= 7; }).length;
-  const nViejas = porRegistrar.filter((f) => { const d = diasDesde(f.m.fecha); return d !== null && d >= 3; }).length;
+  const nViejas = porRegistrar.filter((f) => { const d = diasDesde(f.primera); return d !== null && d >= 3; }).length;
   const peso = { alta: 0, media: 1, normal: 2 };
   const visibles = filas
     .filter((f) => filtro === "todas" || f.estado === filtro)
@@ -212,13 +213,13 @@ function FacturasRecibidas({ filas, errorCxp, fechaCorte, colorDe, nombreDe, onV
           {visibles.map((f) => {
             const u = URGENCIA[f.urg] || URGENCIA.normal;
             const h = diasHasta(f.datos.vence);
-            const d = diasDesde(f.m.fecha);
+            const d = diasDesde(f.primera);
             const col = colorDe(f.m.cuentaId)[0];
             return (
-              <div key={f.m.id} style={{ display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap", padding: "11px 14px", borderBottom: `1px solid ${C.border}`, borderLeft: `4px solid ${f.estado === "por_registrar" ? u.color : "transparent"}`, background: f.estado === "por_registrar" ? u.bg : C.white, opacity: f.estado === "descartada" ? 0.65 : 1 }}>
+              <div key={f.clave} style={{ display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap", padding: "11px 14px", borderBottom: `1px solid ${C.border}`, borderLeft: `4px solid ${f.estado === "por_registrar" ? u.color : "transparent"}`, background: f.estado === "por_registrar" ? u.bg : C.white, opacity: f.estado === "descartada" ? 0.65 : 1 }}>
                 <div style={{ flex: "2 1 220px", minWidth: 200 }}>
                   <div style={{ fontWeight: 800, fontSize: 13.5 }}>{f.datos.proveedor || "Proveedor sin identificar"}</div>
-                  <div style={{ fontSize: 12, color: C.slate }}>{f.datos.tipo === "nota_credito" ? <Pastilla bg={C.violetBg} color={C.violet}>Nota crédito</Pastilla> : f.datos.tipo === "nota_debito" ? <Pastilla bg={C.violetBg} color={C.violet}>Nota débito</Pastilla> : null} {f.datos.numero ? `${f.datos.tipo ? "N.º" : "Factura"} ${f.datos.numero}` : "Sin número detectado"} · <span style={{ color: col, fontWeight: 700 }}>{nombreDe(f.m.cuentaId)}</span></div>
+                  <div style={{ fontSize: 12, color: C.slate }}>{f.datos.tipo === "nota_credito" ? <Pastilla bg={C.violetBg} color={C.violet}>Nota crédito</Pastilla> : f.datos.tipo === "nota_debito" ? <Pastilla bg={C.violetBg} color={C.violet}>Nota débito</Pastilla> : null} {f.datos.numero ? `${f.datos.tipo === "nota_credito" || f.datos.tipo === "nota_debito" ? "N.º" : "Factura"} ${f.datos.numero}` : "Sin número detectado"} · <span style={{ color: col, fontWeight: 700 }}>{nombreDe(f.m.cuentaId)}</span></div>
                 </div>
                 <div style={{ flex: "1 1 110px", fontWeight: 800, fontSize: 14, fontVariantNumeric: "tabular-nums" }}>{pesos(f.datos.valor)}</div>
                 <div style={{ flex: "1 1 130px", fontSize: 12.5 }}>
@@ -226,20 +227,21 @@ function FacturasRecibidas({ filas, errorCxp, fechaCorte, colorDe, nombreDe, onV
                   {f.estado === "por_registrar" && h !== null && <div style={{ fontWeight: 700, color: h <= 3 ? C.red : h <= 7 ? C.amber : C.slate }}>{h < 0 ? `Venció hace ${-h} día(s)` : h === 0 ? "Vence hoy" : `En ${h} día(s)`}</div>}
                 </div>
                 <div style={{ flex: "1 1 130px", fontSize: 12.5, color: C.slate }}>
-                  <div>Llegó {fechaCorta(f.m.fecha)}</div>
+                  <div>Llegó {fechaCorta(f.primera)}</div>
+                  {f.n > 1 && <div title={`El proveedor la envió ${f.n} veces; aquí cuenta una sola vez. El último correo llegó ${fechaCorta(f.m.fecha)}.`} style={{ marginTop: 2 }}><Pastilla bg={C.blueBg} color={C.blue}>{f.n} correos · último {fechaCorta(f.m.fecha)}</Pastilla></div>}
                   {f.estado === "por_registrar" && d !== null && d >= 1 && <div style={{ fontWeight: 700, color: d >= 3 ? C.amber : C.slate }}>Hace {d} día(s)</div>}
                 </div>
                 <div style={{ flex: "2 1 230px", fontSize: 12.5 }}>
                   {f.estado === "por_registrar" && <Pastilla bg={C.amberBg} color={C.amber}>Por registrar</Pastilla>}
                   {f.estado === "descartada" && <Pastilla bg={C.canvas} color={C.slate}>Descartada</Pastilla>}
                   {f.estado === "registrada" && <Pastilla bg={C.greenBg} color={C.green}>Registrada</Pastilla>}
-                  {f.estado === "registrada" && (f.coincidencia ? <div style={{ color: C.slate, marginTop: 3 }}>En Busint: {f.coincidencia.proveedor} · factura {f.coincidencia.nfact}{f.coincidencia.tipo === "valor" ? " (coincide por valor y proveedor)" : ""}</div> : <div style={{ color: C.slate, marginTop: 3 }}>Marcada por ti</div>)}
+                  {f.estado === "registrada" && (f.coincidencia && !f.mensajes.some((m) => m.factura?.estado === "registrada") ? <div style={{ color: C.slate, marginTop: 3 }}>En Busint: {f.coincidencia.proveedor} · factura {f.coincidencia.nfact}{f.coincidencia.tipo === "valor" ? " (coincide por valor y proveedor)" : ""}</div> : <div style={{ color: C.slate, marginTop: 3 }}>Marcada por ti</div>)}
                 </div>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                   <button onClick={() => onVer(f.m)} style={btn(C.white, C.blue, C.blue)}>Ver correo</button>
-                  {f.estado === "por_registrar" && <button onClick={() => onEstado(f.m, "registrada")} style={btn(C.white, C.green, C.green)}>Ya está registrada</button>}
-                  {f.estado === "por_registrar" && <button onClick={() => onEstado(f.m, "descartada")} style={btn(C.white, C.slate, C.border)}>Descartar</button>}
-                  {f.estado !== "por_registrar" && !f.coincidencia && <button onClick={() => onEstado(f.m, null)} style={btn(C.white, C.slate, C.border)}>Volver a por registrar</button>}
+                  {f.estado === "por_registrar" && <button onClick={() => onEstado(f, "registrada")} style={btn(C.white, C.green, C.green)}>Ya está registrada</button>}
+                  {f.estado === "por_registrar" && <button onClick={() => onEstado(f, "descartada")} style={btn(C.white, C.slate, C.border)}>Descartar</button>}
+                  {f.estado !== "por_registrar" && f.mensajes.some((m) => m.factura?.estado) && <button onClick={() => onEstado(f, null)} style={btn(C.white, C.slate, C.border)}>Volver a por registrar</button>}
                 </div>
               </div>
             );
@@ -293,12 +295,8 @@ export default function CorreosView({ currentUser, onVolver, onLogout, notify })
       .filter((m) => !qn || norm(`${m.asunto} ${m.de?.nombre} ${m.de?.correo} ${m.resumenCorto} ${m.texto}`).includes(qn));
   }, [mensajes, cuentaSel, soloNuevos, ocultarMasivos, q, catSel, soloAccion]);
   const pendientesIA = mensajes.filter((m) => !m.clasificacion).length;
-  const filasFactura = useMemo(() => mensajes.filter((m) => m.clasificacion?.categoria === "factura_proveedor").map((m) => {
-    const datos = datosFactura(m);
-    const coincidencia = cxp ? buscarEnBusint(datos, cxp) : null;
-    const estado = estadoFactura(m, coincidencia);
-    return { m, datos, coincidencia, estado, urg: estado === "por_registrar" ? urgenciaFactura(datos, m.fecha) : "normal" };
-  }), [mensajes, cxp]);
+  // Los recordatorios y reenvíos de una misma factura (varios correos) se agrupan en una sola fila.
+  const filasFactura = useMemo(() => agruparFacturas(mensajes.filter((m) => m.clasificacion?.categoria === "factura_proveedor"), cxp), [mensajes, cxp]);
   const nFacturasPorRegistrar = filasFactura.filter((f) => f.estado === "por_registrar").length;
   const fechaCorteCxp = (cxp || []).reduce((a, d) => (String(d.fechaCorte || "") > a ? String(d.fechaCorte) : a), "");
   const conteoCat = useMemo(() => { const o = {}; mensajes.filter((m) => cuentaSel === "todas" || m.cuentaId === cuentaSel).forEach((m) => { const k = m.clasificacion?.categoria; if (k) o[k] = (o[k] || 0) + 1; }); return o; }, [mensajes, cuentaSel]);
@@ -357,8 +355,10 @@ export default function CorreosView({ currentUser, onVolver, onLogout, notify })
       notify?.("No se pudo abrir el adjunto: " + mensajeError(e));
     } finally { setBajandoAdj(""); }
   }
-  async function marcarFactura(m, estado) {
-    try { await updateDoc(doc(db, "correos_mensajes", m.id), { factura: estado ? { estado, en: new Date().toISOString() } : null }); }
+  // La decisión vale para todos los correos repetidos de la misma factura.
+  async function marcarFactura(fila, estado) {
+    const en = new Date().toISOString();
+    try { await Promise.all(fila.mensajes.map((m) => updateDoc(doc(db, "correos_mensajes", m.id), { factura: estado ? { estado, en } : null }))); }
     catch (e) { notify?.("No se pudo cambiar el estado: " + mensajeError(e)); }
   }
   function verCorreo(m) {

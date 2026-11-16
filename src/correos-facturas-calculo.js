@@ -67,3 +67,45 @@ export function urgenciaFactura(datos, fechaCorreo, hoy = new Date()) {
   if ((h !== null && h <= 7) || (llevan !== null && llevan >= 3)) return "media";
   return "normal";
 }
+
+// ── Agrupar los correos repetidos de la misma factura (recordatorios, reenvíos) en una sola fila ──
+// Misma factura = mismo proveedor (por las palabras de su nombre) y mismo número; si el correo no trae número, mismo
+// proveedor + mismo valor + misma fecha de pago; si tampoco, cada correo va aparte.
+export function claveFactura(datos, m) {
+  const prov = palabrasProveedor(datos.proveedor).sort().join(" ");
+  const num = normNumero(datos.numero);
+  if (prov && num.length >= 3) return `n|${prov}|${num}`;
+  if (prov && datos.valor > 0 && datos.vence) return `v|${prov}|${datos.valor}|${datos.vence}`;
+  return `m|${m.id}`;
+}
+
+const porFechaDesc = (a, b) => String(b.fecha).localeCompare(String(a.fecha));
+
+// Estado de un grupo: manda la última decisión manual (registrada o descartada) de cualquiera de sus correos; sin decisión,
+// «registrada» si se encontró en Busint y «por_registrar» si no.
+export function estadoGrupo(mensajes, coincidencia) {
+  const marcas = mensajes.filter((m) => m.factura && m.factura.estado).sort((a, b) => String(b.factura.en || "").localeCompare(String(a.factura.en || "")));
+  if (marcas.length) return estadoFactura(marcas[0], coincidencia);
+  return coincidencia ? "registrada" : "por_registrar";
+}
+
+// Arma las filas de «Facturas recibidas» a partir de los correos clasificados como factura de proveedor.
+//  m = el correo más reciente del grupo (el que abre «Ver correo»); primera = fecha del primer correo (desde cuándo espera).
+export function agruparFacturas(mensajes, cxpDocs, hoy = new Date()) {
+  const grupos = new Map();
+  for (const m of mensajes) {
+    const k = claveFactura(datosFactura(m), m);
+    if (!grupos.has(k)) grupos.set(k, []);
+    grupos.get(k).push(m);
+  }
+  return [...grupos.entries()].map(([clave, lista]) => {
+    const ordenados = [...lista].sort(porFechaDesc);
+    const todos = ordenados.map(datosFactura);
+    const base = { ...(todos.find((d) => d.valor > 0) || todos[0]) };
+    for (const campo of ["proveedor", "numero", "tipo", "vence"]) if (!base[campo]) base[campo] = (todos.find((d) => d[campo]) || {})[campo] || "";
+    const primera = ordenados[ordenados.length - 1].fecha;
+    const coincidencia = cxpDocs ? buscarEnBusint(base, cxpDocs) : null;
+    const estado = estadoGrupo(ordenados, coincidencia);
+    return { clave, m: ordenados[0], mensajes: ordenados, n: ordenados.length, datos: base, primera, coincidencia, estado, urg: estado === "por_registrar" ? urgenciaFactura(base, primera, hoy) : "normal" };
+  });
+}
