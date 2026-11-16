@@ -17,7 +17,7 @@ export const comparteNombre = (a, b) => { const pb = new Set(palabrasProveedor(b
 // Datos de la factura sacados de un correo clasificado.
 export function datosFactura(m) {
   const d = (m && m.clasificacion && m.clasificacion.datos) || {};
-  return { proveedor: d.proveedor || (m && m.de && (m.de.nombre || m.de.correo)) || "", numero: d.numero || "", valor: Number(d.valor) || 0, vence: d.vence || "" };
+  return { proveedor: d.proveedor || (m && m.de && (m.de.nombre || m.de.correo)) || "", numero: d.numero || "", tipo: d.tipo || "", valor: Number(d.valor) || 0, vence: d.vence || "" };
 }
 
 // Busca la factura entre las facturas abiertas del corte de Busint. Devuelve { tipo, proveedor, nfact, valor } o null.

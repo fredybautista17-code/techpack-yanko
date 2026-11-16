@@ -17336,20 +17336,21 @@ async function prepararPendientesCorreosIA() {
     if (enLote) await lote.commit();
     await marca.set({ migrado: true, en: new Date().toISOString(), actualizados }, { merge: true });
   }
-  // «Facturas recibidas»: la IA ahora también saca el número de la factura. Las facturas que se clasificaron antes de eso
-  // se vuelven a clasificar UNA vez (las que Fredy corrigió a mano no se tocan).
-  if (!previo.migradoNumeroFactura) {
-    const fac = await db.collection("correos_mensajes").where("clasificacion.categoria", "==", "factura_proveedor").get();
+  // Cuando cambia el criterio de clasificación (CorreosIA.VERSION) se vuelve a clasificar UNA vez lo ya clasificado.
+  // Las categorías que Fredy corrigió a mano no se tocan.
+  const marcaVersion = `reclasificadoV${CorreosIA.VERSION}`;
+  if (!previo[marcaVersion]) {
+    const todos = await db.collection("correos_mensajes").select("clasificacion").get();
     let enLote = 0, lote = db.batch();
-    for (const d of fac.docs) {
-      const c = d.get("clasificacion") || {};
-      if (c.corregida || (c.datos && c.datos.numero !== undefined)) continue;
+    for (const d of todos.docs) {
+      const c = d.get("clasificacion");
+      if (!c || c.corregida || c.version === CorreosIA.VERSION) continue;
       lote.update(d.ref, { clasificacion: null, iaIntentos: 0 });
       actualizados++;
       if (++enLote === 400) { await lote.commit(); lote = db.batch(); enLote = 0; }
     }
     if (enLote) await lote.commit();
-    await marca.set({ migradoNumeroFactura: true, enNumeroFactura: new Date().toISOString() }, { merge: true });
+    await marca.set({ [marcaVersion]: true, [`${marcaVersion}En`]: new Date().toISOString() }, { merge: true });
   }
   return actualizados;
 }
@@ -17403,5 +17404,32 @@ exports.correosClasificarAhora = onCallAuth(
   async (request) => {
     await exigirAdminCorreos(request);
     return clasificarCorreosPendientes(120);
+  }
+);
+
+// Abre o descarga un adjunto de un correo: se lo pide a Gmail en ese momento (no se guarda ningún archivo). Solo administradores.
+exports.correosAdjunto = onCallAuth(
+  { secrets: [CORREOS_CLAVE], timeoutSeconds: 120, memory: "1GiB" },
+  async (request) => {
+    await exigirAdminCorreos(request);
+    const d = request.data || {};
+    const id = String(d.mensajeId || "");
+    const indice = Number(d.indice);
+    if (!id || !Number.isInteger(indice) || indice < 0) throw new HttpsError("invalid-argument", "Falta el correo o el adjunto.");
+    const msg = await db.collection("correos_mensajes").doc(id).get();
+    if (!msg.exists) throw new HttpsError("not-found", "No se encontró ese correo.");
+    const m = msg.data();
+    const partes = id.split("_"); // cuentaId_uidValidity_uid (el cuentaId puede traer guiones bajos)
+    const uidValidity = partes[partes.length - 2];
+    const uid = Number(partes[partes.length - 1]);
+    const adj = (m.adjuntos || [])[indice];
+    if (!adj || !uid) throw new HttpsError("not-found", "No se encontró ese adjunto.");
+    const [cuenta, sec] = await Promise.all([db.collection("correos_cuentas").doc(m.cuentaId).get(), db.collection("correos_secretos").doc(m.cuentaId).get()]);
+    if (!cuenta.exists || !sec.exists) throw new HttpsError("failed-precondition", "La cuenta de este correo ya no está configurada.");
+    try {
+      return await Correos.descargarAdjunto({ correo: cuenta.data().email, pass: Correos.descifrar(CORREOS_CLAVE.value(), sec.data().pass), uid, uidValidity, indice, nombre: adj.nombre });
+    } catch (e) {
+      throw new HttpsError("failed-precondition", Correos.textoErrorImap(e));
+    }
   }
 );

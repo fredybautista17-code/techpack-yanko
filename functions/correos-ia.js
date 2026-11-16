@@ -9,6 +9,9 @@
 // - Sin Firebase: las funciones que lo usan están al final de index.js (clasificarCorreos, correosClasificarAhora).
 
 const MODELO = process.env.CORREOS_MODELO || "claude-haiku-4-5";
+// Versión del criterio de clasificación. Al subirla, index.js vuelve a clasificar UNA vez los correos ya clasificados
+// (salvo los que Fredy corrigió a mano). v2 (2026-11-16): número de factura desde el asunto DIAN, notas crédito, acción más estricta.
+const VERSION = 2;
 
 const CATEGORIAS = {
   factura_proveedor: "Factura de proveedor",
@@ -33,9 +36,10 @@ Categorías:
 - otro: lo que no encaje en ninguna.
 
 Prioridad: alta = exige acción pronto (vencimientos, pagos, requerimientos de la DIAN o del banco, clientes esperando respuesta, reclamos); media = hay que revisarlo, sin urgencia; baja = informativo o publicidad.
-requiereAccion: true solo si alguien de la empresa debe hacer algo (pagar, responder, revisar, aprobar, enviar). accion: qué hay que hacer, en una frase corta (máximo 100 caracteres), o cadena vacía si no hay nada que hacer.
+requiereAccion: true SOLO si alguien de la empresa debe hacer algo concreto y no rutinario: pagar o registrar una factura, responder a un cliente o proveedor, atender un requerimiento del banco o de la DIAN, aprobar o revisar algo. NO es acción: avisos informativos, confirmaciones de operaciones ya hechas, extractos o saldos, tarifas o novedades generales del banco, notificaciones automáticas de recibido o aceptado, boletines. Si dudas, false. accion: qué hay que hacer, en una frase corta (máximo 100 caracteres), o cadena vacía si requiereAccion es false.
 resumen: de qué trata, en una frase de máximo 140 caracteres, en español, sin saludos.
-datos: llena proveedor, numero, valor o vence SOLO si el correo lo dice de forma explícita; si no, déjalos en null. proveedor = quien emite o envía la factura. numero = número de la factura tal como aparece, con su prefijo si lo tiene (por ejemplo FH-4728 o 12952); no uses el NIT ni el número de cliente. valor = total a pagar en pesos colombianos, número entero sin símbolos ni puntos. vence = fecha límite de pago, formato AAAA-MM-DD. No inventes ni calcules nada.`;
+Facturas electrónicas colombianas (DIAN): el asunto suele tener el formato NIT;RAZÓN SOCIAL;NÚMERO;CÓDIGO;NOMBRE. El segundo campo es el proveedor, el tercero es el número de factura (por ejemplo «805025449;CHEVIOTTO TEXTIL S.A.S.;FVC27304;01;…» → proveedor CHEVIOTTO TEXTIL S.A.S., numero FVC27304) y el cuarto es el tipo de documento: 01 factura de venta, 91 nota crédito, 92 nota débito. Una nota crédito no se paga: es un descuento a favor de la empresa; clasifícala como factura_proveedor, con tipo nota_credito, valor null y accion «Registrar la nota crédito».
+datos: llena proveedor, numero, valor o vence SOLO si el correo lo dice de forma explícita; si no, déjalos en null. proveedor = quien emite o envía la factura. numero = número de la factura tal como aparece, con su prefijo si lo tiene (por ejemplo FH-4728 o 12952); no uses el NIT ni el número de cliente. valor = total a pagar en pesos colombianos, número entero sin símbolos ni puntos. vence = fecha límite de pago, formato AAAA-MM-DD. tipo = «factura», «nota_credito» o «nota_debito» si el correo es una factura electrónica o una nota; si no, null. No inventes ni calcules nada.`;
 
 const HERRAMIENTA = {
   name: "clasificar",
@@ -53,10 +57,11 @@ const HERRAMIENTA = {
         properties: {
           proveedor: { type: ["string", "null"] },
           numero: { type: ["string", "null"] },
+          tipo: { type: ["string", "null"], enum: ["factura", "nota_credito", "nota_debito", null] },
           valor: { type: ["integer", "null"] },
           vence: { type: ["string", "null"] },
         },
-        required: ["proveedor", "numero", "valor", "vence"],
+        required: ["proveedor", "numero", "tipo", "valor", "vence"],
       },
     },
     required: ["categoria", "prioridad", "requiereAccion", "accion", "resumen", "datos"],
@@ -94,19 +99,21 @@ function validar(x) {
   const vence = /^\d{4}-\d{2}-\d{2}$/.test(String(d.vence || "")) ? String(d.vence) : null;
   const proveedor = corto(d.proveedor, 120) || null;
   const numero = corto(d.numero, 40) || null;
+  const tipo = ["factura", "nota_credito", "nota_debito"].includes(d.tipo) ? d.tipo : null;
   return {
     categoria,
     prioridad,
     requiereAccion: x.requiereAccion === true,
     accion: corto(x.accion, 140),
     resumen: corto(x.resumen, 200),
-    datos: { proveedor, numero, valor: Number.isFinite(valor) && valor > 0 ? Math.round(valor) : null, vence },
+    datos: { proveedor, numero, tipo, valor: Number.isFinite(valor) && valor > 0 ? Math.round(valor) : null, vence },
     modelo: MODELO,
+    version: VERSION,
     en: new Date().toISOString(),
   };
 }
 
-const porDefecto = () => ({ categoria: "otro", prioridad: "media", requiereAccion: false, accion: "", resumen: "", datos: { proveedor: null, numero: null, valor: null, vence: null }, modelo: MODELO, en: new Date().toISOString() });
+const porDefecto = () => ({ categoria: "otro", prioridad: "media", requiereAccion: false, accion: "", resumen: "", datos: { proveedor: null, numero: null, tipo: null, valor: null, vence: null }, modelo: MODELO, version: VERSION, en: new Date().toISOString() });
 
 // Clasifica UN correo. Los errores de clave o de modelo llevan `fatal: true` (no sirve seguir con los demás).
 async function clasificar({ apiKey, mensaje, cuenta, fetchFn }) {
@@ -137,4 +144,4 @@ async function clasificar({ apiKey, mensaje, cuenta, fetchFn }) {
   return validar(uso.input);
 }
 
-module.exports = { CATEGORIAS, PRIORIDADES, MODELO, armarCorreo, validar, porDefecto, clasificar };
+module.exports = { CATEGORIAS, PRIORIDADES, MODELO, VERSION, armarCorreo, validar, porDefecto, clasificar };

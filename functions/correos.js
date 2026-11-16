@@ -121,4 +121,39 @@ async function leerNuevos({ cuentaId, correo, pass, estado }) {
 
 const idMensaje = (m, uidValidity) => `${m.cuentaId}_${uidValidity}_${m.uid}`;
 
-module.exports = { cifrar, descifrar, limpiarPass, mensajeDesdeParsed, probarCuenta, leerNuevos, textoErrorImap, idMensaje, DIAS_PRIMERA_VEZ, MAX_POR_CORRIDA };
+// ── Adjuntos bajo demanda (2026-11-16) ──
+// Los archivos NO se guardan en Firebase: cuando el administrador pulsa «Abrir» o «Descargar» se vuelve a pedir ese correo
+// a Gmail, se saca el adjunto y se devuelve. Los adjuntos son de terceros: aquí solo se entregan (nunca se ejecutan ni se abren).
+const MAX_ADJUNTO = 6 * 1024 * 1024; // bytes; la respuesta de una función llamable admite ~10 MB y base64 pesa 1/3 más
+const MAX_CORREO_COMPLETO = 14 * 1024 * 1024;
+const APTOS_PARA_VER = ["application/pdf", "image/png", "image/jpeg", "image/gif", "image/webp"]; // lo demás solo se descarga
+
+// Saca el adjunto número `indice` (contando como al guardar: sin los incrustados en el cuerpo) de un correo completo.
+async function adjuntoDeFuente(source, indice, nombreEsperado) {
+  const { simpleParser } = require("mailparser");
+  const parsed = await simpleParser(source);
+  const lista = (parsed.attachments || []).filter((a) => !a.related);
+  const a = lista[indice];
+  if (!a) throw new Error("No se encontró ese adjunto en el correo.");
+  const nombre = String(a.filename || "adjunto").slice(0, 160);
+  if (nombreEsperado && nombre !== String(nombreEsperado).slice(0, 160)) throw new Error("El adjunto no coincide con el que se guardó. Ábrelo en Gmail.");
+  const tamano = a.content ? a.content.length : 0;
+  if (tamano > MAX_ADJUNTO) throw new Error(`El adjunto pesa ${(tamano / 1048576).toFixed(1).replace(".", ",")} MB y el límite aquí es ${MAX_ADJUNTO / 1048576} MB. Ábrelo en Gmail.`);
+  const tipo = String(a.contentType || "application/octet-stream").toLowerCase().split(";")[0].trim();
+  return { nombre, tipo: APTOS_PARA_VER.includes(tipo) ? tipo : "application/octet-stream", tamano, base64: a.content.toString("base64") };
+}
+
+async function descargarAdjunto({ correo, pass, uid, uidValidity, indice, nombre }) {
+  const cliente = await conectar(correo, pass);
+  try {
+    const lock = await cliente.getMailboxLock("INBOX");
+    try {
+      if (String(cliente.mailbox.uidValidity) !== String(uidValidity)) throw new Error("Gmail renumeró esta bandeja y ya no se puede ubicar el correo. Ábrelo en Gmail.");
+      const msg = await cliente.fetchOne(uid, { source: { maxLength: MAX_CORREO_COMPLETO } }, { uid: true });
+      if (!msg || !msg.source) throw new Error("Ese correo ya no está en la bandeja de Gmail.");
+      return await adjuntoDeFuente(msg.source, indice, nombre);
+    } finally { lock.release(); }
+  } finally { try { await cliente.logout(); } catch (e) { /* ya cerrada */ } }
+}
+
+module.exports = { cifrar, descifrar, limpiarPass, mensajeDesdeParsed, probarCuenta, leerNuevos, textoErrorImap, idMensaje, adjuntoDeFuente, descargarAdjunto, DIAS_PRIMERA_VEZ, MAX_POR_CORRIDA };

@@ -16,6 +16,8 @@ import { datosFactura, buscarEnBusint, estadoFactura, diasDesde, diasHasta, urge
 // «Facturas recibidas»: las facturas de proveedores que llegan por correo se listan con su estado (por registrar / registrada
 // en Busint / descartada). NO crean deuda: Cuentas por Pagar viene de Busint; aquí solo se compara con el último corte
 // (contabilidad_cxp_facturas) para saber si contabilidad ya la registró y avisar de las que se acercan a vencer.
+// Adjuntos: no se guardan en Firebase; «Ver» / «Descargar» se los pide a Gmail en ese momento (función correosAdjunto, hasta
+// 6 MB; PDF e imágenes se ven en una pestaña nueva, lo demás se descarga) y «Abrir en Gmail» lleva al correo original.
 
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
@@ -60,6 +62,8 @@ function fechaCorta(iso) {
   return d.toLocaleDateString("es-CO", { day: "numeric", month: "short" });
 }
 const fechaLarga = (iso) => { const d = new Date(iso); return Number.isNaN(d.getTime()) ? "" : d.toLocaleString("es-CO", { weekday: "short", day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" }); };
+// Enlace al correo original en Gmail (busca por el Message-ID). Gmail abre la cuenta indicada si ya tienes la sesión iniciada.
+const urlGmail = (m) => { const id = String(m.mensajeId || "").replace(/^<|>$/g, ""); return id && m.cuenta ? `https://mail.google.com/mail/?authuser=${encodeURIComponent(m.cuenta)}#search/rfc822msgid%3A${encodeURIComponent(id)}` : ""; };
 const quien = (p) => (p ? (p.nombre ? `${p.nombre} <${p.correo}>` : p.correo) : "");
 const tamanoTxt = (b) => (b >= 1048576 ? `${(b / 1048576).toFixed(1).replace(".", ",")} MB` : b >= 1024 ? `${Math.round(b / 1024)} KB` : b ? `${b} B` : "");
 const mensajeError = (e) => String((e && (e.message || e.details)) || e || "Error").replace(/^.*?:\s*(?=[A-ZÁÉÍÓÚ])/, "");
@@ -170,7 +174,7 @@ function FacturasRecibidas({ filas, errorCxp, fechaCorte, colorDe, nombreDe, onV
   const [filtro, setFiltro] = useState("por_registrar");
   const cuenta = (e) => filas.filter((f) => f.estado === e).length;
   const porRegistrar = filas.filter((f) => f.estado === "por_registrar");
-  const suma = porRegistrar.reduce((a, f) => a + (f.datos.valor || 0), 0);
+  const suma = porRegistrar.reduce((a, f) => a + (f.datos.tipo === "nota_credito" ? 0 : f.datos.valor || 0), 0);
   const nPronto = porRegistrar.filter((f) => { const h = diasHasta(f.datos.vence); return h !== null && h <= 7; }).length;
   const nViejas = porRegistrar.filter((f) => { const d = diasDesde(f.m.fecha); return d !== null && d >= 3; }).length;
   const peso = { alta: 0, media: 1, normal: 2 };
@@ -214,7 +218,7 @@ function FacturasRecibidas({ filas, errorCxp, fechaCorte, colorDe, nombreDe, onV
               <div key={f.m.id} style={{ display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap", padding: "11px 14px", borderBottom: `1px solid ${C.border}`, borderLeft: `4px solid ${f.estado === "por_registrar" ? u.color : "transparent"}`, background: f.estado === "por_registrar" ? u.bg : C.white, opacity: f.estado === "descartada" ? 0.65 : 1 }}>
                 <div style={{ flex: "2 1 220px", minWidth: 200 }}>
                   <div style={{ fontWeight: 800, fontSize: 13.5 }}>{f.datos.proveedor || "Proveedor sin identificar"}</div>
-                  <div style={{ fontSize: 12, color: C.slate }}>{f.datos.numero ? `Factura ${f.datos.numero}` : "Sin número detectado"} · <span style={{ color: col, fontWeight: 700 }}>{nombreDe(f.m.cuentaId)}</span></div>
+                  <div style={{ fontSize: 12, color: C.slate }}>{f.datos.tipo === "nota_credito" ? <Pastilla bg={C.violetBg} color={C.violet}>Nota crédito</Pastilla> : f.datos.tipo === "nota_debito" ? <Pastilla bg={C.violetBg} color={C.violet}>Nota débito</Pastilla> : null} {f.datos.numero ? `${f.datos.tipo ? "N.º" : "Factura"} ${f.datos.numero}` : "Sin número detectado"} · <span style={{ color: col, fontWeight: 700 }}>{nombreDe(f.m.cuentaId)}</span></div>
                 </div>
                 <div style={{ flex: "1 1 110px", fontWeight: 800, fontSize: 14, fontVariantNumeric: "tabular-nums" }}>{pesos(f.datos.valor)}</div>
                 <div style={{ flex: "1 1 130px", fontSize: 12.5 }}>
@@ -262,6 +266,7 @@ export default function CorreosView({ currentUser, onVolver, onLogout, notify })
   const [soloAccion, setSoloAccion] = useState(false);
   const [clasificando, setClasificando] = useState(false);
   const [vista, setVista] = useState("bandeja");
+  const [bajandoAdj, setBajandoAdj] = useState("");
   const [cxp, setCxp] = useState(null);
   const [errorCxp, setErrorCxp] = useState("");
 
@@ -327,6 +332,30 @@ export default function CorreosView({ currentUser, onVolver, onLogout, notify })
       else notify?.(`Listo: ${r.clasificados || 0} correo(s) clasificado(s)${r.pendientes ? `; faltan ${r.pendientes} (se siguen clasificando solos cada 10 minutos)` : ""}.`);
     } catch (e) { notify?.("No se pudo clasificar: " + mensajeError(e)); }
     finally { setClasificando(false); }
+  }
+  // Pide el adjunto a Gmail (la función lo descarga en ese momento). PDF e imágenes se abren en una pestaña nueva; el resto se descarga.
+  async function abrirAdjunto(m, i) {
+    const a = (m.adjuntos || [])[i];
+    if (!a) return;
+    const verlo = /\.(pdf|png|jpe?g|gif|webp)$/i.test(a.nombre || "");
+    const ventana = verlo ? window.open("", "_blank") : null; // se abre con el clic para que el navegador no la bloquee
+    if (ventana) ventana.opener = null;
+    setBajandoAdj(`${m.id}:${i}`);
+    try {
+      const r = (await httpsCallable(functionsClient, "correosAdjunto", { timeout: 120000 })({ mensajeId: m.id, indice: i })).data;
+      const url = URL.createObjectURL(new Blob([Uint8Array.from(atob(r.base64), (c) => c.charCodeAt(0))], { type: r.tipo }));
+      if (ventana && r.tipo !== "application/octet-stream") ventana.location.href = url;
+      else {
+        if (ventana) ventana.close();
+        const l = document.createElement("a");
+        l.href = url; l.download = r.nombre;
+        document.body.appendChild(l); l.click(); l.remove();
+      }
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (e) {
+      if (ventana) ventana.close();
+      notify?.("No se pudo abrir el adjunto: " + mensajeError(e));
+    } finally { setBajandoAdj(""); }
   }
   async function marcarFactura(m, estado) {
     try { await updateDoc(doc(db, "correos_mensajes", m.id), { factura: estado ? { estado, en: new Date().toISOString() } : null }); }
@@ -435,7 +464,10 @@ export default function CorreosView({ currentUser, onVolver, onLogout, notify })
                   <div>
                     <div style={{ display: "flex", gap: 10, alignItems: "flex-start", flexWrap: "wrap" }}>
                       <div style={{ flex: 1, minWidth: 240, fontWeight: 800, fontSize: 18, lineHeight: 1.3 }}>{sel.asunto}</div>
-                      <button onClick={() => marcar(sel, !sel.leidoAtlas)} style={btn(C.white, C.slate, C.border)}>{sel.leidoAtlas ? "Marcar sin leer" : "Marcar leído"}</button>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        {urlGmail(sel) && <a href={urlGmail(sel)} target="_blank" rel="noopener noreferrer" style={{ ...btn(C.white, C.blue, C.blue), textDecoration: "none", display: "inline-block" }}>Abrir en Gmail</a>}
+                        <button onClick={() => marcar(sel, !sel.leidoAtlas)} style={btn(C.white, C.slate, C.border)}>{sel.leidoAtlas ? "Marcar sin leer" : "Marcar leído"}</button>
+                      </div>
                     </div>
                     <div style={{ fontSize: 12.5, color: C.slate, margin: "10px 0", lineHeight: 1.6 }}>
                       <div><b style={{ color: C.ink }}>De:</b> {quien(sel.de)}</div>
@@ -466,8 +498,17 @@ export default function CorreosView({ currentUser, onVolver, onLogout, notify })
                     )}
                     {sel.adjuntos?.length > 0 && (
                       <div style={{ background: C.field, borderRadius: 10, padding: "8px 12px", marginBottom: 12, fontSize: 12.5 }}>
-                        {sel.adjuntos.map((a, i) => <div key={i}>📎 {a.nombre}{a.tamano ? <span style={{ color: C.slate }}> · {tamanoTxt(a.tamano)}</span> : null}</div>)}
-                        <div style={{ color: C.slate, fontSize: 11.5, marginTop: 4 }}>Los adjuntos se ven en Gmail; aquí solo se muestran sus nombres.</div>
+                        {sel.adjuntos.map((a, i) => {
+                          const verlo = /\.(pdf|png|jpe?g|gif|webp)$/i.test(a.nombre || "");
+                          const ocupado = bajandoAdj === `${sel.id}:${i}`;
+                          return (
+                            <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", padding: "3px 0" }}>
+                              <span style={{ flex: 1, minWidth: 200, wordBreak: "break-word" }}>📎 {a.nombre}{a.tamano ? <span style={{ color: C.slate }}> · {tamanoTxt(a.tamano)}</span> : null}</span>
+                              <button onClick={() => abrirAdjunto(sel, i)} disabled={!!bajandoAdj} style={{ ...btn(C.white, C.blue, C.blue), padding: "3px 10px", fontSize: 12, opacity: bajandoAdj && !ocupado ? 0.5 : 1 }}>{ocupado ? "Descargando…" : verlo ? "Ver" : "Descargar"}</button>
+                            </div>
+                          );
+                        })}
+                        <div style={{ color: C.slate, fontSize: 11.5, marginTop: 4 }}>Los archivos se piden a Gmail al pulsar; ATLAS no los guarda. Hasta 6 MB: si pesa más, ábrelo en Gmail. Vienen de terceros: no abras archivos que no esperabas.</div>
                       </div>
                     )}
                     <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: 13.5, lineHeight: 1.6, borderTop: `1px solid ${C.border}`, paddingTop: 12 }}>{sel.texto || "(sin texto)"}</div>
