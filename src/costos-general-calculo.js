@@ -54,15 +54,29 @@ export function fichaDeTrabajador(t, fichas) {
 }
 
 // ─── Lo que recogen los lotes (Dado por Cumplido) ────────────────────────────
-// Aporte de un lote aprobado = lo que el Dado por Cumplido le suma al costo real: base × cortadas + % sobre costo + % sobre
-// venta, o sea costoT − costoDefinitivo × cortadas (los mismos números que Contabilidad aprobó).
+// Aporte de un lote aprobado = lo que el Dado por Cumplido le suma al costo real: base + % sobre costo + % sobre venta de cada prenda
+// (costoT − costoDefinitivo × cortadas, ÷ cortadas: los mismos números que Contabilidad aprobó), multiplicado por lo DESPACHADO.
+//
+// (2026-11-16, a pedido de Fredy) El aporte se cobra sobre lo DESPACHADO, no sobre lo cortado: base (+ % sobre costo + % sobre venta) POR PRENDA × cantidad despachada
+// efectiva del lote (misma regla de Contabilidad, `despachadaEfectiva`). Solo cambia el reporte: la fórmula del Dado por Cumplido en Contabilidad sigue con cortadas.
+export function despachadaEfectiva(l) {
+  // Misma lógica que despachadaEfectiva de modulo-contabilidad.jsx y despachadaEfectivaLote de functions/index.js.
+  if (l?.estado === "aprobado" && l?.adicionalesIncluidosAlAprobar) return num(l.cantDespachada);
+  const base = l?.cantidadDespachadaBodega !== undefined ? num(l.cantidadDespachadaBodega) : num(l?.cantDespachada);
+  return base + num(l?.cantDespachadaAdicional);
+}
+
 export function aporteDeLote(l) {
   const cortada = num(l.cantCortada);
+  const despachada = despachadaEfectiva(l);
   const costoDef = num(l.costoDefinitivo);
   const costoT = num(l.costoT);
-  const total = costoT > 0 ? costoT - costoDef * cortada : 0;
-  const basicos = num(l.total) > 0 ? num(l.total) : num(l.baseValorUsado) * cortada;
-  return { aporte: total, basicos, porcentajes: total - basicos };
+  // Aporte por prenda = (costoT − costoDefinitivo × cortadas) ÷ cortadas = base + % sobre costo + % sobre venta de cada prenda.
+  const porPrenda = costoT > 0 && cortada > 0 ? (costoT - costoDef * cortada) / cortada : 0;
+  const basePorPrenda = num(l.baseValorUsado) > 0 ? num(l.baseValorUsado) : (num(l.total) > 0 && cortada > 0 ? num(l.total) / cortada : 0);
+  const aporte = porPrenda * despachada;
+  const basicos = basePorPrenda * despachada;
+  return { aporte, basicos, porcentajes: aporte - basicos, despachada };
 }
 
 export function recogidoDeLotes(lotes, bases) {
@@ -70,12 +84,13 @@ export function recogidoDeLotes(lotes, bases) {
   const por = new Map();
   (lotes || []).forEach((l) => {
     const id = l.categoriaBaseId || "";
-    if (!por.has(id)) por.set(id, { id, nombre: nombreBase(id), lotes: 0, cortadas: 0, despachadas: 0, basicos: 0, porcentajes: 0, aporte: 0, ventas: 0, ganancia: 0 });
+    if (!por.has(id)) por.set(id, { id, nombre: nombreBase(id), lotes: 0, sinDespachada: 0, cortadas: 0, despachadas: 0, basicos: 0, porcentajes: 0, aporte: 0, ventas: 0, ganancia: 0 });
     const g = por.get(id);
     const a = aporteDeLote(l);
     g.lotes += 1;
     g.cortadas += num(l.cantCortada);
-    g.despachadas += num(l.cantDespachada);
+    g.despachadas += a.despachada;
+    if (a.despachada <= 0) g.sinDespachada += 1;
     g.basicos += a.basicos;
     g.porcentajes += a.porcentajes;
     g.aporte += a.aporte;
@@ -84,7 +99,7 @@ export function recogidoDeLotes(lotes, bases) {
   });
   const categorias = [...por.values()].sort((a, b) => b.aporte - a.aporte);
   const suma = (k) => categorias.reduce((s, c) => s + c[k], 0);
-  return { categorias, lotes: suma("lotes"), cortadas: suma("cortadas"), despachadas: suma("despachadas"), basicos: suma("basicos"), porcentajes: suma("porcentajes"), aporte: suma("aporte"), ventas: suma("ventas"), ganancia: suma("ganancia") };
+  return { categorias, lotes: suma("lotes"), sinDespachada: suma("sinDespachada"), cortadas: suma("cortadas"), despachadas: suma("despachadas"), basicos: suma("basicos"), porcentajes: suma("porcentajes"), aporte: suma("aporte"), ventas: suma("ventas"), ganancia: suma("ganancia") };
 }
 
 // ─── Gastos (Excel «Control de gastos y vencimientos») ───────────────────────
@@ -295,7 +310,7 @@ export function detalleLotes(lotes, bases, categoriaId) {
     .filter((l) => todas || (l.categoriaBaseId || "") === categoriaId)
     .map((l) => {
       const a = aporteDeLote(l);
-      return { numLote: String(l.numLote || ""), referencia: l.referencia || "", cliente: l.cliente || "", categoria: nombreBase(l.categoriaBaseId), cortadas: num(l.cantCortada), despachadas: num(l.cantDespachada), basicos: a.basicos, porcentajes: a.porcentajes, aporte: a.aporte };
+      return { numLote: String(l.numLote || ""), referencia: l.referencia || "", cliente: l.cliente || "", categoria: nombreBase(l.categoriaBaseId), cortadas: num(l.cantCortada), despachadas: a.despachada, basicos: a.basicos, porcentajes: a.porcentajes, aporte: a.aporte };
     })
     .sort((x, y) => y.aporte - x.aporte);
 }
@@ -327,7 +342,8 @@ export function cierreGeneral({ lotes, bases, gastos, liquidacionesFiscal, areas
   const destajo = destajoDelMes(areasDestajo, fichas, equiposCorte, destajoOpc);
   const estructura = g.total + fiscal.total + destajo.extra;
   const resultado = recogido.aporte - estructura;
-  const aportePorPrenda = recogido.cortadas > 0 ? recogido.aporte / recogido.cortadas : 0;
+  // Aporte por prenda DESPACHADA (el aporte ya se cobra sobre lo despachado).
+  const aportePorPrenda = recogido.despachadas > 0 ? recogido.aporte / recogido.despachadas : 0;
   return {
     recogido, gastos: g, fiscal, destajo, estructura, resultado,
     cobertura: estructura > 0 ? (recogido.aporte / estructura) * 100 : null,

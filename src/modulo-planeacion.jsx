@@ -27,7 +27,7 @@ import { CONCEPTOS_GASTOS_BUSINT, proveedoresDeTexto, candidatosGastos, gastoDeF
 import { MESES_HIST, COLECCION_HISTORICO_MAQUILA, textoAFilas, parsearHistorial, docHistoricoMes, resumenAnual } from "./historial-maquila-calculo";
 import { PLANTA_PROPIA_VENTAS, rangoDelPeriodo, plantasDeEntradas, clientePorLoteDeCargas, candidatosVentas, ventaDeEntrada, totalLineaVenta, SERVICIOS_VENTA, SIN_SERVICIO, servicioValido, etiquetaServicio, sugerirServicio, resumenPorServicio, bloqueoLinea, servicioDeVenta } from "./ventas-entradas-calculo";
 import ResumenAreasCC from "./centro-costo-resumen-areas";
-import { aporteDeLote } from "./costos-general-calculo";
+import { aporteDeLote, despachadaEfectiva } from "./costos-general-calculo";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
   authDomain: "techpack-yanko-f37b8.firebaseapp.com",
@@ -6761,7 +6761,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
           aporte: aporteDeLote(l).aporte,
           // (2026-11-16, a pedido de Fredy) Unidades del mes = las del Dado por Cumplido (misma cifra de «¿Cubro mis costos?»).
           cortadas: Number(l.cantCortada) || 0,
-          despachadas: Number(l.cantDespachada) || 0,
+          despachadas: despachadaEfectiva(l),
           // Fecha en hora Colombia (UTC−5), igual que «¿Cubro mis costos?»: un lote aprobado el 31 por la noche no cambia de mes entre pantallas.
           fechaAprobacion: l.fechaAprobacion?.toDate ? new Date(l.fechaAprobacion.toDate().getTime() - 5 * 3600 * 1000).toISOString().slice(0, 10) : null,
         }))

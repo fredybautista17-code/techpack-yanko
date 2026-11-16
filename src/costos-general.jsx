@@ -1,7 +1,7 @@
 // ─── ¿CUBRO MIS COSTOS? (Tablero de Costos) ──────────────────────────────────
 // (2026-11-04, a pedido de Fredy) Cierre mensual del centro de costo general:
-//   · Recogido con los básicos: lo que dejan los lotes aprobados en el mes en Dado por Cumplido (base × cortadas + los dos
-//     porcentajes), por categoría BASE.
+//   · Recogido con los básicos: lo que dejan los lotes aprobados en el mes en Dado por Cumplido (base + los dos
+//     porcentajes por prenda) × despachadas, por categoría BASE.
 //   · Por pagar fuera de los lotes: gastos del Excel (se cargan aquí cada mes) + nómina fiscal confirmada + lo que se pone
 //     de más en destajo (solo las ayudas, de los cierres de Centro de Costo; los excedentes no se restan) + provisión de cesantías, prima, intereses
 //     y vacaciones de esos trabajadores.
@@ -678,7 +678,7 @@ export default function CostosGeneralView({ db }) {
       const filas = detalleLotes(datos.lotes, datos.bases, v.categoria);
       return {
         titulo: cat ? `Lotes de ${cat.nombre} — ${mesTxt}` : `Lotes aprobados en ${mesTxt}`,
-        sub: "Lotes aprobados por Contabilidad en Dado por Cumplido este mes. Aporte = base × cortadas + % sobre costo + % sobre venta.",
+        sub: "Lotes aprobados por Contabilidad en Dado por Cumplido este mes. Aporte = (base + % sobre costo + % sobre venta por prenda) × prendas despachadas.",
         total: money(filas.reduce((s, f) => s + f.aporte, 0)),
         columnas: [
           { k: "numLote", label: "Lote", izq: true }, { k: "referencia", label: "Referencia", izq: true }, { k: "cliente", label: "Cliente", izq: true }, { k: "categoria", label: "Categoría", izq: true },
@@ -868,7 +868,7 @@ export default function CostosGeneralView({ db }) {
       {(datos.cargando || cargandoCC) ? <div style={{ fontSize: 13, color: C.slate, marginBottom: 14 }}>Leyendo lotes, nómina y cierres…</div> : null}
 
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 22 }}>
-        <Tile onClick={() => setVentana({ tipo: "lotes", categoria: null })} titulo="Recogido con los básicos" valor={money(r.recogido.aporte)} color={C.green} sub={`${r.recogido.lotes} lotes aprobados · ${fmt(r.recogido.cortadas)} prendas cortadas`} />
+        <Tile onClick={() => setVentana({ tipo: "lotes", categoria: null })} titulo="Recogido con los básicos" valor={money(r.recogido.aporte)} color={C.green} sub={`${r.recogido.lotes} lotes aprobados · ${fmt(r.recogido.despachadas)} prendas despachadas (${fmt(r.recogido.cortadas)} cortadas)${r.recogido.sinDespachada ? ` · ⚠ ${r.recogido.sinDespachada} sin despachada, aportan $0` : ""}`} />
         <Tile onClick={() => setVentana({ tipo: "estructura" })} titulo="Por pagar fuera de los lotes" valor={money(r.estructura)} color={C.amber} sub="gastos + nómina fiscal + destajo (ayudas y provisión)" />
         <Tile
           titulo={alcanza ? "Me alcanza" : "Me falta"}
