@@ -17216,3 +17216,96 @@ exports.getConsumoTelaLotesBusint = onCallAuth(
     };
   }
 );
+
+// ─── CORREOS DE LA EMPRESA (2026-11-16, a pedido de Fredy) ───────────────────────────────────────
+// Fase 1: bandeja unificada de las cuentas de Gmail que el administrador agrega en el módulo «Correos» de ATLAS.
+// La lógica (cifrado, lectura por IMAP) está en correos.js. Configurar UNA VEZ, desde la terminal:
+//   firebase functions:secrets:set CORREOS_CLAVE      (cualquier texto largo y secreto; cifra las contraseñas guardadas)
+//   firebase deploy --only functions:sincronizarCorreos,functions:correosSincronizarAhora,functions:correosGuardarCuenta
+const Correos = require("./correos");
+const CORREOS_CLAVE = defineSecret("CORREOS_CLAVE");
+
+async function exigirAdminCorreos(request) {
+  const snap = await db.collection("users").where("authUid", "==", request.auth.uid).limit(1).get();
+  const u = snap.empty ? null : snap.docs[0].data();
+  if (!u || !u.isAdmin) throw new HttpsError("permission-denied", "Solo un administrador maneja las cuentas de correo.");
+  return u;
+}
+
+// Lee los correos nuevos de las cuentas activas (o de una sola) y los guarda en correos_mensajes.
+async function sincronizarCuentasCorreos(soloId) {
+  const snap = await db.collection("correos_cuentas").get();
+  const resumen = [];
+  for (const d of snap.docs) {
+    const c = d.data();
+    if (c.activa === false || (soloId && d.id !== soloId)) continue;
+    const ahora = new Date().toISOString();
+    try {
+      const sec = await db.collection("correos_secretos").doc(d.id).get();
+      if (!sec.exists) throw new Error("Falta la contraseña de aplicación de esta cuenta. Edita la cuenta y escríbela de nuevo.");
+      const pass = Correos.descifrar(CORREOS_CLAVE.value(), sec.data().pass);
+      const r = await Correos.leerNuevos({ cuentaId: d.id, correo: c.email, pass, estado: { uidValidity: c.uidValidity, ultimoUid: c.ultimoUid } });
+      for (let i = 0; i < r.mensajes.length; i += 400) {
+        const lote = db.batch();
+        r.mensajes.slice(i, i + 400).forEach((m) => lote.set(db.collection("correos_mensajes").doc(Correos.idMensaje(m, r.uidValidity)), m));
+        await lote.commit();
+      }
+      await d.ref.set({ uidValidity: r.uidValidity, ultimoUid: r.ultimoUid, ultimaSync: ahora, ultimoError: "", pendientes: !!r.pendientes, totalCorreos: admin.firestore.FieldValue.increment(r.mensajes.length) }, { merge: true });
+      resumen.push({ id: d.id, correo: c.email, nuevos: r.mensajes.length, pendientes: !!r.pendientes });
+    } catch (e) {
+      const msg = Correos.textoErrorImap(e);
+      logger.warn(`correos: ${c.email}: ${msg}`);
+      await d.ref.set({ ultimoIntento: ahora, ultimoError: msg }, { merge: true });
+      resumen.push({ id: d.id, correo: c.email, nuevos: 0, error: msg });
+    }
+  }
+  return resumen;
+}
+
+exports.sincronizarCorreos = onSchedule(
+  { schedule: "every 10 minutes", timeZone: "America/Bogota", secrets: [CORREOS_CLAVE], timeoutSeconds: 300, memory: "512MiB" },
+  async () => { await sincronizarCuentasCorreos(null); }
+);
+
+exports.correosSincronizarAhora = onCallAuth(
+  { secrets: [CORREOS_CLAVE], timeoutSeconds: 300, memory: "512MiB" },
+  async (request) => {
+    await exigirAdminCorreos(request);
+    const cuentas = await sincronizarCuentasCorreos((request.data && request.data.cuentaId) || null);
+    return { cuentas };
+  }
+);
+
+// Crea o edita una cuenta. Si trae contraseña, primero la prueba contra Gmail y solo entonces la guarda (cifrada).
+exports.correosGuardarCuenta = onCallAuth(
+  { secrets: [CORREOS_CLAVE], timeoutSeconds: 120, memory: "256MiB" },
+  async (request) => {
+    await exigirAdminCorreos(request);
+    const d = request.data || {};
+    const email = String(d.email || "").trim().toLowerCase();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new HttpsError("invalid-argument", "Escribe un correo válido.");
+    const id = d.id ? String(d.id) : email.replace(/[^a-z0-9]/g, "_");
+    const ref = db.collection("correos_cuentas").doc(id);
+    const previa = await ref.get();
+    const pass = Correos.limpiarPass(d.password);
+    if (!pass && (!previa.exists || previa.data().email !== email)) {
+      throw new HttpsError("invalid-argument", "Escribe la contraseña de aplicación de Google de este correo (16 letras).");
+    }
+    if (pass) {
+      try { await Correos.probarCuenta(email, pass); }
+      catch (e) { throw new HttpsError("failed-precondition", Correos.textoErrorImap(e)); }
+      await db.collection("correos_secretos").doc(id).set({ email, pass: Correos.cifrar(CORREOS_CLAVE.value(), pass), actualizado: new Date().toISOString() });
+    }
+    const ahora = new Date().toISOString();
+    await ref.set({
+      email,
+      nombre: String(d.nombre || "").trim().slice(0, 80) || email,
+      uso: String(d.uso || "").trim().slice(0, 300),
+      activa: d.activa !== false,
+      actualizadoEn: ahora,
+      ...(previa.exists ? {} : { creadoEn: ahora, ultimoUid: 0 }),
+      ...(pass && previa.exists && previa.data().email !== email ? { ultimoUid: 0, uidValidity: "" } : {}),
+    }, { merge: true });
+    return { id };
+  }
+);

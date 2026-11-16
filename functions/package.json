@@ -9,6 +9,8 @@
     "exceljs": "^4.4.0",
     "firebase-admin": "^12.1.0",
     "firebase-functions": "^5.0.0",
+    "imapflow": "^2.12.1",
+    "mailparser": "^3.14.4",
     "nodemailer": "^6.9.0",
     "pdfjs-dist": "4.10.38"
   },
