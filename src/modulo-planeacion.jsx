@@ -14,6 +14,7 @@ import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "fire
 import CentroCostoCorteEnAreas, { CentroCostoCierreCorte } from "./modulo-corte-areas";
 import CentroCostoAnioPanel from "./centro-costo-historico";
 import { cargaEntradasActivaDe } from "./entradas-planta-util";
+import { DashboardEntregasView, EstadisticasPlantaView } from "./plantas-vistas";
 import { SelectorMotivo, pedirMotivoIncumplimiento, registrarIncumplimiento, claveAreaMotivo, NOMBRE_AREA_MOTIVO } from "./motivos-incumplimiento";
 import ProyeccionAreasView from "./proyeccion-areas";
 import TableroCostosView from "./tablero-costos";
@@ -5058,7 +5059,7 @@ function TraerLotesVentasModal({ area, ventasExistentes, rangoInicial, cierreDe,
       </div>
       {cargasEntradas !== null && !entradas.length && (
         <div style={{ padding: 16, borderRadius: 10, background: C.amberBg, color: C.amber, fontSize: 13, marginBottom: 12 }}>
-          Todavía no hay Entradas de Planta cargadas. Se suben o sincronizan en Planta Yanko → Dashboard de Entregas.
+          Todavía no hay Entradas de Planta cargadas. Se suben o sincronizan en Planeación → Plantas → Dashboard de entregas.
         </div>
       )}
       <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "auto", maxHeight: "52vh" }}>
@@ -9892,6 +9893,25 @@ function ReferenciasView({ lista, clienteDe }) {
   );
 }
 
+// (2026-11-16, a pedido de Fredy) Planeación → Plantas: todo lo de las plantas y talleres externos en un solo lugar. Las dos últimas
+// pestañas son las pantallas que estaban en Planta Yanko (mismo código, ver plantas-vistas.jsx); la primera es la comparación contra el
+// mes anterior de «Entradas de Talleres».
+function PlantasView({ entradas, cargas, cargaEntradas, onSubir, isAdmin }) {
+  const [tab, setTab] = useState("mes");
+  const TABS = [["mes", "Contra el mes anterior"], ["estadisticas", "Por planta y categoría"], ["entregas", "Dashboard de entregas"]];
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 18 }}>
+        {TABS.map(([k, t]) => (
+          <button key={k} onClick={() => setTab(k)} style={{ padding: "8px 16px", borderRadius: 999, border: `1.5px solid ${tab === k ? C.ink : C.border}`, background: tab === k ? C.ink : C.white, color: tab === k ? C.white : C.ink, fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>{t}</button>
+        ))}
+      </div>
+      {tab === "mes" && <EntradasTalleresView entradas={entradas} cargas={cargas} />}
+      {tab === "estadisticas" && <EstadisticasPlantaView cargaActiva={cargaEntradas} />}
+      {tab === "entregas" && <DashboardEntregasView cargaActiva={cargaEntradas} onSubir={onSubir} isAdmin={isAdmin} />}
+    </div>
+  );
+}
 function EntradasTalleresView({ entradas, cargas }) {
   // Todas las entradas con fecha, incluidas las correcciones (cantidad negativa): las unidades salen netas.
   const buenas = useMemo(() => entradas.filter((e) => e.fecha), [entradas]);
@@ -11128,6 +11148,13 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
     return () => unsub();
   }, []);
   const cargaEntradasPlantaActiva = useMemo(() => cargaEntradasActivaDe(cargasEntradasPlanta), [cargasEntradasPlanta]);
+  // (2026-11-16) «Plantas»: el Dashboard de Entregas y las Estadísticas de Planta vivían en Planta Yanko; la subida de entradas
+  // escribe en la misma colección de siempre (planta_entradas_cargas), así que Planta Yanko y Planeación ven los mismos datos.
+  async function agregarCargaEntradasPlantas(entradas) {
+    const nueva = { id: uid(), fecha: today(), creadoEn: new Date().toISOString(), subidoPor: currentUser?.name || "—", entradas };
+    setCargasEntradasPlanta((cs) => [...(cs || []), nueva]);
+    await fsSave("planta_entradas_cargas", nueva.id, nueva);
+  }
   // Todas las entradas de la carga activa de "Entradas de Planta" — planta
   // propia (INDUSTRIAS YANKO MODULO CENTRO) Y talleres externos por igual.
   // Antes esto excluía la planta propia (de ahí el nombre "entradasTalleres"),
@@ -11290,6 +11317,7 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
     { id: "centro_costo", icon: "💰", label: "Centro de Costo" },
     { id: "estadisticas", icon: "📈", label: "Estadísticas" },
     { id: "entradas_talleres", icon: "📥", label: "Entradas de Talleres" },
+    { id: "plantas", icon: "🏭", label: "Plantas" },
     { id: "lotes_por_dia", icon: "📅", label: "Lotes por Día" },
     { id: "proyeccion_areas", icon: "🗓", label: "Proyección por Área" },
     ...(isAdmin ? [{ id: "tablero_costos", icon: "💹", label: "Tablero de Costos" }] : []),
@@ -11387,6 +11415,7 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
             />
           )}
           {subView === "entradas_talleres" && <EntradasTalleresView entradas={entradasTalleres} cargas={cargas} />}
+          {subView === "plantas" && <PlantasView entradas={entradasTalleres} cargas={cargas} cargaEntradas={cargaEntradasPlantaActiva} onSubir={agregarCargaEntradasPlantas} isAdmin={isAdmin} />}
           {subView === "lotes_por_dia" && <LotesPorDiaView entradas={entradasTalleres} cargas={cargas} />}
           {subView === "proyeccion_areas" && (
             <ProyeccionAreasView
