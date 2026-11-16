@@ -5,7 +5,7 @@
 // (costos_cierres_mes/{año-mes}.resumen.estructura). Solo lee lotes ya cargados por Contabilidad.
 import React, { useEffect, useMemo, useState } from "react";
 import { collection, doc, getDocs, onSnapshot, setDoc } from "firebase/firestore";
-import { construirTablero, factoresAFecha, presupuestoEfectivo, resumenAFecha, topMasOtros, totalDe } from "./dado-por-cumplido-tablero-calculo";
+import { construirTablero, factoresAFecha, matrizPorAnio, presupuestoEfectivo, resumenAFecha, topMasOtros, totalDe } from "./dado-por-cumplido-tablero-calculo";
 
 const C = {
   ink: "#1A1A2E", slate: "#5A5A7A", border: "#E8E2DB", canvas: "#F7F4F0", white: "#FFFFFF",
@@ -106,13 +106,14 @@ export default function DadoPorCumplidoTablero({ lotes, bases, db, isAdmin, curr
   const anioActual = hoyCol.getUTCFullYear();
   const [anio, setAnio] = useState(anioActual);
   const [modo, setModo] = useState("aprobacion");
-  const [medida, setMedida] = useState("d");
+  const [medida, setMedida] = useState("u");
   const [desglose, setDesglose] = useState("t");
   const [verTodos, setVerTodos] = useState(false);
   const [escrito, setEscrito] = useState({});
   const [estructuras, setEstructuras] = useState({});
   const [borrador, setBorrador] = useState({});
   const [errorGuardar, setErrorGuardar] = useState("");
+  const [verAvisos, setVerAvisos] = useState("");
 
   useEffect(() => {
     const unsub = onSnapshot(
@@ -137,6 +138,8 @@ export default function DadoPorCumplidoTablero({ lotes, bases, db, isAdmin, curr
   }, [db]);
 
   const tablero = useMemo(() => construirTablero(lotes, bases, { anio, modo }), [lotes, bases, anio, modo]);
+  const porAnio = useMemo(() => matrizPorAnio(lotes, { modo }), [lotes, modo]);
+  const aniosDisponibles = useMemo(() => [...new Set([anioActual, ...porAnio.map((a) => a.anio)])].sort((a, b) => b - a), [porAnio, anioActual]);
   const sugerido = useMemo(() => MESES.map((_, i) => estructuras[`${anio}-${String(i + 1).padStart(2, "0")}`] || 0), [estructuras, anio]);
   const presEf = useMemo(() => presupuestoEfectivo(escrito, sugerido), [escrito, sugerido]);
   const factores = useMemo(() => factoresAFecha(anio), [anio]);
@@ -175,6 +178,9 @@ export default function DadoPorCumplidoTablero({ lotes, bases, db, isAdmin, curr
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(filasDe(tablero.clientes, "d")), "Recaudado por cliente");
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(filasDe(tablero.clientes, "u")), "Unidades por cliente");
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(MESES.map((m, i) => ({ Mes: m, Presupuesto: Math.round(presValores[i]), Origen: presEf[i].origen }))), "Presupuesto");
+    const lote = (x) => ({ Lote: x.numLote, Referencia: x.referencia, Cliente: x.cliente, "Categoría BASE": x.categoria, "Fecha del lote": x.fecha, Aprobado: x.aprobado, Cortadas: x.cortadas, Despachadas: x.despachadas, "Base por prenda": Math.round(x.base) });
+    if (tablero.detalleSinBase.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(tablero.detalleSinBase.map(lote)), "Lotes sin base");
+    if (tablero.detalleSinDespachada.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(tablero.detalleSinDespachada.map(lote)), "Lotes sin despachada");
     XLSX.writeFile(wb, `tablero_dado_por_cumplido_${anio}.xlsx`);
   }
 
@@ -186,12 +192,12 @@ export default function DadoPorCumplidoTablero({ lotes, bases, db, isAdmin, curr
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 14, color: C.slate, fontSize: 12 }}>
         <label style={{ display: "flex", flexDirection: "column", gap: 3 }}>Año
           <select style={sel} value={anio} onChange={(e) => setAnio(Number(e.target.value))}>
-            {[anioActual, anioActual - 1, anioActual - 2].map((a) => <option key={a} value={a}>{a}</option>)}
+            {aniosDisponibles.map((a) => <option key={a} value={a}>{a}</option>)}
           </select>
         </label>
         <label style={{ display: "flex", flexDirection: "column", gap: 3 }}>El mes se toma por
           <select style={sel} value={modo} onChange={(e) => setModo(e.target.value)}>
-            <option value="aprobacion">Fecha de aprobación</option>
+            <option value="aprobacion">Fecha en que se dio por cumplido (aprobación)</option>
             <option value="lote">Fecha del lote</option>
           </select>
         </label>
@@ -206,6 +212,7 @@ export default function DadoPorCumplidoTablero({ lotes, bases, db, isAdmin, curr
       </div>
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 14 }}>
+        <Tarjeta titulo={`Unidades dadas por cumplido ${anio}`} valor={fmt(unidadesAnio)} sub={`${tablero.lotesConDespachada} lotes aprobados con despachada`} />
         <Tarjeta titulo="Recaudado a la fecha" valor={money(alaFecha.recaudado)} sub={anio === anioActual ? "enero hasta hoy" : `todo ${anio}`} />
         <Tarjeta titulo="Presupuesto a la fecha" valor={hayPresupuesto ? money(alaFecha.presupuesto) : "—"} sub={hayPresupuesto ? "el mes en curso va proporcional a los días" : "escríbelo mes a mes en la tabla de abajo"} />
         <Tarjeta
@@ -214,13 +221,55 @@ export default function DadoPorCumplidoTablero({ lotes, bases, db, isAdmin, curr
           color={colorCumple(alaFecha.cumplimiento)}
           sub={alaFecha.cumplimiento === null ? "sin presupuesto todavía" : alaFecha.recaudado >= alaFecha.presupuesto ? `${money(alaFecha.recaudado - alaFecha.presupuesto)} por encima` : `faltan ${money(alaFecha.presupuesto - alaFecha.recaudado)}`}
         />
-        <Tarjeta titulo="Unidades × base promedio" valor={`${fmt(unidadesAnio)} × ${money(unidadesAnio > 0 ? recaudadoAnio / unidadesAnio : 0)}`} sub={`${tablero.lotesConDespachada} lotes aprobados con despachada`} />
+        <Tarjeta titulo="Base promedio por prenda" valor={money(unidadesAnio > 0 ? recaudadoAnio / unidadesAnio : 0)} sub={`${fmt(unidadesAnio)} unidades × base promedio = ${money(recaudadoAnio)}`} />
       </div>
 
       {tablero.sinDespachada > 0 || tablero.sinBase > 0 ? (
-        <div style={{ fontSize: 12, color: C.amber, marginBottom: 10 }}>
-          {tablero.sinDespachada > 0 ? `⚠ ${tablero.sinDespachada} lote(s) aprobado(s) sin cantidad despachada: aportan $0. ` : ""}
-          {tablero.sinBase > 0 ? `⚠ ${tablero.sinBase} lote(s) sin valor de base: aportan $0.` : ""}
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", fontSize: 12, color: C.amber }}>
+            {tablero.sinBase > 0 ? (
+              <button type="button" onClick={() => setVerAvisos(verAvisos === "base" ? "" : "base")} style={{ ...sel, fontSize: 12, cursor: "pointer", color: C.amber, borderColor: C.amber, background: C.amberBg }}>
+                ⚠ {tablero.sinBase} lote(s) sin valor de base: aportan $0 · {verAvisos === "base" ? "ocultar" : "ver cuáles"}
+              </button>
+            ) : null}
+            {tablero.sinDespachada > 0 ? (
+              <button type="button" onClick={() => setVerAvisos(verAvisos === "desp" ? "" : "desp")} style={{ ...sel, fontSize: 12, cursor: "pointer", color: C.amber, borderColor: C.amber, background: C.amberBg }}>
+                ⚠ {tablero.sinDespachada} lote(s) sin cantidad despachada: aportan $0 · {verAvisos === "desp" ? "ocultar" : "ver cuáles"}
+              </button>
+            ) : null}
+          </div>
+          {verAvisos ? (() => {
+            const lista = verAvisos === "base" ? tablero.detalleSinBase : tablero.detalleSinDespachada;
+            const mostrar = lista.slice(0, 200);
+            return (
+              <div style={{ marginTop: 8, background: C.white, border: `1px solid ${C.border}`, borderRadius: 10, padding: 12 }}>
+                <div style={{ fontSize: 12, color: C.slate, marginBottom: 6 }}>
+                  {verAvisos === "base"
+                    ? "Lotes aprobados sin valor de base (sin categoría BASE o con la base en cero). Se corrigen en Históricos (editar lote aprobado) para que cuenten en el recaudado."
+                    : "Lotes aprobados sin cantidad despachada (ni de Bodega ni de Busint). Revisa su despacho para que cuenten."}
+                  {lista.length > mostrar.length ? ` Se muestran los primeros ${mostrar.length} de ${lista.length}; el resto va en el Excel.` : ""}
+                </div>
+                <div style={{ overflowX: "auto", maxHeight: 320, overflowY: "auto", border: `1px solid ${C.border}`, borderRadius: 8 }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", background: C.white }}>
+                    <thead>
+                      <tr>
+                        <th style={{ ...th, textAlign: "left" }}>Lote</th><th style={{ ...th, textAlign: "left" }}>Referencia</th><th style={{ ...th, textAlign: "left" }}>Cliente</th><th style={{ ...th, textAlign: "left" }}>Categoría BASE</th>
+                        <th style={th}>Fecha lote</th><th style={th}>Aprobado</th><th style={th}>Cortadas</th><th style={th}>Despachadas</th><th style={th}>Base</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {mostrar.map((x, k) => (
+                        <tr key={`${x.id}-${k}`}>
+                          <td style={tdL}>{x.numLote || "–"}</td><td style={{ ...td, textAlign: "left" }}>{x.referencia || "–"}</td><td style={{ ...td, textAlign: "left" }}>{x.cliente}</td><td style={{ ...td, textAlign: "left" }}>{x.categoria}</td>
+                          <td style={td}>{x.fecha || "–"}</td><td style={td}>{x.aprobado || "–"}</td><td style={td}>{fmt(x.cortadas)}</td><td style={td}>{fmt(x.despachadas)}</td><td style={td}>{x.base > 0 ? money(x.base) : "$0"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          })() : null}
         </div>
       ) : null}
 
@@ -240,7 +289,45 @@ export default function DadoPorCumplidoTablero({ lotes, bases, db, isAdmin, curr
       </div>
 
       <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, marginBottom: 16 }}>
-        <div style={{ fontSize: 15, fontWeight: 800, color: C.ink, marginBottom: 4 }}>Detalle por mes</div>
+        <div style={{ fontSize: 15, fontWeight: 800, color: C.ink, marginBottom: 4 }}>{medida === "d" ? "Recaudado" : "Unidades dadas por cumplido"} por mes y por año</div>
+        <div style={{ fontSize: 12, color: C.slate, marginBottom: 8 }}>Todos los años con lotes aprobados, contados {modo === "lote" ? "por la fecha del lote" : "por el mes en que se dieron por cumplido (aprobación)"}. Cada fila es un año.</div>
+        <div style={{ overflowX: "auto", border: `1px solid ${C.border}`, borderRadius: 8 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", background: C.white }}>
+            <thead>
+              <tr>
+                <th style={{ ...th, textAlign: "left" }}>Año</th>
+                {MESES.map((m) => <th key={m} style={th}>{m}</th>)}
+                <th style={th}>Total año</th>
+                <th style={th}>Prom. mes</th>
+                <th style={th}>vs año anterior</th>
+              </tr>
+            </thead>
+            <tbody>
+              {porAnio.map((a, k) => {
+                const tot = totalDe(a[clave]);
+                const ant = porAnio[k + 1];
+                const totAnt = ant ? totalDe(ant[clave]) : 0;
+                const mesesConDato = a[clave].filter((v) => v > 0).length || 1;
+                const delta = totAnt > 0 ? tot / totAnt - 1 : null;
+                return (
+                  <tr key={a.anio} style={{ background: a.anio === anio ? C.canvas : C.white }}>
+                    <td style={tdL}>{a.anio}</td>
+                    {MESES.map((m, i) => <td key={m} style={td}>{a[clave][i] ? formato(a[clave][i]) : "–"}</td>)}
+                    <td style={{ ...td, fontWeight: 800 }}>{formato(tot)}</td>
+                    <td style={td}>{formato(tot / mesesConDato)}</td>
+                    <td style={{ ...td, fontWeight: 700, color: delta === null ? C.slate : delta >= 0 ? C.green : C.red }}>{delta === null ? "–" : `${delta >= 0 ? "+" : ""}${Math.round(delta * 100)} %`}</td>
+                  </tr>
+                );
+              })}
+              {!porAnio.length ? <tr><td style={{ ...td, textAlign: "left", color: C.slate }} colSpan={16}>Todavía no hay lotes aprobados.</td></tr> : null}
+            </tbody>
+          </table>
+        </div>
+        <div style={{ fontSize: 11, color: C.slate, marginTop: 6 }}>El año en curso va incompleto: «Prom. mes» cuenta solo los meses con datos y «vs año anterior» compara contra el año anterior completo.</div>
+      </div>
+
+      <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, marginBottom: 16 }}>
+        <div style={{ fontSize: 15, fontWeight: 800, color: C.ink, marginBottom: 4 }}>Detalle por mes · {anio}</div>
         <div style={{ fontSize: 12, color: C.slate, marginBottom: 8 }}>
           Cada cifra es unidades despachadas × valor de la base (ej. 5.000 × $2.300 = $11.500.000), solo la base; los porcentajes del Dado por Cumplido quedan aparte.
           {medida === "d" ? (isAdmin ? " Escribe el presupuesto de cada mes (se guarda al salir de la casilla); si lo dejas vacío se sugiere la estructura que guardó ¿Cubro mis costos?." : " El presupuesto lo escribe un administrador.") : ""}

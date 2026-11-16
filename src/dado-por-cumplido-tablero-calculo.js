@@ -52,6 +52,8 @@ export function construirTablero(lotes, bases, { anio, modo }) {
   let lotesConDespachada = 0;
   let sinDespachada = 0;
   let sinBase = 0;
+  const detalleSinBase = [];
+  const detalleSinDespachada = [];
   (lotes || []).forEach((l) => {
     if (l.estado !== "aprobado" || l.eliminado) return;
     const m = mesDeLote(l, modo);
@@ -59,11 +61,13 @@ export function construirTablero(lotes, bases, { anio, modo }) {
     const u = despachadaEfectiva(l);
     const bp = basePorPrenda(l);
     const d = u * bp;
-    if (u <= 0) sinDespachada += 1;
-    else lotesConDespachada += 1;
-    if (bp <= 0) sinBase += 1;
     const base = nombreBase(l.categoriaBaseId);
     const cliente = String(l.cliente || "").trim() || "(sin cliente)";
+    // Para el aviso «aportan $0»: qué lotes son, para poder corregirlos en Dado por Cumplido.
+    const ficha = { id: l.id || "", numLote: String(l.numLote || ""), referencia: String(l.referencia || ""), cliente, categoria: l.categoriaBaseId ? base : "(sin categoría BASE)", fecha: fechaISO(l.fecha, false), aprobado: fechaISO(l.fechaAprobacion, true), cortadas: num(l.cantCortada), despachadas: u, base: bp };
+    if (u <= 0) { sinDespachada += 1; detalleSinDespachada.push(ficha); }
+    else lotesConDespachada += 1;
+    if (bp <= 0) { sinBase += 1; detalleSinBase.push(ficha); }
     [total, grupo(porBase, base), grupo(porCliente, cliente)].forEach((g) => {
       g.u[m.mes] += u;
       g.d[m.mes] += d;
@@ -78,7 +82,26 @@ export function construirTablero(lotes, bases, { anio, modo }) {
     lotesConDespachada,
     sinDespachada,
     sinBase,
+    detalleSinBase,
+    detalleSinDespachada,
   };
+}
+
+// Unidades (y recaudado) por mes de TODOS los años que haya en los lotes aprobados: una fila por año, más reciente primero.
+export function matrizPorAnio(lotes, { modo }) {
+  const por = new Map();
+  (lotes || []).forEach((l) => {
+    if (l.estado !== "aprobado" || l.eliminado) return;
+    const m = mesDeLote(l, modo);
+    if (!m) return;
+    if (!por.has(m.anio)) por.set(m.anio, { anio: m.anio, ...vacio() });
+    const g = por.get(m.anio);
+    const u = despachadaEfectiva(l);
+    g.u[m.mes] += u;
+    g.d[m.mes] += u * basePorPrenda(l);
+    g.lotes += 1;
+  });
+  return [...por.values()].sort((a, b) => b.anio - a.anio);
 }
 
 // Porcentaje del mes transcurrido (hora Colombia) para comparar el mes en curso con el presupuesto proporcional.
