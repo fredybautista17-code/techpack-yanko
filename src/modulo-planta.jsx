@@ -726,6 +726,36 @@ function PanelPedidosPlanta({ sinProgramar, programacion, hoyISO, desdeISO, onCl
     </div>
   );
 }
+// (2026-11-17, a pedido de Fredy) Lupa de Programación Diaria: filtra por referencia, categoría, número de lote y número de pedido.
+// Sin mayúsculas ni tildes; con varias palabras deben coincidir todas.
+const normBuscaPl = (v) => String(v ?? "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+function coincideBusquedaPl(item, q) {
+  const palabras = normBuscaPl(q).split(/\s+/).filter(Boolean);
+  if (!palabras.length) return true;
+  const texto = normBuscaPl(`${item.numLote ?? ""} ${item.numPedido ?? ""} ${item.referencia ?? ""} ${item.categoria ?? ""}`);
+  return palabras.every((w) => texto.includes(w));
+}
+function CajaBusquedaPl({ value, onChange, aviso, ancho = 280 }) {
+  return (
+    <div style={{ display: "inline-flex", flexDirection: "column", gap: 3 }}>
+      <div style={{ position: "relative", width: ancho }}>
+        <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", fontSize: 14, pointerEvents: "none" }}>🔍</span>
+        <input
+          type="text"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder="Buscar referencia, categoría, lote o pedido…"
+          aria-label="Buscar referencia, categoría, lote o pedido"
+          style={{ width: "100%", padding: "8px 30px 8px 32px", border: `1.5px solid ${value.trim() ? C.blue : C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", background: C.white, color: C.ink, outline: "none" }}
+        />
+        {value && (
+          <span onClick={() => onChange("")} title="Limpiar la búsqueda" style={{ position: "absolute", right: 9, top: "50%", transform: "translateY(-50%)", cursor: "pointer", color: C.slate, fontWeight: 800, fontSize: 13 }}>✕</span>
+        )}
+      </div>
+      {value.trim() && aviso ? <span style={{ fontSize: 11.5, color: C.blue, fontWeight: 700 }}>{aviso}</span> : null}
+    </div>
+  );
+}
 function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, onEnviarDia, onVistaDia, onCancelar, onMover, onEditar }) {
   const hoyISO = new Date().toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
   const [semana, setSemana] = useState(0);
@@ -734,6 +764,7 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
   const [vistaCorreo, setVistaCorreo] = useState(null); // días cuyo correo se está revisando antes de enviar
   const [panel, setPanel] = useState(false);
   const [verPedidos, setVerPedidos] = useState(false); // panel "Pedidos" al lado del tablero
+  const [busca, setBusca] = useState(""); // lupa del tablero (independiente de la de Listas)
   const [abiertos, setAbiertos] = useState({}); // pedidos desplegados dentro de un día (clave "iso|pedido") y cumplidos ("cum|iso")
   useEffect(() => {
     const unsub = onSnapshot(doc(db, "config", "planta_programacion"), (snap) => setTope(Number(snap.exists() ? snap.data()?.topeDia : 0) || 0), () => {});
@@ -743,9 +774,13 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
   const dias = Array.from({ length: sabado ? 6 : 5 }, (_, i) => ({ iso: sumarDiasISOPl(lunes, i), nombre: NOMBRES_DIA_PL[i] }));
   const diasProg = dias.filter((d) => d.iso >= hoyISO);
   const pendientes = programacion.filter((p) => p.estado !== "cumplido");
+  // Con la lupa, el tablero muestra solo lo que coincide; los avisos por correo y los totales de «Enviar pendientes» siguen contando todo.
+  const progVis = busca.trim() ? programacion.filter((p) => coincideBusquedaPl(p, busca)) : programacion;
+  const sinProgramarVis = busca.trim() ? sinProgramar.filter((l) => coincideBusquedaPl(l, busca)) : sinProgramar;
+  const pendientesVis = progVis.filter((p) => p.estado !== "cumplido");
   // Lo vencido de semanas anteriores va en su propia franja roja; lo vencido de esta semana se ve en su día (borde rojo).
-  const vencidosVisibles = pendientes.filter((p) => p.fechaEnviado && p.fechaEnviado < hoyISO && p.fechaEnviado < dias[0].iso);
-  const pedidos = agruparPedidosPlanta(sinProgramar);
+  const vencidosVisibles = pendientesVis.filter((p) => p.fechaEnviado && p.fechaEnviado < hoyISO && p.fechaEnviado < dias[0].iso);
+  const pedidos = agruparPedidosPlanta(sinProgramarVis);
   const sinAvisarTotal = pendientes.filter((p) => p.avisado === false).length;
   const diasSinAvisar = [...new Set(pendientes.filter((p) => p.avisado === false && p.fechaEnviado).map((p) => p.fechaEnviado))].sort();
   const abrirVista = (isos) => { if (isos.length) setVistaCorreo(isos); };
@@ -810,7 +845,7 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
       </div>
     );
   }
-  const totalSemana = programacion.filter((p) => dias.some((d) => d.iso === p.fechaEnviado));
+  const totalSemana = progVis.filter((p) => dias.some((d) => d.iso === p.fechaEnviado));
   return (
     <div style={{ marginBottom: 24 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
@@ -823,6 +858,14 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
         <label style={{ fontSize: 12, color: C.slate, display: "inline-flex", alignItems: "center", gap: 4 }}>
           <input type="checkbox" checked={sabado} onChange={(e) => setSabado(e.target.checked)} /> Incluir sábado
         </label>
+        <span style={{ flex: 1 }} />
+        <CajaBusquedaPl
+          value={busca}
+          onChange={setBusca}
+          aviso={progVis.length || sinProgramarVis.length
+            ? `Coinciden ${progVis.filter((p) => p.estado !== "cumplido").length} programados y ${sinProgramarVis.length} sin programar`
+            : "Ningún lote coincide con la búsqueda"}
+        />
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
         <button onClick={() => setPanel(true)} style={{ border: `1px solid ${C.blue}`, background: C.blue, color: "#fff", borderRadius: 12, padding: "13px 22px", fontSize: 15.5, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>
@@ -872,20 +915,21 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
       <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
       <div style={{ flex: 1, minWidth: 0, display: "grid", gridTemplateColumns: `repeat(${dias.length}, minmax(0,1fr))`, gap: 14, alignItems: "start" }}>
         {dias.map((d) => {
-          const delDia = programacion.filter((p) => p.fechaEnviado === d.iso);
+          const delDia = progVis.filter((p) => p.fechaEnviado === d.iso);
           const total = sumaUnd(delDia);
           const pasa = tope > 0 && total > tope;
           const esHoy = d.iso === hoyISO;
           const pasado = d.iso < hoyISO;
           const pendDia = delDia.filter((p) => p.estado !== "cumplido");
+          const pendDiaTodos = programacion.filter((p) => p.fechaEnviado === d.iso && p.estado !== "cumplido");
           const cumDia = delDia.filter((p) => p.estado === "cumplido");
-          const sinAvisarDia = pendDia.filter((p) => p.avisado === false).length;
-          const ultimoAviso = pendDia.map((p) => p.avisadoEn).filter(Boolean).sort().pop();
+          const sinAvisarDia = pendDiaTodos.filter((p) => p.avisado === false).length;
+          const ultimoAviso = pendDiaTodos.map((p) => p.avisadoEn).filter(Boolean).sort().pop();
           const horaAviso = ultimoAviso ? new Date(ultimoAviso).toLocaleTimeString("es-CO", { hour: "numeric", minute: "2-digit", timeZone: "America/Bogota" }) : "";
           let estado = pill("libre", C.slate, "#ECEAE4");
-          if (delDia.length && !pendDia.length) estado = pill("todo cumplido", C.green, C.greenBg);
+          if (delDia.length && !pendDiaTodos.length) estado = pill("todo cumplido", C.green, C.greenBg);
           else if (sinAvisarDia) estado = pill(`${sinAvisarDia} sin avisar`, C.amber, C.amberBg, "Salen en el siguiente correo automático (7 p. m. o 10 a. m.)");
-          else if (pendDia.length) estado = pill(`✓ avisado${horaAviso ? ` ${horaAviso}` : ""}`, C.green, C.greenBg);
+          else if (pendDiaTodos.length) estado = pill(`✓ avisado${horaAviso ? ` ${horaAviso}` : ""}`, C.green, C.greenBg);
           const claveCum = `cum|${d.iso}`;
           return (
             <div key={d.iso} style={{ background: C.white, border: esHoy ? `2px solid ${C.blue}` : `1px solid ${C.border}`, borderRadius: 16, padding: esHoy ? 15 : 16, minHeight: 250, opacity: pasado && !pendDia.length ? 0.85 : 1 }}>
@@ -900,7 +944,7 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
                 {delDia.length === 1 ? "lote" : "lotes"} · {fmtNum(total)} und{tope > 0 ? ` de ${fmtNum(tope)}` : ""}
               </div>
               <div style={{ marginTop: 8 }}>{estado}</div>
-              {pendDia.length > 0 && (
+              {pendDiaTodos.length > 0 && (
                 <button
                   onClick={() => abrirVista([d.iso])}
                   title="Ver el correo de Planta de este día y enviarlo, sin esperar al correo automático"
@@ -923,7 +967,7 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
               )}
               {!delDia.length && (
                 <div style={{ border: `2px dashed ${C.border}`, borderRadius: 12, padding: "40px 10px", textAlign: "center", color: "#98A2B3", fontSize: 13.5, marginTop: 14 }}>
-                  {pasado ? "Sin lotes" : "Nada programado"}
+                  {busca.trim() ? "Sin coincidencias" : pasado ? "Sin lotes" : "Nada programado"}
                 </div>
               )}
             </div>
@@ -973,6 +1017,7 @@ function ProgramacionDiariaView({ cargaActiva, programacion, onProgramar, onProg
     [lotesEnPlantaYanko, numLotesProgramados]
   );
   const [filtroPrio, setFiltroPrio] = useState("todas");
+  const [buscaL, setBuscaL] = useState(""); // lupa de Listas (independiente de la del Tablero)
   const statsPedido = useMemo(() => estadisticasPedidos(cargaActiva?.lotes), [cargaActiva]);
   const sinProgramarPrio = useMemo(
     () => sinProgramar
@@ -981,14 +1026,15 @@ function ProgramacionDiariaView({ cargaActiva, programacion, onProgramar, onProg
         || (a.diasPedido ?? 9999) - (b.diasPedido ?? 9999) || a.numLote - b.numLote),
     [sinProgramar, statsPedido]
   );
+  const sinProgramarPrioF = useMemo(() => sinProgramarPrio.filter((l) => coincideBusquedaPl(l, buscaL)), [sinProgramarPrio, buscaL]);
   const conteoPrio = useMemo(() => ({
-    alta: sinProgramarPrio.filter((l) => l.prioridad === "alta").length,
-    media: sinProgramarPrio.filter((l) => l.prioridad === "media").length,
-    normal: sinProgramarPrio.filter((l) => l.prioridad === "normal").length,
-  }), [sinProgramarPrio]);
+    alta: sinProgramarPrioF.filter((l) => l.prioridad === "alta").length,
+    media: sinProgramarPrioF.filter((l) => l.prioridad === "media").length,
+    normal: sinProgramarPrioF.filter((l) => l.prioridad === "normal").length,
+  }), [sinProgramarPrioF]);
   const sinProgramarVisibles = useMemo(
-    () => (filtroPrio === "todas" ? sinProgramarPrio : sinProgramarPrio.filter((l) => l.prioridad === filtroPrio)),
-    [sinProgramarPrio, filtroPrio]
+    () => (filtroPrio === "todas" ? sinProgramarPrioF : sinProgramarPrioF.filter((l) => l.prioridad === filtroPrio)),
+    [sinProgramarPrioF, filtroPrio]
   );
   const pendientesConEstado = useMemo(
     () => pendientes.map((p) => {
@@ -1043,6 +1089,16 @@ function ProgramacionDiariaView({ cargaActiva, programacion, onProgramar, onProg
       {vista === "tablero" && (
         <TableroSemanalPlanta sinProgramar={sinProgramarPrio} programacion={programacion} onProgramarVarios={onProgramarVarios} onEnviarDia={onEnviarDia} onVistaDia={onVistaDia} onCancelar={onCancelar} onMover={onEditarFecha} onEditar={setEditando} />
       )}
+      {vista === "tabla" && (
+        <div style={{ marginBottom: 16 }}>
+          <CajaBusquedaPl
+            value={buscaL}
+            onChange={setBuscaL}
+            ancho={340}
+            aviso={`Sin programar: ${sinProgramarPrioF.length} · Pendientes: ${pendientesConEstado.filter((p) => coincideBusquedaPl(p, buscaL)).length} · Cumplidos: ${cumplidos.filter((p) => coincideBusquedaPl(p, buscaL)).length}`}
+          />
+        </div>
+      )}
       {vista === "tabla" && sinProgramar.length > 0 && (
         <div style={{ marginBottom: 28 }}>
           <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 4 }}>EN PLANTA YANKO SIN PROGRAMAR — ordenado por prioridad</div>
@@ -1050,7 +1106,7 @@ function ProgramacionDiariaView({ cargaActiva, programacion, onProgramar, onProg
             La prioridad sale de la fecha de entrega del pedido y de cuántos lotes del pedido faltan por salir. Al programar, la fecha sugerida ya viene puesta.
           </div>
           <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
-            {[["todas", `Todas (${sinProgramarPrio.length})`, C.ink, C.canvas], ["alta", `🔴 Alta (${conteoPrio.alta})`, NIVELES_PRIO.alta.color, NIVELES_PRIO.alta.bg], ["media", `🟠 Media (${conteoPrio.media})`, NIVELES_PRIO.media.color, NIVELES_PRIO.media.bg], ["normal", `🟢 Normal (${conteoPrio.normal})`, NIVELES_PRIO.normal.color, NIVELES_PRIO.normal.bg]].map(([id, txt, color, bg]) => (
+            {[["todas", `Todas (${sinProgramarPrioF.length})`, C.ink, C.canvas], ["alta", `🔴 Alta (${conteoPrio.alta})`, NIVELES_PRIO.alta.color, NIVELES_PRIO.alta.bg], ["media", `🟠 Media (${conteoPrio.media})`, NIVELES_PRIO.media.color, NIVELES_PRIO.media.bg], ["normal", `🟢 Normal (${conteoPrio.normal})`, NIVELES_PRIO.normal.color, NIVELES_PRIO.normal.bg]].map(([id, txt, color, bg]) => (
               <div
                 key={id}
                 onClick={() => setFiltroPrio(id)}
@@ -1061,7 +1117,7 @@ function ProgramacionDiariaView({ cargaActiva, programacion, onProgramar, onProg
             ))}
           </div>
           <Tabla
-            vacio="Todo lo que está en Planta Yanko ya tiene una fecha programada."
+            vacio={buscaL.trim() ? "Ningún lote sin programar coincide con la búsqueda." : "Todo lo que está en Planta Yanko ya tiene una fecha programada."}
             columnas={[
               {
                 key: "prioridad",
@@ -1110,7 +1166,7 @@ function ProgramacionDiariaView({ cargaActiva, programacion, onProgramar, onProg
       </div>
       {subTab === "pendientes" && (
         <Tabla
-          vacio="No hay lotes programados pendientes."
+          vacio={buscaL.trim() ? "Ningún lote programado coincide con la búsqueda." : "No hay lotes programados pendientes."}
           columnas={[
             { key: "numLote", label: "Num Lote" },
             { key: "referencia", label: "Referencia" },
@@ -1144,12 +1200,12 @@ function ProgramacionDiariaView({ cargaActiva, programacion, onProgramar, onProg
               ),
             },
           ]}
-          filas={pendientesConEstado}
+          filas={pendientesConEstado.filter((p) => coincideBusquedaPl(p, buscaL))}
         />
       )}
       {subTab === "cumplidos" && (
         <Tabla
-          vacio="Todavía no hay lotes cumplidos."
+          vacio={buscaL.trim() ? "Ningún lote cumplido coincide con la búsqueda." : "Todavía no hay lotes cumplidos."}
           columnas={[
             { key: "numLote", label: "Num Lote" },
             { key: "referencia", label: "Referencia" },
@@ -1173,7 +1229,7 @@ function ProgramacionDiariaView({ cargaActiva, programacion, onProgramar, onProg
               },
             },
           ]}
-          filas={cumplidos}
+          filas={cumplidos.filter((p) => coincideBusquedaPl(p, buscaL))}
         />
       )}
       </>)}
