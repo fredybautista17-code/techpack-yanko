@@ -11703,6 +11703,43 @@ function abrirImpresionDed(paginas, titulo) {
   setTimeout(() => URL.revokeObjectURL(url), 120000);
   return !!w;
 }
+// (2026-11-17, a pedido de Contabilidad) Control de cobros por mes y por día: cada cobro cuenta en el día de su fecha (la del cobro, no la
+// de la nómina). «Cobrado» = ya se descontó en una nómina; «Pendiente» = todavía no. Los cobros sin fecha se cuentan aparte.
+function resumenCobrosControl(filas, anio, mes) {
+  const vacio = () => ({ cantidad: 0, valor: 0, cobrado: 0, pendiente: 0 });
+  const sumar = (g, f) => {
+    g.cantidad += 1;
+    g.valor += f.valor;
+    if (f.cobrado) g.cobrado += f.valor; else g.pendiente += f.valor;
+  };
+  const porMes = Array.from({ length: 12 }, (_, i) => ({ id: String(i + 1).padStart(2, "0"), mes: i, ...vacio() }));
+  const dias = new Map();
+  const mesTotal = vacio();
+  const sinFecha = vacio();
+  const anios = new Set();
+  (filas || []).forEach((f) => {
+    const iso = String(f.fecha || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) { sumar(sinFecha, f); return; }
+    anios.add(iso.slice(0, 4));
+    if (iso.slice(0, 4) !== String(anio)) return;
+    const m = Number(iso.slice(5, 7)) - 1;
+    sumar(porMes[m], f);
+    if (m !== Number(mes) - 1) return;
+    sumar(mesTotal, f);
+    if (!dias.has(iso)) dias.set(iso, { id: iso, fecha: iso, ...vacio(), cobros: [] });
+    const d = dias.get(iso);
+    sumar(d, f);
+    d.cobros.push(f);
+  });
+  const porDia = [...dias.values()].sort((a, b) => a.fecha.localeCompare(b.fecha));
+  const anioTotal = porMes.reduce((a, g) => ({ cantidad: a.cantidad + g.cantidad, valor: a.valor + g.valor, cobrado: a.cobrado + g.cobrado, pendiente: a.pendiente + g.pendiente }), vacio());
+  return { porMes, porDia, mesTotal, anioTotal, sinFecha, anios: [...anios].sort() };
+}
+const DIAS_SEM_DED = ["dom", "lun", "mar", "mié", "jue", "vie", "sáb"];
+function diaSemanaDed(iso) {
+  const [y, m, d] = String(iso).slice(0, 10).split("-").map(Number);
+  return DIAS_SEM_DED[new Date(Date.UTC(y, m - 1, d)).getUTCDay()];
+}
 function agruparDed(lista, claveFn, etiquetaFn) {
   const m = new Map();
   lista.forEach((f) => {
@@ -11770,6 +11807,11 @@ function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobro
   const [quincenaQ, setQuincenaQ] = useState(hoyDed.getDate() <= 15 ? "1" : "2");
   const [corteManual, setCorteManual] = useState("");
   const [buscarTrab, setBuscarTrab] = useState("");
+  // (2026-11-17) Control por mes y por día (Contabilidad).
+  const [verControl, setVerControl] = useState(false);
+  const [anioCtl, setAnioCtl] = useState(String(hoyDed.getFullYear()));
+  const [mesCtl, setMesCtl] = useState(String(hoyDed.getMonth() + 1).padStart(2, "0"));
+  const [diaCtl, setDiaCtl] = useState(null);
   // (2026-09-18, a pedido de Fredy) Formulario para agregar un cobro manual
   // -- solo lo ve quien tenga el permiso (administrador, Yuleisi Virginia,
   // María Fernanda Páez). No depende de ningún lote de Bodega.
@@ -11938,6 +11980,21 @@ function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobro
   const porTrabajadorVista = normBuscarDed(buscarTrab) ? porTrabajador.filter((g) => normBuscarDed(g.nombre).includes(normBuscarDed(buscarTrab))) : porTrabajador;
   const conCobrosQ = porTrabajador.filter((g) => g.cobros.some((f) => ["entra", "atrasado", "cobrado_q"].includes(f.clase)));
   const ctxImp = { etiqueta: etiquetaQ, corte: corteQ };
+  const ctl = resumenCobrosControl(filasClas, anioCtl, mesCtl);
+  const aniosCtl = [...new Set([...ctl.anios, String(hoyDed.getFullYear())])].sort();
+  const nombreMesCtl = NOMBRES_MES_DED[Number(mesCtl) - 1];
+  async function descargarControlCobros() {
+    const XLSX = await import("xlsx");
+    const wb = XLSX.utils.book_new();
+    const cab = ["Cobros", "Valor", "Cobrado (ya descontado)", "Pendiente de cobrar"];
+    const dias = [["Fecha", "Día", ...cab], ...ctl.porDia.map((d) => [d.fecha, diaSemanaDed(d.fecha), d.cantidad, d.valor, d.cobrado, d.pendiente]), ["TOTAL", "", ctl.mesTotal.cantidad, ctl.mesTotal.valor, ctl.mesTotal.cobrado, ctl.mesTotal.pendiente]];
+    const meses = [["Mes", ...cab], ...ctl.porMes.map((g) => [NOMBRES_MES_DED[g.mes], g.cantidad, g.valor, g.cobrado, g.pendiente]), [`TOTAL ${anioCtl}`, ctl.anioTotal.cantidad, ctl.anioTotal.valor, ctl.anioTotal.cobrado, ctl.anioTotal.pendiente]];
+    const detalle = [["Fecha", "Trabajador", "Área", "Lote", "Referencia", "Motivo", "Valor", "Estado", "Descontado en"], ...ctl.porDia.flatMap((d) => d.cobros.map((f) => [f.fecha, f.trabajadorNombre, f.area, f.numLote || "", f.referencia || "", f.tipo, f.valor, f.cobrado ? "Cobrado" : "Pendiente", f.periodoIdCobrado || ""]))];
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(dias), `Por día ${nombreMesCtl}`.slice(0, 31));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(meses), `Por mes ${anioCtl}`);
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(detalle), "Detalle del mes");
+    XLSX.writeFile(wb, `cobros_${anioCtl}-${mesCtl}.xlsx`);
+  }
   function imprimirResumenQ() {
     const grupos = conCobrosQ.map((g) => ({ ...g })).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
     if (!abrirImpresionDed([hojaResumenDedHTML(grupos, ctxImp)], "Deducciones de la quincena")) window.alert("No hay cobros en esta quincena o el navegador bloqueó la ventana.");
@@ -12054,6 +12111,82 @@ function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobro
         <KPI icon="➡️" label="A descontar en esta quincena" value={fmtMoney(totalEntra + totalAtrasado)} color={C.blue} bg={C.blueBg} sub={`Dentro de la quincena ${fmtMoney(totalEntra)}`} />
         <KPI icon="⚠️" label="Atrasado de quincenas anteriores" value={fmtMoney(totalAtrasado)} color={totalAtrasado > 0 ? C.red : C.slate} bg={totalAtrasado > 0 ? C.redBg : C.canvas} />
         <KPI icon="✅" label="Ya cobrado en esta quincena" value={fmtMoney(totalCobradoQ)} color={C.green} bg={C.greenBg} />
+      </div>
+      {diaCtl && (
+        <Modal title={`Cobros del ${diaSemanaDed(diaCtl.fecha)} ${fechaCortaDed(diaCtl.fecha)}`} onClose={() => setDiaCtl(null)} width={860}>
+          <div style={{ fontSize: 12, color: C.slate, marginBottom: 10 }}>
+            {fmtNum(diaCtl.cantidad)} cobro{diaCtl.cantidad === 1 ? "" : "s"} · {fmtMoney(diaCtl.valor)} (cobrado {fmtMoney(diaCtl.cobrado)} · pendiente {fmtMoney(diaCtl.pendiente)})
+          </div>
+          <Tabla
+            vacio="Sin cobros."
+            columnas={[
+              { key: "trabajadorNombre", label: "Trabajador" },
+              { key: "area", label: "Área", render: (f) => <span style={{ color: C.slate }}>{f.area}</span> },
+              { key: "numLote", label: "Lote", render: (f) => `${f.numLote || "—"}${f.referencia ? ` · ${f.referencia}` : ""}` },
+              { key: "tipo", label: "Motivo" },
+              { key: "valor", label: "Valor", align: "right", render: (f) => <strong>{fmtMoney(f.valor)}</strong> },
+              { key: "cobrado", label: "Estado", render: (f) => (f.cobrado ? <span style={{ color: C.green, fontWeight: 700 }}>Cobrado en {f.periodoIdCobrado || "—"}</span> : <span style={{ color: C.amber, fontWeight: 700 }}>Pendiente de cobrar</span>) },
+            ]}
+            filas={diaCtl.cobros}
+          />
+        </Modal>
+      )}
+      <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 14, marginBottom: 18, background: C.white }}>
+        <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <div style={{ fontSize: 13, fontWeight: 800, color: C.ink }}>📅 Cobros por mes y por día</div>
+          <Btn small variant="secondary" onClick={() => setVerControl(!verControl)}>{verControl ? "Ocultar" : "Ver control"}</Btn>
+          <div style={{ fontSize: 12, color: C.slate, flex: 1, minWidth: 220 }}>Cuánto se cobró cada mes y cada día (por la fecha del cobro), con lo que ya se descontó en nómina y lo que sigue pendiente.</div>
+        </div>
+        {verControl && (
+          <div style={{ marginTop: 14 }}>
+            <div style={{ display: "flex", gap: 12, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 14 }}>
+              <div style={{ width: 120 }}><FSel value={anioCtl} onChange={(v) => setAnioCtl(v || String(hoyDed.getFullYear()))} options={aniosCtl.map((a) => ({ value: a, label: a }))} placeholder="Año" /></div>
+              <div style={{ width: 170 }}><FSel value={mesCtl} onChange={(v) => setMesCtl(v || mesCtl)} options={NOMBRES_MES_DED.map((m, i) => ({ value: String(i + 1).padStart(2, "0"), label: m }))} placeholder="Mes" /></div>
+              <Btn small variant="secondary" onClick={descargarControlCobros}>⬇ Descargar Excel</Btn>
+            </div>
+            <div style={{ display: "flex", gap: 14, marginBottom: 16, flexWrap: "wrap" }}>
+              <KPI icon="💵" label={`Cobrado en ${nombreMesCtl} ${anioCtl}`} value={fmtMoney(ctl.mesTotal.valor)} color={C.ink} bg={C.canvas} sub={`${fmtNum(ctl.mesTotal.cantidad)} cobros`} />
+              <KPI icon="✅" label="Ya descontado en nómina" value={fmtMoney(ctl.mesTotal.cobrado)} color={C.green} bg={C.greenBg} />
+              <KPI icon="⏳" label="Pendiente de cobrar" value={fmtMoney(ctl.mesTotal.pendiente)} color={C.amber} bg={C.amberBg} />
+              <KPI icon="📆" label={`Total del año ${anioCtl}`} value={fmtMoney(ctl.anioTotal.valor)} color={C.blue} bg={C.blueBg} sub={`${fmtNum(ctl.anioTotal.cantidad)} cobros`} />
+            </div>
+            {ctl.sinFecha.cantidad > 0 && (
+              <div style={{ fontSize: 12, color: C.amber, marginBottom: 10 }}>⚠ {fmtNum(ctl.sinFecha.cantidad)} cobro{ctl.sinFecha.cantidad === 1 ? "" : "s"} sin fecha ({fmtMoney(ctl.sinFecha.valor)}) no entra{ctl.sinFecha.cantidad === 1 ? "" : "n"} en esta vista.</div>
+            )}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(420px, 1fr))", gap: 14 }}>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 800, color: C.ink, marginBottom: 6 }}>Por día · {nombreMesCtl} {anioCtl} <span style={{ fontWeight: 400, color: C.slate }}>(clic en un día para ver sus cobros)</span></div>
+                <Tabla
+                  vacio={`Sin cobros en ${nombreMesCtl} ${anioCtl}.`}
+                  onRowClick={(f) => { if (!f.total) setDiaCtl(f); }}
+                  columnas={[
+                    { key: "fecha", label: "Día", render: (f) => (f.total ? <strong>Total del mes</strong> : `${diaSemanaDed(f.fecha)} ${fechaCortaDed(f.fecha)}`) },
+                    { key: "cantidad", label: "Cobros", align: "right", render: (f) => fmtNum(f.cantidad) },
+                    { key: "valor", label: "Valor", align: "right", render: (f) => <strong>{fmtMoney(f.valor)}</strong> },
+                    { key: "cobrado", label: "Cobrado", align: "right", render: (f) => <span style={{ color: C.green }}>{fmtMoney(f.cobrado)}</span> },
+                    { key: "pendiente", label: "Pendiente", align: "right", render: (f) => <span style={{ color: f.pendiente > 0 ? C.amber : C.slate }}>{fmtMoney(f.pendiente)}</span> },
+                  ]}
+                  filas={[...ctl.porDia, { id: "__total", fecha: "", cantidad: ctl.mesTotal.cantidad, valor: ctl.mesTotal.valor, cobrado: ctl.mesTotal.cobrado, pendiente: ctl.mesTotal.pendiente, cobros: [], total: true }].filter((f) => !f.total || ctl.porDia.length > 0)}
+                />
+              </div>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 800, color: C.ink, marginBottom: 6 }}>Por mes · {anioCtl} <span style={{ fontWeight: 400, color: C.slate }}>(clic en un mes para ver sus días)</span></div>
+                <Tabla
+                  vacio="Sin cobros."
+                  onRowClick={(f) => { if (f.id !== "__total") setMesCtl(f.id); }}
+                  columnas={[
+                    { key: "mes", label: "Mes", render: (f) => (f.id === "__total" ? <strong>Total {anioCtl}</strong> : <span style={{ fontWeight: f.id === mesCtl ? 800 : 400, color: f.id === mesCtl ? C.blue : C.ink }}>{NOMBRES_MES_DED[f.mes]}</span>) },
+                    { key: "cantidad", label: "Cobros", align: "right", render: (f) => fmtNum(f.cantidad) },
+                    { key: "valor", label: "Valor", align: "right", render: (f) => <strong>{fmtMoney(f.valor)}</strong> },
+                    { key: "cobrado", label: "Cobrado", align: "right", render: (f) => <span style={{ color: C.green }}>{fmtMoney(f.cobrado)}</span> },
+                    { key: "pendiente", label: "Pendiente", align: "right", render: (f) => <span style={{ color: f.pendiente > 0 ? C.amber : C.slate }}>{fmtMoney(f.pendiente)}</span> },
+                  ]}
+                  filas={[...ctl.porMes, { id: "__total", mes: 0, ...ctl.anioTotal }]}
+                />
+              </div>
+            </div>
+          </div>
+        )}
       </div>
       {isAdmin && onRepararCobros && (
         <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 14, marginBottom: 18, background: C.white }}>
