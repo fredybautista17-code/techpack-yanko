@@ -5020,6 +5020,37 @@ function FranjaVencimientosCxp({ proveedores, fechaCorte, nPlazo, nTotal }) {
 // la emite el proveedor (TNS sí la ingresa el día de la emisión), así que el vencimiento real es: fecha de emisión + el plazo
 // que ese proveedor da (cada uno es distinto). Los plazos se guardan en contabilidad_cxp_plazos/main { plazos: { <clave>: días } },
 // con la clave = nombre del proveedor en Busint (claveDocCxp). Los proveedores SIN plazo definido siguen con las fechas de Busint.
+// (2026-11-17, a pedido de Fredy) Estado de cuenta de un proveedor (Excel y PDF) y pronto pago. El descuento de cada factura sale de las
+// notas de descuento de Busint (ya restado del saldo); «pronto pago hasta» = emisión + los días de pronto pago que se escriban por proveedor
+// (contabilidad_cxp_plazos/main → prontoPago: { <clave>: días }).
+const escHtmlCxp = (v) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+function abrirImpresionCxp(html, titulo) {
+  const w = window.open("", "_blank");
+  if (!w) return false;
+  w.document.open();
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${escHtmlCxp(titulo)}</title><style>
+    *{box-sizing:border-box}body{margin:0;padding:28px 34px;font-family:"Segoe UI",Helvetica,Arial,sans-serif;color:#1A1A2E;font-size:12px}
+    h1{font-size:18px;margin:0 0 4px}.meta{display:flex;justify-content:space-between;gap:12px;color:#555;border-bottom:2px solid #1A1A2E;padding-bottom:8px;margin-bottom:12px}
+    table{width:100%;border-collapse:collapse;font-size:11px}th{background:#1A1A2E;color:#fff;padding:7px 8px;text-align:right}td{padding:6px 8px;text-align:right;border-top:1px solid #e3dfd7}
+    th:first-child,td:first-child{text-align:left}tr:nth-child(even) td{background:#f7f4ee}tfoot td{font-weight:700;background:#efebe4!important;border-top:2px solid #1A1A2E}
+    .tot{display:flex;gap:26px;justify-content:flex-end;margin-top:14px}.tot b{display:block;font-size:14px}.pie{font-size:10px;color:#777;margin-top:16px;border-top:1px solid #e3dfd7;padding-top:6px}
+    @media print{body{padding:12mm}}
+  </style></head><body>${html}</body></html>`);
+  w.document.close();
+  setTimeout(() => { try { w.focus(); w.print(); } catch (e) { /* el usuario puede imprimir a mano */ } }, 400);
+  return true;
+}
+function estadoCuentaHTMLCxp({ proveedor, nit, corte, hoy, filas, resumen, conPronto }) {
+  const cols = conPronto ? 8 : 7;
+  const trs = filas.map((f) => `<tr><td>${escHtmlCxp(f.nfact)}</td><td>${escHtmlCxp(f.emision || "—")}</td><td>${escHtmlCxp(f.vence || "—")}</td><td>${f.diasVenc > 0 ? f.diasVenc : "—"}</td><td>${fmtCOP(f.valor)}</td><td>${f.descuento > 0 ? fmtCOP(f.descuento) : "—"}</td>${conPronto ? `<td>${escHtmlCxp(f.proHasta || "—")}</td>` : ""}<td><b>${fmtCOP(f.saldo)}</b></td></tr>`).join("");
+  return `<h1>Estado de cuenta del proveedor</h1>
+    <div class="meta"><span><b>Proveedor:</b> ${escHtmlCxp(proveedor)}${nit ? ` · NIT ${escHtmlCxp(nit)}` : ""}</span><span>Corte Busint: ${escHtmlCxp(corte || hoy)} · Generado el ${escHtmlCxp(hoy)} por ATLAS</span></div>
+    <table><thead><tr><th>Factura</th><th>Emitida</th><th>Vence</th><th>Días venc.</th><th>Valor</th><th>Descuento</th>${conPronto ? "<th>Pronto pago hasta</th>" : ""}<th>Saldo</th></tr></thead>
+    <tbody>${trs || `<tr><td colspan="${cols}" style="text-align:center">Sin facturas abiertas.</td></tr>`}</tbody>
+    <tfoot><tr><td>Total</td><td></td><td></td><td></td><td>${fmtCOP(resumen.valor)}</td><td>${fmtCOP(resumen.desc)}</td>${conPronto ? "<td></td>" : ""}<td>${fmtCOP(resumen.saldo)}</td></tr></tfoot></table>
+    <div class="tot"><div>Valor facturas<b>${fmtCOP(resumen.valor)}</b></div><div>Descuentos<b>${fmtCOP(resumen.desc)}</b></div><div>Saldo<b>${fmtCOP(resumen.saldo)}</b></div><div>Vencido<b>${fmtCOP(resumen.vencido)}</b></div></div>
+    <div class="pie">Incluye solo las facturas abiertas según Busint. El descuento es el registrado en Busint (pronto pago y otros) y ya está restado del saldo.</div>`;
+}
 const difDiasISOCxp = (aISO, bISO) => Math.round((new Date(`${bISO}T00:00:00Z`) - new Date(`${aISO}T00:00:00Z`)) / 86400000);
 const plazoDeProveedorCxp = (plazos, nombreBusint) => {
   const v = Number(plazos?.[claveDocCxp(nombreBusint)]);
@@ -5138,7 +5169,7 @@ function PlazosPagoCxp({ proveedores, plazos, facturasGuardadas, corteId, onGuar
     </div>
   );
 }
-function CuadreCxpView({ proveedoresBusint: proveedoresBusintProp, corteActivo, detalleFacturas, facturasGuardadas, onTraerBusint, cargandoBusint, plazos, onGuardarPlazo, empresa, setEmpresa }) {
+function CuadreCxpView({ proveedoresBusint: proveedoresBusintProp, corteActivo, detalleFacturas, facturasGuardadas, onTraerBusint, cargandoBusint, plazos, onGuardarPlazo, prontoDias, onGuardarPronto, empresa, setEmpresa }) {
   // (2026-11-05, a pedido de Fredy) La empresa la elige el selector de la pantalla. Busint solo trae a Yanko: para Indutex
   // no hay con qué cruzar, así que se muestra solo lo que dice TNS (sin "Solo Busint", sin diferencia).
   const soloTns = empresa === "indutex";
@@ -5339,6 +5370,13 @@ function CuadreCxpView({ proveedoresBusint: proveedoresBusintProp, corteActivo, 
     // Plazo propio de este proveedor (días desde la emisión); 0 = sin definir.
     const plazo = plazoDeProveedorCxp(plazos, fila.nombreBusint);
     const venceTns = (f) => (plazo > 0 && f.fechaEmisionISO ? sumarDiasISOCxp(f.fechaEmisionISO, plazo) : null);
+    // Pronto pago: días desde la emisión durante los que el proveedor respeta el descuento (0 = sin definir).
+    const ppDias = Math.max(0, Number(prontoDias?.[claveDocCxp(fila.nombreBusint)]) || 0);
+    const ppInfo = (f) => {
+      if (!(ppDias > 0) || !(Number(f.descuento) > 0) || !f.fechaEmisionISO) return null;
+      const hasta = sumarDiasISOCxp(f.fechaEmisionISO, ppDias);
+      return { hasta, resta: difDiasISOCxp(hoyISO, hasta) };
+    };
     const chipDias = (dias) => (dias > 0
       ? chip(`${dias} d vencida`, dias > 60 ? C.red : C.amber, dias > 60 ? C.redBg : C.amberBg)
       : <span style={{ color: C.slate, fontSize: 11 }}>{dias === 0 ? "vence hoy" : `en ${Math.abs(dias)} d`}</span>);
@@ -5353,6 +5391,10 @@ function CuadreCxpView({ proveedoresBusint: proveedoresBusintProp, corteActivo, 
         vencPlazo: lista.filter((x) => venceTns(x) && venceTns(x) < hoyISO).reduce((t, x) => t + (Number(x.saldo) || 0), 0),
         hayEmision: lista.some((x) => x.fechaEmisionISO),
         hayValor: lista.some((x) => x.facTotal !== undefined),
+        ppTiempo: lista.filter((x) => ppInfo(x) && ppInfo(x).resta >= 0).reduce((t, x) => t + (Number(x.descuento) || 0), 0),
+        ppNTiempo: lista.filter((x) => ppInfo(x) && ppInfo(x).resta >= 0).length,
+        ppPerdido: lista.filter((x) => ppInfo(x) && ppInfo(x).resta < 0).reduce((t, x) => t + (Number(x.descuento) || 0), 0),
+        ppNPerdido: lista.filter((x) => ppInfo(x) && ppInfo(x).resta < 0).length,
       };
     }
     // Para marcar, entre los movimientos de TNS, cuáles son facturas que Busint tiene abiertas (se cruzan por los dígitos del número).
@@ -5381,6 +5423,47 @@ function CuadreCxpView({ proveedoresBusint: proveedoresBusintProp, corteActivo, 
       return true;
     }).map((f) => ({ ...f, iso: isoTns(f.fecha) }));
     const valorPendientesTns = pendientesTns.reduce((t, f) => t + f.credito, 0);
+    // Estado de cuenta del proveedor (Excel y PDF): solo facturas abiertas de Busint, más los movimientos de TNS si ya se trajeron.
+    const filasEstado = [...(lista || [])].sort((a, b) => (b.diasVencido || 0) - (a.diasVencido || 0)).map((f) => {
+      const pi = ppInfo(f);
+      return { nfact: f.nfact, emision: f.fechaEmisionISO || "", vence: f.fechaVctoISO || "", diasVenc: f.diasVencido || 0, valor: Number(f.facTotal) || 0, descuento: Number(f.descuento) || 0, saldo: Number(f.saldo) || 0, proHasta: pi ? pi.hasta : "", proEstado: pi ? (pi.resta >= 0 ? `faltan ${pi.resta} d` : `perdido hace ${-pi.resta} d`) : "" };
+    });
+    const resumenEstado = { valor: resumenF?.valor || 0, desc: resumenF?.desc || 0, saldo: resumenF?.saldo || 0, vencido: resumenF?.vencBusint || 0 };
+    const nombreArchivoEstado = String(fila.nombreBusint || fila.nombre || "proveedor").replace(/[^A-Za-z0-9áéíóúñÁÉÍÓÚÑ]+/g, "_").slice(0, 40);
+    async function descargarEstadoExcel() {
+      const XLSX = await import("xlsx");
+      const wb = XLSX.utils.book_new();
+      const cab = ["Factura", "Emitida", "Vence (Busint)", "Días vencida", "Valor", "Descuento", "% descuento", ...(ppDias > 0 ? ["Pronto pago hasta", "Estado pronto pago"] : []), "Saldo"];
+      const aoa = [
+        [`Estado de cuenta · ${fila.nombreBusint || fila.nombre}${fila.nit ? ` · NIT ${fila.nit}` : ""}`],
+        [`Corte Busint: ${corteActivo?.fechaCorte || hoyISO} · Generado: ${hoyISO}`],
+        [],
+        cab,
+        ...filasEstado.map((f) => [f.nfact, f.emision, f.vence, f.diasVenc > 0 ? f.diasVenc : 0, f.valor, f.descuento, f.valor > 0 && f.descuento > 0 ? Math.round((f.descuento / f.valor) * 10000) / 100 : 0, ...(ppDias > 0 ? [f.proHasta, f.proEstado] : []), f.saldo]),
+        [],
+        ["TOTAL", "", "", "", resumenEstado.valor, resumenEstado.desc, resumenEstado.valor > 0 ? Math.round((resumenEstado.desc / resumenEstado.valor) * 10000) / 100 : 0, ...(ppDias > 0 ? ["", ""] : []), resumenEstado.saldo],
+      ];
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), "Facturas");
+      const res = [
+        ["Concepto", "Valor"],
+        ["Valor de las facturas", resumenEstado.valor],
+        ["Descuentos registrados en Busint (pronto pago y otros)", resumenEstado.desc],
+        ["Saldo a pagar", resumenEstado.saldo],
+        ["Vencido según Busint", resumenEstado.vencido],
+        ...(ppDias > 0 ? [[`Pronto pago (${ppDias} días desde la emisión): aún a tiempo`, resumenF?.ppTiempo || 0], ["Pronto pago ya perdido", resumenF?.ppPerdido || 0]] : []),
+        ...(plazo > 0 ? [[`Vencido según emisión + ${plazo} d`, resumenF?.vencPlazo || 0]] : []),
+      ];
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(res), "Resumen");
+      const movTns = (m?.data?.filas || []);
+      if (movTns.length) {
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["Fecha", "Documento", "Detalle", "Débito", "Crédito"], ...movTns.map((f) => [f.fecha, f.documento, f.detalle, Number(f.debito) || 0, Number(f.credito) || 0])]), "Movimientos TNS");
+      }
+      XLSX.writeFile(wb, `Estado_de_cuenta_${nombreArchivoEstado}_${hoyISO}.xlsx`);
+    }
+    function descargarEstadoPdf() {
+      const ok = abrirImpresionCxp(estadoCuentaHTMLCxp({ proveedor: fila.nombreBusint || fila.nombre, nit: fila.nit, corte: corteActivo?.fechaCorte, hoy: hoyISO, filas: filasEstado, resumen: resumenEstado, conPronto: ppDias > 0 }), `Estado de cuenta ${fila.nombreBusint || fila.nombre}`);
+      if (!ok) alert("El navegador bloqueó la ventana. Permite las ventanas emergentes para este sitio e inténtalo de nuevo.");
+    }
     const ra = revAnt[fila.clave];
     const hayAnticipos = (fila.anticipoBusint || 0) > 0 || (fila.anticipoTns || 0) > 0;
     const pp = ra?.data?.porProveedor1330;
@@ -5454,6 +5537,32 @@ function CuadreCxpView({ proveedoresBusint: proveedoresBusintProp, corteActivo, 
                     días
                   </label>
                 )}
+                {fila.enBusint && onGuardarPronto && (
+                  <label style={{ fontSize: 12, color: C.slate, display: "inline-flex", alignItems: "center", gap: 4 }} title="Días desde la emisión durante los que el proveedor respeta el descuento de pronto pago. Con eso se ve hasta cuándo conviene pagar cada factura.">
+                    Pronto pago: pagar en
+                    <input
+                      key={`pp-${fila.nombreBusint}-${ppDias}`}
+                      type="number"
+                      min="0"
+                      max="365"
+                      defaultValue={ppDias || ""}
+                      placeholder="—"
+                      onBlur={(e) => {
+                        const n = Math.max(0, Math.min(365, Math.round(Number(e.target.value) || 0)));
+                        if (n !== ppDias) onGuardarPronto(fila.nombreBusint, n);
+                      }}
+                      onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+                      style={{ ...selStyle, width: 58, padding: "4px 6px" }}
+                    />
+                    días de la emisión
+                  </label>
+                )}
+                {fila.enBusint && lista && lista.length > 0 && (
+                  <span style={{ display: "inline-flex", gap: 8, marginLeft: "auto" }}>
+                    <Btn small onClick={descargarEstadoExcel}>⬇ Estado de cuenta (Excel)</Btn>
+                    <Btn small variant="secondary" onClick={descargarEstadoPdf}>⬇ Estado de cuenta (PDF)</Btn>
+                  </span>
+                )}
               </div>
               {!fila.enBusint ? (
                 <div style={{ fontSize: 12, color: C.slate }}>Este proveedor no está en el corte de Busint.</div>
@@ -5466,14 +5575,17 @@ function CuadreCxpView({ proveedoresBusint: proveedoresBusintProp, corteActivo, 
                   {resumenF && (
                     <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 12, color: C.slate, marginBottom: 8 }}>
                       {resumenF.hayValor && <span>Valor de las facturas <b style={{ color: C.ink }}>{fmtCOP(resumenF.valor)}</b></span>}
-                      {resumenF.hayValor && <span>Descuentos (pronto pago y otros) <b style={{ color: C.green }}>{fmtCOP(resumenF.desc)}</b></span>}
+                      {resumenF.hayValor && <span>Descuentos (pronto pago y otros) <b style={{ color: C.green }}>{fmtCOP(resumenF.desc)}</b>{resumenF.valor > 0 && resumenF.desc > 0 ? <span> · {((resumenF.desc / resumenF.valor) * 100).toLocaleString("es-CO", { maximumFractionDigits: 2 })} % del valor</span> : null}</span>}
+                      {resumenF.desc > 0 && ppDias > 0 && <span>Pronto pago aún a tiempo <b style={{ color: C.amber }}>{fmtCOP(resumenF.ppTiempo)}</b> ({resumenF.ppNTiempo})</span>}
+                      {resumenF.desc > 0 && ppDias > 0 && <span>Pronto pago ya perdido <b style={{ color: C.red }}>{fmtCOP(resumenF.ppPerdido)}</b> ({resumenF.ppNPerdido})</span>}
+                      {resumenF.desc > 0 && !(ppDias > 0) && fila.enBusint && onGuardarPronto && <span style={{ fontStyle: "italic" }}>Escribe los días de pronto pago de este proveedor para ver hasta cuándo conviene pagar.</span>}
                       <span>Saldo <b style={{ color: C.ink }}>{fmtCOP(resumenF.saldo)}</b></span>
                       <span>Vencido según Busint <b style={{ color: C.red }}>{fmtCOP(resumenF.vencBusint)}</b></span>
                       {resumenF.hayEmision && plazo > 0 && <span>Vencido según emisión + {plazo} d <b style={{ color: C.red }}>{fmtCOP(resumenF.vencPlazo)}</b></span>}
                     </div>
                   )}
                   <div style={{ overflowX: "auto", maxHeight: 300, overflowY: "auto" }}>
-                    <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 700 }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 860 }}>
                       <thead>
                         <tr>
                           <th style={{ ...th, textAlign: "left" }}>Factura</th>
@@ -5482,6 +5594,8 @@ function CuadreCxpView({ proveedoresBusint: proveedoresBusintProp, corteActivo, 
                           <th style={th}>{plazo > 0 ? `Vence (emisión + ${plazo} d)` : "Vence (plazo sin definir)"}</th>
                           <th style={th}>Valor</th>
                           <th style={th}>Descuento</th>
+                          <th style={th}>% desc.</th>
+                          {ppDias > 0 && <th style={th}>{`Pronto pago hasta (${ppDias} d)`}</th>}
                           <th style={th}>Saldo</th>
                         </tr>
                       </thead>
@@ -5502,6 +5616,20 @@ function CuadreCxpView({ proveedoresBusint: proveedoresBusintProp, corteActivo, 
                               </td>
                               <td style={td}>{f.facTotal !== undefined ? fmtCOP(f.facTotal) : "—"}</td>
                               <td style={{ ...td, color: f.descuento > 0 ? C.green : C.slate }}>{f.descuento > 0 ? fmtCOP(f.descuento) : "—"}</td>
+                              <td style={{ ...td, color: C.slate }}>{f.descuento > 0 && f.facTotal > 0 ? `${((f.descuento / f.facTotal) * 100).toLocaleString("es-CO", { maximumFractionDigits: 2 })} %` : "—"}</td>
+                              {ppDias > 0 && (() => {
+                                const pi = ppInfo(f);
+                                return (
+                                  <td style={td}>
+                                    {pi ? (
+                                      <>
+                                        <div>{pi.hasta}</div>
+                                        {pi.resta >= 0 ? chip(pi.resta === 0 ? "vence hoy" : `faltan ${pi.resta} d`, pi.resta <= 3 ? C.amber : C.green, pi.resta <= 3 ? C.amberBg : C.greenBg) : chip(`perdido hace ${-pi.resta} d`, C.red, C.redBg)}
+                                      </>
+                                    ) : "—"}
+                                  </td>
+                                );
+                              })()}
                               <td style={{ ...td, fontWeight: 700 }}>{fmtCOP(f.saldo)}</td>
                             </tr>
                           );
@@ -6255,9 +6383,10 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
   }, []);
   // Plazo de pago de cada proveedor (días desde la emisión) -- ver aplicarPlazoCxp.
   const [plazos, setPlazos] = useState({});
+  const [prontoDias, setProntoDias] = useState({}); // pronto pago: días desde la emisión por proveedor
   const [showPlazos, setShowPlazos] = useState(false);
   useEffect(() => {
-    const unsub = onSnapshot(doc(db, "contabilidad_cxp_plazos", "main"), (snap) => setPlazos(snap.exists() ? snap.data()?.plazos || {} : {}), () => {});
+    const unsub = onSnapshot(doc(db, "contabilidad_cxp_plazos", "main"), (snap) => { setPlazos(snap.exists() ? snap.data()?.plazos || {} : {}); setProntoDias(snap.exists() ? snap.data()?.prontoPago || {} : {}); }, () => {});
     return unsub;
   }, []);
   async function guardarPlazo(nombreBusint, dias) {
@@ -6265,6 +6394,13 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
       await setDoc(doc(db, "contabilidad_cxp_plazos", "main"), { plazos: { [claveDocCxp(nombreBusint)]: dias > 0 ? dias : null } }, { merge: true });
     } catch (e) {
       alert("No se pudo guardar el plazo: " + (e?.message || e));
+    }
+  }
+  async function guardarProntoPago(nombreBusint, dias) {
+    try {
+      await setDoc(doc(db, "contabilidad_cxp_plazos", "main"), { prontoPago: { [claveDocCxp(nombreBusint)]: dias > 0 ? dias : null } }, { merge: true });
+    } catch (e) {
+      alert("No se pudo guardar los días de pronto pago: " + (e?.message || e));
     }
   }
   const [cargandoBusint, setCargandoBusint] = useState(false);
@@ -6623,6 +6759,8 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
           facturasGuardadas={facturasGuardadas}
           plazos={plazos}
           onGuardarPlazo={guardarPlazo}
+          prontoDias={prontoDias}
+          onGuardarPronto={guardarProntoPago}
           onTraerBusint={traerCorteDesdeBusint}
           cargandoBusint={cargandoBusint}
         />
