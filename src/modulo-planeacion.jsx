@@ -27,6 +27,7 @@ import { CONCEPTOS_GASTOS_BUSINT, proveedoresDeTexto, candidatosGastos, gastoDeF
 import { MESES_HIST, COLECCION_HISTORICO_MAQUILA, textoAFilas, parsearHistorial, docHistoricoMes, resumenAnual } from "./historial-maquila-calculo";
 import { PLANTA_PROPIA_VENTAS, rangoDelPeriodo, plantasDeEntradas, clientePorLoteDeCargas, candidatosVentas, ventaDeEntrada, totalLineaVenta, SERVICIOS_VENTA, SIN_SERVICIO, servicioValido, etiquetaServicio, sugerirServicio, resumenPorServicio, bloqueoLinea, servicioDeVenta } from "./ventas-entradas-calculo";
 import ResumenAreasCC from "./centro-costo-resumen-areas";
+import { hojaHistoricoCargado, hojaCoberturaNomina, hojaPantalla } from "./centro-costo-datos-cargados";
 import { aporteDeLote, despachadaEfectiva } from "./costos-general-calculo";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
@@ -6974,6 +6975,23 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
   // una fila por cada registro de Registrar Producción de los trabajadores
   // del área en el período elegido (mismo detalle que el modal de un solo
   // trabajador, pero de todos a la vez, con el nombre y área de cada uno).
+  // (2026-11-17, a pedido de Fredy) «Datos cargados»: histórico subido + cobertura de Nómina por mes + lo que muestra «Por área». Solo lectura.
+  async function descargarDatosCargadosCC() {
+    try {
+      const XLSX = await import("xlsx");
+      const snapHist = await getDocs(collection(db, "centro_costo_historico_mes"));
+      const historico = snapHist.docs.map((d) => ({ ...d.data(), id: d.id }));
+      const cobertura = hojaCoberturaNomina({ liquidaciones: liquidacionesDestajo, produccion, horas: horasCC, ajustes: ajustesDestajoCC });
+      const pantalla = hojaPantalla(filasProduccionCC.map((f) => ({ ...f, horas: horasPorIdCC[f.id], ayuda: ayudaAdicionalPorIdCC[f.id] })));
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(hojaHistoricoCargado(historico)), "Histórico cargado");
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(cobertura.aoa), "Cobertura Nómina");
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(pantalla), "Lo que muestra la pantalla");
+      XLSX.writeFile(wb, `CentroDeCosto_DatosCargados_${etiquetaPeriodo}.xlsx`.replace(/[\/:*?"<>|\s]+/g, "_"));
+    } catch (e) {
+      window.alert(`No se pudo armar el Excel de datos cargados: ${e?.message || e}`);
+    }
+  }
   async function exportarCentroCostoExcel() {
     const XLSX = await import("xlsx");
     const idsTrabajadoresArea = new Set(trabajadoresArea.map((t) => t.id));
@@ -7491,7 +7509,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
                   totalAyudaQuincenas={totalAyudaQuincenas} totalCostoIndirecto={totalCostoIndirectoQuincenas}
                   horasPorId={horasPorIdCC} ayudaAdicionalPorId={ayudaAdicionalPorIdCC}
                   hayCausado={filasProduccionCC.some((f) => f.huboCausado)} vista={vistaCC} onVista={setVistaCC}
-                  onVerTrabajador={setTrabajadorDetalleAbierto} onExcel={filas.length > 0 ? exportarCentroCostoExcel : null}
+                  onVerTrabajador={setTrabajadorDetalleAbierto} onExcel={filas.length > 0 ? exportarCentroCostoExcel : null} onDatosCargados={descargarDatosCargadosCC}
                 />
               )}
               {!verPorAreaCC && (

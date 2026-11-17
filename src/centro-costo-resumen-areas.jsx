@@ -154,7 +154,7 @@ function FilaEstructura({ estructura, extraProduccion }) {
 // estructura = { personas: [{ id, nombre, area, costo, sinSueldo }], base, lotes } — nómina de las áreas/personas que se pagan con la Base del Dado por Cumplido.
 export default function ResumenAreasCC({
   filas, garantizadoDe, etiquetaPeriodo, unidadesTerminadas, unidadesDespachadas, unidadesCortadas, lotesAprobados, estructura,
-  totalAyudaQuincenas, totalCostoIndirecto, hayCausado, vista, onVista, onVerTrabajador, onExcel, horasPorId, ayudaAdicionalPorId,
+  totalAyudaQuincenas, totalCostoIndirecto, hayCausado, vista, onVista, onVerTrabajador, onExcel, onDatosCargados, horasPorId, ayudaAdicionalPorId,
 }) {
   // La fábrica (arriba) y las plantas externas (Maquila, abajo) se leen por separado: Maquila no interviene en el equilibrio de la fábrica.
   const filasExternas = useMemo(() => filas.filter(esExterna), [filas]);
@@ -205,6 +205,7 @@ export default function ResumenAreasCC({
         <button type="button" style={pill(vista === "trabajador")} onClick={() => onVista("trabajador")}>Por trabajador</button>
         {vista === "area" ? <button type="button" style={pill(soloAyuda)} onClick={() => setSoloAyuda(!soloAyuda)}>Solo áreas con ayuda</button> : null}
         <span style={{ flex: 1 }} />
+        {onDatosCargados ? <button type="button" onClick={onDatosCargados} title="Baja un Excel con el histórico que subiste, lo que hay guardado en Nómina por mes y lo que muestra esta pantalla" style={{ ...pill(false), color: "#3D6B9E", borderColor: "#3D6B9E" }}>🗂 Datos cargados</button> : null}
         {onExcel ? <button type="button" onClick={onExcel} style={{ ...pill(false), color: "#3D6B9E", borderColor: "#3D6B9E" }}>📥 Descargar Excel</button> : null}
       </div>
 
