@@ -3,12 +3,12 @@
 // producido de quienes quedaron por debajo (acuerdo del 2026-11-04: UNA sola ayuda en todas las pantallas). Funciones puras.
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 
-export const UMBRAL_ROJO = 0.6;   // cubre menos del 60 % de lo garantizado → «Necesita ayuda»
+export const UMBRAL_ROJO = 0.6;   // cubre menos del 60 % de lo garantizado → «Produce poco»
 export const UMBRAL_AMBAR = 0.85; // menos del 85 % → «Cubre a medias»
 
 export function estadoCobertura(c) {
   if (c === null || c === undefined) return { k: "sin", texto: "Sin sueldos cargados" };
-  if (c < UMBRAL_ROJO) return { k: "mal", texto: "Necesita ayuda" };
+  if (c < UMBRAL_ROJO) return { k: "mal", texto: "Produce poco" };
   if (c < UMBRAL_AMBAR) return { k: "ojo", texto: "Cubre a medias" };
   return { k: "bien", texto: "Se cubre" };
 }

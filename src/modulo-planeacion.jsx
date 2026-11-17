@@ -6373,7 +6373,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
   // período elegido -- Mes suma sus 2 quincenas, Año las 24 del año,
   // Quincena es una sola. Día/Rango quedan sin periodoIds (sin dato real
   // exacto para esos).
-  const periodosDestajoSeleccionados = useMemo(() => {
+  const periodosDestajoTodos = useMemo(() => {
     const ids = [];
     const pushMes = (anio, mes) => {
       const mm = String(mes).padStart(2, "0");
@@ -6384,6 +6384,29 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
     else if (periodo === "quincena") ids.push(`${anioSel}-${String(mesSel).padStart(2, "0")}-Q${quincenaSel}`);
     return ids;
   }, [periodo, anioSel, mesSel, quincenaSel]);
+  // (2026-11-17, a pedido de Fredy) Solo cuentan las quincenas que TIENEN datos de destajo: una liquidación guardada, producción de alguien de
+  // Destajo o una causación manual. Antes «Año» comparaba los 12 meses de sueldo garantizado contra los pocos meses con producción cargada y
+  // la «ayuda» salía enorme (los meses sin datos se contaban como si nadie hubiera producido nada). Si no hay ningún dato cargado todavía
+  // (aún cargando), se dejan todas como antes.
+  const pidsConDatosCC = useMemo(() => {
+    const s = new Set();
+    const esPid = (x) => /^\d{4}-\d{2}-Q[12]$/.test(String(x || ""));
+    (liquidacionesDestajo || []).forEach((l) => { if (esPid(l.periodoId)) s.add(l.periodoId); });
+    const idsDestajo = new Set((trabajadores || []).filter((t) => t.tipoNomina === "Destajo").map((t) => t.id));
+    (produccion || []).forEach((p) => {
+      if (!idsDestajo.has(p.trabajadorId) || !(Number(p.total) > 0)) return;
+      const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(p.fecha || ""));
+      if (m) s.add(`${m[1]}-${m[2]}-Q${Number(m[3]) <= 15 ? 1 : 2}`);
+    });
+    (causacionManualCC || []).forEach((c) => { const pid = String(c.id || "").split("__")[1]; if (esPid(pid)) s.add(pid); });
+    return s;
+  }, [liquidacionesDestajo, produccion, trabajadores, causacionManualCC]);
+  const periodosDestajoSeleccionados = useMemo(
+    () => (pidsConDatosCC.size ? periodosDestajoTodos.filter((p) => pidsConDatosCC.has(p)) : periodosDestajoTodos),
+    [periodosDestajoTodos, pidsConDatosCC]
+  );
+  const quincenasSinDatosCC = periodosDestajoTodos.length - periodosDestajoSeleccionados.length;
+  const primerPidConDatosCC = useMemo(() => [...pidsConDatosCC].sort()[0] || null, [pidsConDatosCC]);
   // (2026-09-22, a pedido de Fredy) Ranking anual de "Ayuda salario mínimo
   // garantizado" por trabajador -- usa el área ACTUAL de la ficha del
   // trabajador (la liquidación no guarda el área en que estaba en ese
@@ -6516,6 +6539,8 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
           esDestajoReal,
           liquidacionesEnPeriodo,
           huboCausado,
+          // (2026-11-17) «Pagarle siempre el salario mínimo»: lo que Nómina le completa es sueldo fijo, no ayuda por producir poco.
+          sueldoFijo: !!t.salarioMinimoGarantizado,
         };
       })
       .sort((a, b) => b.valorProducido - a.valorProducido);
@@ -7501,6 +7526,15 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
             </>
           ) : (
             <>
+              {quincenasSinDatosCC > 0 && (
+                <div style={{ display: "flex", gap: 10, alignItems: "flex-start", background: C.blueBg, border: `1px solid ${C.border}`, borderRadius: 12, padding: "10px 14px", marginBottom: 14, fontSize: 12.5, color: C.ink }}>
+                  <span style={{ fontSize: 16 }}>ℹ️</span>
+                  <span>
+                    <b>Solo se cuentan las quincenas con datos.</b> {quincenasSinDatosCC} {quincenasSinDatosCC === 1 ? "quincena" : "quincenas"} de {etiquetaPeriodo} no tienen liquidaciones ni producción de destajo y no entran en lo garantizado, la ayuda ni las horas
+                    {primerPidConDatosCC ? <> (Nómina tiene datos desde <b>{labelQuincenaCC(primerPidConDatosCC)}</b>)</> : null}. Así lo garantizado se compara solo con lo que sí se registró.
+                  </span>
+                </div>
+              )}
               {verPorAreaCC && (
                 <ResumenAreasCC
                   filas={filasProduccionCC} garantizadoDe={garantizadoDe} etiquetaPeriodo={etiquetaPeriodo}

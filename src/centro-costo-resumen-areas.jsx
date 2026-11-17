@@ -3,6 +3,8 @@
 // usa las mismas filas y los mismos totales de la pantalla; no cambia ningún cálculo. Las demás cifras quedan plegadas en «Más cifras del período».
 // (2026-11-16, a pedido de Fredy) La fábrica se lee aparte de las plantas externas (MAQUILA no interviene en el equilibrio de la fábrica) y cada área/persona muestra
 // sus Horas trabajadas y su Ayuda adicional (lo realmente puesto en Nómina por quincena, sin netear) junto a lo que genera y cuesta.
+// (2026-11-17, a pedido de Fredy) Rediseño: el orden y el color dicen lo que de verdad costó (horas + ayuda de Nómina); «garantizado − producido» pasa a ser
+// un «faltante» gris e informativo; cinta de 4 cifras; el detalle por persona trae barra de cobertura, etiqueta «fijo» (salario mínimo garantizado) y total del área.
 import React, { useMemo, useState } from "react";
 import { agruparPorArea, estadoCobertura } from "./centro-costo-resumen-areas-calculo";
 
@@ -32,54 +34,90 @@ function Cifra({ etiqueta, valor, sub, color }) {
   );
 }
 
+function MiniBarra({ cobertura }) {
+  if (cobertura === null || cobertura === undefined) return <span style={{ color: K.slate }}>—</span>;
+  const c = Math.max(0, Math.min(1, cobertura));
+  const est = ESTADO[estadoCobertura(c).k];
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, justifyContent: "flex-end" }} title={`La producción cubrió el ${Math.round(c * 100)} % de lo garantizado`}>
+      <span style={{ width: 64, height: 6, background: K.track, borderRadius: 99, overflow: "hidden", display: "inline-block" }}>
+        <span style={{ display: "block", width: `${c * 100}%`, height: "100%", background: est.barra, borderRadius: 99 }} />
+      </span>
+      <span style={{ minWidth: 34, fontSize: 12, fontWeight: 800, color: est.color }}>{Math.round(c * 100)} %</span>
+    </span>
+  );
+}
+
+const COLS_AREA = "20px minmax(120px,170px) minmax(180px,1fr) 150px 120px 118px";
+
 function FilaArea({ a, abierta, onToggle, onVerTrabajador, horasPorId, ayudaAdicionalPorId }) {
   const e = ESTADO[a.estado.k];
   const horasDe = (f) => Number(horasPorId && horasPorId[f.id]) || 0;
   const adicionalDe = (f) => Number(ayudaAdicionalPorId && ayudaAdicionalPorId[f.id]) || 0;
   const horasArea = a.filas.reduce((x, f) => x + horasDe(f), 0);
   const adicionalArea = a.filas.reduce((x, f) => x + adicionalDe(f), 0);
+  const costoReal = horasArea + adicionalArea;
   const pct = a.cobertura === null ? 0 : Math.max(0, Math.min(100, a.cobertura * 100));
+  const filasOrden = [...a.filas].sort((x, y) => (adicionalDe(y) + horasDe(y)) - (adicionalDe(x) + horasDe(x)) || (x.balance === null ? 1 : y.balance === null ? -1 : x.balance - y.balance));
   return (
     <div style={{ background: K.white, border: `1px solid ${K.border}`, borderRadius: 14, marginBottom: 8, overflow: "hidden" }}>
       <div onClick={onToggle} role="button" tabIndex={0} aria-expanded={abierta} onKeyDown={(ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); onToggle(); } }}
-        style={{ display: "grid", gridTemplateColumns: "22px minmax(120px,190px) minmax(160px,1fr) 140px 140px", gap: 14, alignItems: "center", padding: "13px 16px", cursor: "pointer" }}>
+        style={{ display: "grid", gridTemplateColumns: COLS_AREA, gap: 14, alignItems: "center", padding: "12px 16px", cursor: "pointer", minWidth: 760 }}>
         <span style={{ color: K.slate, display: "inline-block", transform: abierta ? "rotate(90deg)" : "none", transition: "transform .15s" }}>▸</span>
         <div style={{ fontWeight: 900, fontSize: 15, color: K.ink }}>
           {a.area}
-          <div style={{ fontWeight: 500, fontSize: 12, color: K.slate }}>{a.personas} {a.personas === 1 ? "persona" : "personas"}{a.ayudadas > 0 ? ` · ${a.ayudadas} con ayuda` : ""}</div>
+          <div style={{ fontWeight: 500, fontSize: 12, color: K.slate }}>{a.personas} {a.personas === 1 ? "persona" : "personas"}{a.ayudadas > 0 ? ` · ${a.ayudadas} bajo lo garantizado` : ""}</div>
         </div>
         <div>
-          <div style={{ height: 14, background: K.track, borderRadius: 99, overflow: "hidden" }} title="Parte de lo garantizado que cubrió la producción">
+          <div style={{ height: 10, background: K.track, borderRadius: 99, overflow: "hidden" }} title="Parte de lo garantizado que cubrió la producción">
             <div style={{ width: `${pct}%`, height: "100%", background: e.barra, borderRadius: 99 }} />
           </div>
-          <div style={{ fontSize: 11.5, color: K.slate, marginTop: 3 }}>{a.cobertura === null ? "Sin sueldos cargados para comparar" : `Genera ${millones(a.producido)} de ${millones(a.garantizado)} garantizado (${Math.round(a.cobertura * 100)} %)`}{horasArea > 0 || adicionalArea > 0 ? ` · horas ${millones(horasArea)} + ayuda adicional ${millones(adicionalArea)}` : ""}</div>
+          <div style={{ fontSize: 11.5, color: K.slate, marginTop: 3 }}>{a.cobertura === null ? "Sin sueldos cargados para comparar" : `Cubre ${Math.round(a.cobertura * 100)} % · produjo ${millones(a.producido)} de ${millones(a.garantizado)} garantizado`}</div>
         </div>
-        <div style={{ textAlign: "right", fontWeight: 900, fontVariantNumeric: "tabular-nums", color: a.ayuda > 0 ? K.red : K.ink }}>
-          {millones(a.ayuda)}
-          <div style={{ fontWeight: 500, fontSize: 11.5, color: K.slate }}>de ayuda</div>
+        <div style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+          <div style={{ fontWeight: 900, fontSize: 15, color: costoReal > 0 ? K.amber : K.ink }}>{millones(costoReal)}</div>
+          <div style={{ fontWeight: 500, fontSize: 11.5, color: K.slate }}>horas {millones(horasArea)} + ayuda {millones(adicionalArea)}</div>
+        </div>
+        <div style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }} title="Garantizado − producido de quienes quedaron por debajo. Es solo una comparación: no es plata puesta.">
+          <div style={{ fontWeight: 800, fontSize: 14, color: K.slate }}>{millones(a.ayuda)}</div>
+          <div style={{ fontWeight: 500, fontSize: 11.5, color: K.slate }}>faltante vs garantizado</div>
         </div>
         <span style={{ justifySelf: "end", fontSize: 12, fontWeight: 800, borderRadius: 999, padding: "3px 11px", background: e.fondo, color: e.color, whiteSpace: "nowrap" }}>{a.estado.texto}</span>
       </div>
       {abierta ? (
-        <div style={{ borderTop: `1px solid ${K.border}`, background: K.panel, padding: "6px 16px 14px 52px", overflowX: "auto" }}>
-          <table style={{ borderCollapse: "collapse", width: "100%" }}>
+        <div style={{ borderTop: `1px solid ${K.border}`, background: K.panel, padding: "6px 16px 14px 44px", overflowX: "auto" }}>
+          <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 700 }}>
             <thead>
-              <tr><th style={{ ...th, textAlign: "left" }}>Trabajador</th><th style={th}>Unidades</th><th style={th}>Valor producido</th><th style={th}>Garantizado</th><th style={th}>Balance</th><th style={th}>Horas</th><th style={th}>Ayuda adicional</th></tr>
+              <tr><th style={{ ...th, textAlign: "left" }}>Trabajador</th><th style={th}>Producido</th><th style={th}>Garantizado</th><th style={th}>Cubre</th><th style={th}>Faltante</th><th style={th}>Horas</th><th style={th}>Ayuda de Nómina</th></tr>
             </thead>
             <tbody>
-              {a.filas.map((f) => (
-                <tr key={f.id} onClick={() => onVerTrabajador && onVerTrabajador(f)} style={{ cursor: onVerTrabajador ? "pointer" : "default" }} title="Ver lo que registró en el período">
-                  <td style={{ ...td, textAlign: "left", fontWeight: 800 }}>{f.nombre}{f.huboCausado ? <span title="Incluye causado sin confirmar"> 🟡</span> : null}</td>
-                  <td style={td}>{entero(f.unidades)}</td>
-                  <td style={td}>{dinero(f.valorProducido)}</td>
-                  <td style={td}>{f.sinSueldo ? <span style={{ color: K.amber }}>sin sueldo cargado</span> : dinero(f.garantizado)}</td>
-                  <td style={td}>
-                    {f.balance === null ? "—" : <span style={{ fontWeight: 900, borderRadius: 8, padding: "2px 9px", background: f.balance < 0 ? K.redBg : K.greenBg, color: f.balance < 0 ? K.red : K.green }}>{dinero(f.balance)}</span>}
-                  </td>
-                  <td style={td}>{horasDe(f) > 0 ? dinero(horasDe(f)) : "—"}</td>
-                  <td style={{ ...td, background: adicionalDe(f) > 0 ? "#FFF4D6" : undefined }}>{adicionalDe(f) > 0 ? dinero(adicionalDe(f)) : "—"}</td>
-                </tr>
-              ))}
+              {filasOrden.map((f) => {
+                const cob = f.sinSueldo || !(f.garantizado > 0) ? null : (Number(f.valorProducido) || 0) / f.garantizado;
+                return (
+                  <tr key={f.id} onClick={() => onVerTrabajador && onVerTrabajador(f)} style={{ cursor: onVerTrabajador ? "pointer" : "default" }} title="Ver lo que registró en el período">
+                    <td style={{ ...td, textAlign: "left", fontWeight: 800 }}>
+                      {f.nombre}{f.huboCausado ? <span title="Incluye causado sin confirmar"> 🟡</span> : null}
+                      {f.sueldoFijo ? <span title="Se le paga siempre el salario mínimo: lo que Nómina le completa es sueldo fijo, no ayuda por producir poco" style={{ marginLeft: 6, fontSize: 10.5, fontWeight: 800, color: K.violet, background: "#F0EBF7", borderRadius: 6, padding: "1px 6px" }}>fijo</span> : null}
+                      <div style={{ fontWeight: 500, fontSize: 11.5, color: K.slate }}>{entero(f.unidades)} movimientos</div>
+                    </td>
+                    <td style={td}>{dinero(f.valorProducido)}</td>
+                    <td style={td}>{f.sinSueldo ? <span style={{ color: K.amber }}>sin sueldo cargado</span> : dinero(f.garantizado)}</td>
+                    <td style={td}><MiniBarra cobertura={cob} /></td>
+                    <td style={{ ...td, color: K.slate }}>{f.balance === null ? "—" : f.balance < 0 ? dinero(-f.balance) : <span style={{ color: K.green }}>sobra {dinero(f.balance)}</span>}</td>
+                    <td style={td}>{horasDe(f) > 0 ? dinero(horasDe(f)) : "—"}</td>
+                    <td style={{ ...td, fontWeight: adicionalDe(f) > 0 ? 800 : 500, background: adicionalDe(f) > 0 ? "#FFF4D6" : undefined }}>{adicionalDe(f) > 0 ? dinero(adicionalDe(f)) : "—"}</td>
+                  </tr>
+                );
+              })}
+              <tr>
+                <td style={{ ...td, textAlign: "left", fontWeight: 900, borderTop: `2px solid ${K.border}` }}>Total del área</td>
+                <td style={{ ...td, fontWeight: 900, borderTop: `2px solid ${K.border}` }}>{dinero(a.producido)}</td>
+                <td style={{ ...td, fontWeight: 900, borderTop: `2px solid ${K.border}` }}>{dinero(a.garantizado)}</td>
+                <td style={{ ...td, borderTop: `2px solid ${K.border}` }}><MiniBarra cobertura={a.cobertura} /></td>
+                <td style={{ ...td, fontWeight: 900, color: K.slate, borderTop: `2px solid ${K.border}` }}>{dinero(a.ayuda)}</td>
+                <td style={{ ...td, fontWeight: 900, borderTop: `2px solid ${K.border}` }}>{dinero(horasArea)}</td>
+                <td style={{ ...td, fontWeight: 900, borderTop: `2px solid ${K.border}` }}>{dinero(adicionalArea)}</td>
+              </tr>
             </tbody>
           </table>
         </div>
@@ -172,8 +210,10 @@ export default function ResumenAreasCC({
   const totalExcedente = g.areas.reduce((s, a) => s + a.excedente, 0);
   const [abiertas, setAbiertas] = useState(() => ({}));
   const [soloAyuda, setSoloAyuda] = useState(false);
-  const lista = g.areas.filter((a) => !soloAyuda || a.ayuda > 0);
-  const abierta = (a, i) => (abiertas[a.area] !== undefined ? abiertas[a.area] : i === 0 && a.ayuda > 0);
+  const costoRealArea = (a) => a.filas.reduce((x, f) => x + (Number(horasPorId && horasPorId[f.id]) || 0) + (Number(ayudaAdicionalPorId && ayudaAdicionalPorId[f.id]) || 0), 0);
+  // Primero la que más costó de verdad (horas + ayuda de Nómina); a igualdad, la que más le faltó vs lo garantizado.
+  const lista = g.areas.filter((a) => !soloAyuda || a.ayuda > 0).slice().sort((x, y) => costoRealArea(y) - costoRealArea(x) || y.ayuda - x.ayuda);
+  const abierta = (a, i) => (abiertas[a.area] !== undefined ? abiertas[a.area] : i === 0 && costoRealArea(a) > 0);
   const cob = g.total.cobertura;
 
   return (
@@ -191,19 +231,17 @@ export default function ResumenAreasCC({
       </div>
 
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "10px 28px", background: K.ink, color: "#fff", borderRadius: 14, padding: "14px 20px", marginBottom: 16 }}>
+        <Cifra etiqueta="Horas + ayuda de Nómina" valor={millones(totalHorasFab + totalAdicionalFab)} sub={`horas ${millones(totalHorasFab)} · ayuda ${millones(totalAdicionalFab)} · lo que de verdad costó de más`} color="#FFD27F" />
         <Cifra etiqueta="Costo nómina causado" valor={millones(totalCosto)} sub={hayCausado ? "🟡 incluye causado sin confirmar" : "áreas de producción (sin apoyo, Corte ni Maquila)"} />
         <Cifra etiqueta="Valor producido" valor={millones(totalValor)} sub={`${entero(totalUnidades)} movimientos de proceso`} />
         <Cifra etiqueta="Unidades despachadas" valor={entero(unidadesDespachadas)} sub={`${entero(unidadesTerminadas)} terminadas · ${entero(lotesAprobados)} lotes aprobados`} />
-        <Cifra etiqueta="Faltante vs garantizado" valor={millones(totalAyuda)} sub="garantizado − producido · informativo" color="#FF9C8E" />
-        <Cifra etiqueta="Total excedente" valor={millones(totalExcedente)} sub="no se resta" color="#7FD9AE" />
-        <Cifra etiqueta="Horas + ayuda adicional" valor={millones(totalHorasFab + totalAdicionalFab)} sub={`horas ${millones(totalHorasFab)} · ayuda de Nómina ${millones(totalAdicionalFab)}`} color="#FFD27F" />
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
         <div style={{ fontSize: 16, fontWeight: 900, color: K.ink, marginRight: 4 }}>¿Dónde está el problema?</div>
         <button type="button" style={pill(vista === "area")} onClick={() => onVista("area")}>Por área</button>
         <button type="button" style={pill(vista === "trabajador")} onClick={() => onVista("trabajador")}>Por trabajador</button>
-        {vista === "area" ? <button type="button" style={pill(soloAyuda)} onClick={() => setSoloAyuda(!soloAyuda)}>Solo áreas con ayuda</button> : null}
+        {vista === "area" ? <button type="button" style={pill(soloAyuda)} onClick={() => setSoloAyuda(!soloAyuda)}>Solo áreas bajo lo garantizado</button> : null}
         <span style={{ flex: 1 }} />
         {onDatosCargados ? <button type="button" onClick={onDatosCargados} title="Baja un Excel con el histórico que subiste, lo que hay guardado en Nómina por mes y lo que muestra esta pantalla" style={{ ...pill(false), color: "#3D6B9E", borderColor: "#3D6B9E" }}>🗂 Datos cargados</button> : null}
         {onExcel ? <button type="button" onClick={onExcel} style={{ ...pill(false), color: "#3D6B9E", borderColor: "#3D6B9E" }}>📥 Descargar Excel</button> : null}
@@ -211,10 +249,10 @@ export default function ResumenAreasCC({
 
       {vista === "area" ? (
         <>
-          <div style={{ fontSize: 12, color: K.slate, marginBottom: 8 }}>De la que más ayuda necesita a la que menos. La barra es la parte de lo garantizado que cubrió la producción (rojo menos de 60 %, ámbar menos de 85 %, verde si se cubre).</div>
+          <div style={{ fontSize: 12, color: K.slate, marginBottom: 8 }}>De la que más costó de verdad (horas + ayuda de Nómina) a la que menos. La barra es la parte de lo garantizado que cubrió la producción (rojo menos de 60 %, ámbar menos de 85 %, verde si se cubre). El faltante vs garantizado es solo una comparación, no plata puesta.</div>
           {lista.length ? lista.map((a, i) => (
             <FilaArea key={a.area} a={a} abierta={abierta(a, i)} onToggle={() => setAbiertas({ ...abiertas, [a.area]: !abierta(a, i) })} onVerTrabajador={onVerTrabajador} horasPorId={horasPorId} ayudaAdicionalPorId={ayudaAdicionalPorId} />
-          )) : <div style={{ fontSize: 13, color: K.slate, padding: 10 }}>Ninguna área necesitó ayuda en este período.</div>}
+          )) : <div style={{ fontSize: 13, color: K.slate, padding: 10 }}>Ninguna área quedó por debajo de lo garantizado en este período.</div>}
           {filasCorte.length > 0 ? (
             <div style={{ marginTop: 14 }}>
               <div style={{ fontSize: 16, fontWeight: 900, color: K.ink, marginBottom: 2 }}>Corte · se mide por equipos y su costo ya va en el lote</div>
@@ -226,7 +264,7 @@ export default function ResumenAreasCC({
           {gExt.areas.length > 0 ? (
             <div style={{ marginTop: 14 }}>
               <div style={{ fontSize: 16, fontWeight: 900, color: K.ink, marginBottom: 2 }}>Plantas externas · no cuentan en el equilibrio de la fábrica</div>
-              <div style={{ fontSize: 12, color: K.slate, marginBottom: 8 }}>Maquila se paga con sus propias ventas; su ayuda de {millones(gExt.total.ayuda)} no suma a lo de arriba.</div>
+              <div style={{ fontSize: 12, color: K.slate, marginBottom: 8 }}>Maquila se paga con sus propias ventas; su faltante vs garantizado de {millones(gExt.total.ayuda)} no suma a lo de arriba.</div>
               {gExt.areas.map((a) => (
                 <FilaArea key={`ext-${a.area}`} a={a} abierta={abiertas[`ext-${a.area}`] === true} onToggle={() => setAbiertas({ ...abiertas, [`ext-${a.area}`]: !(abiertas[`ext-${a.area}`] === true) })} onVerTrabajador={onVerTrabajador} horasPorId={horasPorId} ayudaAdicionalPorId={ayudaAdicionalPorId} />
               ))}
@@ -245,7 +283,9 @@ export default function ResumenAreasCC({
             [entero(unidadesCortadas), "Unidades cortadas de esos mismos lotes"],
             [entero(unidadesTerminadas), "Unidades en Terminadas (proceso Terminación, toda la empresa)"],
             [entero(totalUnidades), "Movimientos de proceso (cada prenda cuenta una vez por proceso; no son prendas)"],
-            [dinero(totalAdicionalFab), "Ayuda adicional (Nómina): lo realmente puesto en Nómina por quincena, sin netear; solo la fábrica"],
+            [dinero(totalAyuda), "Faltante vs garantizado: garantizado − producido de quienes quedaron por debajo; solo compara, no es plata puesta"],
+            [dinero(totalExcedente), "Excedente: lo que produjeron de más quienes superaron lo garantizado; no se resta"],
+            [dinero(totalAdicionalFab), "Ayuda de Nómina: lo realmente puesto en Nómina por quincena (ajustes y complemento de salario mínimo), sin netear; solo la fábrica"],
             [dinero(totalHorasFab), "Costo indirecto: horas trabajadas causadas; no es costo del producto; solo la fábrica"],
           ].map(([v, t]) => (
             <div key={t}><b style={{ display: "block", fontSize: 18, fontVariantNumeric: "tabular-nums", color: K.ink }}>{v}</b><span style={{ fontSize: 12, color: K.slate }}>{t}</span></div>
