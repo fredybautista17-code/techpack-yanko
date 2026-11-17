@@ -87,6 +87,33 @@ export function construirTablero(lotes, bases, { anio, modo }) {
   };
 }
 
+// Lotes aprobados que cuentan en un mes (0–11) de un año: para el filtro por mes del tablero (ranking, lista y Excel del mes).
+export function lotesDelMes(lotes, bases, { anio, modo, mes }) {
+  const nombreBase = (id) => (bases || []).find((b) => b.id === id)?.nombre || (id ? id : "Sin categoría");
+  const out = [];
+  (lotes || []).forEach((l) => {
+    if (l.estado !== "aprobado" || l.eliminado) return;
+    const m = mesDeLote(l, modo);
+    if (!m || m.anio !== anio || m.mes !== mes) return;
+    const u = despachadaEfectiva(l);
+    const bp = basePorPrenda(l);
+    out.push({
+      id: l.id || "",
+      numLote: String(l.numLote || ""),
+      referencia: String(l.referencia || ""),
+      cliente: String(l.cliente || "").trim() || "(sin cliente)",
+      categoria: l.categoriaBaseId ? nombreBase(l.categoriaBaseId) : "(sin categoría BASE)",
+      fecha: fechaISO(l.fecha, false),
+      aprobado: fechaISO(l.fechaAprobacion, true),
+      cortadas: num(l.cantCortada),
+      despachadas: u,
+      base: bp,
+      recaudado: u * bp,
+    });
+  });
+  return out.sort((a, b) => b.recaudado - a.recaudado || b.despachadas - a.despachadas);
+}
+
 // Unidades (y recaudado) por mes de TODOS los años que haya en los lotes aprobados: una fila por año, más reciente primero.
 export function matrizPorAnio(lotes, { modo }) {
   const por = new Map();

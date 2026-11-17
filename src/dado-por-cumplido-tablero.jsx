@@ -5,7 +5,7 @@
 // (costos_cierres_mes/{año-mes}.resumen.estructura). Solo lee lotes ya cargados por Contabilidad.
 import React, { useEffect, useMemo, useState } from "react";
 import { collection, doc, getDocs, onSnapshot, setDoc } from "firebase/firestore";
-import { construirTablero, factoresAFecha, matrizPorAnio, presupuestoEfectivo, resumenAFecha, topMasOtros, totalDe } from "./dado-por-cumplido-tablero-calculo";
+import { construirTablero, factoresAFecha, lotesDelMes, matrizPorAnio, presupuestoEfectivo, resumenAFecha, topMasOtros, totalDe } from "./dado-por-cumplido-tablero-calculo";
 
 const C = {
   ink: "#1A1A2E", slate: "#5A5A7A", border: "#E8E2DB", canvas: "#F7F4F0", white: "#FFFFFF",
@@ -55,7 +55,7 @@ function marcasEje(max) {
   return { tope: marcas[marcas.length - 1], marcas };
 }
 
-function Columnas({ series, clave, presupuesto, formato, corto }) {
+function Columnas({ series, clave, presupuesto, formato, corto, resaltar }) {
   const W = 760, H = 300, mL = 70, mR = 12, mT = 12, mB = 28;
   const stacks = MESES.map((_, i) => series.reduce((s, x) => s + (x[clave][i] || 0), 0));
   const maxPres = presupuesto ? Math.max(...presupuesto) : 0;
@@ -82,12 +82,12 @@ function Columnas({ series, clave, presupuesto, formato, corto }) {
               const y0 = y(acum), y1 = y(acum + v);
               acum += v;
               return (
-                <rect key={s.nombre} x={cx - barra / 2} y={y1} width={barra} height={Math.max(0, y0 - y1 - 1)} fill={PALETA[k % PALETA.length]}>
+                <rect key={s.nombre} x={cx - barra / 2} y={y1} width={barra} height={Math.max(0, y0 - y1 - 1)} fill={PALETA[k % PALETA.length]} opacity={resaltar === null || resaltar === undefined || resaltar === i ? 1 : 0.28}>
                   <title>{`${m} · ${s.nombre}: ${formato(v)}`}</title>
                 </rect>
               );
             })}
-            <text x={cx} y={H - 9} textAnchor="middle" fontSize="11" fill="#898781">{m}</text>
+            <text x={cx} y={H - 9} textAnchor="middle" fontSize="11" fontWeight={resaltar === i ? "700" : "400"} fill={resaltar === i ? "#1A1A2E" : "#898781"}>{m}</text>
           </g>
         );
       })}
@@ -114,6 +114,8 @@ export default function DadoPorCumplidoTablero({ lotes, bases, db, isAdmin, curr
   const [borrador, setBorrador] = useState({});
   const [errorGuardar, setErrorGuardar] = useState("");
   const [verAvisos, setVerAvisos] = useState("");
+  const [mes, setMes] = useState(""); // "" = todo el año; 0–11 = un mes
+  const [verLotesMes, setVerLotesMes] = useState(false);
 
   useEffect(() => {
     const unsub = onSnapshot(
@@ -154,6 +156,27 @@ export default function DadoPorCumplidoTablero({ lotes, bases, db, isAdmin, curr
   const seriesTabla = desglose === "t" ? [] : desglose === "b" ? tablero.bases : (verTodos ? tablero.clientes : topMasOtros(tablero.clientes, 15, "Otros clientes"));
   const unidadesAnio = totalDe(tablero.total.u);
   const recaudadoAnio = totalDe(tablero.total.d);
+  const enfocado = mes !== "";
+  const lotesMes = useMemo(() => (enfocado ? lotesDelMes(lotes, bases, { anio, modo, mes }) : []), [lotes, bases, anio, modo, mes, enfocado]);
+  const uFoco = enfocado ? tablero.total.u[mes] : unidadesAnio;
+  const dFoco = enfocado ? tablero.total.d[mes] : recaudadoAnio;
+  const lotesFoco = enfocado ? lotesMes.filter((x) => x.despachadas > 0).length : tablero.lotesConDespachada;
+  const presFoco = enfocado ? presValores[mes] * factores[mes] : alaFecha.presupuesto;
+  const recFoco = enfocado ? (factores[mes] > 0 ? tablero.total.d[mes] : 0) : alaFecha.recaudado;
+  const cumpleFoco = presFoco > 0 ? recFoco / presFoco : null;
+  const nombreFoco = enfocado ? `${MESES[mes]} ${anio}` : `${anio}`;
+  const rankingMes = useMemo(() => {
+    const m = new Map();
+    lotesMes.forEach((x) => {
+      const k = desglose === "b" ? x.categoria : x.cliente;
+      const g = m.get(k) || { nombre: k, u: 0, d: 0, lotes: 0 };
+      g.u += x.despachadas;
+      g.d += x.recaudado;
+      g.lotes += 1;
+      m.set(k, g);
+    });
+    return [...m.values()].sort((a, b) => (medida === "d" ? b.d - a.d : b.u - a.u));
+  }, [lotesMes, desglose, medida]);
 
   async function guardarMes(i, texto) {
     const limpio = String(texto ?? "").trim().replace(/\$/g, "").replace(/\./g, "").replace(",", ".");
@@ -181,7 +204,8 @@ export default function DadoPorCumplidoTablero({ lotes, bases, db, isAdmin, curr
     const lote = (x) => ({ Lote: x.numLote, Referencia: x.referencia, Cliente: x.cliente, "Categoría BASE": x.categoria, "Fecha del lote": x.fecha, Aprobado: x.aprobado, Cortadas: x.cortadas, Despachadas: x.despachadas, "Base por prenda": Math.round(x.base) });
     if (tablero.detalleSinBase.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(tablero.detalleSinBase.map(lote)), "Lotes sin base");
     if (tablero.detalleSinDespachada.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(tablero.detalleSinDespachada.map(lote)), "Lotes sin despachada");
-    XLSX.writeFile(wb, `tablero_dado_por_cumplido_${anio}.xlsx`);
+    if (enfocado) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(lotesMes.map((x) => ({ ...lote(x), Recaudado: Math.round(x.recaudado) }))), `Lotes ${MESES[mes]}`.slice(0, 31));
+    XLSX.writeFile(wb, `tablero_dado_por_cumplido_${anio}${enfocado ? `_${MESES[mes]}` : ""}.xlsx`);
   }
 
   const titulo = `${medida === "d" ? "Recaudado con las bases" : "Unidades despachadas"} por mes · ${desglose === "t" ? "total empresa" : desglose === "b" ? "por base" : "por cliente"}`;
@@ -193,6 +217,12 @@ export default function DadoPorCumplidoTablero({ lotes, bases, db, isAdmin, curr
         <label style={{ display: "flex", flexDirection: "column", gap: 3 }}>Año
           <select style={sel} value={anio} onChange={(e) => setAnio(Number(e.target.value))}>
             {aniosDisponibles.map((a) => <option key={a} value={a}>{a}</option>)}
+          </select>
+        </label>
+        <label style={{ display: "flex", flexDirection: "column", gap: 3 }}>Mes
+          <select style={sel} value={mes === "" ? "" : String(mes)} onChange={(e) => { setMes(e.target.value === "" ? "" : Number(e.target.value)); setVerLotesMes(false); }}>
+            <option value="">Todo el año</option>
+            {MESES.map((m, i) => <option key={m} value={i}>{m}</option>)}
           </select>
         </label>
         <label style={{ display: "flex", flexDirection: "column", gap: 3 }}>El mes se toma por
@@ -212,16 +242,16 @@ export default function DadoPorCumplidoTablero({ lotes, bases, db, isAdmin, curr
       </div>
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 14 }}>
-        <Tarjeta titulo={`Unidades dadas por cumplido ${anio}`} valor={fmt(unidadesAnio)} sub={`${tablero.lotesConDespachada} lotes aprobados con despachada`} />
-        <Tarjeta titulo="Recaudado a la fecha" valor={money(alaFecha.recaudado)} sub={anio === anioActual ? "enero hasta hoy" : `todo ${anio}`} />
-        <Tarjeta titulo="Presupuesto a la fecha" valor={hayPresupuesto ? money(alaFecha.presupuesto) : "—"} sub={hayPresupuesto ? "el mes en curso va proporcional a los días" : "escríbelo mes a mes en la tabla de abajo"} />
+        <Tarjeta titulo={`Unidades dadas por cumplido ${nombreFoco}`} valor={fmt(uFoco)} sub={`${lotesFoco} lotes aprobados con despachada`} />
+        <Tarjeta titulo={enfocado ? `Recaudado ${nombreFoco}` : "Recaudado a la fecha"} valor={money(recFoco)} sub={enfocado ? "unidades × valor de la base" : (anio === anioActual ? "enero hasta hoy" : `todo ${anio}`)} />
+        <Tarjeta titulo={enfocado ? "Presupuesto del mes" : "Presupuesto a la fecha"} valor={presFoco > 0 ? money(presFoco) : "—"} sub={presFoco > 0 ? "el mes en curso va proporcional a los días" : "escríbelo mes a mes en la tabla de abajo"} />
         <Tarjeta
           titulo="Cumplimiento"
-          valor={alaFecha.cumplimiento === null ? "—" : pct(alaFecha.cumplimiento)}
-          color={colorCumple(alaFecha.cumplimiento)}
-          sub={alaFecha.cumplimiento === null ? "sin presupuesto todavía" : alaFecha.recaudado >= alaFecha.presupuesto ? `${money(alaFecha.recaudado - alaFecha.presupuesto)} por encima` : `faltan ${money(alaFecha.presupuesto - alaFecha.recaudado)}`}
+          valor={cumpleFoco === null ? "—" : pct(cumpleFoco)}
+          color={colorCumple(cumpleFoco)}
+          sub={cumpleFoco === null ? "sin presupuesto todavía" : recFoco >= presFoco ? `${money(recFoco - presFoco)} por encima` : `faltan ${money(presFoco - recFoco)}`}
         />
-        <Tarjeta titulo="Base promedio por prenda" valor={money(unidadesAnio > 0 ? recaudadoAnio / unidadesAnio : 0)} sub={`${fmt(unidadesAnio)} unidades × base promedio = ${money(recaudadoAnio)}`} />
+        <Tarjeta titulo="Base promedio por prenda" valor={money(uFoco > 0 ? dFoco / uFoco : 0)} sub={`${fmt(uFoco)} unidades × base promedio = ${money(dFoco)}`} />
       </div>
 
       {tablero.sinDespachada > 0 || tablero.sinBase > 0 ? (
@@ -282,11 +312,70 @@ export default function DadoPorCumplidoTablero({ lotes, bases, db, isAdmin, curr
           {medida === "d" && hayPresupuesto ? <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><i style={{ width: 16, borderTop: "2px dashed #5A5A7A", display: "inline-block" }} />Presupuesto</span> : null}
         </div>
         {unidadesAnio > 0 ? (
-          <Columnas series={seriesGrafico} clave={clave} presupuesto={medida === "d" && hayPresupuesto ? presValores : null} formato={formato} corto={cortoEje} />
+          <Columnas series={seriesGrafico} clave={clave} presupuesto={medida === "d" && hayPresupuesto ? presValores : null} formato={formato} corto={cortoEje} resaltar={enfocado ? mes : null} />
         ) : (
           <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>No hay lotes aprobados con despachada en {anio}.</div>
         )}
       </div>
+
+      {enfocado ? (
+        <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, marginBottom: 16 }}>
+          <div style={{ fontSize: 15, fontWeight: 800, color: C.ink, marginBottom: 4 }}>{MESES[mes]} {anio} · {desglose === "b" ? "por base" : "por cliente"}</div>
+          <div style={{ fontSize: 12, color: C.slate, marginBottom: 8 }}>
+            {lotesMes.length} lote(s) aprobado(s) contados {modo === "lote" ? "por la fecha del lote" : "por el mes en que se dieron por cumplido (aprobación)"}. Ordenado por {medida === "d" ? "recaudado" : "unidades"}.
+          </div>
+          {lotesMes.length ? (
+            <div style={{ overflowX: "auto", border: `1px solid ${C.border}`, borderRadius: 8, marginBottom: 8 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", background: C.white }}>
+                <thead>
+                  <tr>
+                    <th style={{ ...th, textAlign: "left" }}>{desglose === "b" ? "Base" : "Cliente"}</th><th style={th}>Unidades</th><th style={th}>Recaudado</th><th style={th}>% del mes</th><th style={th}>Lotes</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rankingMes.map((g) => (
+                    <tr key={g.nombre}>
+                      <td style={tdL}>{g.nombre}</td><td style={td}>{fmt(g.u)}</td><td style={td}>{money(g.d)}</td>
+                      <td style={td}>{(medida === "d" ? dFoco : uFoco) > 0 ? `${((medida === "d" ? g.d / dFoco : g.u / uFoco) * 100).toLocaleString("es-CO", { maximumFractionDigits: 1 })} %` : "–"}</td><td style={td}>{g.lotes}</td>
+                    </tr>
+                  ))}
+                  <tr style={{ background: C.canvas }}>
+                    <td style={tdL}>Total del mes</td><td style={{ ...td, fontWeight: 800 }}>{fmt(uFoco)}</td><td style={{ ...td, fontWeight: 800 }}>{money(dFoco)}</td><td style={td}>100 %</td><td style={{ ...td, fontWeight: 800 }}>{lotesMes.length}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div style={{ padding: 16, textAlign: "center", color: C.slate, fontSize: 13 }}>No hay lotes aprobados en {MESES[mes]} {anio} con este criterio de mes.</div>
+          )}
+          {lotesMes.length ? (
+            <>
+              <button type="button" onClick={() => setVerLotesMes(!verLotesMes)} style={{ ...sel, fontSize: 12, cursor: "pointer", fontWeight: 700 }}>{verLotesMes ? "Ocultar los lotes del mes" : `Ver los ${lotesMes.length} lotes del mes`}</button>
+              {verLotesMes ? (
+                <div style={{ marginTop: 8, overflow: "auto", maxHeight: 360, border: `1px solid ${C.border}`, borderRadius: 8 }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", background: C.white }}>
+                    <thead>
+                      <tr>
+                        <th style={{ ...th, textAlign: "left" }}>Lote</th><th style={{ ...th, textAlign: "left" }}>Referencia</th><th style={{ ...th, textAlign: "left" }}>Cliente</th><th style={{ ...th, textAlign: "left" }}>Categoría BASE</th>
+                        <th style={th}>Fecha lote</th><th style={th}>Aprobado</th><th style={th}>Cortadas</th><th style={th}>Despachadas</th><th style={th}>Base</th><th style={th}>Recaudado</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {lotesMes.slice(0, 300).map((x, k) => (
+                        <tr key={`${x.id}-${k}`}>
+                          <td style={tdL}>{x.numLote || "–"}</td><td style={{ ...td, textAlign: "left" }}>{x.referencia || "–"}</td><td style={{ ...td, textAlign: "left" }}>{x.cliente}</td><td style={{ ...td, textAlign: "left" }}>{x.categoria}</td>
+                          <td style={td}>{x.fecha || "–"}</td><td style={td}>{x.aprobado || "–"}</td><td style={td}>{fmt(x.cortadas)}</td><td style={td}>{fmt(x.despachadas)}</td><td style={td}>{x.base > 0 ? money(x.base) : "$0"}</td><td style={{ ...td, fontWeight: 700 }}>{money(x.recaudado)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {lotesMes.length > 300 ? <div style={{ fontSize: 11, color: C.slate, padding: 8 }}>Se muestran los primeros 300 de {lotesMes.length}; el resto va en el Excel.</div> : null}
+                </div>
+              ) : null}
+            </>
+          ) : null}
+        </div>
+      ) : null}
 
       <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, marginBottom: 16 }}>
         <div style={{ fontSize: 15, fontWeight: 800, color: C.ink, marginBottom: 4 }}>{medida === "d" ? "Recaudado" : "Unidades dadas por cumplido"} por mes y por año</div>
@@ -296,7 +385,7 @@ export default function DadoPorCumplidoTablero({ lotes, bases, db, isAdmin, curr
             <thead>
               <tr>
                 <th style={{ ...th, textAlign: "left" }}>Año</th>
-                {MESES.map((m) => <th key={m} style={th}>{m}</th>)}
+                {MESES.map((m, i) => <th key={m} style={{ ...th, background: enfocado && mes === i ? C.blueBg : th.background, color: enfocado && mes === i ? C.blue : th.color }}>{m}</th>)}
                 <th style={th}>Total año</th>
                 <th style={th}>Prom. mes</th>
                 <th style={th}>vs año anterior</th>
@@ -312,7 +401,7 @@ export default function DadoPorCumplidoTablero({ lotes, bases, db, isAdmin, curr
                 return (
                   <tr key={a.anio} style={{ background: a.anio === anio ? C.canvas : C.white }}>
                     <td style={tdL}>{a.anio}</td>
-                    {MESES.map((m, i) => <td key={m} style={td}>{a[clave][i] ? formato(a[clave][i]) : "–"}</td>)}
+                    {MESES.map((m, i) => <td key={m} style={{ ...td, background: enfocado && mes === i ? C.blueBg : undefined, fontWeight: enfocado && mes === i ? 800 : 400 }}>{a[clave][i] ? formato(a[clave][i]) : "–"}</td>)}
                     <td style={{ ...td, fontWeight: 800 }}>{formato(tot)}</td>
                     <td style={td}>{formato(tot / mesesConDato)}</td>
                     <td style={{ ...td, fontWeight: 700, color: delta === null ? C.slate : delta >= 0 ? C.green : C.red }}>{delta === null ? "–" : `${delta >= 0 ? "+" : ""}${Math.round(delta * 100)} %`}</td>
