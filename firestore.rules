@@ -24,6 +24,16 @@ service cloud.firestore {
                    'lotes_servicio_confeccion'];
     }
 
+    // (2026-11-17, a pedido de Fredy) Clientes de Kamila (p. ej. Mauricio Isaza): solo LEEN, en Bodega → Despacho y Saldo, los despachos,
+    // abonos y cuenta Yuliana de Kamila (Venezuela y Dubo). Se reconoce por los clientes asociados de su perfil (claim `clientes`).
+    // Un Cliente de otra empresa sigue bloqueado y ningún Cliente escribe en estas colecciones.
+    function esClienteKamila() {
+      return esCliente() && request.auth.token.get('clientes', []).hasAny(['Kamila', 'KAMILA', 'Kamila Colombia', 'Kamila Venezuela', 'Kamila Group', 'KAMILA GROUP', 'KML']);
+    }
+    function lecturaKamila(col) {
+      return esClienteKamila() && col in ['despachosVenezuela', 'despachosDubo', 'abonosVenezuela', 'cuentaYulianaVenezuela'];
+    }
+
     // Perfiles: todos los leen (la app los necesita), pero SOLO un administrador los escribe.
     // Cierra el hueco de que alguien se ponga isAdmin: true en su propio documento.
     match /users/{userId} {
@@ -81,7 +91,12 @@ service cloud.firestore {
 
     // Todo lo demás: cualquier cuenta con sesión, salvo lo sensible para el rol Cliente.
     match /{col}/{rest=**} {
-      allow read, write: if signedIn()
+      allow read: if signedIn()
+        && col != 'users' && col != 'cotizaciones' && col != 'devoluciones_cliente' && col != 'nomina_codigos_permiso'
+        && col != 'asistente_log' && col != 'asistente_recordatorios'
+        && col != 'correos_cuentas' && col != 'correos_mensajes' && col != 'correos_secretos'
+        && (!esCliente() || !sensible(col) || lecturaKamila(col));
+      allow write: if signedIn()
         && col != 'users' && col != 'cotizaciones' && col != 'devoluciones_cliente' && col != 'nomina_codigos_permiso'
         // El asistente solo escribe/lee estas dos con el servidor (Admin SDK): ningún usuario las toca directo.
         && col != 'asistente_log' && col != 'asistente_recordatorios'

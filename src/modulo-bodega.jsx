@@ -3418,6 +3418,10 @@ function DespachoYSaldoView({ currentUser, puedeAprobarDespacho, canAccessContab
   const [saldoYuliana, setSaldoYuliana] = useState([]);
   const [pinEdicion, setPinEdicion] = useState("");
   const [loading, setLoading] = useState(true);
+  // (2026-11-17) Si Firestore niega la lectura (p. ej. un usuario Cliente sin acceso a este destino), antes la pantalla se quedaba
+  // en «Cargando Bodega…» para siempre; ahora muestra el motivo y deja reintentar.
+  const [errorCarga, setErrorCarga] = useState("");
+  const [reintentoCarga, setReintentoCarga] = useState(0);
   const [estadoKamila, setEstadoKamila] = useState({ despachosVenezuela: [], despachosDubo: [], abonosVenezuela: [], yulianaVenezuela: [], loading: true });
   const coleccionDespachos = `despachos${slugDestino(destino)}`;
   const coleccionAbonos = `abonos${slugDestino(destino)}`;
@@ -3427,16 +3431,22 @@ function DespachoYSaldoView({ currentUser, puedeAprobarDespacho, canAccessContab
   // viejos y abrir los nuevos (por eso [destino] en las dependencias).
   useEffect(() => {
     setLoading(true);
+    setErrorCarga("");
+    const falloCarga = (err) => {
+      const sinPermiso = err?.code === "permission-denied";
+      setErrorCarga(sinPermiso ? "No tienes permiso para ver los datos de este destino. Pide a un administrador que revise tu perfil (rol y clientes asociados)." : `No se pudieron cargar los datos: ${err?.message || err}`);
+      setLoading(false);
+    };
     const unsubDespachos = onSnapshot(collection(db, coleccionDespachos), (snap) => {
       setDespachos(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
       setLoading(false);
-    });
+    }, falloCarga);
     const unsubAbonos = onSnapshot(collection(db, coleccionAbonos), (snap) => {
       setAbonos(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
-    });
+    }, falloCarga);
     const unsubSaldoYuliana = onSnapshot(collection(db, coleccionSaldoYuliana), (snap) => {
       setSaldoYuliana(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
-    });
+    }, falloCarga);
     const unsubConfig = onSnapshot(doc(db, "bodega_config", "main"), (snap) => {
       setPinEdicion(snap.exists() ? snap.data()?.pinEdicion || "" : "");
     });
@@ -3446,7 +3456,7 @@ function DespachoYSaldoView({ currentUser, puedeAprobarDespacho, canAccessContab
       unsubSaldoYuliana();
       unsubConfig();
     };
-  }, [coleccionDespachos, coleccionAbonos, coleccionSaldoYuliana]);
+  }, [coleccionDespachos, coleccionAbonos, coleccionSaldoYuliana, reintentoCarga]);
   // Estado de Cuenta KAMILA GROUP: junta Venezuela + Dubo en una sola vista,
   // sin importar qué destino esté elegido en el selector de arriba. Solo se
   // suscribe mientras esa pestaña está abierta, para no leer 4 colecciones
@@ -3531,6 +3541,18 @@ function DespachoYSaldoView({ currentUser, puedeAprobarDespacho, canAccessContab
     ...(isAdmin ? [{ id: "importar", icon: "⬆️", label: "Importar Histórico" }] : []),
     ...(isAdmin ? [{ id: "codigo", icon: "🔐", label: "Código Edición" }] : []),
   ];
+  if (errorCarga) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: C.canvas, padding: 24 }}>
+        <div style={{ textAlign: "center", maxWidth: 460 }}>
+          <div style={{ fontSize: 36, marginBottom: 12 }}>🔒</div>
+          <div style={{ color: C.ink, fontWeight: 700, marginBottom: 8 }}>No se pudo abrir Bodega</div>
+          <div style={{ color: C.slate, fontSize: 14, marginBottom: 16 }}>{errorCarga}</div>
+          <button type="button" onClick={() => setReintentoCarga((n) => n + 1)} style={{ padding: "9px 18px", borderRadius: 8, border: `1.5px solid ${C.border}`, background: C.white, color: C.ink, fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>Reintentar</button>
+        </div>
+      </div>
+    );
+  }
   if (loading) {
     return (
       <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: C.canvas }}>
