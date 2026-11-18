@@ -4766,6 +4766,8 @@ function calcularCausadoDestajoCC(trabajador, netoProduccion, totalHoras, propor
 // la ficha del trabajador, prorrateado por dias habiles reales --
 // independiente de si esa quincena puntual ya se confirmo o no (por eso
 // ya no hace falta mirar ni "liq" ni "causado" para este numero).
+// periodoId de quincena válido: "YYYY-MM-QN".
+const esPidCC = (x) => /^\d{4}-\d{2}-Q[12]$/.test(String(x || ""));
 function sueldoEsperadoPeriodoCC(trabajador, inicio, fin, hoy) {
   if (trabajador.pagoPorDia) return 0;
   const diasHabilesTotales = diasHabilesEnRangoCC(inicio, fin);
@@ -6408,30 +6410,37 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
     else if (periodo === "quincena") ids.push(`${anioSel}-${String(mesSel).padStart(2, "0")}-Q${quincenaSel}`);
     return ids;
   }, [periodo, anioSel, mesSel, quincenaSel]);
-  // (2026-11-17, a pedido de Fredy) Solo cuentan las quincenas que TIENEN datos de destajo: una liquidación guardada, producción de alguien de
-  // Destajo o una causación manual. Antes «Año» comparaba los 12 meses de sueldo garantizado contra los pocos meses con producción cargada y
-  // la «ayuda» salía enorme (los meses sin datos se contaban como si nadie hubiera producido nada). Si no hay ningún dato cargado todavía
-  // (aún cargando), se dejan todas como antes.
-  const pidsConDatosCC = useMemo(() => {
+  // (2026-11-18, a pedido de Fredy) Quincenas REALES = con liquidación guardada en Nómina o con el Excel de nómina subido (producido, ayuda y
+  // pagado de verdad). Las que solo tienen producción suelta o una causación manual son ESTIMADAS: con ellas «Año» inflaba la ayuda (lo que
+  // faltaba para el garantizado se contaba como ayuda pagada). Si el período tiene alguna quincena real, solo cuentan esas y las estimadas se
+  // avisan aparte; si no tiene ninguna, se deja el cálculo estimado de antes (ej. la quincena en curso) y se marca como estimado.
+  const pidsRealesCC = useMemo(() => {
     const s = new Set();
-    const esPid = (x) => /^\d{4}-\d{2}-Q[12]$/.test(String(x || ""));
-    (liquidacionesDestajo || []).forEach((l) => { if (esPid(l.periodoId)) s.add(l.periodoId); });
+    (liquidacionesDestajo || []).forEach((l) => { if (esPidCC(l.periodoId)) s.add(l.periodoId); });
+    (nominaQuincenaCC || []).forEach((d) => { if (esPidCC(d.periodoId)) s.add(d.periodoId); });
+    return s;
+  }, [liquidacionesDestajo, nominaQuincenaCC]);
+  const pidsEstimadosCC = useMemo(() => {
+    const s = new Set();
     const idsDestajo = new Set((trabajadores || []).filter((t) => t.tipoNomina === "Destajo").map((t) => t.id));
     (produccion || []).forEach((p) => {
       if (!idsDestajo.has(p.trabajadorId) || !(Number(p.total) > 0)) return;
       const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(p.fecha || ""));
       if (m) s.add(`${m[1]}-${m[2]}-Q${Number(m[3]) <= 15 ? 1 : 2}`);
     });
-    (causacionManualCC || []).forEach((c) => { const pid = String(c.id || "").split("__")[1]; if (esPid(pid)) s.add(pid); });
-    (nominaQuincenaCC || []).forEach((d) => { if (esPid(d.periodoId)) s.add(d.periodoId); });
+    (causacionManualCC || []).forEach((c) => { const pid = String(c.id || "").split("__")[1]; if (esPidCC(pid)) s.add(pid); });
     return s;
-  }, [liquidacionesDestajo, produccion, trabajadores, causacionManualCC, nominaQuincenaCC]);
-  const periodosDestajoSeleccionados = useMemo(
-    () => (pidsConDatosCC.size ? periodosDestajoTodos.filter((p) => pidsConDatosCC.has(p)) : periodosDestajoTodos),
-    [periodosDestajoTodos, pidsConDatosCC]
-  );
+  }, [produccion, trabajadores, causacionManualCC]);
+  const pidsRealesEnPeriodoCC = useMemo(() => periodosDestajoTodos.filter((p) => pidsRealesCC.has(p)), [periodosDestajoTodos, pidsRealesCC]);
+  const pidsEstimadosEnPeriodoCC = useMemo(() => periodosDestajoTodos.filter((p) => !pidsRealesCC.has(p) && pidsEstimadosCC.has(p)), [periodosDestajoTodos, pidsRealesCC, pidsEstimadosCC]);
+  const soloEstimadoCC = pidsRealesEnPeriodoCC.length === 0 && pidsEstimadosEnPeriodoCC.length > 0;
+  const periodosDestajoSeleccionados = useMemo(() => {
+    if (pidsRealesEnPeriodoCC.length) return pidsRealesEnPeriodoCC;
+    if (pidsEstimadosEnPeriodoCC.length) return periodosDestajoTodos.filter((p) => pidsEstimadosCC.has(p));
+    return periodosDestajoTodos;
+  }, [pidsRealesEnPeriodoCC, pidsEstimadosEnPeriodoCC, periodosDestajoTodos, pidsEstimadosCC]);
   const quincenasSinDatosCC = periodosDestajoTodos.length - periodosDestajoSeleccionados.length;
-  const primerPidConDatosCC = useMemo(() => [...pidsConDatosCC].sort()[0] || null, [pidsConDatosCC]);
+  const primerPidConDatosCC = useMemo(() => [...pidsRealesCC].sort()[0] || null, [pidsRealesCC]);
   // (2026-09-22, a pedido de Fredy) Ranking anual de "Ayuda salario mínimo
   // garantizado" por trabajador -- usa el área ACTUAL de la ficha del
   // trabajador (la liquidación no guarda el área en que estaba en ese
@@ -7572,12 +7581,23 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
               {subirNominaCC && (
                 <SubirNominaQuincenaModal db={db} trabajadores={trabajadores} currentUser={currentUser} existentes={nominaQuincenaCC} alias={aliasNominaCC} anioInicial={anioSel} onClose={() => setSubirNominaCC(false)} />
               )}
-              {quincenasSinDatosCC > 0 && (
-                <div style={{ display: "flex", gap: 10, alignItems: "flex-start", background: C.blueBg, border: `1px solid ${C.border}`, borderRadius: 12, padding: "10px 14px", marginBottom: 14, fontSize: 12.5, color: C.ink }}>
-                  <span style={{ fontSize: 16 }}>ℹ️</span>
+              {(pidsRealesEnPeriodoCC.length > 0 || soloEstimadoCC || quincenasSinDatosCC > 0) && (
+                <div style={{ display: "flex", gap: 10, alignItems: "flex-start", background: soloEstimadoCC ? C.amberBg : C.blueBg, border: `1px solid ${C.border}`, borderRadius: 12, padding: "10px 14px", marginBottom: 14, fontSize: 12.5, color: C.ink, lineHeight: 1.55 }}>
+                  <span style={{ fontSize: 16 }}>{soloEstimadoCC ? "⚠️" : "ℹ️"}</span>
                   <span>
-                    <b>Solo se cuentan las quincenas con datos.</b> {quincenasSinDatosCC} {quincenasSinDatosCC === 1 ? "quincena" : "quincenas"} de {etiquetaPeriodo} no tienen liquidaciones ni producción de destajo y no entran en lo garantizado, la ayuda ni las horas
-                    {primerPidConDatosCC ? <> (Nómina tiene datos desde <b>{labelQuincenaCC(primerPidConDatosCC)}</b>)</> : null}. Así lo garantizado se compara solo con lo que sí se registró.
+                    {soloEstimadoCC ? (
+                      <>
+                        <b>Cifras estimadas.</b> {etiquetaPeriodo} todavía no tiene quincenas liquidadas en Nómina ni Excel de nómina subido; la ayuda es lo que le falta a cada persona para su garantizado (estimado), no lo que ya se puso. Se vuelve real al liquidar la quincena o subir su Excel.
+                      </>
+                    ) : (
+                      <>
+                        <b>{pidsRealesEnPeriodoCC.length} {pidsRealesEnPeriodoCC.length === 1 ? "quincena real" : "quincenas reales"}</b> en {etiquetaPeriodo} (con liquidación en Nómina o Excel subido): {pidsRealesEnPeriodoCC.length <= 12 ? pidsRealesEnPeriodoCC.map(labelQuincenaCC).join(", ") : `${labelQuincenaCC(pidsRealesEnPeriodoCC[0])} … ${labelQuincenaCC(pidsRealesEnPeriodoCC[pidsRealesEnPeriodoCC.length - 1])}`}. Lo garantizado, la ayuda y las horas suman solo esas.
+                        {pidsEstimadosEnPeriodoCC.length > 0 && (
+                          <> <b>No suman</b> ({pidsEstimadosEnPeriodoCC.length} sin liquidar ni Excel: {pidsEstimadosEnPeriodoCC.length <= 8 ? pidsEstimadosEnPeriodoCC.map(labelQuincenaCC).join(", ") : `${labelQuincenaCC(pidsEstimadosEnPeriodoCC[0])} …`}) hasta que se liquiden o subas su Excel.</>
+                        )}
+                        {primerPidConDatosCC ? <> Nómina tiene datos desde <b>{labelQuincenaCC(primerPidConDatosCC)}</b>.</> : null}
+                      </>
+                    )}
                   </span>
                 </div>
               )}

@@ -3,6 +3,7 @@ import { initializeApp, getApps } from "firebase/app";
 import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc } from "firebase/firestore";
 import { calcularEquiposCorte } from "./corte-equipos";
 import { unirPorAlias } from "./nombres-alias";
+import { superponerNominaReal, resultadoPersona, matrizAyudaPorMes } from "./centro-costo-nomina-real";
 import { esDiaDeTrabajoISO, diasDeTrabajoDelMes } from "./dias-habiles";
 import { AREAS_HISTORICO, claveArea, nombreAreaPorClave, normTexto, parsearHojaHistorico, unirResultados } from "./centro-costo-historico-parser";
 
@@ -44,6 +45,7 @@ const C = {
   green: "#2D9E6B", greenBg: "#EBF7F2", red: "#E85D4A", redBg: "#FDF0EE", blue: "#3D6B9E", blueBg: "#EBF1F7",
   amber: "#C47C1A", amberBg: "#FDF5E6", violet: "#7B5EA7", violetBg: "#F3EEF9", teal: "#2A8C99", tealBg: "#EAF6F7",
 };
+const CLAVES_AYUDA_MES = AREAS_HISTORICO.filter((a) => a.clave !== "CORTE").map((a) => a.clave);
 const MESES_CORTOS = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
 const MESES_LARGOS = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
 function fmtNum(n) {
@@ -265,7 +267,9 @@ function DetalleMes({ titulo, f, cierre, h, filasTrab: filasTrabCrudas, miembros
   const q = normTexto(busq);
   // Los cierres guardados con el nombre viejo de alguien renombrado en Admin Corte se unen al nombre nuevo.
   const filasTrab = useMemo(() => unirPorAlias(filasTrabCrudas, alias), [filasTrabCrudas, alias]);
-  const todas = [...filasTrab].sort((a, b) => (a.valor - a.costo) - (b.valor - b.costo));
+  const balPersona = (t) => { const r = resultadoPersona(t); return r.excedente - r.ayuda; };
+  const todas = [...filasTrab].sort((a, b) => balPersona(a) - balPersona(b));
+  const hayReal = todas.some((t) => t.real);
   const filas = todas.filter((t) => !q || normTexto(t.nombre).includes(q));
   // (2026-11-04, a pedido de Fredy) CORTE se mide por equipos (cortador + ayudante); doña Berta es apoyo. Solo si ya hay
   // roles guardados en costos_config/corte_equipos; si no, todo sigue persona por persona.
@@ -273,10 +277,10 @@ function DetalleMes({ titulo, f, cierre, h, filasTrab: filasTrabCrudas, miembros
     () => (miembros && miembros.length ? calcularEquiposCorte(filasTrab.map((t) => ({ nombre: t.nombre, ingreso: t.valor, costo: t.costo, unidades: 0 })), miembros) : null),
     [filasTrab, miembros]
   );
-  const totAyuda = eq ? eq.ayudaGeneral : todas.reduce((s, t) => s + Math.max(0, t.costo - t.valor), 0);
-  const totExced = eq ? eq.excedenteGeneral : todas.reduce((s, t) => s + Math.max(0, t.valor - t.costo), 0);
-  const nAyudados = todas.filter((t) => t.costo - t.valor >= 1).length;
-  const nExced = todas.filter((t) => t.valor - t.costo >= 1).length;
+  const totAyuda = eq ? eq.ayudaGeneral : todas.reduce((s, t) => s + resultadoPersona(t).ayuda, 0);
+  const totExced = eq ? eq.excedenteGeneral : todas.reduce((s, t) => s + resultadoPersona(t).excedente, 0);
+  const nAyudados = todas.filter((t) => resultadoPersona(t).ayuda >= 1).length;
+  const nExced = todas.filter((t) => resultadoPersona(t).excedente >= 1).length;
   const primerNombre = (n) => String(n || "").trim().split(/\s+/).slice(0, 2).join(" ");
   // Filas de la tabla por equipo: encabezado del equipo (suma de su cortador y sus ayudantes) y debajo cada persona.
   const filasEquipo = eq ? [
@@ -295,9 +299,16 @@ function DetalleMes({ titulo, f, cierre, h, filasTrab: filasTrabCrudas, miembros
       )}
       {f.fuente === "cierre" && cierre && (
         <div style={{ fontSize: 12, color: C.slate, marginTop: 4 }}>
-          {cierre.esMes
+          {cierre.soloNomina
+            ? "Este mes no tiene cierres diarios guardados: sale solo de Nómina (liquidaciones o Excel de nómina subido)."
+            : cierre.esMes
             ? "Sale del cierre del mes guardado en Centro de Costo."
             : `Sale de ${cierre.dias} cierres diarios. El valor producido se suma todos los días; el costo de nómina solo cuenta de lunes a viernes (el sueldo del mes ya está repartido entre los días hábiles).`}
+          {cierre.nominaReal && (
+            <div style={{ marginTop: 6, color: C.ink, lineHeight: 1.55 }}>
+              <strong style={{ color: C.green }}>Cifras reales de Nómina</strong> para {cierre.nominaReal.conReal} de {cierre.nominaReal.personas} {cierre.nominaReal.personas === 1 ? "persona" : "personas"} de destajo (quincenas con liquidación o con el Excel de nómina subido): «Le pagamos» es lo realmente pagado, la <strong>ayuda es lo puesto en Nómina</strong> (Ajuste manual + Ayuda salario mínimo, o el AUXILIO del Excel) y las horas van aparte. Solo cuentan las quincenas reales de cada persona; quien no tiene ninguna sigue con el estimado del cierre diario. Hoy en este mes: ayuda {fmtMoney(cierre.nominaReal.ayuda)} · horas {fmtMoney(cierre.nominaReal.horas)}.
+            </div>
+          )}
         </div>
       )}
       {f.fuente === "vivo" && (
@@ -309,7 +320,7 @@ function DetalleMes({ titulo, f, cierre, h, filasTrab: filasTrabCrudas, miembros
             <div style={{ background: C.redBg, borderRadius: 10, padding: "10px 12px" }}>
               <div style={{ fontSize: 11, color: C.slate, fontWeight: 700 }}>Ayudas del mes</div>
               <div style={{ fontSize: 17, fontWeight: 900, color: C.red }}>{fmtMoney(totAyuda)}</div>
-              <div style={{ fontSize: 11, color: C.slate }}>{eq ? "lo que Corte no alcanzó a cubrir con sus equipos" : `${nAyudados} ${nAyudados === 1 ? "trabajador" : "trabajadores"}`}</div>
+              <div style={{ fontSize: 11, color: C.slate }}>{eq ? "lo que Corte no alcanzó a cubrir con sus equipos" : `${nAyudados} ${nAyudados === 1 ? "trabajador" : "trabajadores"}${hayReal ? " · lo puesto en Nómina" : ""}`}</div>
             </div>
             <div style={{ background: C.greenBg, borderRadius: 10, padding: "10px 12px" }}>
               <div style={{ fontSize: 11, color: C.slate, fontWeight: 700 }}>Excedentes del mes</div>
@@ -326,7 +337,7 @@ function DetalleMes({ titulo, f, cierre, h, filasTrab: filasTrabCrudas, miembros
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
               <thead>
-                <tr style={{ borderBottom: `2px solid ${C.border}` }}>{thCell("Trabajador")}{thCell("Produjo", true)}{thCell("Le pagamos (nómina)", true)}{thCell("Resultado", true)}</tr>
+                <tr style={{ borderBottom: `2px solid ${C.border}` }}>{thCell("Trabajador")}{thCell("Produjo", true)}{hayReal && thCell("Horas", true)}{thCell("Le pagamos (nómina)", true)}{hayReal && thCell("Ayuda de nómina", true)}{thCell("Resultado", true)}</tr>
               </thead>
               <tbody>
                 {eq && filasEquipo.map((g) => (
@@ -349,13 +360,18 @@ function DetalleMes({ titulo, f, cierre, h, filasTrab: filasTrabCrudas, miembros
                 ))}
                 {!eq && filas.map((t) => (
                   <tr key={t.id} style={{ borderBottom: `1px solid ${C.border}` }}>
-                    <td style={{ padding: "8px 9px", fontWeight: 800, color: C.ink }}>{t.nombre}</td>
-                    <td style={{ padding: "8px 9px", textAlign: "right", color: C.green, fontWeight: 700 }}>{fmtMoney(t.valor)}</td>
+                    <td style={{ padding: "8px 9px", fontWeight: 800, color: C.ink }}>
+                      {t.nombre}
+                      {hayReal && <div style={{ fontSize: 10, fontWeight: 700, color: t.real ? C.green : C.slate }}>{t.real ? `nómina real · ${t.fuenteReal} · ${t.quincenasReales} de 2 quincenas` : "estimado del cierre diario"}</div>}
+                    </td>
+                    <td style={{ padding: "8px 9px", textAlign: "right", color: C.green, fontWeight: 700 }}>{fmtMoney(t.real ? t.produjo : t.valor)}</td>
+                    {hayReal && <td style={{ padding: "8px 9px", textAlign: "right", color: C.slate }}>{t.real ? fmtMoney(t.horas) : "—"}</td>}
                     <td style={{ padding: "8px 9px", textAlign: "right", color: C.amber, fontWeight: 700 }}>{fmtMoney(t.costo)}</td>
-                    <td style={{ padding: "8px 9px", textAlign: "right" }}><EtiquetaResultado bal={t.valor - t.costo} /></td>
+                    {hayReal && <td style={{ padding: "8px 9px", textAlign: "right", fontWeight: 800, color: t.real && t.ayudaReal > 0 ? C.red : C.slate }}>{t.real ? fmtMoney(t.ayudaReal) : "—"}</td>}
+                    <td style={{ padding: "8px 9px", textAlign: "right" }}><EtiquetaResultado bal={balPersona(t)} /></td>
                   </tr>
                 ))}
-                {(eq ? !filasEquipo.length : !filas.length) && <tr><td colSpan={4} style={{ padding: 12, color: C.slate, fontSize: 12.5 }}>Ningún trabajador coincide con la búsqueda.</td></tr>}
+                {(eq ? !filasEquipo.length : !filas.length) && <tr><td colSpan={hayReal ? 6 : 4} style={{ padding: 12, color: C.slate, fontSize: 12.5 }}>Ningún trabajador coincide con la búsqueda.</td></tr>}
               </tbody>
             </table>
           </div>
@@ -366,7 +382,7 @@ function DetalleMes({ titulo, f, cierre, h, filasTrab: filasTrabCrudas, miembros
       )}
       {f.fuente === "cierre" && cierre && cierre.diasDet.length > 0 && (
         <div style={{ marginTop: 16 }}>
-          <div style={{ fontWeight: 800, color: C.ink, fontSize: 13, marginBottom: 6 }}>Día por día</div>
+          <div style={{ fontWeight: 800, color: C.ink, fontSize: 13, marginBottom: 6 }}>Día por día{cierre.nominaReal ? <span style={{ fontWeight: 600, color: C.slate, fontSize: 11.5 }}> · referencia de los cierres diarios; las cifras reales de arriba salen de Nómina</span> : null}</div>
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
               <thead>
@@ -650,7 +666,13 @@ export function filasCorteMes(pedidos, trabajadoresCorte, mk, congelados) {
 // ─── PANEL "AÑO" ─────────────────────────────────────────────────────────────
 // (2026-10-26) Lectura compartida del Centro de Costo: la usan el panel «Año» y el Tablero de costos.
 // Devuelve, por área y mes, lo producido y el costo de nómina (histórico cargado, CORTE en vivo o cierres guardados).
-export function useCentroCostoDatos(anioSel, claveSel) {
+// conNominaReal (solo el panel «Estado del año»): además lee Nómina (liquidaciones, ajustes y Excel de nómina subido) para devolver `cierresReales` y
+// `datosAreaReal`, con lo realmente pagado y ayudado en vez del estimado de los cierres diarios. Los demás usos del hook no cambian.
+export function useCentroCostoDatos(anioSel, claveSel, conNominaReal = false) {
+  const [liquidacionesNom, setLiquidacionesNom] = useState([]);
+  const [ajustesNom, setAjustesNom] = useState([]);
+  const [nominaQuincenaNom, setNominaQuincenaNom] = useState([]);
+  const [aliasNom, setAliasNom] = useState({});
   const [historico, setHistorico] = useState([]);
   const [cierres, setCierres] = useState([]);
   const [pedidos, setPedidos] = useState([]);
@@ -671,7 +693,7 @@ export function useCentroCostoDatos(anioSel, claveSel) {
       onSnapshot(collection(db, "centro_costo_historico_mes"), (snap) => { setHistorico(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); setCargando(false); }, () => setCargando(false)),
       onSnapshot(collection(db, "centro_costo_historial_ayuda"), (snap) => setCierres(snap.docs.map((d) => ({ ...d.data(), id: d.id }))), () => {}),
       onSnapshot(collection(db, "pedidos_activos"), (snap) => setPedidos(snap.docs.map((d) => ({ ...d.data(), id: d.id }))), () => {}),
-      onSnapshot(collection(db, "nomina_trabajadores"), (snap) => setFichas(snap.docs.map((d) => ({ id: d.id, tipoNomina: d.data().tipoNomina, sueldo: Number(d.data().sueldo) || 0, auxilio: Number(d.data().auxilioTransporte) || 0 }))), () => {}),
+      onSnapshot(collection(db, "nomina_trabajadores"), (snap) => setFichas(snap.docs.map((d) => ({ id: d.id, tipoNomina: d.data().tipoNomina, sueldo: Number(d.data().sueldo) || 0, auxilio: Number(d.data().auxilioTransporte) || 0, pagoPorDia: !!d.data().pagoPorDia, nombre: d.data().nombre || "", area: d.data().area || "" }))), () => {}),
       onSnapshot(collection(db, "corte_config"), (snap) => {
         const docs = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
         const cfg = docs.find((d) => d.id === "main") || docs[0];
@@ -680,6 +702,16 @@ export function useCentroCostoDatos(anioSel, claveSel) {
     ];
     return () => unsubs.forEach((u) => u());
   }, []);
+  useEffect(() => {
+    if (!conNominaReal) return undefined;
+    const unsubs = [
+      onSnapshot(collection(db, "nomina_destajo_liquidaciones"), (snap) => setLiquidacionesNom(snap.docs.map((d) => ({ ...d.data(), id: d.id }))), () => {}),
+      onSnapshot(collection(db, "nomina_ajustes_destajo"), (snap) => setAjustesNom(snap.docs.map((d) => ({ ...d.data(), id: d.id }))), () => {}),
+      onSnapshot(collection(db, "nomina_historico_quincena"), (snap) => setNominaQuincenaNom(snap.docs.map((d) => ({ ...d.data(), id: d.id }))), () => {}),
+      onSnapshot(doc(db, "nomina_historico_config", "alias"), (d) => setAliasNom(d.exists() && d.data().mapa ? d.data().mapa : {}), () => {}),
+    ];
+    return () => unsubs.forEach((u) => u());
+  }, [conNominaReal]);
   // Congela los meses pasados de CORTE que todavía no tienen foto (solo con cortes y nómina cargada; nunca el mes en curso).
   useEffect(() => {
     if (!congeladosListos || !(pedidos || []).length || !(trabajadoresCorte || []).length) return;
@@ -704,10 +736,14 @@ export function useCentroCostoDatos(anioSel, claveSel) {
   const incluir = useMemo(() => (t) => t.area === "CORTE" || !fichas.length || tiposDestajo.has(t.id), [fichas, tiposDestajo]);
   const cierresBase = useMemo(() => normalizarCierresDiarios(cierres, fichas), [cierres, fichas]);
   const cierresResueltos = useMemo(() => unificarTrabajadoresRepetidos(resolverCierres(cierresBase, incluir)), [cierresBase, incluir]);
+  const cierresReales = useMemo(
+    () => (conNominaReal ? superponerNominaReal(cierresResueltos, { fichas, liquidaciones: liquidacionesNom, ajustes: ajustesNom, nominaQuincena: nominaQuincenaNom, alias: aliasNom }) : cierresResueltos),
+    [conNominaReal, cierresResueltos, fichas, liquidacionesNom, ajustesNom, nominaQuincenaNom, aliasNom]
+  );
 
   // (2026-10-26) Se arma por año para que el Tablero de costos también pueda leer años anteriores (Total).
   // Para un año, devuelve una lectura por área y mes: { valor, costo, unidades, fuente }.
-  const construirDatosArea = useMemo(() => (anio, claveExtra) => {
+  const construirDatosArea = useMemo(() => (anio, claveExtra, mapaCierres) => {
     // CORTE en vivo por mes (cortes registrados en ATLAS + sueldos de la nómina de corte)
     const corteVivo = {};
     pedidos.forEach((p) => {
@@ -735,12 +771,13 @@ export function useCentroCostoDatos(anioSel, claveSel) {
         const vivo = clave === "CORTE" ? corteVivo[m] : null;
         const foto = clave === "CORTE" ? congelados.get(mk) : null;
         const h = historico.find((x) => x.clave === clave && x.anio === Number(anio) && x.mes === m);
-        const cierre = cierresResueltos.get(`${clave}|${mk}`);
+        const cierre = (mapaCierres || cierresResueltos).get(`${clave}|${mk}`);
         if (h && h.prioridad) meses[m] = { valor: Number(h.valor) || 0, costo: Number(h.costo) || 0, unidades: h.unidades, fuente: "historico" };
         else if (foto && foto.valor > 0) meses[m] = { valor: Number(foto.valor) || 0, costo: Number(foto.costo) || 0, unidades: foto.unidades, fuente: "vivo", congelado: true };
         else if (vivo && vivo.valor > 0) meses[m] = { valor: vivo.valor, costo: vivo.costo, unidades: vivo.unidades, fuente: "vivo" };
+        else if (cierre && cierre.nominaReal && cierre.nominaReal.conReal > 0) meses[m] = { valor: cierre.valor, costo: cierre.costo, fuente: "cierre", parcial: !cierre.esMes ? cierre.dias : 0, nominaReal: cierre.nominaReal, soloNomina: !!cierre.soloNomina };
         else if (h) meses[m] = { valor: Number(h.valor) || 0, costo: Number(h.costo) || 0, unidades: h.unidades, fuente: "historico" };
-        else if (cierre && (cierre.valor > 0 || cierre.costo > 0)) meses[m] = { valor: cierre.valor, costo: cierre.costo, fuente: "cierre", parcial: !cierre.esMes ? cierre.dias : 0 };
+        else if (cierre && (cierre.valor > 0 || cierre.costo > 0)) meses[m] = { valor: cierre.valor, costo: cierre.costo, fuente: "cierre", parcial: !cierre.esMes ? cierre.dias : 0, nominaReal: cierre.nominaReal || null };
       }
       const lista = Object.values(meses);
       const valor = lista.reduce((s, x) => s + x.valor, 0);
@@ -750,7 +787,8 @@ export function useCentroCostoDatos(anioSel, claveSel) {
     return out;
   }, [historico, cierresResueltos, pedidos, trabajadoresCorte, congelados]);
   const datosArea = useMemo(() => construirDatosArea(anioSel, claveSel), [construirDatosArea, anioSel, claveSel]);
-  return { historico, cierres: cierresBase, pedidos, trabajadoresCorte, fichas, cargando, cierresResueltos, datosArea, construirDatosArea, incluirTrabajador: incluir, congelados };
+  const datosAreaReal = useMemo(() => (conNominaReal ? construirDatosArea(anioSel, claveSel, cierresReales) : datosArea), [conNominaReal, construirDatosArea, anioSel, claveSel, cierresReales, datosArea]);
+  return { historico, cierres: cierresBase, pedidos, trabajadoresCorte, fichas, cargando, cierresResueltos, datosArea, construirDatosArea, incluirTrabajador: incluir, congelados, cierresReales, datosAreaReal };
 }
 
 export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentUser, puedeCargar }) {
@@ -763,7 +801,7 @@ export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentU
 
 
   const claveSel = claveArea(areaNombre || "CORTE");
-  const { historico, pedidos, trabajadoresCorte, cargando, cierresResueltos, datosArea, congelados } = useCentroCostoDatos(anioSel, claveSel);
+  const { historico, pedidos, trabajadoresCorte, cargando, cierresReales: cierresResueltos, datosAreaReal: datosArea, congelados } = useCentroCostoDatos(anioSel, claveSel, true);
   // Roles de los equipos de Corte (se arman en Corte → Centro de Costo).
   const [aliasCorte, setAliasCorte] = useState({});
   useEffect(() => {
@@ -795,16 +833,38 @@ export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentU
         const k = `${t.area}|${t.id}`;
         if (!m.has(k)) m.set(k, { id: t.id, nombre: t.nombre, area: t.area, ayuda: 0, excedente: 0, mesesAyudado: 0, mesesExcedente: 0, mesesTotal: 0, meses: [] });
         const acc = m.get(k);
-        const bal = t.valor - t.costo;
+        const rp = resultadoPersona(t);
         acc.mesesTotal += 1;
-        if (bal <= -1) { acc.ayuda += -bal; acc.mesesAyudado += 1; } else if (bal >= 1) { acc.excedente += bal; acc.mesesExcedente += 1; }
-        acc.meses.push({ mk, valor: t.valor, costo: t.costo });
+        if (rp.ayuda >= 1) { acc.ayuda += rp.ayuda; acc.mesesAyudado += 1; } else if (rp.excedente >= 1) { acc.excedente += rp.excedente; acc.mesesExcedente += 1; }
+        acc.meses.push({ mk, valor: t.valor, costo: t.costo, ayuda: rp.ayuda, excedente: rp.excedente, real: !!t.real });
       });
     });
     const lista = [...m.values()];
     lista.forEach((x) => x.meses.sort((a, b) => a.mk.localeCompare(b.mk)));
     return { lista: lista.sort((a, b) => b.ayuda - a.ayuda), desde: primero };
   }, [cierresResueltos]);
+  // «Ayuda de nómina por mes»: lo realmente puesto en Nómina (y las horas) por área y mes; solo meses con liquidación o Excel de nómina subido.
+  const matrizAyuda = useMemo(() => matrizAyudaPorMes(datosArea, CLAVES_AYUDA_MES), [datosArea]);
+  async function descargarAyudaPorMes() {
+    const XLSX = await import("xlsx");
+    const wb = XLSX.utils.book_new();
+    const filasMes = [["Área", "Mes", "Ayuda de nómina", "Horas", "Personas con nómina real", "Personas de destajo"]];
+    matrizAyuda.forEach((r) => {
+      for (let m = 1; m <= 12; m++) {
+        const x = r.meses[m];
+        if (x) filasMes.push([nombreAreaPorClave(r.clave), `${MESES_LARGOS[m - 1]} ${anioSel}`, Math.round(x.ayuda), Math.round(x.horas), x.conReal, x.personas]);
+      }
+    });
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(filasMes), "Ayuda por mes");
+    const filasPer = [["Área", "Mes", "Trabajador", "Fuente", "Quincenas reales", "Produjo", "Horas", "Pagado", "Ayuda de nómina", "Garantizado"]];
+    cierresResueltos.forEach((r, key) => {
+      const [clave, mk] = key.split("|");
+      if (clave === "CORTE" || !r.nominaReal || mk.slice(0, 4) !== String(anioSel)) return;
+      r.trabajadores.filter((t) => t.real).forEach((t) => filasPer.push([nombreAreaPorClave(clave), `${MESES_LARGOS[Number(mk.slice(5, 7)) - 1]} ${anioSel}`, t.nombre, t.fuenteReal, t.quincenasReales, Math.round(t.produjo), Math.round(t.horas), Math.round(t.costo), Math.round(t.ayudaReal), Math.round(t.base)]));
+    });
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(filasPer), "Por persona");
+    XLSX.writeFile(wb, `Ayuda_nomina_por_mes_${anioSel}.xlsx`);
+  }
   const rankArea = ranking.lista.filter((x) => x.area === claveSel);
   const topArea = rankArea.find((x) => x.ayuda > 0) || null;
   const topGlobal = ranking.lista.find((x) => x.ayuda > 0) || null;
@@ -829,6 +889,7 @@ export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentU
   const etiquetaFuente = (f) => {
     if (f.fuente === "vivo") return { txt: f.congelado ? "cierre del mes (ATLAS)" : "en vivo (ATLAS)", color: C.green, bg: C.greenBg };
     if (f.fuente === "historico") return { txt: "histórico cargado", color: C.violet, bg: C.violetBg };
+    if (f.fuente === "cierre" && f.nominaReal) return { txt: `nómina real (${f.nominaReal.conReal} de ${f.nominaReal.personas} personas)`, color: C.green, bg: C.greenBg };
     return { txt: f.parcial ? `cierres diarios (${f.parcial} días, costo solo hábiles)` : "cierre guardado", color: C.teal, bg: C.tealBg };
   };
   const rentab = sel.valor - sel.costo;
@@ -1023,6 +1084,59 @@ export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentU
       )}
 
       <div style={{ marginTop: 22 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, flexWrap: "wrap", marginBottom: 6 }}>
+          <div>
+            <h4 style={{ margin: 0, fontSize: 15, fontWeight: 900, color: C.ink }}>🩹 Ayuda de nómina por mes — {anioSel}</h4>
+            <p style={{ margin: "4px 0 0", fontSize: 12, color: C.slate, maxWidth: 760 }}>
+              Lo que de verdad se puso en Nómina cada mes para llegar al mínimo (Ajuste manual + Ayuda salario mínimo, o el AUXILIO del Excel de nómina), con las horas trabajadas debajo. Solo meses con liquidación en Nómina o Excel subido; los demás quedan en «—» (no se estiman). Sin compensar entre quincenas.
+            </p>
+          </div>
+          <button onClick={descargarAyudaPorMes} style={{ padding: "7px 12px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.ink, fontWeight: 800, fontSize: 12, cursor: "pointer" }}>⬇ Excel</button>
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+            <thead>
+              <tr style={{ borderBottom: `2px solid ${C.border}` }}>{th("Área")}{MESES_CORTOS.map((mm) => <th key={mm} style={{ textAlign: "right", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>{mm}</th>)}{th("Total", true)}</tr>
+            </thead>
+            <tbody>
+              {matrizAyuda.map((r) => (
+                <tr key={r.clave} style={{ borderBottom: `1px solid ${C.border}`, background: r.clave === claveSel ? C.canvas : "transparent" }}>
+                  <td style={{ padding: "8px 10px", fontWeight: 800, color: C.ink, whiteSpace: "nowrap" }}>{nombreAreaPorClave(r.clave)}</td>
+                  {MESES_CORTOS.map((mm, i) => {
+                    const x = r.meses[i + 1];
+                    return (
+                      <td key={mm} style={{ padding: "8px 8px", textAlign: "right", whiteSpace: "nowrap" }} title={x ? `${x.conReal} de ${x.personas} personas con nómina real` : "sin liquidación ni Excel de nómina"}>
+                        {x ? (
+                          <>
+                            <div style={{ fontWeight: 800, color: x.ayuda > 0 ? C.red : C.slate }}>{fmtMoney(x.ayuda)}</div>
+                            <div style={{ fontSize: 10.5, color: C.slate }}>{x.horas > 0 ? `+ ${fmtMoney(x.horas)} h` : ""}</div>
+                          </>
+                        ) : <span style={{ color: C.slate }}>—</span>}
+                      </td>
+                    );
+                  })}
+                  <td style={{ padding: "8px 10px", textAlign: "right", whiteSpace: "nowrap" }}>
+                    <div style={{ fontWeight: 900, color: r.ayuda > 0 ? C.red : C.slate }}>{fmtMoney(r.ayuda)}</div>
+                    <div style={{ fontSize: 10.5, color: C.slate }}>{r.mesesReales ? `${r.mesesReales} ${r.mesesReales === 1 ? "mes" : "meses"} · + ${fmtMoney(r.horas)} h` : ""}</div>
+                  </td>
+                </tr>
+              ))}
+              <tr style={{ borderTop: `2px solid ${C.border}`, fontWeight: 900 }}>
+                <td style={{ padding: "9px 10px" }}>Total</td>
+                {MESES_CORTOS.map((mm, i) => {
+                  const a = matrizAyuda.reduce((sum, r) => sum + (r.meses[i + 1] ? r.meses[i + 1].ayuda : 0), 0);
+                  const hay = matrizAyuda.some((r) => r.meses[i + 1]);
+                  return <td key={mm} style={{ padding: "9px 8px", textAlign: "right", color: a > 0 ? C.red : C.slate }}>{hay ? fmtMoney(a) : "—"}</td>;
+                })}
+                <td style={{ padding: "9px 10px", textAlign: "right", color: C.red }}>{fmtMoney(matrizAyuda.reduce((sum, r) => sum + r.ayuda, 0))}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div style={{ fontSize: 11, color: C.slate, marginTop: 6 }}>Pasa el cursor sobre un mes para ver cuántas personas tienen nómina real. Para ver quién fue ayudado en un mes, abre ese mes arriba (columna «Ayuda de nómina»).</div>
+      </div>
+
+      <div style={{ marginTop: 22 }}>
         <h4 style={{ margin: "0 0 4px", fontSize: 15, fontWeight: 900, color: C.ink }}>👥 Historial por trabajador — {nombreAreaPorClave(claveSel)}</h4>
         <p style={{ margin: "0 0 10px", fontSize: 12, color: C.slate, maxWidth: 760 }}>
           Por cada mes se compara lo que produjo con lo que se le pagó (su nómina): si produjo menos fue <strong>ayuda</strong>, si produjo más fue <strong>excedente</strong>. Aquí va lo acumulado desde que ATLAS guarda cierres. Toca un trabajador para ver mes a mes.
@@ -1062,10 +1176,10 @@ export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentU
                               <tbody>
                                 {t.meses.map((x) => (
                                   <tr key={x.mk} style={{ borderBottom: `1px solid ${C.border}` }}>
-                                    <td style={{ padding: "7px 9px", fontWeight: 700 }}>{MESES_LARGOS[Number(x.mk.slice(5, 7)) - 1]} {x.mk.slice(0, 4)}</td>
+                                    <td style={{ padding: "7px 9px", fontWeight: 700 }}>{MESES_LARGOS[Number(x.mk.slice(5, 7)) - 1]} {x.mk.slice(0, 4)} <span style={{ fontSize: 10, fontWeight: 700, color: x.real ? C.green : C.slate }}>{x.real ? "nómina real" : "estimado"}</span></td>
                                     <td style={{ padding: "7px 9px", textAlign: "right", color: C.green, fontWeight: 700 }}>{fmtMoney(x.valor)}</td>
                                     <td style={{ padding: "7px 9px", textAlign: "right", color: C.amber, fontWeight: 700 }}>{fmtMoney(x.costo)}</td>
-                                    <td style={{ padding: "7px 9px", textAlign: "right" }}><EtiquetaResultado bal={x.valor - x.costo} /></td>
+                                    <td style={{ padding: "7px 9px", textAlign: "right" }}><EtiquetaResultado bal={x.ayuda > 0 ? -x.ayuda : x.excedente} /></td>
                                   </tr>
                                 ))}
                               </tbody>
