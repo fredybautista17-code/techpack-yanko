@@ -70,7 +70,7 @@ export function realDePersonaMes(ficha, mk, { liquidaciones = [], ajustes = [], 
 }
 
 // Superpone lo real a un Map "CLAVE|AAAA-MM" de cierres (salida de resolverCierres/unificar...). No toca CORTE ni modifica el mapa original.
-// A cada persona con quincenas reales: valor = producción + horas (el «valor producido» de Planeación), costo = pagado, y se agregan
+// A cada persona con quincenas reales: valor = producción de lotes SIN horas, costo = pagado, y se agregan
 // `produjo`, `horas`, `ayudaReal`, `base`, `real`, `quincenasReales`, `fuenteReal`. El valor y el costo del mes se ajustan por la diferencia.
 // La entrada del mes recibe `nominaReal: { personas, conReal, ayuda, horas, pagado, produjo }`.
 // Los meses que NO tienen cierres guardados (ej. enero a agosto, de antes de los cierres diarios) pero sí liquidaciones o Excel de nómina se
@@ -93,7 +93,7 @@ export function superponerNominaReal(mapa, { fichas = [], liquidaciones = [], aj
       if (ficha?.tipoNomina === "Destajo") tot.personas++;
       if (!real) return { ...t, real: false };
       hechos.add(`${key}|${t.id}`);
-      const valor = real.produjo + real.horas;
+      const valor = real.produjo;
       dValor += valor - t.valor;
       dCosto += real.pagado - t.costo;
       tot.conReal++;
@@ -127,7 +127,7 @@ export function superponerNominaReal(mapa, { fichas = [], liquidaciones = [], aj
       if (!real) return;
       const base = out.get(key) || { valor: 0, costo: 0, dias: 0, esMes: true, soloNomina: true, trabajadores: [], diasDet: [], primerGuardado: "" };
       const tot = base.nominaReal ? { ...base.nominaReal } : { personas: 0, conReal: 0, ayuda: 0, horas: 0, pagado: 0, produjo: 0 };
-      const valor = real.produjo + real.horas;
+      const valor = real.produjo;
       tot.personas++;
       tot.conReal++;
       tot.ayuda += real.ayuda;
@@ -142,28 +142,31 @@ export function superponerNominaReal(mapa, { fichas = [], liquidaciones = [], aj
 }
 
 // Matriz «ayuda de nómina por mes» para el panel y su Excel: una fila por área (sin CORTE) y por mes la ayuda real puesta en Nómina y las horas.
+// (2026-11-18, a pedido de Fredy) Las horas trabajadas no están en ningún lote: son ayuda. `total` = ayuda de Nómina + horas.
 // datosArea: salida de construirDatosArea con los cierres reales ({ CLAVE: { meses: { 1..12: { nominaReal } } } }).
 export function matrizAyudaPorMes(datosArea, claves) {
   return (claves || []).map((clave) => {
     const meses = {};
     let ayuda = 0;
     let horas = 0;
+    let total = 0;
     for (let m = 1; m <= 12; m++) {
       const nr = datosArea?.[clave]?.meses?.[m]?.nominaReal;
       if (nr && nr.conReal > 0) {
-        meses[m] = { ayuda: nr.ayuda, horas: nr.horas, conReal: nr.conReal, personas: nr.personas };
+        meses[m] = { ayuda: nr.ayuda, horas: nr.horas, total: nr.ayuda + nr.horas, conReal: nr.conReal, personas: nr.personas };
         ayuda += nr.ayuda;
         horas += nr.horas;
+        total += nr.ayuda + nr.horas;
       }
     }
-    return { clave, meses, ayuda, horas, mesesReales: Object.keys(meses).length };
+    return { clave, meses, ayuda, horas, total, mesesReales: Object.keys(meses).length };
   });
 }
 
-// Resultado de una fila del detalle: { ayuda, excedente } — real: ayuda = lo puesto en Nómina, excedente = (producción + horas) − garantizado;
-// estimada: la diferencia contra el costo del cierre, como antes.
+// Resultado de una fila del detalle: { ayuda, excedente } — real: ayuda = horas + lo puesto en Nómina (las horas no están en ningún lote),
+// excedente = producción de lotes − garantizado; estimada: la diferencia contra el costo del cierre, como antes.
 export function resultadoPersona(t) {
-  if (t && t.real) return { ayuda: num(t.ayudaReal), excedente: Math.max(0, num(t.valor) - num(t.base)) };
+  if (t && t.real) return { ayuda: num(t.ayudaReal) + num(t.horas), excedente: Math.max(0, num(t.valor) - num(t.base)) };
   const bal = num(t && t.valor) - num(t && t.costo);
   return { ayuda: bal < 0 ? -bal : 0, excedente: bal > 0 ? bal : 0 };
 }

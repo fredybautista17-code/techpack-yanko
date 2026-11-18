@@ -279,6 +279,8 @@ function DetalleMes({ titulo, f, cierre, h, filasTrab: filasTrabCrudas, miembros
   );
   const totAyuda = eq ? eq.ayudaGeneral : todas.reduce((s, t) => s + resultadoPersona(t).ayuda, 0);
   const totExced = eq ? eq.excedenteGeneral : todas.reduce((s, t) => s + resultadoPersona(t).excedente, 0);
+  const totHorasReal = todas.reduce((s, t) => s + (t.real ? Number(t.horas) || 0 : 0), 0);
+  const totAyudaNomina = todas.reduce((s, t) => s + (t.real ? Number(t.ayudaReal) || 0 : 0), 0);
   const nAyudados = todas.filter((t) => resultadoPersona(t).ayuda >= 1).length;
   const nExced = todas.filter((t) => resultadoPersona(t).excedente >= 1).length;
   const primerNombre = (n) => String(n || "").trim().split(/\s+/).slice(0, 2).join(" ");
@@ -306,7 +308,7 @@ function DetalleMes({ titulo, f, cierre, h, filasTrab: filasTrabCrudas, miembros
             : `Sale de ${cierre.dias} cierres diarios. El valor producido se suma todos los días; el costo de nómina solo cuenta de lunes a viernes (el sueldo del mes ya está repartido entre los días hábiles).`}
           {cierre.nominaReal && (
             <div style={{ marginTop: 6, color: C.ink, lineHeight: 1.55 }}>
-              <strong style={{ color: C.green }}>Cifras reales de Nómina</strong> para {cierre.nominaReal.conReal} de {cierre.nominaReal.personas} {cierre.nominaReal.personas === 1 ? "persona" : "personas"} de destajo (quincenas con liquidación o con el Excel de nómina subido): «Le pagamos» es lo realmente pagado, la <strong>ayuda es lo puesto en Nómina</strong> (Ajuste manual + Ayuda salario mínimo, o el AUXILIO del Excel) y las horas van aparte. Solo cuentan las quincenas reales de cada persona; quien no tiene ninguna sigue con el estimado del cierre diario. Hoy en este mes: ayuda {fmtMoney(cierre.nominaReal.ayuda)} · horas {fmtMoney(cierre.nominaReal.horas)}.
+              <strong style={{ color: C.green }}>Cifras reales de Nómina</strong> para {cierre.nominaReal.conReal} de {cierre.nominaReal.personas} {cierre.nominaReal.personas === 1 ? "persona" : "personas"} de destajo (quincenas con liquidación o con el Excel de nómina subido): «Le pagamos» es lo realmente pagado, «Produjo» es solo lo de los lotes. Las <strong>horas trabajadas no están en ningún lote, así que cuentan como ayuda</strong>, junto con lo puesto en Nómina (Ajuste manual + Ayuda salario mínimo, o el AUXILIO del Excel). Solo cuentan las quincenas reales de cada persona; quien no tiene ninguna sigue con el estimado del cierre diario. En este mes: ayuda total {fmtMoney(cierre.nominaReal.ayuda + cierre.nominaReal.horas)} = horas {fmtMoney(cierre.nominaReal.horas)} + Nómina {fmtMoney(cierre.nominaReal.ayuda)}.
             </div>
           )}
         </div>
@@ -320,7 +322,7 @@ function DetalleMes({ titulo, f, cierre, h, filasTrab: filasTrabCrudas, miembros
             <div style={{ background: C.redBg, borderRadius: 10, padding: "10px 12px" }}>
               <div style={{ fontSize: 11, color: C.slate, fontWeight: 700 }}>Ayudas del mes</div>
               <div style={{ fontSize: 17, fontWeight: 900, color: C.red }}>{fmtMoney(totAyuda)}</div>
-              <div style={{ fontSize: 11, color: C.slate }}>{eq ? "lo que Corte no alcanzó a cubrir con sus equipos" : `${nAyudados} ${nAyudados === 1 ? "trabajador" : "trabajadores"}${hayReal ? " · lo puesto en Nómina" : ""}`}</div>
+              <div style={{ fontSize: 11, color: C.slate }}>{eq ? "lo que Corte no alcanzó a cubrir con sus equipos" : `${nAyudados} ${nAyudados === 1 ? "trabajador" : "trabajadores"}${hayReal ? ` · horas ${fmtMoney(totHorasReal)} + Nómina ${fmtMoney(totAyudaNomina)}` : ""}`}</div>
             </div>
             <div style={{ background: C.greenBg, borderRadius: 10, padding: "10px 12px" }}>
               <div style={{ fontSize: 11, color: C.slate, fontWeight: 700 }}>Excedentes del mes</div>
@@ -848,19 +850,19 @@ export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentU
   async function descargarAyudaPorMes() {
     const XLSX = await import("xlsx");
     const wb = XLSX.utils.book_new();
-    const filasMes = [["Área", "Mes", "Ayuda de nómina", "Horas", "Personas con nómina real", "Personas de destajo"]];
+    const filasMes = [["Área", "Mes", "Ayuda total (nómina + horas)", "Ayuda de nómina", "Horas", "Personas con nómina real", "Personas de destajo"]];
     matrizAyuda.forEach((r) => {
       for (let m = 1; m <= 12; m++) {
         const x = r.meses[m];
-        if (x) filasMes.push([nombreAreaPorClave(r.clave), `${MESES_LARGOS[m - 1]} ${anioSel}`, Math.round(x.ayuda), Math.round(x.horas), x.conReal, x.personas]);
+        if (x) filasMes.push([nombreAreaPorClave(r.clave), `${MESES_LARGOS[m - 1]} ${anioSel}`, Math.round(x.total), Math.round(x.ayuda), Math.round(x.horas), x.conReal, x.personas]);
       }
     });
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(filasMes), "Ayuda por mes");
-    const filasPer = [["Área", "Mes", "Trabajador", "Fuente", "Quincenas reales", "Produjo", "Horas", "Pagado", "Ayuda de nómina", "Garantizado"]];
+    const filasPer = [["Área", "Mes", "Trabajador", "Fuente", "Quincenas reales", "Produjo (lotes)", "Horas", "Pagado", "Ayuda de nómina", "Ayuda total (nómina + horas)", "Garantizado"]];
     cierresResueltos.forEach((r, key) => {
       const [clave, mk] = key.split("|");
       if (clave === "CORTE" || !r.nominaReal || mk.slice(0, 4) !== String(anioSel)) return;
-      r.trabajadores.filter((t) => t.real).forEach((t) => filasPer.push([nombreAreaPorClave(clave), `${MESES_LARGOS[Number(mk.slice(5, 7)) - 1]} ${anioSel}`, t.nombre, t.fuenteReal, t.quincenasReales, Math.round(t.produjo), Math.round(t.horas), Math.round(t.costo), Math.round(t.ayudaReal), Math.round(t.base)]));
+      r.trabajadores.filter((t) => t.real).forEach((t) => filasPer.push([nombreAreaPorClave(clave), `${MESES_LARGOS[Number(mk.slice(5, 7)) - 1]} ${anioSel}`, t.nombre, t.fuenteReal, t.quincenasReales, Math.round(t.produjo), Math.round(t.horas), Math.round(t.costo), Math.round(t.ayudaReal), Math.round(t.ayudaReal + t.horas), Math.round(t.base)]));
     });
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(filasPer), "Por persona");
     XLSX.writeFile(wb, `Ayuda_nomina_por_mes_${anioSel}.xlsx`);
@@ -1088,7 +1090,7 @@ export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentU
           <div>
             <h4 style={{ margin: 0, fontSize: 15, fontWeight: 900, color: C.ink }}>🩹 Ayuda de nómina por mes — {anioSel}</h4>
             <p style={{ margin: "4px 0 0", fontSize: 12, color: C.slate, maxWidth: 760 }}>
-              Lo que de verdad se puso en Nómina cada mes para llegar al mínimo (Ajuste manual + Ayuda salario mínimo, o el AUXILIO del Excel de nómina), con las horas trabajadas debajo. Solo meses con liquidación en Nómina o Excel subido; los demás quedan en «—» (no se estiman). Sin compensar entre quincenas.
+              Ayuda total de cada mes = lo que de verdad se puso en Nómina para llegar al mínimo (Ajuste manual + Ayuda salario mínimo, o el AUXILIO del Excel) + las horas trabajadas (no están en ningún lote). Debajo, el desglose. Solo meses con liquidación en Nómina o Excel subido; los demás quedan en «—» (no se estiman). Sin compensar entre quincenas.
             </p>
           </div>
           <button onClick={descargarAyudaPorMes} style={{ padding: "7px 12px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.ink, fontWeight: 800, fontSize: 12, cursor: "pointer" }}>⬇ Excel</button>
@@ -1108,27 +1110,27 @@ export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentU
                       <td key={mm} style={{ padding: "8px 8px", textAlign: "right", whiteSpace: "nowrap" }} title={x ? `${x.conReal} de ${x.personas} personas con nómina real` : "sin liquidación ni Excel de nómina"}>
                         {x ? (
                           <>
-                            <div style={{ fontWeight: 800, color: x.ayuda > 0 ? C.red : C.slate }}>{fmtMoney(x.ayuda)}</div>
-                            <div style={{ fontSize: 10.5, color: C.slate }}>{x.horas > 0 ? `+ ${fmtMoney(x.horas)} h` : ""}</div>
+                            <div style={{ fontWeight: 800, color: x.total > 0 ? C.red : C.slate }}>{fmtMoney(x.total)}</div>
+                            <div style={{ fontSize: 10.5, color: C.slate }}>{`${fmtMoney(x.ayuda)} nómina + ${fmtMoney(x.horas)} h`}</div>
                           </>
                         ) : <span style={{ color: C.slate }}>—</span>}
                       </td>
                     );
                   })}
                   <td style={{ padding: "8px 10px", textAlign: "right", whiteSpace: "nowrap" }}>
-                    <div style={{ fontWeight: 900, color: r.ayuda > 0 ? C.red : C.slate }}>{fmtMoney(r.ayuda)}</div>
-                    <div style={{ fontSize: 10.5, color: C.slate }}>{r.mesesReales ? `${r.mesesReales} ${r.mesesReales === 1 ? "mes" : "meses"} · + ${fmtMoney(r.horas)} h` : ""}</div>
+                    <div style={{ fontWeight: 900, color: r.total > 0 ? C.red : C.slate }}>{fmtMoney(r.total)}</div>
+                    <div style={{ fontSize: 10.5, color: C.slate }}>{r.mesesReales ? `${r.mesesReales} ${r.mesesReales === 1 ? "mes" : "meses"} · ${fmtMoney(r.ayuda)} nómina + ${fmtMoney(r.horas)} h` : ""}</div>
                   </td>
                 </tr>
               ))}
               <tr style={{ borderTop: `2px solid ${C.border}`, fontWeight: 900 }}>
                 <td style={{ padding: "9px 10px" }}>Total</td>
                 {MESES_CORTOS.map((mm, i) => {
-                  const a = matrizAyuda.reduce((sum, r) => sum + (r.meses[i + 1] ? r.meses[i + 1].ayuda : 0), 0);
+                  const a = matrizAyuda.reduce((sum, r) => sum + (r.meses[i + 1] ? r.meses[i + 1].total : 0), 0);
                   const hay = matrizAyuda.some((r) => r.meses[i + 1]);
                   return <td key={mm} style={{ padding: "9px 8px", textAlign: "right", color: a > 0 ? C.red : C.slate }}>{hay ? fmtMoney(a) : "—"}</td>;
                 })}
-                <td style={{ padding: "9px 10px", textAlign: "right", color: C.red }}>{fmtMoney(matrizAyuda.reduce((sum, r) => sum + r.ayuda, 0))}</td>
+                <td style={{ padding: "9px 10px", textAlign: "right", color: C.red }}>{fmtMoney(matrizAyuda.reduce((sum, r) => sum + r.total, 0))}</td>
               </tr>
             </tbody>
           </table>
