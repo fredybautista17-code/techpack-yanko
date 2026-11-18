@@ -19,6 +19,9 @@ import { resolverNombre } from "./nombres-alias";
 import { evaluarCorteContraTeorico } from "./consumo-tela-calculo";
 import EquiposCorteVista from "./corte-equipos-vista";
 import { diasDeTrabajoDelMes } from "./dias-habiles";
+import { useVacacionesCorte } from "./use-vacaciones-corte";
+import { costoCorteConVacaciones, costoDiaCorte, corteSinFicha, resumenVacacionesCorte } from "./corte-vacaciones";
+import AvisoVacacionesCorte from "./aviso-vacaciones-corte";
 // ─── FIREBASE ────────────────────────────────────────────────────────────────
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
@@ -8580,6 +8583,8 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
 function CentroCosto({ pedidos, trabajadores, preciosMap, isAdmin, currentUser }) {
   const hoy = today();
   const [periodo, setPeriodo] = useState("mes"); // "dia" | "mes" | "anio"
+  // (2026-11-18) Vacaciones de Nómina: el sueldo de quien está de vacaciones no cuenta contra lo que corta el equipo.
+  const vacCtx = useVacacionesCorte(db);
   const [recalculando, setRecalculando] = useState(false);
   const [resultadoRecalculo, setResultadoRecalculo] = useState(null);
   // Corrige cortes YA registrados (de cualquier fecha, incluso pedidos
@@ -8675,12 +8680,12 @@ function CentroCosto({ pedidos, trabajadores, preciosMap, isAdmin, currentUser }
     const ingreso = cortesDia.reduce((s, c) => s + (c.ingresoCorte || 0), 0);
     const [y, m] = fechaISO.split("-").map(Number);
     const dh = diasHabiles(m, y) || 1;
-    const costo = (trabajadores || [])
-      .filter((t) => !t.fechaSalida || fechaISO <= t.fechaSalida)
-      .reduce((s, t) => s + (t.sueldo || 0) / dh, 0);
+    const cd = costoDiaCorte(trabajadores, fechaISO, vacCtx, dh);
+    const costo = cd.costo;
     return {
       ingreso,
       costo,
+      enVacaciones: cd.enVacaciones,
       tieneCortes: cortesDia.length > 0,
       ok: cortesDia.length > 0 && costo > 0 ? ingreso >= costo : null,
     };
@@ -8736,11 +8741,14 @@ function CentroCosto({ pedidos, trabajadores, preciosMap, isAdmin, currentUser }
   (trabajadores || []).filter(trabajadorActivoPeriodo).forEach((t) => {
     const key = norm(t.nombre);
     const datos = porCortador.get(key);
+    const aj = costoCorteConVacaciones(t, costoPeriodo(t.sueldo || 0), periodo, { fechaDia, mesSel, anioSel }, vacCtx);
     filas.push({
       nombre: t.nombre,
       unidades: datos?.unidades || 0,
       ingreso: datos?.ingreso || 0,
-      costo: costoPeriodo(t.sueldo || 0),
+      costo: aj.costo,
+      vacDias: aj.dias.length,
+      vacReduccion: aj.reduccion,
       enNomina: true,
     });
     usados.add(key);
@@ -8756,6 +8764,9 @@ function CentroCosto({ pedidos, trabajadores, preciosMap, isAdmin, currentUser }
   const rentabilidad = totalIngreso - totalCosto;
   const pctCobertura = totalCosto > 0 ? (totalIngreso / totalCosto) * 100 : 0;
   const estado = totalCosto === 0 ? null : totalIngreso >= totalCosto ? "ok" : "bad";
+  const resumenVac = resumenVacacionesCorte((trabajadores || []).filter(trabajadorActivoPeriodo), periodo, { fechaDia, mesSel, anioSel }, vacCtx);
+  const reduccionVac = filas.reduce((s, f) => s + (f.vacReduccion || 0), 0);
+  const sinFichaCorte = corteSinFicha(trabajadores, vacCtx.fichas);
   const etiquetaPeriodo =
     periodo === "dia"
       ? fmtFechaISO(fechaDia)
@@ -8920,7 +8931,7 @@ function CentroCosto({ pedidos, trabajadores, preciosMap, isAdmin, currentUser }
                 <button
                   key={iso}
                   onClick={() => setFechaDia(iso)}
-                  title={`${fmtFechaISO(iso)} — ${ed.tieneCortes ? `${fmtCOP(ed.ingreso)} vs ${fmtCOP(ed.costo)} nómina` : "sin cortes"}`}
+                  title={`${fmtFechaISO(iso)} — ${ed.tieneCortes ? `${fmtCOP(ed.ingreso)} vs ${fmtCOP(ed.costo)} nómina` : "sin cortes"}${ed.enVacaciones && ed.enVacaciones.length ? ` · 🏖 de vacaciones: ${ed.enVacaciones.join(", ")}` : ""}`}
                   style={{
                     flex: "0 0 auto",
                     width: 26,
@@ -8981,6 +8992,7 @@ function CentroCosto({ pedidos, trabajadores, preciosMap, isAdmin, currentUser }
           {estado === "ok" ? "El corte cubre la nómina" : "El corte NO cubre la nómina"} · {pctCobertura.toFixed(1)}% de cobertura
         </div>
       )}
+      <AvisoVacacionesCorte resumen={resumenVac} reduccion={reduccionVac} sinFicha={sinFichaCorte} etiqueta={etiquetaPeriodo} />
       <EquiposCorteVista db={db} filas={filas} />
       {!filas.length ? (
         <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>
@@ -9012,6 +9024,11 @@ function CentroCosto({ pedidos, trabajadores, preciosMap, isAdmin, currentUser }
                     {f.enNomina && f.unidades === 0 && (
                       <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: C.slate, background: C.canvas, padding: "2px 6px", borderRadius: 10 }}>
                         sin cortes en el periodo
+                      </span>
+                    )}
+                    {f.vacDias > 0 && (
+                      <span title="Sueldo de esos días no cuenta en el costo" style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: C.blue, background: C.blueBg, padding: "2px 6px", borderRadius: 10 }}>
+                        🏖 {f.vacDias} {f.vacDias === 1 ? "día" : "días"} de vacaciones
                       </span>
                     )}
                   </td>

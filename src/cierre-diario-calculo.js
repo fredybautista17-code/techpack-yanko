@@ -126,8 +126,10 @@ export function corteDelDia(idx, trabajadoresCorte, iso) {
     const d = porCortador.get(k);
     usados.add(k);
     if (!NUM(t.sueldo)) return;
-    const co = NUM(t.sueldo) / divisor;
-    trab.push({ id: t.id || k, nombre: t.nombre, valor: d ? d.ingreso : 0, costo: co, costoContado: habil ? co : 0, unidades: d ? d.unidades : 0 });
+    // (2026-11-18) Quien tiene vacaciones ese día (t.diasVacaciones, ver corte-vacaciones.js) no cuesta contra el equipo.
+    const enVac = !!(t.diasVacaciones && t.diasVacaciones.has(iso));
+    const co = enVac ? 0 : NUM(t.sueldo) / divisor;
+    trab.push({ id: t.id || k, nombre: t.nombre, valor: d ? d.ingreso : 0, costo: co, costoContado: habil ? co : 0, unidades: d ? d.unidades : 0, enVacaciones: enVac });
   });
   let valorSinSueldo = 0;
   let unidadesSinSueldo = 0;

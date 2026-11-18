@@ -6,6 +6,9 @@ import CentroCostoAnioPanel from "./centro-costo-historico";
 import ConsumoTelaCortePanel from "./consumo-tela-corte";
 import EquiposCorteVista from "./corte-equipos-vista";
 import { diasDeTrabajoDelMes } from "./dias-habiles";
+import { useVacacionesCorte } from "./use-vacaciones-corte";
+import { costoCorteConVacaciones, costoDiaCorte, corteSinFicha, resumenVacacionesCorte } from "./corte-vacaciones";
+import AvisoVacacionesCorte from "./aviso-vacaciones-corte";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
   authDomain: "techpack-yanko-f37b8.firebaseapp.com",
@@ -79,6 +82,8 @@ export default function CentroCostoCorteEnAreas({ areaNombre, currentUser }) {
   const [fechaDia, setFechaDia] = useState(hoy);
   const [mesSel, setMesSel] = useState(new Date().getMonth() + 1);
   const [anioSel, setAnioSel] = useState(new Date().getFullYear());
+  // (2026-11-18) Vacaciones de Nómina: el sueldo de quien está de vacaciones no cuenta contra lo que corta el equipo.
+  const vacCtx = useVacacionesCorte(db);
   useEffect(() => {
     const unsubP = onSnapshot(collection(db, "pedidos_activos"), (snap) => {
       setPedidos(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
@@ -121,10 +126,9 @@ export default function CentroCostoCorteEnAreas({ areaNombre, currentUser }) {
     const ingreso = cortesDia.reduce((s, c) => s + (c.ingresoCorte || 0), 0);
     const [y, m] = fechaISO.split("-").map(Number);
     const dh = diasHabilesCC(m, y) || 1;
-    const costo = trabajadores
-      .filter((t) => !t.fechaSalida || fechaISO <= t.fechaSalida)
-      .reduce((s, t) => s + (t.sueldo || 0) / dh, 0);
-    return { ingreso, costo, tieneCortes: cortesDia.length > 0, ok: cortesDia.length > 0 && costo > 0 ? ingreso >= costo : null };
+    const cd = costoDiaCorte(trabajadores, fechaISO, vacCtx, dh);
+    const costo = cd.costo;
+    return { ingreso, costo, enVacaciones: cd.enVacaciones, tieneCortes: cortesDia.length > 0, ok: cortesDia.length > 0 && costo > 0 ? ingreso >= costo : null };
   }
   const diasStrip = [];
   for (let i = 29; i >= 0; i--) {
@@ -147,7 +151,8 @@ export default function CentroCostoCorteEnAreas({ areaNombre, currentUser }) {
   trabajadores.filter(trabajadorActivoPeriodo).forEach((t) => {
     const key = norm(t.nombre);
     const datos = porCortador.get(key);
-    filas.push({ nombre: t.nombre, unidades: datos?.unidades || 0, ingreso: datos?.ingreso || 0, costo: costoPeriodo(t.sueldo || 0), enNomina: true });
+    const aj = costoCorteConVacaciones(t, costoPeriodo(t.sueldo || 0), periodo, { fechaDia, mesSel, anioSel }, vacCtx);
+    filas.push({ nombre: t.nombre, unidades: datos?.unidades || 0, ingreso: datos?.ingreso || 0, costo: aj.costo, vacDias: aj.dias.length, vacReduccion: aj.reduccion, enNomina: true });
     usados.add(key);
   });
   porCortador.forEach((datos, key) => {
@@ -161,6 +166,9 @@ export default function CentroCostoCorteEnAreas({ areaNombre, currentUser }) {
   const rentabilidad = totalIngreso - totalCosto;
   const pctCobertura = totalCosto > 0 ? (totalIngreso / totalCosto) * 100 : 0;
   const estado = totalCosto === 0 ? null : totalIngreso >= totalCosto ? "ok" : "bad";
+  const resumenVac = resumenVacacionesCorte(trabajadores.filter(trabajadorActivoPeriodo), periodo, { fechaDia, mesSel, anioSel }, vacCtx);
+  const reduccionVac = filas.reduce((s, f) => s + (f.vacReduccion || 0), 0);
+  const sinFichaCorte = corteSinFicha(trabajadores, vacCtx.fichas);
   // Ingreso por pedido: los mismos cortes del periodo, agrupados por pedido.
   const porPedido = [];
   pedidos.forEach((p) => {
@@ -300,7 +308,7 @@ export default function CentroCostoCorteEnAreas({ areaNombre, currentUser }) {
                 <button
                   key={iso}
                   onClick={() => setFechaDia(iso)}
-                  title={`${fmtFechaISO(iso)} — ${ed.tieneCortes ? `${fmtMoney(ed.ingreso)} vs ${fmtMoney(ed.costo)} nómina` : "sin cortes"}`}
+                  title={`${fmtFechaISO(iso)} — ${ed.tieneCortes ? `${fmtMoney(ed.ingreso)} vs ${fmtMoney(ed.costo)} nómina` : "sin cortes"}${ed.enVacaciones && ed.enVacaciones.length ? ` · 🏖 de vacaciones: ${ed.enVacaciones.join(", ")}` : ""}`}
                   style={{ flex: "0 0 auto", width: 26, height: 34, borderRadius: 6, border: activo ? `2px solid ${C.ink}` : `1px solid ${C.border}`, background: bg, color, fontSize: 9, fontWeight: 800, cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", lineHeight: 1.1, padding: 0 }}
                 >
                   <span>{iso.slice(8, 10)}</span>
@@ -323,6 +331,7 @@ export default function CentroCostoCorteEnAreas({ areaNombre, currentUser }) {
           {estado === "ok" ? "El corte cubre la nómina" : "El corte NO cubre la nómina"} · {pctCobertura.toFixed(1)}% de cobertura
         </div>
       )}
+      <AvisoVacacionesCorte resumen={resumenVac} reduccion={reduccionVac} sinFicha={sinFichaCorte} etiqueta={etiquetaPeriodo} />
       <EquiposCorteVista db={db} filas={filas} />
       {!filas.length ? (
         <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>Sin trabajadores en nómina ni cortes registrados en este periodo.</div>
@@ -342,6 +351,11 @@ export default function CentroCostoCorteEnAreas({ areaNombre, currentUser }) {
                     {f.nombre}
                     {!f.enNomina && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: C.red, background: C.redBg, padding: "2px 6px", borderRadius: 10 }}>no está en nómina</span>}
                     {f.enNomina && f.unidades === 0 && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: C.slate, background: C.canvas, padding: "2px 6px", borderRadius: 10 }}>sin cortes en el periodo</span>}
+                    {f.vacDias > 0 && (
+                      <span title="Sueldo de esos días no cuenta en el costo" style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: C.blue, background: C.blueBg, padding: "2px 6px", borderRadius: 10 }}>
+                        🏖 {f.vacDias} {f.vacDias === 1 ? "día" : "días"} de vacaciones
+                      </span>
+                    )}
                   </td>
                   <td style={{ padding: "10px", textAlign: "right" }}>{fmtNum(f.unidades)}</td>
                   <td style={{ padding: "10px", textAlign: "right", color: C.green, fontWeight: 700 }}>{fmtMoney(f.ingreso)}</td>
@@ -420,7 +434,7 @@ export default function CentroCostoCorteEnAreas({ areaNombre, currentUser }) {
 // cortes registrados y la nómina de Corte -- los MISMOS números del Centro de
 // Costo de CORTE (ver CentroCostoCorteEnAreas arriba) --, y con la Auditoría
 // Corte vs Busint debajo (la corrida diaria vive en functions/auditoria-corte.js).
-function calcularFilasCorteCC({ pedidos, trabajadores, periodo, fechaDia, mesSel, anioSel }) {
+function calcularFilasCorteCC({ pedidos, trabajadores, periodo, fechaDia, mesSel, anioSel, vac }) {
   const mesKey = `${anioSel}-${String(mesSel).padStart(2, "0")}`;
   const enP = (f) => {
     if (!f) return false;
@@ -457,7 +471,9 @@ function calcularFilasCorteCC({ pedidos, trabajadores, periodo, fechaDia, mesSel
   trabajadores.filter(activo).forEach((t) => {
     const k = norm(t.nombre);
     const d = por.get(k);
-    filas.push({ id: t.id || k, nombre: t.nombre, unidades: d?.unidades || 0, valorProducido: d?.ingreso || 0, costo: costoP(t.sueldo || 0), sinSueldo: !t.sueldo });
+    // (2026-11-18) Las vacaciones de Nómina se restan del costo del periodo.
+    const aj = costoCorteConVacaciones(t, costoP(t.sueldo || 0), periodo, { fechaDia, mesSel, anioSel }, vac || { fichas: [], ausencias: [] });
+    filas.push({ id: t.id || k, nombre: t.nombre, unidades: d?.unidades || 0, valorProducido: d?.ingreso || 0, costo: aj.costo, vacDias: aj.dias.length, vacReduccion: aj.reduccion, sinSueldo: !t.sueldo });
     usados.add(k);
   });
   por.forEach((d, k) => {
@@ -700,6 +716,7 @@ export function CentroCostoCierreCorte({ currentUser }) {
   const [trabajadores, setTrabajadores] = useState([]);
   const [historial, setHistorial] = useState([]);
   const [detalleAbierto, setDetalleAbierto] = useState(null);
+  const vacCtx = useVacacionesCorte(db);
   useEffect(() => {
     const u1 = onSnapshot(collection(db, "pedidos_activos"), (snap) => setPedidos(snap.docs.map((d) => ({ ...d.data(), id: d.id }))));
     const u2 = onSnapshot(collection(db, "corte_config"), (snap) => {
@@ -711,9 +728,12 @@ export function CentroCostoCierreCorte({ currentUser }) {
     return () => { u1(); u2(); u3(); };
   }, []);
   const filas = useMemo(
-    () => calcularFilasCorteCC({ pedidos, trabajadores, periodo, fechaDia, mesSel, anioSel }),
-    [pedidos, trabajadores, periodo, fechaDia, mesSel, anioSel]
+    () => calcularFilasCorteCC({ pedidos, trabajadores, periodo, fechaDia, mesSel, anioSel, vac: vacCtx }),
+    [pedidos, trabajadores, periodo, fechaDia, mesSel, anioSel, vacCtx]
   );
+  const resumenVacCierre = resumenVacacionesCorte(trabajadores, periodo, { fechaDia, mesSel, anioSel }, vacCtx);
+  const reduccionVacCierre = filas.reduce((s, f) => s + (f.vacReduccion || 0), 0);
+  const sinFichaCierre = corteSinFicha(trabajadores, vacCtx.fichas);
   const etiquetaPeriodo = periodo === "dia" ? fmtFechaISO(fechaDia) : periodo === "mes" ? `${MESES_CORTOS[mesSel - 1]} ${anioSel}` : String(anioSel);
   const totalValor = filas.reduce((s, f) => s + f.valorProducido, 0);
   const totalCosto = filas.reduce((s, f) => s + (f.sinSueldo ? 0 : f.costo), 0);
@@ -767,6 +787,7 @@ export function CentroCostoCierreCorte({ currentUser }) {
         )}
         {periodo === "anio" && <input type="number" value={anioSel} onChange={(e) => setAnioSel(Number(e.target.value) || anioSel)} style={{ ...inp, width: 90 }} />}
       </div>
+      <AvisoVacacionesCorte resumen={resumenVacCierre} reduccion={reduccionVacCierre} sinFicha={sinFichaCierre} etiqueta={etiquetaPeriodo} />
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 14 }}>
         <KPI icon="💵" label="Valor producido (Ingreso Corte)" value={fmtMoney(totalValor)} color={C.green} bg={C.greenBg} />
         <KPI icon="🏦" label={`Costo nómina (${etiquetaPeriodo})`} value={fmtMoney(totalCosto)} color={C.violet} bg={C.violetBg} />

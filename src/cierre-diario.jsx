@@ -17,6 +17,7 @@ import {
   unidadesCortePorDia, unidadesDespachos, unidadesConfeccion, unidadesTerminacion, estadoMeta,
   diasDelMesHasta, esHabilISO, sumarDiasISO,
 } from "./cierre-diario-calculo";
+import { conDiasVacaciones } from "./corte-vacaciones";
 import {
   personasDelGrupo, mapaVacacionesDias, metasPorDia, metaAjustadaDia, cumplimientoMetaAjustada, textoMetaVacaciones,
 } from "./meta-vacaciones";
@@ -266,11 +267,16 @@ export function useCierreDiario(db, diaSel, alcance, conUnidades = true) {
     return { metaPorDia, vac, meta: metaAjustadaDia(metaBase, vac), habilesHasta };
   };
 
+  // (2026-11-18) CORTE: a cada trabajador se le agregan sus días de vacaciones (Nómina) para que su sueldo de ese día no cuente.
+  const trabajadoresCorteV = useMemo(
+    () => conDiasVacaciones(trabajadoresCorte, { fichas: fichasVac, ausencias: ausenciasVac }, `${anio}-01-01`, `${anio}-12-31`),
+    [trabajadoresCorte, fichasVac, ausenciasVac, anio]
+  );
   const filasCosto = useMemo(() => AREAS_COSTO.map((a) => {
-    const dia = diaDeArea(a.clave, diaSel, cierresMap, corteIdx, trabajadoresCorte);
+    const dia = diaDeArea(a.clave, diaSel, cierresMap, corteIdx, trabajadoresCorteV);
     const mm = String(mes).padStart(2, "0");
     const ac = acumuladoMes({
-      clave: a.clave, anio, mes, hastaISO: diaSel, cierresMap, corteIdx, trabajadoresCorte,
+      clave: a.clave, anio, mes, hastaISO: diaSel, cierresMap, corteIdx, trabajadoresCorte: trabajadoresCorteV,
       datosMes: datosArea[a.clave]?.meses?.[mes] || null,
       trabajadoresMes: cierresResueltos.get(`${a.clave}|${anio}-${mm}`)?.trabajadores || [],
     });
@@ -292,7 +298,7 @@ export function useCierreDiario(db, diaSel, alcance, conUnidades = true) {
       ...a, dia, ac, saldoDia, saldoAlcance, meta, metaBase, metaPorDia, vac, vacPorDia, porDia, cubren, sinCierre: meses,
       cumpl: cumplimientoMetaAjustada(porDia, metaBase, vacPorDia, habilesHasta), em: vac && vac.todos ? { pct: null, nivel: "sin_meta" } : estadoMeta(dia.unidades, meta),
     };
-  }), [diaSel, cierresMap, corteIdx, trabajadoresCorte, datosArea, cierresResueltos, alcance, anio, mes, primerAnio, construirDatosArea, cfg, areasNomina, unidCorte, fichasVac, ausenciasVac]); // eslint-disable-line
+  }), [diaSel, cierresMap, corteIdx, trabajadoresCorte, trabajadoresCorteV, datosArea, cierresResueltos, alcance, anio, mes, primerAnio, construirDatosArea, cfg, areasNomina, unidCorte, fichasVac, ausenciasVac]); // eslint-disable-line
 
   const filasUnid = useMemo(() => AREAS_UNIDADES.map((a) => {
     const porDia = unid[a.id];
@@ -319,7 +325,7 @@ export function useCierreDiario(db, diaSel, alcance, conUnidades = true) {
     return { cierran: cierran.length, faltan, valor, costo, saldoDia: valor - costo, si, totalT, saldoAlc, metasOk: conMeta.filter((e) => e.nivel === "cumple").length, metasN: conMeta.length };
   }, [filasCosto, filasUnid]);
 
-  return { anio, mes, cargando, metas, errUnid, cierresMap, corteIdx, trabajadoresCorte, filasCosto, filasUnid, tot };
+  return { anio, mes, cargando, metas, errUnid, cierresMap, corteIdx, trabajadoresCorte: trabajadoresCorteV, filasCosto, filasUnid, tot };
 }
 
 export default function CierreDiarioView({ db }) {
