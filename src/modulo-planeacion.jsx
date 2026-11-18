@@ -27,7 +27,7 @@ import { CONCEPTOS_GASTOS_BUSINT, proveedoresDeTexto, candidatosGastos, gastoDeF
 import { MESES_HIST, COLECCION_HISTORICO_MAQUILA, textoAFilas, parsearHistorial, docHistoricoMes, resumenAnual } from "./historial-maquila-calculo";
 import { PLANTA_PROPIA_VENTAS, rangoDelPeriodo, plantasDeEntradas, clientePorLoteDeCargas, candidatosVentas, ventaDeEntrada, totalLineaVenta, SERVICIOS_VENTA, SIN_SERVICIO, servicioValido, etiquetaServicio, sugerirServicio, resumenPorServicio, bloqueoLinea, servicioDeVenta } from "./ventas-entradas-calculo";
 import ResumenAreasCC from "./centro-costo-resumen-areas";
-import SubirNominaQuincenaModal, { COLECCION_NOMINA_QUINCENA } from "./centro-costo-subir-nomina";
+import SubirNominaQuincenaModal, { COLECCION_NOMINA_QUINCENA, COLECCION_NOMINA_CONFIG, NINGUNA as NINGUNA_NOMINA } from "./centro-costo-subir-nomina";
 import { hojaHistoricoCargado, hojaCoberturaNomina, hojaPantalla, hojaNominaSubida } from "./centro-costo-datos-cargados";
 import { aporteDeLote, despachadaEfectiva } from "./costos-general-calculo";
 const firebaseConfig = {
@@ -6134,11 +6134,21 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
     const unsub = onSnapshot(collection(db, COLECCION_NOMINA_QUINCENA), (snap) => setNominaQuincenaCC(snap.docs.map((d) => ({ ...d.data(), id: d.id }))), () => setNominaQuincenaCC([]));
     return () => unsub();
   }, []);
+  // Fichas que Fredy eligió a mano para cada nombre del Excel (se recuerdan entre cargas): si hay una decisión para ese nombre, manda sobre el cruce guardado.
+  const [aliasNominaCC, setAliasNominaCC] = useState({});
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, COLECCION_NOMINA_CONFIG, "alias"), (snap) => setAliasNominaCC(snap.exists() ? snap.data().mapa || {} : {}), () => setAliasNominaCC({}));
+    return () => unsub();
+  }, []);
   const nominaQuincenaMapCC = useMemo(() => {
     const m = new Map();
-    (nominaQuincenaCC || []).forEach((d) => { if (d.trabajadorId && d.periodoId) m.set(`${d.trabajadorId}__${d.periodoId}`, d); });
+    (nominaQuincenaCC || []).forEach((d) => {
+      const decidida = d.nombreNorm ? aliasNominaCC[d.nombreNorm] : undefined;
+      const idFicha = decidida !== undefined ? (decidida === NINGUNA_NOMINA ? "" : decidida) : d.trabajadorId;
+      if (idFicha && d.periodoId) m.set(`${idFicha}__${d.periodoId}`, d);
+    });
     return m;
-  }, [nominaQuincenaCC]);
+  }, [nominaQuincenaCC, aliasNominaCC]);
   // (2026-09-22, a pedido de Fredy) Datos crudos para calcular "lo
   // causado" (ver causadoDestajoEnPeriodoCC arriba) de las quincenas de
   // Destajo que todavia no se confirman en Nomina -> Destajo. Mismas
@@ -7560,7 +7570,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
           ) : (
             <>
               {subirNominaCC && (
-                <SubirNominaQuincenaModal db={db} trabajadores={trabajadores} currentUser={currentUser} existentes={nominaQuincenaCC} anioInicial={anioSel} onClose={() => setSubirNominaCC(false)} />
+                <SubirNominaQuincenaModal db={db} trabajadores={trabajadores} currentUser={currentUser} existentes={nominaQuincenaCC} alias={aliasNominaCC} anioInicial={anioSel} onClose={() => setSubirNominaCC(false)} />
               )}
               {quincenasSinDatosCC > 0 && (
                 <div style={{ display: "flex", gap: 10, alignItems: "flex-start", background: C.blueBg, border: `1px solid ${C.border}`, borderRadius: 12, padding: "10px 14px", marginBottom: 14, fontSize: 12.5, color: C.ink }}>
