@@ -45,6 +45,12 @@ const C = {
   green: "#2D9E6B", greenBg: "#EBF7F2", red: "#E85D4A", redBg: "#FDF0EE", blue: "#3D6B9E", blueBg: "#EBF1F7",
   amber: "#C47C1A", amberBg: "#FDF5E6", violet: "#7B5EA7", violetBg: "#F3EEF9", teal: "#2A8C99", tealBg: "#EAF6F7",
 };
+// Resultado de un mes en la tabla del año. Con nómina real = la AYUDA (horas + lo puesto en Nómina, en negativo): lo que se ayudó realmente.
+// Sin ella, valor producido − costo del cierre, como antes.
+function resultadoMesAnio(f) {
+  if (f && f.nominaReal) return -((Number(f.nominaReal.ayuda) || 0) + (Number(f.nominaReal.horas) || 0));
+  return (Number(f && f.valor) || 0) - (Number(f && f.costo) || 0);
+}
 const CLAVES_AYUDA_MES = AREAS_HISTORICO.filter((a) => a.clave !== "CORTE").map((a) => a.clave);
 const MESES_CORTOS = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
 const MESES_LARGOS = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
@@ -281,6 +287,8 @@ function DetalleMes({ titulo, f, cierre, h, filasTrab: filasTrabCrudas, miembros
   const totExced = eq ? eq.excedenteGeneral : todas.reduce((s, t) => s + resultadoPersona(t).excedente, 0);
   const totHorasReal = todas.reduce((s, t) => s + (t.real ? Number(t.horas) || 0 : 0), 0);
   const totAyudaNomina = todas.reduce((s, t) => s + (t.real ? Number(t.ayudaReal) || 0 : 0), 0);
+  const pagadoReal = todas.reduce((s, t) => s + (t.real ? Number(t.costo) || 0 : 0), 0);
+  const produjoReal = todas.reduce((s, t) => s + (t.real ? Number(t.produjo) || 0 : 0), 0);
   const nAyudados = todas.filter((t) => resultadoPersona(t).ayuda >= 1).length;
   const nExced = todas.filter((t) => resultadoPersona(t).excedente >= 1).length;
   const primerNombre = (n) => String(n || "").trim().split(/\s+/).slice(0, 2).join(" ");
@@ -329,12 +337,19 @@ function DetalleMes({ titulo, f, cierre, h, filasTrab: filasTrabCrudas, miembros
               <div style={{ fontSize: 17, fontWeight: 900, color: C.green }}>{fmtMoney(totExced)}</div>
               <div style={{ fontSize: 11, color: C.slate }}>{eq ? (eq.apoyoRecibe > 0 ? `los equipos sobraron ${fmtMoney(eq.apoyoRecibe)}: cubren a ${eq.apoyo.map((a) => primerNombre(a.nombre)).join(", ")}` : eq.excedenteEquipos < 0 ? `los equipos quedaron cortos ${fmtMoney(-eq.excedenteEquipos)}` : "sin excedente de equipos") : `${nExced} ${nExced === 1 ? "trabajador" : "trabajadores"}`}</div>
             </div>
-            <div style={{ background: C.white, borderRadius: 10, padding: "10px 12px" }}>
-              <div style={{ fontSize: 11, color: C.slate, fontWeight: 700 }}>Balance del mes</div>
-              <div style={{ fontSize: 17, fontWeight: 900, color: totExced - totAyuda >= 0 ? C.green : C.red }}>{fmtMoney(totExced - totAyuda)}</div>
-              <div style={{ fontSize: 11, color: C.slate }}>excedentes − ayudas</div>
-            </div>
+            {!(hayReal && !eq) && (
+              <div style={{ background: C.white, borderRadius: 10, padding: "10px 12px" }}>
+                <div style={{ fontSize: 11, color: C.slate, fontWeight: 700 }}>Balance del mes</div>
+                <div style={{ fontSize: 17, fontWeight: 900, color: totExced - totAyuda >= 0 ? C.green : C.red }}>{fmtMoney(totExced - totAyuda)}</div>
+                <div style={{ fontSize: 11, color: C.slate }}>excedentes − ayudas</div>
+              </div>
+            )}
           </div>
+          {hayReal && !eq && (
+            <div style={{ fontSize: 12, color: C.slate, margin: "-2px 0 10px", lineHeight: 1.55 }}>
+              Aparte, para conciliar: pagado <strong>{fmtMoney(pagadoReal)}</strong> − producido <strong>{fmtMoney(produjoReal)}</strong> = <strong>{fmtMoney(pagadoReal - produjoReal)}</strong>. Frente a la ayuda (horas + Nómina, {fmtMoney(totHorasReal + totAyudaNomina)}) hay una diferencia de <strong>{fmtMoney(pagadoReal - produjoReal - (totHorasReal + totAyudaNomina))}</strong>: son fijos (quien tiene el mínimo garantizado), bonificaciones y descuentos de la liquidación.
+            </div>
+          )}
           <input value={busq} onChange={(e) => setBusq(e.target.value)} placeholder="Buscar trabajador…" style={{ padding: "7px 10px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, marginBottom: 8, width: 240 }} />
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
@@ -894,7 +909,8 @@ export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentU
     if (f.fuente === "cierre" && f.nominaReal) return { txt: `nómina real (${f.nominaReal.conReal} de ${f.nominaReal.personas} personas)`, color: C.green, bg: C.greenBg };
     return { txt: f.parcial ? `cierres diarios (${f.parcial} días, costo solo hábiles)` : "cierre guardado", color: C.teal, bg: C.tealBg };
   };
-  const rentab = sel.valor - sel.costo;
+  const hayRealAnio = Object.values(sel.meses).some((f) => f.nominaReal);
+  const rentab = Object.values(sel.meses).reduce((sum, f) => sum + resultadoMesAnio(f), 0);
 
   return (
     <div style={{ marginBottom: 28 }}>
@@ -970,7 +986,7 @@ export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentU
           <div style={{ fontSize: 20, fontWeight: 900, color: C.amber }}>{fmtMoney(sel.costo)}</div>
         </div>
         <div style={{ background: rentab >= 0 ? C.greenBg : C.redBg, borderRadius: 12, padding: "12px 14px" }}>
-          <div style={{ fontSize: 11, color: C.slate, fontWeight: 700 }}>{rentab >= 0 ? "Excedente del año" : "Pérdida del año"}</div>
+          <div style={{ fontSize: 11, color: C.slate, fontWeight: 700 }}>{rentab >= 0 ? "Excedente del año" : hayRealAnio ? "Ayuda y pérdida del año" : "Pérdida del año"}</div>
           <div style={{ fontSize: 20, fontWeight: 900, color: rentab >= 0 ? C.green : C.red }}>{fmtMoney(rentab)}</div>
         </div>
         <div style={{ background: C.canvas, borderRadius: 12, padding: "12px 14px" }}>
@@ -999,7 +1015,7 @@ export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentU
                   </tr>
                 );
               }
-              const res = f.valor - f.costo;
+              const res = resultadoMesAnio(f);
               const cob = f.costo > 0 ? (f.valor / f.costo) * 100 : 0;
               const et = etiquetaFuente(f);
               const abierto = mesAbierto === m;
@@ -1011,7 +1027,7 @@ export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentU
                   <td style={{ padding: "9px 10px", textAlign: "right", color: C.amber, fontWeight: 700 }}>{fmtMoney(f.costo)}</td>
                   <td style={{ padding: "9px 10px", textAlign: "right", color: res >= 0 ? C.green : C.red, fontWeight: 800 }}>
                     {fmtMoney(res)}
-                    <div style={{ fontSize: 10, fontWeight: 700 }}>{res >= 0 ? "excedente" : "pérdida"}</div>
+                    <div style={{ fontSize: 10, fontWeight: 700 }}>{res >= 0 ? "excedente" : f.nominaReal ? "ayuda: horas + nómina" : "pérdida"}</div>
                   </td>
                   <td style={{ padding: "9px 10px", textAlign: "right", color: f.costo > 0 ? colorCobertura(cob) : C.slate, fontWeight: 800 }}>{f.costo > 0 ? fmtPct(cob) : "—"}</td>
                   <td style={{ padding: "9px 10px", minWidth: 120 }}>
@@ -1049,7 +1065,7 @@ export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentU
               <td style={{ padding: "10px", textAlign: "right", color: C.amber, fontWeight: 900 }}>{fmtMoney(sel.costo)}</td>
               <td style={{ padding: "10px", textAlign: "right", color: rentab >= 0 ? C.green : C.red, fontWeight: 900 }}>
                 {fmtMoney(rentab)}
-                <div style={{ fontSize: 10, fontWeight: 700 }}>{rentab >= 0 ? "excedente" : "pérdida"}</div>
+                <div style={{ fontSize: 10, fontWeight: 700 }}>{rentab >= 0 ? "excedente" : hayRealAnio ? "ayuda y pérdida" : "pérdida"}</div>
               </td>
               <td style={{ padding: "10px", textAlign: "right", fontWeight: 900, color: sel.costo > 0 ? colorCobertura(sel.cobertura) : C.slate }}>{sel.costo > 0 ? fmtPct(sel.cobertura) : "—"}</td>
               <td colSpan={2} />
