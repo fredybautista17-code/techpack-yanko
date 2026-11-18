@@ -4768,6 +4768,14 @@ function calcularCausadoDestajoCC(trabajador, netoProduccion, totalHoras, propor
 // ya no hace falta mirar ni "liq" ni "causado" para este numero).
 // periodoId de quincena válido: "YYYY-MM-QN".
 const esPidCC = (x) => /^\d{4}-\d{2}-Q[12]$/.test(String(x || ""));
+// (2026-11-18, a pedido de Fredy) Una quincena «real» solo cuenta para QUIEN tiene su liquidación o su fila del Excel de nómina. Si la quincena es real
+// para otros pero esta persona no tiene fila (ej. su nombre del Excel quedó sin ficha), se saltaba a estimar y le salían ≈ $1 M de «ayuda» por quincena
+// con producción en cero (Yorleny: exactamente $3.000.000 = 3 quincenas). Con `soloEstimado` (el período no tiene ninguna quincena real) cuentan todas.
+function quincenaCuentaDePersonaCC(soloEstimado, liquidaciones, mapaExcel, trabajadorId, pid) {
+  if (soloEstimado) return true;
+  if ((liquidaciones || []).some((l) => l.trabajadorId === trabajadorId && l.periodoId === pid)) return true;
+  return mapaExcel.has(`${trabajadorId}__${pid}`);
+}
 function sueldoEsperadoPeriodoCC(trabajador, inicio, fin, hoy) {
   if (trabajador.pagoPorDia) return 0;
   const diasHabilesTotales = diasHabilesEnRangoCC(inicio, fin);
@@ -6525,7 +6533,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
         let liquidacionesEnPeriodo = 0;
         let huboCausado = false;
         if (esDestajoReal) {
-          periodosDestajoSeleccionados.forEach((pid) => {
+          periodosDestajoSeleccionados.filter((pid) => quincenaCuentaDePersonaCC(soloEstimadoCC, liquidacionesDestajo, nominaQuincenaMapCC, t.id, pid)).forEach((pid) => {
             const [anioPid, mesPid, qLabelPid] = pid.split("-");
             const { inicio: iniPid, fin: finPid } = rangoQuincenaCC(anioPid, mesPid, qLabelPid.replace("Q", ""));
             horasTrabajadasCantidad += sumaCantidadHorasCC(horasCC, t.id, iniPid, finPid);
@@ -6584,7 +6592,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
         };
       })
       .sort((a, b) => b.valorProducido - a.valorProducido);
-  }, [trabajadoresArea, porTrabajador, periodo, fechaDia, mesSel, anioSel, fechaRangoInicio, fechaRangoFin, liquidacionesDestajo, nominaQuincenaMapCC, periodosDestajoSeleccionados, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC, hoy]);
+  }, [trabajadoresArea, porTrabajador, periodo, fechaDia, mesSel, anioSel, fechaRangoInicio, fechaRangoFin, liquidacionesDestajo, nominaQuincenaMapCC, periodosDestajoSeleccionados, soloEstimadoCC, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC, hoy]);
   // (2026-10-02, a pedido de Fredy) "Ayuda por quincena" y "Costo
   // indirecto por quincena" -- a diferencia de "filas" de arriba (que
   // suma las quincenas del período elegido en una sola cifra neta por
@@ -6598,7 +6606,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
     const porQuincena = new Map();
     trabajadoresArea.forEach((t) => {
       if (t.tipoNomina !== "Destajo") return;
-      periodosDestajoSeleccionados.forEach((pid) => {
+      periodosDestajoSeleccionados.filter((pid) => quincenaCuentaDePersonaCC(soloEstimadoCC, liquidacionesDestajo, nominaQuincenaMapCC, t.id, pid)).forEach((pid) => {
         const [anioPid, mesPid, qLabelPid] = pid.split("-");
         const { inicio: iniPid, fin: finPid } = rangoQuincenaCC(anioPid, mesPid, qLabelPid.replace("Q", ""));
         const sueldoEsperadoQ = sueldoEsperadoPeriodoCC(t, iniPid, finPid, hoy);
@@ -6637,7 +6645,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
       });
     });
     return [...porQuincena.values()].sort((a, b) => a.pid.localeCompare(b.pid));
-  }, [trabajadoresArea, periodosDestajoSeleccionados, liquidacionesDestajo, nominaQuincenaMapCC, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC, hoy]);
+  }, [trabajadoresArea, periodosDestajoSeleccionados, soloEstimadoCC, liquidacionesDestajo, nominaQuincenaMapCC, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC, hoy]);
   const totalAyudaQuincenas = detalleQuincenasDestajoCC.reduce((s, q) => s + q.ayudaTotal, 0);
   // (2026-11-16, a pedido de Fredy) Por persona, para el resumen «Todas las áreas»: horas trabajadas (costo indirecto) y ayuda adicional (lo puesto en Nómina), sin netear.
   const horasPorIdCC = useMemo(() => {
@@ -6663,7 +6671,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
     const out = [];
     trabajadoresArea.forEach((t) => {
       if (t.tipoNomina !== "Destajo") return;
-      periodosDestajoSeleccionados.forEach((pid) => {
+      periodosDestajoSeleccionados.filter((pid) => quincenaCuentaDePersonaCC(soloEstimadoCC, liquidacionesDestajo, nominaQuincenaMapCC, t.id, pid)).forEach((pid) => {
         const [anioPid, mesPid, qLabelPid] = pid.split("-");
         const { inicio: iniPid, fin: finPid } = rangoQuincenaCC(anioPid, mesPid, qLabelPid.replace("Q", ""));
         const liq = (liquidacionesDestajo || []).find((l) => l.trabajadorId === t.id && l.periodoId === pid);
@@ -6712,7 +6720,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
       });
     });
     return out;
-  }, [trabajadoresArea, periodosDestajoSeleccionados, liquidacionesDestajo, nominaQuincenaMapCC, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC, hoy]);
+  }, [trabajadoresArea, periodosDestajoSeleccionados, soloEstimadoCC, liquidacionesDestajo, nominaQuincenaMapCC, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC, hoy]);
   const detalleCostoNominaCompleto = useMemo(
     () => [
       ...detalleCostoNomina,
@@ -7591,7 +7599,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
                       </>
                     ) : (
                       <>
-                        <b>{pidsRealesEnPeriodoCC.length} {pidsRealesEnPeriodoCC.length === 1 ? "quincena real" : "quincenas reales"}</b> en {etiquetaPeriodo} (con liquidación en Nómina o Excel subido): {pidsRealesEnPeriodoCC.length <= 12 ? pidsRealesEnPeriodoCC.map(labelQuincenaCC).join(", ") : `${labelQuincenaCC(pidsRealesEnPeriodoCC[0])} … ${labelQuincenaCC(pidsRealesEnPeriodoCC[pidsRealesEnPeriodoCC.length - 1])}`}. Lo garantizado, la ayuda y las horas suman solo esas.
+                        <b>{pidsRealesEnPeriodoCC.length} {pidsRealesEnPeriodoCC.length === 1 ? "quincena real" : "quincenas reales"}</b> en {etiquetaPeriodo} (con liquidación en Nómina o Excel subido): {pidsRealesEnPeriodoCC.length <= 12 ? pidsRealesEnPeriodoCC.map(labelQuincenaCC).join(", ") : `${labelQuincenaCC(pidsRealesEnPeriodoCC[0])} … ${labelQuincenaCC(pidsRealesEnPeriodoCC[pidsRealesEnPeriodoCC.length - 1])}`}. Lo garantizado, la ayuda y las horas suman solo esas, y cada persona cuenta solo en las quincenas donde tiene su liquidación o su fila del Excel con ficha (un nombre del Excel sin ficha no suma hasta que se le asigne una).
                         {pidsEstimadosEnPeriodoCC.length > 0 && (
                           <> <b>No suman</b> ({pidsEstimadosEnPeriodoCC.length} sin liquidar ni Excel: {pidsEstimadosEnPeriodoCC.length <= 8 ? pidsEstimadosEnPeriodoCC.map(labelQuincenaCC).join(", ") : `${labelQuincenaCC(pidsEstimadosEnPeriodoCC[0])} …`}) hasta que se liquiden o subas su Excel.</>
                         )}
