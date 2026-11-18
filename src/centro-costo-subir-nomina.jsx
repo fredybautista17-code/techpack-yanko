@@ -7,6 +7,7 @@ import { collection, doc, setDoc, deleteDoc, getDocs, query, where } from "fireb
 import { leerNominaConsolidado, cruzarConTrabajadores, sugerirPeriodo, hojaConsolidado, docNominaQuincena, periodoIdDe } from "./centro-costo-nomina-quincena";
 
 export const COLECCION_NOMINA_QUINCENA = "nomina_historico_quincena";
+const NINGUNA = "__ninguna__";
 const K = { ink: "#1A1A2E", slate: "#5A5A7A", border: "#E8E2DB", canvas: "#F7F4F0", panel: "#FBF9F6", white: "#FFFFFF", green: "#2D9E6B", greenBg: "#EBF7F2", red: "#D24A38", redBg: "#FDF0EE", amber: "#B26F12", amberBg: "#FDF5E6", blue: "#3D6B9E", blueBg: "#EBF1F7", track: "#EFE9E1" };
 const MESES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
 const dinero = (n) => (Number(n) < 0 ? "-$" : "$") + Math.round(Math.abs(Number(n) || 0)).toLocaleString("es-CO");
@@ -26,7 +27,9 @@ export default function SubirNominaQuincenaModal({ db, trabajadores, currentUser
   const [leyendo, setLeyendo] = useState(false);
   const [error, setError] = useState("");
   const [lectura, setLectura] = useState(null);
+  // asignaciones[nombreNorm] = id de la ficha elegida a mano, o NINGUNA si se quitó la ficha. editando[nombreNorm] = la fila muestra el selector.
   const [asignaciones, setAsignaciones] = useState({});
+  const [editando, setEditando] = useState({});
   const [soloSinFicha, setSoloSinFicha] = useState(false);
   const [guardando, setGuardando] = useState(false);
   const [mensaje, setMensaje] = useState("");
@@ -44,6 +47,7 @@ export default function SubirNominaQuincenaModal({ db, trabajadores, currentUser
     if (!lectura) return [];
     return cruzarConTrabajadores(lectura.personas, trabajadores).map((p) => {
       const idManual = asignaciones[p.nombreNorm];
+      if (idManual === NINGUNA) return { ...p, trabajadorId: "", trabajadorNombre: "", area: "", cruce: null };
       const t = idManual ? (trabajadores || []).find((x) => x.id === idManual) : null;
       return t ? { ...p, trabajadorId: t.id, trabajadorNombre: t.nombre, area: t.area || "", cruce: "manual" } : p;
     }).sort((a, b) => b.ayuda - a.ayuda || b.producido - a.producido);
@@ -58,6 +62,7 @@ export default function SubirNominaQuincenaModal({ db, trabajadores, currentUser
     setMensaje("");
     setLectura(null);
     setAsignaciones({});
+    setEditando({});
     try {
       const XLSX = await import("xlsx");
       const buf = await file.arrayBuffer();
@@ -166,15 +171,21 @@ export default function SubirNominaQuincenaModal({ db, trabajadores, currentUser
                       <td style={{ ...td, background: p.ayuda > 0 ? "#FFF4D6" : undefined, fontWeight: p.ayuda > 0 ? 800 : 500 }}>{p.ayuda > 0 ? dinero(p.ayuda) : "—"}</td>
                       <td style={td}>{dinero(p.pagado)}</td>
                       <td style={{ ...td, textAlign: "left" }}>
-                        {p.trabajadorId ? (
+                        {p.trabajadorId && !editando[p.nombreNorm] ? (
                           <span title={p.cruce === "exacto" ? "Mismo nombre" : p.cruce === "manual" ? "Elegida a mano" : "Nombre parecido: revísalo"}>
-                            <span style={chip(true)}>✓ {p.area || "sin área"}</span>{p.cruce === "palabras" || p.cruce === "parcial" ? <span style={{ fontSize: 11.5, color: K.slate }}> · {p.trabajadorNombre}</span> : null}
+                            <span style={chip(true)}>✓ {p.area || "sin área"}</span>
+                            <span style={{ fontSize: 11.5, color: K.slate }}> · {p.trabajadorNombre}{p.cruce === "manual" ? " (a mano)" : ""}</span>{" "}
+                            <button type="button" onClick={() => setEditando({ ...editando, [p.nombreNorm]: true })} style={{ border: "none", background: "none", color: K.blue, fontWeight: 800, fontSize: 12, cursor: "pointer", textDecoration: "underline", fontFamily: "inherit", padding: 0 }}>Cambiar</button>
                           </span>
                         ) : (
-                          <select style={{ ...campo, padding: "4px 8px", fontSize: 12, minWidth: 190 }} value="" onChange={(e) => setAsignaciones({ ...asignaciones, [p.nombreNorm]: e.target.value })}>
-                            <option value="">Elegir ficha…</option>
-                            {listaTrab.map((x) => <option key={x.id} value={x.id}>{x.nombre}{x.area ? ` · ${x.area}` : ""}</option>)}
-                          </select>
+                          <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+                            <select style={{ ...campo, padding: "4px 8px", fontSize: 12, minWidth: 190 }} value={p.trabajadorId || ""} onChange={(e) => { const v = e.target.value; if (!v) return; setAsignaciones({ ...asignaciones, [p.nombreNorm]: v }); setEditando({ ...editando, [p.nombreNorm]: false }); }}>
+                              <option value="">Elegir ficha…</option>
+                              {p.trabajadorId ? <option value={NINGUNA}>— Quitar la ficha (dejarla sin ficha) —</option> : null}
+                              {listaTrab.map((x) => <option key={x.id} value={x.id}>{x.nombre}{x.area ? ` · ${x.area}` : ""}</option>)}
+                            </select>
+                            {p.trabajadorId ? <button type="button" onClick={() => setEditando({ ...editando, [p.nombreNorm]: false })} style={{ border: "none", background: "none", color: K.slate, fontWeight: 800, fontSize: 12, cursor: "pointer", fontFamily: "inherit", padding: 0 }}>Cancelar</button> : null}
+                          </span>
                         )}
                       </td>
                     </tr>
