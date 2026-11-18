@@ -2445,12 +2445,30 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint
   const excedeCapacidad = disponible !== null && largoTrazoNum > disponible;
   const stats = estadisticasTela[form.tipoTela];
   const tiempoTeorico = stats?.minPorMetro && metrosTotales() > 0 ? Math.round(stats.minPorMetro * metrosTotales()) : null;
-  // Tendido: no hay historial real todavía (nunca se ha cronometrado), así
-  // que se estima con una regla fija de 20 segundos por metro de trazo, por
-  // capa — igual que el corte, escala con los metros totales (trazo×capas).
+  // Tendido: (2026-11-18) si la tela ya tiene al menos 3 cortes con tendido registrado se estima con ese historial
+  // (minutos de tendido ÷ metros); si no, queda la regla fija de 20 segundos por metro (trazo × capas).
   const TENDIDO_SEG_POR_METRO = 20;
-  const tendidoEstimadoMin = metrosTotales() > 0 ? Math.round((TENDIDO_SEG_POR_METRO / 60) * metrosTotales()) : null;
+  const tendidoDelHistorial = stats?.tendidoMinPorMetro > 0;
+  const tendidoMinPorMetro = tendidoDelHistorial ? stats.tendidoMinPorMetro : TENDIDO_SEG_POR_METRO / 60;
+  const tendidoEstimadoMin = metrosTotales() > 0 ? Math.round(tendidoMinPorMetro * metrosTotales()) : null;
   const tiempoTotalEstimadoMin = tendidoEstimadoMin !== null ? tendidoEstimadoMin + (tiempoTeorico || 0) : null;
+  // Segunda cuenta del corte, por prendas del PEDIDO (no por metros): sirve para notar cuando capas o trazo están inflados.
+  const prendasPedidoTotal = coloresSeleccionados.reduce((s, c) => s + calcColor(c).cantidadReal, 0)
+    + (refVinculada ? refVinculada.colores.reduce((s, c) => s + calcColorVinculada(c).cantidadReal, 0) : 0);
+  const corteMinPorPrendas = stats?.unidadesPorMin > 0 && prendasPedidoTotal > 0 ? Math.round(prendasPedidoTotal / stats.unidadesPorMin) : null;
+  const razonMetrosVsPrendas = tiempoTeorico !== null && corteMinPorPrendas > 0 ? tiempoTeorico / corteMinPorPrendas : null;
+  const cuentasNoCoinciden = razonMetrosVsPrendas !== null && (razonMetrosVsPrendas >= 1.6 || razonMetrosVsPrendas <= 0.6);
+  // Colores cuyas capas × prendas por capa no se parecen a lo pedido (más de 1,5 veces o menos de 2/3) → se sugiere corregir.
+  const desbalanceColor = (k) => marcadas > 0 && k.capasColor > 0 && k.cantidadReal > 0 && (k.prendasCalculadas >= k.cantidadReal * 1.5 || k.prendasCalculadas <= k.cantidadReal * 0.67);
+  const capasSugeridasDe = (k) => (marcadas > 0 ? Math.max(1, Math.round(k.cantidadReal / marcadas)) : 0);
+  const coloresDesbalance = refVinculada ? [] : coloresSeleccionados.filter((c) => desbalanceColor(calcColor(c)));
+  function corregirCapasDesbalanceadas() {
+    setCapasPorColor((st) => {
+      const n = { ...st };
+      coloresDesbalance.forEach((c) => { n[c.id] = String(capasSugeridasDe(calcColor(c))); });
+      return n;
+    });
+  }
   const telasDatalistId = `telas-prog-hecha-${grupo.pedidoId}-${grupo.ref}`;
   // Nombres de tela sugeridos: catálogo local de Atlas + los nombres reales
   // que trae Busint (deduplicados) — así el datalist ayuda a escribir el
@@ -2927,6 +2945,8 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint
                 const calc = calcColor(c);
                 const coincide = marcadas > 0 && calc.capasColor > 0 && calc.diff === 0;
                 const hayDatos = marcadas > 0 && calc.capasColor > 0;
+                const avisoCapas = desbalanceColor(calc);
+                const capasSug = capasSugeridasDe(calc);
                 const abierto = colorAbierto === c.id;
                 // "PINTA · COLOR" (ej. "G · AZUL CLARO") — PINTA es el
                 // código estable de Busint que se usa para cruzar contra
@@ -3039,6 +3059,20 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint
                       </div>
                       <div style={{ fontSize: 11, color: C.slate }}>{abierto ? "▲" : "▼"}</div>
                     </div>
+                    {avisoCapas && capasSug > 0 && (
+                      <div onClick={(e) => e.stopPropagation()} style={{ padding: "7px 12px", background: C.amberBg, color: C.amber, fontSize: 12, fontWeight: 700, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", borderTop: `1px solid ${C.border}` }}>
+                        <span>
+                          ⚠ Con {fmtNum(calc.capasColor)} capas × {fmtNum(marcadas)} prendas por capa se cortarían {fmtNum(calc.prendasCalculadas)} y el pedido es {fmtNum(calc.cantidadReal)}. ¿Serían {fmtNum(capasSug)} capas?
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setCapasPorColor((st) => ({ ...st, [c.id]: String(capasSug) }))}
+                          style={{ padding: "4px 10px", borderRadius: 6, border: `1.5px solid ${C.amber}`, background: C.white, color: C.amber, fontWeight: 800, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}
+                        >
+                          Usar {fmtNum(capasSug)} capas
+                        </button>
+                      </div>
+                    )}
                     {abierto && (
                       <div style={{ padding: "10px 12px", borderTop: `1px solid ${C.border}`, background: C.white }}>
                         {form.tipoTela.trim() && (
@@ -3168,12 +3202,41 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint
             </div>
           </div>
           )}
+          {coloresDesbalance.length > 0 && (
+            <div style={{ padding: "10px 16px", background: C.amberBg, borderRadius: 8, marginBottom: 12, fontSize: 13, color: C.amber, fontWeight: 700, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <span>
+                ⚠ {coloresDesbalance.length} color{coloresDesbalance.length !== 1 ? "es" : ""} no cuadra{coloresDesbalance.length !== 1 ? "n" : ""} con el pedido (capas × prendas por capa muy lejos de lo pedido): los metros y el tiempo estimado pueden estar inflados o cortos.
+              </span>
+              <button
+                type="button"
+                onClick={corregirCapasDesbalanceadas}
+                style={{ padding: "5px 12px", borderRadius: 6, border: `1.5px solid ${C.amber}`, background: C.white, color: C.amber, fontWeight: 800, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}
+              >
+                Corregir las capas sugeridas
+              </button>
+            </div>
+          )}
           {tiempoTotalEstimadoMin !== null && (
             <div style={{ padding: "10px 16px", background: C.violetBg, borderRadius: 8, marginBottom: 16, fontSize: 13, color: C.violet, fontWeight: 700 }}>
               ⏱ Tiempo estimado total: ~{tiempoTotalEstimadoMin} min — tendido ~{tendidoEstimadoMin} min
               {tiempoTeorico !== null
                 ? ` + corte ~${tiempoTeorico} min (según ${stats.cortes} corte${stats.cortes !== 1 ? "s" : ""} previo${stats.cortes !== 1 ? "s" : ""} de ${form.tipoTela})`
                 : " + corte (todavía sin historial de corte para esta tela, el total solo cuenta el tendido)"}
+              <div style={{ fontSize: 11.5, fontWeight: 600, marginTop: 4 }}>
+                {tendidoDelHistorial
+                  ? `Tendido a ${tendidoMinPorMetro.toFixed(2)} min/m, según ${stats.cortesTendido} cortes con tendido registrado de esta tela.`
+                  : `Tendido con la regla fija de ${TENDIDO_SEG_POR_METRO} s por metro: esta tela todavía no tiene 3 cortes con tendido registrado.`}
+              </div>
+              {corteMinPorPrendas !== null && (
+                <div style={{ fontSize: 11.5, fontWeight: 600, marginTop: 4 }}>
+                  Por prendas: {fmtNum(prendasPedidoTotal)} prendas del pedido a {stats.unidadesPorMin.toFixed(2)} u/min ≈ {corteMinPorPrendas} min de corte (por metros: {tiempoTeorico} min).
+                </div>
+              )}
+              {cuentasNoCoinciden && (
+                <div style={{ fontSize: 12, fontWeight: 800, marginTop: 6, color: C.amber }}>
+                  ⚠ Las dos cuentas del corte no coinciden ({tiempoTeorico} min por metros contra {corteMinPorPrendas} min por prendas): revisa las capas y el largo del trazo.
+                </div>
+              )}
             </div>
           )}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 4 }}>
@@ -9738,15 +9801,26 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
     pedidos.forEach((p) =>
       (p.cortesRealizados || []).forEach((c) => {
         if (!c.tipoTela || !(c.metrosTendido > 0) || !(c.minutos > 0)) return;
-        if (!byTela[c.tipoTela]) byTela[c.tipoTela] = { minutos: 0, metros: 0, cortes: 0 };
-        byTela[c.tipoTela].minutos += c.minutos;
-        byTela[c.tipoTela].metros += c.metrosTendido;
-        byTela[c.tipoTela].cortes++;
+        if (!byTela[c.tipoTela]) byTela[c.tipoTela] = { minutos: 0, metros: 0, cortes: 0, minTend: 0, metTend: 0, cortesTend: 0, unidades: 0, minUnid: 0, cortesUnid: 0 };
+        const t = byTela[c.tipoTela];
+        t.minutos += c.minutos;
+        t.metros += c.metrosTendido;
+        t.cortes++;
+        // (2026-11-18) Tendido real y prendas por minuto, para estimar con el historial y no con una regla fija.
+        if (c.minutosTendido > 0) { t.minTend += c.minutosTendido; t.metTend += c.metrosTendido; t.cortesTend++; }
+        if (c.totalUnidades > 0) { t.unidades += c.totalUnidades; t.minUnid += c.minutos; t.cortesUnid++; }
       })
     );
     const out = {};
     Object.entries(byTela).forEach(([tela, d]) => {
-      out[tela] = { minPorMetro: d.metros > 0 ? d.minutos / d.metros : null, cortes: d.cortes };
+      out[tela] = {
+        minPorMetro: d.metros > 0 ? d.minutos / d.metros : null,
+        cortes: d.cortes,
+        // Solo se usan con al menos 3 cortes que los tengan registrados (un dato suelto no manda).
+        tendidoMinPorMetro: d.cortesTend >= 3 && d.metTend > 0 ? d.minTend / d.metTend : null,
+        cortesTendido: d.cortesTend,
+        unidadesPorMin: d.cortesUnid >= 3 && d.minUnid > 0 ? d.unidades / d.minUnid : null,
+      };
     });
     return out;
   })();
