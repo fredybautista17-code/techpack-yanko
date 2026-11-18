@@ -27,7 +27,8 @@ import { CONCEPTOS_GASTOS_BUSINT, proveedoresDeTexto, candidatosGastos, gastoDeF
 import { MESES_HIST, COLECCION_HISTORICO_MAQUILA, textoAFilas, parsearHistorial, docHistoricoMes, resumenAnual } from "./historial-maquila-calculo";
 import { PLANTA_PROPIA_VENTAS, rangoDelPeriodo, plantasDeEntradas, clientePorLoteDeCargas, candidatosVentas, ventaDeEntrada, totalLineaVenta, SERVICIOS_VENTA, SIN_SERVICIO, servicioValido, etiquetaServicio, sugerirServicio, resumenPorServicio, bloqueoLinea, servicioDeVenta } from "./ventas-entradas-calculo";
 import ResumenAreasCC from "./centro-costo-resumen-areas";
-import { hojaHistoricoCargado, hojaCoberturaNomina, hojaPantalla } from "./centro-costo-datos-cargados";
+import SubirNominaQuincenaModal, { COLECCION_NOMINA_QUINCENA } from "./centro-costo-subir-nomina";
+import { hojaHistoricoCargado, hojaCoberturaNomina, hojaPantalla, hojaNominaSubida } from "./centro-costo-datos-cargados";
 import { aporteDeLote, despachadaEfectiva } from "./costos-general-calculo";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
@@ -6125,6 +6126,19 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
     const unsub = onSnapshot(collection(db, "nomina_destajo_liquidaciones"), (snap) => setLiquidacionesDestajo(snap.docs.map((d) => ({ ...d.data(), id: d.id }))));
     return () => unsub();
   }, []);
+  // (2026-11-18, a pedido de Fredy) Nómina de quincenas anteriores subida desde el Excel («📤 Subir nómina de la quincena»): por persona y quincena trae
+  // producido, ayuda («AUXILIO») y pagado reales. Una quincena sin liquidación en ATLAS pero con Excel usa estos datos en vez de estimar.
+  const [nominaQuincenaCC, setNominaQuincenaCC] = useState([]);
+  const [subirNominaCC, setSubirNominaCC] = useState(false);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, COLECCION_NOMINA_QUINCENA), (snap) => setNominaQuincenaCC(snap.docs.map((d) => ({ ...d.data(), id: d.id }))), () => setNominaQuincenaCC([]));
+    return () => unsub();
+  }, []);
+  const nominaQuincenaMapCC = useMemo(() => {
+    const m = new Map();
+    (nominaQuincenaCC || []).forEach((d) => { if (d.trabajadorId && d.periodoId) m.set(`${d.trabajadorId}__${d.periodoId}`, d); });
+    return m;
+  }, [nominaQuincenaCC]);
   // (2026-09-22, a pedido de Fredy) Datos crudos para calcular "lo
   // causado" (ver causadoDestajoEnPeriodoCC arriba) de las quincenas de
   // Destajo que todavia no se confirman en Nomina -> Destajo. Mismas
@@ -6399,8 +6413,9 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
       if (m) s.add(`${m[1]}-${m[2]}-Q${Number(m[3]) <= 15 ? 1 : 2}`);
     });
     (causacionManualCC || []).forEach((c) => { const pid = String(c.id || "").split("__")[1]; if (esPid(pid)) s.add(pid); });
+    (nominaQuincenaCC || []).forEach((d) => { if (esPid(d.periodoId)) s.add(d.periodoId); });
     return s;
-  }, [liquidacionesDestajo, produccion, trabajadores, causacionManualCC]);
+  }, [liquidacionesDestajo, produccion, trabajadores, causacionManualCC, nominaQuincenaCC]);
   const periodosDestajoSeleccionados = useMemo(
     () => (pidsConDatosCC.size ? periodosDestajoTodos.filter((p) => pidsConDatosCC.has(p)) : periodosDestajoTodos),
     [periodosDestajoTodos, pidsConDatosCC]
@@ -6505,6 +6520,12 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
               liquidacionesEnPeriodo++;
               valorRealDestajo += liq.pagoPorDia ? (Number(liq.pagoDias) || 0) : (Number(liq.produccionReal) || 0);
               costoRealDestajo += (Number(liq.netoAPagar) || 0) + (Number(liq.cesantiasPeriodo) || 0) + (Number(liq.primaPeriodo) || 0) + (Number(liq.vacacionesPeriodo) || 0);
+            } else if (nominaQuincenaMapCC.get(`${t.id}__${pid}`)) {
+              // Quincena subida desde el Excel de nómina: producido y pagado reales (sin estimar).
+              const hx = nominaQuincenaMapCC.get(`${t.id}__${pid}`);
+              liquidacionesEnPeriodo++;
+              valorRealDestajo += Number(hx.producido) || 0;
+              costoRealDestajo += Number(hx.pagado) || 0;
             } else {
               const causado = causadoDestajoEnPeriodoCC(t, pid, hoy, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC, liquidacionesDestajo);
               valorRealDestajo += causado.valorProducido;
@@ -6544,7 +6565,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
         };
       })
       .sort((a, b) => b.valorProducido - a.valorProducido);
-  }, [trabajadoresArea, porTrabajador, periodo, fechaDia, mesSel, anioSel, fechaRangoInicio, fechaRangoFin, liquidacionesDestajo, periodosDestajoSeleccionados, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC, hoy]);
+  }, [trabajadoresArea, porTrabajador, periodo, fechaDia, mesSel, anioSel, fechaRangoInicio, fechaRangoFin, liquidacionesDestajo, nominaQuincenaMapCC, periodosDestajoSeleccionados, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC, hoy]);
   // (2026-10-02, a pedido de Fredy) "Ayuda por quincena" y "Costo
   // indirecto por quincena" -- a diferencia de "filas" de arriba (que
   // suma las quincenas del período elegido en una sola cifra neta por
@@ -6565,8 +6586,10 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
         const horasCantidadQ = sumaCantidadHorasCC(horasCC, t.id, iniPid, finPid);
         const horasValorQ = sumaHorasExtraTrabajadorCC(horasCC, t.id, iniPid, finPid);
         const liq = (liquidacionesDestajo || []).find((l) => l.trabajadorId === t.id && l.periodoId === pid);
+        const histQ = liq ? null : nominaQuincenaMapCC.get(`${t.id}__${pid}`);
         const valorProducidoQ = liq
           ? (liq.pagoPorDia ? (Number(liq.pagoDias) || 0) : (Number(liq.produccionReal) || 0))
+          : histQ ? (Number(histQ.producido) || 0)
           : causadoDestajoEnPeriodoCC(t, pid, hoy, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC, liquidacionesDestajo).valorProducido;
         const valorTotalQ = valorProducidoQ + horasValorQ;
         const diferenciaQ = valorTotalQ - sueldoEsperadoQ;
@@ -6580,6 +6603,9 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
           ayudaQ = liq.salarioMinimoGarantizado
             ? (Number(liq.ayudaSalarioMinimo) || 0)
             : Math.max(0, Number(ajusteQ ? ajusteQ.valor : liq.ajusteValor) || 0);
+        } else if (histQ) {
+          // Quincena del Excel: la ayuda es la columna «AUXILIO» (lo que de verdad se ayudó).
+          ayudaQ = Number(histQ.ayuda) || 0;
         }
         if (ayudaQ > 0) {
           acc.ayudaTotal += ayudaQ;
@@ -6592,7 +6618,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
       });
     });
     return [...porQuincena.values()].sort((a, b) => a.pid.localeCompare(b.pid));
-  }, [trabajadoresArea, periodosDestajoSeleccionados, liquidacionesDestajo, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC, hoy]);
+  }, [trabajadoresArea, periodosDestajoSeleccionados, liquidacionesDestajo, nominaQuincenaMapCC, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC, hoy]);
   const totalAyudaQuincenas = detalleQuincenasDestajoCC.reduce((s, q) => s + q.ayudaTotal, 0);
   // (2026-11-16, a pedido de Fredy) Por persona, para el resumen «Todas las áreas»: horas trabajadas (costo indirecto) y ayuda adicional (lo puesto en Nómina), sin netear.
   const horasPorIdCC = useMemo(() => {
@@ -6642,6 +6668,12 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
           prov = ces + prima + vac;
           completas = { ces, prima, vac };
           estado = "confirmada";
+        } else if (nominaQuincenaMapCC.get(`${t.id}__${pid}`)) {
+          // Quincena subida desde el Excel de nómina: lo pagado, sin prestaciones (el Excel no las trae).
+          neto = Number(nominaQuincenaMapCC.get(`${t.id}__${pid}`).pagado) || 0;
+          ces = 0; prima = 0; vac = 0; prov = 0;
+          completas = { ces: 0, prima: 0, vac: 0 };
+          estado = "confirmada";
         } else {
           const c = causadoDestajoEnPeriodoCC(t, pid, hoy, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC, liquidacionesDestajo);
           neto = c.neto;
@@ -6661,7 +6693,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
       });
     });
     return out;
-  }, [trabajadoresArea, periodosDestajoSeleccionados, liquidacionesDestajo, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC, hoy]);
+  }, [trabajadoresArea, periodosDestajoSeleccionados, liquidacionesDestajo, nominaQuincenaMapCC, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC, hoy]);
   const detalleCostoNominaCompleto = useMemo(
     () => [
       ...detalleCostoNomina,
@@ -7011,6 +7043,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(hojaHistoricoCargado(historico)), "Histórico cargado");
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(cobertura.aoa), "Cobertura Nómina");
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(hojaNominaSubida(nominaQuincenaCC)), "Nómina subida (Excel)");
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(pantalla), "Lo que muestra la pantalla");
       XLSX.writeFile(wb, `CentroDeCosto_DatosCargados_${etiquetaPeriodo}.xlsx`.replace(/[\/:*?"<>|\s]+/g, "_"));
     } catch (e) {
@@ -7526,6 +7559,9 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
             </>
           ) : (
             <>
+              {subirNominaCC && (
+                <SubirNominaQuincenaModal db={db} trabajadores={trabajadores} currentUser={currentUser} existentes={nominaQuincenaCC} anioInicial={anioSel} onClose={() => setSubirNominaCC(false)} />
+              )}
               {quincenasSinDatosCC > 0 && (
                 <div style={{ display: "flex", gap: 10, alignItems: "flex-start", background: C.blueBg, border: `1px solid ${C.border}`, borderRadius: 12, padding: "10px 14px", marginBottom: 14, fontSize: 12.5, color: C.ink }}>
                   <span style={{ fontSize: 16 }}>ℹ️</span>
@@ -7544,6 +7580,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
                   horasPorId={horasPorIdCC} ayudaAdicionalPorId={ayudaAdicionalPorIdCC}
                   hayCausado={filasProduccionCC.some((f) => f.huboCausado)} vista={vistaCC} onVista={setVistaCC}
                   onVerTrabajador={setTrabajadorDetalleAbierto} onExcel={filas.length > 0 ? exportarCentroCostoExcel : null} onDatosCargados={descargarDatosCargadosCC}
+                  onSubirNomina={puedeEditarCostos ? () => setSubirNominaCC(true) : null}
                 />
               )}
               {!verPorAreaCC && (

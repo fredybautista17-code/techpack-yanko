@@ -192,7 +192,7 @@ function FilaEstructura({ estructura, extraProduccion }) {
 // estructura = { personas: [{ id, nombre, area, costo, sinSueldo }], base, lotes } — nómina de las áreas/personas que se pagan con la Base del Dado por Cumplido.
 export default function ResumenAreasCC({
   filas, garantizadoDe, etiquetaPeriodo, unidadesTerminadas, unidadesDespachadas, unidadesCortadas, lotesAprobados, estructura,
-  totalAyudaQuincenas, totalCostoIndirecto, hayCausado, vista, onVista, onVerTrabajador, onExcel, onDatosCargados, horasPorId, ayudaAdicionalPorId,
+  totalAyudaQuincenas, totalCostoIndirecto, hayCausado, vista, onVista, onVerTrabajador, onExcel, onDatosCargados, onSubirNomina, horasPorId, ayudaAdicionalPorId,
 }) {
   // La fábrica (arriba) y las plantas externas (Maquila, abajo) se leen por separado: Maquila no interviene en el equilibrio de la fábrica.
   const filasExternas = useMemo(() => filas.filter(esExterna), [filas]);
@@ -243,6 +243,7 @@ export default function ResumenAreasCC({
         <button type="button" style={pill(vista === "trabajador")} onClick={() => onVista("trabajador")}>Por trabajador</button>
         {vista === "area" ? <button type="button" style={pill(soloAyuda)} onClick={() => setSoloAyuda(!soloAyuda)}>Solo áreas bajo lo garantizado</button> : null}
         <span style={{ flex: 1 }} />
+        {onSubirNomina ? <button type="button" onClick={onSubirNomina} title="Sube el Excel de nómina de una quincena: producido, ayuda y pagado de cada persona" style={{ ...pill(false), color: "#3D6B9E", borderColor: "#3D6B9E" }}>📤 Subir nómina de la quincena</button> : null}
         {onDatosCargados ? <button type="button" onClick={onDatosCargados} title="Baja un Excel con el histórico que subiste, lo que hay guardado en Nómina por mes y lo que muestra esta pantalla" style={{ ...pill(false), color: "#3D6B9E", borderColor: "#3D6B9E" }}>🗂 Datos cargados</button> : null}
         {onExcel ? <button type="button" onClick={onExcel} style={{ ...pill(false), color: "#3D6B9E", borderColor: "#3D6B9E" }}>📥 Descargar Excel</button> : null}
       </div>

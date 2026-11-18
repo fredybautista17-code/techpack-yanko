@@ -78,3 +78,12 @@ export function hojaPantalla(filas) {
     ...(filas || []).map((f) => [f.area || "", f.nombre || "", num(f.unidades), Math.round(num(f.valorProducido)), f.sinSueldo ? "sin sueldo" : Math.round(num(f.garantizado)), f.balance == null ? "" : Math.round(num(f.balance)), Math.round(num(f.horas)), Math.round(num(f.ayuda))]),
   ];
 }
+
+// (2026-11-18) Lo que se subió con «Subir nómina de la quincena» (nomina_historico_quincena): una fila por persona y quincena.
+export function hojaNominaSubida(docs) {
+  const filas = [...(docs || [])].sort((a, b) => String(a.periodoId).localeCompare(String(b.periodoId)) || String(a.nombre).localeCompare(String(b.nombre), "es"));
+  return [
+    ["Quincena", "Persona", "Tipo", "Producido", "Ayuda", "Pagado", "Base salario", "Descuentos", "Bonificación", "Días", "Ficha en ATLAS", "Área", "Archivo", "Cargado por", "Cargado en"],
+    ...filas.map((d) => [d.periodoId || "", d.nombre || "", d.tipoNomina || "", num(d.producido), num(d.ayuda), num(d.pagado), num(d.baseSalario), num(d.descuentos), num(d.bonificacion), num(d.dias), d.trabajadorNombre || "SIN FICHA", d.area || "", d.archivo || "", d.cargadoPor || "", String(d.cargadoEn || "").slice(0, 10)]),
+  ];
+}
