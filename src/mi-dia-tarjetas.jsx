@@ -9,6 +9,7 @@ import { getFunctions } from "firebase/functions";
 import ConsumoTelaCortePanel from "./consumo-tela-corte";
 import { useCierreDiario, TablaTrabajadores } from "./cierre-diario";
 import { diaDeArea, diasDelMesHasta, esHabilISO, sumarDiasISO } from "./cierre-diario-calculo";
+import { textoMetaVacaciones } from "./meta-vacaciones";
 import { claveCierreDeArea, IDS_CIERRE, IDS_PLANEACION, IDS_ORDENES_COMPRA, IDS_CIERRE_AREAS, AREA_DE_TARJETA_CIERRE } from "./mi-dia-tarjetas-catalogo";
 import BloqueOrdenesCompra from "./mi-dia-costos";
 import { BloqueCumpleanos } from "./cumpleanos";
@@ -155,9 +156,11 @@ function BloqueCierre({ db, currentUser, deOtraArea }) {
   // Promedio de unidades por día hábil del mes (hasta el día elegido)
   const resumenMes = useMemo(() => {
     if (!f || !f.porDia) return null;
-    const dias = diasDelMesHasta(anio, mes, diaSel).filter(esHabilISO);
+    // (2026-11-18) Los días con todo el grupo de vacaciones no cuentan; la meta de cada día ya viene ajustada por vacaciones.
+    const dias = diasDelMesHasta(anio, mes, diaSel).filter(esHabilISO).filter((iso) => !(f.vacPorDia && f.vacPorDia.get(iso) && f.vacPorDia.get(iso).todos));
     const suma = dias.reduce((s, iso) => s + (f.porDia.get(iso) || 0), 0);
-    return { n: dias.length, suma, prom: dias.length ? suma / dias.length : 0 };
+    const sumaMeta = dias.reduce((s, iso) => s + (f.metaPorDia ? f.metaPorDia.get(iso) || 0 : f.meta), 0);
+    return { n: dias.length, suma, prom: dias.length ? suma / dias.length : 0, metaProm: dias.length ? sumaMeta / dias.length : 0 };
   }, [f, anio, mes, diaSel]);
 
   // Calendario lunes a viernes del mes
@@ -184,7 +187,9 @@ function BloqueCierre({ db, currentUser, deOtraArea }) {
     );
   }
 
-  const verMeta = !!f && f.meta > 0;
+  const verMeta = !!f && f.metaBase > 0;
+  const todosVac = !!(f && f.vac && f.vac.todos);
+  const hayVac = !!(f && f.vac && f.vac.hay && !f.vac.todos);
   const mostrarDia = !!f && (tiene("meta_hoy") || tiene("saldo_acumulado") || tiene("cubren_salario"));
   const mostrarMes = !!f && (tiene("meta_dia") || tiene("saldo_acumulado"));
   const verTrabajadores = !!f && (tiene("trabajadores") || tiene("cubren_salario"));
@@ -195,7 +200,7 @@ function BloqueCierre({ db, currentUser, deOtraArea }) {
   if (f && tiene("meta_hoy")) {
     const e = f.em;
     const u = Math.round(f.dia.unidades || 0);
-    const conNivel = verMeta && !sinCierre && esHabil;
+    const conNivel = verMeta && !sinCierre && esHabil && !todosVac;
     const col = !conNivel ? C.slate : e.nivel === "cumple" ? C.green : e.nivel === "cerca" ? C.amber : C.red;
     const bg = !conNivel ? C.canvas : e.nivel === "cumple" ? C.greenBg : e.nivel === "cerca" ? C.amberBg : C.redBg;
     const ln = !conNivel ? C.border : e.nivel === "cumple" ? C.greenLn : e.nivel === "cerca" ? C.amberLn : C.redLn;
@@ -203,21 +208,24 @@ function BloqueCierre({ db, currentUser, deOtraArea }) {
     let sub = `${deOtraArea ? "El área" : "Tu área"} todavía no tiene meta diaria (se define en Nómina → Áreas → «Meta diaria de unidades»).`;
     if (sinCierre) { pill = "Sin cierre"; sub = "Este día todavía no tiene cierre guardado."; }
     else if (!esHabil) { pill = "Día no hábil"; sub = "Fin de semana o festivo: cuenta lo producido, no se cobra sueldo."; }
+    else if (todosVac) { pill = "🏖 Todos de vacaciones"; sub = "Todo el grupo estaba de vacaciones: este día no cuenta para la meta."; }
     else if (verMeta) {
       pill = e.nivel === "cumple" ? "✓ Cumplió la meta" : e.nivel === "cerca" ? "Casi llega a la meta" : "✗ No cumplió la meta";
       const dif = Math.round(f.meta - f.dia.unidades);
       sub = dif > 0
         ? `${esHoy ? "Faltan" : "Faltaron"} ${fmt(dif)} und · ${esHoy ? "lleva" : "llegó a"} el ${Math.round(e.pct)} %`
         : `Pasó la meta por ${fmt(-dif)} und · ${Math.round(e.pct)} %`;
+      if (hayVac) sub += ` · 🏖 ${textoMetaVacaciones(f.metaBase, f.vac)}`;
     }
     hero = (
       <div style={{ flex: "1.3 1 300px", background: bg, border: `1px solid ${ln}`, borderRadius: 16, padding: "18px 20px" }}>
         <Pastilla color={col} fondo={C.white} linea={ln}>{pill}</Pastilla>
         <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
           <span style={{ fontSize: 56, fontWeight: 900, color: col, lineHeight: 1 }}>{sinCierre ? "—" : fmt(u)}</span>
-          <span style={{ fontSize: 15, fontWeight: 700, color: C.slate }}>{verMeta ? `de ${fmt(f.meta)} und` : "und"}</span>
+          <span style={{ fontSize: 15, fontWeight: 700, color: C.slate }}>{verMeta && !todosVac ? `de ${fmt(f.meta)} und` : "und"}</span>
         </div>
         <div style={{ fontSize: 13.5, color: C.slate, marginTop: 8, lineHeight: 1.4 }}>{sub}</div>
+        {hayVac ? <div style={{ fontSize: 12, color: C.blue, fontWeight: 700, marginTop: 4 }}>De vacaciones: {f.vac.nombres.join(", ")}</div> : null}
       </div>
     );
   }
@@ -269,30 +277,33 @@ function BloqueCierre({ db, currentUser, deOtraArea }) {
           if (!iso) return <div key={`${i}-${j}`} />;
           const futuro = iso > hoyISO;
           const u = f.porDia ? f.porDia.get(iso) || 0 : 0;
-          const ok = verMeta && u >= f.meta;
+          const vd = f.vacPorDia ? f.vacPorDia.get(iso) : null;
+          const mDia = f.metaPorDia ? f.metaPorDia.get(iso) : f.meta;
+          const todos = !!(vd && vd.todos);
+          const ok = verMeta && !todos && u >= mDia;
           const sel = iso === diaSel;
-          const bg = futuro ? "transparent" : u === 0 ? C.canvas : !verMeta ? C.blueBg : ok ? C.greenBg : C.redBg;
-          const col = futuro ? C.seam : u === 0 ? C.slate : !verMeta ? C.blue : ok ? C.green : C.red;
+          const bg = futuro ? "transparent" : todos ? C.canvas : u === 0 ? C.canvas : !verMeta ? C.blueBg : ok ? C.greenBg : C.redBg;
+          const col = futuro ? C.seam : todos ? C.slate : u === 0 ? C.slate : !verMeta ? C.blue : ok ? C.green : C.red;
           return (
             <div
               key={iso}
               onClick={futuro ? undefined : () => setDiaSel(iso)}
-              title={futuro ? "" : `${etiquetaDia(iso)}: ${fmt(u)}${verMeta ? ` de ${fmt(f.meta)}` : ""} und`}
+              title={futuro ? "" : `${etiquetaDia(iso)}: ${fmt(u)}${verMeta ? ` de ${fmt(mDia)}` : ""} und${vd && vd.hay ? ` · ${textoMetaVacaciones(f.metaBase, vd)} (${vd.nombres.join(", ")})` : ""}`}
               style={{ background: bg, border: `${sel ? 2 : 1}px solid ${sel ? C.ink : futuro ? C.border : "transparent"}`, borderRadius: 10, padding: "5px 6px 6px", cursor: futuro ? "default" : "pointer", minHeight: 46 }}
             >
               <div style={{ fontSize: 10.5, color: C.slate, fontWeight: 700 }}>{Number(iso.slice(8))}</div>
-              <div style={{ fontSize: 13.5, fontWeight: 900, color: col, textAlign: "center", marginTop: 2 }}>{futuro ? "" : u === 0 ? "–" : fmt(u)}</div>
+              <div style={{ fontSize: 13.5, fontWeight: 900, color: col, textAlign: "center", marginTop: 2 }}>{futuro ? "" : todos ? "🏖" : u === 0 ? "–" : fmt(u)}{!futuro && vd && vd.hay && !todos ? " 🏖" : ""}</div>
             </div>
           );
         }))}
       </div>
       <div style={{ fontSize: 11.5, color: C.slate, marginTop: 8 }}>
-        <span style={{ color: C.green, fontWeight: 800 }}>Verde</span> cumplió la meta · <span style={{ color: C.red, fontWeight: 800 }}>rojo</span> no la alcanzó · gris sin producción. Toca un día para verlo arriba.
+        <span style={{ color: C.green, fontWeight: 800 }}>Verde</span> cumplió la meta · <span style={{ color: C.red, fontWeight: 800 }}>rojo</span> no la alcanzó · gris sin producción · 🏖 hubo personas de vacaciones (la meta de ese día se reduce). Toca un día para verlo arriba.
       </div>
     </div>
   ) : null;
 
-  const pctProm = verMeta && resumenMes ? (resumenMes.prom / f.meta) * 100 : null;
+  const pctProm = verMeta && resumenMes && resumenMes.metaProm > 0 ? (resumenMes.prom / resumenMes.metaProm) * 100 : null;
   const colProm = pctProm === null ? C.blue : pctProm >= 100 ? C.green : pctProm >= 80 ? C.amber : C.red;
   const bgProm = pctProm === null ? C.blueBg : pctProm >= 100 ? C.greenBg : pctProm >= 80 ? C.amberBg : C.redBg;
   const lnProm = pctProm === null ? C.blueLn : pctProm >= 100 ? C.greenLn : pctProm >= 80 ? C.amberLn : C.redLn;
@@ -341,7 +352,7 @@ function BloqueCierre({ db, currentUser, deOtraArea }) {
                   <Loseta
                     titulo="Promedio por día"
                     valor={resumenMes ? fmt(resumenMes.prom) : "—"}
-                    sub={`und · meta ${fmt(f.meta)}${pctProm !== null ? ` · ${Math.round(pctProm)} %` : ""}`}
+                    sub={`und · meta ${fmt(resumenMes ? resumenMes.metaProm : f.metaBase)}${pctProm !== null ? ` · ${Math.round(pctProm)} %` : ""}`}
                     color={colProm} fondo={bgProm} linea={lnProm}
                   />
                 </>

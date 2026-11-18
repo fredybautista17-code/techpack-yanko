@@ -14,9 +14,12 @@ import { claveArea } from "./centro-costo-historico-parser";
 import { cargaEntradasActivaDe } from "./entradas-planta-util";
 import {
   METAS_DEFECTO, cierresDiarios, indiceCortes, diaDeArea, cubrenDelDia, acumuladoMes, saldoMesCompleto, saldoAnioHasta,
-  unidadesCortePorDia, unidadesDespachos, unidadesConfeccion, unidadesTerminacion, cumplimientoMeta, estadoMeta,
+  unidadesCortePorDia, unidadesDespachos, unidadesConfeccion, unidadesTerminacion, estadoMeta,
   diasDelMesHasta, esHabilISO, sumarDiasISO,
 } from "./cierre-diario-calculo";
+import {
+  personasDelGrupo, mapaVacacionesDias, metasPorDia, metaAjustadaDia, cumplimientoMetaAjustada, textoMetaVacaciones,
+} from "./meta-vacaciones";
 
 const C = {
   ink: "#1A1A2E", slate: "#5A5A7A", border: "#E8E2DB", canvas: "#F7F4F0", white: "#FFFFFF",
@@ -50,6 +53,10 @@ const AREAS_UNIDADES = [
   { id: "terminacion", nombre: "Terminación", fuente: "producción de Nómina en procesos de Terminación" },
   { id: "despachos", nombre: "Despachos", fuente: "bitácora de despachos facturados, netos de devoluciones" },
 ];
+
+// Áreas de solo unidades: nombres de área en las fichas de Nómina que forman «el grupo» (si no hay fichas, la meta no se ajusta).
+const CLAVES_FICHA_UNID = { confeccion: ["CONFECCION"], terminacion: ["TERMINACION"], despachos: ["DESPACHOS", "DESPACHO"] };
+const normNombreVac = (s) => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase().replace(/\s+/g, " ").trim();
 
 const th = { padding: "8px 10px", fontSize: 11, fontWeight: 800, color: C.slate, textTransform: "uppercase", letterSpacing: 0.3, textAlign: "right", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap", background: C.white };
 const td = { padding: "10px 10px", fontSize: 13, color: C.ink, textAlign: "right", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" };
@@ -85,12 +92,21 @@ const ESTADO_CIERRE = {
   sin_cierre: { t: "Sin cierre", c: C.red, f: C.redBg },
 };
 
-function celdaMeta(unidades, meta, nivelDe) {
+// (2026-11-18) vac/metaBase: si parte del grupo está de vacaciones la meta ya viene ajustada; se avisa debajo y con los nombres en el tooltip.
+function celdaMeta(unidades, meta, nivelDe, vac, metaBase) {
+  if (vac && vac.todos) return <Pastilla texto="🏖 Todos de vacaciones · no cuenta" color={C.slate} fondo={C.canvas} />;
   if (!(meta > 0)) return <Pastilla texto="sin meta" color={C.slate} fondo={C.canvas} />;
   const e = nivelDe;
   const col = e.nivel === "cumple" ? C.green : e.nivel === "cerca" ? C.amber : C.red;
   const bg = e.nivel === "cumple" ? C.greenBg : e.nivel === "cerca" ? C.amberBg : C.redBg;
-  return <Pastilla texto={`${fmt(unidades)} de ${fmt(meta)} · ${Math.round(e.pct)} %`} color={col} fondo={bg} />;
+  const pastilla = <Pastilla texto={`${fmt(unidades)} de ${fmt(meta)} · ${Math.round(e.pct)} %`} color={col} fondo={bg} />;
+  if (!(vac && vac.hay)) return pastilla;
+  return (
+    <span title={`En vacaciones: ${vac.nombres.join(", ")}`}>
+      {pastilla}
+      <div style={{ fontSize: 10.5, fontWeight: 700, color: C.blue, marginTop: 3 }}>🏖 {textoMetaVacaciones(metaBase, vac)}</div>
+    </span>
+  );
 }
 
 // Tabla de cada trabajador de un área (día elegido y mes a la fecha). La usa el Tablero de costos y el Mi Día.
@@ -145,21 +161,25 @@ export function TablaTrabajadores({ fila: f, esHabil, titulo }) {
 }
 
 // Días hábiles del mes con su cantidad de unidades; en verde los que llegan a la meta.
-export function ChipsMetaDias({ porDia, meta, anio, mes, diaSel }) {
+export function ChipsMetaDias({ porDia, meta, metaPorDia, vacPorDia, anio, mes, diaSel }) {
   const dias = diasDelMesHasta(anio, mes, diaSel).filter(esHabilISO).map((iso) => ({ iso, u: porDia.get(iso) || 0 }));
   return (
     <>
       <div style={{ padding: "12px 16px 4px", fontSize: 13, fontWeight: 800, color: C.ink }}>Meta día a día ({MESES[mes - 1].toLowerCase()}, días hábiles)</div>
       <div style={{ margin: "0 16px", display: "flex", gap: 6, flexWrap: "wrap" }}>
         {dias.map((x) => {
-          const ok = x.u >= meta;
+          const vd = vacPorDia ? vacPorDia.get(x.iso) : null;
+          const mDia = metaPorDia ? metaPorDia.get(x.iso) : meta;
+          const todos = !!(vd && vd.todos);
+          const ok = !todos && x.u >= mDia;
           return (
-            <span key={x.iso} title={`${etiquetaDia(x.iso)}: ${fmt(x.u)} de ${fmt(meta)}`} style={{ padding: "4px 9px", borderRadius: 8, fontSize: 11.5, fontWeight: 700, color: ok ? C.green : C.red, background: ok ? C.greenBg : C.redBg }}>
-              {x.iso.slice(8)} · {fmt(x.u)}
+            <span key={x.iso} title={`${etiquetaDia(x.iso)}: ${fmt(x.u)} de ${fmt(mDia)}${vd && vd.hay ? ` · ${textoMetaVacaciones(meta, vd)} (${vd.nombres.join(", ")})` : ""}`} style={{ padding: "4px 9px", borderRadius: 8, fontSize: 11.5, fontWeight: 700, color: todos ? C.slate : ok ? C.green : C.red, background: todos ? C.canvas : ok ? C.greenBg : C.redBg }}>
+              {x.iso.slice(8)} · {todos ? "🏖" : fmt(x.u)}{vd && vd.hay && !todos ? " 🏖" : ""}
             </span>
           );
         })}
       </div>
+      {vacPorDia && vacPorDia.size ? <div style={{ margin: "6px 16px 0", fontSize: 11.5, color: C.slate }}>🏖 = hubo personas de vacaciones ese día: la meta se redujo en proporción a quienes sí trabajaron (pasa el cursor para ver quiénes). Gris = todo el grupo estaba de vacaciones y el día no cuenta.</div> : null}
     </>
   );
 }
@@ -174,10 +194,15 @@ export function useCierreDiario(db, diaSel, alcance, conUnidades = true) {
   // Metas diarias (costos_config/main) y metas por área de Nómina (Zona calor y Control de calidad)
   const [cfg, setCfg] = useState(null);
   const [areasNomina, setAreasNomina] = useState([]);
+  // (2026-11-18) Fichas y ausencias de Nómina: quien está de vacaciones ese día no cuenta en la meta del día.
+  const [fichasVac, setFichasVac] = useState([]);
+  const [ausenciasVac, setAusenciasVac] = useState([]);
   useEffect(() => {
     const u1 = onSnapshot(doc(db, "costos_config", "main"), (s) => setCfg(s.exists() ? s.data() : {}), () => setCfg({}));
     const u2 = onSnapshot(collection(db, "nomina_areas"), (s) => setAreasNomina(s.docs.map((d) => ({ ...d.data(), id: d.id }))), () => {});
-    return () => { u1(); u2(); };
+    const u3 = onSnapshot(collection(db, "nomina_trabajadores"), (s) => setFichasVac(s.docs.map((d) => { const x = d.data(); return { id: d.id, nombre: x.nombre || "", area: x.area || "", activo: x.activo, medirComoBaseAdministrativa: !!x.medirComoBaseAdministrativa }; })), () => {});
+    const u4 = onSnapshot(collection(db, "nomina_ausencias"), (s) => setAusenciasVac(s.docs.map((d) => { const x = d.data(); return { trabajadorId: x.trabajadorId, motivo: x.motivo, fechaInicio: x.fechaInicio, fechaFin: x.fechaFin }; })), () => {});
+    return () => { u1(); u2(); u3(); u4(); };
   }, [db]);
   const metas = { ...METAS_DEFECTO, ...(cfg?.metas || {}) };
   const metaNomina = (clave) => Number(areasNomina.find((a) => claveArea(a.nombre) === clave)?.metaDiariaUnidades) || 0;
@@ -221,6 +246,26 @@ export function useCierreDiario(db, diaSel, alcance, conUnidades = true) {
     return Math.max(min, anio - 5);
   }, [historico, cierresResueltos, anio]);
 
+  // Grupo de cada área y días con vacaciones del mes (solo días hábiles; solo los días donde alguien está fuera).
+  const vacacionesDe = (claves, personasExtra) => {
+    const personas = personasExtra || personasDelGrupo(fichasVac, (t) => claves.includes(claveArea(t.area)));
+    const diasHab = diasDelMesHasta(anio, mes, null).filter(esHabilISO);
+    return mapaVacacionesDias(personas, ausenciasVac, diasHab);
+  };
+  const personasCorte = () => {
+    const porNombre = new Map(fichasVac.map((t) => [normNombreVac(t.nombre), t.id]));
+    return (trabajadoresCorte || [])
+      .filter((t) => !t.fechaSalida || String(t.fechaSalida).slice(0, 10) >= diaSel)
+      .map((t) => ({ id: porNombre.get(normNombreVac(t.nombre)) || t.id, nombre: t.nombre }));
+  };
+  const datosMeta = (metaBase, vacPorDia) => {
+    const dias = diasDelMesHasta(anio, mes, null);
+    const habilesHasta = dias.filter((iso) => iso <= diaSel && esHabilISO(iso));
+    const metaPorDia = metasPorDia(metaBase, vacPorDia, dias);
+    const vac = vacPorDia.get(diaSel) || null;
+    return { metaPorDia, vac, meta: metaAjustadaDia(metaBase, vac), habilesHasta };
+  };
+
   const filasCosto = useMemo(() => AREAS_COSTO.map((a) => {
     const dia = diaDeArea(a.clave, diaSel, cierresMap, corteIdx, trabajadoresCorte);
     const mm = String(mes).padStart(2, "0");
@@ -236,20 +281,31 @@ export function useCierreDiario(db, diaSel, alcance, conUnidades = true) {
       for (let m = 1; m <= 12; m++) saldoTotal += saldoMesCompleto(da, m);
     }
     const saldoAlcance = alcance === "mes" ? ac.saldo : alcance === "anio" ? saldoAnio : saldoTotal;
-    const meta = a.metaClave ? Number(metas[a.metaClave]) || 0 : metaNomina(a.clave);
+    const metaBase = a.metaClave ? Number(metas[a.metaClave]) || 0 : metaNomina(a.clave);
+    const vacPorDia = a.clave === "CORTE" ? vacacionesDe([], personasCorte()) : vacacionesDe([a.clave]);
+    const { metaPorDia, vac, meta, habilesHasta } = datosMeta(metaBase, vacPorDia);
     const porDia = a.clave === "CORTE" ? unidCorte : (() => { const m = new Map(); diasDelMesHasta(anio, mes, null).forEach((iso) => { const g = cierresMap.get(`${a.clave}|${iso}`); if (g) m.set(iso, g.unidades); }); return m; })();
     const cubren = cubrenDelDia(dia, diaSel);
     const saldoDia = dia.valor - dia.costoContado;
     const meses = dia.estado === "sin_cierre" && !dia.trabajadores.length;
-    return { ...a, dia, ac, saldoDia, saldoAlcance, meta, porDia, cubren, sinCierre: meses, cumpl: cumplimientoMeta(porDia, meta, anio, mes, diaSel), em: estadoMeta(dia.unidades, meta) };
-  }), [diaSel, cierresMap, corteIdx, trabajadoresCorte, datosArea, cierresResueltos, alcance, anio, mes, primerAnio, construirDatosArea, cfg, areasNomina, unidCorte]); // eslint-disable-line
+    return {
+      ...a, dia, ac, saldoDia, saldoAlcance, meta, metaBase, metaPorDia, vac, vacPorDia, porDia, cubren, sinCierre: meses,
+      cumpl: cumplimientoMetaAjustada(porDia, metaBase, vacPorDia, habilesHasta), em: vac && vac.todos ? { pct: null, nivel: "sin_meta" } : estadoMeta(dia.unidades, meta),
+    };
+  }), [diaSel, cierresMap, corteIdx, trabajadoresCorte, datosArea, cierresResueltos, alcance, anio, mes, primerAnio, construirDatosArea, cfg, areasNomina, unidCorte, fichasVac, ausenciasVac]); // eslint-disable-line
 
   const filasUnid = useMemo(() => AREAS_UNIDADES.map((a) => {
     const porDia = unid[a.id];
-    const meta = Number(metas[a.id]) || 0;
+    const metaBase = Number(metas[a.id]) || 0;
+    const vacPorDia = vacacionesDe(CLAVES_FICHA_UNID[a.id] || []);
+    const { metaPorDia, vac, meta, habilesHasta } = datosMeta(metaBase, vacPorDia);
     const u = porDia ? porDia.get(diaSel) || 0 : null;
-    return { ...a, porDia, meta, u, em: u === null ? { pct: null, nivel: "sin_meta" } : estadoMeta(u, meta), cumpl: porDia ? cumplimientoMeta(porDia, meta, anio, mes, diaSel) : null };
-  }), [unid, diaSel, anio, mes, cfg]); // eslint-disable-line
+    return {
+      ...a, porDia, meta, metaBase, metaPorDia, vac, vacPorDia, u,
+      em: u === null || (vac && vac.todos) ? { pct: null, nivel: "sin_meta" } : estadoMeta(u, meta),
+      cumpl: porDia ? cumplimientoMetaAjustada(porDia, metaBase, vacPorDia, habilesHasta) : null,
+    };
+  }), [unid, diaSel, anio, mes, cfg, fichasVac, ausenciasVac]); // eslint-disable-line
 
   const tot = useMemo(() => {
     const cierran = filasCosto.filter((f) => f.dia.estado === "automatico" || f.dia.estado === "manual");
@@ -297,9 +353,9 @@ export default function CierreDiarioView({ db }) {
       ...filasCosto.map((f) => ({
         Área: f.nombre, Día: diaSel, Producido: Math.round(f.dia.valor), "Costo del día": Math.round(f.dia.costoContado), "Saldo del día": Math.round(f.saldoDia),
         [`Acumulado ${etiquetaAlcance}`]: Math.round(f.saldoAlcance), "Cubren salario": f.cubren.habil ? `${f.cubren.si} de ${f.cubren.total}` : "día no hábil",
-        "Unidades del día": Math.round(f.dia.unidades), "Meta del día": f.meta || "", "Cierre": ESTADO_CIERRE[f.dia.estado]?.t || "",
+        "Unidades del día": Math.round(f.dia.unidades), "Meta del día": f.meta || "", "Meta completa": f.metaBase || "", "En vacaciones": f.vac && f.vac.hay ? `${f.vac.enVacaciones} de ${f.vac.total}: ${f.vac.nombres.join(", ")}` : "", "Cierre": ESTADO_CIERRE[f.dia.estado]?.t || "",
       })),
-      ...filasUnid.map((f) => ({ Área: f.nombre, Día: diaSel, "Unidades del día": f.u === null ? "" : Math.round(f.u), "Meta del día": f.meta || "", Cierre: "Solo unidades" })),
+      ...filasUnid.map((f) => ({ Área: f.nombre, Día: diaSel, "Unidades del día": f.u === null ? "" : Math.round(f.u), "Meta del día": f.meta || "", "Meta completa": f.metaBase || "", "En vacaciones": f.vac && f.vac.hay ? `${f.vac.enVacaciones} de ${f.vac.total}: ${f.vac.nombres.join(", ")}` : "", Cierre: "Solo unidades" })),
     ];
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(filas), "Cierre del día");
     const trab = [];
@@ -417,15 +473,15 @@ export default function CierreDiarioView({ db }) {
                     <td style={{ ...td, fontWeight: 800, color: f.sinCierre ? C.slate : colorSaldo(f.saldoDia) }}>{f.sinCierre ? "—" : signed(f.saldoDia)}</td>
                     <td style={{ ...td, fontWeight: 800, color: colorSaldo(f.saldoAlcance) }}>{f.ac.fuente || alcance !== "mes" ? signed(f.saldoAlcance) : "—"}</td>
                     <td style={td}>{f.cubren.habil && f.cubren.total ? `${f.cubren.si} de ${f.cubren.total}` : "—"}</td>
-                    <td style={td}>{f.sinCierre && f.clave !== "CORTE" ? <Pastilla texto={f.meta > 0 ? `meta ${fmt(f.meta)}` : "sin meta"} color={C.slate} fondo={C.canvas} /> : celdaMeta(f.dia.unidades, f.meta, f.em)}</td>
-                    <td style={td}>{f.meta > 0 ? `${f.cumpl.cumplidos} de ${f.cumpl.diasHabiles}` : "—"}</td>
+                    <td style={td}>{f.sinCierre && f.clave !== "CORTE" ? <Pastilla texto={f.vac && f.vac.todos ? "🏖 Todos de vacaciones" : f.meta > 0 ? `meta ${fmt(f.meta)}` : "sin meta"} color={C.slate} fondo={C.canvas} /> : celdaMeta(f.dia.unidades, f.meta, f.em, f.vac, f.metaBase)}</td>
+                    <td style={td} title={f.cumpl.diasExcluidos ? `${f.cumpl.diasExcluidos} día(s) sin contar: todo el grupo estaba de vacaciones` : ""}>{f.metaBase > 0 ? `${f.cumpl.cumplidos} de ${f.cumpl.diasHabiles}` : "—"}</td>
                     <td style={td}><Pastilla texto={st.t} color={st.c} fondo={st.f} /></td>
                   </tr>
                   {abre ? (
                     <tr>
                       <td colSpan={9} style={{ padding: "0 0 14px", background: C.canvas, borderBottom: `1px solid ${C.border}` }}>
                         <TablaTrabajadores fila={f} esHabil={esHabil} titulo={`${f.nombre} · cada trabajador`} />
-                        {f.meta > 0 ? <ChipsMetaDias porDia={f.porDia} meta={f.meta} anio={anio} mes={mes} diaSel={diaSel} /> : null}
+                        {f.metaBase > 0 ? <ChipsMetaDias porDia={f.porDia} meta={f.metaBase} metaPorDia={f.metaPorDia} vacPorDia={f.vacPorDia} anio={anio} mes={mes} diaSel={diaSel} /> : null}
                       </td>
                     </tr>
                   ) : null}
@@ -445,8 +501,8 @@ export default function CierreDiarioView({ db }) {
                     ) : (
                       [0, 1, 2, 3, 4].map((i) => <td key={i} style={td}>—</td>)
                     )}
-                    <td style={td}>{f.u === null ? "—" : celdaMeta(f.u, f.meta, f.em)}</td>
-                    <td style={td}>{f.cumpl && f.meta > 0 ? `${f.cumpl.cumplidos} de ${f.cumpl.diasHabiles}` : "—"}</td>
+                    <td style={td}>{f.u === null ? "—" : celdaMeta(f.u, f.meta, f.em, f.vac, f.metaBase)}</td>
+                    <td style={td}>{f.cumpl && f.metaBase > 0 ? `${f.cumpl.cumplidos} de ${f.cumpl.diasHabiles}` : "—"}</td>
                     <td style={td}><Pastilla texto="Solo unidades" color={C.slate} fondo={C.canvas} /></td>
                   </tr>
                   {abre && f.porDia ? (
@@ -455,10 +511,13 @@ export default function CierreDiarioView({ db }) {
                         <div style={{ fontSize: 12, color: C.slate, marginBottom: 6 }}>Fuente: {f.fuente}. Días hábiles de {MESES[mes - 1].toLowerCase()} hasta el día elegido; en verde los que cumplen la meta.</div>
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                           {filaDias(f.porDia).map((x) => {
-                            const ok = f.meta > 0 && x.u >= f.meta;
+                            const vd = f.vacPorDia ? f.vacPorDia.get(x.iso) : null;
+                            const mDia = f.metaPorDia ? f.metaPorDia.get(x.iso) : f.meta;
+                            const todos = !!(vd && vd.todos);
+                            const ok = !todos && mDia > 0 && x.u >= mDia;
                             return (
-                              <span key={x.iso} title={`${etiquetaDia(x.iso)}: ${fmt(x.u)}${f.meta ? ` de ${fmt(f.meta)}` : ""}`} style={{ padding: "4px 9px", borderRadius: 8, fontSize: 11.5, fontWeight: 700, color: ok ? C.green : f.meta ? C.red : C.slate, background: ok ? C.greenBg : f.meta ? C.redBg : C.white }}>
-                                {x.iso.slice(8)} · {fmt(x.u)}
+                              <span key={x.iso} title={`${etiquetaDia(x.iso)}: ${fmt(x.u)}${mDia ? ` de ${fmt(mDia)}` : ""}${vd && vd.hay ? ` · ${textoMetaVacaciones(f.metaBase, vd)} (${vd.nombres.join(", ")})` : ""}`} style={{ padding: "4px 9px", borderRadius: 8, fontSize: 11.5, fontWeight: 700, color: todos ? C.slate : ok ? C.green : mDia ? C.red : C.slate, background: todos ? C.canvas : ok ? C.greenBg : mDia ? C.redBg : C.white }}>
+                                {x.iso.slice(8)} · {todos ? "🏖" : fmt(x.u)}{vd && vd.hay && !todos ? " 🏖" : ""}
                               </span>
                             );
                           })}

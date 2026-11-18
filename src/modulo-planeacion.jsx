@@ -22,6 +22,7 @@ import { DevolucionesCalidadView } from "./devoluciones-cliente";
 import { EmpacadorasEstadisticasView } from "./devoluciones-empacadoras";
 import { claveArea as claveAreaHistorico } from "./centro-costo-historico-parser";
 import { diasDeTrabajoDelMes, esDiaDeTrabajoISO, sabadoSeTrabajaISO } from "./dias-habiles";
+import { esMotivoVacaciones, diasEntreISO, reduccionMetaPorVacaciones } from "./meta-vacaciones";
 import { armarListaPorProgramar, estadisticasPedidos, prioridadPedido } from "./lista-programar-calculo";
 import { CONCEPTOS_GASTOS_BUSINT, proveedoresDeTexto, candidatosGastos, gastoDeFactura } from "./gastos-busint-calculo";
 import { MESES_HIST, COLECCION_HISTORICO_MAQUILA, textoAFilas, parsearHistorial, docHistoricoMes, resumenAnual } from "./historial-maquila-calculo";
@@ -6172,8 +6173,11 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
   const [ajustesDestajoCC, setAjustesDestajoCC] = useState([]);
   const [lotesConCobrosCrudoCC, setLotesConCobrosCrudoCC] = useState([]);
   const [cobrosManualesCC, setCobrosManualesCC] = useState([]);
+  // (2026-11-18) Ausencias de Nómina: quien está de vacaciones baja la meta del día (modo apoyo / unidades).
+  const [ausenciasVacCC, setAusenciasVacCC] = useState([]);
   useEffect(() => {
     const unsubs = [
+      onSnapshot(collection(db, "nomina_ausencias"), (snap) => setAusenciasVacCC(snap.docs.map((d) => { const x = d.data(); return { trabajadorId: x.trabajadorId, motivo: x.motivo, fechaInicio: x.fechaInicio, fechaFin: x.fechaFin }; })), () => {}),
       onSnapshot(collection(db, "nomina_causacion_manual"), (snap) => setCausacionManualCC(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_horas"), (snap) => setHorasCC(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_horas_extras"), (snap) => setHorasExtrasCC(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
@@ -6741,7 +6745,20 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
   }, [modoMedicion, movimientos, procesosApoyo, periodo, fechaDia, mesSel, anioSel, fechaRangoInicio, fechaRangoFin]);
   const unidadesMovidasApoyo = movimientosArea.reduce((s, r) => s + (r.total || 0), 0);
   const metaDiariaApoyo = Number(areaSeleccionada?.metaDiariaUnidades) || 0;
-  const metaPeriodoApoyo = metaPeriodo(metaDiariaApoyo);
+  // (2026-11-18) La meta del período se calcula como siempre y se le resta lo que baja por las vacaciones del grupo:
+  // cada día de trabajo con personas de vacaciones vale meta × (quienes trabajan ÷ total); si todos están fuera, no cuenta.
+  const vacApoyo = useMemo(() => {
+    if (!(metaDiariaApoyo > 0) || !trabajadoresArea.length || !ausenciasVacCC.some((a) => esMotivoVacaciones(a.motivo))) return null;
+    const mm = String(mesSel).padStart(2, "0");
+    let desde = `${anioSel}-${mm}-01`;
+    let hasta = `${anioSel}-${mm}-${String(new Date(anioSel, mesSel, 0).getDate()).padStart(2, "0")}`;
+    if (periodo === "dia") { desde = fechaDia; hasta = fechaDia; }
+    else if (periodo === "rango") { desde = fechaRangoInicio; hasta = fechaRangoFin; }
+    else if (periodo === "anio") { desde = `${anioSel}-01-01`; hasta = `${anioSel}-12-31`; }
+    const r = reduccionMetaPorVacaciones(metaDiariaApoyo, trabajadoresArea, ausenciasVacCC, diasEntreISO(desde, hasta, esDiaDeTrabajoISO));
+    return r.reduccion > 0 ? r : null;
+  }, [metaDiariaApoyo, trabajadoresArea, ausenciasVacCC, periodo, fechaDia, mesSel, anioSel, fechaRangoInicio, fechaRangoFin]);
+  const metaPeriodoApoyo = Math.max(0, metaPeriodo(metaDiariaApoyo) - (vacApoyo ? vacApoyo.reduccion : 0));
   const pctCumplimientoApoyo = metaPeriodoApoyo > 0 ? (unidadesMovidasApoyo / metaPeriodoApoyo) * 100 : 0;
   const estadoApoyo = metaPeriodoApoyo > 0 ? (unidadesMovidasApoyo >= metaPeriodoApoyo ? "ok" : "bad") : null;
   const costoAreaApoyo = trabajadoresArea.reduce((s, t) => s + costoPeriodo(costoMensualCompletoCC(t)), 0);
@@ -7488,7 +7505,7 @@ export function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomin
                   <KPI icon={dentroPresupuesto ? "✅" : "⚠️"} label="Presupuesto nómina" value={`${pctPresupuesto.toFixed(0)}%`} color={dentroPresupuesto ? C.green : C.red} bg={dentroPresupuesto ? C.greenBg : C.redBg} sub={dentroPresupuesto ? "✓ Dentro del presupuesto" : "⚠ Se pasó del presupuesto"} />
                 )}
                 <KPI icon="📦" label="Unidades movidas" value={fmtNum(unidadesMovidasApoyo)} color={C.blue} bg={C.blueBg} />
-                <KPI icon="🎯" label={`Meta ${etiquetaPeriodo}`} value={metaPeriodoApoyo > 0 ? fmtNum(metaPeriodoApoyo) : "Sin meta"} color={C.slate} bg={C.canvas} />
+                <KPI icon="🎯" label={`Meta ${etiquetaPeriodo}`} value={metaPeriodoApoyo > 0 ? fmtNum(metaPeriodoApoyo) : vacApoyo ? "Todos de vacaciones" : "Sin meta"} color={C.slate} bg={C.canvas} sub={vacApoyo ? `🏖 Ajustada por vacaciones (−${fmtNum(vacApoyo.reduccion)} und${vacApoyo.nombres.length ? ` · ${vacApoyo.nombres.join(", ")}` : ""})` : undefined} />
                 {metaPeriodoApoyo > 0 && (
                   <KPI icon={estadoApoyo === "ok" ? "✅" : "⚠️"} label="Cumplimiento" value={`${pctCumplimientoApoyo.toFixed(0)}%`} color={estadoApoyo === "ok" ? C.green : C.red} bg={estadoApoyo === "ok" ? C.greenBg : C.redBg} sub={estadoApoyo === "ok" ? "✓ Le da el período" : "⚠ No le da el período"} />
                 )}
