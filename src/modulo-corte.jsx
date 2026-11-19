@@ -22,6 +22,7 @@ import { diasDeTrabajoDelMes } from "./dias-habiles";
 import { useVacacionesCorte } from "./use-vacaciones-corte";
 import { costoCorteConVacaciones, costoDiaCorte, corteSinFicha, resumenVacacionesCorte } from "./corte-vacaciones";
 import AvisoVacacionesCorte from "./aviso-vacaciones-corte";
+import { marcadaDeColor, opcionesCapasMarcada } from "./corte-capas";
 import { huecosLibres, totalLibreMin, fmtDuracionMin, fmtHoraMin, colorDeLote, nombreMesonBonito, MESON_LIBRE_INICIO_MIN, MESON_LIBRE_FIN_MIN } from "./mesones-libre";
 // ─── FIREBASE ────────────────────────────────────────────────────────────────
 const firebaseConfig = {
@@ -2487,12 +2488,15 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint
   function capasDeColor(color) {
     return refVinculada ? parseFloat(capasCompartidas) || 0 : parseFloat(capasPorColor[color.id]) || 0;
   }
+  // (2026-11-19) Prendas por capa de ESTE color: la que se escribió en su campo «Prendas por capa» o, si está vacía, la de la
+  // curva de tallas. Así cada color puede marcar distinto (más prendas por capa = menos capas, y al revés).
   function calcColor(color) {
     const capasColor = capasDeColor(color);
-    const prendasCalculadas = capasColor * marcadas;
+    const marcada = refVinculada ? marcadas : marcadaDeColor(cantidadPorDocenaPorColor[color.id], marcadas);
+    const prendasCalculadas = capasColor * marcada;
     const metrosColor = (parseFloat(form.largoTrazo) || 0) * capasColor;
     const cantidadReal = color.cantidadProgramada ?? color.cantidadPendiente ?? 0;
-    return { capasColor, prendasCalculadas, metrosColor, cantidadReal, diff: prendasCalculadas - cantidadReal };
+    return { capasColor, marcada, prendasCalculadas, metrosColor, cantidadReal, diff: prendasCalculadas - cantidadReal };
   }
   // Mismo cálculo que calcColor, pero para un color de la referencia
   // VINCULADA — usa la curva propia de esa referencia (marcadasVinculada),
@@ -2595,16 +2599,19 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint
   const tendidoDelHistorial = stats?.tendidoMinPorMetro > 0;
   const tendidoMinPorMetro = tendidoDelHistorial ? stats.tendidoMinPorMetro : TENDIDO_SEG_POR_METRO / 60;
   const tendidoEstimadoMin = metrosTotales() > 0 ? Math.round(tendidoMinPorMetro * metrosTotales()) : null;
-  const tiempoTotalEstimadoMin = tendidoEstimadoMin !== null ? tendidoEstimadoMin + (tiempoTeorico || 0) : null;
   // Segunda cuenta del corte, por prendas del PEDIDO (no por metros): sirve para notar cuando capas o trazo están inflados.
   const prendasPedidoTotal = coloresSeleccionados.reduce((s, c) => s + calcColor(c).cantidadReal, 0)
     + (refVinculada ? refVinculada.colores.reduce((s, c) => s + calcColorVinculada(c).cantidadReal, 0) : 0);
   const corteMinPorPrendas = stats?.unidadesPorMin > 0 && prendasPedidoTotal > 0 ? Math.round(prendasPedidoTotal / stats.unidadesPorMin) : null;
+  // Corte estimado: por prendas del pedido (estable: 1,5 veces de diferencia entre trazos) y, si no hay ritmo, por metros
+  // (que cambia hasta 3,6 veces según el largo del trazo). Los metros quedan como control.
+  const corteEstimadoMin = corteMinPorPrendas !== null ? corteMinPorPrendas : tiempoTeorico;
+  const tiempoTotalEstimadoMin = tendidoEstimadoMin !== null ? tendidoEstimadoMin + (corteEstimadoMin || 0) : null;
   const razonMetrosVsPrendas = tiempoTeorico !== null && corteMinPorPrendas > 0 ? tiempoTeorico / corteMinPorPrendas : null;
   const cuentasNoCoinciden = razonMetrosVsPrendas !== null && (razonMetrosVsPrendas >= 1.6 || razonMetrosVsPrendas <= 0.6);
   // Colores cuyas capas × prendas por capa no se parecen a lo pedido (más de 1,5 veces o menos de 2/3) → se sugiere corregir.
-  const desbalanceColor = (k) => marcadas > 0 && k.capasColor > 0 && k.cantidadReal > 0 && (k.prendasCalculadas >= k.cantidadReal * 1.5 || k.prendasCalculadas <= k.cantidadReal * 0.67);
-  const capasSugeridasDe = (k) => (marcadas > 0 ? Math.max(1, Math.round(k.cantidadReal / marcadas)) : 0);
+  const desbalanceColor = (k) => k.marcada > 0 && k.capasColor > 0 && k.cantidadReal > 0 && (k.prendasCalculadas >= k.cantidadReal * 1.5 || k.prendasCalculadas <= k.cantidadReal * 0.67);
+  const capasSugeridasDe = (k) => (k.marcada > 0 ? Math.max(1, Math.round(k.cantidadReal / k.marcada)) : 0);
   const coloresDesbalance = refVinculada ? [] : coloresSeleccionados.filter((c) => desbalanceColor(calcColor(c)));
   function corregirCapasDesbalanceadas() {
     setCapasPorColor((st) => {
@@ -2689,7 +2696,7 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint
       metrosTendido: metrosTotales(),
       horaInicioEstimada: form.horaInicioEstimada,
       horaFinEstimada: form.horaFinEstimada,
-      tiempoTeoricoMin: tiempoTeorico,
+      tiempoTeoricoMin: corteEstimadoMin,
       tendidoEstimadoMin: tendidoEstimadoMin,
       tiempoTotalEstimadoMin: tiempoTotalEstimadoMin,
       vinculoTrazoId,
@@ -3087,8 +3094,8 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint
             <div style={{ display: "grid", gap: 8 }}>
               {grupo.colores.map((c) => {
                 const calc = calcColor(c);
-                const coincide = marcadas > 0 && calc.capasColor > 0 && calc.diff === 0;
-                const hayDatos = marcadas > 0 && calc.capasColor > 0;
+                const coincide = calc.marcada > 0 && calc.capasColor > 0 && calc.diff === 0;
+                const hayDatos = calc.marcada > 0 && calc.capasColor > 0;
                 const avisoCapas = desbalanceColor(calc);
                 const capasSug = capasSugeridasDe(calc);
                 const abierto = colorAbierto === c.id;
@@ -3159,7 +3166,7 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint
                           type="number"
                           value={cantidadPorDocenaPorColor[c.id] || ""}
                           onChange={(v) => actualizarCantidadPorDocena(c.id, v, calc.cantidadReal)}
-                          placeholder="Cant. x docena"
+                          placeholder="Prendas por capa"
                         />
                       </div>
                       <div onClick={(e) => e.stopPropagation()}>
@@ -3206,15 +3213,22 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint
                     {avisoCapas && capasSug > 0 && (
                       <div onClick={(e) => e.stopPropagation()} style={{ padding: "7px 12px", background: C.amberBg, color: C.amber, fontSize: 12, fontWeight: 700, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", borderTop: `1px solid ${C.border}` }}>
                         <span>
-                          ⚠ Con {fmtNum(calc.capasColor)} capas × {fmtNum(marcadas)} prendas por capa se cortarían {fmtNum(calc.prendasCalculadas)} y el pedido es {fmtNum(calc.cantidadReal)}. ¿Serían {fmtNum(capasSug)} capas?
+                          ⚠ {fmtNum(calc.capasColor)} capas × {fmtNum(calc.marcada)} prendas por capa = {fmtNum(calc.prendasCalculadas)} y el pedido es {fmtNum(calc.cantidadReal)}.
+                          {opcionesCapasMarcada(calc.cantidadReal, calc.capasColor).length > 0 ? " Combinaciones que cuadran:" : ` Con ${fmtNum(calc.marcada)} por capa serían ${fmtNum(capasSug)} capas.`}
                         </span>
-                        <button
-                          type="button"
-                          onClick={() => setCapasPorColor((st) => ({ ...st, [c.id]: String(capasSug) }))}
-                          style={{ padding: "4px 10px", borderRadius: 6, border: `1.5px solid ${C.amber}`, background: C.white, color: C.amber, fontWeight: 800, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}
-                        >
-                          Usar {fmtNum(capasSug)} capas
-                        </button>
+                        {opcionesCapasMarcada(calc.cantidadReal, calc.capasColor).map((o) => (
+                          <button
+                            key={`${o.capas}x${o.marcada}`}
+                            type="button"
+                            onClick={() => {
+                              setCapasPorColor((st) => ({ ...st, [c.id]: String(o.capas) }));
+                              setCantidadPorDocenaPorColor((st) => ({ ...st, [c.id]: String(o.marcada) }));
+                            }}
+                            style={{ padding: "4px 10px", borderRadius: 6, border: `1.5px solid ${C.amber}`, background: C.white, color: C.amber, fontWeight: 800, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}
+                          >
+                            {fmtNum(o.capas)} capas de {fmtNum(o.marcada)}
+                          </button>
+                        ))}
                       </div>
                     )}
                     {abierto && (
@@ -3349,22 +3363,22 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint
           {coloresDesbalance.length > 0 && (
             <div style={{ padding: "10px 16px", background: C.amberBg, borderRadius: 8, marginBottom: 12, fontSize: 13, color: C.amber, fontWeight: 700, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
               <span>
-                ⚠ {coloresDesbalance.length} color{coloresDesbalance.length !== 1 ? "es" : ""} no cuadra{coloresDesbalance.length !== 1 ? "n" : ""} con el pedido (capas × prendas por capa muy lejos de lo pedido): los metros y el tiempo estimado pueden estar inflados o cortos.
+                ⚠ {coloresDesbalance.length} color{coloresDesbalance.length !== 1 ? "es" : ""} no cuadra{coloresDesbalance.length !== 1 ? "n" : ""} con el pedido (capas × prendas por capa muy lejos de lo pedido): los metros y el tiempo estimado pueden estar inflados o cortos. Cada color puede marcar distinto: ajusta capas o prendas por capa.
               </span>
               <button
                 type="button"
                 onClick={corregirCapasDesbalanceadas}
                 style={{ padding: "5px 12px", borderRadius: 6, border: `1.5px solid ${C.amber}`, background: C.white, color: C.amber, fontWeight: 800, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}
               >
-                Corregir las capas sugeridas
+                Ajustar capas con la marcada de cada color
               </button>
             </div>
           )}
           {tiempoTotalEstimadoMin !== null && (
             <div style={{ padding: "10px 16px", background: C.violetBg, borderRadius: 8, marginBottom: 16, fontSize: 13, color: C.violet, fontWeight: 700 }}>
               ⏱ Tiempo estimado total: ~{tiempoTotalEstimadoMin} min — tendido ~{tendidoEstimadoMin} min
-              {tiempoTeorico !== null
-                ? ` + corte ~${tiempoTeorico} min (según ${stats.cortes} corte${stats.cortes !== 1 ? "s" : ""} previo${stats.cortes !== 1 ? "s" : ""} de ${form.tipoTela})`
+              {corteEstimadoMin !== null
+                ? ` + corte ~${corteEstimadoMin} min (${corteMinPorPrendas !== null ? "por prendas del pedido" : "por metros"}, según ${stats.cortes} corte${stats.cortes !== 1 ? "s" : ""} previo${stats.cortes !== 1 ? "s" : ""} de ${form.tipoTela})`
                 : " + corte (todavía sin historial de corte para esta tela, el total solo cuenta el tendido)"}
               <div style={{ fontSize: 11.5, fontWeight: 600, marginTop: 4 }}>
                 {tendidoDelHistorial
@@ -3373,7 +3387,7 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint
               </div>
               {corteMinPorPrendas !== null && (
                 <div style={{ fontSize: 11.5, fontWeight: 600, marginTop: 4 }}>
-                  Por prendas: {fmtNum(prendasPedidoTotal)} prendas del pedido a {stats.unidadesPorMin.toFixed(2)} u/min ≈ {corteMinPorPrendas} min de corte (por metros: {tiempoTeorico} min).
+                  Corte por prendas: {fmtNum(prendasPedidoTotal)} prendas del pedido a {stats.unidadesPorMin.toFixed(2)} u/min ≈ {corteMinPorPrendas} min.{tiempoTeorico !== null ? ` Control por metros: ${tiempoTeorico} min.` : ""}
                 </div>
               )}
               {cuentasNoCoinciden && (
@@ -5178,7 +5192,12 @@ function EstadisticasTela({ pedidos }) {
     t.capas += c.capas || 0;
     t.unidades += c.totalUnidades || 0;
     const rango = rangoTrazo(c.largoTrazo);
-    if (!t.porRango[rango]) t.porRango[rango] = { cortes: 0, metros: 0, minutos: 0, unidades: 0 };
+    if (!t.porRango[rango]) t.porRango[rango] = { cortes: 0, metros: 0, minutos: 0, unidades: 0, minutosTendido: 0, metrosTend: 0 };
+    // Tendido por largo de trazo: solo cuentan los cortes que tienen minutos de tendido registrados.
+    if (c.minutosTendido > 0) {
+      t.porRango[rango].minutosTendido += c.minutosTendido;
+      t.porRango[rango].metrosTend += c.metrosTendido || 0;
+    }
     t.porRango[rango].cortes++;
     t.porRango[rango].metros += c.metrosTendido || 0;
     t.porRango[rango].minutos += c.minutos || 0;
@@ -5371,8 +5390,10 @@ function EstadisticasTela({ pedidos }) {
             {Object.entries(byTela)
               .sort((a, b) => b[1].metros - a[1].metros)
               .map(([tela, data]) => {
-                const minPorMetro = data.metros > 0 ? (data.minutos / data.metros).toFixed(1) : "—";
-                const minPorMetroTendido = data.metros > 0 && data.minutosTendido > 0 ? (data.minutosTendido / data.metros).toFixed(1) : null;
+                const minPorMetro = data.metros > 0 ? (data.minutos / data.metros).toFixed(2) : "—";
+                const minPorMetroTendido = data.metros > 0 && data.minutosTendido > 0 ? (data.minutosTendido / data.metros).toFixed(2) : null;
+                const minTotalTelaTC = data.minutosTendido + data.minutos;
+                const pctTendido = data.minutosTendido > 0 && minTotalTelaTC > 0 ? Math.round((data.minutosTendido / minTotalTelaTC) * 100) : null;
                 const capasPromedio = data.cortes > 0 ? (data.capas / data.cortes).toFixed(0) : "—";
                 const unidadesPorMin = data.minutos > 0 ? (data.unidades / data.minutos).toFixed(2) : "—";
                 const rangos = ORDEN_RANGOS.filter((r) => data.porRango[r]);
@@ -5413,6 +5434,15 @@ function EstadisticasTela({ pedidos }) {
                         </div>
                       ))}
                     </div>
+                    {pctTendido !== null && (
+                      <div style={{ marginBottom: 14 }}>
+                        <div style={{ fontSize: 10, fontWeight: 800, color: C.slate, textTransform: "uppercase", marginBottom: 6 }}>¿En qué se va el tiempo?</div>
+                        <div style={{ display: "flex", height: 24, borderRadius: 8, overflow: "hidden", fontSize: 11.5, fontWeight: 800, color: C.white }}>
+                          <div style={{ width: `${pctTendido}%`, background: C.blue, display: "flex", alignItems: "center", justifyContent: "center" }}>Tendido {pctTendido} %</div>
+                          <div style={{ width: `${100 - pctTendido}%`, background: C.violet, display: "flex", alignItems: "center", justifyContent: "center" }}>Corte {100 - pctTendido} %</div>
+                        </div>
+                      </div>
+                    )}
                     {rangos.length > 0 && (
                       <div>
                         <div style={{ fontSize: 10, fontWeight: 800, color: C.slate, textTransform: "uppercase", marginBottom: 6 }}>
@@ -5424,15 +5454,19 @@ function EstadisticasTela({ pedidos }) {
                               <th style={{ textAlign: "left", padding: "4px 8px", fontSize: 10, color: C.slate, textTransform: "uppercase" }}>Trazo</th>
                               <th style={{ textAlign: "right", padding: "4px 8px", fontSize: 10, color: C.slate, textTransform: "uppercase" }}>Cortes</th>
                               <th style={{ textAlign: "right", padding: "4px 8px", fontSize: 10, color: C.slate, textTransform: "uppercase" }}>Metros</th>
-                              <th style={{ textAlign: "right", padding: "4px 8px", fontSize: 10, color: C.slate, textTransform: "uppercase" }}>Min/Metro</th>
+                              <th style={{ textAlign: "right", padding: "4px 8px", fontSize: 10, color: C.slate, textTransform: "uppercase" }}>Min/m corte</th>
+                              <th style={{ textAlign: "right", padding: "4px 8px", fontSize: 10, color: C.slate, textTransform: "uppercase" }}>Min/m tendido</th>
                               <th style={{ textAlign: "right", padding: "4px 8px", fontSize: 10, color: C.slate, textTransform: "uppercase" }}>Unidades</th>
                               <th style={{ textAlign: "right", padding: "4px 8px", fontSize: 10, color: C.slate, textTransform: "uppercase" }}>Rendimiento</th>
+                              <th style={{ textAlign: "left", padding: "4px 8px", fontSize: 10, color: C.slate, textTransform: "uppercase" }}>Confianza</th>
                             </tr>
                           </thead>
                           <tbody>
                             {rangos.map((r) => {
                               const d = data.porRango[r];
-                              const mpm = d.metros > 0 ? (d.minutos / d.metros).toFixed(1) : "—";
+                              const mpm = d.metros > 0 ? (d.minutos / d.metros).toFixed(2) : "—";
+                              const mpmTend = d.metrosTend > 0 && d.minutosTendido > 0 ? (d.minutosTendido / d.metrosTend).toFixed(2) : "—";
+                              const pocos = d.cortes < 10;
                               const upm = d.minutos > 0 ? (d.unidades / d.minutos).toFixed(2) : "—";
                               return (
                                 <tr key={r} style={{ borderBottom: `1px solid ${C.border}` }}>
@@ -5440,8 +5474,14 @@ function EstadisticasTela({ pedidos }) {
                                   <td style={{ padding: "5px 8px", textAlign: "right" }}>{d.cortes}</td>
                                   <td style={{ padding: "5px 8px", textAlign: "right" }}>{d.metros.toFixed(1)}m</td>
                                   <td style={{ padding: "5px 8px", textAlign: "right", color: C.violet, fontWeight: 700 }}>{mpm}</td>
+                                  <td style={{ padding: "5px 8px", textAlign: "right", color: C.blue, fontWeight: 700 }}>{mpmTend}</td>
                                   <td style={{ padding: "5px 8px", textAlign: "right" }}>{fmtNum(d.unidades)}</td>
                                   <td style={{ padding: "5px 8px", textAlign: "right", color: C.green, fontWeight: 700 }}>{upm} u/min</td>
+                                  <td style={{ padding: "5px 8px" }}>
+                                    <span title={pocos ? "Menos de 10 cortes: el dato todavía no es confiable para estimar" : "10 cortes o más"} style={{ fontSize: 10.5, fontWeight: 800, padding: "2px 8px", borderRadius: 10, color: pocos ? C.amber : C.green, background: pocos ? C.amberBg : C.greenBg, whiteSpace: "nowrap" }}>
+                                      {pocos ? "pocos cortes" : "buena"}
+                                    </span>
+                                  </td>
                                 </tr>
                               );
                             })}
@@ -5450,7 +5490,7 @@ function EstadisticasTela({ pedidos }) {
                       </div>
                     )}
                     <div style={{ marginTop: 12, padding: "8px 14px", background: C.amberBg, borderRadius: 8, fontSize: 12, color: C.amber, fontWeight: 600 }}>
-                      💡 Sugerencia: para {tela}, programar 1 metro tendido = {minPorMetro} minutos de corte en promedio.
+                      💡 Para {tela}: 1 metro tendido = {minPorMetro} min de corte en promedio, pero ese dato cambia mucho con el largo del trazo. El corte rinde {unidadesPorMin} prendas por minuto: conviene estimar el corte por las prendas del pedido.
                     </div>
                   </div>
                 );
