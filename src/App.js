@@ -1,18 +1,8 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
-import ModuloCorte from "./modulo-corte";
-import ModuloContabilidad from "./modulo-contabilidad";
 import AsistenteAtlas from "./asistente-atlas";
-import ModuloPlaneacion, { MiDiaStandalone, ProgramadorProcesosStandalone, AreasStandalone, MiDiaNominaStandalone } from "./modulo-planeacion";
-import MiDiaTarjetasStandalone from "./mi-dia-tarjetas";
 import { setDiasSinTrabajar } from "./dias-habiles";
 import { GRUPOS_MI_DIA, TARJETAS_DEFECTO_MIDIA, claveCierreDeArea, esAreaCorte } from "./mi-dia-tarjetas-catalogo";
-import { FinancieraStandalone } from "./modulo-financiera";
-import ModuloPlanta from "./modulo-planta";
-import ModuloBodega from "./modulo-bodega";
-import ModuloNomina from "./modulo-nomina";
-import ModuloInformes from "./modulo-informes";
-import CotizadorView from "./modulo-cotizador";
 import DisponibleDespacharView from "./disponible-despachar";
 import { telasProgramadasYaCortadas } from "./tela-programada-cortada";
 import VigentesPorEtapaView from "./vigentes-por-etapa";
@@ -43,6 +33,22 @@ import { parsearNumProto, maxNumeros, formatearNumProto, siguienteNumProto, numP
 // mas abajo, y la nota completa junto a `const storage = ...`).
 import { getStorage, ref as storageRef, uploadString, getDownloadURL } from "firebase/storage";
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, updatePassword, EmailAuthProvider, reauthenticateWithCredential, setPersistence, browserSessionPersistence } from "firebase/auth";
+// (2026-11-19, a pedido de Fredy) Carga por demanda: cada módulo grande es un archivo aparte que se descarga al entrar a él
+// (index.js muestra «Cargando módulo…» mientras llega y precarga Planeación y Corte en segundo plano).
+const ModuloCorte = React.lazy(() => import("./modulo-corte"));
+const ModuloContabilidad = React.lazy(() => import("./modulo-contabilidad"));
+const ModuloPlaneacion = React.lazy(() => import("./modulo-planeacion"));
+const MiDiaStandalone = React.lazy(() => import("./modulo-planeacion").then((m) => ({ default: m.MiDiaStandalone })));
+const ProgramadorProcesosStandalone = React.lazy(() => import("./modulo-planeacion").then((m) => ({ default: m.ProgramadorProcesosStandalone })));
+const AreasStandalone = React.lazy(() => import("./modulo-planeacion").then((m) => ({ default: m.AreasStandalone })));
+const MiDiaNominaStandalone = React.lazy(() => import("./modulo-planeacion").then((m) => ({ default: m.MiDiaNominaStandalone })));
+const MiDiaTarjetasStandalone = React.lazy(() => import("./mi-dia-tarjetas"));
+const FinancieraStandalone = React.lazy(() => import("./modulo-financiera").then((m) => ({ default: m.FinancieraStandalone })));
+const ModuloPlanta = React.lazy(() => import("./modulo-planta"));
+const ModuloBodega = React.lazy(() => import("./modulo-bodega"));
+const ModuloNomina = React.lazy(() => import("./modulo-nomina"));
+const ModuloInformes = React.lazy(() => import("./modulo-informes"));
+const CotizadorView = React.lazy(() => import("./modulo-cotizador"));
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
   authDomain: "techpack-yanko-f37b8.firebaseapp.com",
