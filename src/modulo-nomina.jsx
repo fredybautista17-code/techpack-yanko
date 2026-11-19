@@ -7141,7 +7141,7 @@ function cobrosPendientesDeTrabajador(lotesConCobros, trabajadorId, hastaFecha) 
         // las unidades de ese cobro (ej: 6 cobros de $26.000 c/u = deben
         // descontar $156.000, no $26.000). Los cobros manuales no traen
         // Cantidad, por eso el "|| 1" no les cambia nada.
-        pendientes.push({ loteId: l.id, numLote: l.numLote, tipo: c.tipo, valor: (Number(c.valor) || 0) * (Number(c.cantidad) || 1), fecha: c.fecha || "" });
+        pendientes.push({ loteId: l.id, numLote: l.numLote, referencia: l.referencia || "", cantidad: Number(c.cantidad) || 1, tipo: c.tipo, valor: (Number(c.valor) || 0) * (Number(c.cantidad) || 1), fecha: c.fecha || "" });
       }
     });
   });
@@ -9200,17 +9200,17 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
 // Los días salen de Ausencias con motivo «Vacaciones» (días hábiles según su turno, igual que la Liquidación de
 // Trabajador). Como los recibos se arman en muchas pantallas (y en Financiera) sin recibir las ausencias, estas
 // se dejan en un contexto del módulo que llena ModuloNomina (o useContextoVacaciones en Financiera).
-let CONTEXTO_VACACIONES = { ausencias: [], areasNomina: [], turnos: [] };
+let CONTEXTO_VACACIONES = { ausencias: [], areasNomina: [], turnos: [], horasExtras: [] };
 export function fijarContextoVacaciones(ctx) {
-  CONTEXTO_VACACIONES = { ausencias: ctx?.ausencias || [], areasNomina: ctx?.areasNomina || [], turnos: ctx?.turnos || [] };
+  CONTEXTO_VACACIONES = { ausencias: ctx?.ausencias || [], areasNomina: ctx?.areasNomina || [], turnos: ctx?.turnos || [], horasExtras: ctx?.horasExtras || [] };
 }
 export function useContextoVacaciones(db) {
   useEffect(() => {
     if (!db) return undefined;
-    const ctx = { ausencias: [], areasNomina: [], turnos: [] };
+    const ctx = { ausencias: [], areasNomina: [], turnos: [], horasExtras: [] };
     const publicar = () => fijarContextoVacaciones({ ...ctx });
     const leer = (col, clave) => onSnapshot(collection(db, col), (snap) => { ctx[clave] = snap.docs.map((d) => ({ ...d.data(), id: d.id })); publicar(); }, () => {});
-    const desuscribir = [leer("nomina_ausencias", "ausencias"), leer("nomina_areas", "areasNomina"), leer("nomina_turnos", "turnos")];
+    const desuscribir = [leer("nomina_ausencias", "ausencias"), leer("nomina_areas", "areasNomina"), leer("nomina_turnos", "turnos"), leer("nomina_horas_extras", "horasExtras")];
     return () => desuscribir.forEach((f) => f());
   }, [db]);
 }
@@ -9259,7 +9259,9 @@ const ESTILOS_RECIBO_LIQUIDACION = `  *{box-sizing:border-box;margin:0;padding:0
   .total-card .val{font-size:19px;font-weight:900}
   .firma{margin-top:44px;display:grid;grid-template-columns:1fr 1fr;gap:40px}
   .firma div{border-top:1px solid #1A1A2E;padding-top:8px;text-align:center;font-size:11px;color:#5A5A7A}
-  .footer{background:#F7F4F0;padding:16px 32px;display:flex;justify-content:space-between;align-items:center;border-top:1px solid #E8E2DB;font-size:12px;color:#5A5A7A}`;
+  .footer{background:#F7F4F0;padding:16px 32px;display:flex;justify-content:space-between;align-items:center;border-top:1px solid #E8E2DB;font-size:12px;color:#5A5A7A}
+  table th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:#5A5A7A;font-weight:700;padding:6px 10px;border-bottom:1px solid #E8E2DB}
+  table th.r,table td.r{text-align:right;font-variant-numeric:tabular-nums}`;
 function periodosVacacionesEnRango(trabajador, inicio, fin) {
   if (!trabajador || !inicio || !fin) return [];
   const { ausencias, areasNomina, turnos } = CONTEXTO_VACACIONES;
@@ -9436,12 +9438,34 @@ function armarReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
       <tr><td colspan="2" style="color:#5A5A7A;font-size:11px;padding-top:2px">Sueldo básico de referencia: ${fmtMoney(sueldoBasico)} · Auxilio de referencia: ${fmtMoney(auxilioBasico)} — solo se usan para calcular las prestaciones sociales, no hacen parte del pago.</td></tr>`;
   const seccionAportesPatronales = esFiscalConSegSocial ? `
     <div class="section-title">🏛️ Aportes patronales de seguridad social (a cargo de la empresa, no se descuentan)</div>
-    <table><tbody>
+    <table class="sec-2col"><tbody>
       <tr><td>Pensión empleador (12%)</td><td style="text-align:right">${fmtMoney(liquidacion.pensionEmpleador)}</td></tr>
       <tr><td>ARL empleador</td><td style="text-align:right">${fmtMoney(liquidacion.arlEmpleador)}</td></tr>
       <tr><td>Caja de Compensación (4%)</td><td style="text-align:right">${fmtMoney(liquidacion.cajaCompensacionEmpleador)}</td></tr>
       <tr><td>EPS empleador</td><td style="text-align:right;color:#5A5A7A">Exonerada (Ley 1607/2012)</td></tr>
     </tbody></table>` : "";
+  // (2026-11-19, a pedido de Fredy) Cobros con su detalle (lote, referencia, cantidad) y horas extras con su detalle
+  // (tipo, horas, valor). Las horas extras se pagan APARTE, en efectivo: se muestran, pero no están en el neto.
+  const totalPrendasCobradas = (liquidacion.cobrosDetalle || []).reduce((sum, c) => sum + (Number(c.cantidad) || 0), 0);
+  const idTrabRecibo = trabajador?.id || liquidacion.trabajadorId;
+  const extrasRecibo = (CONTEXTO_VACACIONES.horasExtras || []).filter((h) => h.trabajadorId === idTrabRecibo && h.fecha && liquidacion.inicio && liquidacion.fin && h.fecha >= liquidacion.inicio && h.fecha <= liquidacion.fin);
+  const etiquetaExtra = { diurna: "Extra diurna (+25 %)", nocturna: "Extra nocturna (+75 %)", dominical_diurna: "Dominical diurna (+115 %)", dominical_nocturna: "Dominical nocturna (+165 %)" };
+  const extrasPorTipo = Object.keys(etiquetaExtra)
+    .map((tipo) => {
+      const rs = extrasRecibo.filter((h) => h.tipo === tipo);
+      return { tipo, horas: rs.reduce((sum, h) => sum + (Number(h.horas) || 0), 0), total: rs.reduce((sum, h) => sum + (Number(h.total) || 0), 0) };
+    })
+    .filter((x) => x.horas > 0 || x.total > 0);
+  const fmtHorasExtra = (n) => String(Math.round((Number(n) || 0) * 100) / 100).replace(".", ",");
+  const totalHorasExtraRecibo = extrasPorTipo.reduce((sum, x) => sum + x.horas, 0);
+  const totalValorExtraRecibo = extrasPorTipo.length ? extrasPorTipo.reduce((sum, x) => sum + x.total, 0) : Number(liquidacion.totalHorasExtra) || 0;
+  const seccionHorasExtra = totalValorExtraRecibo > 0 || extrasPorTipo.length ? `
+    <div class="bloque"><div class="section-title">⏱ Horas extras</div>
+    <table><thead><tr><th>Tipo</th><th class="r">Horas</th><th class="r">Valor</th></tr></thead><tbody>
+      ${extrasPorTipo.map((x) => `<tr><td>${etiquetaExtra[x.tipo]}</td><td class="r">${fmtHorasExtra(x.horas)}</td><td class="r">${fmtMoney(x.total)}</td></tr>`).join("")}
+      <tr><td><strong>Total horas extras</strong></td><td class="r"><strong>${extrasPorTipo.length ? `${fmtHorasExtra(totalHorasExtraRecibo)} h` : ""}</strong></td><td class="r"><strong>${fmtMoney(totalValorExtraRecibo)}</strong></td></tr>
+      <tr><td colspan="3" style="font-size:11px;color:#5A5A7A;padding-top:2px">Se pagan aparte, en efectivo (no están en el neto).</td></tr>
+    </tbody></table></div>` : "";
   const totalCardAportesPatronales = esFiscalConSegSocial
     ? `<div class="total-card" style="background:#FBEFE3;color:#C47C1A"><label>Aportes Patronales Seg. Social</label><div class="val">${fmtMoney(totalAportesPatronales)}</div></div>`
     : "";
@@ -9472,12 +9496,12 @@ function armarReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
       <div class="info-card"><label>Tipo de nómina</label><span>${tipoNomina}</span></div>
     </div>
     <div class="section-title">💰 Pago de la quincena</div>
-    <table><tbody>${filasPago}</tbody></table>
+    <table class="sec-2col"><tbody>${filasPago}</tbody></table>
     ${cajaVacaciones}
     ${seccionAportesPatronales}
     ${esPrestacionServicios ? "" : `
     <div class="section-title">📦 Prestaciones sociales (provisión de esta quincena)</div>
-    <table><tbody>
+    <table class="sec-2col"><tbody>
       <tr><td>Cesantías</td><td style="text-align:right">${fmtMoney(liquidacion.cesantiasPeriodo)}</td></tr>
       <tr><td>Intereses de cesantías</td><td style="text-align:right">${fmtMoney(liquidacion.interesesPeriodo)}</td></tr>
       <tr><td>Prima</td><td style="text-align:right">${fmtMoney(liquidacion.primaPeriodo)}</td></tr>
@@ -9488,11 +9512,15 @@ function armarReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
     <table><tbody>
       <tr><td>Horas sueltas pagadas en la quincena (ya sumadas al neto)</td><td style="text-align:right;color:#2D9E6B">+${fmtMoney(liquidacion.totalHoras)}</td></tr>
     </tbody></table>` : ""}
+    <div class="duo">${seccionHorasExtra}
     ${liquidacion.descuentoCobros > 0 ? `
-    <div class="section-title">🏭 Descuento por cobros de Bodega</div>
-    <table><tbody>
+    <div class="bloque"><div class="section-title">🏭 Descuento por cobros de Bodega</div>
+    ${(liquidacion.cobrosDetalle || []).length ? `<table class="tabla-cobros"><thead><tr><th>Lote</th><th>Referencia</th><th>Tipo</th><th class="r">Cant.</th><th class="r">Valor</th></tr></thead><tbody>
+      ${liquidacion.cobrosDetalle.map((c) => `<tr><td>${escVac(c.numLote ?? "—")}</td><td>${escVac(c.referencia || "—")}</td><td>${escVac(c.tipo || "Cobro")}</td><td class="r">${c.cantidad ? escVac(c.cantidad) : "—"}</td><td class="r" style="color:#B23A48">-${fmtMoney(c.valor)}</td></tr>`).join("")}
+      <tr><td colspan="3"><strong>Total cobros (ya restado del neto)</strong></td><td class="r"><strong>${totalPrendasCobradas || ""}</strong></td><td class="r" style="color:#B23A48"><strong>-${fmtMoney(liquidacion.descuentoCobros)}</strong></td></tr>
+    </tbody></table>` : `<table><tbody>
       <tr><td>Descuento por cobros de Bodega (ya restado del neto)</td><td style="text-align:right;color:#B23A48">-${fmtMoney(liquidacion.descuentoCobros)}</td></tr>
-    </tbody></table>` : ""}
+    </tbody></table>`}</div>` : ""}</div>
     ${liquidacion.descuentoDeducciones > 0 ? `
     <div class="section-title">🛡️ Deducciones (seguros)</div>
     <table><tbody>
@@ -9515,6 +9543,7 @@ function armarReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
     <button onclick="window.print()" style="background:#1A1A2E;color:#C8B8A2;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:12px;font-weight:700">🖨 Imprimir / PDF</button>
   </div>
 </div>
+<!--FIN-RECIBO-->
 ${paginaVacaciones}
 </body>
 </html>`;
@@ -9534,19 +9563,47 @@ function exportReciboLiquidacionHTML(args) {
 // siempre) en UNA sola hoja imprimible, uno por página, y la abre en una pestaña nueva. items =
 // [{ tipoNomina, trabajador, liquidacion }]. Devuelve false si no hay nada o el navegador bloqueó la ventana.
 export function abrirRecibosLiquidacionLote(items, titulo = "Desprendibles de nómina") {
+  // (2026-11-19, a pedido de Fredy) Dos recibos por hoja para gastar menos papel. Quien tiene vacaciones en la quincena va solo
+  // en su hoja, y su desprendible de vacaciones sale justo detrás; un recibo muy largo tampoco comparte hoja (no cabe dos veces).
   const docs = (items || []).map((it) => armarReciboLiquidacionHTML(it).html);
   if (!docs.length) return false;
+  const MARCA = "<!--FIN-RECIBO-->";
   const estilos = (docs[0].match(/<style>([\s\S]*?)<\/style>/) || [])[1] || "";
-  const paginas = docs
+  const bloques = docs
     .map((h) => {
       const i = h.indexOf('<div class="page">');
       const j = h.lastIndexOf("</body>");
-      return i >= 0 && j > i ? h.slice(i, j) : "";
+      if (i < 0 || j <= i) return "";
+      const m = h.indexOf(MARCA);
+      if (m < 0) return `<section class="par">${h.slice(i, j)}</section>`;
+      const recibo = h.slice(i, m);
+      const vac = h.slice(m + MARCA.length, j).trim();
+      return vac ? `<section class="par sola">${recibo}</section><section class="tras-vac">${vac}</section>` : `<section class="par">${recibo}</section>`;
     })
     .filter(Boolean);
   const html = `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"/><title>${titulo}</title><style>${estilos}
-.page{margin-bottom:28px;page-break-after:always;break-after:page}
-@media print{.page{margin-bottom:0;box-shadow:none;border-radius:0}.footer button{display:none}}</style></head><body>${paginas.join("\n")}</body></html>`;
+@page{margin:6mm}
+section{margin-bottom:14px}
+.par,.sola{break-inside:avoid;page-break-inside:avoid}
+.par{padding-bottom:5px;border-bottom:1.5px dashed #B9B1A6}
+.sola{break-before:page;page-break-before:always;border-bottom:none;padding-bottom:0}
+.tras-vac{break-after:page;page-break-after:always}
+.par .header{padding:6px 16px}.par .header-left h1{font-size:14px}.par .header-left p{font-size:10px;margin-top:1px}
+.par .header-right .badge{padding:3px 9px;font-size:11px}
+.par .body{padding:6px 16px}.par .info-row{gap:6px;margin-bottom:6px}.par .info-card{padding:4px 8px}
+.par .info-card label{font-size:8px;margin-bottom:1px}.par .info-card span{font-size:11px}
+.par .section-title{font-size:10.5px;margin:6px 0 2px;padding-bottom:2px}
+.par table{font-size:10px}.par table td{padding:1.5px 5px}.par table th{padding:2px 6px;font-size:8.5px}
+.par .sec-2col tbody{display:grid;grid-template-columns:1fr 1fr;column-gap:18px}
+.par .sec-2col tr{display:flex;justify-content:space-between;gap:8px}.par .sec-2col td{border-bottom:1px solid #F0ECE6}.par .sec-2col tr:has(td[colspan]){grid-column:1/-1}.par .sec-2col td[colspan]{flex:1 1 100%}
+.par .duo{display:grid;grid-template-columns:1fr 1fr;column-gap:16px;align-items:start}.par .duo>.bloque:only-child{grid-column:1/-1}
+.par .tabla-cobros td,.par .tabla-cobros th{padding:2px 4px}
+.par td[colspan]{font-size:9px!important}
+.par .totales{margin-top:8px;gap:8px}.par .total-card{padding:5px 8px}.par .total-card .val{font-size:14px}
+.par .total-card label{font-size:8px;margin-bottom:2px}
+.par .firma{margin-top:10px;gap:30px}.par .firma div{padding-top:3px;font-size:10px}
+.par .footer{padding:4px 16px;font-size:9px}
+@media print{.footer button{display:none}.page{margin:0;box-shadow:none;border-radius:0}section{margin-bottom:0}.par{margin-bottom:6px}}</style></head><body>${bloques.join("\n")}</body></html>`;
   const url = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8;" }));
   const w = window.open(url, "_blank");
   setTimeout(() => URL.revokeObjectURL(url), 120000);
@@ -16096,7 +16153,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   const [costosTeoricoProceso, setCostosTeoricoProceso] = useState([]);
   const [ausencias, setAusencias] = useState([]);
   // (2026-11-12) Las tirillas de pago leen de aquí los días de vacaciones de la quincena (ver calcularVacacionesPeriodo).
-  useEffect(() => { fijarContextoVacaciones({ ausencias, areasNomina, turnos }); }, [ausencias, areasNomina, turnos]);
+  useEffect(() => { fijarContextoVacaciones({ ausencias, areasNomina, turnos, horasExtras }); }, [ausencias, areasNomina, turnos, horasExtras]);
   // (2026-10-28) Tope de permisos al mes sin código de gerencia (config/nomina_permisos).
   const [topePermisos, setTopePermisos] = useState(TOPE_PERMISOS_POR_MES);
   const [faltasSinJustificar, setFaltasSinJustificar] = useState([]);
