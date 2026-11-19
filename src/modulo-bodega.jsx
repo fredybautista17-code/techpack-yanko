@@ -3835,6 +3835,12 @@ function EstadoDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
     .filter((l) => l.estadoEnvio === "recibido" || (l.estadoEnvio === "enviado" && (l.fechaEnvio || "") <= CORTE_HISTORIAL_ENVIOS))
     .sort((a, b) => (b.fechaRecibido || b.fechaEnvio || "").localeCompare(a.fechaRecibido || a.fechaEnvio || ""));
   const histDesdeEfectivo = histDesde || (histRangoDias > 0 ? fechaMenosDias(histRangoDias) : "");
+  // (2026-11-19, a pedido de Fredy) La remisión (campo «N° de remisión / factura»
+  // del despacho) se lee del despacho al que pertenece el lote.
+  const remisionDeLote = (l) => {
+    const d = l?.despachoId ? despachos.find((x) => x.id === l.despachoId) : null;
+    return String(d?.numeroFactura || "").trim();
+  };
   const recibidosFiltrados = recibidos.filter((l) => {
     if (histEstado !== "todos" && l.estadoEnvio !== histEstado) return false;
     const fechaRef = l.fechaRecibido || l.fechaEnvio || l.fecha || "";
@@ -3849,7 +3855,8 @@ function EstadoDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
       // sin guiones, para que "978002" y "97-8002" encuentren lo mismo.
       const qRefNorm = normalizarRefComparacion(histBusqueda);
       const enReferenciaSinGuion = qRefNorm && normalizarRefComparacion(l.referencia).includes(qRefNorm);
-      if (!enLote && !enCliente && !enReferencia && !enReferenciaSinGuion) return false;
+      const enRemision = remisionDeLote(l).toLowerCase().includes(q);
+      if (!enLote && !enCliente && !enReferencia && !enReferenciaSinGuion && !enRemision) return false;
     }
     return true;
   });
@@ -4184,7 +4191,7 @@ function EstadoDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
 
   async function descargarBitacora() {
     const XLSX = await import("xlsx-js-style");
-    const encabezados = ["Lote", "Referencia", "Cliente", "Cant. Cortada", "Cant. Despachada", "Sacrificios", "Segundas", "Cobro Planta", "Cobros", "Despacho", "Transportador", "Guía", "Fecha Envío", "Fecha Recibido", "Estado"];
+    const encabezados = ["Lote", "Referencia", "Cliente", "Cant. Cortada", "Cant. Despachada", "Sacrificios", "Segundas", "Cobro Planta", "Cobros", "Despacho", "Transportador", "Guía", "Remisión / Factura", "Fecha Envío", "Fecha Recibido", "Estado"];
     const grid = [encabezados.map((h) => celda(h, ESTILO_HEADER))];
     [...enviados, ...recibidos].forEach((l) => {
       const esRecibido = l.estadoEnvio === "recibido";
@@ -4202,13 +4209,14 @@ function EstadoDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
         celda(l.despachoCodigo || "", ESTILO_DATO),
         celda(l.transportador || "", ESTILO_DATO),
         celda(l.numeroGuia || "", ESTILO_DATO),
+        celda(remisionDeLote(l), ESTILO_DATO),
         celda(l.fechaEnvio || "", ESTILO_DATO),
         celda(l.fechaRecibido || "", ESTILO_DATO),
         celda(esRecibido ? "Recibido" : "Enviado", esRecibido ? ESTILO_SALDO_VERDE : ESTILO_SUBTOTAL),
       ]);
     });
     const ws = XLSX.utils.aoa_to_sheet(grid);
-    ws["!cols"] = [{ wch: 8 }, { wch: 14 }, { wch: 20 }, { wch: 12 }, { wch: 14 }, { wch: 11 }, { wch: 10 }, { wch: 12 }, { wch: 34 }, { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 12 }, { wch: 13 }, { wch: 11 }];
+    ws["!cols"] = [{ wch: 8 }, { wch: 14 }, { wch: 20 }, { wch: 12 }, { wch: 14 }, { wch: 11 }, { wch: 10 }, { wch: 12 }, { wch: 34 }, { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 18 }, { wch: 12 }, { wch: 13 }, { wch: 11 }];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Bitácora");
     XLSX.writeFile(wb, `Bitacora Despachos ${today()}.xlsx`);
@@ -4382,7 +4390,7 @@ function EstadoDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
                       </Field>
                     </div>
                     <div style={{ flex: 1, minWidth: 160 }}>
-                      <Field label="N° de Factura (opcional)">
+                      <Field label="N° de Remisión / Factura (opcional)">
                         <FInput value={facturaNuevo} onChange={setFacturaNuevo} placeholder="Si ya la tienes" />
                       </Field>
                     </div>
@@ -4448,7 +4456,7 @@ function EstadoDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
                       <div style={{ fontWeight: 800, fontSize: 15, color: C.ink }}>{despacho?.codigo || "(despacho)"} — {despacho?.cliente || "(sin cliente)"}</div>
                       <div style={{ fontSize: 12, color: C.slate }}>
                         {despacho?.transportador || "—"} · Guía {despacho?.numeroGuia || "—"}
-                        {despacho?.numeroFactura ? <> · Factura {despacho.numeroFactura}</> : null}
+                        {despacho?.numeroFactura ? <> · Remisión / Factura {despacho.numeroFactura}</> : null}
                       </div>
                     </div>
                     <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
@@ -4562,7 +4570,7 @@ function EstadoDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
                         <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 12, marginBottom: 10 }}>
                           <div style={{ fontSize: 12, color: C.slate, alignSelf: "center" }}>
                             {despacho?.transportador || "—"} · Guía {despacho?.numeroGuia || "—"}
-                            {despacho?.numeroFactura ? <> · Factura {despacho.numeroFactura}</> : null}
+                            {despacho?.numeroFactura ? <> · Remisión / Factura {despacho.numeroFactura}</> : null}
                           </div>
                           <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
                             <div style={{ minWidth: 150 }}>
@@ -4601,7 +4609,7 @@ function EstadoDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
             <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-end", gap: 10, padding: "12px 14px", border: `1px solid ${C.border}`, borderRadius: 10, background: C.white, marginBottom: 12 }}>
               <div style={{ flex: 1, minWidth: 160 }}>
                 <Field label="Buscar">
-                  <FInput value={histBusqueda} onChange={(v) => { setHistBusqueda(v); setHistVisibles(50); }} placeholder="Número de lote, cliente o referencia..." />
+                  <FInput value={histBusqueda} onChange={(v) => { setHistBusqueda(v); setHistVisibles(50); }} placeholder="Número de lote, cliente, referencia o remisión..." />
                 </Field>
               </div>
               <div style={{ width: 150 }}>
@@ -4671,6 +4679,7 @@ function EstadoDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
                 { key: "fecha", label: "Fecha", sortable: true, render: (l) => (l.fecha ? fmtFechaISO(l.fecha) : "—") },
                 { key: "referencia", label: "Referencia", render: (l) => l.referencia || "—" },
                 { key: "cliente", label: "Cliente", render: (l) => l.cliente || "—" },
+                { key: "remision", label: "Remisión", render: (l) => remisionDeLote(l) || "—" },
                 { key: "estadoEnvio", label: "Estado", render: (l) => <EstadoEnvioDot lote={l} /> },
                 { key: "cantidadDespachadaBodega", label: "Despachada", align: "right", render: (l) => <CeldaNum valor={l.cantidadDespachadaBodega} /> },
                 { key: "sacrificios", label: "Sacrificios", align: "right", render: (l) => <CeldaNum valor={l.sacrificios} resaltarSiHayValor /> },
@@ -4703,6 +4712,7 @@ function EstadoDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
                     <div><span style={{ color: C.slate, fontSize: 11 }}>Código de despacho</span><br /><strong>{loteDetalle.despachoCodigo || "—"}</strong></div>
                     <div><span style={{ color: C.slate, fontSize: 11 }}>Transportador</span><br /><strong>{loteDetalle.transportador || "— (aún no existía este dato en ATLAS)"}</strong></div>
                     <div><span style={{ color: C.slate, fontSize: 11 }}>N° Guía</span><br /><strong>{loteDetalle.numeroGuia || "—"}</strong></div>
+                    <div><span style={{ color: C.slate, fontSize: 11 }}>Remisión / Factura</span><br /><strong>{remisionDeLote(loteDetalle) || "—"}</strong></div>
                     <div><span style={{ color: C.slate, fontSize: 11 }}>Enviado</span><br /><strong>{loteDetalle.fechaEnvio ? fmtFechaISO(loteDetalle.fechaEnvio) : "—"}</strong></div>
                     <div><span style={{ color: C.slate, fontSize: 11 }}>Recibido</span><br /><strong>{loteDetalle.fechaRecibido ? fmtFechaISO(loteDetalle.fechaRecibido) : "—"}</strong></div>
                   </div>
