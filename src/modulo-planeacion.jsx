@@ -1,5 +1,7 @@
 import { useState, useEffect, useMemo, useRef, Fragment } from "react";
 import { initializeApp, getApps } from "firebase/app";
+import TableroMesonesHoy from "./tablero-mesones-hoy";
+import { estadisticasPorTela } from "./corte-promedios";
 import {
   getFirestore,
   collection,
@@ -940,6 +942,11 @@ function generarMesonesHoy(programacionCorte, corteConfig, bloqueosMeson) {
         cortador: p.cortador || "Sin asignar",
         horaInicioEstimada: p.horaInicioEstimada || "",
         horaFinEstimada: p.horaFinEstimada || "",
+        // (2026-11-19) para el promedio por tela de la ventana «Programación de mesones — hoy»
+        tipoTela: p.tipoTela || "",
+        numeroCorte: p.numeroCorte || "",
+        color: p.descripcion || p.color || "",
+        metros: p.metrosTendido || 0,
         estado: p.aprobado ? "Aprobado" : p.etapa === "programacion_hecha" ? "Programado" : "Por programar mesón",
       };
     });
@@ -970,137 +977,6 @@ function generarMesonesHoy(programacionCorte, corteConfig, bloqueosMeson) {
     });
   return [...cortes, ...bloqueos].sort(
     (a, b) => (a.planta || "").localeCompare(b.planta || "") || (a.referencia || "").localeCompare(b.referencia || "")
-  );
-}
-// ─── TABLERO VISUAL DE MESONES (Mi Día) ────────────────────────────────────────
-// Ventana del día que se dibuja en el tablero — de 6:00 a.m. a 8:00 p.m., el
-// horario habitual de planta. Lo que quede fuera de esa franja igual se
-// dibuja pegado al borde (clamp), no se pierde.
-const HORA_INICIO_TABLERO = 6;
-const HORA_FIN_TABLERO = 20;
-function pctHora(hhmm) {
-  if (!hhmm || typeof hhmm !== "string") return null;
-  const partes = hhmm.split(":");
-  if (partes.length !== 2) return null;
-  const h = Number(partes[0]);
-  const m = Number(partes[1]);
-  if (isNaN(h) || isNaN(m)) return null;
-  const minutos = h * 60 + m;
-  const inicio = HORA_INICIO_TABLERO * 60;
-  const fin = HORA_FIN_TABLERO * 60;
-  return Math.min(100, Math.max(0, ((minutos - inicio) / (fin - inicio)) * 100));
-}
-// Una fila por planta+mesón, con un bloque de color por cada corte
-// programado hoy, ubicado según horaInicioEstimada/horaFinEstimada (mismos
-// datos que ya guarda Corte al hacer la Programación de Mesones). Lo que
-// todavía no tiene horario puesto se lista aparte, no se dibuja a ciegas.
-function TableroMesonesDia({ items }) {
-  // Clic sobre un bloque del tablero abre el detalle de qué se va a cortar
-  // ahí, en vez de tener que buscarlo en la tabla de más abajo.
-  const [seleccionado, setSeleccionado] = useState(null);
-  const conHorario = items.filter((it) => pctHora(it.horaInicioEstimada) !== null && pctHora(it.horaFinEstimada) !== null);
-  const sinHorario = items.filter((it) => pctHora(it.horaInicioEstimada) === null || pctHora(it.horaFinEstimada) === null);
-  const grupos = useMemo(() => {
-    const map = new Map();
-    items.forEach((it) => {
-      if (pctHora(it.horaInicioEstimada) === null || pctHora(it.horaFinEstimada) === null) return;
-      const clave = `${it.planta} · ${it.meson}`;
-      if (!map.has(clave)) map.set(clave, []);
-      map.get(clave).push(it);
-    });
-    return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-  }, [items]);
-  const horasRegla = [6, 8, 10, 12, 14, 16, 18, 20];
-  if (!items.length) {
-    return <div style={{ textAlign: "center", padding: 24, color: C.slate, fontSize: 13 }}>No hay cortes programados para hoy.</div>;
-  }
-  return (
-    <div style={{ marginBottom: 20 }}>
-      {!!grupos.length && (
-        <div style={{ background: C.white, borderRadius: 12, border: `1px solid ${C.border}`, padding: "14px 16px 10px" }}>
-          <div style={{ position: "relative", height: 16, marginLeft: 178, marginBottom: 8 }}>
-            {horasRegla.map((h) => (
-              <span
-                key={h}
-                style={{ position: "absolute", left: `${((h - HORA_INICIO_TABLERO) / (HORA_FIN_TABLERO - HORA_INICIO_TABLERO)) * 100}%`, fontSize: 10, color: C.slate, fontWeight: 700 }}
-              >
-                {h}:00
-              </span>
-            ))}
-          </div>
-          {grupos.map(([clave, filas]) => (
-            <div key={clave} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-              <div
-                title={clave}
-                style={{ width: 168, flexShrink: 0, fontSize: 12, fontWeight: 700, color: C.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-              >
-                {clave}
-              </div>
-              <div style={{ position: "relative", flex: 1, height: 32, background: C.canvas, borderRadius: 8 }}>
-                {filas.map((it) => {
-                  const left = pctHora(it.horaInicioEstimada);
-                  const right = pctHora(it.horaFinEstimada);
-                  const width = Math.max(right - left, 3);
-                  const color = it.esBloqueo ? C.slate : it.estado === "Aprobado" ? C.green : it.estado === "Programado" ? C.violet : C.amber;
-                  return (
-                    <div
-                      key={it.id}
-                      onClick={() => setSeleccionado(it)}
-                      title={it.esBloqueo ? `🔒 Bloqueo: ${it.referencia} · ${it.horaInicioEstimada}–${it.horaFinEstimada} (clic para ver detalle)` : `${it.cortador} · ${it.referencia} · ${it.horaInicioEstimada}–${it.horaFinEstimada} (clic para ver detalle)`}
-                      style={{
-                        position: "absolute", left: `${left}%`, width: `${width}%`, top: 3, bottom: 3,
-                        background: color, color: C.white, borderRadius: 6, fontSize: 10, fontWeight: 700,
-                        display: "flex", alignItems: "center", padding: "0 6px", overflow: "hidden", whiteSpace: "nowrap",
-                        cursor: "pointer",
-                      }}
-                    >
-                      {it.esBloqueo ? `🔒 ${it.referencia}` : `${it.cortador} · ${it.referencia}`}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-      {!!sinHorario.length && (
-        <div style={{ marginTop: 12, fontSize: 12, color: C.slate }}>
-          <strong style={{ color: C.ink }}>Sin horario asignado todavía:</strong>{" "}
-          {sinHorario.map((it) => `${it.referencia} (${it.planta} · ${it.meson})`).join(", ")}
-        </div>
-      )}
-      {seleccionado && (
-        <Modal title={seleccionado.esBloqueo ? "🔒 Bloqueo de espacio" : "✂️ Qué se va a cortar"} onClose={() => setSeleccionado(null)} width={440}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10, fontSize: 13 }}>
-            {seleccionado.esBloqueo ? (
-              <>
-                <DetalleFila label="Motivo" valor={seleccionado.referencia} />
-              </>
-            ) : (
-              <>
-                <DetalleFila label="Referencia" valor={seleccionado.referencia} />
-                <DetalleFila label="Pedido" valor={seleccionado.numPedido} />
-                <DetalleFila label="Cliente" valor={seleccionado.cliente} />
-                <DetalleFila label="Cantidad" valor={fmtNum(seleccionado.cantidad)} />
-                <DetalleFila label="Cortador" valor={seleccionado.cortador} />
-                <DetalleFila label="Estado" valor={seleccionado.estado} />
-              </>
-            )}
-            <DetalleFila label="Planta" valor={seleccionado.planta} />
-            <DetalleFila label="Mesón" valor={seleccionado.meson} />
-            <DetalleFila label="Horario" valor={`${seleccionado.horaInicioEstimada} – ${seleccionado.horaFinEstimada}`} />
-          </div>
-        </Modal>
-      )}
-    </div>
-  );
-}
-function DetalleFila({ label, valor }) {
-  return (
-    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, paddingBottom: 8, borderBottom: `1px solid ${C.border}` }}>
-      <span style={{ color: C.slate, fontWeight: 700 }}>{label}</span>
-      <span style={{ color: C.ink, fontWeight: 700, textAlign: "right" }}>{valor || "—"}</span>
-    </div>
   );
 }
 // ─── SUBIR HOJA1 ────────────────────────────────────────────────────────────────
@@ -3176,6 +3052,23 @@ function MiDiaPlaneadoraView({ lotes, reporteBMP, programacionBMP, programacionC
   // La Programación de Mesones tiene su propio modal (no el genérico de
   // `detalle`) porque además de la tabla lleva el tablero visual dibujado.
   const [mostrarMesonesModal, setMostrarMesonesModal] = useState(false);
+  // (2026-11-19) Promedios por tela para esa ventana: se leen los cortes realizados de pedidos_activos SOLO mientras está abierta
+  // (con la caché de Firestore en memoria ya vienen cargados de App.js). null = todavía no hay / sin permiso.
+  const [estadisticasCorteHoy, setEstadisticasCorteHoy] = useState(null);
+  const [cargandoEstadisticasHoy, setCargandoEstadisticasHoy] = useState(false);
+  useEffect(() => {
+    if (!mostrarMesonesModal) return undefined;
+    setCargandoEstadisticasHoy(true);
+    const unsub = onSnapshot(
+      collection(db, "pedidos_activos"),
+      (snap) => {
+        setEstadisticasCorteHoy(estadisticasPorTela(snap.docs.map((d) => d.data())));
+        setCargandoEstadisticasHoy(false);
+      },
+      () => { setEstadisticasCorteHoy(null); setCargandoEstadisticasHoy(false); }
+    );
+    return () => unsub();
+  }, [mostrarMesonesModal]);
   // Las dos tablas de abajo empiezan cerradas — se despliegan al hacer clic
   // en su encabezado, igual que el resto de secciones colapsables de
   // Planeación (ej. el Verificador de Precio dentro de Programador BMP).
@@ -3211,16 +3104,6 @@ function MiDiaPlaneadoraView({ lotes, reporteBMP, programacionBMP, programacionC
     { key: "cantidad", label: "Cantidad", align: "right", render: (f) => fmtNum(f.cantidad) },
     { key: "fechaEntregaConf", label: "Fecha Entrega Conf.", render: (f) => fmtFechaISO(f.fechaEntregaConf) },
   ];
-  const columnasMesones = [
-    { key: "estado", label: "Estado" },
-    { key: "referencia", label: "Referencia" },
-    { key: "numPedido", label: "Pedido" },
-    { key: "cliente", label: "Cliente" },
-    { key: "cantidad", label: "Cantidad", align: "right", render: (f) => fmtNum(f.cantidad) },
-    { key: "planta", label: "Planta" },
-    { key: "meson", label: "Mesón" },
-    { key: "cortador", label: "Cortador" },
-  ];
   return (
     <div>
       {detalle && (
@@ -3229,9 +3112,8 @@ function MiDiaPlaneadoraView({ lotes, reporteBMP, programacionBMP, programacionC
         </Modal>
       )}
       {mostrarMesonesModal && (
-        <Modal title="Programación de mesones — hoy" onClose={() => setMostrarMesonesModal(false)} width={900}>
-          <TableroMesonesDia items={mesonesHoy} />
-          <Tabla vacio="No hay cortes programados para hoy en Corte." columnas={columnasMesones} filas={mesonesHoy} />
+        <Modal title="Programación de mesones — hoy" onClose={() => setMostrarMesonesModal(false)} width={1000}>
+          <TableroMesonesHoy items={mesonesHoy} estadisticas={estadisticasCorteHoy} cargandoEstadisticas={cargandoEstadisticasHoy} />
         </Modal>
       )}
       {!visibles && (
