@@ -22,6 +22,7 @@ import { diasDeTrabajoDelMes } from "./dias-habiles";
 import { useVacacionesCorte } from "./use-vacaciones-corte";
 import { costoCorteConVacaciones, costoDiaCorte, corteSinFicha, resumenVacacionesCorte } from "./corte-vacaciones";
 import AvisoVacacionesCorte from "./aviso-vacaciones-corte";
+import { huecosLibres, totalLibreMin, fmtDuracionMin, fmtHoraMin, colorDeLote, nombreMesonBonito, MESON_LIBRE_INICIO_MIN, MESON_LIBRE_FIN_MIN } from "./mesones-libre";
 // ─── FIREBASE ────────────────────────────────────────────────────────────────
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
@@ -2023,7 +2024,7 @@ function bloqueTimelineStyle(inicioMin, finMin) {
 // (6am–8pm) con los horarios ya ocupados por otras referencias programadas
 // ahí ese día (según su Hora Inicio/Fin Estimada) en rojo, y el horario que
 // se está por guardar en violeta — para elegir a ojo un hueco libre.
-function MesonTimeline({ nombre, capacidad, compartido, ocupados, inicioActual, finActual }) {
+function MesonTimeline({ nombre, capacidad, compartido, ocupados, inicioActual, finActual, pie }) {
   const horasEtiqueta = [];
   for (let m = MESON_TIMELINE_INICIO_MIN; m <= MESON_TIMELINE_FIN_MIN; m += 120) {
     horasEtiqueta.push(m);
@@ -2034,16 +2035,37 @@ function MesonTimeline({ nombre, capacidad, compartido, ocupados, inicioActual, 
     inicioActualMin !== null && finActualMin !== null && finActualMin > inicioActualMin
       ? bloqueTimelineStyle(inicioActualMin, finActualMin)
       : null;
+  // Tiempo libre (2026-11-19): lo que queda sin corte entre 06:00 y 20:00, contando también el corte que se está programando.
+  const bloquesOcupados = (ocupados || [])
+    .map((it) => ({ ini: minDesdeHora(it.horaInicioEstimada), fin: minDesdeHora(it.horaFinEstimada) }))
+    .filter((b) => b.ini !== null && b.fin !== null);
+  if (inicioActualMin !== null && finActualMin !== null) bloquesOcupados.push({ ini: inicioActualMin, fin: finActualMin });
+  const huecos = huecosLibres(bloquesOcupados, MESON_LIBRE_INICIO_MIN, MESON_LIBRE_FIN_MIN);
+  const libreTotal = totalLibreMin(huecos);
   return (
     <div style={{ padding: "12px 16px", borderRadius: 8, border: `1.5px solid ${C.border}`, background: C.canvas, marginBottom: 16 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
         <div style={{ fontSize: 13, fontWeight: 800, color: C.ink }}>
-          🪧 {nombre}
+          🪧 {nombreMesonBonito(nombre)}
           {compartido ? " (compartido)" : ""}
         </div>
         <div style={{ fontSize: 12, fontWeight: 700, color: C.slate }}>Capacidad: {capacidad}m de trazo</div>
       </div>
-      <div style={{ position: "relative", height: 34, borderRadius: 6, background: C.white, border: `1px solid ${C.border}`, overflow: "hidden" }}>
+      <div style={{ position: "relative", height: 40, borderRadius: 8, background: C.white, border: `1px solid ${C.border}`, overflow: "hidden" }}>
+        {huecos.map((h) => {
+          const st = bloqueTimelineStyle(h.ini, h.fin);
+          if (!st) return null;
+          const ancho = parseFloat(st.width);
+          return (
+            <div
+              key={`libre-${h.ini}`}
+              title={`Libre de ${fmtHoraMin(h.ini)} a ${fmtHoraMin(h.fin)}`}
+              style={{ position: "absolute", top: 3, bottom: 3, left: st.left, width: st.width, background: C.greenBg, borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", fontSize: ancho < 12 ? 9.5 : 11, fontWeight: 800, color: C.green, overflow: "hidden", whiteSpace: "nowrap" }}
+            >
+              {ancho >= 5 ? `Libre ${fmtDuracionMin(h.min)}` : ""}
+            </div>
+          );
+        })}
         {ocupados.map((it) => {
           const iMin = minDesdeHora(it.horaInicioEstimada);
           const fMin = minDesdeHora(it.horaFinEstimada);
@@ -2060,21 +2082,21 @@ function MesonTimeline({ nombre, capacidad, compartido, ocupados, inicioActual, 
               }
               style={{
                 position: "absolute",
-                top: 0,
-                bottom: 0,
+                top: 3,
+                bottom: 3,
                 left: st.left,
-                width: st.width,
-                background: it.esBloqueo ? C.border : C.redBg,
-                borderRight: `1px solid ${C.white}`,
+                width: `calc(${st.width} - 2px)`,
+                background: it.esBloqueo ? C.border : colorDeLote(it.ref),
+                borderRadius: 6,
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
-                fontSize: 9,
+                fontSize: 11,
                 fontWeight: 800,
-                color: it.esBloqueo ? C.slate : C.red,
+                color: it.esBloqueo ? C.slate : "#fff",
                 overflow: "hidden",
                 whiteSpace: "nowrap",
-                padding: "0 2px",
+                padding: "0 4px",
               }}
             >
               {it.esBloqueo ? `🔒 ${it.motivo}` : it.ref}
@@ -2086,12 +2108,14 @@ function MesonTimeline({ nombre, capacidad, compartido, ocupados, inicioActual, 
             title={`Este corte: ${inicioActual} a ${finActual}`}
             style={{
               position: "absolute",
-              top: 0,
-              bottom: 0,
+              top: 3,
+              bottom: 3,
               left: actualStyle.left,
               width: actualStyle.width,
+              borderRadius: 6,
               background: C.violet,
-              opacity: 0.85,
+              outline: `2px solid ${C.ink}`,
+              opacity: 0.9,
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
@@ -2111,9 +2135,126 @@ function MesonTimeline({ nombre, capacidad, compartido, ocupados, inicioActual, 
           </span>
         ))}
       </div>
-      {ocupados.length === 0 && (
-        <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>Ningún otro corte tiene horario estimado ahí ese día todavía.</div>
-      )}
+      <div style={{ fontSize: 11.5, color: C.slate, marginTop: 6 }}>
+        <b style={{ color: C.green }}>Tiempo libre: {fmtDuracionMin(libreTotal)}</b>
+        {huecos.length > 0 && huecos.length < 5 ? ` (${huecos.map((h) => `${fmtHoraMin(h.ini)}–${fmtHoraMin(h.fin)}`).join(" · ")})` : ""}
+        {ocupados.length === 0 ? " · ningún otro corte tiene horario estimado ahí ese día todavía" : ""}
+      </div>
+      {pie}
+    </div>
+  );
+}
+// ─── PROGRAMACIÓN DE MESONES: RESUMEN DEL DÍA + CORTES AGRUPADOS POR MESÓN ──────────────────────────────────
+// (2026-11-19, a pedido de Fredy) En vez de una lista plana: arriba un resumen del día y debajo los cortes agrupados por
+// mesón con su horario, un color por lote (el mismo de Disponibilidad de Mesones) y «Sin horario» destacado.
+function ListaCortesPorMeson({ grupos, seleccionadoKey, onSelect, isAdmin, onPartir, nombreMeson, capasTotalesGrupo, hayPanelAbierto }) {
+  const aprobado = (g) => g.etapa === "programacion_hecha" && g.colores.every((c) => c.aprobado === true);
+  const hechos = grupos.filter((g) => g.etapa === "programacion_hecha");
+  const mesonesEnUso = new Set(hechos.filter((g) => g.meson).map((g) => `${g.planta}|${g.meson}`)).size;
+  const capasTotal = hechos.reduce((s, g) => s + capasTotalesGrupo(g), 0);
+  const aprobados = grupos.filter(aprobado).length;
+  // Agrupar por mesón; lo que todavía no tiene programación va aparte.
+  const porMeson = new Map();
+  grupos.forEach((g) => {
+    const k = g.etapa === "programacion_hecha" && g.meson ? `${g.planta}|${g.meson}` : "__sin__";
+    if (!porMeson.has(k)) porMeson.set(k, { k, planta: g.planta, meson: g.meson, items: [] });
+    porMeson.get(k).items.push(g);
+  });
+  const secciones = [...porMeson.values()].sort((a, b) => {
+    if (a.k === "__sin__") return 1;
+    if (b.k === "__sin__") return -1;
+    return nombreMeson(a.planta, a.meson).localeCompare(nombreMeson(b.planta, b.meson), "es", { numeric: true });
+  });
+  secciones.forEach((sec) => sec.items.sort((a, b) => (a.horaInicioEstimada || "99:99").localeCompare(b.horaInicioEstimada || "99:99")));
+  const tile = (label, valor, sub) => (
+    <div style={{ flex: "1 1 140px", padding: "10px 16px", borderRight: `1px solid ${C.border}` }}>
+      <div style={{ fontSize: 10.5, fontWeight: 800, color: C.slate, textTransform: "uppercase", letterSpacing: "0.05em" }}>{label}</div>
+      <div style={{ fontSize: 22, fontWeight: 900, color: C.ink, lineHeight: 1.2 }}>
+        {valor} {sub ? <span style={{ fontSize: 12.5, fontWeight: 700, color: C.slate }}>{sub}</span> : null}
+      </div>
+    </div>
+  );
+  return (
+    <div style={{ marginBottom: hayPanelAbierto ? 24 : 0 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden", marginBottom: 18 }}>
+        {tile("Cortes del día", fmtNum(grupos.length))}
+        {tile("Capas teóricas", fmtNum(capasTotal))}
+        {tile("Mesones en uso", fmtNum(mesonesEnUso))}
+        {tile("Aprobados", fmtNum(aprobados), `de ${fmtNum(grupos.length)}`)}
+      </div>
+      {secciones.map((sec) => {
+        const prendas = sec.items.reduce((s, g) => s + (g.cantidadTotal || 0), 0);
+        const horas = sec.items.filter((g) => g.horaInicioEstimada && g.horaFinEstimada);
+        const rango = horas.length ? `${horas[0].horaInicioEstimada} a ${horas.reduce((m, g) => (g.horaFinEstimada > m ? g.horaFinEstimada : m), "")}` : "";
+        const titulo = sec.k === "__sin__" ? "Sin mesón asignado" : nombreMesonBonito(nombreMeson(sec.planta, sec.meson));
+        return (
+          <div key={sec.k} style={{ marginBottom: 18 }}>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
+              <div style={{ fontSize: 15, fontWeight: 900, color: C.ink }}>{titulo}</div>
+              <div style={{ fontSize: 12, color: C.slate }}>
+                {sec.items.length} corte{sec.items.length !== 1 ? "s" : ""} · {fmtNum(prendas)} prendas{rango ? ` · ${rango}` : ""}
+                {sec.k !== "__sin__" && sec.planta ? ` · ${sec.planta}` : ""}
+              </div>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {sec.items.map((g) => {
+                const hecha = g.etapa === "programacion_hecha";
+                const aprobadoG = aprobado(g);
+                const estadoLabel = !hecha ? "Falta ingresar" : aprobadoG ? "Aprobada Analista" : "Pendiente de aprobación";
+                const estadoColor = !hecha ? C.violet : aprobadoG ? C.green : C.amber;
+                const estadoBg = !hecha ? C.violetBg : aprobadoG ? C.greenBg : C.amberBg;
+                const sel = g.key === seleccionadoKey;
+                const tieneHora = !!(g.horaInicioEstimada && g.horaFinEstimada);
+                return (
+                  <div
+                    key={g.key}
+                    onClick={() => onSelect(g.key)}
+                    style={{
+                      display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap",
+                      padding: "11px 14px", borderRadius: 12, cursor: "pointer",
+                      border: `1.5px solid ${sel ? C.violet : C.border}`,
+                      background: sel ? C.violetBg : C.white,
+                    }}
+                  >
+                    <div style={{ minWidth: 0, flex: "1 1 260px" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", fontWeight: 800, fontSize: 13, color: C.ink }}>
+                        <span style={{ width: 11, height: 11, borderRadius: 3, background: colorDeLote(g.ref), flex: "none" }} />
+                        {g.cliente} · #{g.numero} · {g.ref}
+                        {g.numeroCorte && (
+                          <span style={{ fontSize: 11, fontWeight: 800, color: C.violet, background: C.violetBg, padding: "2px 8px", borderRadius: 10 }}>{g.numeroCorte}</span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>
+                        {g.colores.length} color{g.colores.length !== 1 ? "es" : ""} · {fmtNum(g.cantidadTotal)} unid.
+                        {hecha && sec.k === "__sin__" && g.planta ? ` · ${g.planta}` : ""}
+                      </div>
+                    </div>
+                    {hecha && (
+                      <div style={{ fontSize: 13, fontWeight: 800, fontVariantNumeric: "tabular-nums", color: tieneHora ? C.ink : C.amber }}>
+                        {tieneHora ? `${g.horaInicioEstimada} – ${g.horaFinEstimada}` : "Sin horario"}
+                      </div>
+                    )}
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      {isAdmin && !hecha && !g.numeroCorte && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); onPartir(g); }}
+                          title="Partir este lote en varios cortes"
+                          style={{ background: C.violetBg, border: "none", borderRadius: 6, padding: "4px 8px", color: C.violet, fontWeight: 800, fontSize: 12, cursor: "pointer" }}
+                        >
+                          ✂
+                        </button>
+                      )}
+                      <span style={{ fontSize: 10.5, fontWeight: 800, color: estadoColor, background: estadoBg, padding: "4px 10px", borderRadius: 10, whiteSpace: "nowrap" }}>
+                        {estadoLabel}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -7360,12 +7501,14 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
             return (
               <div>
                 <p style={{ margin: "0 0 16px", fontSize: 13, color: C.slate, maxWidth: 660 }}>
-                  Elige un día para ver lo programado ahí (a futuro, para que el cortador vaya ingresando los datos teóricos con anticipación) y entra a cada referencia para poner mesón, trazo, capas y horario. Un analista revisa y aprueba antes de que quede confirmado.
+                  Elige un día, entra a cada referencia y pon mesón, trazo, capas y horario. Un analista revisa y aprueba antes de que quede confirmado.
                 </p>
                 <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
+                  <Btn variant="secondary" onClick={() => { setMesonesFecha(sumarDiasISO(mesonesFecha, -1)); setMesonesGrupoKey(null); }}>‹</Btn>
                   <Field label="Día">
                     <FInput type="date" value={mesonesFecha} onChange={(v) => { setMesonesFecha(v); setMesonesGrupoKey(null); }} />
                   </Field>
+                  <Btn variant="secondary" onClick={() => { setMesonesFecha(sumarDiasISO(mesonesFecha, 1)); setMesonesGrupoKey(null); }}>›</Btn>
                   <Btn variant="secondary" onClick={() => { setMesonesFecha(today()); setMesonesGrupoKey(null); }}>
                     Hoy
                   </Btn>
@@ -7399,60 +7542,16 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                   </div>
                 )}
                 {!!datosMesones.grupos.length && (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: grupoSel ? 24 : 0 }}>
-                    {datosMesones.grupos.map((g) => {
-                      const aprobadoG = g.etapa === "programacion_hecha" && g.colores.every((c) => c.aprobado === true);
-                      const estadoLabel = g.etapa !== "programacion_hecha" ? "Falta ingresar" : aprobadoG ? "Aprobada Analista" : "Pendiente de aprobación";
-                      const estadoColor = g.etapa !== "programacion_hecha" ? C.violet : aprobadoG ? C.green : C.amber;
-                      const estadoBg = g.etapa !== "programacion_hecha" ? C.violetBg : aprobadoG ? C.greenBg : C.amberBg;
-                      const seleccionado = g.key === mesonesGrupoKey;
-                      return (
-                        <div
-                          key={g.key}
-                          onClick={() => setMesonesGrupoKey(g.key)}
-                          style={{
-                            display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
-                            padding: "12px 16px", borderRadius: 10, cursor: "pointer",
-                            border: `1.5px solid ${seleccionado ? C.violet : C.border}`,
-                            background: seleccionado ? C.violetBg : C.white,
-                          }}
-                        >
-                          <div>
-                            <div style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>
-                              {g.cliente} · #{g.numero} · {g.ref}
-                              {g.numeroCorte && (
-                                <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: C.violet, background: C.violetBg, padding: "1px 6px", borderRadius: 8 }}>
-                                  {g.numeroCorte}
-                                </span>
-                              )}
-                            </div>
-                            <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>
-                              {g.colores.length} color{g.colores.length !== 1 ? "es" : ""} · {fmtNum(g.cantidadTotal)} unid.
-                              {g.etapa === "programacion_hecha" && ` · ${g.planta}${g.meson ? " · " + nombreMeson(g.planta, g.meson) : ""}`}
-                            </div>
-                          </div>
-                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                            {isAdmin && g.etapa !== "programacion_hecha" && !g.numeroCorte && (
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setPartiendoGrupo(g);
-                                  setNumPartes(2);
-                                }}
-                                title="Partir este lote en varios cortes"
-                                style={{ background: C.violetBg, border: "none", borderRadius: 6, padding: "4px 8px", color: C.violet, fontWeight: 800, fontSize: 12, cursor: "pointer" }}
-                              >
-                                ✂
-                              </button>
-                            )}
-                            <span style={{ fontSize: 10, fontWeight: 800, color: estadoColor, background: estadoBg, padding: "4px 10px", borderRadius: 10, whiteSpace: "nowrap" }}>
-                              {estadoLabel}
-                            </span>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
+                  <ListaCortesPorMeson
+                    grupos={datosMesones.grupos}
+                    seleccionadoKey={mesonesGrupoKey}
+                    onSelect={setMesonesGrupoKey}
+                    isAdmin={isAdmin}
+                    onPartir={(g) => { setPartiendoGrupo(g); setNumPartes(2); }}
+                    nombreMeson={nombreMeson}
+                    capasTotalesGrupo={capasTotalesGrupo}
+                    hayPanelAbierto={!!grupoSel}
+                  />
                 )}
                 {grupoSel && (
                   <ProgramacionMesonPanel
@@ -7520,15 +7619,11 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                   </Btn>
                 </div>
                 {!!mesonesDePlanta.length && (
-                  <div style={{ marginBottom: 20 }}>
-                    <KPICard
-                      icon="📚"
-                      label={`Capas teóricas del día en ${nombrePlantaActual || "esta planta"}`}
-                      value={fmtNum(capasTeoricasTotalPlanta)}
-                      color={C.blue}
-                      bg={C.blueBg}
-                      sub={`${gruposDelDiaPlanta.length} corte${gruposDelDiaPlanta.length !== 1 ? "s" : ""} programado${gruposDelDiaPlanta.length !== 1 ? "s" : ""}`}
-                    />
+                  <div style={{ display: "flex", alignItems: "baseline", gap: 14, flexWrap: "wrap", marginBottom: 16, padding: "10px 14px", background: C.white, border: `1px solid ${C.border}`, borderRadius: 10 }}>
+                    <span style={{ fontSize: 22, fontWeight: 900, color: C.blue }}>{fmtNum(capasTeoricasTotalPlanta)}</span>
+                    <span style={{ fontSize: 12.5, color: C.slate, fontWeight: 700 }}>
+                      capas teóricas del día en {nombrePlantaActual || "esta planta"} · {gruposDelDiaPlanta.length} corte{gruposDelDiaPlanta.length !== 1 ? "s" : ""} programado{gruposDelDiaPlanta.length !== 1 ? "s" : ""}
+                    </span>
                   </div>
                 )}
                 {!plantasLista.length && (
@@ -7557,18 +7652,18 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                         ocupados={ocupados}
                         inicioActual={null}
                         finActual={null}
+                        pie={capacidad !== null && capacidad !== undefined ? (
+                          <div style={{ fontSize: 11, color: C.slate, marginTop: 8, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                            <span>Trazo del día: <b>{usados}m</b>{libre > 0 ? <> · Libre: <b style={{ color: C.green }}>{libre}m</b></> : null} · Capas teóricas: <b>{fmtNum(capasMeson)}</b></span>
+                            <button
+                              onClick={() => { setBloqueoAbierto(bloqueoAbierto === m.id ? null : m.id); setBloqueoForm({ meson: m.id, motivo: "", horaInicio: "", horaFin: "", metros: "" }); }}
+                              style={{ padding: "3px 8px", borderRadius: 6, border: `1px solid ${C.border}`, background: C.white, color: C.slate, fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}
+                            >
+                              🔒 {bloqueoAbierto === m.id ? "Cancelar" : "Bloquear espacio"}
+                            </button>
+                          </div>
+                        ) : null}
                       />
-                      {capacidad !== null && capacidad !== undefined && (
-                        <div style={{ fontSize: 11, color: C.slate, marginTop: -10, marginBottom: 8, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                          <span>Usado hoy: {usados}m · Libre: <b style={{ color: libre > 0 ? C.green : C.red }}>{libre}m</b> · Capas teóricas: <b>{fmtNum(capasMeson)}</b></span>
-                          <button
-                            onClick={() => { setBloqueoAbierto(bloqueoAbierto === m.id ? null : m.id); setBloqueoForm({ meson: m.id, motivo: "", horaInicio: "", horaFin: "", metros: "" }); }}
-                            style={{ padding: "3px 8px", borderRadius: 6, border: `1px solid ${C.border}`, background: C.white, color: C.slate, fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}
-                          >
-                            🔒 {bloqueoAbierto === m.id ? "Cancelar" : "Bloquear espacio"}
-                          </button>
-                        </div>
-                      )}
                       {bloqueoAbierto === m.id && (
                         <div style={{ display: "flex", gap: 8, alignItems: "end", flexWrap: "wrap", marginBottom: 14, padding: 10, background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 8 }}>
                           <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
