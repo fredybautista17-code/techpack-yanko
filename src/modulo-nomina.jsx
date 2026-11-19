@@ -6414,88 +6414,363 @@ function AnomaliasHuelleroView({ anomalias, retardos, onAjustar }) {
 // anterior nunca requiere volver a subir el archivo. El líder de área ve
 // fija su propia área (sin selector); el admin puede elegir cualquiera o
 // dejarlo en "Todas".
+// (2026-11-19, a pedido de Fredy) Rediseño: por persona dice cuántos días
+// asistió (de los que le tocaba trabajar hasta hoy), de esos cuántos con
+// permiso y cuántas horas de permiso, y cuántos permisos fueron de día
+// completo sin asistir. Un día con marcación Y permiso ahora se ve como
+// asistido (con marca violeta) en vez de esconder la marcación. Quincena
+// 1–15 / 16–fin / Mes. Solo cambia lo que se ve: no toca ningún cálculo.
+const AVATARES_ASISTENCIA = ["#6B4FA0", "#3D6B9E", "#2D9E6B", "#B16D12", "#B04A6B", "#2F8A9E"];
+const LETRAS_DIA = ["D", "L", "M", "X", "J", "V", "S"];
+const NOMBRES_DIA = ["dom", "lun", "mar", "mié", "jue", "vie", "sáb"];
+function nombreBonitoAsistencia(n) {
+  return String(n || "").toLowerCase().replace(/(^|\s)\S/g, (c) => c.toUpperCase());
+}
+function iniciales(n) {
+  const p = String(n || "").trim().split(/\s+/);
+  return ((p[0] || "")[0] || "").toUpperCase() + ((p[1] || "")[0] || "").toUpperCase();
+}
+function plural(n, uno, varios) {
+  return `${n} ${n === 1 ? uno : varios}`;
+}
+function textoPermiso(p) {
+  const cuando = p.horaInicio ? `${p.horaInicio}–${p.horaFin}` : "día completo";
+  return `${p.motivo} · ${cuando}${p.horas ? ` · ${fmtHoras(p.horas)}` : ""}`;
+}
+function InsigniaCelda({ fondo, lado, children }) {
+  return (
+    <span style={{ position: "absolute", ...lado, width: 12, height: 12, borderRadius: "50%", background: fondo, color: "#fff", border: "1.5px solid #fff", display: "grid", placeItems: "center", boxSizing: "content-box" }}>
+      {children}
+    </span>
+  );
+}
+function CeldaAsistencia({ e }) {
+  if (e.tipo === "nl") return <div title={e.title} style={{ width: 5, height: 5, borderRadius: "50%", background: "#D9D3C8", margin: "0 auto" }} />;
+  if (e.tipo === "futuro" || e.tipo === "exento") return <div title={e.title} style={{ width: 26, height: 26, margin: "0 auto" }} />;
+  const base = { width: 26, height: 26, borderRadius: 9, display: "grid", placeItems: "center", margin: "0 auto", position: "relative" };
+  if (e.tipo === "sd") return <div title={e.title} style={{ ...base, color: "#A8A39A", fontWeight: 700, fontSize: 13 }}>—</div>;
+  const verde = { background: C.greenBg, color: C.green };
+  const estilo = {
+    ok: verde,
+    tarde: verde,
+    mix: { ...verde, boxShadow: "0 0 0 2px #9A82CF" },
+    per: { background: C.amberBg, color: C.amber },
+    no: { background: C.redBg, color: C.red },
+  }[e.tipo] || verde;
+  return (
+    <div title={e.title} style={{ ...base, ...estilo }}>
+      <IconoAsis tipo={e.tipo === "per" ? "per" : e.tipo === "no" ? "no" : "ok"} />
+      {e.tipo === "tarde" && (
+        <InsigniaCelda fondo={C.blue} lado={{ right: -4, bottom: -4 }}>
+          <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.6" strokeLinecap="round"><path d="M12 6v6l4 2" /></svg>
+        </InsigniaCelda>
+      )}
+      {e.tipo === "mix" && (
+        <InsigniaCelda fondo={C.violet} lado={{ right: -6, top: -6 }}>
+          <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="5" width="16" height="15" rx="2" /><path d="M4 10h16M9 3v4M15 3v4" /></svg>
+        </InsigniaCelda>
+      )}
+      {e.anomalia && (
+        <InsigniaCelda fondo={C.amber} lado={{ right: -4, bottom: -4 }}>
+          <span style={{ fontSize: 8, fontWeight: 800, lineHeight: 1 }}>!</span>
+        </InsigniaCelda>
+      )}
+    </div>
+  );
+}
+function KpiAsistencia({ etiqueta, valor, unidad, sub, color, halo }) {
+  return (
+    <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 16, padding: "14px 16px", position: "relative", overflow: "hidden" }}>
+      <div style={{ position: "absolute", right: -18, top: -18, width: 70, height: 70, borderRadius: "50%", background: halo, opacity: 0.5 }} />
+      <div style={{ position: "relative", fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", letterSpacing: "0.06em" }}>{etiqueta}</div>
+      <div style={{ position: "relative", fontSize: 28, fontWeight: 800, letterSpacing: -1, marginTop: 4, color, display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap" }}>
+        {valor}
+        <span style={{ fontSize: 13, fontWeight: 600, color: C.slate, letterSpacing: 0 }}>{unidad}</span>
+      </div>
+      <div style={{ position: "relative", fontSize: 12, color: C.slate, marginTop: 2 }}>{sub}</div>
+    </div>
+  );
+}
+function BarraAsistencia({ r, alto = 6 }) {
+  const pct = (n) => (r.esp ? (n * 100) / r.esp : 0);
+  return (
+    <div style={{ display: "flex", height: alto, borderRadius: alto, overflow: "hidden", background: "#EEE9E1", gap: 1.5 }}>
+      <i style={{ display: "block", height: "100%", width: `${pct(r.asis)}%`, background: C.green }} />
+      <i style={{ display: "block", height: "100%", width: `${pct(r.solo)}%`, background: "#E5B25D" }} />
+      <i style={{ display: "block", height: "100%", width: `${pct(r.nom)}%`, background: C.red }} />
+    </div>
+  );
+}
 function HistorialAsistenciaAreaView({ areasNomina, trabajadores, areaLider, diasTrabajados, faltas, ausencias, anomalias, retardos, turnos }) {
+  const hoyISO = today();
   const [areaSel, setAreaSel] = useState(areaLider || "");
-  const [mes, setMes] = useState(today().slice(0, 7));
+  const [mes, setMes] = useState(hoyISO.slice(0, 7));
+  const [rango, setRango] = useState(Number(hoyISO.slice(8, 10)) <= 15 ? "q1" : "q2");
+  const [selId, setSelId] = useState("");
   const [anioStr, mesStr] = mes.split("-");
   const anio = Number(anioStr);
   const mesNum = Number(mesStr);
-  const primerDia = new Date(anio, mesNum - 1, 1);
   const ultimoDia = new Date(anio, mesNum, 0);
-  const diasDelMes = [];
-  for (let d = new Date(primerDia); d <= ultimoDia; d.setDate(d.getDate() + 1)) diasDelMes.push(isoDate(d));
+  const diasVisibles = [];
+  for (let d = new Date(anio, mesNum - 1, 1); d <= ultimoDia; d.setDate(d.getDate() + 1)) {
+    const n = d.getDate();
+    if (rango === "mes" || (rango === "q1" ? n <= 15 : n >= 16)) diasVisibles.push(isoDate(d));
+  }
   const areaEfectiva = areaLider || areaSel;
   const trabajadoresMostrados = (areaEfectiva ? trabajadores.filter((t) => (t.area || "Sin asignar") === areaEfectiva) : trabajadores)
     .slice()
     .sort((a, b) => a.nombre.localeCompare(b.nombre));
-  const hoyISO = today();
-  function estadoDelDia(t, iso, turno) {
-    if (t.exentoHuellero) return { icon: "", bg: "transparent", title: "Exento de Huellero -- no se le exige marcación" };
-    if (!diaEsperado(iso, turno)) return { icon: "·", bg: "transparent", title: "No laboral" };
-    const nombreNorm = normalizarNombreHuellero(t.nombre);
-    const ausencia = (ausencias || []).find((a) => a.trabajadorId === t.id && a.fechaInicio <= iso && iso <= a.fechaFin);
-    if (ausencia) return { icon: "🗓️", bg: C.amberBg, title: `Permiso — ${ausencia.motivo}` };
-    const trabajo = (diasTrabajados || []).find((d) => d.fecha === iso && coincideHuellero(d, t, nombreNorm));
-    if (trabajo) {
-      const anomalia = (anomalias || []).find((a) => a.fecha === iso && a.nombreNorm === nombreNorm && a.estado !== "ajustado");
-      const retardo = (retardos || []).find((r) => r.fecha === iso && r.nombreNorm === nombreNorm);
-      if (anomalia) return { icon: "✅⚠️", bg: C.amberBg, title: `Trabajado — le faltó marcar ${anomalia.tipo === "falta_entrada" ? "la entrada" : "la salida"}` };
-      if (retardo) return { icon: "✅🕒", bg: C.blueBg, title: `Trabajado — llegó tarde (marcó ${retardo.horaMarcada}, esperado ${retardo.horaEsperada})` };
-      return { icon: "✅", bg: "transparent", title: "Trabajado" };
+  // Índices por fecha: con miles de registros, buscar celda por celda era lento.
+  const indice = useMemo(() => {
+    const porFecha = (lista) => {
+      const m = new Map();
+      (lista || []).forEach((x) => { if (!m.has(x.fecha)) m.set(x.fecha, []); m.get(x.fecha).push(x); });
+      return m;
+    };
+    return { trabajo: porFecha(diasTrabajados), faltas: porFecha(faltas), anomalias: porFecha(anomalias), retardos: porFecha(retardos) };
+  }, [diasTrabajados, faltas, anomalias, retardos]);
+  function estadoDelDia(t, iso, turno, nombreNorm, susAus) {
+    if (t.exentoHuellero) return { tipo: "exento", title: "Exento de Huellero -- no se le exige marcación", cuenta: false };
+    const delDia = susAus.filter((a) => a.fechaInicio <= iso && iso <= (a.fechaFin || a.fechaInicio));
+    const trabajo = (indice.trabajo.get(iso) || []).some((d) => coincideHuellero(d, t, nombreNorm));
+    const esperado = diaEsperado(iso, turno);
+    const futuro = iso > hoyISO;
+    // Un día no esperado (domingo, festivo, sábado sin turno) solo se muestra si de todos modos marcó.
+    if (!esperado && !trabajo) return { tipo: "nl", title: "No laboral", cuenta: false };
+    if (trabajo && delDia.length) {
+      const p = medirPermisoDelDia(t, iso, delDia, areasNomina, turnos);
+      return { tipo: "mix", title: `Asistió y tuvo permiso — ${textoPermiso(p)}`, cuenta: !futuro, ...p };
     }
-    const falta = (faltas || []).find((f) => f.fecha === iso && coincideHuellero(f, t, nombreNorm));
-    if (falta) return { icon: "❌", bg: C.redBg, title: "No marcó — sin justificar" };
-    if (iso > hoyISO) return { icon: "", bg: "transparent", title: "" };
-    return { icon: "—", bg: "transparent", title: "Sin datos todavía (no se ha subido el huellero de esta fecha)" };
+    if (delDia.length) return { tipo: "per", title: `Permiso — ${delDia[0].motivo} (no marcó)`, cuenta: !futuro, motivo: delDia[0].motivo };
+    if (trabajo) {
+      const anomalia = (indice.anomalias.get(iso) || []).find((a) => a.nombreNorm === nombreNorm && a.estado !== "ajustado");
+      const retardo = (indice.retardos.get(iso) || []).find((r) => r.nombreNorm === nombreNorm);
+      if (retardo) return { tipo: "tarde", title: `Asistió — llegó tarde (marcó ${retardo.horaMarcada}, esperado ${retardo.horaEsperada})`, cuenta: true, anomalia: !!anomalia };
+      if (anomalia) return { tipo: "ok", anomalia: true, title: `Asistió — le faltó marcar ${anomalia.tipo === "falta_entrada" ? "la entrada" : "la salida"}`, cuenta: true };
+      return { tipo: "ok", title: "Asistió", cuenta: true };
+    }
+    if ((indice.faltas.get(iso) || []).some((f) => coincideHuellero(f, t, nombreNorm))) return { tipo: "no", title: "No marcó — sin justificar", cuenta: true };
+    if (futuro) return { tipo: "futuro", title: "", cuenta: false };
+    return { tipo: "sd", title: "Sin datos todavía (no se ha subido el huellero de esta fecha)", cuenta: false };
   }
+  const analisis = trabajadoresMostrados.map((t) => {
+    const turno = resolverTurnoDeTrabajador(t, areasNomina, turnos);
+    const nombreNorm = normalizarNombreHuellero(t.nombre);
+    const susAus = (ausencias || []).filter((a) => a.trabajadorId === t.id);
+    const celdas = diasVisibles.map((iso) => ({ iso, ...estadoDelDia(t, iso, turno, nombreNorm, susAus) }));
+    const r = { asis: 0, esp: 0, conP: 0, horas: 0, solo: 0, nom: 0 };
+    celdas.forEach((c) => {
+      if (!c.cuenta) return;
+      r.esp++;
+      if (c.tipo === "ok" || c.tipo === "tarde" || c.tipo === "mix") r.asis++;
+      if (c.tipo === "mix") { r.conP++; r.horas += c.horas || 0; }
+      if (c.tipo === "per") r.solo++;
+      if (c.tipo === "no") r.nom++;
+    });
+    return { t, celdas, r };
+  });
+  const medidos = analisis.filter((a) => !a.t.exentoHuellero);
+  const tot = medidos.reduce((s, a) => ({ asis: s.asis + a.r.asis, esp: s.esp + a.r.esp, conP: s.conP + a.r.conP, horas: s.horas + a.r.horas, solo: s.solo + a.r.solo, nom: s.nom + a.r.nom }), { asis: 0, esp: 0, conP: 0, horas: 0, solo: 0, nom: 0 });
+  const pctArea = tot.esp ? Math.round((tot.asis * 100) / tot.esp) : 0;
+  const sel = analisis.find((a) => a.t.id === selId) || analisis[0];
+  const hoyEnRango = diasVisibles.includes(hoyISO);
+  const cajaSegmento = (clave, texto) => (
+    <button
+      key={clave}
+      type="button"
+      onClick={() => setRango(clave)}
+      style={{ border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, padding: "7px 14px", borderRadius: 9, background: rango === clave ? C.ink : "transparent", color: rango === clave ? "#fff" : C.slate, boxShadow: rango === clave ? "0 2px 6px rgba(26,26,46,.25)" : "none" }}
+    >
+      {texto}
+    </button>
+  );
+  const ultimoNum = ultimoDia.getDate();
+  const leyenda = [
+    { e: { tipo: "ok" }, t: "Asistió" },
+    { e: { tipo: "tarde" }, t: "Llegó tarde" },
+    { e: { tipo: "ok", anomalia: true }, t: "Le faltó marcar entrada o salida" },
+    { e: { tipo: "per" }, t: "Permiso (no marcó)" },
+    { e: { tipo: "mix" }, t: "Asistió y tuvo permiso", destacado: true },
+    { e: { tipo: "no" }, t: "No marcó, sin justificar" },
+    { e: { tipo: "sd" }, t: "Sin datos todavía" },
+  ];
   return (
     <div>
-      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
-        Calendario de asistencia leído directo de lo que ya quedó guardado al subir el huellero -- no hace falta volver a subirlo para consultar un mes anterior. ✅ trabajado · ✅⚠️ trabajado con anomalía de marcación · ✅🕒 trabajado pero llegó tarde · 🗓️ permiso · ❌ no marcó (sin justificar) · — sin datos todavía.
+      <div style={{ fontSize: 13, color: C.slate, marginBottom: 14, maxWidth: 780, lineHeight: 1.5 }}>
+        Calendario leído de lo que ya quedó guardado al subir el huellero. Por cada persona: cuántos días asistió, cuántos de esos con permiso y cuántas horas.
       </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
         {!areaLider && (
           <div style={{ minWidth: 220 }}>
             <FSel value={areaSel} onChange={setAreaSel} options={(areasNomina || []).slice().sort((a, b) => a.nombre.localeCompare(b.nombre)).map((a) => ({ value: a.nombre, label: a.nombre }))} placeholder="Todas las áreas" />
           </div>
         )}
-        <input type="month" value={mes} onChange={(e) => setMes(e.target.value)} style={{ padding: "8px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13 }} />
+        <input type="month" value={mes} onChange={(e) => e.target.value && setMes(e.target.value)} style={{ padding: "8px 10px", border: `1px solid ${C.border}`, borderRadius: 10, fontSize: 13, fontFamily: "inherit" }} />
+        <div style={{ display: "inline-flex", background: "#ECE6DC", borderRadius: 11, padding: 3 }}>
+          {cajaSegmento("q1", "1 – 15")}
+          {cajaSegmento("q2", `16 – ${ultimoNum}`)}
+          {cajaSegmento("mes", "Mes")}
+        </div>
       </div>
       {!trabajadoresMostrados.length && <div style={{ padding: 20, color: C.slate, fontSize: 13 }}>No hay trabajadores para mostrar en esta área.</div>}
       {!!trabajadoresMostrados.length && (
-        <div style={{ overflowX: "auto", border: `1px solid ${C.border}`, borderRadius: 12 }}>
-          <table style={{ borderCollapse: "collapse", fontSize: 12, minWidth: "100%" }}>
-            <thead>
-              <tr style={{ background: C.ink }}>
-                <th style={{ position: "sticky", left: 0, background: C.ink, padding: "8px 10px", color: "#fff", textAlign: "left", fontWeight: 700, fontSize: 11, zIndex: 1 }}>Trabajador</th>
-                {diasDelMes.map((iso) => (
-                  <th key={iso} style={{ padding: "6px 4px", color: "#fff", textAlign: "center", fontWeight: 700, fontSize: 10, minWidth: 28 }}>{Number(iso.slice(8, 10))}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {trabajadoresMostrados.map((t, i) => {
-                const turno = resolverTurnoDeTrabajador(t, areasNomina, turnos);
-                return (
-                  <tr key={t.id} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
-                    <td style={{ position: "sticky", left: 0, background: i % 2 === 0 ? C.canvas : C.white, padding: "6px 10px", fontWeight: 700, whiteSpace: "nowrap" }}>
-                      {t.nombre}
-                      {t.exentoHuellero && <span style={{ marginLeft: 6, padding: "1px 6px", borderRadius: 20, fontSize: 9, fontWeight: 700, background: C.amberBg, color: C.amber }}>🚫 Exento</span>}
-                    </td>
-                    {diasDelMes.map((iso) => {
-                      const e = estadoDelDia(t, iso, turno);
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 12, marginBottom: 16 }}>
+            <KpiAsistencia etiqueta="Asistencia del área" valor={`${pctArea} %`} unidad={`${tot.asis} de ${tot.esp} días`} sub="Días con marcación sobre los que tocaba" color={C.green} halo={C.greenBg} />
+            <KpiAsistencia etiqueta="Asistió y tuvo permiso" valor={tot.conP} unidad={`${tot.conP === 1 ? "día" : "días"} · ${tot.horas ? fmtHoras(tot.horas) : "0 h"}`} sub="Marcó el huellero y tenía permiso" color={C.violet} halo={C.violetBg} />
+            <KpiAsistencia etiqueta="Permiso sin asistir" valor={tot.solo} unidad={tot.solo === 1 ? "día" : "días"} sub="Permiso de día completo, no marcó" color={C.amber} halo={C.amberBg} />
+            <KpiAsistencia etiqueta="Sin justificar" valor={tot.nom} unidad={tot.nom === 1 ? "día" : "días"} sub="No marcó y no hay permiso" color={C.ink} halo="#ECE6DC" />
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "8px 18px", fontSize: 12, color: C.slate, margin: "0 2px 12px", alignItems: "center" }}>
+            {leyenda.map((l) => (
+              <span key={l.t} style={{ display: "inline-flex", alignItems: "center", gap: 7, fontWeight: l.destacado ? 700 : 400, color: l.destacado ? C.violet : C.slate }}>
+                <span style={{ display: "inline-block", width: 26 }}><CeldaAsistencia e={l.e} /></span>
+                {l.t}
+              </span>
+            ))}
+          </div>
+          <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 18, overflow: "hidden", boxShadow: "0 1px 2px rgba(26,26,46,.04), 0 8px 24px rgba(26,26,46,.05)" }}>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ borderCollapse: "separate", borderSpacing: 0, width: "100%", fontSize: 12 }}>
+                <thead>
+                  <tr>
+                    <th style={{ position: "sticky", left: 0, zIndex: 2, background: "#FAF8F4", textAlign: "left", padding: "10px 16px", minWidth: 215, color: C.slate, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.05em", borderBottom: `1px solid ${C.border}` }}>Trabajador</th>
+                    {["Asistió", "Con permiso", "Sin asistir"].map((h) => (
+                      <th key={h} style={{ background: "#FAF8F4", textAlign: "left", padding: "10px 6px 10px 12px", color: C.slate, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.05em", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" }}>{h}</th>
+                    ))}
+                    {diasVisibles.map((iso) => {
+                      const dow = new Date(iso + "T00:00:00").getDay();
+                      const noLab = dow === 0 || esFestivoColombia(iso);
+                      const esHoy = iso === hoyISO;
                       return (
-                        <td key={iso} title={e.title} style={{ padding: "4px 2px", textAlign: "center", background: e.bg, fontSize: 13 }}>
-                          {e.icon}
-                        </td>
+                        <th key={iso} style={{ background: noLab ? "#FBF9F5" : "#FAF8F4", padding: "8px 3px", borderBottom: `1px solid ${C.border}`, borderLeft: iso.endsWith("-16") && rango === "mes" ? `1.5px solid ${C.border}` : "none", textAlign: "center" }}>
+                          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 1, minWidth: 30, opacity: noLab ? 0.45 : 1 }}>
+                            <i style={{ fontStyle: "normal", fontSize: 10, color: "#A8A39A", fontWeight: 600 }}>{LETRAS_DIA[dow]}</i>
+                            <b style={{ fontSize: 12, color: esHoy ? "#fff" : C.ink, background: esHoy ? C.ink : "transparent", borderRadius: 7, padding: "1px 7px" }}>{Number(iso.slice(8, 10))}</b>
+                          </div>
+                        </th>
                       );
                     })}
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                </thead>
+                <tbody>
+                  {analisis.map(({ t, celdas, r }, i) => {
+                    const elegido = sel && sel.t.id === t.id;
+                    const fondo = elegido ? "#FBF8FF" : C.white;
+                    const celda = { padding: "9px 4px", borderBottom: `1px solid #F0EBE3`, background: fondo, verticalAlign: "middle" };
+                    return (
+                      <tr key={t.id}>
+                        <td onClick={() => setSelId(t.id)} style={{ ...celda, position: "sticky", left: 0, zIndex: 1, padding: "9px 16px", cursor: "pointer" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
+                            <div style={{ width: 34, height: 34, borderRadius: "50%", display: "grid", placeItems: "center", fontSize: 12, fontWeight: 800, color: "#fff", flex: "none", background: AVATARES_ASISTENCIA[i % AVATARES_ASISTENCIA.length] }}>{iniciales(t.nombre)}</div>
+                            <div>
+                              <div style={{ fontSize: 13, fontWeight: 700, lineHeight: 1.2 }}>
+                                {nombreBonitoAsistencia(t.nombre)}
+                                {t.exentoHuellero && <span style={{ marginLeft: 6, padding: "1px 6px", borderRadius: 20, fontSize: 9, fontWeight: 700, background: C.amberBg, color: C.amber }}>🚫 Exento</span>}
+                              </div>
+                              <div style={{ fontSize: 11, color: C.slate, marginTop: 1 }}>{t.area || "Sin asignar"}</div>
+                            </div>
+                          </div>
+                        </td>
+                        {t.exentoHuellero ? (
+                          <td colSpan={3} style={{ ...celda, padding: "9px 12px", color: C.slate, fontSize: 12 }}>No necesita marcar el huellero</td>
+                        ) : (
+                          <>
+                            <td style={{ ...celda, padding: "9px 6px 9px 12px", whiteSpace: "nowrap" }}>
+                              <div style={{ display: "flex", flexDirection: "column", gap: 5, minWidth: 118 }}>
+                                <b style={{ fontSize: 19, fontWeight: 800, letterSpacing: -0.5 }}>{r.asis}<span style={{ fontSize: 11.5, fontWeight: 600, color: C.slate, letterSpacing: 0, marginLeft: 3 }}>de {r.esp} días</span></b>
+                                <BarraAsistencia r={r} />
+                              </div>
+                            </td>
+                            <td style={{ ...celda, padding: "9px 6px 9px 12px", whiteSpace: "nowrap" }}>
+                              {r.conP ? (
+                                <span style={{ display: "inline-flex", alignItems: "center", gap: 6, background: C.violetBg, color: C.violet, borderRadius: 20, padding: "4px 10px", fontSize: 12, fontWeight: 700 }}>
+                                  <IconoAsis tipo="per" size={12} />
+                                  {plural(r.conP, "día", "días")}{r.horas ? ` · ${fmtHoras(r.horas)}` : ""}
+                                </span>
+                              ) : <span style={{ color: "#A8A39A", fontWeight: 600 }}>—</span>}
+                            </td>
+                            <td style={{ ...celda, padding: "9px 6px 9px 12px", whiteSpace: "nowrap" }}>
+                              {r.solo ? <span style={{ display: "inline-flex", background: C.amberBg, color: C.amber, borderRadius: 20, padding: "4px 10px", fontSize: 12, fontWeight: 700 }}>{plural(r.solo, "día", "días")}</span> : <span style={{ color: "#A8A39A", fontWeight: 600 }}>—</span>}
+                            </td>
+                          </>
+                        )}
+                        {celdas.map((c) => (
+                          <td key={c.iso} style={{ ...celda, textAlign: "center", background: c.tipo === "nl" ? "#FBF9F5" : fondo, borderLeft: c.iso.endsWith("-16") && rango === "mes" ? `1.5px solid ${C.border}` : "none", boxShadow: hoyEnRango && c.iso === hoyISO ? "inset 2px 0 0 #E8E2F5, inset -2px 0 0 #E8E2F5" : "none" }}>
+                            <CeldaAsistencia e={c} />
+                          </td>
+                        ))}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          {sel && (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 14, marginTop: 16 }}>
+              <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 16, padding: "16px 18px" }}>
+                <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 10 }}>{nombreBonitoAsistencia(sel.t.nombre)}</div>
+                {sel.t.exentoHuellero ? (
+                  <p style={{ fontSize: 13, color: C.slate, margin: 0 }}>Esta persona está exenta de huellero: no se le exige marcación.</p>
+                ) : (
+                  <>
+                    <p style={{ fontSize: 13.5, lineHeight: 1.55, margin: "0 0 14px", color: C.ink }}>
+                      Asistió <b>{sel.r.asis} de {sel.r.esp} días</b>
+                      {sel.r.conP ? <>; de esos, <b>{sel.r.conP} con permiso ({fmtHoras(sel.r.horas)})</b></> : "; ninguno con permiso"}
+                      {sel.r.solo ? <> y tuvo <b>{plural(sel.r.solo, "día", "días")} de permiso sin asistir</b></> : null}.
+                    </p>
+                    <div style={{ display: "flex", gap: 22, flexWrap: "wrap", marginBottom: 12 }}>
+                      {[
+                        { v: <>{sel.r.asis}<span style={{ fontSize: 14, color: C.slate, fontWeight: 600 }}> / {sel.r.esp}</span></>, t: "días que asistió", c: C.green },
+                        { v: sel.r.conP, t: "de esos, con permiso", c: C.violet },
+                        { v: sel.r.horas ? fmtHoras(sel.r.horas) : "0 h", t: "horas de permiso", c: C.violet },
+                        { v: sel.r.solo, t: "permiso sin asistir", c: C.amber },
+                      ].map((x) => (
+                        <div key={x.t} style={{ minWidth: 90 }}>
+                          <b style={{ display: "block", fontSize: 24, fontWeight: 800, letterSpacing: -0.8, color: x.c }}>{x.v}</b>
+                          <span style={{ fontSize: 11.5, color: C.slate, fontWeight: 600 }}>{x.t}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <BarraAsistencia r={sel.r} alto={9} />
+                  </>
+                )}
+              </div>
+              <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 16, padding: "16px 18px" }}>
+                <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 10 }}>Días con permiso</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {sel.celdas.filter((c) => c.tipo === "mix" || c.tipo === "per").map((c) => {
+                    const dow = new Date(c.iso + "T00:00:00").getDay();
+                    const mix = c.tipo === "mix";
+                    return (
+                      <div key={c.iso} style={{ display: "flex", gap: 12, alignItems: "center", border: `1px solid ${C.border}`, borderRadius: 12, padding: "10px 12px", background: "#FAF8F4" }}>
+                        <div style={{ width: 44, textAlign: "center", lineHeight: 1.15, flex: "none" }}>
+                          <b style={{ display: "block", fontSize: 18, fontWeight: 800 }}>{Number(c.iso.slice(8, 10))}</b>
+                          <span style={{ fontSize: 10, color: C.slate, textTransform: "uppercase", fontWeight: 700 }}>{NOMBRES_DIA[dow]}</span>
+                        </div>
+                        <div>
+                          <div style={{ fontSize: 13, fontWeight: 700 }}>{c.motivo}</div>
+                          <div style={{ fontSize: 12, color: C.slate, marginTop: 1 }}>
+                            {mix ? `Asistió · permiso ${c.horaInicio ? `${c.horaInicio}–${c.horaFin}` : "de día completo"}` : "Permiso de día completo · no marcó"}
+                          </div>
+                        </div>
+                        <div style={{ marginLeft: "auto", textAlign: "right", fontSize: 12, color: C.slate }}>
+                          <b style={{ display: "block", color: mix ? C.violet : C.amber, fontSize: 15 }}>{mix ? fmtHoras(c.horas) : "Sin asistir"}</b>
+                          {mix ? "de permiso" : "1 día"}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {!sel.celdas.some((c) => c.tipo === "mix" || c.tipo === "per") && <div style={{ color: C.slate, fontSize: 13 }}>Sin permisos en este rango.</div>}
+                </div>
+              </div>
+            </div>
+          )}
+          <p style={{ fontSize: 12.5, color: C.slate, lineHeight: 1.6, marginTop: 14, maxWidth: 900 }}>
+            <b style={{ color: C.ink }}>Cómo se calcula:</b> <b style={{ color: C.ink }}>Asistió</b> = días con marcación del huellero, sobre los días que le tocaba trabajar hasta hoy (los días «sin datos», porque aún no se sube el huellero, no se cuentan). <b style={{ color: C.ink }}>Con permiso</b> = días en que marcó y además tenía un permiso; las horas son la duración de ese permiso con la hora de inicio y fin con que se registró (se descuentan los descansos del turno, igual que en Costos), o las del turno si es de día completo. <b style={{ color: C.ink }}>Sin asistir</b> = días de permiso en que no marcó. Solo cambia lo que se ve: no modifica ningún cálculo ni la liquidación.
+          </p>
+        </>
       )}
     </div>
   );
@@ -6596,6 +6871,76 @@ function medirPermisoHorasCosto(a, { trabajadores, areasNomina, turnos }) {
 }
 function fmtHoras(h) {
   return `${(Math.round((Number(h) || 0) * 10) / 10).toLocaleString("es-CO")} h`;
+}
+// (2026-11-19, a pedido de Fredy) Asistencia con permiso. El conteo "Días
+// trabajados (huellero)" de la liquidación cuenta TODO día con marcación, aunque
+// ese mismo día la persona haya tenido un permiso (p. ej. salió 2 h a una cita
+// médica pero igual marcó). El Historial de Asistencia, en cambio, mostraba 🗓️
+// y escondía la marcación, y por eso las dos pantallas daban números distintos
+// (Linda: 8 en la liquidación vs 9 días en el calendario). Estas funciones
+// separan los dos casos SIN cambiar ningún valor de la nómina: solo sirven para
+// mostrar «asistió y tuvo permiso» (días y horas de permiso).
+function medirPermisoDelDia(t, iso, ausDelDia, areasNomina, turnos) {
+  let horas = 0;
+  ausDelDia.forEach((a) => {
+    horas += medirPermisoHorasCosto(
+      { trabajadorId: t.id, fechaInicio: iso, fechaFin: iso, horaInicio: a.horaInicio, horaFin: a.horaFin },
+      { trabajadores: [t], areasNomina, turnos }
+    ).horas;
+  });
+  const a0 = ausDelDia[0] || {};
+  const parcial = minutosDeHoraTurno(a0.horaInicio) != null && minutosDeHoraTurno(a0.horaFin) != null;
+  return { motivo: a0.motivo || "Permiso", horaInicio: parcial ? a0.horaInicio : "", horaFin: parcial ? a0.horaFin : "", horas };
+}
+// Días del rango [desde, hasta] en que el trabajador marcó huellero Y tenía un permiso.
+function diasConPermisoYMarcacion(t, desde, hasta, diasTrab, ausencias) {
+  const { areasNomina, turnos } = CONTEXTO_VACACIONES;
+  const nombreNorm = normalizarNombreHuellero(t.nombre);
+  const susAus = (ausencias || []).filter((a) => a.trabajadorId === t.id && a.fechaInicio <= hasta && (a.fechaFin || a.fechaInicio) >= desde);
+  if (!susAus.length) return [];
+  const marcados = new Set();
+  (diasTrab || []).forEach((d) => {
+    if (d.fecha >= desde && d.fecha <= hasta && coincideHuellero(d, t, nombreNorm)) marcados.add(d.fecha);
+  });
+  const out = [];
+  marcados.forEach((iso) => {
+    const delDia = susAus.filter((a) => a.fechaInicio <= iso && iso <= (a.fechaFin || a.fechaInicio));
+    if (!delDia.length) return;
+    out.push({ fecha: iso, ...medirPermisoDelDia(t, iso, delDia, areasNomina, turnos) });
+  });
+  return out.sort((a, b) => (a.fecha < b.fecha ? -1 : 1));
+}
+// Lo que se guarda junto al cálculo de la liquidación (siempre números, nunca undefined).
+function resumenPermisoMarcado(t, desde, hasta, diasTrab, ausencias) {
+  const lista = diasConPermisoYMarcacion(t, desde, hasta, diasTrab, ausencias);
+  return { dias: lista.length, horas: Math.round(lista.reduce((s, x) => s + x.horas, 0) * 100) / 100 };
+}
+function IconoAsis({ tipo, size = 15 }) {
+  const p = { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true };
+  if (tipo === "per") return (<svg {...p} strokeWidth="2.4"><rect x="4" y="5" width="16" height="15" rx="3" /><path d="M4 10h16M9 3v4M15 3v4" /></svg>);
+  if (tipo === "no") return (<svg {...p} strokeWidth="3"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" /></svg>);
+  return (<svg {...p} strokeWidth="3"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>);
+}
+// Aviso al lado de «Días trabajados (huellero)» en la liquidación: el número no cambia.
+function ChipPermisoMarcado({ pm }) {
+  if (!pm || !pm.dias) return null;
+  return (
+    <span
+      title="Días de esta quincena en que marcó el huellero y además tenía un permiso. Es solo un aviso: no cambia el número de días trabajados ni ningún valor."
+      style={{ display: "inline-flex", alignItems: "center", gap: 5, background: C.violetBg, color: C.violet, borderRadius: 20, padding: "3px 9px", fontSize: 11.5, fontWeight: 700, whiteSpace: "nowrap" }}
+    >
+      <IconoAsis tipo="per" size={11} />
+      {pm.dias} con permiso{pm.horas ? ` · ${fmtHoras(pm.horas)}` : ""}
+    </span>
+  );
+}
+function DiasTrabajadosConAviso({ dias, pm }) {
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 9, justifyContent: "flex-end" }}>
+      <span style={{ fontWeight: 700, color: C.green }}>{dias == null ? "—" : dias}</span>
+      <ChipPermisoMarcado pm={pm} />
+    </span>
+  );
 }
 function personasDelArea(area, permisosDelMes, faltasDelMes, retardosDelMes, trabajadores, medidas) {
   const porPersona = new Map();
@@ -7917,7 +8262,7 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
       // (seguros, funeraria, etc.) -- ver DeduccionesFijasView.
       const deduccionesDetalle = soloPagosPendientes ? [] : deduccionesActivasDeTrabajador(deduccionesTrabajador, t.id);
       const descuentoDeducciones = sumaDeducciones(deduccionesDetalle);
-      return { trabajador: t, calculo: { ...base, soloPagosPendientes, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, horasDetalle, horasCant, totalHoras, totalHorasExtra, bonificacionPuntual, descuentoCobros, cobrosDetalle, deduccionesDetalle, descuentoDeducciones, ...causacionContraNeto(base, { totalHoras, totalHorasExtra, bonificacionPuntual, descuentoCobros, descuentoDeducciones }) } };
+      return { trabajador: t, calculo: { ...base, soloPagosPendientes, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, permisoMarcado: resumenPermisoMarcado(t, inicio, fin, diasTrabajados, ausencias), horasDetalle, horasCant, totalHoras, totalHorasExtra, bonificacionPuntual, descuentoCobros, cobrosDetalle, deduccionesDetalle, descuentoDeducciones, ...causacionContraNeto(base, { totalHoras, totalHorasExtra, bonificacionPuntual, descuentoCobros, descuentoDeducciones }) } };
     });
     setResultados(filas);
     setGuardadoOk(false);
@@ -8155,7 +8500,7 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
                 <span onClick={() => setDetalleFaltas({ trabajador: f.trabajador, fechas: f.calculo.fechasFalta || [] })} style={{ fontWeight: 800, color: f.calculo.diasInasistencia > 0 ? C.red : C.green, cursor: "pointer", textDecoration: "underline" }} title="Ver el detalle de las fechas">{f.calculo.diasInasistencia}</span>
               ) },
               { key: "diasTrabajados", label: "Días trabajados (huellero)", align: "right", render: (f) => (
-                <span style={{ fontWeight: 700, color: C.green }}>{f.calculo.diasTrabajados}</span>
+                <DiasTrabajadosConAviso dias={f.calculo.diasTrabajados} pm={f.calculo.permisoMarcado} />
               ) },
               { key: "diasSinAuxilio", label: "Días sin aux. transporte", align: "right", render: (f) => (
                 <span style={{ fontWeight: 700, color: f.calculo.diasSinAuxilio > 0 ? C.amber : C.slate }}>{f.calculo.diasSinAuxilio || 0}</span>
@@ -8283,7 +8628,7 @@ function HistorialFiscalView({ liquidaciones, trabajadores }) {
                 <span style={{ fontWeight: 700, color: f.diasInasistencia > 0 ? C.red : C.green }}>{f.diasInasistencia || 0}</span>
               ) },
               { key: "diasTrabajados", label: "Días trabajados (huellero)", align: "right", render: (f) => (
-                <span style={{ fontWeight: 700, color: C.green }}>{f.diasTrabajados == null ? "—" : f.diasTrabajados}</span>
+                <DiasTrabajadosConAviso dias={f.diasTrabajados} pm={f.permisoMarcado} />
               ) },
               { key: "sueldoQuincena", label: "Sueldo quincena", align: "right", render: (f) => fmtMoney(f.sueldoQuincena) },
               { key: "auxilioQuincena", label: "Auxilio quincena", align: "right", render: (f) => fmtMoney(f.auxilioQuincena) },
@@ -8932,7 +9277,7 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
       // (seguros, funeraria, etc.) -- ver DeduccionesFijasView.
       const deduccionesDetalle = soloPagosPendientes ? [] : deduccionesActivasDeTrabajador(deduccionesTrabajador, t.id);
       const descuentoDeducciones = sumaDeducciones(deduccionesDetalle);
-      return { trabajador: t, calculo: { ...base, soloPagosPendientes, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, horasDetalle, horasCant, totalHoras, totalHorasExtra, bonificacionPuntual, descuentoCobros, cobrosDetalle, deduccionesDetalle, descuentoDeducciones, ...causacionContraNeto(base, { totalHoras, totalHorasExtra, bonificacionPuntual, descuentoCobros, descuentoDeducciones }) } };
+      return { trabajador: t, calculo: { ...base, soloPagosPendientes, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, permisoMarcado: resumenPermisoMarcado(t, inicio, fin, diasTrabajados, ausencias), horasDetalle, horasCant, totalHoras, totalHorasExtra, bonificacionPuntual, descuentoCobros, cobrosDetalle, deduccionesDetalle, descuentoDeducciones, ...causacionContraNeto(base, { totalHoras, totalHorasExtra, bonificacionPuntual, descuentoCobros, descuentoDeducciones }) } };
     });
     setResultados(filas);
     setGuardadoOk(false);
@@ -9146,7 +9491,7 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
                 <span onClick={() => setDetalleFaltas({ trabajador: f.trabajador, fechas: f.calculo.fechasFalta || [] })} style={{ fontWeight: 800, color: f.calculo.diasInasistencia > 0 ? C.red : C.green, cursor: "pointer", textDecoration: "underline" }} title="Ver el detalle de las fechas">{f.calculo.diasInasistencia}</span>
               ) },
               { key: "diasTrabajados", label: "Días trabajados (huellero)", align: "right", render: (f) => (
-                <span style={{ fontWeight: 700, color: C.green }}>{f.calculo.diasTrabajados}</span>
+                <DiasTrabajadosConAviso dias={f.calculo.diasTrabajados} pm={f.calculo.permisoMarcado} />
               ) },
               { key: "diasSinAuxilio", label: "Días sin aux. transporte", align: "right", render: (f) => (
                 <span style={{ fontWeight: 700, color: f.calculo.diasSinAuxilio > 0 ? C.amber : C.slate }}>{f.calculo.diasSinAuxilio || 0}</span>
@@ -9788,7 +10133,7 @@ function HistorialFiscalDestajoView({ liquidaciones, trabajadores }) {
                 <span style={{ fontWeight: 700, color: f.diasInasistencia > 0 ? C.red : C.green }}>{f.diasInasistencia || 0}</span>
               ) },
               { key: "diasTrabajados", label: "Días trabajados (huellero)", align: "right", render: (f) => (
-                <span style={{ fontWeight: 700, color: C.green }}>{f.diasTrabajados == null ? "—" : f.diasTrabajados}</span>
+                <DiasTrabajadosConAviso dias={f.diasTrabajados} pm={f.permisoMarcado} />
               ) },
               { key: "sueldoQuincena", label: "Sueldo quincena", align: "right", render: (f) => fmtMoney(f.sueldoQuincena) },
               { key: "auxilioQuincena", label: "Auxilio quincena", align: "right", render: (f) => fmtMoney(f.auxilioQuincena) },
@@ -10344,7 +10689,7 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
       const incapNeto = (incap.devengado || 0) - (base.salarioMinimoGarantizado ? (SMMLV_2026 / 30) * incap.dias : 0);
       const cobrosDetalle = cobrosPendientesDeTrabajador(lotesConCobros, t.id, fin);
       const descuentoCobros = sumaCobrosPendientes(cobrosDetalle);
-      return { trabajador: t, calculo: { ...base, causacionManual: tieneCausacionManual, diasInasistencia, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, horasDetalle, horasCant, totalHorasExtra, bonificacionPuntual, descuentoCobros, cobrosDetalle, netoAntesDeAjuste: base.netoBase - descuentoCobros + totalHorasExtra + bonificacionPuntual + incapNeto, ...incapCampos(incap) } };
+      return { trabajador: t, calculo: { ...base, causacionManual: tieneCausacionManual, diasInasistencia, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, permisoMarcado: resumenPermisoMarcado(t, inicio, fin, diasTrabajados, ausencias), horasDetalle, horasCant, totalHorasExtra, bonificacionPuntual, descuentoCobros, cobrosDetalle, netoAntesDeAjuste: base.netoBase - descuentoCobros + totalHorasExtra + bonificacionPuntual + incapNeto, ...incapCampos(incap) } };
     });
     setResultados(filas);
     setGuardadoOk(false);
@@ -10609,7 +10954,7 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
                 <span onClick={() => setDetalleFaltas({ trabajador: f.trabajador, fechas: f.calculo.fechasFalta || [] })} style={{ fontWeight: 800, color: f.calculo.diasInasistencia > 0 ? C.red : C.green, cursor: "pointer", textDecoration: "underline" }} title="Ver el detalle de las fechas">{f.calculo.diasInasistencia}</span>
               ) },
               { key: "diasTrabajados", label: "Días trabajados (huellero)", align: "right", render: (f) => (
-                <span style={{ fontWeight: 700, color: C.green }}>{f.calculo.diasTrabajados}</span>
+                <DiasTrabajadosConAviso dias={f.calculo.diasTrabajados} pm={f.calculo.permisoMarcado} />
               ) },
               { key: "produccionReal", label: "Producción real", align: "right", render: (f) => f.calculo.pagoPorDia ? (
                 <span title={`${f.calculo.diasPagados} día(s) × ${fmtMoney(f.calculo.valorDia)}`}><strong>{fmtMoney(f.calculo.pagoDias)}</strong> <span style={{ color: C.slate, fontWeight: 400 }}>({f.calculo.diasPagados} × {fmtMoney(f.calculo.valorDia)})</span></span>
@@ -11673,7 +12018,7 @@ function HistorialDestajoView({ liquidaciones, trabajadores }) {
                 <span style={{ fontWeight: 700, color: f.diasInasistencia > 0 ? C.red : C.green }}>{f.diasInasistencia || 0}</span>
               ) },
               { key: "diasTrabajados", label: "Días trabajados (huellero)", align: "right", render: (f) => (
-                <span style={{ fontWeight: 700, color: C.green }}>{f.diasTrabajados == null ? "—" : f.diasTrabajados}</span>
+                <DiasTrabajadosConAviso dias={f.diasTrabajados} pm={f.permisoMarcado} />
               ) },
               { key: "descuentoCobros", label: "Descuento cobros Bodega", align: "right", render: (f) => f.descuentoCobros > 0 ? <span style={{ color: C.red, fontWeight: 700 }}>-{fmtMoney(f.descuentoCobros)}</span> : <span style={{ color: C.slate }}>—</span> },
               { key: "netoAPagar", label: "Neto a pagar (producción)", align: "right", render: (f) => <strong>{fmtMoney(f.netoAPagar)}</strong> },
