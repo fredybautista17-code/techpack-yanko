@@ -16,6 +16,12 @@ export const GRUPOS_MI_DIA = [
     ],
   },
   {
+    // (2026-11-20, a pedido de Fredy) Asistencia del área del usuario en la quincena actual: días que asistió, cuántos con permiso y horas de
+    // permiso (el mismo Historial de Asistencia de Nómina, solo lectura). Sirve para cualquier «Área Interna» que exista en las fichas de Nómina.
+    id: "asistencia", titulo: "Asistencia de su área", requiere: "areaInterna",
+    tarjetas: [{ id: "asistencia_area", label: "Asistencia de mi área (quincena actual): días que asistió, con permiso y horas de permiso, por trabajador" }],
+  },
+  {
     // (2026-11-10, a pedido de Fredy) Ya no exige que el usuario sea del área CORTE: la persona de costos también ve el saldo de la tela.
     id: "consumo_tela", titulo: "Costo de tela (teórico contra real)",
     tarjetas: [{ id: "consumo_tela", label: "Saldo de costo de la tela: consumo teórico contra real, con lo pagado de más en pesos (trazos de ATLAS y rendimiento de Busint)" }],

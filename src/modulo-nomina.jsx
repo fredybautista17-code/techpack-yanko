@@ -7,11 +7,14 @@ import {
   setDoc,
   deleteDoc,
   onSnapshot,
+  query,
+  where,
   writeBatch,
   runTransaction,
 } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { getStorage, ref as storageRef, uploadString, getDownloadURL } from "firebase/storage";
+import { claveArea } from "./centro-costo-historico-parser";
 import CumpleanosView from "./cumpleanos";
 import GastosTalentoHumanoView from "./talento-gastos";
 const firebaseConfig = {
@@ -6501,7 +6504,7 @@ function BarraAsistencia({ r, alto = 6 }) {
     </div>
   );
 }
-function HistorialAsistenciaAreaView({ areasNomina, trabajadores, areaLider, diasTrabajados, faltas, ausencias, anomalias, retardos, turnos }) {
+function HistorialAsistenciaAreaView({ areasNomina, trabajadores, areaLider, diasTrabajados, faltas, ausencias, anomalias, retardos, turnos, fija = false }) {
   const hoyISO = today();
   const [areaSel, setAreaSel] = useState(areaLider || "");
   const [mes, setMes] = useState(hoyISO.slice(0, 7));
@@ -6516,7 +6519,8 @@ function HistorialAsistenciaAreaView({ areasNomina, trabajadores, areaLider, dia
     const n = d.getDate();
     if (rango === "mes" || (rango === "q1" ? n <= 15 : n >= 16)) diasVisibles.push(isoDate(d));
   }
-  const areaEfectiva = areaLider || areaSel;
+  // `fija` = incrustado en ☀️ Mi Día: los trabajadores ya vienen filtrados al área del usuario y solo se ve la quincena actual.
+  const areaEfectiva = fija ? "" : (areaLider || areaSel);
   const trabajadoresMostrados = (areaEfectiva ? trabajadores.filter((t) => (t.area || "Sin asignar") === areaEfectiva) : trabajadores)
     .slice()
     .sort((a, b) => a.nombre.localeCompare(b.nombre));
@@ -6600,17 +6604,25 @@ function HistorialAsistenciaAreaView({ areasNomina, trabajadores, areaLider, dia
         Calendario leído de lo que ya quedó guardado al subir el huellero. Por cada persona: cuántos días asistió, cuántos de esos con permiso y cuántas horas.
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
-        {!areaLider && (
+        {!areaLider && !fija && (
           <div style={{ minWidth: 220 }}>
             <FSel value={areaSel} onChange={setAreaSel} options={(areasNomina || []).slice().sort((a, b) => a.nombre.localeCompare(b.nombre)).map((a) => ({ value: a.nombre, label: a.nombre }))} placeholder="Todas las áreas" />
           </div>
         )}
-        <input type="month" value={mes} onChange={(e) => e.target.value && setMes(e.target.value)} style={{ padding: "8px 10px", border: `1px solid ${C.border}`, borderRadius: 10, fontSize: 13, fontFamily: "inherit" }} />
-        <div style={{ display: "inline-flex", background: "#ECE6DC", borderRadius: 11, padding: 3 }}>
-          {cajaSegmento("q1", "1 – 15")}
-          {cajaSegmento("q2", `16 – ${ultimoNum}`)}
-          {cajaSegmento("mes", "Mes")}
-        </div>
+        {fija ? (
+          <span style={{ padding: "7px 14px", borderRadius: 11, background: "#ECE6DC", fontSize: 12.5, fontWeight: 700, color: C.ink }}>
+            Quincena {rango === "q1" ? "1 – 15" : `16 – ${ultimoNum}`} de {new Date(anio, mesNum - 1, 1).toLocaleDateString("es-CO", { month: "long", year: "numeric" })}
+          </span>
+        ) : (
+          <>
+            <input type="month" value={mes} onChange={(e) => e.target.value && setMes(e.target.value)} style={{ padding: "8px 10px", border: `1px solid ${C.border}`, borderRadius: 10, fontSize: 13, fontFamily: "inherit" }} />
+            <div style={{ display: "inline-flex", background: "#ECE6DC", borderRadius: 11, padding: 3 }}>
+              {cajaSegmento("q1", "1 – 15")}
+              {cajaSegmento("q2", `16 – ${ultimoNum}`)}
+              {cajaSegmento("mes", "Mes")}
+            </div>
+          </>
+        )}
       </div>
       {!trabajadoresMostrados.length && <div style={{ padding: 20, color: C.slate, fontSize: 13 }}>No hay trabajadores para mostrar en esta área.</div>}
       {!!trabajadoresMostrados.length && (
@@ -6773,6 +6785,53 @@ function HistorialAsistenciaAreaView({ areasNomina, trabajadores, areaLider, dia
         </>
       )}
     </div>
+  );
+}
+// (2026-11-20, a pedido de Fredy) Pestaña «🕒 Asistencia» de ☀️ Mi Día: la asistencia del área del usuario (su «Área Interna»)
+// en la quincena actual: días que asistió, cuántos con permiso y horas de permiso. Es el mismo Historial de Asistencia, solo
+// lectura. Lee únicamente lo del mes en curso (huellero, faltas, anomalías y retardos con fecha desde el día 1) más las fichas,
+// turnos y permisos, así que no descarga todo el historial.
+export function AsistenciaAreaMiDia({ db, currentUser }) {
+  const desde = `${today().slice(0, 7)}-01`;
+  const areaUsuario = currentUser?.areaNomina || "";
+  const [datos, setDatos] = useState({ trabajadores: null, areas: [], turnos: [], ausencias: [], dias: [], faltas: [], anomalias: [], retardos: [] });
+  useEffect(() => {
+    if (!areaUsuario) return undefined;
+    const poner = (clave) => (snap) => setDatos((p) => ({ ...p, [clave]: snap.docs.map((d) => ({ ...d.data(), id: d.id })) }));
+    const delMes = (col) => query(collection(db, col), where("fecha", ">=", desde));
+    const desuscribir = [
+      onSnapshot(collection(db, "nomina_trabajadores"), poner("trabajadores"), () => {}),
+      onSnapshot(collection(db, "nomina_areas"), poner("areas"), () => {}),
+      onSnapshot(collection(db, "nomina_turnos"), poner("turnos"), () => {}),
+      onSnapshot(collection(db, "nomina_ausencias"), poner("ausencias"), () => {}),
+      onSnapshot(delMes("nomina_dias_trabajados"), poner("dias"), () => {}),
+      onSnapshot(delMes("nomina_faltas_sin_justificar"), poner("faltas"), () => {}),
+      onSnapshot(delMes("nomina_anomalias_huellero"), poner("anomalias"), () => {}),
+      onSnapshot(delMes("nomina_retardos"), poner("retardos"), () => {}),
+    ];
+    return () => desuscribir.forEach((u) => u());
+  }, [db, desde, areaUsuario]);
+  const claveUsuario = claveArea(areaUsuario);
+  const delArea = useMemo(
+    () => (datos.trabajadores || []).filter((t) => claveArea(t.area || "") === claveUsuario && !(t.fechaRetiro && t.fechaRetiro < desde)),
+    [datos.trabajadores, claveUsuario, desde]
+  );
+  const caja = { padding: 20, color: C.slate, fontSize: 13, background: C.white, border: `1px solid ${C.border}`, borderRadius: 12 };
+  if (!areaUsuario) return <div style={caja}>Tu usuario no tiene un Área Interna asignada. Pídele al administrador que la agregue en Usuarios para ver la asistencia de tu área.</div>;
+  if (datos.trabajadores === null) return <div style={caja}>Cargando la asistencia de {areaUsuario}…</div>;
+  if (!delArea.length) return <div style={caja}>No encontré trabajadores en Nómina con el área «{areaUsuario}». Revisa que el Área Interna del usuario se llame igual que el área de las fichas.</div>;
+  return (
+    <HistorialAsistenciaAreaView
+      fija
+      areasNomina={datos.areas}
+      trabajadores={delArea}
+      diasTrabajados={datos.dias}
+      faltas={datos.faltas}
+      ausencias={datos.ausencias}
+      anomalias={datos.anomalias}
+      retardos={datos.retardos}
+      turnos={datos.turnos}
+    />
   );
 }
 // ─── ESTADÍSTICAS DE PERMISOS (comparativo entre áreas) ──────────────────

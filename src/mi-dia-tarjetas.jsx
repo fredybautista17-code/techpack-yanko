@@ -19,6 +19,9 @@ import { BloqueMuestrasDisenadoras, BloqueCronogramaMuestras } from "./diseno-mu
 import BloqueQueDisenar from "./diseno-que-disenar";
 import { MiDiaPlaneacionBloque, ProgramadorProcesosStandalone, MiDiaNominaStandalone, ListaPorProgramarBloque } from "./modulo-planeacion";
 
+// (2026-11-20, a pedido de Fredy) Asistencia del área: vive en Nómina; se carga solo cuando alguien abre esa pestaña.
+const AsistenciaAreaMiDia = React.lazy(() => import("./modulo-nomina").then((m) => ({ default: m.AsistenciaAreaMiDia })));
+
 const C = {
   ink: "#1A1A2E", slate: "#5A5A7A", border: "#E8E2DB", canvas: "#F7F4F0", white: "#FFFFFF", seam: "#C8B8A2",
   green: "#2D9E6B", greenBg: "#EBF7F2", greenLn: "#C5E6D8", red: "#E85D4A", redBg: "#FDF0EE", redLn: "#F0CCC6",
@@ -457,6 +460,16 @@ export default function MiDiaTarjetasStandalone({ db, currentUser, onVolver, onL
   }
   if (hayCierre) {
     secciones.push({ id: "cierre", icon: "💰", label: "Cierre diario", render: () => <BloqueCierre db={db} currentUser={currentUser} /> });
+  }
+  if (marcadas.includes("asistencia_area")) {
+    secciones.push({
+      id: "asistencia", icon: "🕒", label: "Asistencia",
+      render: () => (
+        <React.Suspense fallback={<div style={{ padding: 20, color: C.slate, fontSize: 13 }}>Cargando la asistencia…</div>}>
+          <AsistenciaAreaMiDia db={db} currentUser={currentUser} />
+        </React.Suspense>
+      ),
+    });
   }
   if (marcadas.includes("consumo_tela")) {
     secciones.push({ id: "consumo", icon: "🧵", label: "Costo de tela", render: () => <BloqueConsumoTela db={db} /> });
