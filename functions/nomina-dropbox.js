@@ -19,6 +19,20 @@ const COL_CONFIRMADA = {
     return Number.isNaN(d.getTime()) ? "" : d.toLocaleString("es-CO", { timeZone: "America/Bogota" });
   },
 };
+// (2026-11-20, a pedido de Fredy) El descuento de «cobros» se separa en tres columnas: Bodega, permisos por horas y retardos (se parte por el origen
+// de cada cobro guardado en cobrosDetalle; una liquidación vieja sin detalle queda toda en Bodega).
+const partesDescuento = (l) => {
+  const lista = Array.isArray(l.cobrosDetalle) ? l.cobrosDetalle : [];
+  const suma = (origen) => lista.filter((c) => c.origen === origen).reduce((s, c) => s + (Number(c.valor) || 0), 0);
+  const permisos = suma("permiso");
+  const retardos = suma("retardo");
+  return { permisos, retardos, bodega: Math.max(0, (Number(l.descuentoCobros) || 0) - permisos - retardos) };
+};
+const COLS_DESCUENTOS = [
+  { h: "Descuento cobros Bodega", v: (l) => partesDescuento(l).bodega, tot: true, fmt: MONEDA },
+  { h: "Desc. permisos (horas)", v: (l) => partesDescuento(l).permisos, tot: true, fmt: MONEDA },
+  { h: "Desc. retardos", v: (l) => partesDescuento(l).retardos, tot: true, fmt: MONEDA },
+];
 const prov = [
   { h: "Cesantías (prov.)", v: num("cesantiasPeriodo"), tot: true, fmt: MONEDA },
   { h: "Intereses cesantías", v: num("interesesPeriodo"), tot: true, fmt: MONEDA },
@@ -39,7 +53,7 @@ const TIPOS = {
       { h: "Auxilio quincena", v: num("auxilioQuincena"), tot: true, fmt: MONEDA },
       { h: "EPS trab.", v: num("epsTrabajador"), tot: true, fmt: MONEDA },
       { h: "Pensión trab.", v: num("pensionTrabajador"), tot: true, fmt: MONEDA },
-      { h: "Descuento cobros Bodega", v: num("descuentoCobros"), tot: true, fmt: MONEDA },
+      ...COLS_DESCUENTOS,
       { h: "Neto a pagar", v: num("netoAPagar"), tot: true, fmt: MONEDA },
       { h: "Pensión empresa", v: num("pensionEmpleador"), tot: true, fmt: MONEDA },
       { h: "ARL empresa", v: num("arlEmpleador"), tot: true, fmt: MONEDA },
@@ -57,7 +71,7 @@ const TIPOS = {
       COL_DIAS_INJUST, COL_DIAS_TRAB,
       { h: "Sueldo quincena", v: num("sueldoQuincena"), tot: true, fmt: MONEDA },
       { h: "Auxilio quincena", v: num("auxilioQuincena"), tot: true, fmt: MONEDA },
-      { h: "Descuento cobros Bodega", v: num("descuentoCobros"), tot: true, fmt: MONEDA },
+      ...COLS_DESCUENTOS,
       { h: "Neto a pagar", v: num("netoAPagar"), tot: true, fmt: MONEDA },
       ...prov, COL_CONFIRMADA,
     ],
@@ -70,7 +84,7 @@ const TIPOS = {
     columnas: [
       { h: "Nombre", v: (l) => l.nombre || "" },
       COL_DIAS_INJUST, COL_DIAS_TRAB,
-      { h: "Descuento cobros Bodega", v: num("descuentoCobros"), tot: true, fmt: MONEDA },
+      ...COLS_DESCUENTOS,
       { h: "Neto a pagar (producción)", v: num("netoAPagar"), tot: true, fmt: MONEDA },
       ...prov, COL_CONFIRMADA,
     ],

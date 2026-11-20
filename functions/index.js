@@ -12994,6 +12994,124 @@ exports.enviarAsistenciaDiaria = onSchedule(
   }
 );
 
+// (2026-11-20, a pedido de Fredy) Correo a la PERSONA cada vez que se le registra un retardo. Sin tolerancia: la entrada del turno + 1 minuto ya
+// es retardo. Los 3 primeros retardos del mes no descuentan; desde el 4.º, cada retardo descuenta 1 hora laboral en la quincena donde cae.
+// Sale cuando se evalúa el reporte del huellero (revisarRetardosYAvisar). Un solo correo por persona y por corrida, con los retardos nuevos
+// (los que no se habían avisado, de los últimos 10 días) y cuántos lleva en el mes. Lo ya avisado queda en nomina_avisos_retardos_persona
+// (id trabajador__fecha) para no repetirse. Quien no tiene correo en su ficha no recibe nada y se devuelve en la lista «sinCorreo».
+const RETARDOS_FECHA_INICIO_AVISO = "2026-11-01";
+const RETARDOS_FECHA_INICIO_DESCUENTO = "2026-11-16"; // los retardos anteriores cuentan para el número del mes pero ya no se descuentan
+const RETARDOS_LIBRES_MES = 3;
+const RETARDOS_DIAS_ATRAS_AVISO = 10;
+function normNombreHuelleroSrv(s) {
+  return String(s || "").trim().toUpperCase().replace(/\s+/g, " ");
+}
+function trabajadorDeRetardoSrv(r, trabajadores) {
+  if (r.trabajadorId) return trabajadores.find((t) => t.id === r.trabajadorId) || null;
+  const idH = r.idHuellero != null ? String(r.idHuellero).trim() : "";
+  if (idH) {
+    const porId = trabajadores.find((t) => String(t.idHuellero || "").trim() === idH);
+    if (porId) return porId;
+  }
+  return trabajadores.find((t) => !String(t.idHuellero || "").trim() && normNombreHuelleroSrv(t.nombre) === r.nombreNorm) || null;
+}
+function fmtFechaCortaSrv(iso) {
+  const [y, m, d] = String(iso || "").split("-");
+  return d && m && y ? `${d}/${m}/${y}` : iso || "";
+}
+function htmlCorreoRetardosPersona({ nombre, nuevos, totalMes, mesLabel }) {
+  const primerNombre = String(nombre || "").trim().split(/\s+/)[0] || "";
+  const bonito = primerNombre ? primerNombre.charAt(0).toUpperCase() + primerNombre.slice(1).toLowerCase() : "";
+  const descuentan = nuevos.filter((r) => r.n > RETARDOS_LIBRES_MES && r.fecha >= RETARDOS_FECHA_INICIO_DESCUENTO).length;
+  let asunto;
+  let titulo;
+  let mensaje;
+  let color;
+  if (descuentan > 0) {
+    asunto = descuentan > 1 ? `ATLAS — ${totalMes} retardos en ${mesLabel}: se descuentan ${descuentan} horas` : `ATLAS — Retardo n.º ${totalMes} de ${mesLabel}: se descuenta 1 hora`;
+    titulo = "Se descuenta por tus retardos";
+    color = "#E85D4A";
+    mensaje = `Ya llevas <b>${totalMes} retardos</b> en ${mesLabel}. A partir del 4.º retardo del mes, <b>cada retardo descuenta 1 hora de tu jornada</b> en la quincena donde ocurrió. ${descuentan === 1 ? "Este retardo" : `Estos ${descuentan} retardos`} se ${descuentan === 1 ? "descontará" : "descontarán"} en tu nómina (${descuentan} hora${descuentan > 1 ? "s" : ""}). Cada retardo adicional que tengas este mes también se descuenta.`;
+  } else if (totalMes === RETARDOS_LIBRES_MES) {
+    asunto = `ATLAS — Llevas ${totalMes} retardos en ${mesLabel}: el próximo se descuenta`;
+    titulo = "Ojo: el próximo retardo se descuenta";
+    color = "#C47C1A";
+    mensaje = `Llevas <b>${totalMes} retardos</b> en ${mesLabel}. Son los 3 que no tienen descuento: <b>desde el 4.º retardo del mes, cada retardo descuenta 1 hora de tu jornada</b>. Procura llegar a tu hora de entrada.`;
+  } else {
+    asunto = `ATLAS — Tienes ${totalMes} retardo${totalMes > 1 ? "s" : ""} en ${mesLabel}`;
+    titulo = `Tienes ${totalMes} retardo${totalMes > 1 ? "s" : ""} este mes`;
+    color = "#5A5A7A";
+    mensaje = `Llevas <b>${totalMes} retardo${totalMes > 1 ? "s" : ""}</b> en ${mesLabel}. Los 3 primeros del mes no tienen descuento, pero <b>desde el 4.º retardo, cada retardo descuenta 1 hora de tu jornada</b>.`;
+  }
+  const filas = nuevos
+    .map((r) => `<tr><td>${escHtmlCP(fmtFechaCortaSrv(r.fecha))}</td><td>${escHtmlCP(r.horaEsperada || "—")}</td><td>${escHtmlCP(r.horaMarcada || "—")}</td><td style="text-align:right">+${Number(r.minutosTarde) || 0} min</td><td style="text-align:center;font-weight:700;color:${r.n > RETARDOS_LIBRES_MES && r.fecha >= RETARDOS_FECHA_INICIO_DESCUENTO ? "#E85D4A" : "#5A5A7A"}">${r.n > RETARDOS_LIBRES_MES ? (r.fecha >= RETARDOS_FECHA_INICIO_DESCUENTO ? "Descuenta 1 h" : "Sin descuento (quincena cerrada)") : `Retardo ${r.n} de 3 libres`}</td></tr>`)
+    .join("");
+  const html = `<div style="max-width:600px;margin:0 auto;font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;color:#1A1A2E;">
+<h2 style="margin:0 0 4px;color:${color};">${titulo}</h2>
+<p style="margin:0 0 14px;color:#5A5A7A;font-size:13px;">Hola${bonito ? ` ${escHtmlCP(bonito)}` : ""},</p>
+<p style="font-size:14px;line-height:1.55;">${mensaje}</p>
+<table border="1" cellpadding="6" style="border-collapse:collapse;width:100%;font-size:13px;margin:12px 0;"><tr style="background:#F7F4F0;"><th>Fecha</th><th>Entrada del turno</th><th>Marcaste</th><th>Tarde</th><th>Estado</th></tr>${filas}</table>
+<p style="font-size:12px;color:#5A5A7A;line-height:1.5;">Regla: no hay tolerancia (si la entrada es a las 7:00, 7:01 ya es retardo). Se cuentan los retardos del mes completo; los 3 primeros no descuentan y desde el 4.º cada uno descuenta 1 hora laboral.<br/>Si crees que alguno de estos retardos es un error, habla con tu líder de área o con Talento Humano.</p>
+<p style="font-size:11px;color:#9a9ab0;">Mensaje automático de ATLAS.</p></div>`;
+  return { asunto, html };
+}
+async function avisarRetardosAPersonas(fecha, retardosMes) {
+  const resultado = { correosPersonales: 0, sinCorreo: [] };
+  if (!retardosMes.length) return resultado;
+  const trabajadoresSnap = await db.collection("nomina_trabajadores").get();
+  const trabajadores = trabajadoresSnap.docs.map((d) => ({ ...d.data(), id: d.id })).filter((t) => t.activo !== false);
+  const porTrabajador = new Map();
+  retardosMes
+    .slice()
+    .sort((a, b) => (a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0))
+    .forEach((r) => {
+      const t = trabajadorDeRetardoSrv(r, trabajadores);
+      if (!t) return;
+      if (!porTrabajador.has(t.id)) porTrabajador.set(t.id, { t, lista: [] });
+      const g = porTrabajador.get(t.id);
+      g.lista.push({ ...r, n: g.lista.length + 1 });
+    });
+  const [y, m, d] = fecha.split("-").map(Number);
+  const limite = new Date(Date.UTC(y, m - 1, d - RETARDOS_DIAS_ATRAS_AVISO)).toISOString().slice(0, 10);
+  const candidatos = [];
+  porTrabajador.forEach((g) => {
+    g.lista.filter((r) => r.fecha >= RETARDOS_FECHA_INICIO_AVISO && r.fecha >= limite).forEach((r) => candidatos.push({ g, r, ref: db.collection("nomina_avisos_retardos_persona").doc(`${g.t.id}__${r.fecha}`) }));
+  });
+  if (!candidatos.length) return resultado;
+  const yaAvisados = new Set();
+  for (let i = 0; i < candidatos.length; i += 300) {
+    const snaps = await db.getAll(...candidatos.slice(i, i + 300).map((c) => c.ref));
+    snaps.forEach((sn) => { if (sn.exists) yaAvisados.add(sn.id); });
+  }
+  const pendientes = candidatos.filter((c) => !yaAvisados.has(c.ref.id));
+  const porPersona = new Map();
+  pendientes.forEach((c) => {
+    if (!porPersona.has(c.g.t.id)) porPersona.set(c.g.t.id, { g: c.g, nuevos: [], refs: [] });
+    porPersona.get(c.g.t.id).nuevos.push(c.r);
+    porPersona.get(c.g.t.id).refs.push(c.ref);
+  });
+  const correoValido = (c) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(c);
+  const mesLabel = new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString("es-CO", { month: "long", year: "numeric", timeZone: "UTC" });
+  const transporte = crearTransporte();
+  for (const { g, nuevos, refs } of porPersona.values()) {
+    const correo = String(g.t.correo || "").trim();
+    if (!correoValido(correo)) {
+      resultado.sinCorreo.push({ nombre: g.t.nombre || "", area: g.t.area || "" });
+      continue;
+    }
+    try {
+      const { asunto, html } = htmlCorreoRetardosPersona({ nombre: g.t.nombre, nuevos, totalMes: g.lista.length, mesLabel });
+      await mandarCorreo(transporte, [correo], asunto, html);
+      const batch = db.batch();
+      refs.forEach((ref, i) => batch.set(ref, { trabajadorId: g.t.id, nombre: g.t.nombre || "", fecha: nuevos[i].fecha, n: nuevos[i].n, correo, enviadoEn: new Date().toISOString() }));
+      await batch.commit();
+      resultado.correosPersonales++;
+    } catch (err) {
+      logger.error("avisarRetardosAPersonas: no se pudo enviar", { trabajador: g.t.id, error: String(err && err.message || err) });
+    }
+  }
+  return resultado;
+}
 // (2026-09-15, a pedido de Fredy) Umbral formal de llegadas tarde: 6 en la
 // quincena (1-15 / 16-fin de mes) o 12 en el mes, lo que se cumpla primero.
 // Se dispara desde "Evaluar anomalías y retardos" en Reporte de Asistencia
@@ -13064,8 +13182,15 @@ exports.revisarRetardosYAvisar = onCallAuth(
     for (const [nombreNorm, datos] of conteoMes) {
       await revisarUmbral(nombreNorm, datos, 12, periodoMes, `el mes de ${mesStr}`);
     }
-    logger.info("revisarRetardosYAvisar terminado", { avisosEnviados, fecha });
-    return { avisosEnviados };
+    // (2026-11-20) Correo a cada persona con retardos nuevos (ver avisarRetardosAPersonas). No frena el aviso formal de arriba si falla.
+    let personales = { correosPersonales: 0, sinCorreo: [] };
+    try {
+      personales = await avisarRetardosAPersonas(fecha, retardosMesSnap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    } catch (err) {
+      logger.error("revisarRetardosYAvisar: avisos personales", { error: String(err && err.message || err) });
+    }
+    logger.info("revisarRetardosYAvisar terminado", { avisosEnviados, fecha, correosPersonales: personales.correosPersonales, sinCorreo: personales.sinCorreo.length });
+    return { avisosEnviados, correosPersonales: personales.correosPersonales, sinCorreo: personales.sinCorreo };
   }
 );
 

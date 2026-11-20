@@ -4633,6 +4633,7 @@ function textoReferenciaPermiso(a, r) {
 }
 // Texto del concepto en recibo / desprendible.
 function textoTipoCobro(c) {
+  if (c && c.origen === "retardo") return `Retardo n.º ${c.retardoN || "—"} del mes · 1 h`;
   if (c && c.origen === "permiso") {
     return `Permiso por horas · ${fmtHoras(c.horas)}${(Number(c.horasRepuestas) || 0) > 0 ? ` (repuestas ${fmtHoras(c.horasRepuestas)})` : ""}`;
   }
@@ -5612,8 +5613,9 @@ function horaSalidaEsperada(turno, diaCodigo, iso) {
 // (2026-09-28, a pedido de Fredy) Mismo cálculo de retardo que ya usa el
 // huellero al subir un archivo (ver retardosEntrada más abajo), factorizado
 // aparte para que el Tabulador de Asistencia manual lo pueda usar en vivo
-// mientras el líder digita la hora de entrada -- 5 minutos de tolerancia
-// (ej. entra a las 7:00, cuenta tarde desde las 7:06).
+// mientras el líder digita la hora de entrada.
+// (2026-11-20, a pedido de Fredy) SIN tolerancia: si la entrada es a las 7:00,
+// llegar a las 7:01 ya es retardo.
 function calcularRetardoEntrada(turno, diaCodigo, horaMarcada, iso) {
   const horaEsperada = horaEntradaEsperada(turno, diaCodigo, iso);
   if (!horaEsperada || !horaMarcada) return null;
@@ -5622,9 +5624,80 @@ function calcularRetardoEntrada(turno, diaCodigo, horaMarcada, iso) {
   if ([hE, mE, hM, mM].some((n) => Number.isNaN(n))) return null;
   const minutosEsperados = hE * 60 + mE;
   const minutosMarcados = hM * 60 + mM;
-  const TOLERANCIA_MIN = 5;
-  if (minutosMarcados <= minutosEsperados + TOLERANCIA_MIN) return null;
+  if (minutosMarcados <= minutosEsperados) return null;
   return { horaEsperada, minutosTarde: minutosMarcados - minutosEsperados };
+}
+// (2026-11-20, a pedido de Fredy) Descuento por retardos. Se cuentan los retardos del MES COMPLETO por persona: los 3 primeros son
+// libres; desde el 4.º, CADA retardo descuenta 1 hora laboral (sueldo de la ficha ÷ 210), sin excepciones. El descuento cae en la
+// quincena donde ocurrió el retardo (se guarda como un cobro «retardo_<trabajador>_<fecha>» con origen "retardo", que ya entra
+// al descuento de cada nómina como los demás cobros). Los retardos de cada mes se cuentan completos (desde el día 1), pero SOLO se descuentan los
+// ocurridos desde esta fecha (quincena en curso al activar la función): así no se le cobra a una quincena que ya se pagó.
+const FECHA_INICIO_DESCUENTO_RETARDOS = "2026-11-16";
+const RETARDOS_LIBRES_POR_MES = 3;
+const TIPOS_NOMINA_RETARDOS = ["Fiscal", "Fiscal Destajo", "Destajo"];
+// Qué se le descontaría a una persona por UN retardo: { aplica, valorHora, valor, motivoNoAplica }.
+function valorDescuentoRetardo(trabajador) {
+  if (!trabajador) return { aplica: false, valorHora: 0, valor: 0, motivoNoAplica: "sin_trabajador" };
+  if (!TIPOS_NOMINA_RETARDOS.includes(trabajador.tipoNomina || "")) return { aplica: false, valorHora: 0, valor: 0, motivoNoAplica: "tipo_nomina" };
+  const sueldo = Number(trabajador.sueldo) || 0;
+  if (!(sueldo > 0)) return { aplica: false, valorHora: 0, valor: 0, motivoNoAplica: "sin_sueldo" };
+  const valorHora = sueldo / DIVISOR_HORAS_MES_EXTRA;
+  return { aplica: true, valorHora, valor: Math.round(valorHora), motivoNoAplica: "" };
+}
+// Retardos de un mes ("YYYY-MM") agrupados por persona y numerados: [{ clave, trabajador, nombre, area, lista:[{...retardo, n, conDescuento, valor, motivoNoAplica}], total, conDescuento, valorTotal }].
+function retardosDelMesPorPersona(retardos, trabajadores, mes) {
+  const normPorId = new Map((trabajadores || []).map((t) => [t.id, normalizarNombreHuellero(t.nombre)]));
+  const grupos = new Map();
+  (retardos || [])
+    .filter((r) => String(r.fecha || "").slice(0, 7) === mes)
+    .sort((a, b) => (a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0))
+    .forEach((r) => {
+      const t = (trabajadores || []).find((x) => coincideHuellero(r, x, normPorId.get(x.id))) || null;
+      const clave = t ? t.id : `sin:${r.nombreNorm || r.nombre || r.id}`;
+      if (!grupos.has(clave)) grupos.set(clave, { clave, trabajador: t, nombre: t?.nombre || r.nombre || "—", area: t?.area || r.area || "Sin asignar", lista: [] });
+      const g = grupos.get(clave);
+      const n = g.lista.length + 1;
+      const v = valorDescuentoRetardo(t);
+      const conDescuento = n > RETARDOS_LIBRES_POR_MES && r.fecha >= FECHA_INICIO_DESCUENTO_RETARDOS;
+      g.lista.push({ ...r, n, conDescuento, valor: conDescuento && v.aplica ? v.valor : 0, valorHora: v.valorHora, motivoNoAplica: conDescuento && !v.aplica ? v.motivoNoAplica : "" });
+    });
+  return [...grupos.values()].map((g) => ({
+    ...g,
+    total: g.lista.length,
+    conDescuento: g.lista.filter((x) => x.conDescuento).length,
+    valorTotal: g.lista.reduce((s, x) => s + x.valor, 0),
+  }));
+}
+function mesesConRetardos(retardos) {
+  return [...new Set((retardos || []).map((r) => String(r.fecha || "").slice(0, 7)).filter((m) => m && m >= FECHA_INICIO_DESCUENTO_RETARDOS.slice(0, 7)))].sort();
+}
+// Cobros «retardo_…» que deberían existir hoy según los retardos guardados: [{ id, datos }].
+function cobrosRetardosEsperados(retardos, trabajadores) {
+  const out = [];
+  mesesConRetardos(retardos).forEach((mes) => {
+    retardosDelMesPorPersona(retardos, trabajadores, mes).forEach((g) => {
+      if (!g.trabajador) return;
+      g.lista.filter((x) => x.conDescuento && x.valor > 0).forEach((x) => {
+        out.push({
+          id: `retardo_${g.trabajador.id}_${x.fecha}`,
+          datos: {
+            trabajadorId: g.trabajador.id,
+            trabajadorNombre: g.trabajador.nombre || "",
+            tipo: `Retardo n.º ${x.n} del mes · 1 h`,
+            valor: x.valor,
+            fecha: x.fecha,
+            numLote: "Retardo",
+            referencia: `${fmtFechaISO(x.fecha)} · entró ${x.horaMarcada || "—"} (esperada ${x.horaEsperada || "—"}) · ${x.minutosTarde || 0} min tarde`,
+            origen: "retardo",
+            retardoN: x.n,
+            horas: 1,
+            valorHora: Math.round(x.valorHora * 100) / 100,
+          },
+        });
+      });
+    });
+  });
+  return out;
 }
 // (2026-09-15, a pedido de Fredy) Turno real de un trabajador: manda el
 // turno especial puesto directamente en su ficha (Trabajadores → Turno);
@@ -6149,8 +6222,8 @@ function ReporteAsistenciaView({ ausencias, trabajadores, turnos, areasNomina, a
         // cerrado del período donde el turno de la persona tiene una hora
         // de entrada esperada para ese día de la semana, se compara contra
         // la marca de "Entrada" más temprana que dejó el huellero ese día.
-        // Tolerancia de 5 minutos (ej: entra a las 7:00, cuenta tarde desde
-        // las 7:06). Si el turno no tiene hora definida para ese día
+        // (2026-11-20) Sin tolerancia (entra a las 7:00, 7:01 ya es tarde).
+        // Si el turno no tiene hora definida para ese día
         // puntual, no se evalúa (no hay con qué comparar) -- así una
         // persona sin turno, o con un turno sin horarios cargados, nunca
         // sale con retardos "inventados".
@@ -6173,8 +6246,7 @@ function ReporteAsistenciaView({ ausencias, trabajadores, turnos, areasNomina, a
             if ([hE, mE, hM, mM].some((n) => Number.isNaN(n))) return null;
             const minutosEsperados = hE * 60 + mE;
             const minutosMarcados = hM * 60 + mM;
-            const TOLERANCIA_MIN = 5;
-            if (minutosMarcados <= minutosEsperados + TOLERANCIA_MIN) return null;
+            if (minutosMarcados <= minutosEsperados) return null;
             return { fecha: iso, horaEsperada, horaMarcada, minutosTarde: minutosMarcados - minutosEsperados, area: trabajadorDelRegistro?.trabajador?.area || "" };
           })
           .filter(Boolean);
@@ -6323,6 +6395,7 @@ function ReporteAsistenciaView({ ausencias, trabajadores, turnos, areasNomina, a
   const [guardandoAnomalias, setGuardandoAnomalias] = useState(false);
   const [anomaliasGuardadas, setAnomaliasGuardadas] = useState(null);
   const [retardosGuardados, setRetardosGuardados] = useState(null);
+  const [avisosRetardos, setAvisosRetardos] = useState(null); // { correosPersonales, sinCorreo: [{nombre, area}] } de la última evaluación
   async function evaluarAnomaliasYRetardos() {
     if (!reporte) return;
     setGuardandoAnomalias(true);
@@ -6389,7 +6462,8 @@ function ReporteAsistenciaView({ ausencias, trabajadores, turnos, areasNomina, a
       setAnomaliasGuardadas(n);
       setRetardosGuardados(nRetardos);
       try {
-        await httpsCallable(functionsClient, "revisarRetardosYAvisar")();
+        const resp = await httpsCallable(functionsClient, "revisarRetardosYAvisar")();
+        setAvisosRetardos({ correosPersonales: resp?.data?.correosPersonales || 0, sinCorreo: resp?.data?.sinCorreo || [] });
       } catch (err) {
         console.error("No se pudo revisar retardos para avisar:", err);
       }
@@ -6465,6 +6539,14 @@ function ReporteAsistenciaView({ ausencias, trabajadores, turnos, areasNomina, a
               <span style={{ marginLeft: 10, fontSize: 12, color: C.slate, fontWeight: 700 }}>
                 🕒 {retardosGuardados} retardo(s) de entrada registrado(s) este período.
               </span>
+            )}
+            {avisosRetardos && (
+              <div style={{ marginTop: 8, fontSize: 12, color: C.slate, maxWidth: 760 }}>
+                ✉ {avisosRetardos.correosPersonales} persona(s) recibieron un correo por sus retardos nuevos.
+                {avisosRetardos.sinCorreo.length > 0 && (
+                  <span style={{ color: C.amber, fontWeight: 700 }}> Sin correo en su ficha (no se les pudo avisar): {avisosRetardos.sinCorreo.map((p) => p.nombre).join(", ")}.</span>
+                )}
+              </div>
             )}
           </div>
 
@@ -6688,7 +6770,7 @@ function AnomaliasHuelleroView({ anomalias, retardos, onAjustar }) {
       )}
       <div style={{ marginTop: 28, marginBottom: 10, fontWeight: 800, color: C.ink, fontSize: 14 }}>🕒 Retardos de este mes</div>
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 12, maxWidth: 760 }}>
-        Llegadas tarde de {new Date(mesActual + "-01T00:00:00").toLocaleDateString("es-CO", { month: "long", year: "numeric" })} contra la hora de entrada del turno de cada persona (5 minutos de tolerancia). Al llegar a 6 en la quincena o 12 en el mes, Atlas manda un correo formal automático a Gerencia y al líder del área.
+        Llegadas tarde de {new Date(mesActual + "-01T00:00:00").toLocaleDateString("es-CO", { month: "long", year: "numeric" })} contra la hora de entrada del turno de cada persona (sin tolerancia: desde 1 minuto tarde cuenta). Desde el 4.º retardo del mes se descuenta 1 hora por cada uno. Al llegar a 6 en la quincena o 12 en el mes, Atlas manda un correo formal automático a Gerencia y al líder del área.
       </div>
       {!filasRetardos.length && <div style={{ padding: 20, color: C.slate, fontSize: 13 }}>Nadie con retardos registrados este mes. 🎉</div>}
       {!!filasRetardos.length && (
@@ -7367,6 +7449,190 @@ function mesAnterior(mes) {
 function fmtMesLabel(mesStr) {
   return new Date(`${mesStr}-01T00:00:00`).toLocaleDateString("es-CO", { month: "long", year: "numeric" });
 }
+// (2026-11-20, a pedido de Fredy) «Retardos del mes»: quién llegó tarde, cuántas veces y cuánto se le descuenta. Sin tolerancia; los 3
+// primeros retardos del mes son libres y desde el 4.º cada uno descuenta 1 hora laboral (sueldo ÷ 210) en la quincena donde cayó.
+// Gerencia y Talento Humano ven todo (con dinero); un líder solo ve su área y sin dinero.
+function RetardosMesView({ retardos, trabajadores, cobrosManuales, mostrarDinero = true, areaLider = "", onSincronizar }) {
+  const [mes, setMes] = useState(today().slice(0, 7));
+  const [busqueda, setBusqueda] = useState("");
+  const [areaSel, setAreaSel] = useState("");
+  const [abierto, setAbierto] = useState(null);
+  const [verAyuda, setVerAyuda] = useState(false);
+  const [sincronizando, setSincronizando] = useState(false);
+  const [msgSync, setMsgSync] = useState("");
+
+  const rige = mes >= FECHA_INICIO_DESCUENTO_RETARDOS.slice(0, 7);
+  const gruposMes = retardosDelMesPorPersona(retardos, trabajadores, mes).filter((g) => !areaLider || g.area === areaLider);
+  const areasDisponibles = [...new Set(gruposMes.map((g) => g.area))].sort((a, b) => a.localeCompare(b));
+  const q = normalizarBusqueda(busqueda);
+  const grupos = gruposMes
+    .filter((g) => (!areaSel || g.area === areaSel) && (!q || normalizarBusqueda(g.nombre).includes(q)))
+    .sort((a, b) => b.conDescuento - a.conDescuento || b.total - a.total || a.nombre.localeCompare(b.nombre));
+
+  const totalRetardos = grupos.reduce((s, g) => s + g.total, 0);
+  const conDesc = grupos.filter((g) => g.conDescuento > 0);
+  const enLimite = grupos.filter((g) => g.total === RETARDOS_LIBRES_POR_MES);
+  const horasDesc = grupos.reduce((s, g) => s + g.conDescuento, 0);
+  const valorDesc = grupos.reduce((s, g) => s + g.valorTotal, 0);
+  const sinSueldo = grupos.filter((g) => g.lista.some((x) => x.motivoNoAplica));
+  const sinVincular = grupos.filter((g) => !g.trabajador);
+
+  function estado(g) {
+    if (!rige) return { texto: "Solo informativo", color: C.slate, bg: C.canvas };
+    if (!g.trabajador) return { texto: "Sin vincular a Trabajadores", color: C.amber, bg: C.amberBg };
+    if (g.conDescuento > 0) {
+      const motivo = g.lista.find((x) => x.motivoNoAplica);
+      if (motivo && g.valorTotal === 0) return { texto: motivo.motivoNoAplica === "sin_sueldo" ? `Cuenta ${g.conDescuento} h · sin sueldo en la ficha` : `Cuenta ${g.conDescuento} h · sin descuento por su tipo de nómina`, color: C.amber, bg: C.amberBg };
+      return { texto: `Descuenta ${g.conDescuento} h`, color: C.red, bg: C.redBg };
+    }
+    if (g.total === RETARDOS_LIBRES_POR_MES) return { texto: "El próximo se descuenta", color: C.amber, bg: C.amberBg };
+    return { texto: "Sin descuento", color: C.green, bg: C.greenBg };
+  }
+  const detalle = abierto ? grupos.find((g) => g.clave === abierto) || null : null;
+
+  function cobradoDe(g, x) {
+    if (!g.trabajador) return false;
+    return (cobrosManuales || []).find((c) => c.id === `retardo_${g.trabajador.id}_${x.fecha}`)?.cobrado === true;
+  }
+  async function actualizarDescuentos() {
+    if (!onSincronizar) return;
+    setSincronizando(true);
+    setMsgSync("");
+    try {
+      const r = await onSincronizar();
+      const partes = [];
+      if (r.creados) partes.push(`${r.creados} descuento${r.creados !== 1 ? "s" : ""} nuevo${r.creados !== 1 ? "s" : ""}`);
+      if (r.actualizados) partes.push(`${r.actualizados} actualizado${r.actualizados !== 1 ? "s" : ""}`);
+      if (r.retirados) partes.push(`${r.retirados} retirado${r.retirados !== 1 ? "s" : ""}`);
+      setMsgSync(partes.length ? `Listo: ${partes.join(", ")}.` : "Todo está al día: no había nada por cambiar.");
+    } catch (err) {
+      setMsgSync(`No se pudo actualizar: ${err.message || err}`);
+    } finally {
+      setSincronizando(false);
+    }
+  }
+  async function exportarExcel() {
+    const filas = [];
+    grupos.forEach((g) => g.lista.forEach((x) => filas.push({
+      Trabajador: g.nombre,
+      Área: g.area,
+      "Tipo de nómina": g.trabajador?.tipoNomina || "",
+      Fecha: x.fecha,
+      "Hora esperada": x.horaEsperada || "",
+      "Hora marcada": x.horaMarcada || "",
+      "Minutos tarde": x.minutosTarde || 0,
+      "Retardo n.º del mes": x.n,
+      "Descuenta 1 h": x.conDescuento ? "Sí" : "No",
+      "Valor a descontar": x.valor || 0,
+      Quincena: x.fecha.slice(8, 10) <= "15" ? "1–15" : "16–fin",
+    })));
+    const XLSX = await import("xlsx");
+    const ws = XLSX.utils.json_to_sheet(filas);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Retardos");
+    XLSX.writeFile(wb, `Retardos_${mes}.xlsx`);
+  }
+
+  const tarjeta = (label, valor, sub, color, fondo) => (
+    <div style={{ background: fondo || C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: "14px 16px" }}>
+      <div style={{ fontSize: 10.5, fontWeight: 700, color: C.slate, letterSpacing: "0.04em", textTransform: "uppercase" }}>{label}</div>
+      <div style={{ fontSize: 26, fontWeight: 900, color, margin: "6px 0 2px", lineHeight: 1.1 }}>{valor}</div>
+      <div style={{ fontSize: 11.5, color: C.slate, fontWeight: 600 }}>{sub}</div>
+    </div>
+  );
+  const siguienteMes = () => { const [y, m] = mes.split("-").map(Number); const d = new Date(y, m, 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; };
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 4, background: C.white, border: `1px solid ${C.border}`, borderRadius: 10, padding: 4 }}>
+          <button onClick={() => { setMes(mesAnterior(mes)); setAbierto(null); }} aria-label="Mes anterior" style={{ border: "none", background: "transparent", fontSize: 16, padding: "4px 10px", cursor: "pointer", color: C.slate }}>‹</button>
+          <b style={{ minWidth: 140, textAlign: "center", fontSize: 14, textTransform: "capitalize" }}>{fmtMesLabel(mes)}</b>
+          <button onClick={() => { setMes(siguienteMes()); setAbierto(null); }} aria-label="Mes siguiente" style={{ border: "none", background: "transparent", fontSize: 16, padding: "4px 10px", cursor: "pointer", color: C.slate }}>›</button>
+        </div>
+        <div style={{ width: 230 }}><FInput value={busqueda} onChange={setBusqueda} placeholder="Buscar trabajador…" icon="🔍" /></div>
+        {!areaLider && (
+          <select value={areaSel} onChange={(e) => setAreaSel(e.target.value)} style={{ padding: "9px 12px", borderRadius: 10, border: `1px solid ${C.border}`, background: C.white, fontSize: 13, color: C.ink }}>
+            <option value="">Todas las áreas</option>
+            {areasDisponibles.map((a) => <option key={a} value={a}>{a}</option>)}
+          </select>
+        )}
+        <span onClick={() => setVerAyuda(!verAyuda)} style={{ fontSize: 12, fontWeight: 700, color: C.blue, background: C.blueBg, borderRadius: 999, padding: "6px 12px", cursor: "pointer" }}>ℹ️ Cómo funciona {verAyuda ? "▴" : "▾"}</span>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          {mostrarDinero && onSincronizar && <Btn variant="secondary" small onClick={actualizarDescuentos} disabled={sincronizando}>{sincronizando ? "Actualizando…" : "🔄 Actualizar descuentos"}</Btn>}
+          {mostrarDinero && <Btn variant="success" small onClick={exportarExcel} disabled={!grupos.length}>📥 Exportar a Excel</Btn>}
+        </div>
+      </div>
+      {msgSync && <div style={{ fontSize: 12, color: C.ink, background: C.greenBg, borderRadius: 8, padding: "8px 12px", marginBottom: 12 }}>{msgSync}</div>}
+      {verAyuda && (
+        <div style={{ fontSize: 12, color: C.ink, background: C.blueBg, borderRadius: 10, padding: "12px 14px", marginBottom: 14, maxWidth: 860, lineHeight: 1.6 }}>
+          Sin tolerancia: si la entrada del turno es a las 7:00, llegar a las 7:01 ya es retardo. Se cuentan los retardos del mes completo por persona. Los {RETARDOS_LIBRES_POR_MES} primeros no descuentan; desde el {RETARDOS_LIBRES_POR_MES + 1}.º, CADA retardo descuenta 1 hora laboral (sueldo de la ficha ÷ {DIVISOR_HORAS_MES_EXTRA}), sin excepciones, en la quincena donde cae ese retardo. Aplica a Fiscal, Fiscal Destajo y Destajo; quien no tiene sueldo en la ficha se cuenta pero no se le descuenta. El descuento sale solo en la nómina (columna «Desc. retardos»). Los retardos de cada mes se cuentan completos desde el día 1, pero solo se descuentan los ocurridos desde el {fmtFechaISO(FECHA_INICIO_DESCUENTO_RETARDOS)} (la quincena anterior ya se pagó). Los retardos guardados antes de este cambio se calcularon con 5 minutos de tolerancia: se corrigen al volver a evaluar el reporte del huellero.
+        </div>
+      )}
+      {!rige && <div style={{ fontSize: 12, color: C.amber, background: C.amberBg, borderRadius: 10, padding: "10px 14px", marginBottom: 14 }}>El descuento por retardos rige desde el {fmtFechaISO(FECHA_INICIO_DESCUENTO_RETARDOS)}. Este mes se muestra solo como información.</div>}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12, marginBottom: 14 }}>
+        {tarjeta("Retardos del mes", totalRetardos, `de ${grupos.length} persona${grupos.length !== 1 ? "s" : ""}`, C.ink)}
+        {tarjeta("Personas con descuento", rige ? conDesc.length : "—", `pasaron de ${RETARDOS_LIBRES_POR_MES} retardos`, C.red, rige && conDesc.length ? C.redBg : undefined)}
+        {tarjeta("En el límite", enLimite.length, `llevan ${RETARDOS_LIBRES_POR_MES}: el próximo descuenta`, C.amber, enLimite.length ? C.amberBg : undefined)}
+        {tarjeta("Horas a descontar", rige ? fmtHoras(horasDesc) : "—", "1 h por cada retardo desde el 4.º", C.violet)}
+        {mostrarDinero && tarjeta("Valor a descontar", rige ? fmtMoney(valorDesc) : "—", `sueldo ÷ ${DIVISOR_HORAS_MES_EXTRA} · solo quien tiene sueldo`, C.red)}
+      </div>
+      {rige && sinSueldo.length > 0 && <div style={{ fontSize: 11.5, color: C.slate, marginBottom: 8 }}>⚠️ {sinSueldo.length} persona{sinSueldo.length !== 1 ? "s" : ""} con retardos que descuentan no tienen sueldo en la ficha (o su tipo de nómina no aplica): cuentan, pero no generan descuento.</div>}
+      {sinVincular.length > 0 && <div style={{ fontSize: 11.5, color: C.slate, marginBottom: 8 }}>⚠️ {sinVincular.length} persona{sinVincular.length !== 1 ? "s" : ""} del huellero no están vinculadas a un trabajador (revisa el ID Huellero en Trabajadores): no se les puede descontar.</div>}
+
+      <Tabla
+        vacio="Nadie con retardos registrados este mes. 🎉"
+        onRowClick={(f) => setAbierto(abierto === f.id ? null : f.id)}
+        filas={grupos.map((g) => {
+          const ultimo = g.lista[g.lista.length - 1];
+          return { ...g, id: g.clave, minutos: g.lista.reduce((s, x) => s + (Number(x.minutosTarde) || 0), 0), ultimo };
+        })}
+        columnas={[
+          { key: "nombre", label: "Trabajador", render: (f) => (<span><b>{f.nombre}</b> <span style={{ color: C.slate, fontSize: 11 }}>· {f.area}{f.trabajador?.tipoNomina ? ` · ${f.trabajador.tipoNomina}` : ""}</span></span>) },
+          { key: "total", label: "Retardos", align: "center", render: (f) => (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <b>{f.total}</b>
+              <span style={{ display: "inline-flex", gap: 3 }}>{f.lista.map((x) => <span key={x.id} style={{ width: 8, height: 8, borderRadius: 999, background: x.conDescuento ? C.red : C.seam }} />)}</span>
+            </span>
+          ) },
+          { key: "minutos", label: "Minutos acumulados", align: "right", render: (f) => `${f.minutos} min` },
+          { key: "ultimo", label: "Último retardo", render: (f) => (f.ultimo ? `${fmtFechaISO(f.ultimo.fecha)} · ${f.ultimo.horaMarcada || "—"}` : "—") },
+          { key: "conDescuento", label: "Descuentan", align: "center", render: (f) => (rige && f.conDescuento > 0 ? <b style={{ color: C.red }}>{f.conDescuento}</b> : "—") },
+          { key: "horas", label: "Horas", align: "right", render: (f) => (rige && f.conDescuento > 0 ? fmtHoras(f.conDescuento) : "—") },
+          ...(mostrarDinero ? [{ key: "valorTotal", label: "A descontar", align: "right", render: (f) => (rige && f.valorTotal > 0 ? <b style={{ color: C.red }}>-{fmtMoney(f.valorTotal)}</b> : "—") }] : []),
+          { key: "estado", label: "Estado", render: (f) => { const e = estado(f); return <span style={{ display: "inline-block", padding: "2px 9px", borderRadius: 999, background: e.bg, color: e.color, fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>{e.texto}</span>; } },
+        ]}
+      />
+      {detalle && (
+        <div style={{ marginTop: 16, background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: "16px 18px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+            <div style={{ fontWeight: 800, color: C.ink, fontSize: 14, textTransform: "capitalize" }}>{detalle.nombre} · detalle de {fmtMesLabel(mes)}</div>
+            <span onClick={() => setAbierto(null)} style={{ marginLeft: "auto", cursor: "pointer", color: C.slate, fontSize: 12, fontWeight: 700 }}>Cerrar ✕</span>
+          </div>
+          <div style={{ fontSize: 11.5, color: C.slate, marginBottom: 10 }}>Sin tolerancia · los {RETARDOS_LIBRES_POR_MES} primeros son libres; desde el {RETARDOS_LIBRES_POR_MES + 1}.º descuenta 1 h por cada retardo.</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {detalle.lista.map((x) => {
+              const q2 = x.fecha.slice(8, 10) <= "15" ? "quincena 1–15" : "quincena 16–fin";
+              const yaCobrado = cobradoDe(detalle, x);
+              return (
+                <div key={x.id} style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", padding: "8px 10px", borderRadius: 10, background: x.conDescuento ? C.redBg : C.canvas }}>
+                  <span style={{ width: 22, height: 22, borderRadius: 999, background: x.conDescuento ? C.red : C.seam, color: "#fff", fontSize: 11, fontWeight: 800, display: "inline-flex", alignItems: "center", justifyContent: "center" }}>{x.n}</span>
+                  <b style={{ fontSize: 13, minWidth: 90 }}>{fmtFechaISO(x.fecha)}</b>
+                  <span style={{ fontSize: 12.5 }}>Marcó {x.horaMarcada || "—"} <span style={{ color: C.slate }}>(esperada {x.horaEsperada || "—"})</span></span>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: C.amber }}>+{x.minutosTarde || 0} min</span>
+                  <span style={{ marginLeft: "auto", fontSize: 12, fontWeight: 700, color: x.conDescuento ? C.red : C.slate }}>
+                    {!rige ? "Informativo" : !x.conDescuento ? (x.n > RETARDOS_LIBRES_POR_MES ? "Sin descuento (quincena ya cerrada)" : "Sin descuento") : x.motivoNoAplica ? "Cuenta, sin descuento (sin sueldo o tipo de nómina)" : `−1 h${mostrarDinero ? ` · ${fmtMoney(x.valor)}` : ""} · ${q2}${yaCobrado ? " · ya descontado ✓" : ""}`}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 function contarTrabajadoresPorArea(trabajadores) {
   const porArea = new Map();
   (trabajadores || []).filter((t) => t.activo !== false).forEach((t) => {
@@ -8019,7 +8285,7 @@ function cobrosPendientesDeTrabajador(lotesConCobros, trabajadorId, hastaFecha) 
         // las unidades de ese cobro (ej: 6 cobros de $26.000 c/u = deben
         // descontar $156.000, no $26.000). Los cobros manuales no traen
         // Cantidad, por eso el "|| 1" no les cambia nada.
-        pendientes.push({ loteId: l.id, numLote: l.numLote, referencia: l.referencia || "", cantidad: c.origen === "permiso" ? 0 : (Number(c.cantidad) || 1), tipo: c.tipo, valor: (Number(c.valor) || 0) * (Number(c.cantidad) || 1), fecha: c.fecha || "", origen: c.origen || "", horas: Number(c.horas) || 0, horasRepuestas: Number(c.horasRepuestas) || 0 });
+        pendientes.push({ loteId: l.id, numLote: l.numLote, referencia: l.referencia || "", cantidad: (c.origen === "permiso" || c.origen === "retardo") ? 0 : (Number(c.cantidad) || 1), tipo: c.tipo, valor: (Number(c.valor) || 0) * (Number(c.cantidad) || 1), fecha: c.fecha || "", origen: c.origen || "", horas: Number(c.horas) || 0, horasRepuestas: Number(c.horasRepuestas) || 0, retardoN: Number(c.retardoN) || 0 });
       }
     });
   });
@@ -8027,6 +8293,51 @@ function cobrosPendientesDeTrabajador(lotesConCobros, trabajadorId, hastaFecha) 
 }
 function sumaCobrosPendientes(cobrosDetalle) {
   return (cobrosDetalle || []).reduce((s, c) => s + (Number(c.valor) || 0), 0);
+}
+// (2026-11-20, a pedido de Fredy) El descuento total de «cobros» se parte en tres columnas en las nóminas: lo de Bodega, lo de permisos por
+// horas y lo de retardos. Sirve tanto para una fila recién calculada como para una liquidación ya guardada (usa su cobrosDetalle).
+function partirDescuentosCobros(cobrosDetalle, descuentoTotal) {
+  const lista = cobrosDetalle || [];
+  const permisos = lista.filter((c) => c.origen === "permiso").reduce((s, c) => s + (Number(c.valor) || 0), 0);
+  const retardos = lista.filter((c) => c.origen === "retardo").reduce((s, c) => s + (Number(c.valor) || 0), 0);
+  const total = descuentoTotal != null ? Number(descuentoTotal) || 0 : sumaCobrosPendientes(lista);
+  return { permisos, retardos, bodega: Math.max(0, total - permisos - retardos) };
+}
+function sumaPartesCobros(lista) {
+  return (lista || []).reduce((s, x) => {
+    const p = partirDescuentosCobros(x.cobrosDetalle, x.descuentoCobros);
+    return { bodega: s.bodega + p.bodega, permisos: s.permisos + p.permisos, retardos: s.retardos + p.retardos };
+  }, { bodega: 0, permisos: 0, retardos: 0 });
+}
+function filaPartesCobros(x) {
+  const p = partirDescuentosCobros(x.cobrosDetalle, x.descuentoCobros);
+  return [p.bodega, p.permisos, p.retardos];
+}
+// Tres columnas de las nóminas en lugar de una: «Descuento cobros Bodega», «Desc. permisos (horas)» y «Desc. retardos». `getX` devuelve el objeto
+// que trae descuentoCobros/cobrosDetalle (el cálculo de la fila en vivo, o la liquidación guardada en el historial).
+function colsDescuentosCobros(getX) {
+  const celda = (color, texto, titulo) => <span style={{ color, fontWeight: 700 }} title={titulo}>{texto}</span>;
+  const vacio = <span style={{ color: C.slate }}>—</span>;
+  return [
+    { key: "descuentoBodega", label: "Descuento cobros Bodega", align: "right", render: (f) => {
+      const x = getX(f);
+      const v = partirDescuentosCobros(x.cobrosDetalle, x.descuentoCobros).bodega;
+      return v > 0 ? celda(C.red, `-${fmtMoney(v)}`, detalleCobrosPorOrigen(x.cobrosDetalle, "bodega").map((c) => `Lote ${c.numLote}: ${c.tipo || "cobro"} ${fmtMoney(c.valor)}`).join(" | ")) : vacio;
+    } },
+    { key: "descuentoPermisos", label: "Desc. permisos (horas)", align: "right", render: (f) => {
+      const x = getX(f);
+      const v = partirDescuentosCobros(x.cobrosDetalle, x.descuentoCobros).permisos;
+      return v > 0 ? celda(C.violet, `-${fmtMoney(v)}`, detalleCobrosPorOrigen(x.cobrosDetalle, "permiso").map((c) => `${c.referencia || "Permiso"} · ${fmtMoney(c.valor)}`).join(" | ")) : vacio;
+    } },
+    { key: "descuentoRetardos", label: "Desc. retardos", align: "right", render: (f) => {
+      const x = getX(f);
+      const v = partirDescuentosCobros(x.cobrosDetalle, x.descuentoCobros).retardos;
+      return v > 0 ? celda(C.amber, `-${fmtMoney(v)}`, detalleCobrosPorOrigen(x.cobrosDetalle, "retardo").map((c) => `Retardo n.º ${c.retardoN || "—"} · ${c.fecha ? fmtFechaISO(c.fecha) : ""} · 1 h · ${fmtMoney(c.valor)}`).join(" | ")) : vacio;
+    } },
+  ];
+}
+function detalleCobrosPorOrigen(cobrosDetalle, origen) {
+  return (cobrosDetalle || []).filter((c) => (origen === "bodega" ? c.origen !== "permiso" && c.origen !== "retardo" : c.origen === origen));
 }
 // (2026-09-18, a pedido de Fredy) Deducciones fijas por quincena (seguros,
 // funeraria, etc.) -- ver DeduccionesFijasView. Solo se toman las que
@@ -8861,17 +9172,18 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
       prima: s.prima + f.calculo.primaPeriodo,
       vacaciones: s.vacaciones + f.calculo.vacacionesPeriodo,
     }), { totalHoras: 0, epsTrabajador: 0, pensionTrabajador: 0, descuentoCobros: 0, descuentoDeducciones: 0, neto: 0, pensionEmpleador: 0, arlEmpleador: 0, cajaCompensacionEmpleador: 0, cesantias: 0, intereses: 0, prima: 0, vacaciones: 0 });
-    const encabezado = ["Nombre", "Clase ARL", "Días sin justificar", "Días trabajados", "Días sin aux. transporte", "Días sin sueldo", "Sueldo quincena", "Auxilio quincena", "Horas", "Total Horas", "EPS trab.", "Pensión trab.", "Descuento cobros Bodega", "Descuento seguros", "Neto a pagar", "Pensión empresa", "ARL empresa", "Caja Comp.", "Cesantías (prov.)", "Intereses cesantías", "Prima (prov.)", "Vacaciones (prov.)"];
+    const tp = sumaPartesCobros(filas.map((f) => f.calculo));
+    const encabezado = ["Nombre", "Clase ARL", "Días sin justificar", "Días trabajados", "Días sin aux. transporte", "Días sin sueldo", "Sueldo quincena", "Auxilio quincena", "Horas", "Total Horas", "EPS trab.", "Pensión trab.", "Descuento cobros Bodega", "Desc. permisos (horas)", "Desc. retardos", "Descuento seguros", "Neto a pagar", "Pensión empresa", "ARL empresa", "Caja Comp.", "Cesantías (prov.)", "Intereses cesantías", "Prima (prov.)", "Vacaciones (prov.)"];
     const filasHoja = filas.map((f) => [
       f.trabajador.nombre,
       f.trabajador.claseRiesgoARL ? labelClaseARL(f.trabajador.claseRiesgoARL) : "Sin asignar",
       f.calculo.diasInasistencia, f.calculo.diasTrabajados, f.calculo.diasSinAuxilio || 0, f.calculo.diasSinSueldo || 0,
       f.calculo.sueldoQuincena, f.calculo.auxilioQuincena, f.calculo.horasCant || 0, f.calculo.totalHoras || 0,
-      f.calculo.epsTrabajador, f.calculo.pensionTrabajador, f.calculo.descuentoCobros, f.calculo.descuentoDeducciones, f.calculo.netoAPagar,
+      f.calculo.epsTrabajador, f.calculo.pensionTrabajador, ...filaPartesCobros(f.calculo), f.calculo.descuentoDeducciones, f.calculo.netoAPagar,
       f.calculo.pensionEmpleador, f.calculo.arlEmpleador, f.calculo.cajaCompensacionEmpleador,
       f.calculo.cesantiasPeriodo, f.calculo.interesesPeriodo, f.calculo.primaPeriodo, f.calculo.vacacionesPeriodo,
     ]);
-    const filaTotal = ["TOTAL", "", "", "", "", "", "", "", "", t.totalHoras, t.epsTrabajador, t.pensionTrabajador, t.descuentoCobros, t.descuentoDeducciones, t.neto, t.pensionEmpleador, t.arlEmpleador, t.cajaCompensacionEmpleador, t.cesantias, t.intereses, t.prima, t.vacaciones];
+    const filaTotal = ["TOTAL", "", "", "", "", "", "", "", "", t.totalHoras, t.epsTrabajador, t.pensionTrabajador, tp.bodega, tp.permisos, tp.retardos, t.descuentoDeducciones, t.neto, t.pensionEmpleador, t.arlEmpleador, t.cajaCompensacionEmpleador, t.cesantias, t.intereses, t.prima, t.vacaciones];
     await descargarExcel(`Nomina_Fiscal_${periodoId}.xlsx`, "Nómina Fiscal", [[`NÓMINA FISCAL — QUINCENA ${periodoId}`], [], encabezado, ...filasHoja, [], filaTotal]);
   }
 
@@ -8997,7 +9309,9 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
             {totales.totalHorasExtra > 0 && <KPI icon="🕐" label="Horas Extras pagadas" value={fmtMoney(totales.totalHorasExtra)} color={C.amber} bg={C.amberBg} />}
             {totales.bonificacionPuntual > 0 && <KPI icon="🎯" label="Bonificación puntual" value={fmtMoney(totales.bonificacionPuntual)} color={C.green} bg={C.greenBg} />}
             <KPI icon="📉" label="EPS + Pensión trabajador (descontado)" value={fmtMoney(totales.epsTrabajador + totales.pensionTrabajador)} color={C.red} bg={C.redBg} />
-            <KPI icon="🔻" label="Descuento cobros de Bodega" value={fmtMoney(totales.descuentoCobros)} color={C.red} bg={C.redBg} />
+            <KPI icon="🔻" label="Descuento cobros de Bodega" value={fmtMoney(sumaPartesCobros((resultados || []).map((r) => r.calculo)).bodega)} color={C.red} bg={C.redBg} />
+            <KPI icon="⏱" label="Descuento permisos (horas)" value={fmtMoney(sumaPartesCobros((resultados || []).map((r) => r.calculo)).permisos)} color={C.violet} bg={C.violetBg} />
+            <KPI icon="🕒" label="Descuento retardos" value={fmtMoney(sumaPartesCobros((resultados || []).map((r) => r.calculo)).retardos)} color={C.amber} bg={C.amberBg} />
             <KPI icon="🛡️" label="Descuento seguros/deducciones" value={fmtMoney(totales.descuentoDeducciones)} color={C.red} bg={C.redBg} />
             <KPI icon="🏛️" label="Pensión + ARL + Caja (costo empresa)" value={fmtMoney(totales.pensionEmpleador + totales.arlEmpleador + totales.cajaCompensacionEmpleador)} color={C.violet} bg={C.violetBg} />
             <KPI icon="📦" label="Cesantías (provisión)" value={fmtMoney(totales.cesantias)} color={C.violet} bg={C.violetBg} />
@@ -9049,9 +9363,7 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
               { key: "bonificacionPuntual", label: "Bonificación", align: "right", render: (f) => (f.calculo.bonificacionPuntual || 0) > 0 ? <span style={{ color: C.green, fontWeight: 700 }}>{fmtMoney(f.calculo.bonificacionPuntual)}</span> : <span style={{ color: C.slate }}>—</span> },
               { key: "epsTrabajador", label: "EPS trab. (-4%)", align: "right", render: (f) => <span style={{ color: C.red }}>-{fmtMoney(f.calculo.epsTrabajador)}</span> },
               { key: "pensionTrabajador", label: "Pensión trab. (-4%)", align: "right", render: (f) => <span style={{ color: C.red }}>-{fmtMoney(f.calculo.pensionTrabajador)}</span> },
-              { key: "descuentoCobros", label: "Descuento cobros Bodega", align: "right", render: (f) => f.calculo.descuentoCobros > 0 ? (
-                <span style={{ color: C.red, fontWeight: 700 }} title={(f.calculo.cobrosDetalle || []).map((c) => `Lote ${c.numLote}: ${c.tipo || "cobro"} ${fmtMoney(c.valor)}`).join(" | ")}>-{fmtMoney(f.calculo.descuentoCobros)}</span>
-              ) : <span style={{ color: C.slate }}>—</span> },
+              ...colsDescuentosCobros((f) => f.calculo),
               { key: "descuentoDeducciones", label: "Descuento seguros", align: "right", render: (f) => f.calculo.descuentoDeducciones > 0 ? (
                 <span style={{ color: C.red, fontWeight: 700 }} title={(f.calculo.deduccionesDetalle || []).map((d) => `${d.conceptoNombre || "Deducción"}: ${fmtMoney(d.valor)}`).join(" | ")}>-{fmtMoney(f.calculo.descuentoDeducciones)}</span>
               ) : <span style={{ color: C.slate }}>—</span> },
@@ -9110,14 +9422,15 @@ function HistorialFiscalView({ liquidaciones, trabajadores }) {
     exportReciboLiquidacionHTML({ tipoNomina: "Fiscal", trabajador, liquidacion: l });
   }
   async function exportarExcel() {
-    const encabezado = ["Período", "Nombre", "Días sin justificar", "Días trabajados", "Sueldo quincena", "Auxilio quincena", "EPS trab.", "Pensión trab.", "Descuento cobros Bodega", "Neto a pagar", "Pensión empresa", "ARL empresa", "Caja Comp.", "Cesantías (prov.)", "Intereses cesantías", "Prima (prov.)", "Vacaciones (prov.)", "Confirmada"];
+    const tp = sumaPartesCobros(filas);
+    const encabezado = ["Período", "Nombre", "Días sin justificar", "Días trabajados", "Sueldo quincena", "Auxilio quincena", "EPS trab.", "Pensión trab.", "Descuento cobros Bodega", "Desc. permisos (horas)", "Desc. retardos", "Neto a pagar", "Pensión empresa", "ARL empresa", "Caja Comp.", "Cesantías (prov.)", "Intereses cesantías", "Prima (prov.)", "Vacaciones (prov.)", "Confirmada"];
     const filasHoja = filas.map((f) => [
       f.periodoId, f.nombre, f.diasInasistencia || 0, f.diasTrabajados == null ? "" : f.diasTrabajados,
-      f.sueldoQuincena, f.auxilioQuincena, f.epsTrabajador, f.pensionTrabajador, f.descuentoCobros || 0, f.netoAPagar,
+      f.sueldoQuincena, f.auxilioQuincena, f.epsTrabajador, f.pensionTrabajador, ...filaPartesCobros(f), f.netoAPagar,
       f.pensionEmpleador, f.arlEmpleador, f.cajaCompensacionEmpleador, f.cesantiasPeriodo, f.interesesPeriodo, f.primaPeriodo, f.vacacionesPeriodo,
       f.confirmadaEn ? new Date(f.confirmadaEn).toLocaleString("es-CO") : "",
     ]);
-    const filaTotal = ["TOTAL", "", "", "", "", "", totales.epsTrabajador, totales.pensionTrabajador, totales.descuentoCobros, totales.neto, totales.pensionEmpleador, totales.arlEmpleador, totales.cajaCompensacionEmpleador, totales.cesantias, totales.intereses, totales.prima, totales.vacaciones, ""];
+    const filaTotal = ["TOTAL", "", "", "", "", "", totales.epsTrabajador, totales.pensionTrabajador, tp.bodega, tp.permisos, tp.retardos, totales.neto, totales.pensionEmpleador, totales.arlEmpleador, totales.cajaCompensacionEmpleador, totales.cesantias, totales.intereses, totales.prima, totales.vacaciones, ""];
     await descargarExcel(`Historial_Fiscal${periodoFiltro ? "_" + periodoFiltro : ""}.xlsx`, "Historial Fiscal", [["HISTORIAL NÓMINA FISCAL"], [], encabezado, ...filasHoja, [], filaTotal]);
   }
   return (
@@ -9145,7 +9458,9 @@ function HistorialFiscalView({ liquidaciones, trabajadores }) {
           <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
             <KPI icon="💵" label="Neto pagado (total)" value={fmtMoney(totales.neto)} color={C.green} bg={C.greenBg} />
             <KPI icon="📉" label="EPS + Pensión trabajador (descontado)" value={fmtMoney(totales.epsTrabajador + totales.pensionTrabajador)} color={C.red} bg={C.redBg} />
-            <KPI icon="🔻" label="Descuento cobros de Bodega" value={fmtMoney(totales.descuentoCobros)} color={C.red} bg={C.redBg} />
+            <KPI icon="🔻" label="Descuento cobros de Bodega" value={fmtMoney(sumaPartesCobros(filas).bodega)} color={C.red} bg={C.redBg} />
+            <KPI icon="⏱" label="Descuento permisos (horas)" value={fmtMoney(sumaPartesCobros(filas).permisos)} color={C.violet} bg={C.violetBg} />
+            <KPI icon="🕒" label="Descuento retardos" value={fmtMoney(sumaPartesCobros(filas).retardos)} color={C.amber} bg={C.amberBg} />
             <KPI icon="🏛️" label="Pensión + ARL + Caja (costo empresa)" value={fmtMoney(totales.pensionEmpleador + totales.arlEmpleador + totales.cajaCompensacionEmpleador)} color={C.violet} bg={C.violetBg} />
             <KPI icon="📦" label="Cesantías (provisión)" value={fmtMoney(totales.cesantias)} color={C.violet} bg={C.violetBg} />
             <KPI icon="📈" label="Intereses cesantías" value={fmtMoney(totales.intereses)} color={C.violet} bg={C.violetBg} />
@@ -9167,7 +9482,7 @@ function HistorialFiscalView({ liquidaciones, trabajadores }) {
               { key: "auxilioQuincena", label: "Auxilio quincena", align: "right", render: (f) => fmtMoney(f.auxilioQuincena) },
               { key: "epsTrabajador", label: "EPS trab.", align: "right", render: (f) => <span style={{ color: C.red }}>-{fmtMoney(f.epsTrabajador)}</span> },
               { key: "pensionTrabajador", label: "Pensión trab.", align: "right", render: (f) => <span style={{ color: C.red }}>-{fmtMoney(f.pensionTrabajador)}</span> },
-              { key: "descuentoCobros", label: "Descuento cobros Bodega", align: "right", render: (f) => f.descuentoCobros > 0 ? <span style={{ color: C.red, fontWeight: 700 }}>-{fmtMoney(f.descuentoCobros)}</span> : <span style={{ color: C.slate }}>—</span> },
+              ...colsDescuentosCobros((f) => f),
               { key: "netoAPagar", label: "Neto a pagar", align: "right", render: (f) => <strong>{fmtMoney(f.netoAPagar)}</strong> },
               { key: "pensionEmpleador", label: "Pensión empresa", align: "right", render: (f) => fmtMoney(f.pensionEmpleador) },
               { key: "arlEmpleador", label: "ARL empresa", align: "right", render: (f) => fmtMoney(f.arlEmpleador) },
@@ -9866,14 +10181,15 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
       prima: s.prima + f.calculo.primaPeriodo,
       vacaciones: s.vacaciones + f.calculo.vacacionesPeriodo,
     }), { totalHoras: 0, descuentoCobros: 0, descuentoDeducciones: 0, neto: 0, cesantias: 0, intereses: 0, prima: 0, vacaciones: 0 });
-    const encabezado = ["Nombre", "Días sin justificar", "Días trabajados", "Días sin aux. transporte", "Días sin sueldo", "Sueldo quincena", "Auxilio quincena", "Horas", "Total Horas", "Descuento cobros Bodega", "Descuento seguros", "Neto a pagar", "Cesantías (prov.)", "Intereses cesantías", "Prima (prov.)", "Vacaciones (prov.)"];
+    const tp = sumaPartesCobros(filas.map((f) => f.calculo));
+    const encabezado = ["Nombre", "Días sin justificar", "Días trabajados", "Días sin aux. transporte", "Días sin sueldo", "Sueldo quincena", "Auxilio quincena", "Horas", "Total Horas", "Descuento cobros Bodega", "Desc. permisos (horas)", "Desc. retardos", "Descuento seguros", "Neto a pagar", "Cesantías (prov.)", "Intereses cesantías", "Prima (prov.)", "Vacaciones (prov.)"];
     const filasHoja = filas.map((f) => [
       f.trabajador.nombre, f.calculo.diasInasistencia, f.calculo.diasTrabajados, f.calculo.diasSinAuxilio || 0, f.calculo.diasSinSueldo || 0,
       f.calculo.sueldoQuincena, f.calculo.auxilioQuincena, f.calculo.horasCant || 0, f.calculo.totalHoras || 0,
-      f.calculo.descuentoCobros, f.calculo.descuentoDeducciones, f.calculo.netoAPagar,
+      ...filaPartesCobros(f.calculo), f.calculo.descuentoDeducciones, f.calculo.netoAPagar,
       f.calculo.cesantiasPeriodo, f.calculo.interesesPeriodo, f.calculo.primaPeriodo, f.calculo.vacacionesPeriodo,
     ]);
-    const filaTotal = ["TOTAL", "", "", "", "", "", "", t.totalHoras, "", t.descuentoCobros, t.descuentoDeducciones, t.neto, t.cesantias, t.intereses, t.prima, t.vacaciones];
+    const filaTotal = ["TOTAL", "", "", "", "", "", "", t.totalHoras, "", tp.bodega, tp.permisos, tp.retardos, t.descuentoDeducciones, t.neto, t.cesantias, t.intereses, t.prima, t.vacaciones];
     await descargarExcel(`Nomina_FiscalDestajo_${periodoId}.xlsx`, "Nómina Fiscal Destajo", [[`NÓMINA FISCAL DESTAJO — QUINCENA ${periodoId}`], [], encabezado, ...filasHoja, [], filaTotal]);
   }
 
@@ -9990,7 +10306,9 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
             <KPI icon="⏱" label="Horas sueltas pagadas" value={fmtMoney(totales.totalHoras)} color={C.blue} bg={C.blueBg} />
             {totales.totalHorasExtra > 0 && <KPI icon="🕐" label="Horas Extras pagadas" value={fmtMoney(totales.totalHorasExtra)} color={C.amber} bg={C.amberBg} />}
             {totales.bonificacionPuntual > 0 && <KPI icon="🎯" label="Bonificación puntual" value={fmtMoney(totales.bonificacionPuntual)} color={C.green} bg={C.greenBg} />}
-            <KPI icon="🔻" label="Descuento cobros de Bodega" value={fmtMoney(totales.descuentoCobros)} color={C.red} bg={C.redBg} />
+            <KPI icon="🔻" label="Descuento cobros de Bodega" value={fmtMoney(sumaPartesCobros((resultados || []).map((r) => r.calculo)).bodega)} color={C.red} bg={C.redBg} />
+            <KPI icon="⏱" label="Descuento permisos (horas)" value={fmtMoney(sumaPartesCobros((resultados || []).map((r) => r.calculo)).permisos)} color={C.violet} bg={C.violetBg} />
+            <KPI icon="🕒" label="Descuento retardos" value={fmtMoney(sumaPartesCobros((resultados || []).map((r) => r.calculo)).retardos)} color={C.amber} bg={C.amberBg} />
             <KPI icon="🛡️" label="Descuento seguros/deducciones" value={fmtMoney(totales.descuentoDeducciones)} color={C.red} bg={C.redBg} />
             <KPI icon="📦" label="Cesantías (provisión)" value={fmtMoney(totales.cesantias)} color={C.violet} bg={C.violetBg} />
             <KPI icon="🎁" label="Prima (provisión)" value={fmtMoney(totales.prima)} color={C.blue} bg={C.blueBg} />
@@ -10038,9 +10356,7 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
               { key: "totalHoras", label: "Total Horas", align: "right", render: (f) => (f.calculo.totalHoras || 0) > 0 ? fmtMoney(f.calculo.totalHoras) : <span style={{ color: C.slate }}>—</span> },
               { key: "totalHorasExtra", label: "Horas Extra", align: "right", render: (f) => (f.calculo.totalHorasExtra || 0) > 0 ? <span style={{ color: C.amber, fontWeight: 700 }}>{fmtMoney(f.calculo.totalHorasExtra)}</span> : <span style={{ color: C.slate }}>—</span> },
               { key: "bonificacionPuntual", label: "Bonificación", align: "right", render: (f) => (f.calculo.bonificacionPuntual || 0) > 0 ? <span style={{ color: C.green, fontWeight: 700 }}>{fmtMoney(f.calculo.bonificacionPuntual)}</span> : <span style={{ color: C.slate }}>—</span> },
-              { key: "descuentoCobros", label: "Descuento cobros Bodega", align: "right", render: (f) => f.calculo.descuentoCobros > 0 ? (
-                <span style={{ color: C.red, fontWeight: 700 }} title={(f.calculo.cobrosDetalle || []).map((c) => `Lote ${c.numLote}: ${c.tipo || "cobro"} ${fmtMoney(c.valor)}`).join(" | ")}>-{fmtMoney(f.calculo.descuentoCobros)}</span>
-              ) : <span style={{ color: C.slate }}>—</span> },
+              ...colsDescuentosCobros((f) => f.calculo),
               { key: "descuentoDeducciones", label: "Descuento seguros", align: "right", render: (f) => f.calculo.descuentoDeducciones > 0 ? (
                 <span style={{ color: C.red, fontWeight: 700 }} title={(f.calculo.deduccionesDetalle || []).map((d) => `${d.conceptoNombre || "Deducción"}: ${fmtMoney(d.valor)}`).join(" | ")}>-{fmtMoney(f.calculo.descuentoDeducciones)}</span>
               ) : <span style={{ color: C.slate }}>—</span> },
@@ -10392,9 +10708,9 @@ function armarReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
     </tbody></table>` : ""}
     <div class="duo">${seccionHorasExtra}
     ${liquidacion.descuentoCobros > 0 ? `
-    <div class="bloque"><div class="section-title">🏭 Descuento por cobros de Bodega</div>
+    <div class="bloque"><div class="section-title">${(liquidacion.cobrosDetalle || []).some((c) => c.origen === "permiso" || c.origen === "retardo") ? "🏭 Descuentos por cobros, permisos y retardos" : "🏭 Descuento por cobros de Bodega"}</div>
     ${(liquidacion.cobrosDetalle || []).length ? `<table class="tabla-cobros"><thead><tr><th>Lote</th><th>Referencia</th><th>Tipo</th><th class="r">Cant.</th><th class="r">Valor</th></tr></thead><tbody>
-      ${liquidacion.cobrosDetalle.map((c) => `<tr><td>${escVac(c.numLote ?? "—")}</td><td>${escVac(c.referencia || "—")}</td><td>${escVac(c.tipo || "Cobro")}</td><td class="r">${c.origen === "permiso" ? escVac(fmtHoras(c.horas)) : (c.cantidad ? escVac(c.cantidad) : "—")}</td><td class="r" style="color:#B23A48">-${fmtMoney(c.valor)}</td></tr>`).join("")}
+      ${liquidacion.cobrosDetalle.map((c) => `<tr><td>${escVac(c.numLote ?? "—")}</td><td>${escVac(c.referencia || "—")}</td><td>${escVac(c.tipo || "Cobro")}</td><td class="r">${(c.origen === "permiso" || c.origen === "retardo") ? escVac(fmtHoras(c.horas)) : (c.cantidad ? escVac(c.cantidad) : "—")}</td><td class="r" style="color:#B23A48">-${fmtMoney(c.valor)}</td></tr>`).join("")}
       <tr><td colspan="3"><strong>Total cobros (ya restado del neto)</strong></td><td class="r"><strong>${totalPrendasCobradas || ""}</strong></td><td class="r" style="color:#B23A48"><strong>-${fmtMoney(liquidacion.descuentoCobros)}</strong></td></tr>
     </tbody></table>` : `<table><tbody>
       <tr><td>Descuento por cobros de Bodega (ya restado del neto)</td><td style="text-align:right;color:#B23A48">-${fmtMoney(liquidacion.descuentoCobros)}</td></tr>
@@ -10617,14 +10933,15 @@ function HistorialFiscalDestajoView({ liquidaciones, trabajadores }) {
     exportReciboLiquidacionHTML({ tipoNomina: "Fiscal Destajo", trabajador, liquidacion: l });
   }
   async function exportarExcel() {
-    const encabezado = ["Período", "Nombre", "Días sin justificar", "Días trabajados", "Sueldo quincena", "Auxilio quincena", "Descuento cobros Bodega", "Neto a pagar", "Cesantías (prov.)", "Intereses cesantías", "Prima (prov.)", "Vacaciones (prov.)", "Confirmada"];
+    const tp = sumaPartesCobros(filas);
+    const encabezado = ["Período", "Nombre", "Días sin justificar", "Días trabajados", "Sueldo quincena", "Auxilio quincena", "Descuento cobros Bodega", "Desc. permisos (horas)", "Desc. retardos", "Neto a pagar", "Cesantías (prov.)", "Intereses cesantías", "Prima (prov.)", "Vacaciones (prov.)", "Confirmada"];
     const filasHoja = filas.map((f) => [
       f.periodoId, f.nombre, f.diasInasistencia || 0, f.diasTrabajados == null ? "" : f.diasTrabajados,
-      f.sueldoQuincena, f.auxilioQuincena, f.descuentoCobros || 0, f.netoAPagar,
+      f.sueldoQuincena, f.auxilioQuincena, ...filaPartesCobros(f), f.netoAPagar,
       f.cesantiasPeriodo, f.interesesPeriodo, f.primaPeriodo, f.vacacionesPeriodo,
       f.confirmadaEn ? new Date(f.confirmadaEn).toLocaleString("es-CO") : "",
     ]);
-    const filaTotal = ["TOTAL", "", "", "", "", "", totales.descuentoCobros, totales.neto, totales.cesantias, totales.intereses, totales.prima, totales.vacaciones, ""];
+    const filaTotal = ["TOTAL", "", "", "", "", "", tp.bodega, tp.permisos, tp.retardos, totales.neto, totales.cesantias, totales.intereses, totales.prima, totales.vacaciones, ""];
     await descargarExcel(`Historial_FiscalDestajo${periodoFiltro ? "_" + periodoFiltro : ""}.xlsx`, "Historial Fiscal Destajo", [["HISTORIAL NÓMINA FISCAL DESTAJO"], [], encabezado, ...filasHoja, [], filaTotal]);
   }
   return (
@@ -10651,7 +10968,9 @@ function HistorialFiscalDestajoView({ liquidaciones, trabajadores }) {
           </div>
           <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
             <KPI icon="💵" label="Neto pagado (total)" value={fmtMoney(totales.neto)} color={C.green} bg={C.greenBg} />
-            <KPI icon="🔻" label="Descuento cobros de Bodega" value={fmtMoney(totales.descuentoCobros)} color={C.red} bg={C.redBg} />
+            <KPI icon="🔻" label="Descuento cobros de Bodega" value={fmtMoney(sumaPartesCobros(filas).bodega)} color={C.red} bg={C.redBg} />
+            <KPI icon="⏱" label="Descuento permisos (horas)" value={fmtMoney(sumaPartesCobros(filas).permisos)} color={C.violet} bg={C.violetBg} />
+            <KPI icon="🕒" label="Descuento retardos" value={fmtMoney(sumaPartesCobros(filas).retardos)} color={C.amber} bg={C.amberBg} />
             <KPI icon="📦" label="Cesantías (provisión)" value={fmtMoney(totales.cesantias)} color={C.violet} bg={C.violetBg} />
             <KPI icon="📈" label="Intereses cesantías" value={fmtMoney(totales.intereses)} color={C.violet} bg={C.violetBg} />
             <KPI icon="🎁" label="Prima (provisión)" value={fmtMoney(totales.prima)} color={C.blue} bg={C.blueBg} />
@@ -10670,7 +10989,7 @@ function HistorialFiscalDestajoView({ liquidaciones, trabajadores }) {
               ) },
               { key: "sueldoQuincena", label: "Sueldo quincena", align: "right", render: (f) => fmtMoney(f.sueldoQuincena) },
               { key: "auxilioQuincena", label: "Auxilio quincena", align: "right", render: (f) => fmtMoney(f.auxilioQuincena) },
-              { key: "descuentoCobros", label: "Descuento cobros Bodega", align: "right", render: (f) => f.descuentoCobros > 0 ? <span style={{ color: C.red, fontWeight: 700 }}>-{fmtMoney(f.descuentoCobros)}</span> : <span style={{ color: C.slate }}>—</span> },
+              ...colsDescuentosCobros((f) => f),
               { key: "netoAPagar", label: "Neto a pagar", align: "right", render: (f) => <strong>{fmtMoney(f.netoAPagar)}</strong> },
               { key: "cesantiasPeriodo", label: "Cesantías (prov.)", align: "right", render: (f) => fmtMoney(f.cesantiasPeriodo) },
               { key: "interesesPeriodo", label: "Intereses cesantías", align: "right", render: (f) => fmtMoney(f.interesesPeriodo) },
@@ -11312,16 +11631,17 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
       prima: s.prima + f.calculo.primaPeriodo,
       vacaciones: s.vacaciones + f.calculo.vacacionesPeriodo,
     }), { totalHoras: 0, descuentoCobros: 0, ajustes: 0, ayudaSalarioMinimo: 0, neto: 0, cesantias: 0, intereses: 0, prima: 0, vacaciones: 0 });
-    const encabezado = ["Nombre", "Días sin justificar", "Días trabajados", "Producción real", "Horas", "Total Horas", "Descuento cobros Bodega", "Ajuste manual", "Ayuda salario mínimo", "Neto a pagar", "Cesantías (prov.)", "Intereses cesantías", "Prima (prov.)", "Vacaciones (prov.)"];
+    const tp = sumaPartesCobros(filas.map((f) => f.calculo));
+    const encabezado = ["Nombre", "Días sin justificar", "Días trabajados", "Producción real", "Horas", "Total Horas", "Descuento cobros Bodega", "Desc. permisos (horas)", "Desc. retardos", "Ajuste manual", "Ayuda salario mínimo", "Neto a pagar", "Cesantías (prov.)", "Intereses cesantías", "Prima (prov.)", "Vacaciones (prov.)"];
     const filasHoja = filas.map((f) => [
       f.trabajador.nombre, f.calculo.diasInasistencia, f.calculo.diasTrabajados,
       f.calculo.pagoPorDia ? f.calculo.pagoDias : f.calculo.produccionReal,
-      f.calculo.horasCant || 0, f.calculo.totalHoras || 0, f.calculo.descuentoCobros,
+      f.calculo.horasCant || 0, f.calculo.totalHoras || 0, ...filaPartesCobros(f.calculo),
       f.calculo.salarioMinimoGarantizado ? 0 : (f.calculo.ajusteValor || 0),
       f.calculo.salarioMinimoGarantizado ? (f.calculo.ayudaSalarioMinimo || 0) : 0,
       f.calculo.netoAPagar, f.calculo.cesantiasPeriodo, f.calculo.interesesPeriodo, f.calculo.primaPeriodo, f.calculo.vacacionesPeriodo,
     ]);
-    const filaTotal = ["TOTAL", "", "", "", "", t.totalHoras, t.descuentoCobros, t.ajustes, t.ayudaSalarioMinimo, t.neto, t.cesantias, t.intereses, t.prima, t.vacaciones];
+    const filaTotal = ["TOTAL", "", "", "", "", t.totalHoras, tp.bodega, tp.permisos, tp.retardos, t.ajustes, t.ayudaSalarioMinimo, t.neto, t.cesantias, t.intereses, t.prima, t.vacaciones];
     await descargarExcel(`Nomina_Destajo_${periodoId}.xlsx`, "Nómina Destajo", [[`NÓMINA DESTAJO — QUINCENA ${periodoId}`], [], encabezado, ...filasHoja, [], filaTotal]);
   }
 
@@ -11458,7 +11778,9 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
             <KPI icon="⏱" label="Horas sueltas pagadas" value={fmtMoney(totales.totalHoras)} color={C.blue} bg={C.blueBg} />
             {totales.totalHorasExtra > 0 && <KPI icon="🕐" label="Horas Extras pagadas" value={fmtMoney(totales.totalHorasExtra)} color={C.amber} bg={C.amberBg} />}
             {totales.bonificacionPuntual > 0 && <KPI icon="🎯" label="Bonificación puntual" value={fmtMoney(totales.bonificacionPuntual)} color={C.green} bg={C.greenBg} />}
-            <KPI icon="🔻" label="Descuento cobros de Bodega" value={fmtMoney(totales.descuentoCobros)} color={C.red} bg={C.redBg} />
+            <KPI icon="🔻" label="Descuento cobros de Bodega" value={fmtMoney(sumaPartesCobros((resultados || []).map((r) => r.calculo)).bodega)} color={C.red} bg={C.redBg} />
+            <KPI icon="⏱" label="Descuento permisos (horas)" value={fmtMoney(sumaPartesCobros((resultados || []).map((r) => r.calculo)).permisos)} color={C.violet} bg={C.violetBg} />
+            <KPI icon="🕒" label="Descuento retardos" value={fmtMoney(sumaPartesCobros((resultados || []).map((r) => r.calculo)).retardos)} color={C.amber} bg={C.amberBg} />
             <KPI icon="🛠" label="Ajustes manuales" value={fmtMoney(totales.ajustes)} color={C.amber} bg={C.amberBg} />
             <KPI icon="🆘" label="Ayuda salario mínimo garantizado" value={fmtMoney(totales.ayudaSalarioMinimo)} color={C.red} bg={C.redBg} />
             <KPI icon="📦" label="Cesantías (provisión)" value={fmtMoney(totales.cesantias)} color={C.violet} bg={C.violetBg} />
@@ -11496,9 +11818,7 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
               { key: "totalHoras", label: "Total Horas", align: "right", render: (f) => (f.calculo.totalHoras || 0) > 0 ? fmtMoney(f.calculo.totalHoras) : <span style={{ color: C.slate }}>—</span> },
               { key: "totalHorasExtra", label: "Horas Extra", align: "right", render: (f) => (f.calculo.totalHorasExtra || 0) > 0 ? <span style={{ color: C.amber, fontWeight: 700 }}>{fmtMoney(f.calculo.totalHorasExtra)}</span> : <span style={{ color: C.slate }}>—</span> },
               { key: "bonificacionPuntual", label: "Bonificación", align: "right", render: (f) => (f.calculo.bonificacionPuntual || 0) > 0 ? <span style={{ color: C.green, fontWeight: 700 }}>{fmtMoney(f.calculo.bonificacionPuntual)}</span> : <span style={{ color: C.slate }}>—</span> },
-              { key: "descuentoCobros", label: "Descuento cobros Bodega", align: "right", render: (f) => f.calculo.descuentoCobros > 0 ? (
-                <span style={{ color: C.red, fontWeight: 700 }} title={(f.calculo.cobrosDetalle || []).map((c) => `Lote ${c.numLote}: ${c.tipo || "cobro"} ${fmtMoney(c.valor)}`).join(" | ")}>-{fmtMoney(f.calculo.descuentoCobros)}</span>
-              ) : <span style={{ color: C.slate }}>—</span> },
+              ...colsDescuentosCobros((f) => f.calculo),
               { key: "ajuste", label: "Ajuste / Ayuda", align: "right", render: (f) => conChipPermisoHoras(f.calculo.permisoHoras, () => {
                 if (f.calculo.salarioMinimoGarantizado) {
                   return f.calculo.ayudaSalarioMinimo > 0 ? (
@@ -12503,13 +12823,14 @@ function HistorialDestajoView({ liquidaciones, trabajadores }) {
     exportReciboLiquidacionHTML({ tipoNomina: "Destajo", trabajador, liquidacion: l });
   }
   async function exportarExcel() {
-    const encabezado = ["Período", "Nombre", "Días sin justificar", "Días trabajados", "Descuento cobros Bodega", "Neto a pagar (producción)", "Cesantías (prov.)", "Intereses cesantías", "Prima (prov.)", "Vacaciones (prov.)", "Confirmada"];
+    const tp = sumaPartesCobros(filas);
+    const encabezado = ["Período", "Nombre", "Días sin justificar", "Días trabajados", "Descuento cobros Bodega", "Desc. permisos (horas)", "Desc. retardos", "Neto a pagar (producción)", "Cesantías (prov.)", "Intereses cesantías", "Prima (prov.)", "Vacaciones (prov.)", "Confirmada"];
     const filasHoja = filas.map((f) => [
       f.periodoId, f.nombre, f.diasInasistencia || 0, f.diasTrabajados == null ? "" : f.diasTrabajados,
-      f.descuentoCobros || 0, f.netoAPagar, f.cesantiasPeriodo, f.interesesPeriodo, f.primaPeriodo, f.vacacionesPeriodo,
+      ...filaPartesCobros(f), f.netoAPagar, f.cesantiasPeriodo, f.interesesPeriodo, f.primaPeriodo, f.vacacionesPeriodo,
       f.confirmadaEn ? new Date(f.confirmadaEn).toLocaleString("es-CO") : "",
     ]);
-    const filaTotal = ["TOTAL", "", "", "", totales.descuentoCobros, totales.neto, totales.cesantias, totales.intereses, totales.prima, totales.vacaciones, ""];
+    const filaTotal = ["TOTAL", "", "", "", tp.bodega, tp.permisos, tp.retardos, totales.neto, totales.cesantias, totales.intereses, totales.prima, totales.vacaciones, ""];
     await descargarExcel(`Historial_Destajo${periodoFiltro ? "_" + periodoFiltro : ""}.xlsx`, "Historial Destajo", [["HISTORIAL NÓMINA DESTAJO"], [], encabezado, ...filasHoja, [], filaTotal]);
   }
   return (
@@ -12536,7 +12857,9 @@ function HistorialDestajoView({ liquidaciones, trabajadores }) {
           </div>
           <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
             <KPI icon="💵" label="Neto pagado (total)" value={fmtMoney(totales.neto)} color={C.green} bg={C.greenBg} />
-            <KPI icon="🔻" label="Descuento cobros de Bodega" value={fmtMoney(totales.descuentoCobros)} color={C.red} bg={C.redBg} />
+            <KPI icon="🔻" label="Descuento cobros de Bodega" value={fmtMoney(sumaPartesCobros(filas).bodega)} color={C.red} bg={C.redBg} />
+            <KPI icon="⏱" label="Descuento permisos (horas)" value={fmtMoney(sumaPartesCobros(filas).permisos)} color={C.violet} bg={C.violetBg} />
+            <KPI icon="🕒" label="Descuento retardos" value={fmtMoney(sumaPartesCobros(filas).retardos)} color={C.amber} bg={C.amberBg} />
             <KPI icon="📦" label="Cesantías (provisión)" value={fmtMoney(totales.cesantias)} color={C.violet} bg={C.violetBg} />
             <KPI icon="📈" label="Intereses cesantías" value={fmtMoney(totales.intereses)} color={C.violet} bg={C.violetBg} />
             <KPI icon="🎁" label="Prima (provisión)" value={fmtMoney(totales.prima)} color={C.blue} bg={C.blueBg} />
@@ -12553,7 +12876,7 @@ function HistorialDestajoView({ liquidaciones, trabajadores }) {
               { key: "diasTrabajados", label: "Días trabajados (huellero)", align: "right", render: (f) => (
                 <DiasTrabajadosConAviso dias={f.diasTrabajados} pm={f.permisoMarcado} />
               ) },
-              { key: "descuentoCobros", label: "Descuento cobros Bodega", align: "right", render: (f) => f.descuentoCobros > 0 ? <span style={{ color: C.red, fontWeight: 700 }}>-{fmtMoney(f.descuentoCobros)}</span> : <span style={{ color: C.slate }}>—</span> },
+              ...colsDescuentosCobros((f) => f),
               { key: "netoAPagar", label: "Neto a pagar (producción)", align: "right", render: (f) => <strong>{fmtMoney(f.netoAPagar)}</strong> },
               { key: "cesantiasPeriodo", label: "Cesantías (prov.)", align: "right", render: (f) => fmtMoney(f.cesantiasPeriodo) },
               { key: "interesesPeriodo", label: "Intereses cesantías", align: "right", render: (f) => fmtMoney(f.interesesPeriodo) },
@@ -13128,7 +13451,7 @@ function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobro
       {isAdmin && onSincronizarPermisos && (
         <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 14, marginBottom: 18, background: C.white }}>
           <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-            <div style={{ fontSize: 13, fontWeight: 800, color: C.ink }}>⏱ Cobros por horas de permiso</div>
+            <div style={{ fontSize: 13, fontWeight: 800, color: C.ink }}>⏱ Cobros por horas de permiso y retardos</div>
             <Btn
               small
               variant="secondary"
@@ -13138,7 +13461,7 @@ function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobro
                 setMsgPermisos("");
                 try {
                   const r = await onSincronizarPermisos();
-                  setMsgPermisos(`Listo: se revisaron ${r.revisados} permiso(s) por horas desde el 16/11/2026 y sus cobros quedaron al día.`);
+                  setMsgPermisos(`Listo: se revisaron ${r.revisados} permiso(s) por horas desde el 16/11/2026 y sus cobros quedaron al día. Retardos: ${r.retardos?.creados || 0} descuento(s) nuevo(s), ${r.retardos?.actualizados || 0} actualizado(s), ${r.retardos?.retirados || 0} retirado(s).`);
                 } catch (err) {
                   setMsgPermisos(`No se pudo sincronizar: ${err?.message || err}`);
                 }
@@ -13148,7 +13471,7 @@ function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobro
               {sincronizandoPermisos ? "Sincronizando…" : "Sincronizar permisos"}
             </Btn>
             <div style={{ fontSize: 11.5, color: C.slate, maxWidth: 560, lineHeight: 1.4 }}>
-              Cada permiso por horas (Fiscal y Fiscal Destajo) crea solo su cobro al guardarse. Usa este botón si hay permisos guardados antes de este cambio o si alguno no aparece. Los cobros que ya se descontaron no se tocan.
+              Cada permiso por horas (Fiscal y Fiscal Destajo) crea solo su cobro al guardarse. Usa este botón si hay permisos guardados antes de este cambio o si alguno no aparece. Los descuentos por retardos (desde el 4.º del mes) también se revisan aquí. Los cobros que ya se descontaron no se tocan.
             </div>
           </div>
           {msgPermisos && <div style={{ marginTop: 10, fontSize: 12.5, fontWeight: 700, color: msgPermisos.startsWith("Listo") ? C.green : C.red }}>{msgPermisos}</div>}
@@ -17350,6 +17673,9 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   const [diasTrabajadosHuellero, setDiasTrabajadosHuellero] = useState([]);
   const [anomaliasHuellero, setAnomaliasHuellero] = useState([]);
   const [retardosHuellero, setRetardosHuellero] = useState([]);
+  const [retardosListos, setRetardosListos] = useState(false);
+  const [cobrosListos, setCobrosListos] = useState(false);
+  const sincronizandoRetardosRef = useRef(false);
   const [liquidacionesF, setLiquidacionesF] = useState([]);
   const [liquidacionesFD, setLiquidacionesFD] = useState([]);
   const [liquidacionesD, setLiquidacionesD] = useState([]);
@@ -17421,7 +17747,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
       onSnapshot(collection(db, "nomina_faltas_sin_justificar"), (snap) => setFaltasSinJustificar(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_dias_trabajados"), (snap) => setDiasTrabajadosHuellero(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_anomalias_huellero"), (snap) => setAnomaliasHuellero(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
-      onSnapshot(collection(db, "nomina_retardos"), (snap) => setRetardosHuellero(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "nomina_retardos"), (snap) => { setRetardosHuellero(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); setRetardosListos(true); }),
       onSnapshot(collection(db, "nomina_fiscal_liquidaciones"), (snap) => setLiquidacionesF(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_fiscal_destajo_liquidaciones"), (snap) => setLiquidacionesFD(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_destajo_liquidaciones"), (snap) => setLiquidacionesD(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
@@ -17431,7 +17757,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
       onSnapshot(collection(db, "nomina_conceptos_deduccion"), (snap) => setConceptosDeduccion(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_deducciones_trabajador"), (snap) => setDeduccionesTrabajador(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "dado_por_cumplido_lotes"), (snap) => setLotesConCobros(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
-      onSnapshot(collection(db, "nomina_cobros_manuales"), (snap) => setCobrosManuales(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "nomina_cobros_manuales"), (snap) => { setCobrosManuales(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); setCobrosListos(true); }),
       onSnapshot(collection(db, "nomina_reposiciones"), (snap) => setReposiciones(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_ajustes_destajo"), (snap) => setAjustesDestajo(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_causacion_manual"), (snap) => setCausacionManual(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
@@ -17440,6 +17766,52 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
     ];
     return () => unsubs.forEach((u) => u());
   }, []);
+  // (2026-11-20, a pedido de Fredy) Descuento por retardos: cada vez que cambian los retardos, los trabajadores o los cobros, se
+  // reconcilian los cobros «retardo_…» (ver cobrosRetardosEsperados). No corre para líderes de área ni antes de que carguen los datos,
+  // para no borrar cobros por una lectura incompleta.
+  useEffect(() => {
+    if (areaLider || !retardosListos || !cobrosListos || !trabajadores.length) return undefined;
+    const timer = setTimeout(() => { sincronizarCobrosRetardos().catch((err) => console.error("Cobros por retardos:", err)); }, 1500);
+    return () => clearTimeout(timer);
+  }, [retardosHuellero, cobrosManuales, trabajadores, areaLider, retardosListos, cobrosListos]);
+  async function sincronizarCobrosRetardos() {
+    const vacio = { creados: 0, actualizados: 0, retirados: 0 };
+    if (sincronizandoRetardosRef.current || !retardosListos || !cobrosListos || !trabajadores.length) return vacio;
+    sincronizandoRetardosRef.current = true;
+    try {
+      const esperados = cobrosRetardosEsperados(retardosHuellero, trabajadores);
+      const idsEsperados = new Set(esperados.map((e) => e.id));
+      const actuales = (cobrosManuales || []).filter((c) => c.origen === "retardo");
+      const porId = new Map(actuales.map((c) => [c.id, c]));
+      const ops = [];
+      let creados = 0;
+      let actualizados = 0;
+      let retirados = 0;
+      esperados.forEach((e) => {
+        const ex = porId.get(e.id);
+        if (ex && ex.cobrado === true) return;
+        if (ex && Number(ex.valor) === e.datos.valor && Number(ex.retardoN) === e.datos.retardoN && ex.fecha === e.datos.fecha) return;
+        ops.push({ tipo: "set", id: e.id, datos: { ...e.datos, finPlazo: finQuincenaDeFecha(e.datos.fecha), cobrado: false, periodoIdCobrado: "", ...(ex ? {} : { creadoPor: "Automático (retardos)", creadoEn: new Date().toISOString() }) } });
+        if (ex) actualizados++; else creados++;
+      });
+      actuales.forEach((c) => {
+        if (idsEsperados.has(c.id) || c.cobrado === true) return;
+        ops.push({ tipo: "del", id: c.id });
+        retirados++;
+      });
+      for (let i = 0; i < ops.length; i += 400) {
+        const batch = writeBatch(db);
+        ops.slice(i, i + 400).forEach((o) => {
+          const ref = doc(db, "nomina_cobros_manuales", o.id);
+          if (o.tipo === "set") batch.set(ref, o.datos, { merge: true }); else batch.delete(ref);
+        });
+        await batch.commit();
+      }
+      return { creados, actualizados, retirados };
+    } finally {
+      sincronizandoRetardosRef.current = false;
+    }
+  }
   const lotesConCobrosTotal = useMemo(() => {
     const manualesComoLotes = (cobrosManuales || []).filter((c) => !(c.origen === "permiso" && !(Number(c.valor) > 0))).map((c) => ({
       id: `manual__${c.id}`,
@@ -17457,6 +17829,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
         origen: c.origen || "",
         horas: Number(c.horas) || 0,
         horasRepuestas: Number(c.horasRepuestas) || 0,
+        retardoN: Number(c.retardoN) || 0,
       }],
     }));
     return [...(lotesConCobros || []), ...manualesComoLotes];
@@ -17526,6 +17899,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
         ...(puedeVerAnomaliasHuellero ? [{ id: "anomalias_huellero", icon: "⚠️", label: "Anomalías Huellero" }] : []),
         { id: "historial_asistencia_area", icon: "🗓️", label: "Historial de Asistencia" },
         { id: "estadisticas_permisos", icon: "📊", label: "Estadísticas de Permisos" },
+        { id: "retardos_mes", icon: "🕒", label: "Retardos del mes" },
         { id: "resumen", icon: "💰", label: "Resumen" },
         { id: "historial_lote", icon: "📦", label: "Historial de Lote" },
         { id: "historial_trabajador", icon: "🧑‍🏭", label: "Historial de Trabajador" },
@@ -17543,6 +17917,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
         ...(puedeVerAnomaliasHuellero ? [{ id: "anomalias_huellero", icon: "⚠️", label: "Anomalías Huellero" }] : []),
         { id: "historial_asistencia_area", icon: "🗓️", label: "Historial de Asistencia" },
         { id: "estadisticas_permisos", icon: "📊", label: "Estadísticas de Permisos" },
+        { id: "retardos_mes", icon: "🕒", label: "Retardos del mes" },
       ]
     : [
         { id: "dashboard", icon: "◉", label: "Inicio" },
@@ -17583,6 +17958,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
             ...(puedeVerAnomaliasHuellero ? [{ id: "anomalias_huellero", icon: "⚠️", label: "Anomalías Huellero" }] : []),
             { id: "historial_asistencia_area", icon: "🗓️", label: "Historial de Asistencia" },
             { id: "estadisticas_permisos", icon: "📊", label: "Estadísticas de Permisos" },
+            { id: "retardos_mes", icon: "🕒", label: "Retardos del mes" },
             { id: "novedades_quincena", icon: "🧾", label: "Listado de Novedades (quincena)" },
             { id: "deducciones", icon: "🧾", label: "Deducciones" },
             { id: "causacion_manual", icon: "🖊️", label: "Causación Manual" },
@@ -17911,7 +18287,9 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
     for (const a of lista) {
       try { await sincronizarCobroPermiso(a); n += 1; } catch (err) { console.error("Cobro de permiso por horas:", err); }
     }
-    return { revisados: lista.length, sincronizados: n };
+    let retardos = { creados: 0, actualizados: 0, retirados: 0 };
+    try { retardos = await sincronizarCobrosRetardos(); } catch (err) { console.error("Cobros por retardos:", err); }
+    return { revisados: lista.length, sincronizados: n, retardos };
   }
   // (2026-09-15, a pedido de Fredy) El líder ajusta una anomalía de
   // Entrada/Salida: queda "ajustado" (ya no vuelve a aparecer como
@@ -18377,6 +18755,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "reposicion_horas" && <ReposicionHorasView trabajadores={trabajadoresVisibles} ausencias={ausenciasVisibles} reposiciones={reposiciones} horasExtras={horasExtras} cobrosManuales={cobrosManuales} mostrarDinero={!areaLider} onRegistrar={registrarReposicionHoras} onQuitar={quitarReposicionHoras} />}
           {subView === "anomalias_huellero" && puedeVerAnomaliasHuellero && <AnomaliasHuelleroView anomalias={anomaliasVisibles} retardos={retardosVisibles} onAjustar={ajustarAnomaliaHuellero} />}
           {subView === "historial_asistencia_area" && <HistorialAsistenciaAreaView areasNomina={areasNomina} trabajadores={trabajadoresVisibles} areaLider={areaLider} diasTrabajados={diasTrabajadosHuellero} faltas={faltasSinJustificar} ausencias={ausenciasVisibles} anomalias={anomaliasVisibles} retardos={retardosVisibles} turnos={turnos} />}
+          {subView === "retardos_mes" && <RetardosMesView retardos={retardosVisibles} trabajadores={trabajadoresVisibles} cobrosManuales={cobrosManuales} mostrarDinero={!areaLider} areaLider={areaLider || ""} onSincronizar={areaLider ? undefined : sincronizarCobrosRetardos} />}
           {subView === "estadisticas_permisos" && <EstadisticasPermisosView areasNomina={areasNomina} trabajadores={trabajadoresVisibles} ausencias={ausenciasVisibles} faltas={areaLider ? faltasSinJustificar.filter((f) => areaDeRegistro(f, trabajadoresVisibles) === areaLider) : faltasSinJustificar} retardos={retardosVisibles} turnos={turnos} reposiciones={reposiciones} cobrosManuales={cobrosManuales} mostrarDinero={!areaLider} areaLider={areaLider || ""} />}
           {subView === "tabulador_asistencia" && <TabuladorAsistenciaView areasNomina={areasNomina} trabajadores={trabajadoresVisibles} areaLider={areaLider} turnos={turnos} ausencias={ausenciasVisibles} diasTrabajados={diasTrabajadosHuellero} faltas={faltasSinJustificar} onGuardar={guardarAsistenciaManual} />}
           {subView === "fiscal" && !areaLider && !soloNovedades && <NominaFiscalView areasNomina={areasNomina} trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesF} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionF} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} isAdmin={isAdmin} onAbrirQuincena={abrirQuincenaParaEditar} turnos={turnos} horas={horas} deduccionesTrabajador={deduccionesTrabajador} causacionManual={causacionManual} horasExtras={horasExtras} bonificaciones={bonificaciones} onEliminarLiquidacion={eliminarLiquidacionF} />}
