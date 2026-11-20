@@ -13937,6 +13937,254 @@ function RegistrarHorasView({ trabajadores, horas, currentUser, onGuardar, onBor
 // -- ver sumaHorasExtraTrabajador() más arriba) y a la columna Efectivo de
 // Financiera, sin importar la forma de pago normal de cada tipo (ver
 // modulo-financiera.jsx).
+// ─── REPOSICIÓN DE HORAS DE PERMISO (2026-11-20, a pedido de Fredy · Fase 2) ──────────────────────────────────
+// Cada reposición queda en nomina_reposiciones { ausenciaId, trabajadorId, fecha, horas, tipo: "horario" | "extra", horaExtraId }.
+// «horario» = repuso en otro horario (sin pago extra). «extra» = canjeó horas extras: esa hora extra se deja de pagar en efectivo
+// (se descuenta de la hora extra: horas y total bajan en proporción, y se guardan horasOrig / totalOrig / horasCanjeadas para poder
+// revertirlo). El cobro del permiso (permiso_<id>) se recalcula con la suma de reposiciones. Canje hora por hora, sin recargo.
+function extraConCanje(e, canjeadas) {
+  const horasOrig = Number(e.horasOrig) > 0 ? Number(e.horasOrig) : Number(e.horas) || 0;
+  const totalOrig = e.totalOrig != null ? Number(e.totalOrig) : Number(e.total) || 0;
+  const c = Math.min(horasOrig, Math.max(0, Number(canjeadas) || 0));
+  const horas = Math.round((horasOrig - c) * 100) / 100;
+  return { horasOrig, totalOrig, horasCanjeadas: Math.round(c * 100) / 100, horas, total: horasOrig > 0 ? Math.round((totalOrig * horas) / horasOrig) : 0 };
+}
+const ESTADOS_REPOSICION = {
+  alDia: { icono: "✓", texto: "Repuesto", color: "green", bg: "greenBg", orden: 4 },
+  pendiente: { icono: "⏳", texto: "Por reponer", color: "amber", bg: "amberBg", orden: 2 },
+  venceHoy: { icono: "⚠", texto: "Vence hoy", color: "amber", bg: "amberBg", orden: 1 },
+  vencido: { icono: "⛔", texto: "Plazo vencido: se descontará", color: "red", bg: "redBg", orden: 0 },
+  descontado: { icono: "🧾", texto: "Ya descontado", color: "slate", bg: "canvas", orden: 5 },
+};
+function ChipEstadoReposicion({ estado }) {
+  const e = ESTADOS_REPOSICION[estado] || ESTADOS_REPOSICION.pendiente;
+  return (
+    <span style={{ display: "inline-block", padding: "2px 9px", borderRadius: 999, background: C[e.bg], color: C[e.color], fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>
+      {e.icono} {e.texto}
+    </span>
+  );
+}
+function ReposicionModal({ fila, extras, mostrarDinero, onRegistrar, onQuitar, onClose }) {
+  const { a, faltan, finPlazo, reps, yaDescontado, trabajadorNombre } = fila;
+  const hoyISO = today();
+  const fechaInicial = hoyISO < a.fechaInicio ? a.fechaInicio : (hoyISO > finPlazo ? finPlazo : hoyISO);
+  const [tipo, setTipo] = useState("horario");
+  const [fecha, setFecha] = useState(fechaInicial);
+  const [horas, setHoras] = useState("");
+  const [extraId, setExtraId] = useState("");
+  const [observacion, setObservacion] = useState("");
+  const [guardando, setGuardando] = useState(false);
+  const [error, setError] = useState("");
+  const extraSel = extras.find((x) => x.id === extraId);
+  const horasNum = Number(horas) || 0;
+  const maxHoras = tipo === "extra" && extraSel ? Math.min(faltan, Number(extraSel.horas) || 0) : faltan;
+  const valido = horasNum > 0 && horasNum <= maxHoras + 0.001 && (tipo === "extra" ? !!extraSel : fecha >= a.fechaInicio && fecha <= finPlazo);
+  const puedeRegistrar = !yaDescontado && faltan > 0.001;
+  async function guardar() {
+    if (!valido || guardando) return;
+    setGuardando(true);
+    setError("");
+    try {
+      await onRegistrar({
+        ausencia: a,
+        tipo,
+        fecha: tipo === "extra" ? (extraSel?.fecha || fecha) : fecha,
+        horas: horasNum,
+        horaExtraId: tipo === "extra" ? extraId : "",
+        observacion: observacion.trim(),
+      });
+      setHoras("");
+      setObservacion("");
+      setExtraId("");
+    } catch (err) {
+      setError(err?.message || "No se pudo guardar la reposición.");
+    }
+    setGuardando(false);
+  }
+  async function quitar(r) {
+    if (!window.confirm(`¿Quitar esta reposición de ${fmtHoras(r.horas)}?${r.tipo === "extra" ? " La hora extra vuelve a pagarse." : ""}`)) return;
+    setError("");
+    try { await onQuitar(r); } catch (err) { setError(err?.message || "No se pudo quitar."); }
+  }
+  const tipoBtn = (id, texto) => (
+    <button
+      type="button"
+      onClick={() => { setTipo(id); setHoras(""); setError(""); }}
+      style={{ flex: 1, padding: "8px 10px", borderRadius: 8, border: `1.5px solid ${tipo === id ? C.violet : C.border}`, background: tipo === id ? C.violetBg : C.white, color: tipo === id ? C.violet : C.ink, fontWeight: 700, fontSize: 12.5, cursor: "pointer" }}
+    >
+      {texto}
+    </button>
+  );
+  return (
+    <Modal title={`Reposición de horas · ${trabajadorNombre}`} onClose={onClose} width={520}>
+      <div style={{ fontSize: 12.5, color: C.ink, lineHeight: 1.6, marginBottom: 12 }}>
+        Permiso del <strong>{fmtFechaISO(a.fechaInicio)}</strong> ({a.horaInicio}–{a.horaFin}) · <strong>{fmtHoras(fila.horas)}</strong> de permiso ·
+        {" "}repuestas <strong>{fmtHoras(fila.repuestas)}</strong> · faltan <strong style={{ color: faltan > 0.001 ? C.amber : C.green }}>{fmtHoras(faltan)}</strong>.
+        {" "}Plazo para reponer: hasta el <strong>{fmtFechaISO(finPlazo)}</strong>.
+      </div>
+      {reps.length > 0 && (
+        <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, marginBottom: 14, overflow: "hidden" }}>
+          {reps.map((r) => (
+            <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderBottom: `1px solid ${C.border}`, fontSize: 12.5 }}>
+              <span style={{ flex: 1 }}>
+                {fmtFechaISO(r.fecha)} · <strong>{fmtHoras(r.horas)}</strong> · {r.tipo === "extra" ? "Canje de horas extras" : "Otro horario"}
+                {r.observacion ? <span style={{ color: C.slate }}> — {r.observacion}</span> : null}
+              </span>
+              {!yaDescontado && <span onClick={() => quitar(r)} style={{ cursor: "pointer", color: C.red, fontWeight: 700 }}>Quitar</span>}
+            </div>
+          ))}
+        </div>
+      )}
+      {yaDescontado && (
+        <div style={{ fontSize: 12.5, fontWeight: 700, color: C.slate }}>🧾 Este permiso ya se descontó en una liquidación: no admite más reposiciones.</div>
+      )}
+      {!yaDescontado && faltan <= 0.001 && (
+        <div style={{ fontSize: 12.5, fontWeight: 700, color: C.green }}>✓ Las horas de este permiso ya están repuestas: no se le descuenta nada.</div>
+      )}
+      {puedeRegistrar && (
+        <>
+          <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+            {tipoBtn("horario", "Repuso en otro horario")}
+            {tipoBtn("extra", "Canjear horas extras")}
+          </div>
+          {tipo === "horario" ? (
+            <Field label="Fecha en que repuso">
+              <FInput type="date" value={fecha} onChange={setFecha} />
+              <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>Entre el {fmtFechaISO(a.fechaInicio)} y el {fmtFechaISO(finPlazo)}.</div>
+            </Field>
+          ) : (
+            <Field label="Hora extra a canjear">
+              {extras.length === 0 ? (
+                <div style={{ fontSize: 12, color: C.slate }}>No tiene horas extras registradas entre el {fmtFechaISO(a.fechaInicio)} y el {fmtFechaISO(finPlazo)}.</div>
+              ) : (
+                <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden" }}>
+                  {extras.map((x) => (
+                    <label key={x.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderBottom: `1px solid ${C.border}`, fontSize: 12.5, cursor: "pointer", background: extraId === x.id ? C.violetBg : C.white }}>
+                      <input type="radio" name="extraCanje" checked={extraId === x.id} onChange={() => { setExtraId(x.id); setHoras(String(Math.min(faltan, Number(x.horas) || 0))); setError(""); }} />
+                      <span style={{ flex: 1 }}>
+                        {fmtFechaISO(x.fecha)} · {RECARGOS_HORA_EXTRA[x.tipo]?.label?.split(" (")[0] || x.tipo} · <strong>{fmtHoras(x.horas)}</strong> disponibles
+                        {(Number(x.horasCanjeadas) || 0) > 0 ? <span style={{ color: C.slate }}> (ya se canjearon {fmtHoras(x.horasCanjeadas)})</span> : null}
+                      </span>
+                      {mostrarDinero && <span style={{ color: C.slate }}>{fmtMoney(x.total)}</span>}
+                    </label>
+                  ))}
+                </div>
+              )}
+            </Field>
+          )}
+          <Field label={`Horas repuestas (máx. ${fmtHoras(maxHoras)})`}>
+            <FInput type="number" value={horas} onChange={setHoras} placeholder="Ej. 2" />
+          </Field>
+          {tipo === "extra" && extraSel && horasNum > 0 && (
+            <div style={{ fontSize: 11.5, color: C.slate, margin: "-6px 0 12px" }}>
+              Esas {fmtHoras(horasNum)} dejan de pagarse como hora extra{mostrarDinero ? ` (${fmtMoney(Math.round(((Number(extraSel.total) || 0) * horasNum) / (Number(extraSel.horas) || 1)))})` : ""} y se restan del permiso, hora por hora, sin recargo.
+            </div>
+          )}
+          <Field label="Observación (opcional)"><FInput value={observacion} onChange={setObservacion} /></Field>
+          {error && <div style={{ fontSize: 12, fontWeight: 700, color: C.red, marginBottom: 10 }}>🚫 {error}</div>}
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={onClose}>Cerrar</Btn>
+            <Btn onClick={guardar} disabled={!valido || guardando}>{guardando ? "Guardando…" : "Registrar reposición"}</Btn>
+          </div>
+        </>
+      )}
+      {!puedeRegistrar && (
+        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
+          {error && <span style={{ flex: 1, fontSize: 12, fontWeight: 700, color: C.red }}>🚫 {error}</span>}
+          <Btn variant="secondary" onClick={onClose}>Cerrar</Btn>
+        </div>
+      )}
+    </Modal>
+  );
+}
+function ReposicionHorasView({ trabajadores, ausencias, reposiciones, horasExtras, cobrosManuales, mostrarDinero, onRegistrar, onQuitar }) {
+  const [offset, setOffset] = useState(0);
+  const [modalId, setModalId] = useState(null);
+  const [filtroEstado, setFiltroEstado] = useState("");
+  const [buscar, setBuscar] = useState("");
+  const q = quincenaDe(offset);
+  const hoyISO = today();
+  const { areasNomina, turnos } = CONTEXTO_VACACIONES;
+  const filas = useMemo(() => {
+    const porId = new Map((trabajadores || []).map((t) => [t.id, t]));
+    const out = [];
+    (ausencias || []).forEach((a) => {
+      if (!esPermisoPorHoras(a) || (a.fechaInicio || "") < FECHA_INICIO_COBRO_PERMISO_HORAS || a.fechaInicio < q.desde || a.fechaInicio > q.hasta) return;
+      const t = porId.get(a.trabajadorId);
+      if (!t) return;
+      const reps = (reposiciones || []).filter((r) => r.ausenciaId === a.id).sort((x, y) => (x.fecha || "").localeCompare(y.fecha || ""));
+      const repuestas = reps.reduce((sum, r) => sum + (Number(r.horas) || 0), 0);
+      const calc = calcularCobroPermisoHoras(a, { trabajadores: [t], areasNomina, turnos }, repuestas);
+      if (!calc.cobra) return;
+      const cobro = (cobrosManuales || []).find((c) => c.id === `permiso_${a.id}`);
+      const yaDescontado = cobro?.cobrado === true;
+      const finPlazo = finQuincenaDeFecha(a.fechaInicio);
+      const faltan = Math.max(0, Math.round((calc.horas - calc.horasRepuestas) * 100) / 100);
+      let estado = "pendiente";
+      if (yaDescontado) estado = "descontado";
+      else if (faltan <= 0.001) estado = "alDia";
+      else if (finPlazo < hoyISO) estado = "vencido";
+      else if (finPlazo === hoyISO) estado = "venceHoy";
+      out.push({
+        id: a.id, a, trabajadorNombre: t.nombre, area: t.area || "Sin asignar", horas: calc.horas, repuestas: calc.horasRepuestas, faltan,
+        valorPendiente: calc.valor, finPlazo, estado, reps, yaDescontado,
+      });
+    });
+    return out.sort((x, y) => (ESTADOS_REPOSICION[x.estado].orden - ESTADOS_REPOSICION[y.estado].orden) || x.trabajadorNombre.localeCompare(y.trabajadorNombre, "es") || x.a.fechaInicio.localeCompare(y.a.fechaInicio));
+  }, [trabajadores, ausencias, reposiciones, cobrosManuales, q.desde, q.hasta, hoyISO, areasNomina, turnos]);
+  const visibles = filas.filter((f) => (!filtroEstado || f.estado === filtroEstado) && (!buscar.trim() || f.trabajadorNombre.toLowerCase().includes(buscar.trim().toLowerCase())));
+  const totHoras = filas.reduce((sum, f) => sum + f.horas, 0);
+  const totRep = filas.reduce((sum, f) => sum + f.repuestas, 0);
+  const totFaltan = filas.reduce((sum, f) => sum + f.faltan, 0);
+  const totValor = filas.filter((f) => !f.yaDescontado).reduce((sum, f) => sum + f.valorPendiente, 0);
+  const filaModal = modalId ? filas.find((f) => f.id === modalId) : null;
+  const extrasDe = (f) => (horasExtras || []).filter((x) => x.trabajadorId === f.a.trabajadorId && x.fecha >= f.a.fechaInicio && x.fecha <= f.finPlazo && (Number(x.horas) || 0) > 0.001)
+    .sort((x, y) => (x.fecha || "").localeCompare(y.fecha || ""));
+  return (
+    <div>
+      {filaModal && (
+        <ReposicionModal fila={filaModal} extras={extrasDe(filaModal)} mostrarDinero={mostrarDinero} onRegistrar={onRegistrar} onQuitar={onQuitar} onClose={() => setModalId(null)} />
+      )}
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 14, maxWidth: 780 }}>
+        Permisos por horas de Fiscal y Fiscal Destajo desde el 16/11/2026. Lo que no se reponga hasta el fin de la quincena se descuenta en la liquidación. La reposición puede ser en otro horario o canjeando horas extras (hora por hora, sin recargo; esa hora extra deja de pagarse).
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
+        <Btn variant="secondary" onClick={() => setOffset(offset - 1)}>← Quincena anterior</Btn>
+        <div style={{ fontWeight: 700, color: C.ink, minWidth: 150, textAlign: "center" }}>{q.label}</div>
+        <Btn variant="secondary" onClick={() => setOffset(offset + 1)}>Quincena siguiente →</Btn>
+        {offset !== 0 && <Btn small variant="ghost" onClick={() => setOffset(0)}>Ir a la actual</Btn>}
+        <div style={{ marginLeft: "auto", display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ minWidth: 190 }}><FInput value={buscar} onChange={setBuscar} placeholder="Buscar trabajador" icon="🔍" /></div>
+          <div style={{ minWidth: 200 }}>
+            <FSel value={filtroEstado} onChange={setFiltroEstado} options={Object.entries(ESTADOS_REPOSICION).map(([v, e]) => ({ value: v, label: `${e.icono} ${e.texto}` }))} placeholder="Todos los estados" />
+          </div>
+        </div>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: `repeat(${mostrarDinero ? 5 : 4}, minmax(0, 1fr))`, gap: 12, marginBottom: 16 }}>
+        <KPI icon="🗓️" label="Permisos por horas" value={filas.length} color={C.ink} bg={C.canvas} />
+        <KPI icon="⏱" label="Horas de permiso" value={fmtHoras(totHoras)} color={C.violet} bg={C.violetBg} />
+        <KPI icon="🔁" label="Horas repuestas" value={fmtHoras(totRep)} color={C.green} bg={C.greenBg} />
+        <KPI icon="⏳" label="Horas que faltan" value={fmtHoras(totFaltan)} color={C.amber} bg={C.amberBg} />
+        {mostrarDinero && <KPI icon="🧾" label="Por descontar (si no reponen)" value={fmtMoney(totValor)} color={C.red} bg={C.redBg} />}
+      </div>
+      <Tabla
+        vacio={filas.length ? "Ningún permiso coincide con el filtro." : "No hay permisos por horas con cobro en esta quincena."}
+        filas={visibles}
+        columnas={[
+          { key: "trabajadorNombre", label: "Trabajador", render: (f) => <span><strong>{f.trabajadorNombre}</strong><span style={{ color: C.slate }}> · {f.area}</span></span> },
+          { key: "fecha", label: "Permiso", render: (f) => <span>{fmtFechaISO(f.a.fechaInicio)} <span style={{ color: C.slate }}>{f.a.horaInicio}–{f.a.horaFin}</span></span> },
+          { key: "horas", label: "Horas", align: "right", render: (f) => fmtHoras(f.horas) },
+          { key: "repuestas", label: "Repuestas", align: "right", render: (f) => <span style={{ color: f.repuestas > 0 ? C.green : C.slate, fontWeight: f.repuestas > 0 ? 700 : 400 }}>{fmtHoras(f.repuestas)}</span> },
+          { key: "faltan", label: "Faltan", align: "right", render: (f) => <strong style={{ color: f.faltan > 0.001 ? C.amber : C.green }}>{fmtHoras(f.faltan)}</strong> },
+          ...(mostrarDinero ? [{ key: "valorPendiente", label: "A descontar", align: "right", render: (f) => (f.yaDescontado ? <span style={{ color: C.slate }}>—</span> : fmtMoney(f.valorPendiente)) }] : []),
+          { key: "finPlazo", label: "Plazo", render: (f) => fmtFechaISO(f.finPlazo) },
+          { key: "estado", label: "Estado", render: (f) => <ChipEstadoReposicion estado={f.estado} /> },
+          { key: "accion", label: "", align: "right", render: (f) => <Btn small variant={f.estado === "descontado" || f.estado === "alDia" ? "secondary" : "primary"} onClick={() => setModalId(f.id)}>{f.estado === "descontado" || f.estado === "alDia" ? "Ver" : "Registrar"}</Btn> },
+        ]}
+      />
+    </div>
+  );
+}
 function RegistrarHorasExtrasView({ trabajadores, horasExtras, currentUser, onGuardar, onBorrar, isAdmin, puedeEditarHorasExtra }) {
   const [trabajadorId, setTrabajadorId] = useState("");
   const [fecha, setFecha] = useState(today());
@@ -13985,6 +14233,10 @@ function RegistrarHorasExtrasView({ trabajadores, horasExtras, currentUser, onGu
     }
   }
   function abrirEditar(f) {
+    if ((Number(f.horasCanjeadas) || 0) > 0) {
+      window.alert(`Esta hora extra tiene ${fmtHoras(f.horasCanjeadas)} canjeadas por un permiso. Quita el canje en Novedades → Reposición de horas antes de editarla.`);
+      return;
+    }
     setModalEditar(f);
     setFormEditar({
       trabajadorId: f.trabajadorId || "",
@@ -13995,6 +14247,10 @@ function RegistrarHorasExtrasView({ trabajadores, horasExtras, currentUser, onGu
     });
   }
   function borrarConfirmando(f) {
+    if ((Number(f.horasCanjeadas) || 0) > 0) {
+      window.alert(`Esta hora extra tiene ${fmtHoras(f.horasCanjeadas)} canjeadas por un permiso. Quita el canje en Novedades → Reposición de horas antes de borrarla.`);
+      return;
+    }
     if (window.confirm(`¿Borrar esta hora extra de ${f.trabajadorNombre || "este trabajador"} (${fmtFechaISO(f.fecha)})? Esto no se puede deshacer.`)) onBorrar(f.id);
   }
   const trabajadorSelEdit = trabajadores.find((t) => t.id === formEditar?.trabajadorId);
@@ -16749,6 +17005,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   // cobros (liquidaciones, Resumen, Deducciones) los vea igual sin importar
   // de dónde vinieron.
   const [cobrosManuales, setCobrosManuales] = useState([]);
+  const [reposiciones, setReposiciones] = useState([]);
   // (2026-09-18, a pedido de Fredy) "Ajuste de Nómina" de Destajo -- un
   // ajuste (valor + observación) por trabajador por quincena, editable
   // solo por quien tenga "nomina_ajustar_destajo" (administrador, Yuleisi
@@ -16802,6 +17059,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
       onSnapshot(collection(db, "nomina_deducciones_trabajador"), (snap) => setDeduccionesTrabajador(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "dado_por_cumplido_lotes"), (snap) => setLotesConCobros(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_cobros_manuales"), (snap) => setCobrosManuales(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "nomina_reposiciones"), (snap) => setReposiciones(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_ajustes_destajo"), (snap) => setAjustesDestajo(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_causacion_manual"), (snap) => setCausacionManual(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "users"), (snap) => setUsuariosApp(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
@@ -16891,6 +17149,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
         { id: "produccion", icon: "🧵", label: "Registrar Producción" },
         { id: "horas", icon: "🕐", label: "Registrar Horas" },
         { id: "permisos", icon: "📅", label: "Permisos" },
+        { id: "reposicion_horas", icon: "🔁", label: "Reposición de horas" },
         ...(puedeVerAnomaliasHuellero ? [{ id: "anomalias_huellero", icon: "⚠️", label: "Anomalías Huellero" }] : []),
         { id: "historial_asistencia_area", icon: "🗓️", label: "Historial de Asistencia" },
         { id: "resumen", icon: "💰", label: "Resumen" },
@@ -16904,6 +17163,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
         { id: "ausencias", icon: "📅", label: "Motivos de Ausencia" },
         { id: "vacaciones", icon: "🏖️", label: "Vacaciones" },
         { id: "permisos", icon: "🗓️", label: "Permisos (Calendario)" },
+        { id: "reposicion_horas", icon: "🔁", label: "Reposición de horas" },
         ...(puedeCodigosPermiso ? [{ id: "codigos_permiso", icon: "🔐", label: "Códigos de Permiso" }] : []),
         { id: "tabulador_asistencia", icon: "📋", label: "Tabulador de Asistencia" },
         ...(puedeVerAnomaliasHuellero ? [{ id: "anomalias_huellero", icon: "⚠️", label: "Anomalías Huellero" }] : []),
@@ -16942,6 +17202,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
             { id: "ausencias", icon: "📅", label: "Motivos de Ausencia" },
             { id: "vacaciones", icon: "🏖️", label: "Vacaciones" },
             { id: "permisos", icon: "🗓️", label: "Permisos (Calendario)" },
+            { id: "reposicion_horas", icon: "🔁", label: "Reposición de horas" },
             ...(puedeCodigosPermiso ? [{ id: "codigos_permiso", icon: "🔐", label: "Códigos de Permiso" }] : []),
             { id: "tabulador_asistencia", icon: "📋", label: "Tabulador de Asistencia" },
             ...(puedeVerAnomaliasHuellero ? [{ id: "anomalias_huellero", icon: "⚠️", label: "Anomalías Huellero" }] : []),
@@ -17171,12 +17432,15 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   // borra una ausencia se crea / actualiza / retira su cobro «permiso_<id>» en nomina_cobros_manuales. Se mezcla la ausencia
   // guardada con la que llega (algunas pantallas mandan solo los campos que cambian) para no calcular con datos incompletos.
   // Un cobro que ya se descontó en una liquidación (cobrado === true) nunca se modifica ni se borra.
-  async function sincronizarCobroPermiso(a) {
+  async function sincronizarCobroPermiso(a, horasRepuestasOverride) {
     if (!a || !a.id) return;
     const cobroId = `permiso_${a.id}`;
     const existente = (cobrosManuales || []).find((c) => c.id === cobroId);
     if (existente && existente.cobrado === true) return;
-    const r = calcularCobroPermisoHoras(a, { trabajadores, areasNomina, turnos }, existente?.horasRepuestas || 0);
+    const horasRep = horasRepuestasOverride != null
+      ? horasRepuestasOverride
+      : (reposiciones || []).filter((x) => x.ausenciaId === a.id).reduce((s, x) => s + (Number(x.horas) || 0), 0);
+    const r = calcularCobroPermisoHoras(a, { trabajadores, areasNomina, turnos }, horasRep);
     if (!r.cobra) {
       if (existente) await fsDelete("nomina_cobros_manuales", cobroId);
       return;
@@ -17213,6 +17477,57 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
       const existente = (cobrosManuales || []).find((c) => c.id === `permiso_${id}`);
       if (existente && existente.cobrado !== true) await fsDelete("nomina_cobros_manuales", existente.id);
     } catch (err) { console.error("Cobro de permiso por horas:", err); }
+  }
+  // Fase 2: registrar / quitar una reposición de horas (ver ReposicionHorasView).
+  async function registrarReposicionHoras({ ausencia, tipo, fecha, horas, horaExtraId, observacion }) {
+    const h = Math.round((Number(horas) || 0) * 100) / 100;
+    if (!ausencia || !ausencia.id || !(h > 0)) throw new Error("Faltan datos de la reposición.");
+    const cobro = (cobrosManuales || []).find((c) => c.id === `permiso_${ausencia.id}`);
+    if (cobro && cobro.cobrado === true) throw new Error("Este permiso ya se descontó en una liquidación.");
+    const calc = calcularCobroPermisoHoras(ausencia, { trabajadores, areasNomina, turnos }, 0);
+    if (!calc.cobra) throw new Error("Este permiso no genera cobro.");
+    const yaRepuestas = (reposiciones || []).filter((r) => r.ausenciaId === ausencia.id).reduce((s, r) => s + (Number(r.horas) || 0), 0);
+    if (yaRepuestas + h > calc.horas + 0.001) throw new Error("Son más horas de las que faltan por reponer.");
+    const finPlazo = finQuincenaDeFecha(ausencia.fechaInicio);
+    if (tipo !== "extra" && (fecha < ausencia.fechaInicio || fecha > finPlazo)) throw new Error("La fecha debe estar entre el permiso y el fin de la quincena.");
+    if (tipo === "extra") {
+      const e = (horasExtras || []).find((x) => x.id === horaExtraId);
+      if (!e || e.trabajadorId !== ausencia.trabajadorId) throw new Error("Escoge una hora extra de este trabajador.");
+      if (e.fecha < ausencia.fechaInicio || e.fecha > finPlazo) throw new Error("La hora extra debe estar entre el permiso y el fin de la quincena.");
+      if (h > (Number(e.horas) || 0) + 0.001) throw new Error("Esa hora extra no tiene tantas horas disponibles.");
+      await fsSave("nomina_horas_extras", e.id, extraConCanje(e, (Number(e.horasCanjeadas) || 0) + h));
+    }
+    const t = trabajadores.find((x) => x.id === ausencia.trabajadorId);
+    const repId = uid();
+    await fsSave("nomina_reposiciones", repId, {
+      id: repId,
+      ausenciaId: ausencia.id,
+      trabajadorId: ausencia.trabajadorId,
+      trabajadorNombre: t?.nombre || ausencia.nombre || "",
+      fecha,
+      horas: h,
+      tipo: tipo === "extra" ? "extra" : "horario",
+      horaExtraId: tipo === "extra" ? horaExtraId : "",
+      observacion: observacion || "",
+      registradoPor: currentUser?.name || currentUser?.username || "",
+      registradoEn: new Date().toISOString(),
+    });
+    await sincronizarCobroPermiso(ausencia, yaRepuestas + h);
+  }
+  async function quitarReposicionHoras(rep) {
+    if (!rep || !rep.id) return;
+    const cobro = (cobrosManuales || []).find((c) => c.id === `permiso_${rep.ausenciaId}`);
+    if (cobro && cobro.cobrado === true) throw new Error("Este permiso ya se descontó en una liquidación.");
+    if (rep.tipo === "extra" && rep.horaExtraId) {
+      const e = (horasExtras || []).find((x) => x.id === rep.horaExtraId);
+      if (e) await fsSave("nomina_horas_extras", e.id, extraConCanje(e, (Number(e.horasCanjeadas) || 0) - (Number(rep.horas) || 0)));
+    }
+    await fsDelete("nomina_reposiciones", rep.id);
+    const a = (ausencias || []).find((x) => x.id === rep.ausenciaId);
+    if (a) {
+      const resto = (reposiciones || []).filter((r) => r.ausenciaId === a.id && r.id !== rep.id).reduce((s, r) => s + (Number(r.horas) || 0), 0);
+      await sincronizarCobroPermiso(a, resto);
+    }
   }
   // Botón de Deducciones (admin): recorre todos los permisos por horas desde el 16/11/2026 y deja su cobro al día.
   async function sincronizarPermisosHoras() {
@@ -17684,6 +17999,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "asistencia" && !areaLider && <ReporteAsistenciaView ausencias={ausencias} trabajadores={trabajadores} turnos={turnos} areasNomina={areasNomina} anomaliasHuellero={anomaliasHuellero} onGuardarTrabajador={guardarTrabajador} />}
           {subView === "codigos_permiso" && puedeCodigosPermiso && !areaLider && <CodigosPermisoView trabajadores={trabajadores} ausencias={ausencias} tope={topePermisos} />}
           {subView === "permisos" && <PermisosCalendarioView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} ausencias={ausenciasVisibles} currentUser={currentUser} isAdmin={isAdmin} motivosDisponibles={nombresMotivosDisponibles} motivoIcono={iconoPorMotivo} onSave={guardarAusencia} onDelete={borrarAusencia} />}
+          {subView === "reposicion_horas" && <ReposicionHorasView trabajadores={trabajadoresVisibles} ausencias={ausenciasVisibles} reposiciones={reposiciones} horasExtras={horasExtras} cobrosManuales={cobrosManuales} mostrarDinero={!areaLider} onRegistrar={registrarReposicionHoras} onQuitar={quitarReposicionHoras} />}
           {subView === "anomalias_huellero" && puedeVerAnomaliasHuellero && <AnomaliasHuelleroView anomalias={anomaliasVisibles} retardos={retardosVisibles} onAjustar={ajustarAnomaliaHuellero} />}
           {subView === "historial_asistencia_area" && <HistorialAsistenciaAreaView areasNomina={areasNomina} trabajadores={trabajadoresVisibles} areaLider={areaLider} diasTrabajados={diasTrabajadosHuellero} faltas={faltasSinJustificar} ausencias={ausenciasVisibles} anomalias={anomaliasVisibles} retardos={retardosVisibles} turnos={turnos} />}
           {subView === "estadisticas_permisos" && !areaLider && !soloNovedades && <EstadisticasPermisosView areasNomina={areasNomina} trabajadores={trabajadores} ausencias={ausencias} faltas={faltasSinJustificar} retardos={retardosHuellero} turnos={turnos} />}
