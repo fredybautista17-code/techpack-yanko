@@ -6599,7 +6599,7 @@ function CeldaAsistencia({ e }) {
           <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="5" width="16" height="15" rx="2" /><path d="M4 10h16M9 3v4M15 3v4" /></svg>
         </InsigniaCelda>
       )}
-      {e.anomalia && (
+      {(e.anomalia || e.sinMarcacion) && (
         <InsigniaCelda fondo={C.amber} lado={{ right: -4, bottom: -4 }}>
           <span style={{ fontSize: 8, fontWeight: 800, lineHeight: 1 }}>!</span>
         </InsigniaCelda>
@@ -6671,6 +6671,16 @@ function HistorialAsistenciaAreaView({ areasNomina, trabajadores, areaLider, dia
       const p = medirPermisoDelDia(t, iso, delDia, areasNomina, turnos);
       return { tipo: "mix", title: `Asistió y tuvo permiso — ${textoPermiso(p)}`, cuenta: !futuro, ...p };
     }
+    // (2026-11-20, a pedido de Fredy) Permiso POR HORAS que no cubre toda la jornada y sin marcación en el huellero: la persona vino
+    // (solo faltó esas horas), así que el día cuenta como «Asistió y tuvo permiso». Se marca con «!» para distinguirlo de una marcación real.
+    // Un permiso de día completo, o uno por horas que cubre toda la jornada, sigue como «Permiso (no marcó)».
+    if (delDia.length && !futuro && delDia.every((a) => minutosDeHoraTurno(a.horaInicio) != null && minutosDeHoraTurno(a.horaFin) != null)) {
+      const p = medirPermisoDelDia(t, iso, delDia, areasNomina, turnos);
+      const jornada = horasDiaDeTurno(turno, diaCodigoDeISO(iso));
+      if (p.horas > 0 && p.horas < (jornada == null ? HORAS_DIA_SIN_TURNO : jornada) - 0.01) {
+        return { tipo: "mix", sinMarcacion: true, title: `Asistió y tuvo permiso — ${textoPermiso(p)} · sin marcación en el huellero`, cuenta: true, ...p };
+      }
+    }
     if (delDia.length) return { tipo: "per", title: `Permiso — ${delDia[0].motivo} (no marcó)`, cuenta: !futuro, motivo: delDia[0].motivo };
     if (trabajo) {
       const anomalia = (indice.anomalias.get(iso) || []).find((a) => a.nombreNorm === nombreNorm && a.estado !== "ajustado");
@@ -6721,6 +6731,7 @@ function HistorialAsistenciaAreaView({ areasNomina, trabajadores, areaLider, dia
     { e: { tipo: "ok", anomalia: true }, t: "Le faltó marcar entrada o salida" },
     { e: { tipo: "per" }, t: "Permiso (no marcó)" },
     { e: { tipo: "mix" }, t: "Asistió y tuvo permiso", destacado: true },
+    { e: { tipo: "mix", sinMarcacion: true }, t: "Permiso por horas, sin marcación en el huellero", destacado: true },
     { e: { tipo: "no" }, t: "No marcó, sin justificar" },
     { e: { tipo: "sd" }, t: "Sin datos todavía" },
   ];
@@ -6754,8 +6765,8 @@ function HistorialAsistenciaAreaView({ areasNomina, trabajadores, areaLider, dia
       {!!trabajadoresMostrados.length && (
         <>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 12, marginBottom: 16 }}>
-            <KpiAsistencia etiqueta="Asistencia del área" valor={`${pctArea} %`} unidad={`${tot.asis} de ${tot.esp} días`} sub="Días con marcación sobre los que tocaba" color={C.green} halo={C.greenBg} />
-            <KpiAsistencia etiqueta="Asistió y tuvo permiso" valor={tot.conP} unidad={`${tot.conP === 1 ? "día" : "días"} · ${tot.horas ? fmtHoras(tot.horas) : "0 h"}`} sub="Marcó el huellero y tenía permiso" color={C.violet} halo={C.violetBg} />
+            <KpiAsistencia etiqueta="Asistencia del área" valor={`${pctArea} %`} unidad={`${tot.asis} de ${tot.esp} días`} sub="Días con marcación o permiso por horas sobre los que tocaba" color={C.green} halo={C.greenBg} />
+            <KpiAsistencia etiqueta="Asistió y tuvo permiso" valor={tot.conP} unidad={`${tot.conP === 1 ? "día" : "días"} · ${tot.horas ? fmtHoras(tot.horas) : "0 h"}`} sub="Vino a trabajar y tenía permiso por horas" color={C.violet} halo={C.violetBg} />
             <KpiAsistencia etiqueta="Permiso sin asistir" valor={tot.solo} unidad={tot.solo === 1 ? "día" : "días"} sub="Permiso de día completo, no marcó" color={C.amber} halo={C.amberBg} />
             <KpiAsistencia etiqueta="Sin justificar" valor={tot.nom} unidad={tot.nom === 1 ? "día" : "días"} sub="No marcó y no hay permiso" color={C.ink} halo="#ECE6DC" />
           </div>
@@ -6890,7 +6901,7 @@ function HistorialAsistenciaAreaView({ areasNomina, trabajadores, areaLider, dia
                         <div>
                           <div style={{ fontSize: 13, fontWeight: 700 }}>{c.motivo}</div>
                           <div style={{ fontSize: 12, color: C.slate, marginTop: 1 }}>
-                            {mix ? `Asistió · permiso ${c.horaInicio ? `${c.horaInicio}–${c.horaFin}` : "de día completo"}` : "Permiso de día completo · no marcó"}
+                            {mix ? `Asistió · permiso ${c.horaInicio ? `${c.horaInicio}–${c.horaFin}` : "de día completo"}${c.sinMarcacion ? " · sin marcación en el huellero" : ""}` : "Permiso de día completo · no marcó"}
                           </div>
                         </div>
                         <div style={{ marginLeft: "auto", textAlign: "right", fontSize: 12, color: C.slate }}>
