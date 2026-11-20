@@ -5140,6 +5140,7 @@ function AusenciasView({ ausencias, trabajadores, currentUser, motivosDisponible
       {modal && (
         <AusenciaModal
           ausencia={modal === "nuevo" ? null : modal}
+          exigirHorasPermiso
           trabajadores={trabajadores}
           ausencias={ausencias}
           motivosDisponibles={motivosDisponibles}
@@ -7482,11 +7483,46 @@ async function exportarPersonasAreaExcel(personas, area, etiquetaPeriodo) {
   XLSX.utils.book_append_sheet(wb, ws, area.slice(0, 31));
   XLSX.writeFile(wb, `${area.replace(/\s+/g, "_")}_${etiquetaPeriodo}.xlsx`);
 }
-function EstadisticasPermisosView({ areasNomina, trabajadores, ausencias, faltas, retardos, turnos }) {
+// (2026-11-20, a pedido de Fredy) Gráfica de columnas simple (permisos por mes / por día de la semana): una sola serie, la columna
+// destacada en violeta, valores encima y líneas guía suaves. Sin dependencias.
+function GraficaColumnas({ datos, destacado, ariaLabel }) {
+  const W = 420, H = 220, padL = 34, padR = 10, top = 30, base = 190;
+  const max = Math.max(1, ...datos.map((d) => d.valor));
+  const step = max <= 5 ? 1 : max <= 10 ? 2 : max <= 20 ? 5 : max <= 50 ? 10 : Math.ceil(max / 4 / 10) * 10;
+  const tope = Math.ceil(max / step) * step;
+  const ticks = [];
+  for (let v = 0; v <= tope; v += step) ticks.push(v);
+  const y = (v) => base - (v / tope) * (base - top);
+  const slot = (W - padL - padR) / Math.max(datos.length, 1);
+  const bw = Math.min(40, slot * 0.6);
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label={ariaLabel}>
+      {ticks.map((v) => (
+        <g key={v}>
+          <line x1={padL} y1={y(v)} x2={W - padR} y2={y(v)} stroke={C.border} strokeWidth="1" strokeDasharray={v === 0 ? undefined : "3 4"} />
+          <text x={padL - 6} y={y(v) + 3} fontSize="10" fill={C.slate} textAnchor="end">{v}</text>
+        </g>
+      ))}
+      {datos.map((d, i) => {
+        const x = padL + slot * i + (slot - bw) / 2;
+        const dest = i === destacado;
+        return (
+          <g key={d.label}>
+            <rect x={x} y={y(d.valor)} width={bw} height={Math.max(base - y(d.valor), 0)} rx="4" fill={dest ? C.violet : C.seam} />
+            <text x={x + bw / 2} y={y(d.valor) - 6} fontSize="11" fontWeight="700" textAnchor="middle" fill={dest ? C.violet : C.ink}>{d.valor}</text>
+            <text x={x + bw / 2} y={208} fontSize="10.5" textAnchor="middle" fill={dest ? C.ink : C.slate} fontWeight={dest ? 800 : 400}>{d.label}</text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+function EstadisticasPermisosView({ areasNomina, trabajadores, ausencias, faltas, retardos, turnos, reposiciones, cobrosManuales, mostrarDinero = true, areaLider = "" }) {
   const { tope: topePermisos } = useContext(PermisosCfgCtx);
   const [mes, setMes] = useState(today().slice(0, 7));
   const [areaDetalle, setAreaDetalle] = useState(null); // nombre del área cuya fila se hizo clic, o null
   const [periodoDetalle, setPeriodoDetalle] = useState("mes"); // "mes" | "anio" -- dentro del detalle
+  const [verAyuda, setVerAyuda] = useState(false);
 
   const anio = mes.slice(0, 4);
   const mesAnt = mesAnterior(mes);
@@ -7534,7 +7570,7 @@ function EstadisticasPermisosView({ areasNomina, trabajadores, ausencias, faltas
   statsMes.permisosDelPeriodo.forEach((a) => {
     const { key, nombre, cedula } = claveYNombrePersona(a, trabajadores);
     const existente = personasPermisosMes.get(key);
-    personasPermisosMes.set(key, { nombre, cedula, count: (existente?.count || 0) + 1 });
+    personasPermisosMes.set(key, { nombre, cedula, area: areaDeRegistro(a, trabajadores), count: (existente?.count || 0) + 1 });
   });
   const alertasPersona = [...personasPermisosMes.values()].filter((p) => p.count === topePermisos - 1);
   const hayAlertas = alertasArea.length > 0 || alertasPersona.length > 0;
@@ -7545,51 +7581,86 @@ function EstadisticasPermisosView({ areasNomina, trabajadores, ausencias, faltas
     ? personasDelArea(areaDetalle, statsDetalle.permisosDelPeriodo, statsDetalle.faltasDelPeriodo, statsDetalle.retardosDelPeriodo, trabajadores, statsDetalle.medidas)
     : [];
 
+  // ── Datos para el panel (2026-11-20, a pedido de Fredy: «modernizar este módulo») ──
+  const mesCorto = (m) => new Date(`${m}-01T00:00:00`).toLocaleDateString("es-CO", { month: "short" }).replace(".", "");
+  const serieMeses = (() => {
+    const lista = [];
+    let m = mes;
+    for (let i = 0; i < 6; i++) { lista.unshift(m); m = mesAnterior(m); }
+    return lista.map((m2) => ({ label: mesCorto(m2), valor: (ausencias || []).filter((a) => esMotivoPermiso(a.motivo) && (a.fechaInicio || "").startsWith(m2)).length }));
+  })();
+  const motivosMes = (() => {
+    const mp = new Map();
+    statsMes.permisosDelPeriodo.forEach((a) => mp.set(a.motivo || "Sin motivo", (mp.get(a.motivo || "Sin motivo") || 0) + 1));
+    return [...mp.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6);
+  })();
+  const DIAS_CORTO = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
+  const DIAS_LARGO = ["Los lunes", "Los martes", "Los miércoles", "Los jueves", "Los viernes", "Los sábados", "Los domingos"];
+  const porDiaSemana = DIAS_CORTO.map((label) => ({ label, valor: 0 }));
+  statsMes.permisosDelPeriodo.forEach((a) => {
+    const [y, m, d] = (a.fechaInicio || "").split("-").map(Number);
+    if (!y) return;
+    porDiaSemana[(new Date(y, m - 1, d).getDay() + 6) % 7].valor++;
+  });
+  const diasGrafica = porDiaSemana[6].valor > 0 ? porDiaSemana : porDiaSemana.slice(0, 6);
+  const maxDia = Math.max(0, ...diasGrafica.map((d) => d.valor));
+  const idxMaxDia = maxDia > 0 ? diasGrafica.findIndex((d) => d.valor === maxDia) : -1;
+  const porReponer = (() => {
+    let horasF = 0, valor = 0;
+    statsMes.permisosDelPeriodo.forEach((a) => {
+      if (!esPermisoPorHoras(a) || (a.fechaInicio || "") < FECHA_INICIO_COBRO_PERMISO_HORAS) return;
+      const t = (trabajadores || []).find((x) => x.id === a.trabajadorId);
+      if (!t) return;
+      const reps = (reposiciones || []).filter((r) => r.ausenciaId === a.id).reduce((sum, r) => sum + (Number(r.horas) || 0), 0);
+      const calc = calcularCobroPermisoHoras(a, { trabajadores: [t], areasNomina, turnos }, reps);
+      if (!calc.cobra) return;
+      if ((cobrosManuales || []).find((c) => c.id === `permiso_${a.id}`)?.cobrado === true) return;
+      horasF += Math.max(0, calc.horas - calc.horasRepuestas);
+      valor += calc.valor;
+    });
+    return { horas: Math.round(horasF * 100) / 100, valor };
+  })();
+  const filasOrdenadas = [...filas].sort((a, b) => b.permisos - a.permisos || a.area.localeCompare(b.area));
+  const filasConPermisos = filasOrdenadas.filter((f) => f.permisos > 0 || (permisosAnteriorPorArea.get(f.area) || 0) > 0);
+  const maxBarra = Math.max(1, ...filasConPermisos.map((f) => Math.max(f.permisos, permisosAnteriorPorArea.get(f.area) || 0)));
+  const colTend = tendenciaGeneral.dir === "up" ? C.red : tendenciaGeneral.dir === "down" ? C.green : C.slate;
+  const tarjeta = (label, valor, sub, color, extra = {}) => (
+    <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: "14px 16px", ...extra }}>
+      <div style={{ fontSize: 10.5, fontWeight: 700, color: C.slate, letterSpacing: "0.04em", textTransform: "uppercase" }}>{label}</div>
+      <div style={{ fontSize: valor && String(valor).length > 12 ? 19 : 26, fontWeight: 900, color, margin: "6px 0 2px", lineHeight: 1.1 }}>{valor}</div>
+      <div style={{ fontSize: 11.5, color: C.slate, fontWeight: 600 }}>{sub}</div>
+    </div>
+  );
+  const panel = { background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: "16px 18px" };
+
   return (
     <div>
-      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 820 }}>
-        Comparativo por área del mes elegido -- "Permisos" cuenta cualquier motivo de ausencia (cita médica, entrega de boletines, etc.) EXCEPTO Vacaciones, Incapacidad, Licencias, Luto y Suspensión -- esos no cuentan acá, pero sí entran en "Motivo más frecuente". "Días sin justificar" son los que hoy ves en Días No Justificados. La "Tasa" es por cada 10 trabajadores activos del área, para poder comparar áreas de distinto tamaño.
+      <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 4, background: C.white, border: `1px solid ${C.border}`, borderRadius: 10, padding: 4 }}>
+          <button onClick={() => setMes(mesAnterior(mes))} aria-label="Mes anterior" style={{ border: "none", background: "transparent", fontSize: 16, padding: "4px 10px", cursor: "pointer", color: C.slate }}>‹</button>
+          <b style={{ minWidth: 140, textAlign: "center", fontSize: 14, textTransform: "capitalize" }}>{fmtMesLabel(mes)}</b>
+          <button onClick={() => { const [y, m] = mes.split("-").map(Number); const d = new Date(y, m, 1); setMes(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`); }} aria-label="Mes siguiente" style={{ border: "none", background: "transparent", fontSize: 16, padding: "4px 10px", cursor: "pointer", color: C.slate }}>›</button>
+        </div>
+        <span onClick={() => setVerAyuda(!verAyuda)} style={{ fontSize: 12, fontWeight: 700, color: C.blue, background: C.blueBg, borderRadius: 999, padding: "6px 12px", cursor: "pointer" }}>ℹ️ Cómo se calcula {verAyuda ? "▴" : "▾"}</span>
+        {mostrarDinero && <div style={{ marginLeft: "auto" }}><Btn variant="success" small onClick={() => exportarFilasAreaExcel(filasOrdenadas, mes)}>📥 Exportar a Excel</Btn></div>}
       </div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12, marginBottom: 16 }}>
-        <input type="month" value={mes} onChange={(e) => setMes(e.target.value)} style={{ padding: "8px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13 }} />
-        <Btn variant="success" small onClick={() => exportarFilasAreaExcel(filas, mes)}>📥 Exportar a Excel</Btn>
-      </div>
-
-      {hayAlertas && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 20 }}>
-          {alertasArea.map((f) => (
-            <div key={`area_${f.area}`} style={{ background: C.redBg, borderLeft: `4px solid ${C.red}`, borderRadius: 8, padding: "10px 14px", fontSize: 12.5, color: C.ink }}>
-              🚨 <strong>{f.area}</strong> se disparó en permisos frente a {fmtMesLabel(mesAnt)}: {permisosAnteriorPorArea.get(f.area) || 0} → <strong>{f.permisos}</strong> este mes.
-            </div>
-          ))}
-          {alertasPersona.map((p) => (
-            <div key={`persona_${p.nombre}_${p.cedula || ""}`} style={{ background: C.amberBg, borderLeft: `4px solid ${C.amber}`, borderRadius: 8, padding: "10px 14px", fontSize: 12.5, color: C.ink }}>
-              ⚠️ <strong>{p.nombre}</strong> ya tiene {p.count} de {topePermisos} permisos este mes -- le queda 1 antes de que se pida código de gerencia.
-            </div>
-          ))}
+      {verAyuda && (
+        <div style={{ fontSize: 12, color: C.ink, background: C.blueBg, borderRadius: 10, padding: "12px 14px", marginBottom: 16, maxWidth: 860, lineHeight: 1.6 }}>
+          «Permisos» cuenta cualquier motivo de ausencia (cita médica, entrega de boletines, etc.) EXCEPTO Vacaciones, Incapacidad, Licencias, Luto y Suspensión: esos no cuentan acá, pero sí entran en «Motivo más frecuente». «Días sin justificar» son los que hoy ves en Días No Justificados. La «tasa» es por cada 10 trabajadores activos del área, para comparar áreas de distinto tamaño. Las horas perdidas salen de la hora inicio y fin del permiso (o del turno de la persona si es de día completo){mostrarDinero ? " y el costo es horas × sueldo ÷ 210" : ""}. «Por reponer» son las horas de permiso por horas que aún no se han repuesto en Reposición de horas.
         </div>
       )}
 
-      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 20 }}>
-        <KPI icon="🗓️" label="Área con más permisos (total)" value={liderPermisos ? `${liderPermisos.area} (${liderPermisos.permisos})` : "—"} color={C.amber} bg={C.amberBg} />
-        <KPI icon="📐" label="Más permisos en proporción" value={liderTasa ? liderTasa.area : "—"} sub={liderTasa ? `${liderTasa.tasa} por cada 10 trabajadores` : undefined} color={C.violet} bg={C.violetBg} />
-        <KPI icon="🕒" label="Área con más retardos" value={liderRetardos ? `${liderRetardos.area} (${liderRetardos.retardos})` : "—"} color={C.blue} bg={C.blueBg} />
-        <KPI icon="❌" label="Área con más ausencias" value={liderFaltas ? `${liderFaltas.area} (${liderFaltas.faltas})` : "—"} color={C.red} bg={C.redBg} />
-        <KPI
-          icon="📈"
-          label="Tendencia general de permisos"
-          value={tendenciaGeneral.texto}
-          sub={`${totalPermisosMes} este mes vs ${totalPermisosAnterior} en ${fmtMesLabel(mesAnt)}`}
-          color={tendenciaGeneral.dir === "up" ? C.red : tendenciaGeneral.dir === "down" ? C.green : C.slate}
-          bg={tendenciaGeneral.dir === "up" ? C.redBg : tendenciaGeneral.dir === "down" ? C.greenBg : C.canvas}
-        />
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12, marginBottom: 14 }}>
+        {tarjeta("Permisos del mes", totalPermisosMes, <span><strong style={{ color: colTend }}>{tendenciaGeneral.texto}</strong> vs {fmtMesLabel(mesAnt)} ({totalPermisosAnterior})</span>, C.ink)}
+        {tarjeta("Personas con permiso", personasPermisosMes.size, `de ${trabajadoresActivos} trabajadores activos`, C.ink)}
+        {tarjeta("Horas perdidas", fmtHoras(statsMes.horasTotal), `${fmtHoras(horasPromPermiso)} por permiso`, C.amber)}
+        {mostrarDinero && tarjeta("Costo de esas horas", fmtMoney(statsMes.costoTotal), `${fmtMoney(costoPromPermiso)} por permiso · ${fmtMoney(costoPromTrabajador)} por trabajador`, C.red)}
+        {tarjeta("Área con más permisos", liderPermisos ? liderPermisos.area : "—", liderPermisos ? `${liderPermisos.permisos} permisos${liderTasa ? ` · tasa más alta: ${liderTasa.area} (${liderTasa.tasa})` : ""}` : "Sin permisos este mes", C.ink)}
+        {tarjeta("Por reponer", fmtHoras(porReponer.horas), mostrarDinero ? `${fmtMoney(porReponer.valor)} por descontar si no reponen` : "horas de permiso sin reponer", C.violet, { background: C.violetBg })}
       </div>
-
-      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 8 }}>
-        <KPI icon="⏱️" label="Horas perdidas por permisos" value={fmtHoras(statsMes.horasTotal)} sub={`${totalPermisosMes} permisos en ${fmtMesLabel(mes)}`} color={C.amber} bg={C.amberBg} />
-        <KPI icon="💸" label="Costo de esas horas" value={fmtMoney(statsMes.costoTotal)} sub="sueldo ÷ 210 × horas perdidas" color={C.red} bg={C.redBg} />
-        <KPI icon="📊" label="Costo promedio por permiso" value={fmtMoney(costoPromPermiso)} sub={`${fmtHoras(horasPromPermiso)} por permiso`} color={C.violet} bg={C.violetBg} />
-        <KPI icon="👥" label="Costo promedio por trabajador" value={fmtMoney(costoPromTrabajador)} sub={`${trabajadoresActivos} trabajadores activos`} color={C.blue} bg={C.blueBg} />
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, display: "flex", gap: 18, flexWrap: "wrap" }}>
+        <span>🕒 Más retardos: <strong style={{ color: C.ink }}>{liderRetardos ? `${liderRetardos.area} (${liderRetardos.retardos})` : "—"}</strong></span>
+        <span>❌ Más días sin justificar: <strong style={{ color: C.ink }}>{liderFaltas ? `${liderFaltas.area} (${liderFaltas.faltas})` : "—"}</strong></span>
       </div>
       {(statsMes.personasSinTurno > 0 || statsMes.personasSinSueldo > 0) && (
         <div style={{ fontSize: 11.5, color: C.slate, marginBottom: 16, maxWidth: 820 }}>
@@ -7598,33 +7669,116 @@ function EstadisticasPermisosView({ areasNomina, trabajadores, ausencias, faltas
         </div>
       )}
 
+      {hayAlertas && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 12, marginBottom: 16 }}>
+          {alertasArea.length > 0 && (
+            <div style={{ background: C.redBg, border: `1px solid ${C.red}55`, borderRadius: 14, padding: "14px 16px" }}>
+              <div style={{ fontSize: 13.5, fontWeight: 800, marginBottom: 6 }}>🚨 {alertasArea.length === 1 ? "Un área se disparó" : `${alertasArea.length} áreas se dispararon`}</div>
+              {alertasArea.map((f) => (
+                <div key={`area_${f.area}`} style={{ fontSize: 12.5, lineHeight: 1.5 }}>
+                  <strong>{f.area}</strong>: {permisosAnteriorPorArea.get(f.area) || 0} → <strong>{f.permisos}</strong> permisos frente a {fmtMesLabel(mesAnt)}.
+                </div>
+              ))}
+            </div>
+          )}
+          {alertasPersona.length > 0 && (
+            <div style={{ background: C.amberBg, border: `1px solid ${C.amber}55`, borderRadius: 14, padding: "14px 16px" }}>
+              <div style={{ fontSize: 13.5, fontWeight: 800, marginBottom: 4 }}>⚠️ {alertasPersona.length} {alertasPersona.length === 1 ? "persona ya lleva" : "personas ya llevan"} {topePermisos - 1} de {topePermisos} permisos este mes</div>
+              <div style={{ fontSize: 12.5 }}>Les queda 1 antes de que se pida código de gerencia. Click en un nombre para ver el detalle de su área.</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }}>
+                {alertasPersona.map((pp) => (
+                  <span key={`persona_${pp.nombre}_${pp.cedula || ""}`} onClick={() => { setAreaDetalle(pp.area); setPeriodoDetalle("mes"); }} style={{ background: C.white, border: `1px solid ${C.amber}55`, borderRadius: 999, padding: "3px 10px", fontSize: 11.5, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>
+                    {pp.nombre}<span style={{ color: C.amber, marginLeft: 5 }}>{pp.count}/{topePermisos}</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
+        <div style={{ ...panel, flex: "1.25 1 420px", minWidth: 0 }}>
+          <div style={{ fontSize: 14, fontWeight: 800 }}>Permisos por área</div>
+          <div style={{ fontSize: 11.5, color: C.slate, marginBottom: 14 }}>La barra es este mes; la raya negra, {fmtMesLabel(mesAnt)}. A la derecha: permisos y tasa por cada 10 trabajadores.</div>
+          {filasConPermisos.length === 0 && <div style={{ fontSize: 12.5, color: C.slate }}>Sin permisos este mes.</div>}
+          {filasConPermisos.map((f) => {
+            const ant = permisosAnteriorPorArea.get(f.area) || 0;
+            return (
+              <div key={f.area} onClick={() => { setAreaDetalle(f.area); setPeriodoDetalle("mes"); }} style={{ display: "grid", gridTemplateColumns: "118px 1fr 84px", alignItems: "center", gap: 10, marginBottom: 9, fontSize: 12.5, cursor: "pointer" }}>
+                <span style={{ fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={f.area}>{f.area}</span>
+                <div style={{ height: 14, background: C.canvas, borderRadius: 4, position: "relative" }}>
+                  <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${(f.permisos / maxBarra) * 100}%`, background: C.violet, borderRadius: 4 }} />
+                  {ant > 0 && <div style={{ position: "absolute", left: 0, top: -1, bottom: -1, width: `${(ant / maxBarra) * 100}%`, borderRight: `2px solid ${C.ink}` }} />}
+                </div>
+                <span style={{ textAlign: "right", color: C.slate, fontSize: 11.5, fontWeight: 600, whiteSpace: "nowrap" }}><b style={{ color: C.ink }}>{f.permisos}</b>{f.tasa != null ? ` · ${f.tasa}` : ""}</span>
+              </div>
+            );
+          })}
+          <div style={{ display: "flex", gap: 14, fontSize: 11, color: C.slate, marginTop: 6 }}>
+            <span><i style={{ display: "inline-block", width: 10, height: 10, borderRadius: 2, background: C.violet, marginRight: 5 }} />{fmtMesLabel(mes)}</span>
+            <span><i style={{ display: "inline-block", width: 2, height: 12, background: C.ink, marginRight: 5, verticalAlign: "-2px" }} />{fmtMesLabel(mesAnt)}</span>
+          </div>
+        </div>
+        <div style={{ ...panel, flex: "1 1 320px", minWidth: 0 }}>
+          <div style={{ fontSize: 14, fontWeight: 800 }}>Permisos por mes</div>
+          <div style={{ fontSize: 11.5, color: C.slate, marginBottom: 6 }}>Últimos 6 meses hasta {fmtMesLabel(mes)}.</div>
+          <GraficaColumnas datos={serieMeses} destacado={serieMeses.length - 1} ariaLabel="Permisos por mes" />
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
+        <div style={{ ...panel, flex: "1.25 1 420px", minWidth: 0 }}>
+          <div style={{ fontSize: 14, fontWeight: 800 }}>Motivos más frecuentes</div>
+          <div style={{ fontSize: 11.5, color: C.slate, marginBottom: 14 }}>Solo motivos de permiso; no incluye vacaciones, incapacidad, licencias, luto ni suspensión.</div>
+          {motivosMes.length === 0 && <div style={{ fontSize: 12.5, color: C.slate }}>Sin permisos este mes.</div>}
+          {motivosMes.map(([motivo, cant]) => (
+            <div key={motivo} style={{ display: "grid", gridTemplateColumns: "190px 1fr 30px", alignItems: "center", gap: 10, marginBottom: 9, fontSize: 12.5 }}>
+              <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={motivo}>{motivo}</span>
+              <div style={{ height: 14, background: C.canvas, borderRadius: 4 }}><div style={{ width: `${(cant / motivosMes[0][1]) * 100}%`, height: "100%", background: C.blue, borderRadius: 4 }} /></div>
+              <b style={{ textAlign: "right" }}>{cant}</b>
+            </div>
+          ))}
+        </div>
+        <div style={{ ...panel, flex: "1 1 320px", minWidth: 0 }}>
+          <div style={{ fontSize: 14, fontWeight: 800 }}>Día de la semana</div>
+          <div style={{ fontSize: 11.5, color: C.slate, marginBottom: 6 }}>{idxMaxDia >= 0 ? `${DIAS_LARGO[idxMaxDia]} concentran el ${Math.round((maxDia / Math.max(totalPermisosMes, 1)) * 100)} % de los permisos.` : "Sin permisos este mes."}</div>
+          <GraficaColumnas datos={diasGrafica} destacado={idxMaxDia} ariaLabel="Permisos por día de la semana" />
+        </div>
+      </div>
+
+      <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 8 }}>Detalle por área</div>
       <Tabla
         vacio="Sin datos para este mes."
         columnas={[
-          { key: "area", label: "Área", render: (f) => (f.esTotal ? <strong>{f.area}</strong> : f.area) },
+          { key: "area", label: "Área", render: (f) => (f.esTotal ? <strong>{f.area}</strong> : <strong>{f.area}</strong>) },
           {
             key: "permisos", label: "Permisos", align: "right",
-            render: (f) => (
-              <div>
-                <div>{f.permisos}</div>
-                {f.tasa != null && <div style={{ fontSize: 10, color: C.slate }}>{f.tasa} / 10 trab.</div>}
-              </div>
-            ),
+            render: (f) => (f.esTotal ? <strong>{f.permisos}</strong> : (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                <span style={{ display: "inline-block", width: 60, height: 8, background: C.canvas, borderRadius: 3, position: "relative" }}>
+                  <span style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${(f.permisos / maxBarra) * 100}%`, background: C.violet, borderRadius: 3 }} />
+                </span>
+                {f.permisos}
+              </span>
+            )),
           },
           { key: "horas", label: "Horas perdidas", align: "right", render: (f) => (f.esTotal ? <strong>{fmtHoras(f.horas)}</strong> : fmtHoras(f.horas)) },
-          { key: "costo", label: "Costo", align: "right", render: (f) => (f.esTotal ? <strong>{fmtMoney(f.costo)}</strong> : fmtMoney(f.costo)) },
-          { key: "costoProm", label: "Costo prom. / permiso", align: "right", render: (f) => (f.permisos ? fmtMoney(f.costo / f.permisos) : "—") },
+          ...(mostrarDinero ? [
+            { key: "costo", label: "Costo", align: "right", render: (f) => (f.esTotal ? <strong>{fmtMoney(f.costo)}</strong> : fmtMoney(f.costo)) },
+            { key: "costoProm", label: "Costo prom. / permiso", align: "right", render: (f) => (f.esTotal ? <strong>{totalPermisosMes ? fmtMoney(statsMes.costoTotal / totalPermisosMes) : "—"}</strong> : (f.permisos ? fmtMoney(f.costo / f.permisos) : "—")) },
+          ] : []),
           { key: "retardos", label: "Retardos", align: "right", render: (f) => (f.esTotal ? "" : f.retardos) },
           { key: "faltas", label: "Días sin justificar", align: "right", render: (f) => (f.esTotal ? "" : f.faltas) },
           {
-            key: "tendencia", label: "Tendencia", align: "right",
-            render: (f) => (f.esTotal ? "" : f.tendencia.texto),
-            color: (f) => (f.esTotal ? C.slate : f.tendencia.dir === "up" ? C.red : f.tendencia.dir === "down" ? C.green : C.slate),
+            key: "tendencia", label: "Tendencia",
+            render: (f) => (f.esTotal ? "" : (
+              <span style={{ fontWeight: 800, fontSize: 11.5, borderRadius: 999, padding: "2px 8px", background: f.tendencia.dir === "up" ? C.redBg : f.tendencia.dir === "down" ? C.greenBg : C.canvas, color: f.tendencia.dir === "up" ? C.red : f.tendencia.dir === "down" ? C.green : C.slate }}>{f.tendencia.texto}</span>
+            )),
           },
           { key: "motivoTop", label: "Motivo más frecuente", render: (f) => f.esTotal ? "" : (f.motivoTop ? `${f.motivoTop} (${f.motivoTopCount})` : "—") },
         ]}
         filas={[
-          ...filas.sort((a, b) => a.area.localeCompare(b.area)),
+          ...filasOrdenadas,
           ...(filas.length ? [{ area: "TOTAL FÁBRICA", esTotal: true, permisos: totalPermisosMes, horas: statsMes.horasTotal, costo: statsMes.costoTotal }] : []),
         ]}
         onRowClick={(f) => { if (f.esTotal) return; setAreaDetalle(f.area); setPeriodoDetalle("mes"); }}
@@ -7648,7 +7802,7 @@ function EstadisticasPermisosView({ areasNomina, trabajadores, ausencias, faltas
                 Acumulado {anio}
               </button>
             </div>
-            <Btn variant="success" small onClick={() => exportarPersonasAreaExcel(personasDetalle, areaDetalle, periodoDetalle === "anio" ? anio : mes)}>📥 Exportar esta área</Btn>
+            {mostrarDinero && <Btn variant="success" small onClick={() => exportarPersonasAreaExcel(personasDetalle, areaDetalle, periodoDetalle === "anio" ? anio : mes)}>📥 Exportar esta área</Btn>}
           </div>
 
           {filaDetalle && filaDetalle.motivosOrdenados.length > 0 && (
@@ -7683,7 +7837,7 @@ function EstadisticasPermisosView({ areasNomina, trabajadores, ausencias, faltas
               },
               { key: "permisos", label: "Permisos", align: "right" },
               { key: "horas", label: "Horas perdidas", align: "right", render: (p) => fmtHoras(p.horas) },
-              { key: "costo", label: "Costo", align: "right", render: (p) => fmtMoney(p.costo) },
+              ...(mostrarDinero ? [{ key: "costo", label: "Costo", align: "right", render: (p) => fmtMoney(p.costo) }] : []),
               { key: "retardos", label: "Retardos", align: "right" },
               { key: "faltas", label: "Días sin justificar", align: "right" },
               { key: "motivoTop", label: "Motivo más usado", render: (p) => p.motivoTop ? `${p.motivoTop} (${p.motivoTopCount})` : "—" },
@@ -17371,6 +17525,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
         { id: "reposicion_horas", icon: "🔁", label: "Reposición de horas" },
         ...(puedeVerAnomaliasHuellero ? [{ id: "anomalias_huellero", icon: "⚠️", label: "Anomalías Huellero" }] : []),
         { id: "historial_asistencia_area", icon: "🗓️", label: "Historial de Asistencia" },
+        { id: "estadisticas_permisos", icon: "📊", label: "Estadísticas de Permisos" },
         { id: "resumen", icon: "💰", label: "Resumen" },
         { id: "historial_lote", icon: "📦", label: "Historial de Lote" },
         { id: "historial_trabajador", icon: "🧑‍🏭", label: "Historial de Trabajador" },
@@ -17387,6 +17542,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
         { id: "tabulador_asistencia", icon: "📋", label: "Tabulador de Asistencia" },
         ...(puedeVerAnomaliasHuellero ? [{ id: "anomalias_huellero", icon: "⚠️", label: "Anomalías Huellero" }] : []),
         { id: "historial_asistencia_area", icon: "🗓️", label: "Historial de Asistencia" },
+        { id: "estadisticas_permisos", icon: "📊", label: "Estadísticas de Permisos" },
       ]
     : [
         { id: "dashboard", icon: "◉", label: "Inicio" },
@@ -18221,7 +18377,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "reposicion_horas" && <ReposicionHorasView trabajadores={trabajadoresVisibles} ausencias={ausenciasVisibles} reposiciones={reposiciones} horasExtras={horasExtras} cobrosManuales={cobrosManuales} mostrarDinero={!areaLider} onRegistrar={registrarReposicionHoras} onQuitar={quitarReposicionHoras} />}
           {subView === "anomalias_huellero" && puedeVerAnomaliasHuellero && <AnomaliasHuelleroView anomalias={anomaliasVisibles} retardos={retardosVisibles} onAjustar={ajustarAnomaliaHuellero} />}
           {subView === "historial_asistencia_area" && <HistorialAsistenciaAreaView areasNomina={areasNomina} trabajadores={trabajadoresVisibles} areaLider={areaLider} diasTrabajados={diasTrabajadosHuellero} faltas={faltasSinJustificar} ausencias={ausenciasVisibles} anomalias={anomaliasVisibles} retardos={retardosVisibles} turnos={turnos} />}
-          {subView === "estadisticas_permisos" && !areaLider && !soloNovedades && <EstadisticasPermisosView areasNomina={areasNomina} trabajadores={trabajadores} ausencias={ausencias} faltas={faltasSinJustificar} retardos={retardosHuellero} turnos={turnos} />}
+          {subView === "estadisticas_permisos" && <EstadisticasPermisosView areasNomina={areasNomina} trabajadores={trabajadoresVisibles} ausencias={ausenciasVisibles} faltas={areaLider ? faltasSinJustificar.filter((f) => areaDeRegistro(f, trabajadoresVisibles) === areaLider) : faltasSinJustificar} retardos={retardosVisibles} turnos={turnos} reposiciones={reposiciones} cobrosManuales={cobrosManuales} mostrarDinero={!areaLider} areaLider={areaLider || ""} />}
           {subView === "tabulador_asistencia" && <TabuladorAsistenciaView areasNomina={areasNomina} trabajadores={trabajadoresVisibles} areaLider={areaLider} turnos={turnos} ausencias={ausenciasVisibles} diasTrabajados={diasTrabajadosHuellero} faltas={faltasSinJustificar} onGuardar={guardarAsistenciaManual} />}
           {subView === "fiscal" && !areaLider && !soloNovedades && <NominaFiscalView areasNomina={areasNomina} trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesF} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionF} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} isAdmin={isAdmin} onAbrirQuincena={abrirQuincenaParaEditar} turnos={turnos} horas={horas} deduccionesTrabajador={deduccionesTrabajador} causacionManual={causacionManual} horasExtras={horasExtras} bonificaciones={bonificaciones} onEliminarLiquidacion={eliminarLiquidacionF} />}
           {subView === "historial_fiscal" && !areaLider && !soloNovedades && <HistorialFiscalView liquidaciones={liquidacionesF} trabajadores={trabajadores} />}
