@@ -4582,6 +4582,98 @@ const MOTIVOS_EXCLUIDOS_DE_PERMISO = [
 function esMotivoPermiso(motivo) {
   return !!motivo && !MOTIVOS_EXCLUIDOS_DE_PERMISO.includes(motivo);
 }
+// ─── COBRO DE LAS HORAS DE PERMISO (2026-11-20, a pedido de Fredy) ───────────────────────────────────────────
+// Cuando un permiso POR HORAS (con hora inicio y hora fin) se da desde Novedades → Permisos (Calendario), las horas que el
+// trabajador no reponga se le cobran. Reglas confirmadas con Fredy:
+//  - Aplica a los permisos desde el 16/11/2026, a todos los motivos menos los protegidos (ver MOTIVOS_EXCLUIDOS_DE_PERMISO).
+//  - Solo permisos con hora inicio y fin; el permiso de día completo se trata como hasta hoy.
+//  - Fiscal y Fiscal Destajo: se descuenta (horas no repuestas) × valor hora, con valor hora = sueldo ÷ DIVISOR_HORAS_MES_EXTRA (210).
+//  - Destajo: NO se descuenta; solo se muestran las horas de permiso junto a la ayuda de salario mínimo (Fredy decide la ayuda).
+//  - El plazo para reponer termina con la quincena del permiso; la reposición se canjea hora por hora, sin recargo.
+// El cobro se guarda como un cobro manual con id fijo «permiso_<id de la ausencia>» (nomina_cobros_manuales), así entra solo a
+// Deducciones, a las liquidaciones, al recibo y al desprendible. Si ya está cobrado (cobrado === true) nunca se vuelve a tocar.
+const FECHA_INICIO_COBRO_PERMISO_HORAS = "2026-11-16";
+const TIPOS_NOMINA_COBRAN_PERMISO_HORAS = ["Fiscal", "Fiscal Destajo"];
+const TIPO_COBRO_PERMISO_HORAS = "Permiso (horas)";
+function esPermisoPorHoras(a) {
+  if (!a || !esMotivoPermiso(a.motivo)) return false;
+  const i = minutosDeHoraTurno(a.horaInicio);
+  const f = minutosDeHoraTurno(a.horaFin);
+  return i != null && f != null && f > i;
+}
+function finQuincenaDeFecha(iso) {
+  const [y, m, d] = String(iso || "").split("-");
+  if (!y || !m || !d) return "";
+  if (Number(d) <= 15) return `${y}-${m}-15`;
+  return `${y}-${m}-${String(new Date(Number(y), Number(m), 0).getDate()).padStart(2, "0")}`;
+}
+// Devuelve qué pasa con un permiso: { aplica, cobra, informativo, horas, valorHora, horasRepuestas, horasACobrar, valor, tipoNomina, motivoNoAplica }.
+function calcularCobroPermisoHoras(a, { trabajadores, areasNomina, turnos }, horasRepuestas = 0) {
+  const vacio = { aplica: false, cobra: false, informativo: false, horas: 0, valorHora: 0, horasRepuestas: 0, horasACobrar: 0, valor: 0, tipoNomina: "", motivoNoAplica: "" };
+  if (!esPermisoPorHoras(a)) return { ...vacio, motivoNoAplica: "no_por_horas" };
+  if ((a.fechaInicio || "") < FECHA_INICIO_COBRO_PERMISO_HORAS) return { ...vacio, motivoNoAplica: "antes_de_fecha" };
+  const t = a.trabajadorId ? (trabajadores || []).find((x) => x.id === a.trabajadorId) : null;
+  if (!t) return { ...vacio, motivoNoAplica: "sin_trabajador" };
+  const tipoNomina = t.tipoNomina || "";
+  const m = medirPermisoHorasCosto(a, { trabajadores, areasNomina, turnos });
+  const horas = Math.round((m.horas || 0) * 100) / 100;
+  const base = { ...vacio, tipoNomina, horas };
+  if (!(horas > 0)) return { ...base, motivoNoAplica: "sin_horas" };
+  if (tipoNomina === "Destajo") return { ...base, aplica: true, informativo: true };
+  if (!TIPOS_NOMINA_COBRAN_PERMISO_HORAS.includes(tipoNomina)) return { ...base, motivoNoAplica: "tipo_nomina" };
+  const sueldo = Number(t.sueldo) || 0;
+  if (!(sueldo > 0)) return { ...base, aplica: true, motivoNoAplica: "sin_sueldo" };
+  const valorHora = sueldo / DIVISOR_HORAS_MES_EXTRA;
+  const rep = Math.min(horas, Math.max(0, Number(horasRepuestas) || 0));
+  const horasACobrar = Math.max(0, horas - rep);
+  return { ...base, aplica: true, cobra: true, valorHora, horasRepuestas: rep, horasACobrar, valor: Math.round(horasACobrar * valorHora) };
+}
+function textoReferenciaPermiso(a, r) {
+  return `${fmtFechaISO(a.fechaInicio)} · ${a.horaInicio}–${a.horaFin} · ${fmtHoras(r.horas)}${r.horasRepuestas > 0 ? ` · repuestas ${fmtHoras(r.horasRepuestas)}` : ""}`;
+}
+// Texto del concepto en recibo / desprendible.
+function textoTipoCobro(c) {
+  if (c && c.origen === "permiso") {
+    return `Permiso por horas · ${fmtHoras(c.horas)}${(Number(c.horasRepuestas) || 0) > 0 ? ` (repuestas ${fmtHoras(c.horasRepuestas)})` : ""}`;
+  }
+  return (c && (c.tipo || c.motivo || c.concepto)) || "Cobro";
+}
+// Horas de permiso por horas de un trabajador dentro de una quincena (para mostrarlas junto a la ayuda en Destajo).
+function horasPermisoEnPeriodo(ausencias, trabajador, inicio, fin) {
+  if (!trabajador || !trabajador.id) return 0;
+  const { areasNomina, turnos } = CONTEXTO_VACACIONES;
+  return (ausencias || [])
+    .filter((a) => a.trabajadorId === trabajador.id && esPermisoPorHoras(a) && a.fechaInicio >= FECHA_INICIO_COBRO_PERMISO_HORAS && a.fechaInicio >= inicio && a.fechaInicio <= fin)
+    .reduce((s, a) => s + (medirPermisoHorasCosto(a, { trabajadores: [trabajador], areasNomina, turnos }).horas || 0), 0);
+}
+// Horas de UNA ausencia (0 si no es permiso por horas o es anterior a la fecha de inicio): para los chips del calendario.
+function horasPermisoDeAusencia(a, trabajador) {
+  if (!trabajador || !esPermisoPorHoras(a) || (a.fechaInicio || "") < FECHA_INICIO_COBRO_PERMISO_HORAS) return 0;
+  const { areasNomina, turnos } = CONTEXTO_VACACIONES;
+  return medirPermisoHorasCosto(a, { trabajadores: [trabajador], areasNomina, turnos }).horas || 0;
+}
+function ChipPermisoHoras({ horas, destajo }) {
+  if (!(horas > 0)) return null;
+  return (
+    <span
+      title={destajo
+        ? `Tuvo ${fmtHoras(horas)} de permiso por horas en la quincena. En Destajo no se descuenta: tenlo en cuenta al decidir la ayuda de salario mínimo.`
+        : `Permiso por horas: ${fmtHoras(horas)}`}
+      style={{ display: "inline-block", padding: "1px 7px", borderRadius: 999, background: C.violetBg, color: C.violet, fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}
+    >
+      ⏱ {fmtHoras(horas)} de permiso
+    </span>
+  );
+}
+function conChipPermisoHoras(horas, render) {
+  if (!(horas > 0)) return render();
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+      {render()}
+      <ChipPermisoHoras horas={horas} destajo />
+    </span>
+  );
+}
 const TOPE_PERMISOS_POR_MES = 3;
 // (2026-10-28, a pedido de Fredy) Del permiso #(tope+1) del mes en adelante
 // ya no se bloquea: se pide un código de autorización que da gerencia (ver
@@ -4596,7 +4688,7 @@ function contarPermisosDelMes(ausencias, { trabajadorId, nombreLibre, mes, idAEx
     (trabajadorId ? a.trabajadorId === trabajadorId : !a.trabajadorId && a.nombreLibre === nombreLibre)
   ).length;
 }
-function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles = MOTIVOS_AUSENCIA, onSave, onClose, trabajadorIdSugerido, fechaInicioSugerida, onDelete, mostrarContarComoTrabajado }) {
+function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles = MOTIVOS_AUSENCIA, onSave, onClose, trabajadorIdSugerido, fechaInicioSugerida, onDelete, mostrarContarComoTrabajado, mostrarDinero = true }) {
   const [form, setForm] = useState({
     trabajadorId: ausencia?.trabajadorId || trabajadorIdSugerido || "",
     nombreLibre: ausencia?.nombreLibre || "",
@@ -4636,6 +4728,13 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
   const [codigo, setCodigo] = useState("");
   const [validando, setValidando] = useState(false);
   const [errorCodigo, setErrorCodigo] = useState("");
+  // (2026-11-20) Cobro de las horas de permiso: se calcula en vivo para que quien da el permiso vea qué pasa con el trabajador.
+  const cobroPermiso = (() => {
+    if (!form.trabajadorId || !esMotivoPermiso(form.motivo) || (form.fechaInicio || "") < FECHA_INICIO_COBRO_PERMISO_HORAS) return null;
+    if (!esPermisoPorHoras(form)) return null;
+    const { areasNomina: areasCtx, turnos: turnosCtx } = CONTEXTO_VACACIONES;
+    return calcularCobroPermisoHoras({ ...form, id: ausencia?.id }, { trabajadores, areasNomina: areasCtx, turnos: turnosCtx }, 0);
+  })();
   async function guardar() {
     if (!form.motivo || (!form.trabajadorId && !form.nombreLibre.trim())) return;
     if (necesitaCodigo && !codigo.trim()) return;
@@ -4727,6 +4826,29 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
         <div style={{ flex: 1 }}><Field label="Hora Inicio (opcional)"><FInput type="time" value={form.horaInicio} onChange={set("horaInicio")} /></Field></div>
         <div style={{ flex: 1 }}><Field label="Hora Fin (opcional)"><FInput type="time" value={form.horaFin} onChange={set("horaFin")} /></Field></div>
       </div>
+      {cobroPermiso && cobroPermiso.cobra && (
+        <div style={{ background: C.violetBg, border: `1px solid ${C.violet}`, borderRadius: 10, padding: "10px 12px", margin: "0 0 12px" }}>
+          <div style={{ fontSize: 12, fontWeight: 800, color: C.violet, marginBottom: 4 }}>⏱ Cobro de las horas de este permiso</div>
+          <div style={{ fontSize: 12, color: C.ink, lineHeight: 1.5 }}>
+            Permiso de <strong>{fmtHoras(cobroPermiso.horas)}</strong>{mostrarDinero ? <> · valor hora <strong>{fmtMoney(Math.round(cobroPermiso.valorHora))}</strong> (sueldo ÷ {DIVISOR_HORAS_MES_EXTRA})</> : null}.
+            {" "}Si no las repone hasta el <strong>{fmtFechaISO(finQuincenaDeFecha(form.fechaInicio))}</strong> (fin de la quincena), se le descuentan{mostrarDinero ? <> <strong>{fmtMoney(cobroPermiso.valor)}</strong></> : " esas horas"} en la liquidación.
+            {" "}Si las repone en otro horario o con horas extras, se canjean hora por hora y el descuento baja.
+          </div>
+        </div>
+      )}
+      {cobroPermiso && cobroPermiso.informativo && (
+        <div style={{ background: C.violetBg, border: `1px solid ${C.violet}`, borderRadius: 10, padding: "10px 12px", margin: "0 0 12px" }}>
+          <div style={{ fontSize: 12, fontWeight: 800, color: C.violet, marginBottom: 4 }}>⏱ Permiso de {fmtHoras(cobroPermiso.horas)} (Destajo)</div>
+          <div style={{ fontSize: 12, color: C.ink, lineHeight: 1.5 }}>
+            En Destajo no se descuenta. Las horas quedan visibles junto a la ayuda de salario mínimo para que decidas si se le da la ayuda.
+          </div>
+        </div>
+      )}
+      {cobroPermiso && cobroPermiso.motivoNoAplica === "sin_sueldo" && (
+        <div style={{ fontSize: 11.5, fontWeight: 700, color: C.red, margin: "0 0 12px" }}>
+          ⚠ Este trabajador no tiene sueldo en su ficha: no se puede calcular el cobro de las horas.
+        </div>
+      )}
       <Field label="Observaciones (opcional)"><FInput value={form.observaciones} onChange={set("observaciones")} /></Field>
       {mostrarContarComoTrabajado && (
         <div style={{ fontSize: 12.5, color: C.ink, margin: "4px 0 14px", display: "flex", alignItems: "flex-start", gap: 8 }}>
@@ -5070,6 +5192,9 @@ function PermisosCalendarioView({ trabajadores, produccion, horas, ausencias, cu
                     {a && a.horaInicio && a.horaFin && (
                       <span style={{ fontSize: 9, fontWeight: 700, color: C.amber }}>{a.horaInicio}–{a.horaFin}</span>
                     )}
+                    {a && horasPermisoDeAusencia(a, trabajadorSel) > 0 && (
+                      <span style={{ fontSize: 9, fontWeight: 700, color: C.violet, background: C.violetBg, borderRadius: 20, padding: "1px 5px", alignSelf: "flex-start" }} title={trabajadorSel.tipoNomina === "Destajo" ? "Permiso por horas: en Destajo no se descuenta, se tiene en cuenta para la ayuda" : "Permiso por horas: las horas no repuestas se descuentan"}>{trabajadorSel.tipoNomina === "Destajo" ? "🆘" : "⏱"} {fmtHoras(horasPermisoDeAusencia(a, trabajadorSel))}</span>
+                    )}
                     {!a && vino && <span style={{ fontSize: 20, lineHeight: 1 }}>✅</span>}
                   </div>
                 );
@@ -5092,7 +5217,7 @@ function PermisosCalendarioView({ trabajadores, produccion, horas, ausencias, cu
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
                     {visibles.map(({ trabajador, ausencia }) => (
                       <span key={trabajador.id} title={`${trabajador.nombre} — ${ausencia.motivo}${fmtHoraRango(ausencia)}`} style={{ fontSize: 10, fontWeight: 700, color: C.amber, background: C.amberBg, borderRadius: 20, padding: "1px 6px", whiteSpace: "nowrap", maxWidth: 78, overflow: "hidden", textOverflow: "ellipsis" }}>
-                        {motivoIcono[ausencia.motivo] || "❔"} {trabajador.nombre.split(" ")[0]}
+                        {motivoIcono[ausencia.motivo] || "❔"} {trabajador.nombre.split(" ")[0]}{horasPermisoDeAusencia(ausencia, trabajador) > 0 ? ` ⏱${Math.round(horasPermisoDeAusencia(ausencia, trabajador) * 10) / 10}h` : ""}
                       </span>
                     ))}
                     {resto > 0 && <span style={{ fontSize: 10, fontWeight: 700, color: C.slate }}>+{resto}</span>}
@@ -5136,6 +5261,7 @@ function PermisosCalendarioView({ trabajadores, produccion, horas, ausencias, cu
       {modal && (
         <AusenciaModal
           ausencia={modal.nuevo ? null : modal}
+          mostrarDinero={!!isAdmin}
           trabajadores={trabajadores}
           ausencias={ausencias}
           motivosDisponibles={motivosDisponibles}
@@ -7545,7 +7671,7 @@ function cobrosPendientesDeTrabajador(lotesConCobros, trabajadorId, hastaFecha) 
         // las unidades de ese cobro (ej: 6 cobros de $26.000 c/u = deben
         // descontar $156.000, no $26.000). Los cobros manuales no traen
         // Cantidad, por eso el "|| 1" no les cambia nada.
-        pendientes.push({ loteId: l.id, numLote: l.numLote, referencia: l.referencia || "", cantidad: Number(c.cantidad) || 1, tipo: c.tipo, valor: (Number(c.valor) || 0) * (Number(c.cantidad) || 1), fecha: c.fecha || "" });
+        pendientes.push({ loteId: l.id, numLote: l.numLote, referencia: l.referencia || "", cantidad: c.origen === "permiso" ? 0 : (Number(c.cantidad) || 1), tipo: c.tipo, valor: (Number(c.valor) || 0) * (Number(c.cantidad) || 1), fecha: c.fecha || "", origen: c.origen || "", horas: Number(c.horas) || 0, horasRepuestas: Number(c.horasRepuestas) || 0 });
       }
     });
   });
@@ -9920,7 +10046,7 @@ function armarReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
     ${liquidacion.descuentoCobros > 0 ? `
     <div class="bloque"><div class="section-title">🏭 Descuento por cobros de Bodega</div>
     ${(liquidacion.cobrosDetalle || []).length ? `<table class="tabla-cobros"><thead><tr><th>Lote</th><th>Referencia</th><th>Tipo</th><th class="r">Cant.</th><th class="r">Valor</th></tr></thead><tbody>
-      ${liquidacion.cobrosDetalle.map((c) => `<tr><td>${escVac(c.numLote ?? "—")}</td><td>${escVac(c.referencia || "—")}</td><td>${escVac(c.tipo || "Cobro")}</td><td class="r">${c.cantidad ? escVac(c.cantidad) : "—"}</td><td class="r" style="color:#B23A48">-${fmtMoney(c.valor)}</td></tr>`).join("")}
+      ${liquidacion.cobrosDetalle.map((c) => `<tr><td>${escVac(c.numLote ?? "—")}</td><td>${escVac(c.referencia || "—")}</td><td>${escVac(c.tipo || "Cobro")}</td><td class="r">${c.origen === "permiso" ? escVac(fmtHoras(c.horas)) : (c.cantidad ? escVac(c.cantidad) : "—")}</td><td class="r" style="color:#B23A48">-${fmtMoney(c.valor)}</td></tr>`).join("")}
       <tr><td colspan="3"><strong>Total cobros (ya restado del neto)</strong></td><td class="r"><strong>${totalPrendasCobradas || ""}</strong></td><td class="r" style="color:#B23A48"><strong>-${fmtMoney(liquidacion.descuentoCobros)}</strong></td></tr>
     </tbody></table>` : `<table><tbody>
       <tr><td>Descuento por cobros de Bodega (ya restado del neto)</td><td style="text-align:right;color:#B23A48">-${fmtMoney(liquidacion.descuentoCobros)}</td></tr>
@@ -10748,7 +10874,7 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
       const incapNeto = (incap.devengado || 0) - (base.salarioMinimoGarantizado ? (SMMLV_2026 / 30) * incap.dias : 0);
       const cobrosDetalle = cobrosPendientesDeTrabajador(lotesConCobros, t.id, fin);
       const descuentoCobros = sumaCobrosPendientes(cobrosDetalle);
-      return { trabajador: t, calculo: { ...base, causacionManual: tieneCausacionManual, diasInasistencia, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, permisoMarcado: resumenPermisoMarcado(t, inicio, fin, diasTrabajados, ausencias), horasDetalle, horasCant, totalHorasExtra, bonificacionPuntual, descuentoCobros, cobrosDetalle, netoAntesDeAjuste: base.netoBase - descuentoCobros + totalHorasExtra + bonificacionPuntual + incapNeto, ...incapCampos(incap) } };
+      return { trabajador: t, calculo: { ...base, permisoHoras: horasPermisoEnPeriodo(ausencias, t, inicio, fin), causacionManual: tieneCausacionManual, diasInasistencia, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, permisoMarcado: resumenPermisoMarcado(t, inicio, fin, diasTrabajados, ausencias), horasDetalle, horasCant, totalHorasExtra, bonificacionPuntual, descuentoCobros, cobrosDetalle, netoAntesDeAjuste: base.netoBase - descuentoCobros + totalHorasExtra + bonificacionPuntual + incapNeto, ...incapCampos(incap) } };
     });
     setResultados(filas);
     setGuardadoOk(false);
@@ -11025,7 +11151,7 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
               { key: "descuentoCobros", label: "Descuento cobros Bodega", align: "right", render: (f) => f.calculo.descuentoCobros > 0 ? (
                 <span style={{ color: C.red, fontWeight: 700 }} title={(f.calculo.cobrosDetalle || []).map((c) => `Lote ${c.numLote}: ${c.tipo || "cobro"} ${fmtMoney(c.valor)}`).join(" | ")}>-{fmtMoney(f.calculo.descuentoCobros)}</span>
               ) : <span style={{ color: C.slate }}>—</span> },
-              { key: "ajuste", label: "Ajuste / Ayuda", align: "right", render: (f) => {
+              { key: "ajuste", label: "Ajuste / Ayuda", align: "right", render: (f) => conChipPermisoHoras(f.calculo.permisoHoras, () => {
                 if (f.calculo.salarioMinimoGarantizado) {
                   return f.calculo.ayudaSalarioMinimo > 0 ? (
                     <span style={{ color: C.red, fontWeight: 700 }} title="Lo que produjo no alcanzó el salario mínimo garantizado -- esto es lo que tuvo que poner la empresa de más">🆘 {fmtMoney(f.calculo.ayudaSalarioMinimo)}</span>
@@ -11043,7 +11169,7 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
                 return f.calculo.ajusteValor ? (
                   <span style={{ color: f.calculo.ajusteValor > 0 ? C.green : C.red, fontWeight: 700 }} title={f.calculo.ajusteObservacion}>{f.calculo.ajusteValor > 0 ? "+" : ""}{fmtMoney(f.calculo.ajusteValor)}</span>
                 ) : <span style={{ color: C.slate }}>—</span>;
-              } },
+              }) },
               { key: "incapacidad", label: "Incapacidad (empresa / EPS / ARL / mín.)", align: "right", render: (f) => <IncapCelda d={incapDeCalculo(f.calculo)} /> },
               { key: "netoAPagar", label: "Neto a pagar", align: "right", render: (f) => <strong>{fmtMoney(f.calculo.netoAPagar)}</strong> },
               { key: "cesantiasPeriodo", label: "Cesantías (prov.)", align: "right", render: (f) => fmtMoney(f.calculo.cesantiasPeriodo) },
@@ -12259,7 +12385,9 @@ function diagnosticarCobrosMarcadosMal(lotesConCobros, liquidaciones) {
   pendientes.sort((a, b) => String(a.trabajadorNombre).localeCompare(String(b.trabajadorNombre), "es") || String(a.periodoId).localeCompare(String(b.periodoId)));
   return { pendientes, dobles, liquidacionesRevisadas: ordenadas.length };
 }
-function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobrosManual, onAgregarCobroManual, isAdmin, onBorrarCobroManual, onRevertirCobro, onMarcarCobroManual, liquidaciones, onRepararCobros }) {
+function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobrosManual, onAgregarCobroManual, isAdmin, onBorrarCobroManual, onRevertirCobro, onMarcarCobroManual, liquidaciones, onRepararCobros, onSincronizarPermisos }) {
+  const [msgPermisos, setMsgPermisos] = useState("");
+  const [sincronizandoPermisos, setSincronizandoPermisos] = useState(false);
   const [filtroEstado, setFiltroEstado] = useState("");
   // (2026-10-30) Quincena y fecha de corte (como Horas Extras): cada cobro se clasifica por su fecha.
   const hoyDed = new Date();
@@ -12649,6 +12777,35 @@ function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobro
           </div>
         )}
       </div>
+      {isAdmin && onSincronizarPermisos && (
+        <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 14, marginBottom: 18, background: C.white }}>
+          <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+            <div style={{ fontSize: 13, fontWeight: 800, color: C.ink }}>⏱ Cobros por horas de permiso</div>
+            <Btn
+              small
+              variant="secondary"
+              disabled={sincronizandoPermisos}
+              onClick={async () => {
+                setSincronizandoPermisos(true);
+                setMsgPermisos("");
+                try {
+                  const r = await onSincronizarPermisos();
+                  setMsgPermisos(`Listo: se revisaron ${r.revisados} permiso(s) por horas desde el 16/11/2026 y sus cobros quedaron al día.`);
+                } catch (err) {
+                  setMsgPermisos(`No se pudo sincronizar: ${err?.message || err}`);
+                }
+                setSincronizandoPermisos(false);
+              }}
+            >
+              {sincronizandoPermisos ? "Sincronizando…" : "Sincronizar permisos"}
+            </Btn>
+            <div style={{ fontSize: 11.5, color: C.slate, maxWidth: 560, lineHeight: 1.4 }}>
+              Cada permiso por horas (Fiscal y Fiscal Destajo) crea solo su cobro al guardarse. Usa este botón si hay permisos guardados antes de este cambio o si alguno no aparece. Los cobros que ya se descontaron no se tocan.
+            </div>
+          </div>
+          {msgPermisos && <div style={{ marginTop: 10, fontSize: 12.5, fontWeight: 700, color: msgPermisos.startsWith("Listo") ? C.green : C.red }}>{msgPermisos}</div>}
+        </div>
+      )}
       {isAdmin && onRepararCobros && (
         <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 14, marginBottom: 18, background: C.white }}>
           <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
@@ -14169,7 +14326,7 @@ function armarCorreoDesprendibleHTML({
   const vacio = (t) => `<div style="padding:12px;color:#5A5A7A;font-size:12.5px;text-align:center">${t}</div>`;
   const filasProd = (produccionItems || []).map((p) => `<tr>${td(fechaCortaDed(p.fecha), { c: "#5A5A7A" })}${td(e(p.proceso), { b: true })}${td(e(p.numLote || "—"), { c: "#5A5A7A" })}${td(e(p.referencia || "—"), { c: "#5A5A7A" })}${td(fmtNum(p.cantidad), { r: true })}${td(fmtMoney(p.precioUnidad), { r: true })}${td(fmtMoney(p.total), { r: true, b: true })}</tr>`).join("");
   const filasHoras = (horasItems || []).map((h) => `<tr>${td(fechaCortaDed(h.fecha), { c: "#5A5A7A" })}${td(e(h.concepto), { b: true })}${td(fmtNum(h.horas), { r: true })}${td(fmtMoney(h.tarifaHora), { r: true })}${td(fmtMoney(h.total), { r: true, b: true })}</tr>`).join("");
-  const filasDed = (cobrosDetalle || []).map((c) => `<tr>${td(c.fecha ? fechaCortaDed(c.fecha) : "—", { c: "#5A5A7A" })}${td(e(c.tipo || c.motivo || c.concepto || "Cobro"), { b: true })}${td(`-${fmtMoney(c.valor)}`, { r: true, c: "#E85D4A", b: true })}</tr>`).join("");
+  const filasDed = (cobrosDetalle || []).map((c) => `<tr>${td(c.fecha ? fechaCortaDed(c.fecha) : "—", { c: "#5A5A7A" })}${td(e(textoTipoCobro(c)), { b: true })}${td(`-${fmtMoney(c.valor)}`, { r: true, c: "#E85D4A", b: true })}</tr>`).join("");
   const tablaHoras = filasHoras
     ? tabla(th("Fecha") + th("Concepto") + th("Horas", 1) + th("Tarifa/Hora", 1) + th("Total", 1), filasHoras)
     : vacio("Sin horas sueltas registradas en esta quincena.");
@@ -14257,7 +14414,7 @@ function exportDesprendiblePagoHTML({
       (c, i) => `
     <tr style="background:${i % 2 === 0 ? "#F7F4F0" : "#fff"}">
       <td style="padding:8px 10px;color:#5A5A7A;font-size:12px">${c.fecha ? fmtFechaISO(c.fecha) : "—"}</td>
-      <td style="padding:8px 10px;font-weight:600">${c.tipo || "Cobro"}</td>
+      <td style="padding:8px 10px;font-weight:600">${textoTipoCobro(c)}</td>
       <td style="padding:8px 10px;text-align:right;font-weight:700;color:#E85D4A">-${fmtMoney(c.valor)}</td>
     </tr>`
     )
@@ -14642,7 +14799,7 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
           if (incapInfo.dias > 0) netoAntesDeAjuste += incapInfo.devengado - (salarioMinimoGarantizado ? (SMMLV_2026 / 30) * incapInfo.dias : 0);
         }
         const totalGeneral = netoAntesDeAjuste + ajusteValor + totalHorasExtra + bonificacionPuntual;
-        return { ...g, incapInfo, tipoNomina: tipo, totalBruto, descuentoCobros, cobrosDetalle, deduccionesDetalle, descuentoDeducciones, salarioMinimoGarantizado, pagoPorDia, pagoDiasQuincena, ayudaSalarioMinimo, excedenteSobreMinimo, sueldoFijoQuincena, auxilioFijoQuincena, sueldoQuincena, auxilioQuincena, ajusteValor, ajusteObservacion, totalHorasExtra, bonificacionPuntual, totalGeneral };
+        return { ...g, permisoHoras: tipo === "Destajo" ? horasPermisoEnPeriodo(ausencias, g.trabajador, desde, hasta) : 0, incapInfo, tipoNomina: tipo, totalBruto, descuentoCobros, cobrosDetalle, deduccionesDetalle, descuentoDeducciones, salarioMinimoGarantizado, pagoPorDia, pagoDiasQuincena, ayudaSalarioMinimo, excedenteSobreMinimo, sueldoFijoQuincena, auxilioFijoQuincena, sueldoQuincena, auxilioQuincena, ajusteValor, ajusteObservacion, totalHorasExtra, bonificacionPuntual, totalGeneral };
       })
       .filter((g) => g.totalBruto > 0 || g.unidades > 0 || g.horasCant > 0 || g.salarioMinimoGarantizado || g.pagoPorDia || g.sueldoQuincena > 0 || g.auxilioQuincena > 0 || (g.incapInfo && g.incapInfo.dias > 0))
       // (2026-09-21, corregido a pedido de Fredy) Este sort iba por
@@ -14996,7 +15153,7 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
               <span style={{ color: C.red, fontWeight: 700 }} title={(f.deduccionesDetalle || []).map((d) => `${d.conceptoNombre || "Deducción"}: ${fmtMoney(d.valor)}`).join(" | ")}>-{fmtMoney(f.descuentoDeducciones)}</span>
             ) : <span style={{ color: C.slate }}>—</span> },
           ] : [
-            { key: "ajuste", label: "Ajuste / Ayuda", align: "right", render: (f) => {
+            { key: "ajuste", label: "Ajuste / Ayuda", align: "right", render: (f) => conChipPermisoHoras(f.permisoHoras, () => {
               if (f.salarioMinimoGarantizado) {
                 return f.ayudaSalarioMinimo > 0
                   ? <span style={{ color: C.red, fontWeight: 700 }} title="Lo que produjo no alcanzó el salario mínimo garantizado -- esto es lo que tuvo que poner la empresa de más">🆘 {fmtMoney(f.ayudaSalarioMinimo)}</span>
@@ -15005,7 +15162,7 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
               return f.ajusteValor ? (
                 <span style={{ color: f.ajusteValor > 0 ? C.green : C.red, fontWeight: 700 }} title={f.ajusteObservacion}>{f.ajusteValor > 0 ? "+" : ""}{fmtMoney(f.ajusteValor)}</span>
               ) : <span style={{ color: C.slate }}>—</span>;
-            } },
+            }) },
           ]),
           { key: "incapacidad", label: "Incapacidad (empresa / EPS / ARL / mín.)", align: "right", render: (f) => <IncapCelda d={f.incapInfo} /> },
           { key: "totalHorasExtra", label: "Horas Extra", align: "right", render: (f) => (f.totalHorasExtra || 0) > 0 ? <span style={{ color: C.amber, fontWeight: 700 }}>{fmtMoney(f.totalHorasExtra)}</span> : <span style={{ color: C.slate }}>—</span> },
@@ -16653,7 +16810,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
     return () => unsubs.forEach((u) => u());
   }, []);
   const lotesConCobrosTotal = useMemo(() => {
-    const manualesComoLotes = (cobrosManuales || []).map((c) => ({
+    const manualesComoLotes = (cobrosManuales || []).filter((c) => !(c.origen === "permiso" && !(Number(c.valor) > 0))).map((c) => ({
       id: `manual__${c.id}`,
       numLote: (c.numLote || "").trim() || "Manual",
       referencia: c.referencia || "",
@@ -16666,6 +16823,9 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
         fecha: c.fecha,
         cobrado: c.cobrado === true,
         periodoIdCobrado: c.periodoIdCobrado || "",
+        origen: c.origen || "",
+        horas: Number(c.horas) || 0,
+        horasRepuestas: Number(c.horasRepuestas) || 0,
       }],
     }));
     return [...(lotesConCobros || []), ...manualesComoLotes];
@@ -17007,8 +17167,62 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   // Horas Extras. Ver RegistrarBonificacionView.
   async function guardarBonificacion(b) { await fsSave("nomina_bonificaciones", b.id, b); }
   async function borrarBonificacion(id) { await fsDelete("nomina_bonificaciones", id); }
-  async function guardarAusencia(a) { await fsSave("nomina_ausencias", a.id, a); }
-  async function borrarAusencia(id) { await fsDelete("nomina_ausencias", id); }
+  // (2026-11-20, a pedido de Fredy) Cobro de las horas de permiso (ver calcularCobroPermisoHoras): cada vez que se guarda o se
+  // borra una ausencia se crea / actualiza / retira su cobro «permiso_<id>» en nomina_cobros_manuales. Se mezcla la ausencia
+  // guardada con la que llega (algunas pantallas mandan solo los campos que cambian) para no calcular con datos incompletos.
+  // Un cobro que ya se descontó en una liquidación (cobrado === true) nunca se modifica ni se borra.
+  async function sincronizarCobroPermiso(a) {
+    if (!a || !a.id) return;
+    const cobroId = `permiso_${a.id}`;
+    const existente = (cobrosManuales || []).find((c) => c.id === cobroId);
+    if (existente && existente.cobrado === true) return;
+    const r = calcularCobroPermisoHoras(a, { trabajadores, areasNomina, turnos }, existente?.horasRepuestas || 0);
+    if (!r.cobra) {
+      if (existente) await fsDelete("nomina_cobros_manuales", cobroId);
+      return;
+    }
+    const t = trabajadores.find((x) => x.id === a.trabajadorId);
+    await fsSave("nomina_cobros_manuales", cobroId, {
+      trabajadorId: a.trabajadorId,
+      trabajadorNombre: t?.nombre || a.nombre || "",
+      tipo: TIPO_COBRO_PERMISO_HORAS,
+      valor: r.valor,
+      fecha: a.fechaInicio,
+      numLote: "Permiso",
+      referencia: textoReferenciaPermiso(a, r),
+      origen: "permiso",
+      ausenciaId: a.id,
+      motivo: a.motivo || "",
+      horas: r.horas,
+      valorHora: Math.round(r.valorHora * 100) / 100,
+      horasRepuestas: r.horasRepuestas,
+      finPlazo: finQuincenaDeFecha(a.fechaInicio),
+      cobrado: false,
+      periodoIdCobrado: "",
+      ...(existente ? {} : { creadoPor: currentUser?.name || currentUser?.username || "", creadoEn: new Date().toISOString() }),
+    });
+  }
+  async function guardarAusencia(a) {
+    const previa = (ausencias || []).find((x) => x.id === a.id);
+    await fsSave("nomina_ausencias", a.id, a);
+    try { await sincronizarCobroPermiso({ ...(previa || {}), ...a }); } catch (err) { console.error("Cobro de permiso por horas:", err); }
+  }
+  async function borrarAusencia(id) {
+    await fsDelete("nomina_ausencias", id);
+    try {
+      const existente = (cobrosManuales || []).find((c) => c.id === `permiso_${id}`);
+      if (existente && existente.cobrado !== true) await fsDelete("nomina_cobros_manuales", existente.id);
+    } catch (err) { console.error("Cobro de permiso por horas:", err); }
+  }
+  // Botón de Deducciones (admin): recorre todos los permisos por horas desde el 16/11/2026 y deja su cobro al día.
+  async function sincronizarPermisosHoras() {
+    const lista = (ausencias || []).filter((a) => esPermisoPorHoras(a) && (a.fechaInicio || "") >= FECHA_INICIO_COBRO_PERMISO_HORAS);
+    let n = 0;
+    for (const a of lista) {
+      try { await sincronizarCobroPermiso(a); n += 1; } catch (err) { console.error("Cobro de permiso por horas:", err); }
+    }
+    return { revisados: lista.length, sincronizados: n };
+  }
   // (2026-09-15, a pedido de Fredy) El líder ajusta una anomalía de
   // Entrada/Salida: queda "ajustado" (ya no vuelve a aparecer como
   // pendiente ni en el correo diario) y el día queda como trabajado
@@ -17482,7 +17696,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "historial_prestacion_servicios" && !areaLider && !soloNovedades && <HistorialPrestacionServicioView liquidaciones={liquidacionesPS} trabajadores={trabajadores} />}
           {subView === "destajo" && !areaLider && !soloNovedades && <NominaDestajoView areasNomina={areasNomina} trabajadores={trabajadores} produccion={produccion} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionD} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} isAdmin={isAdmin} onAbrirQuincena={abrirQuincenaParaEditar} ajustesDestajo={ajustesDestajo} onGuardarAjusteDestajo={guardarAjusteDestajo} puedeAjustarDestajo={isAdmin || !!puedeAjustarDestajo} horas={horas} causacionManual={causacionManual} horasExtras={horasExtras} bonificaciones={bonificaciones} onEliminarLiquidacion={eliminarLiquidacionD} />}
           {subView === "historial_destajo" && !areaLider && !soloNovedades && <HistorialDestajoView liquidaciones={liquidacionesD} trabajadores={trabajadores} />}
-          {subView === "deducciones" && !areaLider && !soloNovedades && <DeduccionesNominaView lotesConCobros={lotesConCobrosTotal} trabajadores={trabajadores} puedeAgregarCobrosManual={isAdmin || !!puedeAgregarCobrosManual} onAgregarCobroManual={agregarCobroManual} isAdmin={isAdmin} onBorrarCobroManual={borrarCobroManual} onRevertirCobro={revertirCobroAPendiente} onMarcarCobroManual={marcarCobroComoCobradoManual} liquidaciones={[...liquidacionesF.map((l) => ({ ...l, _tipoNomina: "Fiscal" })), ...liquidacionesFD.map((l) => ({ ...l, _tipoNomina: "Fiscal destajo" })), ...liquidacionesD.map((l) => ({ ...l, _tipoNomina: "Destajo" })), ...liquidacionesPS.map((l) => ({ ...l, _tipoNomina: "Prestación de servicios" }))]} onRepararCobros={repararCobrosMarcadosMal} />}
+          {subView === "deducciones" && !areaLider && !soloNovedades && <DeduccionesNominaView lotesConCobros={lotesConCobrosTotal} trabajadores={trabajadores} puedeAgregarCobrosManual={isAdmin || !!puedeAgregarCobrosManual} onAgregarCobroManual={agregarCobroManual} isAdmin={isAdmin} onBorrarCobroManual={borrarCobroManual} onRevertirCobro={revertirCobroAPendiente} onMarcarCobroManual={marcarCobroComoCobradoManual} liquidaciones={[...liquidacionesF.map((l) => ({ ...l, _tipoNomina: "Fiscal" })), ...liquidacionesFD.map((l) => ({ ...l, _tipoNomina: "Fiscal destajo" })), ...liquidacionesD.map((l) => ({ ...l, _tipoNomina: "Destajo" })), ...liquidacionesPS.map((l) => ({ ...l, _tipoNomina: "Prestación de servicios" }))]} onRepararCobros={repararCobrosMarcadosMal} onSincronizarPermisos={sincronizarPermisosHoras} />}
           {subView === "causacion_manual" && !areaLider && !soloNovedades && <CausacionManualView trabajadores={trabajadores} causacionManual={causacionManual} isAdmin={isAdmin} puedeAjustarDestajo={isAdmin || !!puedeAjustarDestajo} onGuardar={guardarCausacionManual} onBorrar={borrarCausacionManual} areasNomina={areasNomina} />}
           {subView === "conceptos_deduccion" && !areaLider && !soloNovedades && <ConceptosDeduccionView conceptos={conceptosDeduccion} deduccionesTrabajador={deduccionesTrabajador} isAdmin={isAdminCatalogos} onSave={guardarConceptoDeduccion} onDelete={borrarConceptoDeduccion} />}
           {subView === "deducciones_fijas" && !areaLider && !soloNovedades && <DeduccionesFijasView trabajadores={trabajadores} conceptos={conceptosDeduccion} deducciones={deduccionesTrabajador} isAdmin={isAdminCatalogos} onGuardar={guardarDeduccionTrabajador} onCambiarEstado={cambiarEstadoDeduccionTrabajador} currentUser={currentUser} />}
