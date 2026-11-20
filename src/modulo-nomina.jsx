@@ -4688,7 +4688,97 @@ function contarPermisosDelMes(ausencias, { trabajadorId, nombreLibre, mes, idAEx
     (trabajadorId ? a.trabajadorId === trabajadorId : !a.trabajadorId && a.nombreLibre === nombreLibre)
   ).length;
 }
-function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles = MOTIVOS_AUSENCIA, onSave, onClose, trabajadorIdSugerido, fechaInicioSugerida, onDelete, mostrarContarComoTrabajado, mostrarDinero = true }) {
+// (2026-11-20, a pedido de Fredy) Buscador con lupa para elegir/filtrar trabajadores: escribe y salen sugerencias (sin importar
+// tildes ni mayúsculas, con la coincidencia resaltada y el área). Flechas ↑↓ + Enter o click para elegir; la «×» limpia.
+// value = id del trabajador elegido ("" = ninguno). onTexto (opcional) avisa lo que se va escribiendo, para filtrar listas.
+function normalizarBusqueda(v) {
+  return String(v || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/\s+/g, " ").trim();
+}
+function BuscadorTrabajador({ trabajadores, value, onChange, onTexto, placeholder = "Buscar trabajador…", autoFocus = false }) {
+  const elegido = (trabajadores || []).find((t) => t.id === value) || null;
+  const [q, setQ] = useState(elegido ? elegido.nombre : "");
+  const [abierto, setAbierto] = useState(false);
+  const [activo, setActivo] = useState(0);
+  useEffect(() => { if (elegido) setQ(elegido.nombre); }, [value]);
+  const qn = normalizarBusqueda(q);
+  const palabras = qn ? qn.split(" ") : [];
+  const sugerencias = (() => {
+    if (elegido && q === elegido.nombre) return [];
+    const base = (trabajadores || []).map((t) => ({ t, n: normalizarBusqueda(t.nombre) }));
+    const ok = palabras.length ? base.filter(({ n }) => palabras.every((w) => n.includes(w))) : base;
+    ok.sort((a, b) => {
+      const sa = qn && a.n.startsWith(qn) ? 0 : 1;
+      const sb = qn && b.n.startsWith(qn) ? 0 : 1;
+      return sa - sb || a.n.localeCompare(b.n);
+    });
+    return ok.slice(0, 8).map((x) => x.t);
+  })();
+  function elegir(t) {
+    setQ(t.nombre);
+    setAbierto(false);
+    if (onTexto) onTexto("");
+    onChange(t.id);
+  }
+  function limpiar() {
+    setQ("");
+    setAbierto(false);
+    if (onTexto) onTexto("");
+    onChange("");
+  }
+  function pintar(nombre) {
+    const n = normalizarBusqueda(nombre);
+    const i = qn ? n.indexOf(qn) : -1;
+    if (i < 0 || n.length !== nombre.length) return nombre;
+    return <>{nombre.slice(0, i)}<mark style={{ background: C.violetBg, color: C.violet, fontWeight: 800, borderRadius: 3, padding: "0 1px" }}>{nombre.slice(i, i + qn.length)}</mark>{nombre.slice(i + qn.length)}</>;
+  }
+  function teclas(e) {
+    if (e.key === "ArrowDown") { e.preventDefault(); setAbierto(true); setActivo((a) => Math.min(a + 1, Math.max(sugerencias.length - 1, 0))); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setActivo((a) => Math.max(a - 1, 0)); }
+    else if (e.key === "Enter") { if (abierto && sugerencias[activo]) { e.preventDefault(); elegir(sugerencias[activo]); } }
+    else if (e.key === "Escape") { setAbierto(false); }
+  }
+  return (
+    <div style={{ position: "relative" }}>
+      <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", fontSize: 13, opacity: 0.55, pointerEvents: "none" }}>🔍</span>
+      <input
+        type="text"
+        value={q}
+        autoFocus={autoFocus}
+        placeholder={placeholder}
+        onChange={(e) => {
+          const v = e.target.value;
+          setQ(v);
+          setAbierto(true);
+          setActivo(0);
+          if (value) onChange("");
+          if (onTexto) onTexto(v);
+        }}
+        onFocus={() => setAbierto(true)}
+        onBlur={() => setAbierto(false)}
+        onKeyDown={teclas}
+        style={{ width: "100%", padding: "9px 30px 9px 32px", border: `1.5px solid ${elegido ? C.violet : C.border}`, borderRadius: 8, fontSize: 14, color: C.ink, background: C.white, outline: "none", fontFamily: "inherit" }}
+      />
+      {(q || elegido) && (
+        <button type="button" aria-label="Limpiar búsqueda" onMouseDown={(e) => { e.preventDefault(); limpiar(); }}
+          style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", border: "none", background: "transparent", color: C.slate, fontSize: 18, lineHeight: 1, cursor: "pointer", padding: "2px 6px" }}>×</button>
+      )}
+      {abierto && (
+        <div style={{ position: "absolute", left: 0, right: 0, top: "calc(100% + 4px)", zIndex: 50, background: C.white, border: `1px solid ${C.border}`, borderRadius: 10, boxShadow: "0 10px 24px -8px rgba(26,26,46,.28)", maxHeight: 300, overflowY: "auto" }}>
+          {sugerencias.length === 0 ? (
+            <div style={{ padding: "10px 12px", fontSize: 12.5, color: C.slate }}>Nadie coincide con «{q}».</div>
+          ) : sugerencias.map((t, i) => (
+            <div key={t.id} onMouseDown={(e) => { e.preventDefault(); elegir(t); }} onMouseEnter={() => setActivo(i)}
+              style={{ padding: "8px 12px", cursor: "pointer", background: i === activo ? C.violetBg : C.white, display: "flex", alignItems: "baseline", gap: 8 }}>
+              <span style={{ flex: 1, fontSize: 13, fontWeight: 600, color: C.ink }}>{pintar(t.nombre)}</span>
+              <span style={{ fontSize: 11, color: C.slate, whiteSpace: "nowrap" }}>{t.area || "Sin asignar"}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles = MOTIVOS_AUSENCIA, onSave, onClose, trabajadorIdSugerido, fechaInicioSugerida, onDelete, mostrarContarComoTrabajado, mostrarDinero = true, exigirHorasPermiso = false }) {
   const [form, setForm] = useState({
     trabajadorId: ausencia?.trabajadorId || trabajadorIdSugerido || "",
     nombreLibre: ausencia?.nombreLibre || "",
@@ -4731,15 +4821,31 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
   const [codigo, setCodigo] = useState("");
   const [validando, setValidando] = useState(false);
   const [errorCodigo, setErrorCodigo] = useState("");
+  // (2026-11-20, a pedido de Fredy) Desde Permisos (Calendario) un permiso NUEVO exige trabajador, motivo, fecha, hora inicial y hora final
+  // (un solo día; ya no hay «Fecha Fin»). Vacaciones, Incapacidad, Licencias, Luto y Suspensión siguen por fechas sin horas.
+  // Un permiso viejo guardado sin horas se edita como antes.
+  const exigirHoras = exigirHorasPermiso && (ausencia
+    ? esMotivoPermiso(form.motivo) && esPermisoPorHoras(ausencia)
+    : (!form.motivo || esMotivoPermiso(form.motivo)));
+  const faltantes = [];
+  if (!form.trabajadorId && !form.nombreLibre.trim()) faltantes.push("trabajador");
+  if (!form.motivo) faltantes.push("motivo");
+  if (exigirHoras) {
+    if (!form.fechaInicio) faltantes.push("fecha");
+    if (!form.horaInicio) faltantes.push("hora inicial");
+    if (!form.horaFin) faltantes.push("hora final");
+  }
+  const ordenHorasMal = exigirHoras && !!form.horaInicio && !!form.horaFin && !(minutosDeHoraTurno(form.horaFin) > minutosDeHoraTurno(form.horaInicio));
+  const faltaTexto = faltantes.length > 1 ? `${faltantes.slice(0, -1).join(", ")} y ${faltantes[faltantes.length - 1]}` : (faltantes[0] || "");
   // (2026-11-20) Cobro de las horas de permiso: se calcula en vivo para que quien da el permiso vea qué pasa con el trabajador.
   const cobroPermiso = (() => {
     if (!form.trabajadorId || !esMotivoPermiso(form.motivo) || (form.fechaInicio || "") < FECHA_INICIO_COBRO_PERMISO_HORAS) return null;
     if (!esPermisoPorHoras(form)) return null;
     const { areasNomina: areasCtx, turnos: turnosCtx } = CONTEXTO_VACACIONES;
-    return calcularCobroPermisoHoras({ ...form, id: ausencia?.id }, { trabajadores, areasNomina: areasCtx, turnos: turnosCtx }, 0);
+    return calcularCobroPermisoHoras({ ...form, fechaFin: exigirHoras ? form.fechaInicio : form.fechaFin, id: ausencia?.id }, { trabajadores, areasNomina: areasCtx, turnos: turnosCtx }, 0);
   })();
   async function guardar() {
-    if (!form.motivo || (!form.trabajadorId && !form.nombreLibre.trim())) return;
+    if (faltantes.length || ordenHorasMal) return;
     if (necesitaCodigo && !codigo.trim()) return;
     let extra = {};
     if (necesitaCodigo) {
@@ -4769,7 +4875,7 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
       nombre: form.trabajadorId ? trabajadorSeleccionado?.nombre : form.nombreLibre.trim(),
       motivo: form.motivo,
       fechaInicio: form.fechaInicio,
-      fechaFin: form.fechaFin,
+      fechaFin: exigirHoras ? form.fechaInicio : form.fechaFin,
       horaInicio: form.horaInicio || "",
       horaFin: form.horaFin || "",
       observaciones: form.observaciones.trim(),
@@ -4782,15 +4888,19 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
   }
   return (
     <Modal title={ausencia ? "Editar Ausencia" : "Nueva Ausencia"} onClose={onClose} width={460}>
-      <Field label="Trabajador (de la lista de Atlas)">
-        <FSel value={form.trabajadorId} onChange={set("trabajadorId")} options={trabajadores.map((t) => ({ value: t.id, label: t.nombre }))} placeholder="Selecciona (o escribe el nombre abajo)..." />
+      <Field label={exigirHorasPermiso ? "Trabajador (de la lista de Atlas) *" : "Trabajador (de la lista de Atlas)"}>
+        {exigirHorasPermiso ? (
+          <BuscadorTrabajador trabajadores={trabajadores} value={form.trabajadorId} onChange={set("trabajadorId")} placeholder="Escribe el nombre para buscar…" autoFocus={!form.trabajadorId} />
+        ) : (
+          <FSel value={form.trabajadorId} onChange={set("trabajadorId")} options={trabajadores.map((t) => ({ value: t.id, label: t.nombre }))} placeholder="Selecciona (o escribe el nombre abajo)..." />
+        )}
       </Field>
       {!form.trabajadorId && (
         <Field label="O nombre (si no está en Trabajadores todavía, ej. gente del huellero de otra área)">
           <FInput value={form.nombreLibre} onChange={set("nombreLibre")} placeholder="Nombre completo tal como aparece en el huellero" />
         </Field>
       )}
-      <Field label="Motivo">
+      <Field label={exigirHorasPermiso ? "Motivo *" : "Motivo"}>
         <FSel value={form.motivo} onChange={set("motivo")} options={motivosDisponibles} placeholder="Selecciona..." />
       </Field>
       {form.motivo === "Incapacidad" && (
@@ -4821,16 +4931,18 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
           </div>
         )
       )}
-      <Field label="Fecha Inicio"><FInput type="date" value={form.fechaInicio} onChange={set("fechaInicio")} /></Field>
-      <Field label="Fecha Fin"><FInput type="date" value={form.fechaFin} onChange={set("fechaFin")} /></Field>
-      <div style={{ fontSize: 11, color: C.slate, marginTop: -6, marginBottom: 10 }}>
-        Déjalo vacío si el permiso es por el día completo. Si es solo por unas horas (ej. 8:00 a 10:00), complétalas acá.
-      </div>
+      <Field label={exigirHoras ? "Fecha del permiso *" : "Fecha Inicio"}><FInput type="date" value={form.fechaInicio} onChange={set("fechaInicio")} /></Field>
+      {!exigirHoras && <Field label="Fecha Fin"><FInput type="date" value={form.fechaFin} onChange={set("fechaFin")} /></Field>}
+      {!exigirHoras && (
+        <div style={{ fontSize: 11, color: C.slate, marginTop: -6, marginBottom: 10 }}>
+          Déjalo vacío si el permiso es por el día completo. Si es solo por unas horas (ej. 8:00 a 10:00), complétalas acá.
+        </div>
+      )}
       <div style={{ display: "flex", gap: 12 }}>
-        <div style={{ flex: 1 }}><Field label="Hora Inicio (opcional)"><FInput type="time" value={form.horaInicio} onChange={set("horaInicio")} /></Field></div>
-        <div style={{ flex: 1 }}><Field label="Hora Fin (opcional)"><FInput type="time" value={form.horaFin} onChange={set("horaFin")} /></Field></div>
+        <div style={{ flex: 1 }}><Field label={exigirHoras ? "Hora inicial *" : "Hora Inicio (opcional)"}><FInput type="time" value={form.horaInicio} onChange={set("horaInicio")} /></Field></div>
+        <div style={{ flex: 1 }}><Field label={exigirHoras ? "Hora final *" : "Hora Fin (opcional)"}><FInput type="time" value={form.horaFin} onChange={set("horaFin")} /></Field></div>
       </div>
-      {esMotivoPermiso(form.motivo) && !esPermisoPorHoras(form) && !mostrarContarComoTrabajado && (
+      {esMotivoPermiso(form.motivo) && !exigirHoras && !esPermisoPorHoras(form) && !mostrarContarComoTrabajado && (
         <div style={{ fontSize: 12.5, color: C.ink, margin: "0 0 14px", display: "flex", alignItems: "flex-start", gap: 8 }}>
           <input type="checkbox" id="vinoATrabajar" style={{ marginTop: 2 }} checked={!!form.vinoATrabajar} onChange={(e) => set("vinoATrabajar")(e.target.checked)} />
           <label htmlFor="vinoATrabajar">
@@ -4868,6 +4980,11 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
           <label htmlFor="contarComoTrabajado">Sí vino a trabajar ese día (solo no marcó en el huellero) — que cuente como día trabajado para el pago "Por Día"</label>
         </div>
       )}
+      {(faltantes.length > 0 || ordenHorasMal) && (
+        <div style={{ fontSize: 12, fontWeight: 700, color: C.amber, background: C.amberBg, border: `1px solid ${C.amber}`, borderRadius: 8, padding: "8px 10px", margin: "4px 0 8px" }}>
+          {ordenHorasMal ? "La hora final debe ser mayor que la hora inicial." : `Falta: ${faltaTexto}.`}
+        </div>
+      )}
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
         {onDelete && (
           <div style={{ marginRight: "auto" }}>
@@ -4875,7 +4992,7 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
           </div>
         )}
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
-        <Btn onClick={guardar} disabled={!form.motivo || (!form.trabajadorId && !form.nombreLibre.trim()) || validando || (necesitaCodigo && !codigo.trim())}>{validando ? "Validando..." : "Guardar"}</Btn>
+        <Btn onClick={guardar} disabled={faltantes.length > 0 || ordenHorasMal || validando || (necesitaCodigo && !codigo.trim())}>{validando ? "Validando..." : "Guardar"}</Btn>
       </div>
     </Modal>
   );
@@ -5111,7 +5228,10 @@ function PermisosCalendarioView({ trabajadores, produccion, horas, ausencias, cu
   // celda muestra su estado individual como antes.
   const [trabajadorFiltro, setTrabajadorFiltro] = useState(""); // "" = todos
   const [modal, setModal] = useState(null); // null | { nuevo, trabajadorId, fechaInicio } | ausencia existente
-  const [diaDetalle, setDiaDetalle] = useState(null); // fecha ISO -- panel del dia (solo modo "Todos")
+  // (2026-11-20, a pedido de Fredy) El panel del día lista SOLO a quienes tienen permiso/ausencia ese día (por defecto, hoy), y la
+  // lupa filtra por nombre. `buscar` = texto que se va escribiendo; `trabajadorFiltro` = trabajador elegido de las sugerencias.
+  const [diaDetalle, setDiaDetalle] = useState(today()); // fecha ISO -- día del panel (solo modo "Todos")
+  const [buscar, setBuscar] = useState("");
   const [anioStr, mesStr] = ref.split("-");
   const anio = Number(anioStr);
   const mes = Number(mesStr); // 1-12
@@ -5131,15 +5251,25 @@ function PermisosCalendarioView({ trabajadores, produccion, horas, ausencias, cu
     if (existente) { setModal(existente); return; }
     setModal({ nuevo: true, trabajadorId, fechaInicio: diaISO });
   }
+  const buscarNorm = normalizarBusqueda(buscar);
+  const trabajadoresVista = buscarNorm
+    ? trabajadores.filter((t) => { const n = normalizarBusqueda(t.nombre); return buscarNorm.split(" ").every((w) => n.includes(w)); })
+    : trabajadores;
+  // Todos los permisos del día (un trabajador puede tener más de uno), ordenados por hora y nombre.
   function resumenDia(diaISO) {
     const conAusencia = [];
-    let vinieron = 0;
-    for (const t of trabajadores) {
-      const a = ausenciaDelDia(t.id, diaISO);
-      if (a) { conAusencia.push({ trabajador: t, ausencia: a }); continue; }
-      if (vinoElDia(t.id, diaISO)) vinieron++;
+    for (const t of trabajadoresVista) {
+      for (const a of ausencias) {
+        if (a.trabajadorId === t.id && a.fechaInicio <= diaISO && a.fechaFin >= diaISO) conAusencia.push({ trabajador: t, ausencia: a });
+      }
     }
-    return { conAusencia, vinieron };
+    conAusencia.sort((x, y) => (x.ausencia.horaInicio || "").localeCompare(y.ausencia.horaInicio || "") || x.trabajador.nombre.localeCompare(y.trabajador.nombre));
+    return { conAusencia };
+  }
+  function horasDePermiso(a, t) {
+    if (!esPermisoPorHoras(a)) return 0;
+    const { areasNomina: areasCtx, turnos: turnosCtx } = CONTEXTO_VACACIONES;
+    return medirPermisoHorasCosto(a, { trabajadores: [t], areasNomina: areasCtx, turnos: turnosCtx }).horas || 0;
   }
   const hoyISO = today();
   const trabajadorSel = trabajadorFiltro ? trabajadores.find((t) => t.id === trabajadorFiltro) : null;
@@ -5158,7 +5288,7 @@ function PermisosCalendarioView({ trabajadores, produccion, horas, ausencias, cu
   return (
     <div>
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
-        Calendario del mes: ✅ = tiene producción u horas registradas ese día (vino a trabajar). Un ícono de color = tiene un permiso/ausencia (pasa el mouse para ver el motivo). Click en un día para ver el detalle y registrar un permiso nuevo.
+        Calendario del mes. Click en un día para ver, a la derecha, solo quienes tienen permiso ese día. Usa la lupa para buscar a un trabajador, y «＋ Dar un permiso» para registrar uno nuevo.
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
         <Btn variant="secondary" onClick={() => cambiarMes(-1)}>← Mes anterior</Btn>
@@ -5166,10 +5296,15 @@ function PermisosCalendarioView({ trabajadores, produccion, horas, ausencias, cu
           {new Date(anio, mes - 1, 1).toLocaleDateString("es-CO", { month: "long", year: "numeric" })}
         </div>
         <Btn variant="secondary" onClick={() => cambiarMes(1)}>Mes siguiente →</Btn>
-        <div style={{ marginLeft: "auto", minWidth: 220 }}>
-          <FSel value={trabajadorFiltro} onChange={setTrabajadorFiltro} options={trabajadores.map((t) => ({ value: t.id, label: t.nombre }))} placeholder="Todos los trabajadores" />
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ width: 260 }}>
+            <BuscadorTrabajador trabajadores={trabajadores} value={trabajadorFiltro} onChange={setTrabajadorFiltro} onTexto={setBuscar} placeholder="Buscar trabajador…" />
+          </div>
+          <Btn onClick={() => setModal({ nuevo: true, trabajadorId: trabajadorFiltro || "", fechaInicio: (!trabajadorSel && diaDetalle) || hoyISO })}>＋ Dar un permiso</Btn>
         </div>
       </div>
+      <div style={{ display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
+      <div style={{ flex: "1 1 640px", minWidth: 0 }}>
       <div style={{ border: `1px solid ${C.border}`, borderRadius: 16, overflow: "hidden", background: C.white, boxShadow: "0 1px 2px rgba(22,26,24,.04), 0 6px 16px -10px rgba(22,26,24,.18)" }}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", background: C.ink }}>
           {DOW.map((d) => (
@@ -5211,25 +5346,25 @@ function PermisosCalendarioView({ trabajadores, produccion, horas, ausencias, cu
                   </div>
                 );
               }
-              const { conAusencia, vinieron } = resumenDia(diaISO);
+              const { conAusencia } = resumenDia(diaISO);
               const visibles = conAusencia.slice(0, 3);
               const resto = conAusencia.length - visibles.length;
               return (
                 <div
                   key={diaISO}
                   onClick={() => setDiaDetalle(diaISO)}
-                  style={{ minHeight: 74, padding: "6px 8px", borderTop: `1px solid ${C.border}`, borderLeft: `1px solid ${C.border}`, cursor: "pointer", background: esHoy ? C.blueBg : C.white, display: "flex", flexDirection: "column", gap: 4 }}
+                  style={{ minHeight: 74, padding: "6px 8px", borderTop: `1px solid ${C.border}`, borderLeft: `1px solid ${C.border}`, cursor: "pointer", background: diaDetalle === diaISO ? C.violetBg : (esHoy ? C.blueBg : C.white), boxShadow: diaDetalle === diaISO ? `inset 0 0 0 2px ${C.violet}` : "none", display: "flex", flexDirection: "column", gap: 4 }}
                 >
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                     <span style={{ fontSize: 11, fontWeight: esHoy ? 800 : 600, color: esHoy ? C.blue : C.slate }}>{d.getDate()}</span>
-                    {vinieron > 0 && (
-                      <span style={{ fontSize: 10, fontWeight: 700, color: C.green, background: C.greenBg, borderRadius: 20, padding: "1px 6px" }}>✅ {vinieron}</span>
+                    {conAusencia.length > 0 && (
+                      <span style={{ fontSize: 10, fontWeight: 700, color: C.amber, background: C.amberBg, borderRadius: 20, padding: "1px 6px" }}>{conAusencia.length} con permiso</span>
                     )}
                   </div>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
                     {visibles.map(({ trabajador, ausencia }) => (
-                      <span key={trabajador.id} title={`${trabajador.nombre} — ${ausencia.motivo}${fmtHoraRango(ausencia)}`} style={{ fontSize: 10, fontWeight: 700, color: C.amber, background: C.amberBg, borderRadius: 20, padding: "1px 6px", whiteSpace: "nowrap", maxWidth: 78, overflow: "hidden", textOverflow: "ellipsis" }}>
-                        {motivoIcono[ausencia.motivo] || "❔"} {trabajador.nombre.split(" ")[0]}{horasPermisoDeAusencia(ausencia, trabajador) > 0 ? ` ⏱${Math.round(horasPermisoDeAusencia(ausencia, trabajador) * 10) / 10}h` : ""}
+                      <span key={trabajador.id + ausencia.id} title={`${trabajador.nombre} — ${ausencia.motivo}${fmtHoraRango(ausencia)}`} style={{ fontSize: 10, fontWeight: 700, color: C.amber, background: C.amberBg, borderRadius: 20, padding: "1px 6px", whiteSpace: "nowrap", maxWidth: 78, overflow: "hidden", textOverflow: "ellipsis" }}>
+                        {motivoIcono[ausencia.motivo] || "❔"} {trabajador.nombre.split(" ")[0]}{horasDePermiso(ausencia, trabajador) > 0 ? ` ⏱${Math.round(horasDePermiso(ausencia, trabajador) * 10) / 10}h` : ""}
                       </span>
                     ))}
                     {resto > 0 && <span style={{ fontSize: 10, fontWeight: 700, color: C.slate }}>+{resto}</span>}
@@ -5241,7 +5376,7 @@ function PermisosCalendarioView({ trabajadores, produccion, horas, ausencias, cu
         ))}
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginTop: 14, fontSize: 11.5, color: C.slate }}>
-        <span>✅ Vino (producción/horas registradas)</span>
+        {trabajadorSel && <span>✅ Vino (producción/horas registradas)</span>}
         {Object.entries(motivoIcono).map(([motivo, icono]) => (
           <span key={motivo}>{icono} {motivo}</span>
         ))}
@@ -5249,31 +5384,61 @@ function PermisosCalendarioView({ trabajadores, produccion, horas, ausencias, cu
       {trabajadores.length === 0 && (
         <div style={{ marginTop: 16, color: C.slate, fontSize: 13 }}>No hay trabajadores para mostrar.</div>
       )}
-      {diaDetalle && !trabajadorSel && (
-        <Modal title={`Permisos — ${fmtFechaISO(diaDetalle)}`} onClose={() => setDiaDetalle(null)} width={480}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {trabajadores.map((t) => {
-              const a = ausenciaDelDia(t.id, diaDetalle);
-              const vino = !a && vinoElDia(t.id, diaDetalle);
-              return (
-                <div
-                  key={t.id}
-                  onClick={() => { setDiaDetalle(null); abrirCelda(t.id, diaDetalle); }}
-                  style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 10, border: `1px solid ${C.border}`, cursor: "pointer" }}
-                >
-                  <span style={{ fontSize: 18 }}>{a ? (motivoIcono[a.motivo] || "❔") : (vino ? "✅" : "◻️")}</span>
-                  <span style={{ flex: 1, fontSize: 13, fontWeight: 600, color: C.ink }}>{t.nombre}</span>
-                  <span style={{ fontSize: 11, color: C.slate }}>{a ? `${a.motivo}${fmtHoraRango(a)}${a.codigoAutorizacion ? " 🔐" : ""}` : (vino ? "Vino" : "Sin registro")}</span>
-                </div>
-              );
-            })}
+      </div>
+      {!trabajadorSel && (() => {
+        const diaPanel = diaDetalle || hoyISO;
+        const { conAusencia } = resumenDia(diaPanel);
+        const [py, pm, pd] = diaPanel.split("-").map(Number);
+        const titulo = new Date(py, pm - 1, pd).toLocaleDateString("es-CO", { weekday: "long", day: "numeric", month: "long" });
+        const tituloCap = titulo.charAt(0).toUpperCase() + titulo.slice(1);
+        const totalHoras = conAusencia.reduce((acc, { trabajador, ausencia }) => acc + horasDePermiso(ausencia, trabajador), 0);
+        const personas = new Set(conAusencia.map((x) => x.trabajador.id)).size;
+        const iniciales = (n) => String(n || "?").split(" ").filter(Boolean).slice(0, 2).map((w) => w[0]).join("").toUpperCase();
+        return (
+          <div style={{ flex: "0 1 340px", minWidth: 280, border: `1px solid ${C.border}`, borderRadius: 16, background: C.white, boxShadow: "0 1px 2px rgba(22,26,24,.04), 0 6px 16px -10px rgba(22,26,24,.18)", overflow: "hidden" }}>
+            <div style={{ padding: "14px 16px 10px", borderBottom: `1px solid ${C.border}` }}>
+              <div style={{ fontSize: 15, fontWeight: 800, color: C.ink }}>{tituloCap}{diaPanel === hoyISO ? " · hoy" : ""}</div>
+              <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>
+                {conAusencia.length === 0
+                  ? "Nadie con permiso este día"
+                  : `${personas} ${personas === 1 ? "persona" : "personas"} con permiso${totalHoras > 0 ? ` · ${Math.round(totalHoras * 10) / 10} h en total` : ""}`}
+                {buscarNorm ? ` · filtrado por «${buscar}»` : ""}
+              </div>
+            </div>
+            <div style={{ padding: 10, display: "flex", flexDirection: "column", gap: 8, maxHeight: 460, overflowY: "auto" }}>
+              {conAusencia.map(({ trabajador, ausencia }) => {
+                const h = horasDePermiso(ausencia, trabajador);
+                return (
+                  <div key={ausencia.id} onClick={() => setModal(ausencia)} title="Click para ver o editar este permiso"
+                    style={{ display: "flex", gap: 10, alignItems: "center", padding: "9px 10px", borderRadius: 10, border: `1px solid ${C.border}`, cursor: "pointer" }}>
+                    <span style={{ width: 34, height: 34, borderRadius: "50%", background: C.violetBg, color: C.violet, fontWeight: 800, fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{iniciales(trabajador.nombre)}</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: C.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{trabajador.nombre}</div>
+                      <div style={{ fontSize: 11, color: C.slate }}>{trabajador.area || "Sin asignar"} · {motivoIcono[ausencia.motivo] || "❔"} {ausencia.motivo}{ausencia.codigoAutorizacion ? " 🔐" : ""}</div>
+                    </div>
+                    <div style={{ textAlign: "right", flexShrink: 0 }}>
+                      <div style={{ fontSize: 11.5, fontWeight: 700, color: C.amber }}>{ausencia.horaInicio && ausencia.horaFin ? `${ausencia.horaInicio}–${ausencia.horaFin}` : "Día completo"}</div>
+                      {h > 0 && <div style={{ fontSize: 10.5, fontWeight: 700, color: C.violet }}>⏱ {Math.round(h * 10) / 10} h</div>}
+                    </div>
+                  </div>
+                );
+              })}
+              {conAusencia.length === 0 && (
+                <div style={{ padding: "18px 8px", textAlign: "center", fontSize: 12.5, color: C.slate }}>Sin permisos este día.</div>
+              )}
+            </div>
+            <div style={{ padding: "10px 12px 14px", borderTop: `1px solid ${C.border}` }}>
+              <Btn variant="secondary" onClick={() => setModal({ nuevo: true, trabajadorId: "", fechaInicio: diaPanel })}>＋ Dar un permiso este día</Btn>
+            </div>
           </div>
-        </Modal>
-      )}
+        );
+      })()}
+      </div>
       {modal && (
         <AusenciaModal
           ausencia={modal.nuevo ? null : modal}
           mostrarDinero={!!isAdmin}
+          exigirHorasPermiso
           trabajadores={trabajadores}
           ausencias={ausencias}
           motivosDisponibles={motivosDisponibles}
