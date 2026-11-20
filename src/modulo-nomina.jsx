@@ -14174,6 +14174,8 @@ function ReposicionModal({ fila, extras, mostrarDinero, onRegistrar, onQuitar, o
   const maxHoras = tipo === "extra" && extraSel ? Math.min(faltan, Number(extraSel.horas) || 0) : faltan;
   const valido = horasNum > 0 && horasNum <= maxHoras + 0.001 && (tipo === "extra" ? !!extraSel : fecha >= a.fechaInicio && fecha <= finPlazo);
   const puedeRegistrar = !yaDescontado && faltan > 0.001;
+  // (2026-11-20, a pedido de Fredy) Total de horas extras que la persona tiene disponibles para canjear en este plazo.
+  const extrasTotal = Math.round(extras.reduce((sum, x) => sum + (Number(x.horas) || 0), 0) * 100) / 100;
   async function guardar() {
     if (!valido || guardando) return;
     setGuardando(true);
@@ -14239,7 +14241,7 @@ function ReposicionModal({ fila, extras, mostrarDinero, onRegistrar, onQuitar, o
         <>
           <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
             {tipoBtn("horario", "Repuso en otro horario")}
-            {tipoBtn("extra", "Canjear horas extras")}
+            {tipoBtn("extra", `Canjear horas extras (${fmtHoras(extrasTotal)})`)}
           </div>
           {tipo === "horario" ? (
             <Field label="Fecha en que repuso">
@@ -14249,8 +14251,17 @@ function ReposicionModal({ fila, extras, mostrarDinero, onRegistrar, onQuitar, o
           ) : (
             <Field label="Hora extra a canjear">
               {extras.length === 0 ? (
-                <div style={{ fontSize: 12, color: C.slate }}>No tiene horas extras registradas entre el {fmtFechaISO(a.fechaInicio)} y el {fmtFechaISO(finPlazo)}.</div>
+                <div style={{ background: C.canvas, border: `1px dashed ${C.seam}`, borderRadius: 10, padding: "10px 12px", fontSize: 12.5, color: C.ink, lineHeight: 1.5 }}>
+                  <strong>No tiene horas extras para canjear</strong> entre el {fmtFechaISO(a.fechaInicio)} y el {fmtFechaISO(finPlazo)}.
+                  <div style={{ color: C.slate, marginTop: 2 }}>Cuando se registren en Novedades → Horas extras, aparecerán aquí solas. Mientras tanto puede reponer en otro horario.</div>
+                </div>
               ) : (
+                <>
+                <div style={{ background: C.violetBg, border: `1px solid ${C.violet}`, borderRadius: 10, padding: "10px 12px", marginBottom: 10, fontSize: 12.5, color: C.ink, lineHeight: 1.5 }}>
+                  <strong style={{ color: C.violet }}>🔄 Tiene {fmtHoras(extrasTotal)} de horas extras disponibles para canjear</strong>
+                  {" "}en {extras.length} {extras.length === 1 ? "registro" : "registros"}, entre el {fmtFechaISO(a.fechaInicio)} y el {fmtFechaISO(finPlazo)}.
+                  {" "}{extrasTotal + 0.001 >= faltan ? `Con ellas puede cubrir las ${fmtHoras(faltan)} que le faltan.` : `Cubre ${fmtHoras(extrasTotal)} de las ${fmtHoras(faltan)} que le faltan.`}
+                </div>
                 <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden" }}>
                   {extras.map((x) => (
                     <label key={x.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderBottom: `1px solid ${C.border}`, fontSize: 12.5, cursor: "pointer", background: extraId === x.id ? C.violetBg : C.white }}>
@@ -14263,6 +14274,7 @@ function ReposicionModal({ fila, extras, mostrarDinero, onRegistrar, onQuitar, o
                     </label>
                   ))}
                 </div>
+                </>
               )}
             </Field>
           )}
@@ -14334,6 +14346,12 @@ function ReposicionHorasView({ trabajadores, ausencias, reposiciones, horasExtra
   const filaModal = modalId ? filas.find((f) => f.id === modalId) : null;
   const extrasDe = (f) => (horasExtras || []).filter((x) => x.trabajadorId === f.a.trabajadorId && x.fecha >= f.a.fechaInicio && x.fecha <= f.finPlazo && (Number(x.horas) || 0) > 0.001)
     .sort((x, y) => (x.fecha || "").localeCompare(y.fecha || ""));
+  // (2026-11-20, a pedido de Fredy) Horas extras disponibles para canjear por permiso (solo si aún faltan horas y no se ha descontado).
+  const extrasPorFila = new Map(filas.map((f) => [f.id, f.yaDescontado || f.faltan <= 0.001 ? [] : extrasDe(f)]));
+  const extrasUnicas = new Map();
+  extrasPorFila.forEach((lista) => lista.forEach((x) => extrasUnicas.set(x.id, x)));
+  const totExtras = Math.round([...extrasUnicas.values()].reduce((sum, x) => sum + (Number(x.horas) || 0), 0) * 100) / 100;
+  const personasExtras = new Set([...extrasUnicas.values()].map((x) => x.trabajadorId)).size;
   return (
     <div>
       {filaModal && (
@@ -14354,11 +14372,12 @@ function ReposicionHorasView({ trabajadores, ausencias, reposiciones, horasExtra
           </div>
         </div>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: `repeat(${mostrarDinero ? 5 : 4}, minmax(0, 1fr))`, gap: 12, marginBottom: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: `repeat(${mostrarDinero ? 6 : 5}, minmax(0, 1fr))`, gap: 12, marginBottom: 16 }}>
         <KPI icon="🗓️" label="Permisos por horas" value={filas.length} color={C.ink} bg={C.canvas} />
         <KPI icon="⏱" label="Horas de permiso" value={fmtHoras(totHoras)} color={C.violet} bg={C.violetBg} />
         <KPI icon="🔁" label="Horas repuestas" value={fmtHoras(totRep)} color={C.green} bg={C.greenBg} />
         <KPI icon="⏳" label="Horas que faltan" value={fmtHoras(totFaltan)} color={C.amber} bg={C.amberBg} />
+        <KPI icon="🔄" label="Extras para canjear" value={fmtHoras(totExtras)} sub={`${personasExtras} ${personasExtras === 1 ? "persona" : "personas"}`} color={C.violet} bg={C.violetBg} />
         {mostrarDinero && <KPI icon="🧾" label="Por descontar (si no reponen)" value={fmtMoney(totValor)} color={C.red} bg={C.redBg} />}
       </div>
       <Tabla
@@ -14370,6 +14389,12 @@ function ReposicionHorasView({ trabajadores, ausencias, reposiciones, horasExtra
           { key: "horas", label: "Horas", align: "right", render: (f) => fmtHoras(f.horas) },
           { key: "repuestas", label: "Repuestas", align: "right", render: (f) => <span style={{ color: f.repuestas > 0 ? C.green : C.slate, fontWeight: f.repuestas > 0 ? 700 : 400 }}>{fmtHoras(f.repuestas)}</span> },
           { key: "faltan", label: "Faltan", align: "right", render: (f) => <strong style={{ color: f.faltan > 0.001 ? C.amber : C.green }}>{fmtHoras(f.faltan)}</strong> },
+          { key: "extras", label: "Extras para canjear", render: (f) => {
+            const h = (extrasPorFila.get(f.id) || []).reduce((sum, x) => sum + (Number(x.horas) || 0), 0);
+            return h > 0.001
+              ? <span title="Horas extras de esta persona, dentro del plazo, que puede canjear por las horas que faltan" style={{ display: "inline-block", padding: "2px 9px", borderRadius: 999, background: C.violetBg, color: C.violet, fontSize: 11, fontWeight: 800, whiteSpace: "nowrap" }}>🔄 {fmtHoras(h)} disponibles</span>
+              : <span style={{ color: C.slate }}>—</span>;
+          } },
           ...(mostrarDinero ? [{ key: "valorPendiente", label: "A descontar", align: "right", render: (f) => (f.yaDescontado ? <span style={{ color: C.slate }}>—</span> : fmtMoney(f.valorPendiente)) }] : []),
           { key: "finPlazo", label: "Plazo", render: (f) => fmtFechaISO(f.finPlazo) },
           { key: "estado", label: "Estado", render: (f) => <ChipEstadoReposicion estado={f.estado} /> },
