@@ -4709,6 +4709,9 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
     contarComoTrabajado: ausencia?.contarComoTrabajado || false,
     // (2026-10-30) Origen de la incapacidad (define quien paga y el porcentaje; ver calcularIncapacidadPeriodo).
     origenIncapacidad: ausencia?.origenIncapacidad || "General",
+    // (2026-11-20, a pedido de Fredy) Permiso sin horas (o que cubre el día) pero la persona SÍ vino a trabajar: en el Historial de
+    // asistencia sale como «Asistió y tuvo permiso». Solo es visual: no cambia la nómina ni los días trabajados del huellero.
+    vinoATrabajar: !!ausencia?.vinoATrabajar,
   });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   const trabajadorSeleccionado = trabajadores.find((t) => t.id === form.trabajadorId);
@@ -4772,6 +4775,7 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
       observaciones: form.observaciones.trim(),
       ...(mostrarContarComoTrabajado ? { contarComoTrabajado: !!form.contarComoTrabajado } : {}),
       ...(form.motivo === "Incapacidad" ? { origenIncapacidad: form.origenIncapacidad === "Laboral" ? "Laboral" : "General" } : {}),
+      ...(esMotivoPermiso(form.motivo) ? { vinoATrabajar: !!form.vinoATrabajar } : {}),
       ...extra,
     });
     onClose();
@@ -4826,6 +4830,14 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
         <div style={{ flex: 1 }}><Field label="Hora Inicio (opcional)"><FInput type="time" value={form.horaInicio} onChange={set("horaInicio")} /></Field></div>
         <div style={{ flex: 1 }}><Field label="Hora Fin (opcional)"><FInput type="time" value={form.horaFin} onChange={set("horaFin")} /></Field></div>
       </div>
+      {esMotivoPermiso(form.motivo) && !esPermisoPorHoras(form) && !mostrarContarComoTrabajado && (
+        <div style={{ fontSize: 12.5, color: C.ink, margin: "0 0 14px", display: "flex", alignItems: "flex-start", gap: 8 }}>
+          <input type="checkbox" id="vinoATrabajar" style={{ marginTop: 2 }} checked={!!form.vinoATrabajar} onChange={(e) => set("vinoATrabajar")(e.target.checked)} />
+          <label htmlFor="vinoATrabajar">
+            <strong>Sí vino a trabajar ese día</strong> — en el Historial de asistencia sale como «Asistió y tuvo permiso» (aunque el huellero no tenga su marcación). Aplica a todos los días del permiso y no cambia la nómina.
+          </label>
+        </div>
+      )}
       {cobroPermiso && cobroPermiso.cobra && (
         <div style={{ background: C.violetBg, border: `1px solid ${C.violet}`, borderRadius: 10, padding: "10px 12px", margin: "0 0 12px" }}>
           <div style={{ fontSize: 12, fontWeight: 800, color: C.violet, marginBottom: 4 }}>⏱ Cobro de las horas de este permiso</div>
@@ -6674,11 +6686,17 @@ function HistorialAsistenciaAreaView({ areasNomina, trabajadores, areaLider, dia
     // (2026-11-20, a pedido de Fredy) Permiso POR HORAS que no cubre toda la jornada y sin marcación en el huellero: la persona vino
     // (solo faltó esas horas), así que el día cuenta como «Asistió y tuvo permiso». Se marca con «!» para distinguirlo de una marcación real.
     // Un permiso de día completo, o uno por horas que cubre toda la jornada, sigue como «Permiso (no marcó)».
-    if (delDia.length && !futuro && delDia.every((a) => minutosDeHoraTurno(a.horaInicio) != null && minutosDeHoraTurno(a.horaFin) != null)) {
+    // También cuenta como asistió si quien dio el permiso marcó «Sí vino a trabajar ese día» (vinoATrabajar), aunque no tenga horas.
+    if (delDia.length && !futuro) {
+      const conHoras = delDia.every((a) => minutosDeHoraTurno(a.horaInicio) != null && minutosDeHoraTurno(a.horaFin) != null);
       const p = medirPermisoDelDia(t, iso, delDia, areasNomina, turnos);
       const jornada = horasDiaDeTurno(turno, diaCodigoDeISO(iso));
-      if (p.horas > 0 && p.horas < (jornada == null ? HORAS_DIA_SIN_TURNO : jornada) - 0.01) {
+      if (conHoras && p.horas > 0 && p.horas < (jornada == null ? HORAS_DIA_SIN_TURNO : jornada) - 0.01) {
         return { tipo: "mix", sinMarcacion: true, title: `Asistió y tuvo permiso — ${textoPermiso(p)} · sin marcación en el huellero`, cuenta: true, ...p };
+      }
+      if (delDia.some((a) => a.vinoATrabajar)) {
+        const pv = { ...p, horas: conHoras ? p.horas : 0 };
+        return { tipo: "mix", sinMarcacion: true, title: `Asistió y tuvo permiso — ${textoPermiso(pv)} · sin marcación en el huellero (marcado «sí vino»)`, cuenta: true, ...pv };
       }
     }
     if (delDia.length) return { tipo: "per", title: `Permiso — ${delDia[0].motivo} (no marcó)`, cuenta: !futuro, motivo: delDia[0].motivo };
