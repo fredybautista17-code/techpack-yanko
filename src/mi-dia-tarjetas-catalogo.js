@@ -69,6 +69,12 @@ export const GRUPOS_MI_DIA = [
     tarjetas: [{ id: "auditoria_nomina", label: "Auditoría Busint vs Nómina (todas las áreas)" }],
   },
   {
+    // (2026-11-21, a pedido de Fredy) Verificador de Precio: teórico contra real de la mano de obra de Confección y Corte (Busint en vivo), por referencia o lote.
+    // Además de marcar la tarjeta, el rol del usuario necesita el permiso «Puede ver el Verificador de Precio» (Roles → Planta Yanko).
+    id: "verificador_precio", titulo: "Verificador de precio",
+    tarjetas: [{ id: "verificador_precio", label: "Verificador de precio: teórico contra real de Confección y Corte por referencia o lote (necesita el permiso en el rol)" }],
+  },
+  {
     // (2026-11-10, a pedido de Fredy) Para Talento Humano (Midalys): quién cumple años hoy, en los próximos 3 días y en los próximos 30.
     // Quien tenga esta tarjeta marcada también recibe el correo automático (3 días antes y el mismo día). La lista se cambia en Nómina → Personal → Cumpleaños.
     id: "talento_humano", titulo: "Talento Humano",

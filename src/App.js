@@ -14944,7 +14944,8 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     // (2026-10-28, a pedido de Fredy) Vincular referencias a pedidos en Preórdenes/Órdenes estaba solo para el administrador.
     { area: "🧾 Preórdenes y Órdenes", items: [["preordenes_vincular_pedido", "Puede vincular referencias a pedidos (aunque la preorden esté aprobada)"], ["preordenes_pasar_a_orden", "Puede pasar referencias con tela confirmada a Órdenes (botón «Pasar a Orden»)"]] },
     { area: "📋 Planeación", items: [["planeacion", "Planeación"]] },
-    { area: "🏭 Planta Yanko", items: [["planta", "Planta Yanko"]] },
+    // (2026-11-21, a pedido de Fredy) Verificador de Precio (Busint en vivo) en Programación Diaria de Planta Yanko y como tarjeta de Mi Día: permiso aparte por rol (el admin siempre). Para Mi Día además se marca la tarjeta en Usuarios.
+    { area: "🏭 Planta Yanko", items: [["planta", "Planta Yanko"], ["planta_verificador_precio", "🔍 Puede ver el Verificador de Precio (Programación Diaria de Planta Yanko y Mi Día): precios de mano de obra de Confección y Corte"]] },
     { area: "📦 Bodega", items: [["bodega", "Bodega"], ["bodega_solo_devoluciones", "Solo Devoluciones (no ve Despacho y Saldo ni Control de Despacho)"], ["bodega_cambiar_estado_devoluciones", "Puede cambiar el estado de las devoluciones (líder)"]] },
     { area: "👷 Nómina", items: [["nomina", "Completa (todo el módulo)"], ["nomina_novedades", "Solo Novedades"], ["nomina_editar_catalogos", "Puede editar catálogos (Trabajadores, Turnos, etc.) sin admin total"], ["nomina_ver_anomalias_huellero", "Puede ver Anomalías Huellero"], ["nomina_ver_duplicados_huellero", "Puede ver Diagnóstico de Duplicados"], ["nomina_cerrar_quincena", "Puede cerrar Quincena (General y por Área)"], ["nomina_agregar_cobros_manual", "Puede agregar cobros/deducciones manuales"], ["nomina_ajustar_destajo", "Puede agregar Ajustes de Nómina en Destajo"], ["nomina_editar_horas_extra", "Puede editar/borrar Horas Extras"], ["nomina_editar_bonificacion", "Puede editar/borrar Bonificaciones"], ["nomina_autorizar_permisos", "Puede generar códigos de autorización de permisos (4.º permiso del mes en adelante)"]] },
     { area: "🎯 KPIs", items: [["kpis", "KPIs"]] },
@@ -21411,6 +21412,8 @@ function AppInner() {
   const canCostosRealesCotizacion = canAccessCotizador && !esClienteCot && moduloVisible(userRoleData, "cotizador_costos_reales", currentUser?.isAdmin);
   // (2026-11-14, a pedido de Fredy) Autorizar un cambio del precio vendido (genera el código de un solo uso): permiso aparte, por defecto solo el administrador.
   const canAutorizarPrecioCotizacion = canAccessCotizador && !esClienteCot && moduloVisible(userRoleData, "cotizador_autorizar_precio", currentUser?.isAdmin);
+  // (2026-11-21, a pedido de Fredy) Verificador de Precio (Planta Yanko → Programación Diaria y tarjeta de Mi Día).
+  const canVerificadorPrecio = !esClienteCot && moduloVisible(userRoleData, "planta_verificador_precio", currentUser?.isAdmin);
   // (2026-10-21, a pedido de Fredy) Facturación de cotizaciones aprobadas: quien las envía a facturar (María Fernanda Páez) y quien registra el documento y su número.
   const canEnviarFacturarCotizacion = canAccessCotizador && !esClienteCot && moduloVisible(userRoleData, "cotizador_enviar_facturar", currentUser?.isAdmin);
   const canFacturarCotizacion = canAccessCotizador && !esClienteCot && moduloVisible(userRoleData, "cotizador_facturar", currentUser?.isAdmin);
@@ -21790,7 +21793,7 @@ function AppInner() {
     // (2026-10-26, a pedido de Fredy) Con tarjetas marcadas en Usuarios (tarjetasMiDia) se muestra su Mi Día por
     // tarjetas; sin ninguna marcada todo sigue como antes.
     if ((currentUser?.tarjetasMiDia || []).length > 0) {
-      return <MiDiaTarjetasStandalone db={db} currentUser={currentUser} onVolver={onVolverMiDia} onLogout={onLogoutMiDia} onAbrirItem={abrirDesdeMiDia} tabInicial={miDiaTab} puedeAbrir={{ proto: !!canAccessProtos, ref: !!canAccessCapsulas, cronograma: !!canAccessCronograma }} />;
+      return <MiDiaTarjetasStandalone db={db} currentUser={currentUser} onVolver={onVolverMiDia} onLogout={onLogoutMiDia} onAbrirItem={abrirDesdeMiDia} tabInicial={miDiaTab} puedeAbrir={{ proto: !!canAccessProtos, ref: !!canAccessCapsulas, cronograma: !!canAccessCronograma }} puedeVerificadorPrecio={!!canVerificadorPrecio} />;
     }
     if ((currentUser?.procesosPlaneacion || []).length > 0) {
       return <ProgramadorProcesosStandalone currentUser={currentUser} onVolver={onVolverMiDia} onLogout={onLogoutMiDia} />;
@@ -21810,7 +21813,7 @@ function AppInner() {
     return <ProgramadorProcesosStandalone currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (moduloActivo === "planta") {
-    return <ModuloPlanta currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+    return <ModuloPlanta currentUser={currentUser} puedeVerificadorPrecio={!!canVerificadorPrecio} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (moduloActivo === "bodega") {
     return <ModuloBodega currentUser={currentUser} puedeAprobarDespacho={perms.aprobarDespacho} canAccessContabilidad={canAccessContabilidad} soloLecturaBodega={currentUser?.role === "Cliente"} puedeVerControlDespacho={perms.verControlDespacho} soloDevoluciones={perms.bodegaSoloDevoluciones} puedeCambiarEstadoDev={perms.bodegaCambiarEstadoDev} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;

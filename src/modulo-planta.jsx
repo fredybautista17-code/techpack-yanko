@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, lazy, Suspense } from "react";
 import { initializeApp, getApps } from "firebase/app";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { CentroCostoPlaneacionView } from "./modulo-planeacion";
@@ -11,6 +11,8 @@ import {
   deleteDoc,
   onSnapshot,
 } from "firebase/firestore";
+// (2026-11-21, a pedido de Fredy) Verificador de Precio (Busint en vivo); se carga solo cuando se abre.
+const VerificadorPrecioPlanta = lazy(() => import("./verificador-precio"));
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
   authDomain: "techpack-yanko-f37b8.firebaseapp.com",
@@ -405,8 +407,26 @@ function diaSugeridoPl(sugerida, diasProg) {
   const antes = [...diasProg].reverse().find((d) => d.iso < sugerida);
   return (antes || diasProg[0]).iso;
 }
+// Ventana del Verificador de Precio: va por encima del panel «Programar lotes» (que tiene z-index 1000) para poder abrirla desde su lupa.
+function VentanaVerificadorPrecio({ busqueda, onClose }) {
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(16,24,40,0.5)", zIndex: 1100, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: C.canvas, borderRadius: 18, width: "min(1100px,100%)", maxHeight: "92vh", display: "flex", flexDirection: "column", boxShadow: "0 24px 70px rgba(16,24,40,0.3)", overflow: "hidden" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 24px", background: C.white, borderBottom: `1px solid ${C.border}` }}>
+          <span style={{ fontWeight: 800, fontSize: 17, color: C.ink }}>🔍 Verificador de Precio</span>
+          <button onClick={onClose} aria-label="Cerrar" style={{ background: "none", border: "none", fontSize: 24, cursor: "pointer", color: C.slate }}>×</button>
+        </div>
+        <div style={{ padding: 24, overflowY: "auto" }}>
+          <Suspense fallback={<div style={{ padding: 20, color: C.slate, fontSize: 13 }}>Cargando el verificador…</div>}>
+            <VerificadorPrecioPlanta busquedaInicial={busqueda || ""} />
+          </Suspense>
+        </div>
+      </div>
+    </div>
+  );
+}
 // Panel "Programar lotes": se toman todos (o los que se quiera), cada pedido trae su día propuesto y se guarda de una vez.
-function ProgramarLotesModal({ pedidos, diasProg, programacion, tope, hoyISO, onGuardar, onClose }) {
+function ProgramarLotesModal({ pedidos, diasProg, programacion, tope, hoyISO, onGuardar, onClose, onVerificar }) {
   const [filtro, setFiltro] = useState("todas");
   const [elegidos, setElegidos] = useState(() => Object.fromEntries(pedidos.map((g) => [g.clave, true])));
   const [diaDe, setDiaDe] = useState(() => Object.fromEntries(pedidos.map((g) => [g.clave, diaSugeridoPl(g.sugerida, diasProg)])));
@@ -488,6 +508,9 @@ function ProgramarLotesModal({ pedidos, diasProg, programacion, tope, hoyISO, on
                   <span style={{ fontWeight: 700, color: C.ink }}>{g.lotes.length} {g.lotes.length === 1 ? "lote" : "lotes"}: </span>
                   {g.lotes.slice(0, 7).map((l) => l.numLote).join(" · ")}{g.lotes.length > 7 ? ` · +${g.lotes.length - 7}` : ""}
                 </span>
+                {onVerificar && (
+                  <button type="button" onClick={() => onVerificar(String(g.lotes[0]?.referencia || g.lotes[0]?.numLote || ""))} title="Ver en el Verificador de Precio la referencia de este pedido (precio teórico contra real, de Busint)" aria-label="Verificar precio" style={{ ...btn, padding: "5px 9px", fontSize: 14, lineHeight: 1 }}>🔍</button>
+                )}
                 <span style={{ width: 96, fontSize: 14 }}><b>{fmtNum(g.und)}</b> <span style={{ color: C.slate }}>und</span></span>
                 <span style={{ width: 70 }}>{nivel && <span style={{ fontSize: 11.5, fontWeight: 800, padding: "3px 10px", borderRadius: 999, color: nivel.color, background: nivel.bg }}>{nivel.txt.charAt(0) + nivel.txt.slice(1).toLowerCase()}</span>}</span>
                 <span style={{ display: "inline-flex", gap: 6, marginLeft: "auto" }}>
@@ -756,12 +779,13 @@ function CajaBusquedaPl({ value, onChange, aviso, ancho = 280 }) {
     </div>
   );
 }
-function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, onEnviarDia, onVistaDia, onCancelar, onMover, onEditar }) {
+function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, onEnviarDia, onVistaDia, onCancelar, onMover, onEditar, puedeVerificadorPrecio }) {
   const hoyISO = new Date().toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
   const [semana, setSemana] = useState(0);
   const [sabado, setSabado] = useState(false);
   const [tope, setTope] = useState(0);
   const [vistaCorreo, setVistaCorreo] = useState(null); // días cuyo correo se está revisando antes de enviar
+  const [verificador, setVerificador] = useState(null); // { busqueda } cuando está abierto el Verificador de Precio
   const [panel, setPanel] = useState(false);
   const [verPedidos, setVerPedidos] = useState(false); // panel "Pedidos" al lado del tablero
   const [busca, setBusca] = useState(""); // lupa del tablero (independiente de la de Listas)
@@ -885,6 +909,15 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
         >
           {`📦 Pedidos (${new Set([...pendientes.map((p) => String(p.numPedido ?? "")), ...sinProgramar.map((l) => String(l.numPedido ?? ""))]).size}) ${verPedidos ? "◂" : "▸"}`}
         </button>
+        {puedeVerificadorPrecio && (
+          <button
+            style={{ ...botonMini, padding: "10px 14px", fontSize: 13 }}
+            onClick={() => setVerificador({ busqueda: "" })}
+            title="Compara el precio teórico contra el real de Confección y Corte (Busint) por referencia o lote"
+          >
+            🔍 Verificador de Precio
+          </button>
+        )}
         <span style={{ flex: 1 }} />
         <span style={{ fontSize: 13.5, color: C.slate }}>Semana: <b style={{ color: C.ink }}>{totalSemana.length} lotes · {fmtNum(sumaUnd(totalSemana))} und</b></span>
         <label style={{ fontSize: 12.5, color: C.slate, display: "inline-flex", alignItems: "center", gap: 6 }} title="Si lo llenas, un día que lo pase se pone en rojo. Déjalo en 0 para no usar tope.">
@@ -980,12 +1013,13 @@ function TableroSemanalPlanta({ sinProgramar, programacion, onProgramarVarios, o
         Cada pedido es una sola línea: tócala para ver sus lotes y moverlos. Programar solo guarda: cada área recibe su correo a las 7 p. m. (metas de hoy y programación siguiente) y a las 10 a. m. (se ratifica la de hoy); gerencia recibe todas; el ✉ de cada día o "Enviar pendientes" lo adelantan. Punto amarillo = aún sin avisar.
       </div>
       {vistaCorreo && <VistaPreviaCorreoModal dias={vistaCorreo} programacion={programacion} diasMover={diasMover} hoyISO={hoyISO} onVista={onVistaDia} onEnviarDia={onEnviarDia} onCancelar={onCancelar} onMover={onMover} onClose={() => setVistaCorreo(null)} />}
-      {panel && <ProgramarLotesModal pedidos={pedidos} diasProg={diasProg} programacion={programacion} tope={tope} hoyISO={hoyISO} onGuardar={guardarPanel} onClose={() => setPanel(false)} />}
+      {panel && <ProgramarLotesModal pedidos={pedidos} diasProg={diasProg} programacion={programacion} tope={tope} hoyISO={hoyISO} onGuardar={guardarPanel} onClose={() => setPanel(false)} onVerificar={puedeVerificadorPrecio ? (busqueda) => setVerificador({ busqueda }) : undefined} />}
+      {verificador && puedeVerificadorPrecio && <VentanaVerificadorPrecio busqueda={verificador.busqueda} onClose={() => setVerificador(null)} />}
     </div>
   );
 }
 // ─── PROGRAMACIÓN DIARIA ─────────────────────────────────────────────────────────
-function ProgramacionDiariaView({ cargaActiva, programacion, onProgramar, onProgramarVarios, onEnviarDia, onEnviarTodo, onVistaDia, onCancelar, onEditarFecha, isAdmin }) {
+function ProgramacionDiariaView({ cargaActiva, programacion, onProgramar, onProgramarVarios, onEnviarDia, onEnviarTodo, onVistaDia, onCancelar, onEditarFecha, isAdmin, puedeVerificadorPrecio }) {
   const [programando, setProgramando] = useState(null);
   const [editando, setEditando] = useState(null);
   const [subTab, setSubTab] = useState("pendientes");
@@ -1087,7 +1121,7 @@ function ProgramacionDiariaView({ cargaActiva, programacion, onProgramar, onProg
         ))}
       </div>
       {vista === "tablero" && (
-        <TableroSemanalPlanta sinProgramar={sinProgramarPrio} programacion={programacion} onProgramarVarios={onProgramarVarios} onEnviarDia={onEnviarDia} onVistaDia={onVistaDia} onCancelar={onCancelar} onMover={onEditarFecha} onEditar={setEditando} />
+        <TableroSemanalPlanta sinProgramar={sinProgramarPrio} programacion={programacion} onProgramarVarios={onProgramarVarios} onEnviarDia={onEnviarDia} onVistaDia={onVistaDia} onCancelar={onCancelar} onMover={onEditarFecha} onEditar={setEditando} puedeVerificadorPrecio={puedeVerificadorPrecio} />
       )}
       {vista === "tabla" && (
         <div style={{ marginBottom: 16 }}>
@@ -1724,7 +1758,7 @@ function CostosVentasPlantaView({ currentUser }) {
   );
 }
 
-export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
+export default function ModuloPlanta({ currentUser, onVolver, onLogout, puedeVerificadorPrecio }) {
   const [subView, setSubView] = useState("home");
   const [cargasPlaneacion, setCargasPlaneacion] = useState([]);
   const [programacion, setProgramacion] = useState([]);
@@ -2023,6 +2057,7 @@ export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
               onCancelar={cancelarProgramacion}
               onEditarFecha={editarFechaProgramacion}
               isAdmin={isAdmin}
+              puedeVerificadorPrecio={puedeVerificadorPrecio}
             />
           )}
           {subView === "carga_modulos" && (

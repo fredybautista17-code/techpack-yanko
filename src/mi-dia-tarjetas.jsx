@@ -21,6 +21,7 @@ import { MiDiaPlaneacionBloque, ProgramadorProcesosStandalone, MiDiaNominaStanda
 
 // (2026-11-20, a pedido de Fredy) Asistencia del área: vive en Nómina; se carga solo cuando alguien abre esa pestaña.
 const AsistenciaAreaMiDia = React.lazy(() => import("./modulo-nomina").then((m) => ({ default: m.AsistenciaAreaMiDia })));
+const VerificadorPrecioPlanta = React.lazy(() => import("./verificador-precio")); // (2026-11-21) tarjeta «Verificador de precio»
 
 const C = {
   ink: "#1A1A2E", slate: "#5A5A7A", border: "#E8E2DB", canvas: "#F7F4F0", white: "#FFFFFF", seam: "#C8B8A2",
@@ -447,7 +448,7 @@ function BloqueCierreAreas({ db, currentUser, ids }) {
 
 // Pantalla «☀️ Mi Día» por tarjetas: una barra de pestañas con UNA sección a la vez (en vez de apilar todo y obligar a bajar),
 // solo con las piezas que el administrador marcó para este usuario.
-export default function MiDiaTarjetasStandalone({ db, currentUser, onVolver, onLogout, onAbrirItem, puedeAbrir, tabInicial }) {
+export default function MiDiaTarjetasStandalone({ db, currentUser, onVolver, onLogout, onAbrirItem, puedeAbrir, tabInicial, puedeVerificadorPrecio }) {
   const marcadas = currentUser?.tarjetasMiDia || [];
   const hayCierre = marcadas.some((id) => IDS_CIERRE.includes(id));
   const idsPlaneacion = marcadas.filter((id) => IDS_PLANEACION.includes(id));
@@ -484,6 +485,16 @@ export default function MiDiaTarjetasStandalone({ db, currentUser, onVolver, onL
   }
   if (idsPlaneacion.length) {
     secciones.push({ id: "planeacion", icon: "📊", label: "Planeación", render: () => <MiDiaPlaneacionBloque visibles={idsPlaneacion} /> });
+  }
+  if (marcadas.includes("verificador_precio") && puedeVerificadorPrecio) {
+    secciones.push({
+      id: "verificador_precio", icon: "🔍", label: "Verificador de precio",
+      render: () => (
+        <React.Suspense fallback={<div style={{ padding: 20, color: C.slate, fontSize: 13 }}>Cargando el verificador…</div>}>
+          <VerificadorPrecioPlanta />
+        </React.Suspense>
+      ),
+    });
   }
   if (marcadas.includes("cumpleanos")) {
     secciones.push({ id: "cumpleanos", icon: "🎂", label: "Cumpleaños", render: () => <BloqueCumpleanos db={db} /> });
