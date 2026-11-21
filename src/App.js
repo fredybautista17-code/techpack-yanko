@@ -14945,7 +14945,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     { area: "🧾 Preórdenes y Órdenes", items: [["preordenes_vincular_pedido", "Puede vincular referencias a pedidos (aunque la preorden esté aprobada)"], ["preordenes_pasar_a_orden", "Puede pasar referencias con tela confirmada a Órdenes (botón «Pasar a Orden»)"]] },
     { area: "📋 Planeación", items: [["planeacion", "Planeación"]] },
     // (2026-11-21, a pedido de Fredy) Verificador de Precio (Busint en vivo) en Programación Diaria de Planta Yanko y como tarjeta de Mi Día: permiso aparte por rol (el admin siempre). Para Mi Día además se marca la tarjeta en Usuarios.
-    { area: "🏭 Planta Yanko", items: [["planta", "Planta Yanko"], ["planta_verificador_precio", "🔍 Puede ver el Verificador de Precio (Programación Diaria de Planta Yanko y Mi Día): precios de mano de obra de Confección y Corte"]] },
+    { area: "🏭 Planta Yanko", items: [["planta", "Planta Yanko"], ["planta_verificador_precio", "🔍 Verificador de Precio", "Puede ver el Verificador de Precio en la Programación Diaria de Planta Yanko y en Mi Día (muestra precios de mano de obra de Confección y Corte)"]] },
     { area: "📦 Bodega", items: [["bodega", "Bodega"], ["bodega_solo_devoluciones", "Solo Devoluciones (no ve Despacho y Saldo ni Control de Despacho)"], ["bodega_cambiar_estado_devoluciones", "Puede cambiar el estado de las devoluciones (líder)"]] },
     { area: "👷 Nómina", items: [["nomina", "Completa (todo el módulo)"], ["nomina_novedades", "Solo Novedades"], ["nomina_editar_catalogos", "Puede editar catálogos (Trabajadores, Turnos, etc.) sin admin total"], ["nomina_ver_anomalias_huellero", "Puede ver Anomalías Huellero"], ["nomina_ver_duplicados_huellero", "Puede ver Diagnóstico de Duplicados"], ["nomina_cerrar_quincena", "Puede cerrar Quincena (General y por Área)"], ["nomina_agregar_cobros_manual", "Puede agregar cobros/deducciones manuales"], ["nomina_ajustar_destajo", "Puede agregar Ajustes de Nómina en Destajo"], ["nomina_editar_horas_extra", "Puede editar/borrar Horas Extras"], ["nomina_editar_bonificacion", "Puede editar/borrar Bonificaciones"], ["nomina_autorizar_permisos", "Puede generar códigos de autorización de permisos (4.º permiso del mes en adelante)"]] },
     { area: "🎯 KPIs", items: [["kpis", "KPIs"]] },
@@ -15369,10 +15369,10 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
                               </span>
                               {total > 1 && (
                                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap", padding: "8px 10px 8px 26px", borderTop: `1px solid ${T.border}` }}>
-                                  {items.map(([mod, label]) => {
+                                  {items.map(([mod, label, ayuda]) => {
                                     const activo = modulosActivos.includes(mod);
                                     return (
-                                      <span key={mod} onClick={() => toggleModulo(r.id, mod)}
+                                      <span key={mod} onClick={() => toggleModulo(r.id, mod)} title={ayuda || undefined}
                                         style={{ padding: "3px 10px", borderRadius: 4, fontSize: 11, fontWeight: 700, cursor: "pointer", background: activo ? T.violetBg : "#EDEDF2", color: activo ? T.violet : T.slate, border: `1px solid ${activo ? T.violet : T.border}` }}
                                       >{label}</span>
                                     );
