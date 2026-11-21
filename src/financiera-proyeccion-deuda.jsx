@@ -5,7 +5,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { collection, doc, onSnapshot } from "firebase/firestore";
 import { useMesFinanciero } from "./financiera-que-pagar";
 import { C, caja, Boton, Ventana, Tarjeta } from "./financiera-cuanto-pagar";
-import { sumarMes } from "./financiera-cuanto-pagar-calculo";
+import { sumarMes, arrastreCuotas } from "./financiera-cuanto-pagar-calculo";
 import { HORIZONTE, ESCENARIOS, ingresosBase, presupuestoClientesPorMes, proyectarDeuda, operacionDe } from "./financiera-proyeccion-deuda-calculo";
 import { ultimoCorte, armarProveedoresPagar } from "./financiera-programar-pagos-calculo";
 import { comprasParaProyeccion } from "./financiera-proyeccion-compras-calculo";
@@ -94,6 +94,7 @@ export function guardarOpciones(parcial) {
 export function useProyeccionMensual(db, horizonte = 26) {
   const ymHoy = useMemo(() => new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 7), []);
   const datos = useMesFinanciero(db, ymHoy);
+  const arrastreHoy = useMemo(() => arrastreCuotas(datos.cuotas, datos.pagosMapa, ymHoy, ymHoy), [datos.cuotas, datos.pagosMapa, ymHoy]); // (2026-11-21) saldo de cuotas de meses anteriores
   const [cacheTotal, setCacheTotal] = useState(null);
   const [cacheBusint, setCacheBusint] = useState(null);
   const [presClientes, setPresClientes] = useState([]);
@@ -122,7 +123,7 @@ export function useProyeccionMensual(db, horizonte = 26) {
   const comprasCalc = useMemo(() => comprasParaProyeccion({ compras, presupuestos, categoriasLista: catLista, categoriasPorConcepto: catPorConcepto, opc, ymHoy, horizonte }), [compras, presupuestos, catLista, catPorConcepto, opc, ymHoy, horizonte]);
   const comprasMes = opc.incluirCompras ? comprasCalc.pagoMes : null;
   const r = useMemo(() => proyectarDeuda({
-    ymInicio: ymHoy, horizonte, escenario: opc.escenario, base, presupuestoMes, operacion, cuotas: datos.cuotas, colchonPct: opc.colchonPct,
+    ymInicio: ymHoy, horizonte, escenario: opc.escenario, base, presupuestoMes, operacion, cuotas: datos.cuotas, colchonPct: opc.colchonPct, arrastre: arrastreHoy,
     nueva: { cuota: 0, plazo: 1, desde: sumarMes(ymHoy, 1) }, proveedores: null, comprasMes,
   }), [ymHoy, horizonte, opc, base, presupuestoMes, operacion, datos.cuotas, comprasMes]);
   const meses = useMemo(() => {
@@ -140,6 +141,7 @@ export function useProyeccionMensual(db, horizonte = 26) {
 export default function ProyeccionDeudaView({ db, isAdmin, vistaAnterior, vistaPresupuesto, onIrInsumos }) {
   const ymHoy = useMemo(() => new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 7), []);
   const datos = useMesFinanciero(db, ymHoy);
+  const arrastreHoy = useMemo(() => arrastreCuotas(datos.cuotas, datos.pagosMapa, ymHoy, ymHoy), [datos.cuotas, datos.pagosMapa, ymHoy]); // (2026-11-21) saldo de cuotas de meses anteriores
   const deudaProv = useDeudaProveedores(db);
   const [cacheTotal, setCacheTotal] = useState(null);
   const [cacheBusint, setCacheBusint] = useState(null);
@@ -187,7 +189,7 @@ export default function ProyeccionDeudaView({ db, isAdmin, vistaAnterior, vistaP
   const hayBase = !!ant.hayDatos;
   const operacion = useMemo(() => operacionDe(datos.res, gastosModo), [datos.res, gastosModo]);
   const r = useMemo(() => proyectarDeuda({
-    ymInicio: ymHoy, escenario, base, presupuestoMes, operacion, cuotas: datos.cuotas, colchonPct,
+    ymInicio: ymHoy, escenario, base, presupuestoMes, operacion, cuotas: datos.cuotas, colchonPct, arrastre: arrastreHoy,
     nueva: { cuota: Number(cuotaTxt) || 0, plazo: Number(plazoTxt) || 1, desde }, proveedores: deudaProv, comprasMes,
   }), [ymHoy, escenario, base, presupuestoMes, operacion, datos.cuotas, colchonPct, cuotaTxt, plazoTxt, desde, deudaProv, comprasMes]);
   const hoy = r.meses[0];
@@ -402,7 +404,7 @@ function DetalleMes({ m, r, escenario, pctColchon, total, onClose }) {
       </Bloque>
       {m.compras > 0 ? <Bloque titulo="Compras de materiales proyectadas"><Linea t="Pago de tela e insumos que se compran más adelante" sub="Provisión según lo realmente comprado (Insumos y telas), con el plazo de pago elegido" v={money(m.compras)} /></Bloque> : null}
       <Bloque titulo="Cuotas de endeudamiento este mes">
-        {m.cuotasLista.length ? m.cuotasLista.map((x, k) => <Linea key={x.id || k} t={x.nombre} sub={`${x.acreedor ? `${x.acreedor} · ` : ""}${x.hasta ? (x.hasta === m.ym ? "Última cuota este mes" : `Termina en ${etq(x.hasta)}`) : "Sin fecha de fin"}`} v={money(x.valorMensual)} />) : <Linea t="Sin cuotas vigentes: ya no hay deuda por cuotas." v="$0" />}
+        {m.cuotasLista.length ? m.cuotasLista.map((x, k) => <Linea key={x.id || k} t={x.nombre} sub={`${x.acreedor ? `${x.acreedor} · ` : ""}${x.hasta ? (x.hasta === m.ym ? "Última cuota este mes" : x.hasta < m.ym ? `Terminó en ${etq(x.hasta)}` : `Termina en ${etq(x.hasta)}`) : "Sin fecha de fin"}${x.arrastre > 0 ? ` · incluye ${money(x.arrastre)} de meses anteriores` : x.arrastre < 0 ? ` · con ${money(-x.arrastre)} a favor` : ""}`} v={money(x.valorMensual)} />) : <Linea t="Sin cuotas vigentes: ya no hay deuda por cuotas." v="$0" />}
         <Linea fuerte t="Total cuotas" v={money(m.cuotas)} />
       </Bloque>
       {m.nueva > 0 ? <Bloque titulo="Deuda nueva simulada"><Linea t={`Cuota nueva (${r.plazo} meses desde ${etq(r.desde)})`} v={money(m.nueva)} /></Bloque> : null}

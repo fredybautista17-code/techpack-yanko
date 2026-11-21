@@ -61,7 +61,7 @@ export function armarOperar({ config, ym, hoy, est, porCategoria, pagosMapa, cuo
     const dia = c.diaPago ? Math.min(Math.max(1, Math.round(num(c.diaPago)) || 1), ult) : null;
     const doc = (pagosMapa || {})[`${c.id}__${ym}`];
     const pagado = esPlan ? num((pagosMapa || {})[`plan_liquidaciones__${ym}__${ym}`] && (pagosMapa || {})[`plan_liquidaciones__${ym}__${ym}`].pagado) : num(doc && doc.pagado);
-    agregar({ id: `cuota_${c.id}`, dia, concepto: esPlan ? "Liquidaciones de retiro (plan del mes)" : `Cuota · ${c.nombre}`, sub: c.acreedor || "", valor: num(c.valorMensual), pagado, clase: "deuda", rubro: "deuda", ir: "endeudamiento", accion: esPlan ? null : { tipo: "cuota", cuotaId: c.id } });
+    agregar({ id: `cuota_${c.id}`, dia, concepto: esPlan ? "Liquidaciones de retiro (plan del mes)" : `Cuota · ${c.nombre}`, sub: [c.acreedor || "", num(c.arrastre) > 0 ? `incluye $${Math.round(num(c.arrastre)).toLocaleString("es-CO")} atrasado` : ""].filter(Boolean).join(" · "), valor: num(c.valorMensual), pagado, clase: "deuda", rubro: "deuda", ir: "endeudamiento", accion: esPlan ? null : { tipo: "cuota", cuotaId: c.id } });
   });
   progs.forEach((d) => {
     const l = (liqRetiro || []).find((x) => x.id === d.liqId) || {};
@@ -127,7 +127,7 @@ export function armarOperar({ config, ym, hoy, est, porCategoria, pagosMapa, cuo
   const cuotasMes = cuotasReales.reduce((s, c) => s + num(c.valorMensual), 0);
   const saldoCuotas = cuotasReales
     .filter((c) => c.hasta && !c.vinculoLiquidaciones && !/liquidaci/i.test(String(c.nombre || "")))
-    .reduce((s, c) => s + num(c.valorMensual) * (mesesEntre(ym, c.hasta) + 1), 0);
+    .reduce((s, c) => s + num(c.base !== undefined ? c.base : c.valorMensual) * Math.max(0, mesesEntre(ym, c.hasta) + 1) + Math.max(0, num(c.arrastre)), 0);
   const cuotasSinFin = cuotasReales.filter((c) => !c.hasta && !c.vinculoLiquidaciones && !/liquidaci/i.test(String(c.nombre || ""))).length;
   const liqPend = (liqRetiro || []).filter((l) => l.estadoPago !== "pagada" && num(l.totalAPagar) > 0);
   const liqPendTotal = liqPend.reduce((s, l) => s + num(l.totalAPagar), 0);

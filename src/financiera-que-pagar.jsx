@@ -64,7 +64,7 @@ export function useMesFinanciero(db, ym) {
       .catch((e) => { if (vivo) { setError(e?.message || "No se pudieron leer los datos."); setCargando(false); } });
     return () => { vivo = false; };
   }, [db, ym]);
-  const res = useMemo(() => cuantoPagarMes({ ym, liquidaciones: liq, gastosDocs: gastos, gastosPlanta, cuotas }), [ym, liq, gastos, gastosPlanta, cuotas]);
+  const res = useMemo(() => cuantoPagarMes({ ym, liquidaciones: liq, gastosDocs: gastos, gastosPlanta, cuotas, pagosMapa }), [ym, liq, gastos, gastosPlanta, cuotas, pagosMapa]);
   const cumpl = useMemo(() => cumplimientoPresupuesto({ ym, presupuestos: pres, movimientos: movs, confirmado: res.actual, estimado: res.estimado, hoyISO: `${ym}-15`, diasTotal: 0, diasTranscurridos: 0 }), [ym, pres, movs, res]);
   return { res, cumpl, cargando, error, pagosMapa, cuotas };
 }

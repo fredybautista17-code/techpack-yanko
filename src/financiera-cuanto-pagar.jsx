@@ -7,8 +7,8 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { collection, doc, getDocs, onSnapshot, query, setDoc, deleteDoc, where } from "firebase/firestore";
 import { leerGastosPlanta } from "./financiera-gastos-planta";
-import { cuantoPagarMes, cuotasDelMes, cuotasConLiquidaciones, escalonCuotas, sumarMes, TIPOS_NOMINA, MESES_PONDERADO, cumplimientoPresupuesto } from "./financiera-cuanto-pagar-calculo";
-import { TablaCuotasPago, useCuotasPagos } from "./financiera-cuotas-pagos";
+import { cuantoPagarMes, cuotasDelMes, cuotasConLiquidaciones, escalonCuotas, sumarMes, arrastreCuotas, TIPOS_NOMINA, MESES_PONDERADO, cumplimientoPresupuesto } from "./financiera-cuanto-pagar-calculo";
+import { TablaCuotasPago, useCuotasPagos, abonarCuota, textoSaldoCuota } from "./financiera-cuotas-pagos";
 import { httpsCallable } from "firebase/functions";
 import { diasDeTrabajoDelMes } from "./dias-habiles";
 
@@ -176,7 +176,7 @@ export function CuantoPagarMesView({ db, onIrEndeudamiento, functionsClient, isA
     return () => { vivo = false; };
   }, [db, ym]);
 
-  const res = useMemo(() => cuantoPagarMes({ ym, liquidaciones: datos.liq, gastosDocs: datos.gastos, gastosPlanta: datos.gastosPlanta, cuotas }), [ym, datos, cuotas]);
+  const res = useMemo(() => cuantoPagarMes({ ym, liquidaciones: datos.liq, gastosDocs: datos.gastos, gastosPlanta: datos.gastosPlanta, cuotas, pagosMapa: mapaPagos }), [ym, datos, cuotas, mapaPagos]);
   const { actual, anterior } = res;
   const hayBase = anterior.hayDatos;
   const textoFaltan = (m) => m.faltan.map((f) => `${f.tipo} ${f.falta.join(" y ")}`).join(" · ");
@@ -528,6 +528,10 @@ export function EndeudamientoView({ db, isAdmin }) {
   const hoy = useMemo(() => new Date(Date.now() - 5 * 3600 * 1000), []);
   const ymHoy = `${hoy.getUTCFullYear()}-${String(hoy.getUTCMonth() + 1).padStart(2, "0")}`;
   const { cuotas, error } = useCuotas(db);
+  // (2026-11-21, a pedido de Fredy) Abonos y saldo que pasa al mes siguiente: lo pagado de cada cuota este mes, lo que falta y lo que viene de meses anteriores.
+  const { mapa: mapaPagos } = useCuotasPagos(db);
+  const saldos = useMemo(() => arrastreCuotas(cuotas, mapaPagos, ymHoy, ymHoy), [cuotas, mapaPagos, ymHoy]);
+  const [abono, setAbono] = useState(null); // { cuota, monto, fecha }
   const [form, setForm] = useState(null);
   const [borrar, setBorrar] = useState(null);
   const [msg, setMsg] = useState("");
@@ -548,14 +552,24 @@ export function EndeudamientoView({ db, isAdmin }) {
     finally { setGuardando(false); }
   }
 
-  const estadoDe = (c) => (c.desde > ymHoy ? "futura" : c.hasta && c.hasta < ymHoy ? "terminada" : c.hasta && c.hasta <= sumarMes(ymHoy, 2) ? "pronto" : "vigente");
+  const estadoDe = (c) => (c.desde > ymHoy ? "futura" : c.hasta && c.hasta < ymHoy ? (saldos[c.id] > 0 ? "saldo" : "terminada") : c.hasta && c.hasta <= sumarMes(ymHoy, 2) ? "pronto" : "vigente");
   const ordenadas = useMemo(() => [...cuotas].sort((a, b) => (a.hasta || "9999-99").localeCompare(b.hasta || "9999-99") || String(a.nombre).localeCompare(String(b.nombre))), [cuotas]);
   const activas = ordenadas.filter((c) => estadoDe(c) !== "terminada");
   const terminadas = ordenadas.filter((c) => estadoDe(c) === "terminada");
-  const hoyCuotas = cuotasDelMes(cuotas, ymHoy);
+  const hoyCuotas = cuotasDelMes(cuotas, ymHoy, saldos);
+  const hoyISOAbono = new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 10);
+  async function registrarAbono() {
+    const monto = Math.round(Number(abono?.monto) || 0);
+    if (!(monto > 0)) { setMsg("Escribe un abono mayor que 0."); return; }
+    setGuardando(true);
+    setMsg("");
+    try { await abonarCuota(db, abono.cuota.id, ymHoy, monto, mapaPagos, abono.fecha || hoyISOAbono); setAbono(null); }
+    catch (err) { setMsg(`No se pudo guardar el abono: ${err?.message || err}`); }
+    finally { setGuardando(false); }
+  }
   const pasos = escalonCuotas(cuotas, ymHoy);
 
-  const ETIQUETA = { vigente: ["Vigente", C.green, C.greenBg], pronto: ["Termina pronto", C.amber, C.amberBg], futura: ["Aún no empieza", C.blue, C.blueBg], terminada: ["Terminada", C.slate, C.canvas] };
+  const ETIQUETA = { vigente: ["Vigente", C.green, C.greenBg], pronto: ["Termina pronto", C.amber, C.amberBg], futura: ["Aún no empieza", C.blue, C.blueBg], terminada: ["Terminada", C.slate, C.canvas], saldo: ["Terminó con saldo", C.red, C.redBg] };
 
   function validar(f) {
     if (!f.nombre.trim()) return "Escribe el nombre de la cuota.";
@@ -592,6 +606,10 @@ export function EndeudamientoView({ db, isAdmin }) {
   const campo = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
   const fila = (c) => {
     const [txt, col, fondo] = ETIQUETA[estadoDe(c)];
+    const mes = hoyCuotas.lista.find((x) => x.id === c.id); // la cuota tal como cuenta este mes (con el saldo de meses anteriores)
+    const pagadoMes = Number(mapaPagos[`${c.id}__${ymHoy}`]?.pagado) || 0;
+    const faltaMes = mes ? Math.max(0, mes.valorMensual - pagadoMes) : 0;
+    const notaSaldo = mes ? textoSaldoCuota(mes) : "";
     return (
       <tr key={c.id}>
         <td style={tdL}>{c.nombre}{c.acreedor ? <div style={{ fontSize: 11, fontWeight: 500, color: C.slate }}>{c.acreedor}</div> : null}{esCuotaLiq(c) ? (
@@ -601,16 +619,18 @@ export function EndeudamientoView({ db, isAdmin }) {
             <Boton chico onClick={() => setVerLiq(true)}>Ver quién</Boton>
           </div>
         ) : null}{c.nota ? <div style={{ fontSize: 11, fontWeight: 500, color: C.slate }}>{c.nota}</div> : null}</td>
-        <td style={td}>{money(c.valorMensual)}</td>
+        <td style={td}>{money(c.valorMensual)}{mes && Number(mes.arrastre) ? <div style={{ fontSize: 10.5, fontWeight: 700, color: mes.arrastre > 0 ? C.amber : C.green }}>{notaSaldo}</div> : null}</td>
         <td style={td}>{c.diaPago ? `día ${c.diaPago}` : "—"}</td>
         <td style={td}>{nombreMes(c.desde)}</td>
         <td style={td}>{c.hasta ? nombreMes(c.hasta) : "Sin fecha"}</td>
+        <td style={{ ...td, color: pagadoMes > 0 ? C.green : C.slate, fontWeight: 700 }}>{mes ? money(pagadoMes) : "—"}</td>
+        <td style={{ ...td, fontWeight: 800, color: !mes ? C.slate : faltaMes > 0 ? C.red : C.green }}>{!mes ? "—" : faltaMes > 0 ? money(faltaMes) : mes.valorMensual > 0 ? "✓ Pagada" : "—"}</td>
         <td style={{ ...td, textAlign: "center" }}><span style={{ fontSize: 11, fontWeight: 800, color: col, background: fondo, padding: "2px 9px", borderRadius: 10 }}>{txt}</span></td>
-        {isAdmin ? <td style={{ ...td, textAlign: "right" }}><span style={{ display: "inline-flex", gap: 6 }}><Boton chico onClick={() => { setMsg(""); setForm({ ...FORM_VACIO, ...c, valorMensual: String(c.valorMensual ?? ""), diaPago: c.diaPago == null ? "" : String(c.diaPago), hasta: c.hasta || "", acreedor: c.acreedor || "", nota: c.nota || "" }); }}>Editar</Boton><Boton chico onClick={() => setBorrar(c)}>Eliminar</Boton></span></td> : null}
+        {isAdmin ? <td style={{ ...td, textAlign: "right" }}><span style={{ display: "inline-flex", gap: 6 }}>{mes && faltaMes > 0 ? <Boton chico onClick={() => { setMsg(""); setAbono({ cuota: c, monto: String(Math.round(faltaMes)), fecha: hoyISOAbono }); }}>Abonar</Boton> : null}<Boton chico onClick={() => { setMsg(""); setForm({ ...FORM_VACIO, ...c, valorMensual: String(c.valorMensual ?? ""), diaPago: c.diaPago == null ? "" : String(c.diaPago), hasta: c.hasta || "", acreedor: c.acreedor || "", nota: c.nota || "" }); }}>Editar</Boton><Boton chico onClick={() => setBorrar(c)}>Eliminar</Boton></span></td> : null}
       </tr>
     );
   };
-  const cabecera = <thead><tr><th style={thL}>Cuota</th><th style={th}>Valor mensual</th><th style={th}>Se paga</th><th style={th}>Empieza</th><th style={th}>Termina</th><th style={{ ...th, textAlign: "center" }}>Estado</th>{isAdmin ? <th style={th} /> : null}</tr></thead>;
+  const cabecera = <thead><tr><th style={thL}>Cuota</th><th style={th}>Valor mensual</th><th style={th}>Se paga</th><th style={th}>Empieza</th><th style={th}>Termina</th><th style={th}>Pagado {nombreMes(ymHoy).split(" ")[0].toLowerCase()}</th><th style={th}>Falta</th><th style={{ ...th, textAlign: "center" }}>Estado</th>{isAdmin ? <th style={th} /> : null}</tr></thead>;
 
   return (
     <div>
@@ -626,7 +646,7 @@ export function EndeudamientoView({ db, isAdmin }) {
       {error ? <div style={{ background: C.redBg, color: C.red, borderRadius: 10, padding: "10px 14px", fontSize: 13, marginBottom: 12 }}>{error}</div> : null}
       {msg ? <div style={{ background: C.redBg, color: C.red, borderRadius: 10, padding: "10px 14px", fontSize: 13, marginBottom: 12 }}>{msg}</div> : null}
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
-        <Tarjeta fondo={C.redBg} borde="#F3C9C2" colorValor={C.red} titulo={`Cuotas de ${minusculaMes(ymHoy)}`} valor={money(hoyCuotas.total)} sub={`${hoyCuotas.lista.length} ${hoyCuotas.lista.length === 1 ? "cuota vigente" : "cuotas vigentes"}`} />
+        <Tarjeta fondo={C.redBg} borde="#F3C9C2" colorValor={C.red} titulo={`Cuotas de ${minusculaMes(ymHoy)}`} valor={money(hoyCuotas.total)} sub={`${hoyCuotas.lista.length} ${hoyCuotas.lista.length === 1 ? "cuota vigente" : "cuotas vigentes"}${hoyCuotas.arrastre ? ` · incluye ${money(hoyCuotas.arrastre)} de meses anteriores` : ""}`} />
         <Tarjeta titulo="Próxima en terminar" valor={(() => { const p = hoyCuotas.lista.filter((c) => c.hasta).sort((a, b) => a.hasta.localeCompare(b.hasta))[0]; return p ? nombreMes(p.hasta) : "—"; })()} sub={(() => { const p = hoyCuotas.lista.filter((c) => c.hasta).sort((a, b) => a.hasta.localeCompare(b.hasta))[0]; return p ? `${p.nombre} · ${money(p.valorMensual)} al mes` : "Ninguna vigente tiene fecha de fin"; })()} />
         <Tarjeta titulo="Cuando termine la última" valor={(() => { const f = hoyCuotas.lista.map((c) => c.hasta); return f.length && f.every(Boolean) ? nombreMes(f.sort().slice(-1)[0]) : "—"; })()} sub={hoyCuotas.lista.some((c) => !c.hasta) ? "Alguna cuota vigente no tiene fecha de fin" : "Sin deuda por cuotas después de esa fecha"} />
       </div>
@@ -636,7 +656,7 @@ export function EndeudamientoView({ db, isAdmin }) {
             {cabecera}
             <tbody>
               {activas.map(fila)}
-              {!activas.length && <tr><td colSpan={isAdmin ? 7 : 6} style={{ ...td, textAlign: "left", color: C.slate }}>Todavía no hay cuotas.{isAdmin ? " Usa «Agregar cuota»." : ""}</td></tr>}
+              {!activas.length && <tr><td colSpan={isAdmin ? 9 : 8} style={{ ...td, textAlign: "left", color: C.slate }}>Todavía no hay cuotas.{isAdmin ? " Usa «Agregar cuota»." : ""}</td></tr>}
               {verTerminadas ? terminadas.map(fila) : null}
             </tbody>
           </table>
@@ -669,6 +689,35 @@ export function EndeudamientoView({ db, isAdmin }) {
           <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
             <Boton onClick={() => setForm(null)}>Cancelar</Boton>
             <Boton variante="oscuro" onClick={guardar} disabled={guardando}>{guardando ? "Guardando…" : "Guardar cuota"}</Boton>
+          </div>
+        </Ventana>
+      ) : null}
+      {abono ? (
+        <Ventana titulo={`Abonar a ${abono.cuota.nombre}`} sub={`Cuota de ${nombreMes(ymHoy)}. Lo que no se pague este mes pasa a la cuota del mes siguiente.`} ancho={460} onClose={() => setAbono(null)}>
+          {(() => {
+            const m = hoyCuotas.lista.find((x) => x.id === abono.cuota.id);
+            const pag = Number(mapaPagos[`${abono.cuota.id}__${ymHoy}`]?.pagado) || 0;
+            const falta = m ? Math.max(0, m.valorMensual - pag) : 0;
+            const quedaria = Math.max(0, falta - (Number(abono.monto) || 0));
+            const movs = Array.isArray(mapaPagos[`${abono.cuota.id}__${ymHoy}`]?.abonos) ? mapaPagos[`${abono.cuota.id}__${ymHoy}`].abonos : [];
+            return (
+              <div style={{ fontSize: 13, color: C.ink, lineHeight: 1.6 }}>
+                <div style={{ display: "flex", justifyContent: "space-between" }}><span>Cuota de este mes{m && Number(m.arrastre) ? ` (${money(m.base)} ${m.arrastre > 0 ? "+" : "−"} ${money(Math.abs(m.arrastre))} de meses anteriores)` : ""}</span><b>{money(m ? m.valorMensual : 0)}</b></div>
+                <div style={{ display: "flex", justifyContent: "space-between" }}><span>Ya abonado</span><b style={{ color: C.green }}>{money(pag)}</b></div>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}><span>Falta</span><b style={{ color: C.red }}>{money(falta)}</b></div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                  <label style={{ fontSize: 12, fontWeight: 700, color: C.slate }}>Monto del abono ($)<input style={entrada} type="number" min="0" value={abono.monto} onChange={(e) => setAbono((a) => ({ ...a, monto: e.target.value }))} /></label>
+                  <label style={{ fontSize: 12, fontWeight: 700, color: C.slate }}>Fecha<input style={entrada} type="date" value={abono.fecha} onChange={(e) => setAbono((a) => ({ ...a, fecha: e.target.value }))} /></label>
+                </div>
+                <div style={{ marginTop: 10, fontSize: 12.5, color: quedaria > 0 ? C.amber : C.green, fontWeight: 700 }}>{quedaria > 0 ? `Quedaría faltando ${money(quedaria)}: si no se paga este mes, pasa a la cuota del mes siguiente.` : "Con este abono la cuota queda pagada."}</div>
+                {movs.length ? <div style={{ marginTop: 10, fontSize: 11.5, color: C.slate }}><b>Movimientos de este mes:</b> {movs.map((a, i) => <span key={i} style={{ marginRight: 10 }}>{a.fecha} · {money(a.monto)}</span>)}</div> : null}
+              </div>
+            );
+          })()}
+          {msg ? <div style={{ color: C.red, fontSize: 12.5, marginTop: 10 }}>{msg}</div> : null}
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
+            <Boton onClick={() => setAbono(null)}>Cancelar</Boton>
+            <Boton variante="oscuro" onClick={registrarAbono} disabled={guardando}>{guardando ? "Guardando…" : "Registrar abono"}</Boton>
           </div>
         </Ventana>
       ) : null}

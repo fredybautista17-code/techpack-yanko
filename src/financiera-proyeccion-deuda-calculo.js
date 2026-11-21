@@ -54,7 +54,7 @@ export function operacionDe(res, modo) {
 }
 
 // nueva = { cuota, plazo, desde: "AAAA-MM" } (la deuda que se quiere probar). operacion = { nomina, seguridad, provisiones, gastos } del mes anterior.
-export function proyectarDeuda({ ymInicio, horizonte = HORIZONTE, escenario = "cons", base, presupuestoMes, operacion, cuotas, colchonPct = COLCHON_DEFECTO, nueva, proveedores, comprasMes }) {
+export function proyectarDeuda({ ymInicio, horizonte = HORIZONTE, escenario = "cons", base, presupuestoMes, operacion, cuotas, colchonPct = COLCHON_DEFECTO, nueva, proveedores, comprasMes, arrastre }) {
   const op = { nomina: num(operacion?.nomina), seguridad: num(operacion?.seguridad), provisiones: num(operacion?.provisiones), gastos: num(operacion?.gastos), gastosExcel: num(operacion?.gastosExcel), gastosPlanta: num(operacion?.gastosPlanta), gastosModo: operacion?.gastosModo || "anterior" };
   const opTotal = op.nomina + op.seguridad + op.provisiones + op.gastos;
   const cuotaNueva = Math.max(0, num(nueva?.cuota));
@@ -68,7 +68,7 @@ export function proyectarDeuda({ ymInicio, horizonte = HORIZONTE, escenario = "c
   for (let i = 0; i < horizonte; i++) {
     const ym = sumarMes(ymInicio, i);
     const ing = ingresoDelMes({ escenario, base, presupuestoMes, ym });
-    const cu = cuotasDelMes(cuotas, ym);
+    const cu = cuotasDelMes(cuotas, ym, i === 0 ? arrastre : undefined); // (2026-11-21) el saldo atrasado de cuotas solo pesa en el mes en curso
     const nu = ym >= desde && ym < sumarMes(desde, plazo) ? cuotaNueva : 0;
     const compras = num(comprasMes?.[ym]); // (2026-11-09) pago de compras de materiales futuras que cae en este mes
     const margenBase = ing.valor - opTotal - cu.total - compras;

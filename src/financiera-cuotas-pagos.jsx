@@ -24,6 +24,23 @@ const thL = { ...th, textAlign: "left" };
 const tdL = { ...td, textAlign: "left", fontWeight: 700 };
 const btn = { border: `1.5px solid ${C.border}`, background: C.white, borderRadius: 8, padding: "4px 10px", fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", color: C.ink };
 
+// (2026-11-21, a pedido de Fredy) Abonos con historial. `pagado` sigue siendo el total del mes (lo leen Cuánto debo pagar, Qué pagar primero y Lo que cuesta operar);
+// `abonos` guarda cada movimiento [{ fecha, monto, tipo: "abono" | "ajuste" | "pagada" }] para saber cuándo y cuánto se abonó. Lo que falte de la cuota pasa solo al mes siguiente.
+const hoyBogota = () => new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 10);
+export async function registrarPagoCuota(db, cuotaId, ym, nuevoTotal, mapa, tipo = "ajuste", fecha) {
+  const prev = (mapa || {})[`${cuotaId}__${ym}`] || {};
+  const total = Math.max(0, Math.round(Number(nuevoTotal) || 0));
+  const diff = total - (Number(prev.pagado) || 0);
+  const abonos = Array.isArray(prev.abonos) ? [...prev.abonos] : [];
+  if (Math.abs(diff) >= 1) abonos.push({ fecha: fecha || hoyBogota(), monto: Math.round(diff), tipo });
+  await setDoc(doc(db, COL_PAGOS_CUOTAS, `${cuotaId}__${ym}`), { kind: "pago", cuotaId, ym, pagado: total, abonos, actualizadoEn: new Date().toISOString() });
+}
+export function abonarCuota(db, cuotaId, ym, monto, mapa, fecha) {
+  const prev = (mapa || {})[`${cuotaId}__${ym}`] || {};
+  return registrarPagoCuota(db, cuotaId, ym, (Number(prev.pagado) || 0) + Math.round(Number(monto) || 0), mapa, "abono", fecha);
+}
+export const textoSaldoCuota = (c) => (Number(c.arrastre) > 0 ? (c.vencida ? `Saldo de una cuota que ya terminó: ${money(c.arrastre)}` : `Incluye ${money(c.arrastre)} de meses anteriores`) : Number(c.arrastre) < 0 ? `Saldo a favor de meses anteriores: ${money(-c.arrastre)}` : "");
+
 // Pagos de cuotas del mes + plan de liquidaciones (colección contabilidad_cuotas_pagos) y liquidaciones de retiro de Nómina.
 export function useCuotasPagos(db) {
   const [pagos, setPagos] = useState([]);
@@ -101,11 +118,23 @@ export function TablaCuotasPago({ db, ym, cuotasLista, mapa, liquidaciones, pued
   const [error, setError] = useState("");
 
   const pagoDe = (c) => Number(mapa[`${c.id}__${ym}`]?.pagado) || 0;
-  async function guardarPago(c, valor) {
+  async function guardarPago(c, valor, tipo = "ajuste") {
     setError("");
-    try { await setDoc(doc(db, COL_PAGOS_CUOTAS, `${c.id}__${ym}`), { kind: "pago", cuotaId: c.id, ym, pagado: valor, actualizadoEn: new Date().toISOString() }); }
+    try { await registrarPagoCuota(db, c.id, ym, valor, mapa, tipo); }
     catch (e) { setError(e?.message || "No se pudo guardar el pago."); }
   }
+  // Abonos: una cuota abierta a la vez con su formulario (monto y fecha) y el historial del mes.
+  const [abierto, setAbierto] = useState(null);
+  const [abMonto, setAbMonto] = useState("");
+  const [abFecha, setAbFecha] = useState(hoyISO);
+  async function registrarAbono(c) {
+    const monto = Math.round(Number(abMonto) || 0);
+    if (!(monto > 0)) { setError("Escribe un abono mayor que 0."); return; }
+    setError("");
+    try { await abonarCuota(db, c.id, ym, monto, mapa, abFecha || hoyISO); setAbMonto(""); }
+    catch (e) { setError(e?.message || "No se pudo guardar el abono."); }
+  }
+  const columnas = 6 - (compacto ? 1 : 0) + (puedeEditar ? 1 : 0);
   async function guardarPlan(valor) {
     setError("");
     try { await setDoc(doc(db, COL_PAGOS_CUOTAS, `plan_liquidaciones__${ym}`), { kind: "plan_liquidaciones", ym, plan: valor, actualizadoEn: new Date().toISOString() }, { merge: true }); }
@@ -171,16 +200,42 @@ export function TablaCuotasPago({ db, ym, cuotasLista, mapa, liquidaciones, pued
               const val = Number(c.valorMensual) || 0;
               const pag = pagoDe(c);
               const completa = pag >= val && val > 0;
+              const abonos = Array.isArray(mapa[`${c.id}__${ym}`]?.abonos) ? mapa[`${c.id}__${ym}`].abonos : [];
+              const nota = textoSaldoCuota(c);
+              const faltaC = Math.max(0, val - pag);
               return (
-                <tr key={c.id} style={{ background: completa ? C.greenBg : undefined }}>
-                  <td style={tdL}><span style={{ textDecoration: completa ? "line-through" : "none" }}>{c.nombre}</span>{c.acreedor ? <div style={{ fontSize: 11, fontWeight: 500, color: C.slate }}>{c.acreedor}</div> : null}</td>
-                  <td style={td}>{money(val)}</td>
+                <React.Fragment key={c.id}>
+                <tr style={{ background: completa ? C.greenBg : undefined }}>
+                  <td style={tdL}><span style={{ textDecoration: completa ? "line-through" : "none" }}>{c.nombre}</span>{c.acreedor ? <div style={{ fontSize: 11, fontWeight: 500, color: C.slate }}>{c.acreedor}</div> : null}{nota ? <div style={{ fontSize: 11, fontWeight: 700, color: c.arrastre > 0 ? C.amber : C.green }}>{nota}</div> : null}{abonos.length ? <button style={{ ...btn, padding: "1px 7px", fontSize: 10.5, marginTop: 3 }} onClick={() => { setAbierto(abierto === c.id ? null : c.id); setAbMonto(String(Math.round(faltaC))); setAbFecha(hoyISO); }}>abonos ({abonos.length})</button> : null}</td>
+                  <td style={td}>{money(val)}{Number(c.arrastre) ? <div style={{ fontSize: 10.5, color: C.slate, fontWeight: 500 }}>{money(c.base)} {c.arrastre > 0 ? "+" : "−"} {money(Math.abs(c.arrastre))}</div> : null}</td>
                   <td style={td}>{c.diaPago ? `día ${c.diaPago}` : "—"}</td>
                   {compacto ? null : <td style={td}>{c.hasta ? mesCorto(c.hasta) : "Sin fecha"}</td>}
                   <td style={{ ...td, color: pag > 0 ? C.green : C.slate, fontWeight: 700 }}>{puedeEditar ? <EditorValor valor={pag} onGuardar={(v) => guardarPago(c, v)} /> : money(pag)}</td>
                   <td style={{ ...td, color: val - pag > 0 ? C.red : C.green, fontWeight: 800 }}>{completa ? "✓ Pagada" : money(Math.max(0, val - pag))}</td>
-                  {puedeEditar ? <td style={td}>{!completa ? <button style={btn} onClick={() => guardarPago(c, val)}>Marcar pagada</button> : <button style={btn} onClick={() => guardarPago(c, 0)}>Deshacer</button>}</td> : null}
+                  {puedeEditar ? <td style={td}><span style={{ display: "inline-flex", gap: 6 }}>{!completa ? <button style={btn} onClick={() => { setAbierto(abierto === c.id ? null : c.id); setAbMonto(String(Math.round(faltaC))); setAbFecha(hoyISO); }}>Abonar</button> : null}{!completa ? <button style={btn} onClick={() => guardarPago(c, val, "pagada")}>Marcar pagada</button> : <button style={btn} onClick={() => guardarPago(c, 0)}>Deshacer</button>}</span></td> : null}
                 </tr>
+                {abierto === c.id ? (
+                  <tr style={{ background: C.canvas }}>
+                    <td colSpan={columnas} style={{ ...td, textAlign: "left", whiteSpace: "normal" }}>
+                      {puedeEditar && !completa ? (
+                        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: abonos.length ? 8 : 0 }}>
+                          <b style={{ fontSize: 12 }}>Abonar a {c.nombre}</b>
+                          <input type="number" min="0" value={abMonto} onChange={(e) => setAbMonto(e.target.value)} aria-label="Monto del abono" style={{ width: 118, padding: "4px 6px", border: `1.5px solid ${C.border}`, borderRadius: 7, fontSize: 12.5, textAlign: "right", fontFamily: "inherit" }} />
+                          <input type="date" value={abFecha} onChange={(e) => setAbFecha(e.target.value)} aria-label="Fecha del abono" style={{ padding: "3px 6px", border: `1.5px solid ${C.border}`, borderRadius: 7, fontSize: 12.5, fontFamily: "inherit" }} />
+                          <button style={{ ...btn, color: C.green }} onClick={() => registrarAbono(c)}>Registrar abono</button>
+                          <button style={btn} onClick={() => setAbierto(null)}>Cerrar</button>
+                          <span style={{ fontSize: 11.5, color: C.slate }}>Falta {money(faltaC)}{Number(abMonto) > 0 ? ` → quedaría ${money(Math.max(0, faltaC - Number(abMonto)))}${faltaC - Number(abMonto) > 0 ? " (pasa al mes siguiente si no se paga este mes)" : ""}` : ""}</span>
+                        </div>
+                      ) : null}
+                      {abonos.length ? (
+                        <div style={{ fontSize: 11.5, color: C.slate, lineHeight: 1.6 }}>
+                          <b>Movimientos de {mesCorto(ym)}:</b> {abonos.map((a, i) => <span key={i} style={{ marginRight: 12 }}>{a.fecha} · <b style={{ color: a.monto < 0 ? C.red : C.green }}>{money(a.monto)}</b>{a.tipo === "ajuste" ? " (ajuste)" : a.tipo === "pagada" ? " (pagada)" : ""}</span>)}
+                        </div>
+                      ) : (!puedeEditar || completa ? <span style={{ fontSize: 11.5, color: C.slate }}>Sin movimientos este mes.</span> : null)}
+                    </td>
+                  </tr>
+                ) : null}
+                </React.Fragment>
               );
             })}
             <tr style={{ background: C.canvas }}>

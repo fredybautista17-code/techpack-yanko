@@ -62,9 +62,43 @@ export function cuotasConLiquidaciones(cuotas, pagosDocs) {
     .map((d) => ({ id: `plan_liquidaciones__${d.ym}`, nombre: "Liquidaciones de retiro", acreedor: "Plan del mes (pendientes en Nómina)", valorMensual: num(d.plan), diaPago: num(d.diaPago) >= 1 ? Math.min(31, Math.round(num(d.diaPago))) : 25, desde: d.ym, hasta: d.ym, auto: true }));
   return [...(cuotas || []), ...sinteticas];
 }
-export function cuotasDelMes(cuotas, ym) {
-  const lista = (cuotas || []).filter((c) => cuotaVigente(c, ym));
-  return { total: lista.reduce((s, c) => s + num(c.valorMensual), 0), lista };
+// (2026-11-21, a pedido de Fredy) Saldo que pasa al mes siguiente: si de una cuota de 700 solo se abonan 500, quedan 200 que se suman a la cuota del mes que sigue.
+// `arrastre` (opcional) = { [idCuota]: saldo } de arrastreCuotas(). Con él, cada cuota trae base (la cuota fija), arrastre (+ debe / − a favor) y valorMensual = base + arrastre
+// (mínimo 0); una cuota que ya terminó pero quedó debiendo sigue apareciendo (vencida: true) hasta que se pague. Sin `arrastre` el resultado es el de siempre.
+export function cuotasDelMes(cuotas, ym, arrastre) {
+  const vigentes = (cuotas || []).filter((c) => cuotaVigente(c, ym));
+  if (!arrastre) return { total: vigentes.reduce((s, c) => s + num(c.valorMensual), 0), lista: vigentes };
+  const lista = vigentes.map((c) => {
+    const a = num(arrastre[c.id]);
+    return a ? { ...c, base: num(c.valorMensual), arrastre: a, valorMensual: Math.max(0, num(c.valorMensual) + a) } : c;
+  });
+  (cuotas || []).forEach((c) => {
+    const a = num(arrastre[c && c.id]);
+    if (a > 0 && !cuotaVigente(c, ym)) lista.push({ ...c, base: 0, arrastre: a, valorMensual: a, vencida: true });
+  });
+  return { total: lista.reduce((s, c) => s + num(c.valorMensual), 0), lista, arrastre: lista.reduce((s, c) => s + (num(c.arrastre) ? num(c.valorMensual) - num(c.base) : 0), 0) };
+}
+// Desde qué mes se lleva la cuenta del saldo (antes de eso no hay registro de pagos confiable: todo lo no marcado figuraría como deuda).
+export const ARRASTRE_DESDE = "2026-11";
+const hoyYmBogota = () => new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 7);
+const esCuotaDeLiquidaciones = (c) => !!c.auto || !!c.vinculoLiquidaciones || /liquidaci/i.test(String(c.nombre || ""));
+// Saldo que llega al mes `ym` desde los meses anteriores ya cerrados: por cada mes, cuota + saldo anterior − lo abonado (pagosMapa["{idCuota}__{AAAA-MM}"].pagado).
+// Positivo = se debe; negativo = saldo a favor (se pagó de más). Solo cuenta desde ARRASTRE_DESDE y solo hasta el mes en curso (el futuro no tiene pagos). Las cuotas de
+// liquidaciones no entran: su valor ya es el total pendiente. Devuelve { [idCuota]: saldo } solo con las cuotas que tienen saldo.
+export function arrastreCuotas(cuotas, pagosMapa, ym, hoyYm = hoyYmBogota()) {
+  const out = {};
+  if (!ym || ym > hoyYm) return out;
+  (cuotas || []).forEach((c) => {
+    if (!c || !c.id || esCuotaDeLiquidaciones(c)) return;
+    let saldo = 0;
+    for (let m = ARRASTRE_DESDE; m < ym; m = sumarMes(m, 1)) {
+      const val = cuotaVigente(c, m) ? num(c.valorMensual) : 0;
+      const pag = pagosMapa && pagosMapa[`${c.id}__${m}`] ? num(pagosMapa[`${c.id}__${m}`].pagado) : 0;
+      saldo = Math.round(val + saldo - pag);
+    }
+    if (Math.abs(saldo) >= 1) out[c.id] = saldo;
+  });
+  return out;
 }
 // Cómo baja lo que se paga por cuotas a medida que terminan: [{ ym, total }] desde ym, solo cuando cambia.
 export function escalonCuotas(cuotas, ym, max = 60) {
@@ -187,9 +221,16 @@ export function promedioGastos(previos) {
 }
 
 // Todo junto para la pantalla.
-export function cuantoPagarMes({ ym, liquidaciones, gastosDocs, gastosPlanta, cuotas }) {
+// pagosMapa (opcional) = pagos de cuotas por «{idCuota}__{mes}»: con él, las cuotas del mes `ym` traen el saldo que viene de meses anteriores (solo el mes en curso o anteriores).
+export function cuantoPagarMes({ ym, liquidaciones, gastosDocs, gastosPlanta, cuotas, pagosMapa, hoyYm }) {
   const lista = mesesHasta(ym).map((m) => rubrosDelMes({ ym: m, liquidaciones, gastosDocs, gastosPlanta, cuotas }));
-  const actual = lista[lista.length - 1];
+  let actual = lista[lista.length - 1];
+  const saldos = pagosMapa ? arrastreCuotas(cuotas, pagosMapa, ym, hoyYm) : {};
+  if (Object.keys(saldos).length) {
+    const c = cuotasDelMes(cuotas, ym, saldos);
+    actual = { ...actual, cuotas: c.total, cuotasLista: c.lista, total: actual.total - actual.cuotas + c.total, arrastreCuotas: c.arrastre, saldosCuotas: saldos };
+    lista[lista.length - 1] = actual;
+  }
   const anterior = lista[lista.length - 2];
   const previos = lista.slice(0, -1);
   const pond = ponderadoDe(previos);
@@ -301,7 +342,7 @@ export function calendarioObligaciones(estimado, cuotasLista, ym, pagosMapa) {
   const sinDia = [];
   (cuotasLista || []).forEach((c) => {
     const pagado = num(pagosMapa && pagosMapa[`${c.id}__${ym}`] && pagosMapa[`${c.id}__${ym}`].pagado);
-    const fila = { dia: c.diaPago ? Math.min(Math.max(1, Number(c.diaPago) || 1), ult) : null, concepto: `Cuota · ${c.nombre}`, valor: num(c.valorMensual), pagado };
+    const fila = { dia: c.diaPago ? Math.min(Math.max(1, Number(c.diaPago) || 1), ult) : null, concepto: `Cuota · ${c.nombre}${num(c.arrastre) > 0 ? (c.vencida ? " (saldo de una cuota terminada)" : " (incluye saldo atrasado)") : ""}`, valor: num(c.valorMensual), pagado };
     if (fila.dia) conFecha.push(fila); else sinDia.push(fila);
   });
   [["Seguridad social", estimado.seguridad], ["Provisiones", estimado.provisiones], ["Gastos del Excel", estimado.gastosExcel === undefined ? estimado.gastos : estimado.gastosExcel], ["Gastos de Planta (repuestos, hilazas)", num(estimado.gastosPlanta)]].forEach(([concepto, valor]) => { if (valor > 0) sinDia.push({ dia: null, concepto, valor }); });
