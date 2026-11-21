@@ -1683,6 +1683,8 @@ const COLUMNAS_EXCEL_TRABAJADORES = [
   { campo: "areaTNS", label: "Área TNS", tipo: "catalogo_areaTNS" },
   { campo: "empleador", label: "Empleador", tipo: "catalogo_empleador" },
   { campo: "tipoNomina", label: "Tipo Nómina", tipo: "catalogo_tipoNomina" },
+  { campo: "eps", label: "EPS", tipo: "texto", alias: ["ENTIDAD EPS", "NOMBRE EPS", "EPS TRABAJADOR", "E P S", "ENTIDAD PROMOTORA DE SALUD"] },
+  { campo: "arlEntidad", label: "ARL (entidad)", tipo: "texto", alias: ["ARL", "NOMBRE ARL", "ENTIDAD ARL", "ADMINISTRADORA DE RIESGOS LABORALES"] },
   { campo: "tipoContrato", label: "Tipo de Contrato", tipo: "catalogo_tipoContrato" },
   { campo: "claseRiesgoARL", label: "Clase ARL", tipo: "catalogo_claseARL" },
   { campo: "sueldo", label: "Sueldo", tipo: "numero" },
@@ -1771,7 +1773,8 @@ function mapearColumnasExcel(filaEncabezado) {
   const indices = {};
   COLUMNAS_EXCEL_TRABAJADORES.forEach((col) => {
     const clave = normalizarNombreParaComparar(col.label).split(" (")[0];
-    indices[col.campo] = norm.findIndex((h) => h === clave);
+    const claves = [clave, ...(col.alias || []).map((a) => normalizarNombreParaComparar(a))];
+    indices[col.campo] = norm.findIndex((h) => claves.includes(h));
   });
   return indices;
 }
@@ -1979,6 +1982,8 @@ function TrabajadorModal({ trabajador, valoresIniciales, onSave, onClose, areasN
     tnsCodigo: base?.tnsCodigo || "",
     empleador: base?.empleador || "",
     claseRiesgoARL: base?.claseRiesgoARL || "",
+    eps: base?.eps || "",
+    arlEntidad: base?.arlEntidad || "",
     idHuellero: base?.idHuellero || "",
     exentoHuellero: base?.exentoHuellero ?? false,
     turnoId: base?.turnoId || "",
@@ -2074,6 +2079,8 @@ function TrabajadorModal({ trabajador, valoresIniciales, onSave, onClose, areasN
       tnsCodigo: form.tnsCodigo.trim(),
       empleador: form.empleador || "",
       claseRiesgoARL: form.claseRiesgoARL || "",
+      eps: form.eps.trim(),
+      arlEntidad: form.arlEntidad.trim(),
       idHuellero: form.idHuellero.trim(),
       exentoHuellero: !!form.exentoHuellero,
       turnoId: form.turnoId || "",
@@ -2102,6 +2109,8 @@ function TrabajadorModal({ trabajador, valoresIniciales, onSave, onClose, areasN
       <Field label="Nombre"><FInput value={form.nombre} onChange={set("nombre")} placeholder="Ej: Carlos Javier González" /></Field>
       <Field label="Cédula"><FInput value={form.cedula} onChange={set("cedula")} placeholder="Ej: 1004802413" /></Field>
       <Field label="Correo"><FInput type="email" value={form.correo} onChange={set("correo")} placeholder="Ej: nombre@gmail.com" /></Field>
+      <Field label="EPS (para cobrar incapacidades)"><FInput value={form.eps} onChange={set("eps")} placeholder="Ej: Nueva EPS, Sanitas, Coosalud…" /></Field>
+      <Field label="ARL (entidad)"><FInput value={form.arlEntidad} onChange={set("arlEntidad")} placeholder="Ej: Positiva, Sura, Colmena…" /></Field>
       <Field label="ID Huellero (opcional)"><FInput value={form.idHuellero} onChange={set("idHuellero")} placeholder="Ej: 114 -- el ID que trae el reporte del huellero" /></Field>
       <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
         Vincula a esta persona con su ID en el equipo biométrico -- así el Reporte de Asistencia cruza los días trabajados aunque el nombre esté escrito distinto. Se puede dejar vacío y vincular después, directo desde el Reporte de Asistencia.
@@ -7630,6 +7639,244 @@ function RetardosMesView({ retardos, trabajadores, cobrosManuales, mostrarDinero
           </div>
         </div>
       )}
+    </div>
+  );
+}
+// (2026-11-21, a pedido de Fredy) «Incapacidades por cobrar (EPS/ARL)»: solo trabajadores de Nómina Fiscal. La empresa adelanta la incapacidad
+// y luego la recobra a la EPS (origen General: del día 3 en adelante) o a la ARL (origen Laboral: del día 2 en adelante). Los días a cargo de la
+// empresa (1-2 en General, 1 en Laboral) no se recobran: salen aparte como costo. El valor de cada día es sueldo/30 por el porcentaje de la
+// regla de calcularIncapacidadPeriodo, nunca menos de SMMLV/30, y se cuentan días reales de calendario (la EPS paga por día real, así que el día 31 SÍ cuenta
+// aquí aunque la nómina use mes comercial de 30). El seguimiento (estado, radicado, valor recibido) se guarda en nomina_recobros_incapacidad (id = id de la ausencia).
+const ESTADOS_RECOBRO_INCAP = [
+  { id: "por_radicar", label: "Por radicar", color: C.amber, bg: C.amberBg },
+  { id: "radicada", label: "Radicada", color: C.blue, bg: C.blueBg },
+  { id: "pagada_parcial", label: "Pagada parcial", color: C.violet, bg: C.violetBg },
+  { id: "pagada", label: "Pagada", color: C.green, bg: C.greenBg },
+  { id: "rechazada", label: "Rechazada", color: C.red, bg: C.redBg },
+];
+function calcularRecobrosIncapacidad(ausencias, trabajadores) {
+  const out = [];
+  const piso = SMMLV_2026 / 30;
+  const porTrabajador = new Map();
+  (ausencias || []).forEach((a) => {
+    if (a.motivo !== "Incapacidad" || !a.trabajadorId || !a.fechaInicio || !a.fechaFin) return;
+    if (!porTrabajador.has(a.trabajadorId)) porTrabajador.set(a.trabajadorId, []);
+    porTrabajador.get(a.trabajadorId).push(a);
+  });
+  porTrabajador.forEach((regs, trabajadorId) => {
+    const t = (trabajadores || []).find((x) => x.id === trabajadorId);
+    if (!t || t.tipoNomina !== "Fiscal") return;
+    const baseDia = (Number(t.sueldo) || SMMLV_2026) / 30;
+    const vistos = new Set();
+    let finPrev = null;
+    let origenPrev = null;
+    let contador = 0;
+    regs.sort((x, y) => x.fechaInicio.localeCompare(y.fechaInicio)).forEach((a) => {
+      const origen = a.origenIncapacidad === "Laboral" ? "Laboral" : "General";
+      const continua = finPrev && origenPrev === origen && a.fechaInicio <= _incapSigDia(finPrev);
+      if (!continua) contador = 0;
+      const r = { id: a.id, ausencia: a, trabajador: t, origen, entidadTipo: origen === "Laboral" ? "ARL" : "EPS", desde: a.fechaInicio, hasta: a.fechaFin, dias: 0, diasEmpresa: 0, valorEmpresa: 0, diasEntidad: 0, valorRecobrar: 0, diaInicioEntidad: null };
+      listaDeDiasISO(a.fechaInicio, a.fechaFin).forEach((fecha) => {
+        if (vistos.has(fecha)) return;
+        vistos.add(fecha);
+        contador += 1;
+        let pct;
+        let quien;
+        if (origen === "Laboral") { pct = 1; quien = contador === 1 ? "empresa" : "arl"; }
+        else { pct = contador > 90 ? INCAP_PORC_GENERAL_TARDIO : INCAP_PORC_GENERAL; quien = contador <= 2 ? "empresa" : "eps"; }
+        const valorDia = Math.max(baseDia * pct, piso);
+        r.dias += 1;
+        if (quien === "empresa") { r.diasEmpresa += 1; r.valorEmpresa += valorDia; }
+        else { r.diasEntidad += 1; r.valorRecobrar += valorDia; if (!r.diaInicioEntidad) r.diaInicioEntidad = fecha; }
+      });
+      r.valorEmpresa = Math.round(r.valorEmpresa);
+      r.valorRecobrar = Math.round(r.valorRecobrar);
+      if (!finPrev || a.fechaFin > finPrev) finPrev = a.fechaFin;
+      origenPrev = origen;
+      out.push(r);
+    });
+  });
+  return out.sort((a, b) => (b.desde || "").localeCompare(a.desde || ""));
+}
+function SeguimientoRecobroModal({ fila, onClose, onGuardar }) {
+  const seg = fila.seg || {};
+  const [form, setForm] = useState({
+    estado: fila.estado,
+    entidad: seg.entidad || "",
+    numeroIncapacidad: seg.numeroIncapacidad || "",
+    numeroRadicado: seg.numeroRadicado || "",
+    fechaRadicado: seg.fechaRadicado || "",
+    valorRecibido: seg.valorRecibido != null && seg.valorRecibido !== "" ? String(seg.valorRecibido) : "",
+    fechaPago: seg.fechaPago || "",
+    observacion: seg.observacion || "",
+  });
+  const [error, setError] = useState("");
+  const [guardando, setGuardando] = useState(false);
+  const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+  function cambiarEstado(v) {
+    setForm((f) => {
+      const n = { ...f, estado: v };
+      if ((v === "radicada" || v === "pagada" || v === "pagada_parcial") && !n.fechaRadicado) n.fechaRadicado = today();
+      if (v === "pagada" && !n.valorRecibido) n.valorRecibido = String(fila.valorRecobrar);
+      if ((v === "pagada" || v === "pagada_parcial") && !n.fechaPago) n.fechaPago = today();
+      return n;
+    });
+    setError("");
+  }
+  async function guardar() {
+    const recibido = Number(String(form.valorRecibido).replace(/[^0-9.-]/g, "")) || 0;
+    if ((form.estado === "pagada" || form.estado === "pagada_parcial") && !(recibido > 0)) { setError("Escribe el valor que pagó la entidad."); return; }
+    if (form.estado === "pagada_parcial" && recibido >= fila.valorRecobrar) { setError("Si pagó todo, marca el estado «Pagada»."); return; }
+    setGuardando(true);
+    try {
+      await onGuardar(fila, { ...form, valorRecibido: recibido });
+      onClose();
+    } catch (err) {
+      setError(`No se pudo guardar: ${err?.message || err}`);
+    } finally {
+      setGuardando(false);
+    }
+  }
+  const mostrarPago = form.estado === "pagada" || form.estado === "pagada_parcial";
+  return (
+    <Modal title={`${fila.trabajador.nombre} · seguimiento del cobro`} onClose={onClose} width={500}>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 12, lineHeight: 1.5 }}>
+        Incapacidad {fila.origen.toLowerCase()} del {fmtFechaISO(fila.desde)} al {fmtFechaISO(fila.hasta)} · {fila.diasEntidad} día{fila.diasEntidad !== 1 ? "s" : ""} a cargo de la {fila.entidadTipo} ·
+        <b style={{ color: C.ink }}> a cobrar {fmtMoney(fila.valorRecobrar)}</b>
+      </div>
+      <Field label="Estado"><FSel value={form.estado} onChange={cambiarEstado} options={ESTADOS_RECOBRO_INCAP.map((e) => ({ value: e.id, label: e.label }))} /></Field>
+      <Field label={`${fila.entidadTipo} (entidad)`}><FInput value={form.entidad} onChange={set("entidad")} placeholder={fila.entidadFicha || `Sin ${fila.entidadTipo} en la ficha: escríbela aquí`} /></Field>
+      <Field label="N.º de incapacidad (del certificado)"><FInput value={form.numeroIncapacidad} onChange={set("numeroIncapacidad")} placeholder="Ej: 12345678" /></Field>
+      {form.estado !== "por_radicar" && (
+        <>
+          <Field label="Fecha de radicación"><FInput type="date" value={form.fechaRadicado} onChange={set("fechaRadicado")} /></Field>
+          <Field label="N.º de radicado en la entidad"><FInput value={form.numeroRadicado} onChange={set("numeroRadicado")} placeholder="Opcional" /></Field>
+        </>
+      )}
+      {mostrarPago && (
+        <>
+          <Field label="Valor recibido de la entidad"><FInput type="number" value={form.valorRecibido} onChange={set("valorRecibido")} placeholder={String(fila.valorRecobrar)} /></Field>
+          <Field label="Fecha del pago"><FInput type="date" value={form.fechaPago} onChange={set("fechaPago")} /></Field>
+        </>
+      )}
+      <Field label="Observación"><FInput value={form.observacion} onChange={set("observacion")} placeholder={form.estado === "rechazada" ? "Motivo del rechazo" : "Opcional"} /></Field>
+      {error && <div style={{ color: C.red, fontSize: 12, fontWeight: 700, marginBottom: 8 }}>{error}</div>}
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={guardar} disabled={guardando}>{guardando ? "Guardando…" : "Guardar"}</Btn>
+      </div>
+    </Modal>
+  );
+}
+function IncapacidadesPorCobrarView({ ausencias, trabajadores, recobros, onGuardarRecobro }) {
+  const [mes, setMes] = useState("");
+  const [estadoSel, setEstadoSel] = useState("");
+  const [entidadSel, setEntidadSel] = useState("");
+  const [busqueda, setBusqueda] = useState("");
+  const [editando, setEditando] = useState(null);
+  const [verAyuda, setVerAyuda] = useState(false);
+  const hoy = today();
+
+  const todas = calcularRecobrosIncapacidad(ausencias, trabajadores).map((r) => {
+    const seg = (recobros || []).find((x) => x.id === r.id) || null;
+    const estado = seg?.estado || "por_radicar";
+    const entidadFicha = (r.origen === "Laboral" ? r.trabajador.arlEntidad : r.trabajador.eps) || "";
+    const entidad = (seg?.entidad || "").trim() || entidadFicha;
+    const recibido = Number(seg?.valorRecibido) || 0;
+    const pendiente = estado === "pagada" || estado === "rechazada" ? 0 : Math.max(0, r.valorRecobrar - recibido);
+    const diasSinPago = (estado === "radicada" || estado === "pagada_parcial") && seg?.fechaRadicado ? Math.max(0, Math.floor((new Date(`${hoy}T12:00:00`) - new Date(`${seg.fechaRadicado}T12:00:00`)) / 86400000)) : null;
+    return { ...r, id: r.id, seg, estado, entidadFicha, entidad, recibido, pendiente, diasSinPago, numero: seg?.numeroIncapacidad || "" };
+  });
+  const meses = [...new Set(todas.map((r) => r.desde.slice(0, 7)))].sort().reverse();
+  const entidades = [...new Set(todas.map((r) => r.entidad).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  const q = normalizarBusqueda(busqueda);
+  const filtradas = todas.filter((r) => (!mes || r.desde.slice(0, 7) === mes) && (!q || normalizarBusqueda(r.trabajador.nombre).includes(q)) && (!entidadSel || r.entidad === entidadSel));
+  const lista = filtradas.filter((r) => r.valorRecobrar > 0 && (!estadoSel || r.estado === estadoSel));
+  const suma = (arr, f) => arr.reduce((s, r) => s + f(r), 0);
+  const porRadicar = lista.filter((r) => r.estado === "por_radicar");
+  const radicadas = lista.filter((r) => r.estado === "radicada" || r.estado === "pagada_parcial");
+  const recuperado = suma(lista, (r) => r.recibido);
+  const pendienteTotal = suma(lista, (r) => r.pendiente);
+  const rechazadas = lista.filter((r) => r.estado === "rechazada");
+  const costoEmpresa = suma(filtradas, (r) => r.valorEmpresa);
+  const sinEntidad = lista.filter((r) => !r.entidad);
+
+  async function guardarSeguimiento(fila, datos) {
+    await onGuardarRecobro(fila, datos);
+  }
+  async function exportarExcel() {
+    const enc = ["Trabajador", "Cédula", "Entidad", "Tipo", "N.º incapacidad", "Origen", "Desde", "Hasta", "Días totales", "Días a cargo de la entidad", "Valor a cobrar", "Estado", "Fecha radicación", "N.º radicado", "Valor recibido", "Pendiente", "Fecha pago", "Observación"];
+    const filas = lista.map((r) => [r.trabajador.nombre, r.trabajador.cedula || "", r.entidad, r.entidadTipo, r.numero, r.origen, r.desde, r.hasta, r.dias, r.diasEntidad, r.valorRecobrar,
+      ESTADOS_RECOBRO_INCAP.find((e) => e.id === r.estado)?.label || r.estado, r.seg?.fechaRadicado || "", r.seg?.numeroRadicado || "", r.recibido, r.pendiente, r.seg?.fechaPago || "", r.seg?.observacion || ""]);
+    const total = ["TOTAL", "", "", "", "", "", "", "", suma(lista, (r) => r.dias), suma(lista, (r) => r.diasEntidad), suma(lista, (r) => r.valorRecobrar), "", "", "", recuperado, pendienteTotal, "", ""];
+    await descargarExcel(`Incapacidades_por_cobrar${mes ? "_" + mes : ""}.xlsx`, "Por cobrar", [["INCAPACIDADES POR COBRAR A EPS / ARL — NÓMINA FISCAL"], [], enc, ...filas, [], total]);
+  }
+  const tarjeta = (label, valor, sub, color, fondo) => (
+    <div style={{ background: fondo || C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: "14px 16px" }}>
+      <div style={{ fontSize: 10.5, fontWeight: 700, color: C.slate, letterSpacing: "0.04em", textTransform: "uppercase" }}>{label}</div>
+      <div style={{ fontSize: 22, fontWeight: 900, color, margin: "6px 0 2px", lineHeight: 1.1 }}>{valor}</div>
+      <div style={{ fontSize: 11.5, color: C.slate, fontWeight: 600 }}>{sub}</div>
+    </div>
+  );
+  const pill = (id) => { const e = ESTADOS_RECOBRO_INCAP.find((x) => x.id === id) || ESTADOS_RECOBRO_INCAP[0]; return <span style={{ display: "inline-block", padding: "2px 9px", borderRadius: 999, background: e.bg, color: e.color, fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>{e.label}</span>; };
+  const selStyle = { padding: "9px 12px", borderRadius: 10, border: `1px solid ${C.border}`, background: C.white, fontSize: 13, color: C.ink };
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+        <div style={{ width: 220 }}><FInput value={busqueda} onChange={setBusqueda} placeholder="Buscar trabajador…" icon="🔍" /></div>
+        <select value={mes} onChange={(e) => setMes(e.target.value)} style={selStyle}>
+          <option value="">Todos los meses</option>
+          {meses.map((m) => <option key={m} value={m}>{fmtMesLabel(m)}</option>)}
+        </select>
+        <select value={estadoSel} onChange={(e) => setEstadoSel(e.target.value)} style={selStyle}>
+          <option value="">Todos los estados</option>
+          {ESTADOS_RECOBRO_INCAP.map((e) => <option key={e.id} value={e.id}>{e.label}</option>)}
+        </select>
+        <select value={entidadSel} onChange={(e) => setEntidadSel(e.target.value)} style={selStyle}>
+          <option value="">Todas las entidades</option>
+          {entidades.map((e) => <option key={e} value={e}>{e}</option>)}
+        </select>
+        <span onClick={() => setVerAyuda(!verAyuda)} style={{ fontSize: 12, fontWeight: 700, color: C.blue, background: C.blueBg, borderRadius: 999, padding: "6px 12px", cursor: "pointer" }}>ℹ️ Cómo se calcula {verAyuda ? "▴" : "▾"}</span>
+        <div style={{ marginLeft: "auto" }}><Btn variant="success" small onClick={exportarExcel} disabled={!lista.length}>📥 Excel para radicar</Btn></div>
+      </div>
+      {verAyuda && (
+        <div style={{ fontSize: 12, color: C.ink, background: C.blueBg, borderRadius: 10, padding: "12px 14px", marginBottom: 14, maxWidth: 880, lineHeight: 1.6 }}>
+          Solo trabajadores de Nómina Fiscal con una ausencia de motivo «Incapacidad». La empresa adelanta el pago y lo recobra: en origen General, a la EPS desde el día 3 (66,67 % hasta el día 90 y 50 % del 91 en adelante); en origen Laboral, a la ARL desde el día 2 (100 %). Los días a cargo de la empresa (1-2 en General, 1 en Laboral) no se recobran y salen como costo. Cada día vale sueldo ÷ 30 por ese porcentaje, nunca menos de SMMLV ÷ 30, y se cuentan días reales de calendario (incluido el 31). Las prórrogas (la incapacidad que empieza al día siguiente de otra del mismo origen) siguen el mismo conteo. La entidad sale de la ficha del trabajador (EPS o ARL); también puedes escribirla en el seguimiento de cada incapacidad.
+        </div>
+      )}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(175px, 1fr))", gap: 12, marginBottom: 14 }}>
+        {tarjeta("Por radicar", fmtMoney(suma(porRadicar, (r) => r.valorRecobrar)), `${porRadicar.length} incapacidad${porRadicar.length !== 1 ? "es" : ""}`, C.amber, porRadicar.length ? C.amberBg : undefined)}
+        {tarjeta("Radicadas, esperando pago", fmtMoney(suma(radicadas, (r) => r.pendiente)), `${radicadas.length} incapacidad${radicadas.length !== 1 ? "es" : ""}`, C.blue)}
+        {tarjeta("Recuperado", fmtMoney(recuperado), "ya pagado por EPS/ARL", C.green, recuperado ? C.greenBg : undefined)}
+        {tarjeta("Pendiente por cobrar", fmtMoney(pendienteTotal), "lo que aún falta recibir", C.red)}
+        {tarjeta("Rechazadas", fmtMoney(suma(rechazadas, (r) => r.valorRecobrar)), `${rechazadas.length} incapacidad${rechazadas.length !== 1 ? "es" : ""}`, C.slate)}
+        {tarjeta("Costo para la empresa", fmtMoney(costoEmpresa), "días 1-2 (no se recobran)", C.violet)}
+      </div>
+      {sinEntidad.length > 0 && (
+        <div style={{ fontSize: 11.5, color: C.amber, background: C.amberBg, borderRadius: 10, padding: "8px 12px", marginBottom: 12 }}>
+          ⚠️ {sinEntidad.length} incapacidad{sinEntidad.length !== 1 ? "es" : ""} sin EPS/ARL en la ficha del trabajador: {[...new Set(sinEntidad.map((r) => r.trabajador.nombre))].join(", ")}. Cárgala en Trabajadores (o con la importación por Excel) o escríbela en el seguimiento.
+        </div>
+      )}
+      <Tabla
+        vacio="No hay incapacidades de Nómina Fiscal por cobrar con estos filtros."
+        onRowClick={(f) => setEditando(f)}
+        filas={lista}
+        columnas={[
+          { key: "trabajador", label: "Trabajador", render: (f) => <b>{f.trabajador.nombre}</b> },
+          { key: "entidad", label: "Entidad", render: (f) => (f.entidad ? <span>{f.entidad} <span style={{ color: C.slate, fontSize: 11 }}>· {f.entidadTipo}</span></span> : <span style={{ color: C.amber, fontWeight: 700 }}>Sin {f.entidadTipo}</span>) },
+          { key: "numero", label: "N.º incapacidad", render: (f) => f.numero || <span style={{ color: C.slate }}>—</span> },
+          { key: "periodo", label: "Período", render: (f) => `${fmtFechaISO(f.desde)} – ${fmtFechaISO(f.hasta)}` },
+          { key: "dias", label: "Días", align: "center", render: (f) => (<span title={`${f.diasEmpresa} día(s) a cargo de la empresa`}>{f.dias} <span style={{ color: C.slate, fontSize: 11 }}>({f.diasEntidad} {f.entidadTipo})</span></span>) },
+          { key: "valorRecobrar", label: "A cobrar", align: "right", render: (f) => <b style={{ color: C.ink }}>{fmtMoney(f.valorRecobrar)}</b> },
+          { key: "estado", label: "Estado", render: (f) => pill(f.estado) },
+          { key: "recibido", label: "Recibido", align: "right", render: (f) => (f.recibido > 0 ? <span style={{ color: C.green, fontWeight: 700 }}>{fmtMoney(f.recibido)}</span> : <span style={{ color: C.slate }}>—</span>) },
+          { key: "pendiente", label: "Pendiente", align: "right", render: (f) => (f.pendiente > 0 ? <span style={{ color: C.red, fontWeight: 700 }}>{fmtMoney(f.pendiente)}</span> : <span style={{ color: C.slate }}>—</span>) },
+          { key: "diasSinPago", label: "Sin pago", align: "right", render: (f) => (f.diasSinPago != null ? <span style={{ color: f.diasSinPago > 30 ? C.red : C.slate, fontWeight: f.diasSinPago > 30 ? 700 : 400 }}>{f.diasSinPago} d</span> : "—") },
+        ]}
+      />
+      <div style={{ fontSize: 11.5, color: C.slate, marginTop: 8 }}>Haz clic en una fila para registrar la radicación, el pago o el rechazo.</div>
+      {editando && <SeguimientoRecobroModal fila={editando} onClose={() => setEditando(null)} onGuardar={guardarSeguimiento} />}
     </div>
   );
 }
@@ -17674,6 +17921,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   const [anomaliasHuellero, setAnomaliasHuellero] = useState([]);
   const [retardosHuellero, setRetardosHuellero] = useState([]);
   const [retardosListos, setRetardosListos] = useState(false);
+  const [recobrosIncap, setRecobrosIncap] = useState([]);
   const [cobrosListos, setCobrosListos] = useState(false);
   const sincronizandoRetardosRef = useRef(false);
   const [liquidacionesF, setLiquidacionesF] = useState([]);
@@ -17758,6 +18006,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
       onSnapshot(collection(db, "nomina_deducciones_trabajador"), (snap) => setDeduccionesTrabajador(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "dado_por_cumplido_lotes"), (snap) => setLotesConCobros(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_cobros_manuales"), (snap) => { setCobrosManuales(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); setCobrosListos(true); }),
+      onSnapshot(collection(db, "nomina_recobros_incapacidad"), (snap) => setRecobrosIncap(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_reposiciones"), (snap) => setReposiciones(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_ajustes_destajo"), (snap) => setAjustesDestajo(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_causacion_manual"), (snap) => setCausacionManual(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
@@ -17918,6 +18167,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
         { id: "historial_asistencia_area", icon: "🗓️", label: "Historial de Asistencia" },
         { id: "estadisticas_permisos", icon: "📊", label: "Estadísticas de Permisos" },
         { id: "retardos_mes", icon: "🕒", label: "Retardos del mes" },
+        { id: "incapacidades_cobrar", icon: "🏥", label: "Incapacidades por cobrar" },
       ]
     : [
         { id: "dashboard", icon: "◉", label: "Inicio" },
@@ -17968,6 +18218,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           ] },
         { group: "Liquidaciones", icon: "🧮", items: [
             { id: "liquidacion_retiro", icon: "📄", label: "Liquidación de Trabajador" },
+            { id: "incapacidades_cobrar", icon: "🏥", label: "Incapacidades por cobrar" },
             { id: "dias_no_justificados", icon: "📋", label: "Días No Justificados" },
             { id: "provision_liquidaciones", icon: "📊", label: "Provisión (hasta hoy)" },
             { id: "prestamos", icon: "💵", label: "Préstamos" },
@@ -18215,6 +18466,25 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
       cobrado: false,
       periodoIdCobrado: "",
       ...(existente ? {} : { creadoPor: currentUser?.name || currentUser?.username || "", creadoEn: new Date().toISOString() }),
+    });
+  }
+  // (2026-11-21, a pedido de Fredy) Seguimiento del cobro de una incapacidad a la EPS/ARL (ver IncapacidadesPorCobrarView).
+  async function guardarRecobroIncapacidad(fila, datos) {
+    await fsSave("nomina_recobros_incapacidad", fila.id, {
+      ausenciaId: fila.id,
+      trabajadorId: fila.trabajador.id,
+      trabajadorNombre: fila.trabajador.nombre || "",
+      estado: datos.estado,
+      entidad: (datos.entidad || "").trim(),
+      numeroIncapacidad: (datos.numeroIncapacidad || "").trim(),
+      numeroRadicado: (datos.numeroRadicado || "").trim(),
+      fechaRadicado: datos.estado === "por_radicar" ? "" : datos.fechaRadicado || "",
+      valorRecibido: Number(datos.valorRecibido) || 0,
+      fechaPago: datos.estado === "pagada" || datos.estado === "pagada_parcial" ? datos.fechaPago || "" : "",
+      observacion: (datos.observacion || "").trim(),
+      valorACobrar: fila.valorRecobrar,
+      actualizadoPor: currentUser?.name || currentUser?.username || "",
+      actualizadoEn: new Date().toISOString(),
     });
   }
   async function guardarAusencia(a) {
@@ -18755,6 +19025,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "reposicion_horas" && <ReposicionHorasView trabajadores={trabajadoresVisibles} ausencias={ausenciasVisibles} reposiciones={reposiciones} horasExtras={horasExtras} cobrosManuales={cobrosManuales} mostrarDinero={!areaLider} onRegistrar={registrarReposicionHoras} onQuitar={quitarReposicionHoras} />}
           {subView === "anomalias_huellero" && puedeVerAnomaliasHuellero && <AnomaliasHuelleroView anomalias={anomaliasVisibles} retardos={retardosVisibles} onAjustar={ajustarAnomaliaHuellero} />}
           {subView === "historial_asistencia_area" && <HistorialAsistenciaAreaView areasNomina={areasNomina} trabajadores={trabajadoresVisibles} areaLider={areaLider} diasTrabajados={diasTrabajadosHuellero} faltas={faltasSinJustificar} ausencias={ausenciasVisibles} anomalias={anomaliasVisibles} retardos={retardosVisibles} turnos={turnos} />}
+          {subView === "incapacidades_cobrar" && !areaLider && <IncapacidadesPorCobrarView ausencias={ausencias} trabajadores={trabajadores} recobros={recobrosIncap} onGuardarRecobro={guardarRecobroIncapacidad} />}
           {subView === "retardos_mes" && <RetardosMesView retardos={retardosVisibles} trabajadores={trabajadoresVisibles} cobrosManuales={cobrosManuales} mostrarDinero={!areaLider} areaLider={areaLider || ""} onSincronizar={areaLider ? undefined : sincronizarCobrosRetardos} />}
           {subView === "estadisticas_permisos" && <EstadisticasPermisosView areasNomina={areasNomina} trabajadores={trabajadoresVisibles} ausencias={ausenciasVisibles} faltas={areaLider ? faltasSinJustificar.filter((f) => areaDeRegistro(f, trabajadoresVisibles) === areaLider) : faltasSinJustificar} retardos={retardosVisibles} turnos={turnos} reposiciones={reposiciones} cobrosManuales={cobrosManuales} mostrarDinero={!areaLider} areaLider={areaLider || ""} />}
           {subView === "tabulador_asistencia" && <TabuladorAsistenciaView areasNomina={areasNomina} trabajadores={trabajadoresVisibles} areaLider={areaLider} turnos={turnos} ausencias={ausenciasVisibles} diasTrabajados={diasTrabajadosHuellero} faltas={faltasSinJustificar} onGuardar={guardarAsistenciaManual} />}
