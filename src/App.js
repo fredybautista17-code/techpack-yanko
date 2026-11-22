@@ -45,6 +45,7 @@ const MiDiaNominaStandalone = React.lazy(() => import("./modulo-planeacion").the
 const MiDiaTarjetasStandalone = React.lazy(() => import("./mi-dia-tarjetas"));
 // (2026-11-22, a pedido de Fredy) Ficha de inicio del pedido: semáforo de 9 pasos + asistente + bibliotecas de colores y vinilos (dentro de cada preorden aprobada).
 const FichaInicioPreorden = React.lazy(() => import("./ficha-inicio"));
+const SeguimientoPedido = React.lazy(() => import("./ficha-inicio").then((m) => ({ default: m.SeguimientoPedido })));
 const FinancieraStandalone = React.lazy(() => import("./modulo-financiera").then((m) => ({ default: m.FinancieraStandalone })));
 const ModuloPlanta = React.lazy(() => import("./modulo-planta"));
 const ModuloBodega = React.lazy(() => import("./modulo-bodega"));
@@ -822,9 +823,9 @@ const INIT_CONFIG = {
   ],
   clientes: [],
 };
-const PEDIDO_STAGES = [
-  "Hoja de Vida","Verificación de Colorido","Carta de Combinaciones, Textiles e Insumos","Verificación de Ilustración","Muestra","Revisión de Insumos","Cotización","Ficha Técnica","Pedido en Busint","Explosión de Materiales","Corte","Control de Muestra de Corte","Bodega de Materia Prima","Confección","Inventario de Procesos","Semiterminado","Despacho",
-];
+// (2026-11-22, a pedido de Fredy) Las 9 etapas del Seguimiento del Pedido (las mismas del semáforo de la Ficha de inicio); el candado de corte está en ficha-inicio.jsx.
+// Las claves conservan el nombre viejo cuando ya existía, para no perder lo ya marcado.
+const PEDIDO_STAGES = ["Hoja de Vida", "Ficha de inicio", "Combinaciones de vinilo", "Contramuestra", "Alertas de insumos", "Ficha Técnica", "Explosión de Materiales", "Tela en bodega", "Corte"];
 const STATUS = {
   borrador: { label: "Borrador", color: T.slate, bg: "#EDEDF2" },
   en_proceso: { label: "En proceso", color: T.denim, bg: T.denimBg },
@@ -17728,7 +17729,7 @@ function compararTallas(a, b) {
   return (ka[0] - kb[0]) || (ka[1] - kb[1]) || ka[2].localeCompare(kb[2]);
 }
 
-function PedidoDetailView({ pedido, onBack, onUpdatePedido, soloLectura }) {
+function PedidoDetailView({ pedido, onBack, onUpdatePedido, soloLectura, preordenes, currentUser }) {
   const [showConfirmCumplido, setShowConfirmCumplido] = useState(false);
   const [refsAbiertas, setRefsAbiertas] = useState({}); // referencia -> abierta (muestra sus colores)
   const [filtroRefs, setFiltroRefs] = useState("todas"); // (2026-11-03) todas | cortar (con faltante) | cortadas (completas)
@@ -17744,9 +17745,6 @@ function PedidoDetailView({ pedido, onBack, onUpdatePedido, soloLectura }) {
   const totalCortado = avDet.cortado; // lo mayor entre ATLAS, Planeación, Busint y lo facturado (por referencia)
   const pct = avDet.total > 0 ? Math.round((totalCortado / avDet.total) * 100) : 0;
   const sem = semaforo2(pedido.fechaDespacho);
-  const etapasHechas = Object.values(pedido.seguimiento || {}).filter(Boolean).length;
-  const etapasPct = Math.round((etapasHechas / PEDIDO_STAGES.length) * 100);
-  function toggleEtapa(stage) { if (soloLectura) return; onUpdatePedido({ ...pedido, seguimiento: { ...pedido.seguimiento, [stage]: !pedido.seguimiento?.[stage] } }); }
   // "cerrado" es el único estado de cierre desde el rediseño (antes había
   // "cumplido"/"cancelado_busint"/"venta_perdida_busint" por separado). Se
   // guarda el motivo en motivoCierre — "manual" cuando se marca aquí a
@@ -17915,29 +17913,10 @@ function PedidoDetailView({ pedido, onBack, onUpdatePedido, soloLectura }) {
           );
         })()}
       </div>
-      <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, padding: 20 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-          <div style={{ fontWeight: 700, fontSize: 14, color: T.ink }}>Seguimiento del Pedido</div>
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <span style={{ fontSize: 12, color: T.slate }}>{etapasHechas}/{PEDIDO_STAGES.length} etapas</span>
-            <span style={{ padding: "4px 12px", background: etapasPct === 100 ? T.jadeBg : T.denimBg, color: etapasPct === 100 ? T.jade : T.denim, borderRadius: 20, fontWeight: 800, fontSize: 13 }}>{etapasPct}%</span>
-          </div>
-        </div>
-        <div style={{ height: 8, borderRadius: 4, background: T.border, overflow: "hidden", marginBottom: 16 }}>
-          <div style={{ height: "100%", width: `${etapasPct}%`, background: etapasPct === 100 ? T.jade : T.denim, transition: "width 0.3s" }} />
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: 8 }}>
-          {PEDIDO_STAGES.map((stage, i) => {
-            const done = !!pedido.seguimiento?.[stage];
-            return (
-              <label key={stage} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: done ? T.jadeBg : T.canvas, border: `1px solid ${done ? T.jade + "44" : T.border}`, borderRadius: 8, cursor: soloLectura ? "default" : "pointer", fontSize: 12 }}>
-                <input type="checkbox" checked={done} disabled={soloLectura} onChange={() => toggleEtapa(stage)} style={{ width: 16, height: 16 }} />
-                <span style={{ color: done ? T.jade : T.ink, fontWeight: done ? 700 : 500 }}>{i + 1}. {stage}</span>
-              </label>
-            );
-          })}
-        </div>
-      </div>
+      {/* (2026-11-22, a pedido de Fredy) 9 etapas + candado de corte + dónde va el pedido y cada referencia (ver SeguimientoPedido en ficha-inicio.jsx) */}
+      <React.Suspense fallback={null}>
+        <SeguimientoPedido pedido={pedido} preordenes={preordenes} currentUser={currentUser} soloLectura={soloLectura} yaCortado={totalCortado > 0} onUpdatePedido={onUpdatePedido} />
+      </React.Suspense>
     </div>
   );
 }
@@ -22068,7 +22047,7 @@ function AppInner() {
                 soloLectura={esClienteSoloLectura}
               />
             )}
-            {view === "pedido-detail" && selPedido && <PedidoDetailView pedido={selPedido} onBack={() => setView("pedidos")} onUpdatePedido={updatePedido} soloLectura={esClienteSoloLectura} />}
+            {view === "pedido-detail" && selPedido && <PedidoDetailView pedido={selPedido} onBack={() => setView("pedidos")} onUpdatePedido={updatePedido} soloLectura={esClienteSoloLectura} preordenes={preordenesVisibles} currentUser={currentUser} />}
             {view === "pedidos_admin" && currentUser?.isAdmin && <AdminPedidosView pedidoConfig={pedidoConfig} onSave={savePedidoConfig} config={config} onSaveConfig={saveConfig} />}
             {view === "pedidos_clientes" && <ClientesPedidosView clientes={config.clientes} pedidos={pedidosVisibles} protos={protosVisibles} capsulas={capsulasVisibles} />}
             {view === "explosion_materiales" && canAccessExplosionMateriales && (

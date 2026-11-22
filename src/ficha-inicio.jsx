@@ -14,6 +14,7 @@ import {
   COL_FICHA, COL_COLORES, COL_VINILOS, MAX_COLORES, PASOS_SEMAFORO, PASO_FICHA, PASOS_MANUALES, TIPOS_VINILO, NOMBRES_ASISTENTE,
   idFicha, num, plano, tallasDeRango, distribuirPorTalla, completarFicha, totalPreorden, totalFicha, faltantesPaso, fichaCompleta,
   pasosDeReferencia, resumenSemaforo, parsearColoresPegados, snapshotColor, snapshotVinilo,
+  ETAPAS_PEDIDO, ETAPA_CORTE, itemsDePedido, estadoEtapasPedido,
 } from "./ficha-inicio-calculo";
 
 const C = { ink: "#1A1A2E", slate: "#5A5A7A", border: "#E8E2DB", canvas: "#F7F4F0", white: "#FFFFFF", green: "#2D9E6B", greenBg: "#EBF7F2", amber: "#C47C1A", amberBg: "#FBF3E4", amberLine: "#E3A33A", red: "#E85D4A", redBg: "#FDF0EE", blue: "#3D6B9E", blueBg: "#EBF1F7", grey: "#B9B3A8", greyBg: "#EFEBE4" };
@@ -556,6 +557,133 @@ export default function FichaInicioPreorden({ preorden, config, currentUser, pue
       )}
       {itemAbierto && <AsistenteFicha preorden={preorden} item={itemAbierto} guardada={porItem[itemAbierto.itemId]} config={config} usuario={currentUser?.name || ""} onClose={() => setAbierta(null)} />}
       {biblio && <BibliotecasFicha puedeEditar={puedeEditar} onClose={() => setBiblio(false)} />}
+    </div>
+  );
+}
+
+// ───────────────────────── SEGUIMIENTO DEL PEDIDO (9 etapas + candado de corte) ─────────────────────────
+// (2026-11-22, a pedido de Fredy) Reemplaza la lista de 17 etapas del detalle del Pedido. Dice dónde va el pedido y dónde va cada referencia (su semáforo de la ficha),
+// y NO deja marcar «Corte» mientras falten las 8 etapas anteriores (el administrador puede saltarlo dejando el motivo; los pedidos que ya tienen corte no se bloquean).
+function useFichasDePreordenes(ids, activo) {
+  const [mapa, setMapa] = useState({});
+  const clave = ids.join("|");
+  useEffect(() => {
+    if (!activo || !ids.length) { setMapa({}); return undefined; }
+    const db = dbDe();
+    const bajas = ids.map((id) => onSnapshot(query(collection(db, COL_FICHA), where("preordenId", "==", id)), (s) => {
+      setMapa((m) => {
+        const n = { ...m };
+        Object.keys(n).forEach((k) => { if (n[k].preordenId === id) delete n[k]; });
+        s.docs.forEach((d) => { n[d.id] = d.data(); });
+        return n;
+      });
+    }, () => {}));
+    return () => bajas.forEach((b) => b());
+  }, [clave, activo]); // eslint-disable-line
+  return mapa;
+}
+
+export function SeguimientoPedido({ pedido, preordenes, currentUser, soloLectura, yaCortado, onUpdatePedido }) {
+  const esCliente = currentUser?.role === "Cliente" && !currentUser?.isAdmin;
+  const esAdmin = !!currentUser?.isAdmin;
+  const enlaces = useMemo(() => (esCliente ? [] : itemsDePedido(pedido, preordenes)), [esCliente, pedido, preordenes]);
+  const ids = useMemo(() => [...new Set(enlaces.map((e) => e.preorden.id))], [enlaces]);
+  const fichas = useFichasDePreordenes(ids, !esCliente);
+  const refs = useMemo(() => enlaces.map(({ preorden, item }) => {
+    const f = completarFicha(fichas[idFicha(preorden.id, item.itemId)], item, preorden);
+    const r = pasosDeReferencia(f, item);
+    return { preorden, item, estados: r.estados, porRevisar: r.porRevisar };
+  }), [enlaces, fichas]);
+  const est = estadoEtapasPedido(pedido, refs.map((r) => r.estados), yaCortado);
+  const pct = Math.round((est.total / ETAPAS_PEDIDO.length) * 100);
+  const bloqueado = !soloLectura && !est.corteLibre;
+  const corteSinCumplir = est.hechas[ETAPA_CORTE] && !est.puedeCortar && !yaCortado;
+
+  function guardar(seg, extra) { onUpdatePedido({ ...pedido, seguimiento: { ...(pedido.seguimiento || {}), ...seg }, ...(extra || {}) }); }
+  function toggle(i) {
+    if (soloLectura || est.derivada[i]) return;
+    const k = ETAPAS_PEDIDO[i];
+    const marcar = !pedido.seguimiento?.[k];
+    if (i === ETAPA_CORTE && marcar && !est.corteLibre) {
+      if (!esAdmin) return;
+      const motivo = window.prompt(`Faltan etapas (${est.faltan.map((x) => PASOS_SEMAFORO[x]).join(", ")}). Como administrador puedes habilitar el corte dejando el motivo:`);
+      if (!motivo || !motivo.trim()) return;
+      guardar({ [k]: true }, { seguimientoExcepcion: { motivo: motivo.trim(), por: currentUser?.name || "", en: new Date().toISOString() } });
+      return;
+    }
+    guardar({ [k]: marcar });
+  }
+  const nombre = (i) => PASOS_SEMAFORO[i];
+  const caja = { background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 20 };
+  const exc = pedido.seguimientoExcepcion;
+
+  return (
+    <div style={caja}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+        <div style={{ fontWeight: 700, fontSize: 14, color: C.ink }}>Seguimiento del Pedido</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <span style={{ fontSize: 12, color: C.slate }}>{est.total}/{ETAPAS_PEDIDO.length} etapas</span>
+          <span style={{ padding: "4px 12px", background: pct === 100 ? C.greenBg : C.blueBg, color: pct === 100 ? C.green : C.blue, borderRadius: 20, fontWeight: 800, fontSize: 13 }}>{pct}%</span>
+        </div>
+      </div>
+      <div style={{ height: 8, borderRadius: 4, background: C.border, overflow: "hidden", marginBottom: 14 }}><div style={{ height: "100%", width: `${pct}%`, background: pct === 100 ? C.green : C.blue, transition: "width .3s" }} /></div>
+
+      {yaCortado ? (
+        <div style={{ background: C.blueBg, color: C.blue, borderRadius: 10, padding: "9px 12px", fontSize: 12.5, fontWeight: 700, marginBottom: 12 }}>✂ Este pedido ya tiene corte: el candado de corte no se aplica.</div>
+      ) : est.puedeCortar ? (
+        <div style={{ background: C.greenBg, color: C.green, borderRadius: 10, padding: "9px 12px", fontSize: 12.5, fontWeight: 700, marginBottom: 12 }}>✅ Puede salir a cortar: las 8 etapas anteriores están hechas.</div>
+      ) : (
+        <div style={{ background: C.redBg, color: C.red, borderRadius: 10, padding: "9px 12px", fontSize: 12.5, fontWeight: 700, marginBottom: 12, lineHeight: 1.5 }}>
+          🚫 No puede salir a cortar todavía. Va en: <b>{est.siguiente >= 0 ? `${est.siguiente + 1}. ${nombre(est.siguiente)}` : "—"}</b> · Faltan: {est.faltan.map((i) => `${i + 1}. ${nombre(i)}`).join(" · ")}
+        </div>
+      )}
+      {corteSinCumplir && <div style={{ background: C.amberBg, color: C.amber, borderRadius: 10, padding: "9px 12px", fontSize: 12.5, fontWeight: 700, marginBottom: 12 }}>⚠ «Corte» está marcado pero faltan etapas anteriores{exc ? ` (habilitado por ${exc.por || "el administrador"}: ${exc.motivo})` : ""}.</div>}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: 8 }}>
+        {ETAPAS_PEDIDO.map((k, i) => {
+          const done = est.hechas[i];
+          const esCorte = i === ETAPA_CORTE;
+          const deshabilitado = soloLectura || est.derivada[i] || (esCorte && bloqueado && !esAdmin);
+          return (
+            <label key={k} title={est.derivada[i] ? "Se marca sola según la Ficha de inicio de las referencias del pedido" : esCorte && bloqueado ? "Faltan etapas anteriores: no puede salir a cortar" : ""} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: done ? C.greenBg : C.canvas, border: `1px solid ${done ? `${C.green}44` : C.border}`, borderRadius: 8, fontSize: 12.5, cursor: deshabilitado ? "not-allowed" : "pointer", opacity: esCorte && bloqueado && !esAdmin ? 0.55 : 1 }}>
+              <input type="checkbox" checked={done} disabled={deshabilitado} onChange={() => toggle(i)} style={{ width: 16, height: 16 }} />
+              <span style={{ color: done ? C.green : C.ink, fontWeight: done ? 700 : 500 }}>{i + 1}. {nombre(i)}{est.derivada[i] ? " 🔗" : ""}{esCorte && bloqueado ? " 🔒" : ""}</span>
+            </label>
+          );
+        })}
+      </div>
+      <div style={{ fontSize: 11.5, color: C.slate, fontWeight: 600, marginTop: 8 }}>🔗 se marca sola cuando todas las referencias del pedido la tienen lista en la Ficha de inicio (Hoja de vida, Ficha de inicio, Contramuestra y Ficha técnica). 🔒 el corte se habilita al completar las etapas 1 a 8.</div>
+
+      {!esCliente && (
+        <div style={{ marginTop: 16 }}>
+          <div style={{ fontWeight: 700, fontSize: 13, color: C.ink, marginBottom: 8 }}>Dónde va cada referencia</div>
+          {!refs.length ? (
+            <div style={{ background: C.canvas, border: `1px dashed ${C.border}`, borderRadius: 10, padding: "9px 12px", fontSize: 12.5, color: C.slate, fontWeight: 600 }}>Este pedido no está enlazado a una preorden aprobada: las etapas se marcan a mano.</div>
+          ) : (
+            <div style={{ overflowX: "auto", border: `1px solid ${C.border}`, borderRadius: 12 }}>
+              <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 760 }}>
+                <thead><tr>
+                  <th style={{ padding: "7px 10px", fontSize: 10, textTransform: "uppercase", color: C.slate, textAlign: "left" }}>Referencia</th>
+                  {ETAPAS_PEDIDO.map((k, i) => <th key={k} style={{ padding: "7px 3px", fontSize: 10, textTransform: "uppercase", color: C.slate, textAlign: "center", lineHeight: 1.2 }} title={nombre(i)}>{i + 1}</th>)}
+                  <th style={{ padding: "7px 10px", fontSize: 10, textTransform: "uppercase", color: C.slate, textAlign: "left" }}>Estado</th>
+                </tr></thead>
+                <tbody>
+                  {refs.map(({ preorden, item, estados, porRevisar }) => (
+                    <tr key={`${preorden.id}-${item.itemId}`} style={{ borderTop: `1px solid ${C.border}` }}>
+                      <td style={{ padding: "7px 10px", fontSize: 13 }}><b>{item.referencia}</b><div style={{ fontSize: 11, color: C.slate, fontWeight: 600 }}>{item.nombre || ""}</div></td>
+                      {ETAPAS_PEDIDO.map((k, i) => {
+                        const s = [0, 1, 3, 5].includes(i) ? estados[i] : (est.hechas[i] ? 2 : 0);
+                        return <td key={k} style={{ textAlign: "center", padding: "7px 2px" }}><Punto estado={s} titulo={`${i + 1}. ${nombre(i)}`} /></td>;
+                      })}
+                      <td style={{ padding: "7px 10px", fontSize: 12, fontWeight: 700, color: porRevisar ? C.amber : estados[PASO_FICHA] === 2 ? C.green : C.slate }}>{porRevisar ? "Ficha por revisar" : estados[PASO_FICHA] === 2 ? "Ficha lista" : estados[PASO_FICHA] === 1 ? "Ficha en proceso" : "Ficha sin empezar"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

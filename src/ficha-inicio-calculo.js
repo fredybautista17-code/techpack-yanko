@@ -175,3 +175,51 @@ export function parsearColoresPegados(texto, existentes) {
 
 export function snapshotColor(c) { return { id: c.id, nombre: c.nombre || "", codProveedor: c.codProveedor || "", codBusint: c.codBusint || "", hex: c.hex || "" }; }
 export function snapshotVinilo(v) { return { id: v.id, nombre: v.nombre || "", codigo: v.codigo || "", tipo: v.tipo || "" }; }
+
+// ───────────────── Seguimiento del PEDIDO: las mismas 9 etapas + candado de corte ─────────────────
+// (2026-11-22, a pedido de Fredy) El «Seguimiento del Pedido» pasó de 17 etapas a estas 9 (las mismas del semáforo). Un pedido NO puede salir a cortar
+// (etapa 9) mientras no estén hechas las 8 anteriores; solo el administrador puede saltarse el candado dejando el motivo. Los pedidos que ya tienen corte
+// no se bloquean. Las etapas guardan su casilla en pedido.seguimiento[clave]; las claves conservan el nombre viejo cuando ya existía (así no se pierde lo marcado).
+export const ETAPAS_PEDIDO = ["Hoja de Vida", "Ficha de inicio", "Combinaciones de vinilo", "Contramuestra", "Alertas de insumos", "Ficha Técnica", "Explosión de Materiales", "Tela en bodega", "Corte"];
+export const ETAPA_CORTE = 8;
+export const ETAPAS_DESDE_FICHA = [0, 1, 3, 5]; // las que salen solas del semáforo de las referencias (pasos manuales 1/4/6 y la ficha); el resto se marca a mano en el pedido
+
+export const normRef = (r) => String(r || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+// Referencias de preórdenes APROBADAS que corresponden a este pedido: las vinculadas a su número, o (si no hay vinculación) la misma referencia del mismo cliente.
+export function itemsDePedido(pedido, preordenes) {
+  const numero = String((pedido || {}).numero || "").trim();
+  const refs = new Set(((pedido || {}).referencias || []).map((r) => normRef(r.ref)).filter(Boolean));
+  const cli = plano((pedido || {}).cliente);
+  const porRef = new Map();
+  (preordenes || []).forEach((p) => {
+    if ((p.estado || "montada") !== "aprobada") return;
+    (p.items || []).forEach((it) => {
+      const v = it.pedidoVinculado;
+      const vinculado = !!(v && numero && String(v.numero || "").trim() === numero);
+      const deOtro = !!(v && !vinculado);
+      const mismaRef = refs.has(normRef(it.referencia)) && plano(p.cliente) === cli;
+      if (!vinculado && !(mismaRef && !deOtro)) return;
+      const k = normRef(it.referencia);
+      const nuevo = { preorden: p, item: it, vinculado, fecha: p.fechaCreado || "" };
+      const previo = porRef.get(k);
+      if (!previo || (nuevo.vinculado && !previo.vinculado) || (nuevo.vinculado === previo.vinculado && nuevo.fecha > previo.fecha)) porRef.set(k, nuevo);
+    });
+  });
+  return [...porRef.values()].map(({ preorden, item }) => ({ preorden, item }));
+}
+
+// refsEstados: arreglo (uno por referencia enlazada) de los 9 estados (0/1/2) de cada una → qué etapas están hechas, cuáles son automáticas y si puede cortar
+export function estadoEtapasPedido(pedido, refsEstados, yaCortado) {
+  const seg = (pedido || {}).seguimiento || {};
+  const refs = refsEstados || [];
+  const auto = ETAPAS_PEDIDO.map((_, i) => ETAPAS_DESDE_FICHA.includes(i) && refs.length > 0 && refs.every((e) => e[i] === 2));
+  // Con referencias enlazadas, las etapas que salen de la ficha SOLO dependen de ella (no se pueden marcar a mano en el pedido); sin enlace, se marcan a mano
+  const derivada = ETAPAS_PEDIDO.map((_, i) => ETAPAS_DESDE_FICHA.includes(i) && refs.length > 0);
+  const hechas = ETAPAS_PEDIDO.map((k, i) => (derivada[i] ? auto[i] : !!seg[k] || auto[i]));
+  const faltan = [];
+  for (let i = 0; i < ETAPA_CORTE; i++) if (!hechas[i]) faltan.push(i);
+  const puedeCortar = faltan.length === 0;
+  const siguiente = hechas.findIndex((h) => !h);
+  return { hechas, auto, derivada, faltan, puedeCortar, corteLibre: puedeCortar || !!yaCortado, total: hechas.filter(Boolean).length, siguiente };
+}
