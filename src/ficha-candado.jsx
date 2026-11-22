@@ -1,7 +1,7 @@
 // ─── CANDADO DE CORTE · aviso en el módulo de Corte ──────────────────────────────────────────────────────────
 // (2026-11-22, a pedido de Fredy) Un pedido NO debe salir a cortar si no están hechas las 9 etapas anteriores del Seguimiento del Pedido.
 // Aquí se calcula, con la misma regla de «Seguimiento del Pedido» (evaluarPedido), si cada pedido activo puede cortar y se muestra un AVISO ROJO en Corte
-// (cola sugerida, detalle del pedido, programación y registro del corte). Es solo un aviso: no bloquea el guardado.
+// (cola sugerida, detalle del pedido, programación y registro del corte). Además BLOQUEA «Entrada de Corte» (modal ProgramarCorteModal en modulo-corte.jsx); el registro manual de un corte histórico no se bloquea.
 // Los pedidos que ya tienen corte no se avisan, ni los que el administrador habilitó con motivo.
 import React, { createContext, useContext, useEffect, useRef, useState } from "react";
 import { getApps } from "firebase/app";
@@ -56,4 +56,20 @@ export function AvisoCandadoCorte({ pedido, chico }) {
       <div style={{ fontSize: 11.5, fontWeight: 600, marginTop: 3 }}>{info.sinEnlace ? "Este pedido no está enlazado a una preorden aprobada: las etapas se marcan a mano en Pedidos → Seguimiento del Pedido. " : ""}Se completa en Ficha de inicio y en el Seguimiento del Pedido. Solo el administrador puede habilitarlo con un motivo.</div>
     </div>
   );
+}
+
+// ─── INSIGNIAS DEL MENÚ (2026-11-22, a pedido de Fredy) ───────────────────────────────────────────────────────
+// Burbuja con un número junto a un ítem del menú. `rojo` = requiere atención.
+export function Insignia({ n, rojo, title }) {
+  if (!n) return null;
+  return (
+    <span title={title} style={{ marginLeft: "auto", minWidth: 18, textAlign: "center", fontSize: 10.5, fontWeight: 800, lineHeight: "18px", height: 18, padding: "0 6px", borderRadius: 9, color: "#fff", background: rojo ? "#E85D4A" : "#7A7A99" }}>{n > 99 ? "99+" : n}</span>
+  );
+}
+
+// Pedidos activos que no pueden salir a cortar (misma regla que el tablero: «ya cortó» = el pedido tiene cortesRealizados).
+export function InsigniaNoPueden({ pedidos }) {
+  const candado = useCandadoCorte((p) => (p.cortesRealizados || []).length > 0);
+  const n = (pedidos || []).filter((p) => { const i = candado.infoDe(p); return !!i && !i.libre; }).length;
+  return <Insignia n={n} rojo title={`${n} pedido(s) activo(s) que no pueden salir a cortar todavía`} />;
 }

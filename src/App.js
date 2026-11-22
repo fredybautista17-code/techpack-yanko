@@ -9,6 +9,7 @@ import VigentesPorEtapaView from "./vigentes-por-etapa";
 import ExplosionMaterialesView from "./explosion-materiales";
 import LotesPorIntegrarView from "./lotes-por-integrar";
 import { DevolucionesClienteView } from "./devoluciones-cliente";
+import { Insignia, InsigniaNoPueden } from "./ficha-candado";
 import { BloqueSolicitudesTela } from "./diseno-muestras";
 import PatronCodigosReferencia, { buscarPorPatron, PrefijosDeCliente } from "./codigos-patron";
 import { initializeApp } from "firebase/app";
@@ -21606,6 +21607,10 @@ function AppInner() {
   useEffect(() => {
     if (origenNav && view !== "proto-detail" && view !== "ref-detail" && !(origenNav.tipo === "mi_dia" && view === "cronograma_muestras")) setOrigenNav(null);
   }, [view]); // eslint-disable-line
+  // (2026-11-22, a pedido de Fredy) Contadores del menú: referencias por montar (cápsulas aprobadas sin enviar a preorden) y preórdenes por aprobar.
+  const nPorMontar = capsulasVisibles.reduce((s, cap) => s + (cap.referencias || []).filter((r) => r.status === "aprobado" && !r.enviadoAPreorden).length, 0);
+  const nPreordenesPorAprobar = preordenesVisibles.filter((p) => (p.estado || "montada") !== "aprobada").length;
+  const insigniaDe = (id) => (id === "pedidos_flujo" || id === "pm_montar" ? nPorMontar : id === "preordenes" || id === "fi_preordenes" ? nPreordenesPorAprobar : 0);
   const AREAS = [
     ...(canAccessDiseno
       ? [{
@@ -21626,7 +21631,7 @@ function AppInner() {
       : []),
     ...(canAccessPedidosArea
       ? [{
-          id: "pedidos_area", icon: "🧾", label: "Pedidos",
+          id: "pedidos_area", icon: "🧾", label: "Pedidos", insignia: nPorMontar,
           items: [
             // (2026-11-22, a pedido de Fredy) Orden del proceso: Flujo de Pedidos → Por montar → Preórdenes → Órdenes → Pedidos → Corte; después los ítems de apoyo.
             ...(!esClienteCot ? [{ id: "pedidos_flujo", icon: "🧭", label: "Flujo de Pedidos" }] : []),
@@ -21649,7 +21654,7 @@ function AppInner() {
     // Preórdenes y Órdenes también se abren desde aquí (son las mismas pantallas que en Pedidos; los ids fi_* solo evitan marcar dos ítems a la vez).
     ...(canFichaInicio
       ? [{
-          id: "ficha_area", icon: "🚦", label: "Ficha de inicio",
+          id: "ficha_area", icon: "🚦", label: "Ficha de inicio", insigniaNoPueden: true,
           items: [
             { id: "ficha_tablero", icon: "🚦", label: "Tablero de viabilidad" },
             ...(canAccessPreordenes ? [{ id: "fi_preordenes", icon: "🧾", label: "Preórdenes" }] : []),
@@ -21912,7 +21917,7 @@ function AppInner() {
               return (
                 <div key={area.id}>
                   <button onClick={() => setAreaAbierta(areaActiva ? null : area.id)} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", border: "none", borderRadius: 8, cursor: "pointer", background: anyItemActive && !areaActiva ? "rgba(200,184,162,0.08)" : "transparent", color: anyItemActive ? "rgba(200,184,162,0.9)" : "rgba(136,136,170,0.7)", fontWeight: 700, fontSize: 12, textAlign: "left", textTransform: "uppercase", letterSpacing: "0.06em" }}>
-                    <span style={{ fontSize: 14 }}>{area.icon}</span><span style={{ flex: 1 }}>{area.label}</span><span style={{ fontSize: 10, opacity: 0.6 }}>{areaActiva ? "▾" : "▸"}</span>
+                    <span style={{ fontSize: 14 }}>{area.icon}</span><span style={{ flex: 1 }}>{area.label}</span>{!areaActiva && area.insignia ? <Insignia n={area.insignia} title={`${area.insignia} referencia(s) por montar`} /> : null}{!areaActiva && area.insigniaNoPueden ? <InsigniaNoPueden pedidos={pedidosVisibles} /> : null}<span style={{ fontSize: 10, opacity: 0.6 }}>{areaActiva ? "▾" : "▸"}</span>
                   </button>
                   {areaActiva && (
                     <div style={{ marginLeft: 8, marginBottom: 4, display: "flex", flexDirection: "column", gap: 2 }}>
@@ -21921,6 +21926,8 @@ function AppInner() {
                         return (
                           <button key={item.id} onClick={() => navClick(item.id)} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", border: "none", borderRadius: 8, cursor: "pointer", background: active ? T.seam : "transparent", color: active ? T.ink : "#8888AA", fontWeight: active ? 800 : 500, fontSize: 13, textAlign: "left", borderLeft: active ? `3px solid ${T.seamDark}` : "3px solid transparent" }}>
                             <span style={{ fontSize: 13 }}>{item.icon}</span>{item.label}
+                            {insigniaDe(item.id) ? <Insignia n={insigniaDe(item.id)} title={item.id === "preordenes" || item.id === "fi_preordenes" ? "Preórdenes por aprobar" : "Referencias aprobadas en cápsulas que faltan por pasar a preorden"} /> : null}
+                            {item.id === "ficha_tablero" ? <InsigniaNoPueden pedidos={pedidosVisibles} /> : null}
                           </button>
                         );
                       })}

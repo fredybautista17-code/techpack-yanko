@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useContext } from "react";
 import { initializeApp, getApps } from "firebase/app";
 import {
   getFirestore,
@@ -842,7 +842,12 @@ async function parseTelas(file) {
   if (!nombres.length) throw new Error("No se encontraron nombres de tela en este archivo.");
   return nombres;
 }
-function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, lotesExistentes, onGuardarLote, preseleccion, onSave, onClose, onGuardado, inline, itemsUsadosMeson, pedidosTodos }) {
+function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, lotesExistentes, onGuardarLote, preseleccion, onSave, onClose, onGuardado, inline, itemsUsadosMeson, pedidosTodos, sinCandado }) {
+  // (2026-11-22, a pedido de Fredy) BLOQUEO REAL: un pedido que no tiene las etapas 1 a 9 del Seguimiento NO puede registrar su corte
+  // (salvo que ya tenga cortes o el administrador lo habilitó con motivo). `sinCandado` = registro manual de un corte HISTÓRICO que ya ocurrió.
+  const candadoCtx = useContext(CandadoCorteContext);
+  const infoCandado = !sinCandado && candadoCtx ? candadoCtx.infoDe(pedido) : null;
+  const bloqueadoCandado = !!(infoCandado && !infoCandado.libre);
   const mes = new Date().getMonth() + 1;
   const anio = new Date().getFullYear();
   // Si el ítem viene de "Programación Hecha" (preseleccion trae planta,
@@ -1161,6 +1166,7 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
     ? Object.values(preseleccion.curva).reduce((s, v) => s + (parseInt(v) || 0), 0)
     : 0;
   async function save() {
+    if (bloqueadoCandado) return;
     if (!form.planta || !form.cortador || !form.fecha) return;
     const loteTrim = (form.lote || "").trim();
     if (loteTrim && lotesExistentes?.has(loteTrim.toUpperCase())) return;
@@ -1260,7 +1266,12 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
       width={760}
       inline={inline}
     >
-      <AvisoCandadoCorte pedido={pedido} />
+      {bloqueadoCandado && (
+        <div style={{ background: "#FDF0EE", color: "#E85D4A", border: "1px solid #F3C5BE", borderRadius: 10, padding: "10px 12px", fontSize: 12.5, fontWeight: 700, marginBottom: 12, lineHeight: 1.5 }}>
+          🔒 Este corte está bloqueado: el pedido no cumple las etapas previas. Faltan: {infoCandado.faltan.join(" · ")}
+          <div style={{ fontSize: 11.5, fontWeight: 600, marginTop: 3 }}>{infoCandado.sinEnlace ? "El pedido no está enlazado a una preorden aprobada: marca las etapas a mano en Pedidos → Seguimiento del Pedido. " : "Complétalas en Ficha de inicio y en el Seguimiento del Pedido. "}Solo el administrador puede habilitar el corte con un motivo.</div>
+        </div>
+      )}
       {/* Avance del pedido — cuánto lleva cortado en total (incluye lo ya
           registrado en cortes anteriores más lo que se está por guardar acá
           mismo), para que el cortador no tenga que salir a revisar el
@@ -1987,7 +1998,7 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
         <Btn
           variant="success"
           onClick={save}
-          disabled={totalCortando() === 0 || !form.planta || !form.cortador || (form.lote.trim() && lotesExistentes?.has(form.lote.trim().toUpperCase())) || (form.lote.trim() && (!form.horaInicio || !form.horaFin))}
+          disabled={bloqueadoCandado || totalCortando() === 0 || !form.planta || !form.cortador || (form.lote.trim() && lotesExistentes?.has(form.lote.trim().toUpperCase())) || (form.lote.trim() && (!form.horaInicio || !form.horaFin))}
         >
           ✓ Entrada de Corte
         </Btn>
@@ -8689,6 +8700,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                   lotesExistentes={lotesExistentes}
                   itemsUsadosMeson={itemsUsadosMeson}
                   pedidosTodos={pedidos}
+                  sinCandado
                   onSave={(corte) => onRegistrarCorteManual(pedidoManualSel.id, corte)}
                   onClose={() => setPedidoManualSel(null)}
                   onGuardado={() => {
@@ -10476,7 +10488,7 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
     { id: "costo", icon: "💰", label: "Centro de Costo" },
     ...(isAdmin ? [{ id: "admin", icon: "⚙", label: "Admin Corte" }] : []),
   ];
-  // (2026-11-22, a pedido de Fredy) Aviso rojo «No puede salir a cortar» cuando faltan etapas del Seguimiento del Pedido (ver ficha-candado.jsx). Solo avisa; no bloquea.
+  // (2026-11-22, a pedido de Fredy) Aviso rojo «No puede salir a cortar» cuando faltan etapas del Seguimiento del Pedido (ver ficha-candado.jsx). También bloquea «Entrada de Corte» (ver ProgramarCorteModal).
   const candadoCorte = useCandadoCorte((p) => calcularCortadoPendiente(p, vpRefMap, lotesCortadoMap).totalCortado > 0);
   if (loading)
     return (
