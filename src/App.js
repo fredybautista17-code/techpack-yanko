@@ -12756,7 +12756,11 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
   const [creando, setCreando] = useState(false);
   const [cambiandoClave, setCambiandoClave] = useState(false);
   const [errorClave, setErrorClave] = useState("");
-  const roleOptions = config.roles.map((r) => r.name);
+  // (2026-11-22, a pedido de Fredy) El desplegable «Rol» muestra TODOS los roles existentes: los de Administración → Roles y, además, cualquier rol que algún usuario
+  // ya tenga asignado aunque no esté en esa lista (se marca «sin permisos configurados»). Sin repetidos.
+  const rolesConfigurados = config.roles.map((r) => r.name);
+  const rolesSoloEnUsuarios = [...new Set((users || []).map((u) => (u.role || "").trim()).filter(Boolean))].filter((r) => !rolesConfigurados.includes(r));
+  const roleOptions = [...rolesConfigurados, ...rolesSoloEnUsuarios];
   // --- Migración a Firebase Authentication (Fase A, temporal) ---
   // Botón de un solo uso para crear, por detrás, una cuenta real de Firebase
   // Auth para cada usuario que hoy solo existe como documento en Firestore
@@ -12924,7 +12928,7 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
             <div>
               <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Rol</label>
               <select value={form.role} onChange={(e) => setForm((f) => ({ ...f, role: e.target.value }))} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }}>
-                {roleOptions.map((r) => <option key={r} value={r}>{r}</option>)}
+                {roleOptions.map((r) => <option key={r} value={r}>{rolesConfigurados.includes(r) ? r : `${r} (sin permisos configurados)`}</option>)}
               </select>
             </div>
             <div>
