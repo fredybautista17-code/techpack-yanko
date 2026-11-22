@@ -10,6 +10,7 @@ import ExplosionMaterialesView from "./explosion-materiales";
 import LotesPorIntegrarView from "./lotes-por-integrar";
 import { DevolucionesClienteView } from "./devoluciones-cliente";
 import { Insignia, InsigniaNoPueden } from "./ficha-candado";
+import RolesAdmin from "./roles-admin";
 import { BloqueSolicitudesTela } from "./diseno-muestras";
 import PatronCodigosReferencia, { buscarPorPatron, PrefijosDeCliente } from "./codigos-patron";
 import { initializeApp } from "firebase/app";
@@ -14863,12 +14864,6 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
   function updateStageDays(id, days) {
     onUpdateConfig({ stages: config.stages.map((s) => (s.id === id ? { ...s, days: Math.max(1, parseInt(days) || 1) } : s)) });
   }
-  function addRole() {
-    if (!newItem.trim()) return;
-    onUpdateConfig({ roles: [...config.roles, { id: uid(), name: newItem.trim(), perms: ["editar"], modulos: [...DISENO_SUBMODULOS] }] });
-    setNewItem("");
-  }
-  function removeRole(id) { onUpdateConfig({ roles: config.roles.filter((r) => r.id !== id) }); }
   // Módulos visibles por rol, por sección independiente (Prototipos, Cápsulas,
   // Pedidos, Clientes, Corte, Estadísticas, Contabilidad), separado de los
   // permisos de flujo de trabajo. Si el rol no tiene "modulos" aún, se
@@ -14885,46 +14880,6 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
       return [...new Set([...base.filter((m) => m !== "diseno"), ...DISENO_SUBMODULOS])];
     }
     return base;
-  }
-  function toggleModulo(roleId, mod) {
-    onUpdateConfig({
-      roles: config.roles.map((r) => {
-        if (r.id !== roleId) return r;
-        const current = effectiveModulos(r);
-        return { ...r, modulos: current.includes(mod) ? current.filter((m) => m !== mod) : [...current, mod] };
-      }),
-    });
-  }
-  // Prende/apaga TODAS las secciones básicas de Diseño de una sola vez. No
-  // toca "admin_diseno" a propósito: el acceso al panel de Administración de
-  // Diseño se otorga siempre de forma explícita, nunca por el toggle general,
-  // para que marcar/desmarcar "Diseño" no le dé de rebote poderes de admin.
-  function toggleDisenoGroup(roleId) {
-    onUpdateConfig({
-      roles: config.roles.map((r) => {
-        if (r.id !== roleId) return r;
-        const current = effectiveModulos(r);
-        const todosActivos = DISENO_SUBMODULOS.every((m) => current.includes(m));
-        const resto = current.filter((m) => !DISENO_SUBMODULOS.includes(m));
-        return { ...r, modulos: todosActivos ? resto : [...resto, ...DISENO_SUBMODULOS] };
-      }),
-    });
-  }
-  // Generaliza toggleDisenoGroup para cualquier grupo de permisos por área
-  // (Nómina, Áreas, y cualquier área nueva que en el futuro tenga más de un
-  // permiso) — prende TODAS las llaves del grupo de una vez si falta alguna,
-  // o las apaga todas si ya estaban todas activas. 2026-09-01, a pedido de
-  // Fredy: reorganizar Roles por área en vez de una lista plana de checkboxes.
-  function toggleGrupoModulos(roleId, keys) {
-    onUpdateConfig({
-      roles: config.roles.map((r) => {
-        if (r.id !== roleId) return r;
-        const current = effectiveModulos(r);
-        const todosActivos = keys.every((m) => current.includes(m));
-        const resto = current.filter((m) => !keys.includes(m));
-        return { ...r, modulos: todosActivos ? resto : [...resto, ...keys] };
-      }),
-    });
   }
   const DISENO_ITEMS_DEF = [
     ["protos", "⬡ Prototipos"],
@@ -15312,102 +15267,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
         {tab === "talleres" && <ListEditor listKey="talleresMuestra" title="Talleres de Muestra" />}
         {tab === "prioridades" && <ListEditor listKey="prioridadesMuestra" title="Prioridades de Muestra" />}
         {tab === "roles" && (
-          <div>
-            <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 16 }}>Roles</div>
-            <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
-              <input value={newItem} onChange={(e) => setNewItem(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addRole()} placeholder="Nuevo rol..." style={{ flex: 1, padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
-              <Btn onClick={addRole}>+ Crear</Btn>
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {config.roles.map((r) => {
-                const modulosActivos = effectiveModulos(r);
-                return (
-                  <div key={r.id} style={{ display: "flex", alignItems: "flex-start", gap: 14, padding: "14px 18px", background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
-                    <Avatar name={r.name} size={36} />
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontWeight: 700, fontSize: 14, color: T.ink }}>{r.name}</div>
-                      <div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase", letterSpacing: "0.06em", marginTop: 10, marginBottom: 4 }}>Permisos de flujo de trabajo</div>
-                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                        {["editar", "aprobar", "declinar", "admin", "corte", "ilustracion", "aprobar_corte", "aprobar_despacho", "control_despacho", "editar_kpis", "marcar_observaciones", "revision_diseno"].map((perm) => (
-                          <span key={perm} onClick={() => onUpdateConfig({ roles: config.roles.map((x) => (x.id !== r.id ? x : { ...x, perms: x.perms.includes(perm) ? x.perms.filter((p) => p !== perm) : [...x.perms, perm] })) })}
-                            style={{ padding: "3px 10px", borderRadius: 4, fontSize: 11, fontWeight: 700, cursor: "pointer", background: r.perms.includes(perm) ? T.jadeBg : "#EDEDF2", color: r.perms.includes(perm) ? T.jade : T.slate, border: `1px solid ${r.perms.includes(perm) ? T.jade : T.border}` }}
-                          >{perm}</span>
-                        ))}
-                      </div>
-                      <div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase", letterSpacing: "0.06em", marginTop: 10, marginBottom: 4 }}>Módulos visibles</div>
-                      <div style={{ border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden", maxWidth: 420 }}>
-                        {(() => {
-                          const disenoActivos = DISENO_SUBMODULOS.filter((m) => modulosActivos.includes(m)).length;
-                          const disenoTotal = DISENO_SUBMODULOS.length;
-                          return (
-                            <span onClick={() => toggleDisenoGroup(r.id)}
-                              style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: disenoActivos > 0 ? T.violetBg : T.canvas, cursor: "pointer", fontSize: 12, fontWeight: 700, color: disenoActivos > 0 ? T.violet : T.slate }}
-                            >
-                              <span style={{ flex: 1 }}>🎨 Diseño</span>
-                              <span style={{ fontSize: 10, fontWeight: 600, opacity: 0.75 }}>{disenoActivos}/{disenoTotal} activas</span>
-                            </span>
-                          );
-                        })()}
-                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", padding: "8px 10px 8px 26px", borderTop: `1px solid ${T.border}` }}>
-                          {DISENO_ITEMS_DEF.map(([mod, label]) => {
-                            const activo = modulosActivos.includes(mod);
-                            return (
-                              <span key={mod} onClick={() => toggleModulo(r.id, mod)}
-                                style={{ padding: "3px 10px", borderRadius: 4, fontSize: 11, fontWeight: 700, cursor: "pointer", background: activo ? T.violetBg : "#EDEDF2", color: activo ? T.violet : T.slate, border: `1px solid ${activo ? T.violet : T.border}` }}
-                              >{label}</span>
-                            );
-                          })}
-                        </div>
-                        <div style={{ padding: "8px 10px 8px 26px", borderTop: `1px solid ${T.border}` }}>
-                          {(() => {
-                            const activo = modulosActivos.includes("admin_diseno");
-                            return (
-                              <span onClick={() => toggleModulo(r.id, "admin_diseno")}
-                                title="Acceso al panel de Administración de Diseño (etapas, categorías, roles, usuarios...), independiente de ser Admin general"
-                                style={{ padding: "3px 10px", borderRadius: 4, fontSize: 11, fontWeight: 700, cursor: "pointer", background: activo ? T.amberBg : "#EDEDF2", color: activo ? T.amber : T.slate, border: `1px solid ${activo ? T.amber : T.border}` }}
-                              >⚙ Admin Diseño</span>
-                            );
-                          })()}
-                        </div>
-                      </div>
-                      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 }}>
-                        {GRUPOS_MODULOS_DEF.map(({ area, items }) => {
-                          const claves = items.map(([mod]) => mod);
-                          const activos = claves.filter((mod) => modulosActivos.includes(mod)).length;
-                          const total = items.length;
-                          return (
-                            <div key={area} style={{ border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden", maxWidth: 420 }}>
-                              <span onClick={() => toggleGrupoModulos(r.id, claves)}
-                                style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: activos > 0 ? T.violetBg : T.canvas, cursor: "pointer", fontSize: 12, fontWeight: 700, color: activos > 0 ? T.violet : T.slate }}
-                              >
-                                <span style={{ flex: 1 }}>{area}</span>
-                                {total > 1 && <span style={{ fontSize: 10, fontWeight: 600, opacity: 0.75 }}>{activos}/{total} activas</span>}
-                              </span>
-                              {total > 1 && (
-                                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", padding: "8px 10px 8px 26px", borderTop: `1px solid ${T.border}` }}>
-                                  {items.map(([mod, label, ayuda]) => {
-                                    const activo = modulosActivos.includes(mod);
-                                    return (
-                                      <span key={mod} onClick={() => toggleModulo(r.id, mod)} title={ayuda || undefined}
-                                        style={{ padding: "3px 10px", borderRadius: 4, fontSize: 11, fontWeight: 700, cursor: "pointer", background: activo ? T.violetBg : "#EDEDF2", color: activo ? T.violet : T.slate, border: `1px solid ${activo ? T.violet : T.border}` }}
-                                      >{label}</span>
-                                    );
-                                  })}
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                    {!["r1", "r2"].includes(r.id) && (
-                      <button onClick={() => removeRole(r.id)} style={{ background: T.coralBg, border: "none", borderRadius: 6, padding: "6px 12px", color: T.coral, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>Eliminar</button>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
+          <RolesAdmin config={config} users={users} onUpdateConfig={onUpdateConfig} effectiveModulos={effectiveModulos} disenoItems={DISENO_ITEMS_DEF} disenoBasicas={DISENO_SUBMODULOS} grupos={GRUPOS_MODULOS_DEF} T={T} uid={uid} />
         )}
         {tab === "usuarios" && <UsersTab users={users} onUpdateUsers={onUpdateUsers} config={config} isAdmin={isAdmin} areasNomina={areasNomina} procesosNomina={procesosNomina} />}
         {tab === "notificaciones" && (
