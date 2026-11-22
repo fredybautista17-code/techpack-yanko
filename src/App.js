@@ -8418,6 +8418,9 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
   // en la tercera opción "Otras", que solo aparece si hay alguna.
   const [seccionOrigen, setSeccionOrigen] = useState("reprogramacion");
   const [showMasMenu, setShowMasMenu] = useState(false);
+  // (2026-11-22, a pedido de Fredy, maqueta v17) Etapa elegida tocando uno de los 3 contadores de arriba (null = todas) y menú ⋮ abierto de una tarjeta.
+  const [etapaFiltro, setEtapaFiltro] = useState(null);
+  const [menuTarjeta, setMenuTarjeta] = useState(null);
   const [vinculando, setVinculando] = useState(null);
   const [buscaPedido, setBuscaPedido] = useState("");
   const [numeroPedidoManual, setNumeroPedidoManual] = useState("");
@@ -8613,7 +8616,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
   // igual criterio que normalizarRefComparacion ya usa en el resto de la
   // app para esto mismo.
   const bqListaRef = normalizarRefComparacion(buscarLista);
-  const visiblesBuscadas = !bqLista ? visibles : visibles.filter((p) =>
+  const visiblesAntesEtapa = !bqLista ? visibles : visibles.filter((p) =>
     foldTexto(p.cliente).includes(bqLista) ||
     foldTexto(p.numPedido).includes(bqLista) ||
     foldTexto(p.nombre).includes(bqLista) ||
@@ -8623,6 +8626,9 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
       (bqListaRef && normalizarRefComparacion(it.referencia).includes(bqListaRef))
     )
   );
+  // (2026-11-22, a pedido de Fredy, maqueta v17) Los 3 contadores de arriba filtran la lista por etapa; sus totales se calculan ANTES de este filtro para que no cambien al tocarlos.
+  const cuentaEtapa = (p) => { const e = p.etapas || {}; return etapaFiltro === "pre" && esCliente ? (e.pre || 0) + (e.ord || 0) : (e[etapaFiltro] || 0); };
+  const visiblesBuscadas = !etapaFiltro ? visiblesAntesEtapa : visiblesAntesEtapa.filter((p) => cuentaEtapa(p) > 0);
   const bq = buscaPedido.trim().toLowerCase();
   const pedidosEncontrados = bq
     ? (pedidos || []).filter((p) => String(p.numero || "").toLowerCase().includes(bq) || (p.cliente || "").toLowerCase().includes(bq)).slice(0, 30)
@@ -9294,36 +9300,39 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
           </div>
         )}
       </div>
-      <div style={{ display: "flex", gap: 8, padding: 6, background: T.canvas, borderRadius: 12, marginBottom: 16, width: "fit-content" }}>
+      <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
+      <div style={{ display: "flex", gap: 8, padding: 6, background: T.canvas, borderRadius: 12, marginBottom: 0, width: "fit-content" }}>
         <button onClick={() => setSeccionOrigen("reprogramacion")} style={{ padding: "10px 20px", borderRadius: 9, fontSize: 13, fontWeight: 800, cursor: "pointer", border: "none", background: seccionOrigen === "reprogramacion" ? T.violet : "transparent", color: seccionOrigen === "reprogramacion" ? T.white : T.slate }}>🔁 Nueva Reprogramación</button>
         <button onClick={() => setSeccionOrigen("orden")} style={{ padding: "10px 20px", borderRadius: 9, fontSize: 13, fontWeight: 800, cursor: "pointer", border: "none", background: seccionOrigen === "orden" ? T.denim : "transparent", color: seccionOrigen === "orden" ? T.white : T.slate }}>🆕 Nueva Orden</button>
         {hayOtras && (
           <button onClick={() => setSeccionOrigen("otras")} style={{ padding: "10px 20px", borderRadius: 9, fontSize: 13, fontWeight: 800, cursor: "pointer", border: "none", background: seccionOrigen === "otras" ? T.slate : "transparent", color: seccionOrigen === "otras" ? T.white : T.slate }}>📦 Otras</button>
         )}
       </div>
+        <span style={{ flex: 1 }} />
       {seccionOrigen !== "otras" && (
         <button
           onClick={() => setModo(seccionOrigen === "reprogramacion" ? "reprogramacion" : "orden_nueva")}
-          style={{ padding: "10px 18px", borderRadius: 9, fontSize: 13, fontWeight: 800, color: T.white, border: "none", cursor: "pointer", background: seccionOrigen === "reprogramacion" ? T.violet : T.denim, marginBottom: 16, display: "inline-flex", alignItems: "center", gap: 8 }}
+          style={{ padding: "10px 18px", borderRadius: 9, fontSize: 13, fontWeight: 800, color: T.white, border: "none", cursor: "pointer", background: seccionOrigen === "reprogramacion" ? T.violet : T.denim, marginBottom: 0, display: "inline-flex", alignItems: "center", gap: 8 }}
         >＋ Crear {seccionOrigen === "reprogramacion" ? "Nueva Reprogramación" : "Nueva Orden"}</button>
       )}
-      <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
-        {[["pendientes", "⏳ Pendientes"], ["todos", "Todos"]].map(([v, label]) => (
-          <button key={v} onClick={() => setSubTab(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${subTab === v ? T.denim : T.border}`, background: subTab === v ? T.denimBg : T.white, color: subTab === v ? T.denim : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{label}</button>
-        ))}
       </div>
-      <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
-        {[["todas", "Todos los estados"], ["montada", "🟡 Montadas"], ["aprobada", "✅ Aprobadas"]].map(([v, label]) => (
-          <button key={v} onClick={() => setEstadoFiltro(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${estadoFiltro === v ? T.jade : T.border}`, background: estadoFiltro === v ? T.jadeBg : T.white, color: estadoFiltro === v ? T.jade : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{label}</button>
-        ))}
-      </div>
-      <div style={{ marginBottom: 16 }}>
+      {/* (2026-11-22, a pedido de Fredy, maqueta v17) Una sola fila: buscador + los dos filtros como listas (antes eran 4 filas de botones). */}
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 14 }}>
         <input
           value={buscarLista}
           onChange={(e) => setBuscarLista(e.target.value)}
           placeholder="🔍 Buscar por cliente, N° de pedido o referencia..."
-          style={{ padding: "7px 12px", border: `1.5px solid ${buscarLista ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, minWidth: 280, outline: "none", fontFamily: "inherit" }}
+          style={{ flex: "1 1 260px", minWidth: 0, padding: "9px 12px", border: `1.5px solid ${buscarLista ? T.denim : T.border}`, borderRadius: 10, fontSize: 13, outline: "none", fontFamily: "inherit", background: T.white }}
         />
+        <select value={subTab} onChange={(e) => setSubTab(e.target.value)} aria-label="Pendientes o todas" style={{ padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 10, fontSize: 13, fontWeight: 700, color: T.ink, background: T.white, fontFamily: "inherit" }}>
+          <option value="pendientes">⏳ Solo pendientes</option>
+          <option value="todos">Todas</option>
+        </select>
+        <select value={estadoFiltro} onChange={(e) => setEstadoFiltro(e.target.value)} aria-label="Estado" style={{ padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 10, fontSize: 13, fontWeight: 700, color: T.ink, background: T.white, fontFamily: "inherit" }}>
+          <option value="todas">Todos los estados</option>
+          <option value="montada">🟡 Montadas</option>
+          <option value="aprobada">✅ Aprobadas</option>
+        </select>
       </div>
       {verEtapa && (() => {
         const lista = verEtapa.preordenId ? preordenesConEstado.filter((x) => x.id === verEtapa.preordenId) : visiblesBuscadas;
@@ -9344,8 +9353,8 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
           />
         );
       })()}
-      {visiblesBuscadas.length > 0 && (() => {
-        const tot = visiblesBuscadas.reduce((a, p) => {
+      {visiblesAntesEtapa.length > 0 && (() => {
+        const tot = visiblesAntesEtapa.reduce((a, p) => {
           const e = p.etapas || {};
           return { pre: a.pre + e.pre, ord: a.ord + e.ord, ped: a.ped + e.ped, preU: a.preU + e.preU, ordU: a.ordU + e.ordU, pedU: a.pedU + e.pedU };
         }, { pre: 0, ord: 0, ped: 0, preU: 0, ordU: 0, pedU: 0 });
@@ -9357,19 +9366,31 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
         ];
         return (
           <div style={{ display: "grid", gridTemplateColumns: `repeat(${cajas.length},1fr)`, gap: 10, marginBottom: 16 }}>
-            {cajas.map((k) => (
-              <div key={k.l} onClick={() => setVerEtapa({ etapa: k.e, preordenId: null })} title="Clic para ver cuáles son" style={{ background: k.bg, borderRadius: 12, padding: "12px 16px", border: `1px solid ${k.c}33`, cursor: "pointer" }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: T.slate }}>{k.i} {k.l}</div>
-                <div style={{ fontSize: 24, fontWeight: 900, color: k.c, lineHeight: 1.1, marginTop: 2 }}>{fmtNum(k.n)} <span style={{ fontSize: 12, fontWeight: 700 }}>ref</span></div>
-                <div style={{ fontSize: 11, color: T.slate, marginTop: 2 }}>{fmtNum(k.u)} unid.</div>
-              </div>
-            ))}
+            {cajas.map((k) => {
+              const activa = etapaFiltro === k.e;
+              return (
+                <div key={k.l} onClick={() => setEtapaFiltro(activa ? null : k.e)} title={activa ? "Clic para quitar el filtro" : "Clic para ver solo las preórdenes con referencias en esta etapa"} style={{ background: k.bg, borderRadius: 12, padding: "12px 16px", border: `1.5px solid ${activa ? T.ink : k.c + "33"}`, boxShadow: activa ? "0 2px 10px rgba(26,26,46,0.14)" : "none", cursor: "pointer" }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: T.slate }}>{k.i} {k.l}</div>
+                  <div style={{ fontSize: 24, fontWeight: 900, color: k.c, lineHeight: 1.1, marginTop: 2 }}>{fmtNum(k.n)} <span style={{ fontSize: 12, fontWeight: 700 }}>ref</span></div>
+                  <div style={{ fontSize: 11, color: T.slate, marginTop: 2, display: "flex", justifyContent: "space-between", gap: 8 }}>
+                    <span>{fmtNum(k.u)} unid.</span>
+                    <span onClick={(ev) => { ev.stopPropagation(); setVerEtapa({ etapa: k.e, preordenId: null }); }} title="Abrir la lista de referencias de esta etapa" style={{ fontWeight: 700, color: T.denim, textDecoration: "underline" }}>ver refs</span>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         );
       })()}
+      {etapaFiltro && (
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 12, fontSize: 12.5, color: T.slate, fontWeight: 700 }}>
+          <span>{visiblesBuscadas.length} {visiblesBuscadas.length === 1 ? "preorden" : "preórdenes"}</span>
+          <button type="button" onClick={() => setEtapaFiltro(null)} style={{ background: T.ink, color: T.white, border: "none", borderRadius: 20, padding: "3px 11px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Etapa: {etapaFiltro === "pre" ? "En Preórdenes" : etapaFiltro === "ord" ? "En Órdenes" : "En Pedido"} ✕</button>
+        </div>
+      )}
       {!visiblesBuscadas.length && (
         <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>
-          {bqLista ? "Ninguna preorden coincide con esa búsqueda." : (subTab === "pendientes" ? "No hay preórdenes pendientes de convertirse en pedido. 🎉" : "Todavía no hay preórdenes registradas.")}
+          {etapaFiltro ? "Ninguna preorden tiene referencias en esa etapa con los filtros de arriba." : bqLista ? "Ninguna preorden coincide con esa búsqueda." : (subTab === "pendientes" ? "No hay preórdenes pendientes de convertirse en pedido. 🎉" : "Todavía no hay preórdenes registradas.")}
         </div>
       )}
       {visiblesBuscadas.map((p) => {
@@ -9484,10 +9505,10 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
         }
         return (
           <div key={p.id} style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, marginBottom: 16, overflow: "hidden" }}>
-            <div onClick={() => setExpandido(abierto ? null : p.id)} style={{ padding: "16px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", background: T.canvas, cursor: "pointer", flexWrap: "wrap", gap: 10 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <span style={{ fontSize: 20 }}>{abierto ? "📂" : "📁"}</span>
-                <div>
+            <div onClick={() => setExpandido(abierto ? null : p.id)} style={{ padding: "16px 20px", background: T.canvas, cursor: "pointer" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 22 }}>{abierto ? "📂" : "📁"}</span>
+                <div style={{ minWidth: 0, flex: "1 1 260px" }}>
                   <div style={{ fontWeight: 800, fontSize: 15, color: T.ink, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                     <span>
                       {etiquetaNumeroOrden(p) ? <span style={{ color: T.seamDark, fontWeight: 800 }}>{etiquetaNumeroOrden(p)} — </span> : null}
@@ -9504,57 +9525,110 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                     {p.origenPantalla === "orden" && (
                       <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.denimBg, color: T.denim }}>🆕 Nueva Orden</span>
                     )}
-                    {puedeAprobar && (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (faltaCartaColores) return;
-                          if (window.confirm("¿Aprobar esta preorden y el colorido de cada referencia? Una vez aprobada queda bloqueada.")) onAprobarPreorden(p.id);
-                        }}
-                        disabled={faltaCartaColores}
-                        title={faltaCartaColores ? "Falta subir la carta de colores de cada referencia para poder aprobar." : ""}
-                        style={{ padding: "3px 10px", borderRadius: 20, border: "none", background: faltaCartaColores ? T.border : T.jade, color: faltaCartaColores ? T.slate : T.white, fontWeight: 700, fontSize: 10, cursor: faltaCartaColores ? "not-allowed" : "pointer" }}
-                      >✓ Aprobar</button>
-                    )}
-                    {estadoActual === "aprobada" && (p.items || []).length > 0 && !esCliente && itemsPorPasarAOrden.length > 0 && (
-                      <span title="Tienen la tela confirmada; falta pulsar «Pasar a Orden»" style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.coralBg, color: T.coral }}>{itemsPorPasarAOrden.length} por pasar a Orden</span>
-                    )}
+                    
                   </div>
                   <div style={{ fontSize: 12, color: T.slate }}>{(p.items || []).length} ref · {fmtNum(totalUnidades)} unid.{valorTotalPreorden > 0 ? ` · ${fmtCOP(valorTotalPreorden)}` : ""} · Creada {p.fechaCreado}</div>
                 </div>
-              </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                {(() => {
-                  const e = p.etapas || { pre: 0, ord: 0, ped: 0, preU: 0, ordU: 0, pedU: 0 };
-                  const chip = (txt, n, u, c, bg, etapa) => <span onClick={(ev) => { ev.stopPropagation(); setVerEtapa({ etapa, preordenId: p.id }); }} title={`${fmtNum(u)} unidades — clic para ver cuáles son`} style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: bg, color: c, whiteSpace: "nowrap", cursor: "pointer", border: `1px solid ${c}33` }}>{txt} {n}</span>;
-                  if (p.pendientes === 0) return <span onClick={(ev) => { ev.stopPropagation(); setVerEtapa({ etapa: "ped", preordenId: p.id }); }} title="Clic para ver cuáles son" style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: T.jadeBg, color: T.jade, cursor: "pointer" }}>✓ Todo convertido a pedido ({e.ped})</span>;
-                  return (
-                    <>
-                      {chip("📋 Preórdenes", esCliente ? e.pre + e.ord : e.pre, esCliente ? e.preU + e.ordU : e.preU, T.amber, T.amberBg, "pre")}
-                      {!esCliente && chip("🧵 Órdenes", e.ord, e.ordU, T.coral, T.coralBg, "ord")}
-                      {chip("📦 Pedido", e.ped, e.pedU, T.jade, T.jadeBg, "ped")}
-                    </>
-                  );
-                })()}
-                {/* (2026-10-03, a pedido de Fredy) No calcula nada solo con
-                    abrir la orden -- el consolidado de metros de tela se
-                    pide a propósito con este botón, que abre una pantalla
-                    aparte (TelaAComprarModal). */}
-                <button
-                  onClick={(e) => { e.stopPropagation(); setViendoTelaComprar(p.id); }}
-                  style={{ padding: "5px 10px", borderRadius: 8, border: `1.5px solid ${T.denim}`, background: T.denimBg, color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap" }}
-                >🧵 Tela a comprar</button>
                 {puedeEliminar && (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (window.confirm(`¿Eliminar la preorden de ${p.cliente || "sin cliente"}? Esto no se puede deshacer.`)) onEliminarPreorden(p.id);
-                    }}
-                    title="Eliminar preorden"
-                    style={{ padding: "5px 9px", borderRadius: 6, border: `1px solid ${T.coral}55`, background: T.white, color: T.coral, fontWeight: 700, fontSize: 13, cursor: "pointer" }}
-                  >🗑️</button>
+                  <div style={{ position: "relative" }} onClick={(e) => e.stopPropagation()}>
+                    <button type="button" onClick={() => setMenuTarjeta(menuTarjeta === p.id ? null : p.id)} title="Más acciones" aria-label="Más acciones" style={{ width: 34, height: 34, borderRadius: 9, border: `1px solid ${T.border}`, background: T.white, color: T.slate, fontWeight: 800, fontSize: 17, cursor: "pointer", lineHeight: 1 }}>⋮</button>
+                    {menuTarjeta === p.id && (
+                      <>
+                        <div onClick={() => setMenuTarjeta(null)} style={{ position: "fixed", inset: 0, zIndex: 4 }} />
+                        <div style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, background: T.white, border: `1px solid ${T.border}`, borderRadius: 10, boxShadow: "0 8px 24px rgba(26,26,46,0.12)", minWidth: 200, overflow: "hidden", zIndex: 5 }}>
+                          <div
+                            onClick={() => {
+                              setMenuTarjeta(null);
+                              if (window.confirm(`¿Eliminar la preorden de ${p.cliente || "sin cliente"}? Esto no se puede deshacer.`)) onEliminarPreorden(p.id);
+                            }}
+                            style={{ padding: "10px 16px", fontSize: 12, fontWeight: 700, color: T.coral, cursor: "pointer" }}
+                          >🗑️ Eliminar preorden</div>
+                        </div>
+                      </>
+                    )}
+                  </div>
                 )}
               </div>
+              {/* (2026-11-22, a pedido de Fredy, maqueta v17) Barra de avance por etapa + «qué sigue» con el botón que corresponde, en vez de números sueltos. */}
+              {(() => {
+                const e = p.etapas || { pre: 0, ord: 0, ped: 0, preU: 0, ordU: 0, pedU: 0 };
+                const nPre = esCliente ? e.pre + e.ord : e.pre;
+                const nOrd = esCliente ? 0 : e.ord;
+                const uPre = esCliente ? e.preU + e.ordU : e.preU;
+                const total = nPre + nOrd + e.ped;
+                const pct = (n) => (total ? (n / total) * 100 : 0);
+                const abrir = (etapa) => (ev) => { ev.stopPropagation(); setVerEtapa({ etapa, preordenId: p.id }); };
+                const leyenda = (txt, n, u, c, etapa) => (
+                  <button key={etapa} type="button" onClick={abrir(etapa)} title={`${fmtNum(u)} unidades — clic para ver cuáles son`} style={{ border: "none", background: "none", padding: "2px 0", fontSize: 12, fontWeight: 700, color: T.ink, cursor: "pointer", fontFamily: "inherit" }}>
+                    <span style={{ display: "inline-block", width: 9, height: 9, borderRadius: "50%", background: c, marginRight: 5 }} />{txt} {n}
+                  </button>
+                );
+                const vivos = (p.items || []).filter((it) => !itemGraduado(it, p.cliente, p.fechaCreado));
+                const sinTela = vivos.filter((it) => !it.telaComprada);
+                const sinTelaProg = sinTela.filter((it) => it.telaProgramada).length;
+                const porPasar = vivos.filter((it) => it.telaComprada && !itemPasadoAOrden(it));
+                const enOrden = vivos.filter((it) => it.telaComprada && itemPasadoAOrden(it));
+                const pl = (n, uno, varios) => `${n} ${n === 1 ? uno : varios}`;
+                const frases = [];
+                const acciones = [];
+                if (!(p.items || []).length) {
+                  frases.push(["Sin referencias.", "Agrega referencias a la preorden."]);
+                } else if (p.pendientes === 0) {
+                  frases.push(["✓ Todo con pedido.", `${pl(e.ped, "referencia ya tiene", "referencias ya tienen")} su pedido.`]);
+                } else if (estadoActual !== "aprobada") {
+                  frases.push(["Sin aprobar.", puedeAprobar ? (faltaCartaColores ? "Falta subir la carta de colores de cada referencia para poder aprobar." : "Revisa cantidades y aprueba para pedir la tela.") : "Esperando la aprobación del cliente."]);
+                  if (puedeAprobar) acciones.push(
+                    <button key="aprobar" type="button" disabled={faltaCartaColores} title={faltaCartaColores ? "Falta subir la carta de colores de cada referencia para poder aprobar." : ""}
+                      onClick={(ev) => { ev.stopPropagation(); if (faltaCartaColores) return; if (window.confirm("¿Aprobar esta preorden y el colorido de cada referencia? Una vez aprobada queda bloqueada.")) onAprobarPreorden(p.id); }}
+                      style={{ padding: "8px 13px", borderRadius: 9, border: "none", background: faltaCartaColores ? T.border : T.ink, color: faltaCartaColores ? T.slate : T.white, fontWeight: 800, fontSize: 12.5, cursor: faltaCartaColores ? "not-allowed" : "pointer", fontFamily: "inherit" }}>✅ Aprobar</button>
+                  );
+                } else if (esCliente) {
+                  frases.push(["Aprobada.", `${pl(vivos.length, "referencia sigue", "referencias siguen")} en preparación antes de tener pedido.`]);
+                } else {
+                  if (porPasar.length) {
+                    frases.push([`${pl(porPasar.length, "ref tiene", "refs tienen")} la tela lista.`, "Pásalas a Orden."]);
+                    if (puedePasarAOrden) acciones.push(
+                      <button key="pasar" type="button" onClick={(ev) => { ev.stopPropagation(); pasarAOrden(porPasar); }} style={{ padding: "8px 13px", borderRadius: 9, border: "none", background: T.ink, color: T.white, fontWeight: 800, fontSize: 12.5, cursor: "pointer", fontFamily: "inherit" }}>➜ Pasar {porPasar.length} a Orden</button>
+                    );
+                  }
+                  if (sinTela.length) {
+                    frases.push([`${pl(sinTela.length, "ref", "refs")} sin tela confirmada.`, sinTelaProg ? `${sinTelaProg} con tela programada.` : ""]);
+                    if (puedeIngresarTela || puedeConfirmarTela) acciones.push(
+                      <button key="telas" type="button" onClick={(ev) => { ev.stopPropagation(); setViendoIngresoTelas(p.id); }} style={{ padding: "8px 13px", borderRadius: 9, border: "none", background: T.canvas, color: T.ink, fontWeight: 800, fontSize: 12.5, cursor: "pointer", fontFamily: "inherit" }}>🧵 Ingreso de telas</button>
+                    );
+                  }
+                  if (enOrden.length) {
+                    frases.push([`${pl(enOrden.length, "ref", "refs")} en Orden.`, "Vincúlalas al pedido cuando exista en Busint."]);
+                    if (puedeVincularPedido) acciones.push(
+                      <button key="vincular" type="button" onClick={abrir("ord")} style={{ padding: "8px 13px", borderRadius: 9, border: "none", background: T.ink, color: T.white, fontWeight: 800, fontSize: 12.5, cursor: "pointer", fontFamily: "inherit" }}>🔗 Ver y vincular</button>
+                    );
+                  }
+                }
+                return (
+                  <>
+                    {total > 0 && (
+                      <div title="Avance de las referencias" style={{ display: "flex", height: 10, borderRadius: 6, overflow: "hidden", background: T.border, margin: "13px 0 6px", gap: 2 }}>
+                        <i style={{ display: "block", width: `${pct(e.ped)}%`, background: T.jade }} />
+                        <i style={{ display: "block", width: `${pct(nOrd)}%`, background: T.coral }} />
+                        <i style={{ display: "block", width: `${pct(nPre)}%`, background: T.amber }} />
+                      </div>
+                    )}
+                    <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+                      {leyenda("Preórdenes", nPre, uPre, T.amber, "pre")}
+                      {!esCliente && leyenda("Órdenes", nOrd, e.ordU, T.coral, "ord")}
+                      {leyenda("Pedido", e.ped, e.pedU, T.jade, "ped")}
+                    </div>
+                    <div onClick={(ev) => ev.stopPropagation()} style={{ marginTop: 11, background: T.white, border: `1px solid ${T.border}`, borderRadius: 11, padding: "10px 12px", display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", cursor: "default" }}>
+                      <div style={{ flex: 1, minWidth: 220, fontSize: 12.5, color: T.slate, fontWeight: 600, lineHeight: 1.5 }}>
+                        {frases.map(([negrita, resto], idx) => <div key={idx}>{idx === 0 ? "👉 " : ""}<b style={{ color: T.ink }}>{negrita}</b> {resto}</div>)}
+                      </div>
+                      {acciones}
+                      {/* (2026-10-03, a pedido de Fredy) El consolidado de metros de tela se pide a propósito con este botón (TelaAComprarModal). */}
+                      <button type="button" onClick={(ev) => { ev.stopPropagation(); setViendoTelaComprar(p.id); }} style={{ padding: "8px 13px", borderRadius: 9, border: `1.5px solid ${T.denim}`, background: T.denimBg, color: T.denim, fontWeight: 800, fontSize: 12.5, cursor: "pointer", fontFamily: "inherit" }}>🧵 Tela a comprar</button>
+                    </div>
+                  </>
+                );
+              })()}
             </div>
             {abierto && (
               <div style={{ padding: 20 }}>
