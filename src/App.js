@@ -21268,6 +21268,7 @@ function AppInner() {
     setOrigenNav(null);
     if (origen.tipo === "mi_dia") { setMiDiaTab(origen.tab || null); setModuloActivo("mi_dia"); }
     else if (origen.tipo === "cronograma") { setView("cronograma_muestras"); }
+    else if (origen.tipo === "flujo") { setFlujoEtapa("montar"); setView("pedidos_flujo"); }
   }
   function volverAlOrigen(vistaPorDefecto) {
     if (origenNav && empujoHistorial.current) { window.history.back(); return; } // el listener de popstate hace el regreso
@@ -21814,6 +21815,10 @@ function AppInner() {
                   fechaAprobacion={fechaAprobacionItem}
                   cargarAvance={cargarAvancePedidos}
                   calcularAvance={calcularAvancePedido}
+                  protos={protosVisibles}
+                  clienteDeCapsula={capsulaCliente}
+                  onAbrirRef={(capId, refId) => { setSelCapId(capId); setSelRefId(refId); setOrigenNav({ tipo: "flujo" }); empujarHistorial(); setView("ref-detail"); }}
+                  onAbrirProto={(id) => { setSelProtoId(id); setOrigenNav({ tipo: "flujo" }); empujarHistorial(); setView("proto-detail"); }}
                 />
               </React.Suspense>
             )}
