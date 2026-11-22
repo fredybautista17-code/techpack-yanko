@@ -148,6 +148,11 @@ export default function RolesAdmin({ config, users, onUpdateConfig, effectiveMod
             <span style={{ flex: 1 }} />
             <button type="button" onClick={() => duplicar(rol)} style={{ border: "none", borderRadius: 9, fontWeight: 700, fontSize: 12.5, padding: "8px 14px", background: "#EFEBE4", color: T.ink, cursor: "pointer", fontFamily: "inherit" }}>⧉ Duplicar rol</button>
           </div>
+          {(rol.name || "").trim() === "Cliente" && (
+            <div style={{ margin: "14px 18px 0", padding: "11px 14px", background: "#EAF1FB", border: "1px solid #C6D8F1", borderRadius: 11, fontSize: 12.5, lineHeight: 1.5, color: T.ink, fontWeight: 600 }}>
+              ℹ️ <b>Los módulos de cada cliente se activan por usuario, no aquí.</b> Esta lista no decide qué ve cada cliente. Para dar Devoluciones, Producción, Pedidos u otros a una persona: Administración → Usuarios → Editar → «Qué ve este usuario». Para Devoluciones y Producción también debe tener marcado un «Cliente de Producción».
+            </div>
+          )}
           <div style={{ display: "flex", gap: 4, padding: "10px 14px 0", borderBottom: borde, flexWrap: "wrap" }}>
             {[["perms", "Permisos de flujo", `${rol.perms.length}/${PERMISOS_FLUJO.length}`], ["mods", "Módulos visibles", `${modActivos.length}/${totalModulos}`], ["usr", "Usuarios", String(usuarios.length)]].map(([k, n, c]) => (
               <button key={k} type="button" onClick={() => setPestana(k)}
