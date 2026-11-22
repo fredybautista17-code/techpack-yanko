@@ -3641,7 +3641,7 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
     </div>
   );
 }
-function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCapsula, onNewRef, onEditCapsula, stages, isAdmin, onDeleteCapsula, onDeleteRef, config, onSetIlustracion, onSendObsCapsula, onMarkDoneObsCapsula, onCrearEnvio, onPasarAPreorden, onPasarCapsulaCompleta, onDeshacerEnviadoAPreorden, protos }) {
+function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCapsula, onNewRef, onEditCapsula, stages, isAdmin, onDeleteCapsula, onDeleteRef, config, onSetIlustracion, onSendObsCapsula, onMarkDoneObsCapsula, onCrearEnvio, onPasarAPreorden, onPasarCapsulaCompleta, onDeshacerEnviadoAPreorden, protos, soloCapsulaId, onQuitarFoco, onVolverFlujo }) {
   const [filter, setFilter] = useState("todos");
   const [clienteFiltro, setClienteFiltro] = useState("todos");
   const [mesFiltro, setMesFiltro] = useState("todos");
@@ -3771,6 +3771,7 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
   // En qué campos de la referencia aparece lo buscado (para avisarlo bajo la tarjeta).
   const dondeCoincide = (cap, r) => camposRef(cap, r).filter((c) => c[1] && tokens.some((k) => coincideTokCap(c[1], k))).map((c) => c[0]);
   function filteredRefs(cap) {
+    if (soloCapsulaId) return cap.referencias.slice(); // (2026-11-22) Abierta desde el Flujo de Pedidos: todas sus referencias, sin filtros
     // (2026-10-21) Al buscar se ignoran los filtros de estado, cliente y mes: si buscas un código lo quieres encontrar sin importar dónde esté.
     let refs = buscando ? cap.referencias.slice() : filter === "todos" ? cap.referencias.filter((r) => !["aprobado", "declinado"].includes(r.status)) : cap.referencias.filter((r) => r.status === filter);
     if (!buscando && clienteFiltro !== "todos") refs = refs.filter((r) => refCliente(cap, r) === clienteFiltro);
@@ -3781,7 +3782,7 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
   }
   // Una cápsula vacía (sin referencias) se muestra en "Todos" para poder agregarle referencias;
   // buscando, solo si su propio nombre/cliente calza con lo escrito.
-  const visibleCapsulas = capsulas.filter((cap) => (filter === "todos" && cap.referencias.length === 0 && (!buscando || capCalza(cap))) || filteredRefs(cap).length > 0);
+  const visibleCapsulas = soloCapsulaId ? capsulas.filter((cap) => cap.id === soloCapsulaId) : capsulas.filter((cap) => (filter === "todos" && cap.referencias.length === 0 && (!buscando || capCalza(cap))) || filteredRefs(cap).length > 0);
   return (
     <div>
       {editCap && (
@@ -3818,6 +3819,14 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
         <div><h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Cápsulas</h2><p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Colecciones con múltiples referencias</p></div>
         {perms.editar && <Btn onClick={onNewCapsula}>+ Nueva Cápsula</Btn>}
       </div>
+      {soloCapsulaId && (
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 14, padding: "10px 14px", background: T.denimBg, border: `1px solid ${T.denim}33`, borderRadius: 10, fontSize: 13, color: T.ink, fontWeight: 600 }}>
+          <span>Mostrando solo esta cápsula, con todas sus referencias.</span>
+          <span style={{ flex: 1 }} />
+          {onVolverFlujo && <button type="button" onClick={onVolverFlujo} style={{ border: "none", borderRadius: 8, background: T.ink, color: T.white, fontWeight: 700, fontSize: 12, padding: "7px 12px", cursor: "pointer", fontFamily: "inherit" }}>← Volver al Flujo de Pedidos</button>}
+          {onQuitarFoco && <button type="button" onClick={onQuitarFoco} style={{ border: `1px solid ${T.border}`, borderRadius: 8, background: T.white, color: T.ink, fontWeight: 700, fontSize: 12, padding: "7px 12px", cursor: "pointer", fontFamily: "inherit" }}>Ver todas las cápsulas</button>}
+        </div>
+      )}
       <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center", flexWrap: "wrap" }}>
         <span style={{ fontSize: 12, fontWeight: 700, color: T.slate }}>🏢 Clientes</span>
         <select value={clienteFiltro} onChange={(e) => setClienteFiltro(e.target.value)} style={{ padding: "7px 12px", border: `1.5px solid ${clienteFiltro !== "todos" ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, color: clienteFiltro !== "todos" ? T.denim : T.ink, background: clienteFiltro !== "todos" ? T.denimBg : T.white, outline: "none", fontFamily: "inherit", fontWeight: 700, cursor: "pointer" }}>
@@ -3841,7 +3850,7 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
         </span>
         {buscando && <span style={{ fontSize: 12, color: T.slate, fontWeight: 700 }}>{visibleCapsulas.length} cápsula{visibleCapsulas.length === 1 ? "" : "s"} con resultados · en todos los estados</span>}
       </div>
-      <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap", opacity: buscando ? 0.45 : 1 }}>
+      <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap", opacity: buscando || soloCapsulaId ? 0.45 : 1 }}>
         {FILTERS.map(([v, label]) => (
           <button key={v} onClick={() => cambiarFiltro(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${filter === v ? T.ink : T.border}`, background: filter === v ? T.ink : T.white, color: filter === v ? T.white : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
         ))}
@@ -3860,7 +3869,7 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
       {visibleCapsulas.map((cap) => {
         const refs = filteredRefs(cap);
         // Al buscar, las cápsulas con coincidencias se abren solas.
-        const abierta = buscando || !!expandidas[cap.id];
+        const abierta = buscando || !!soloCapsulaId || !!expandidas[cap.id];
         const od = cap.referencias.filter((r) => isOverdue(r, stages)).length;
         const aprobada = ilustracionAprobada(cap);
         const estadoIlustracion = ILUSTRACION_CAPSULA_ESTADO[cap.ilustracionEstado] || ILUSTRACION_CAPSULA_ESTADO.aprobado;
@@ -20032,6 +20041,8 @@ function AppInner() {
   // arreglo de {cap, ref} de origen y salta directo a Preórdenes en modo
   // "Nueva Orden" con esas filas ya agregadas.
   const [prefillPreordenDesde, setPrefillPreordenDesde] = useState(null);
+  // (2026-11-22, a pedido de Fredy) Cápsula que se abrió desde el Flujo de Pedidos: Cápsulas muestra solo esa, con todas sus referencias (null = normal).
+  const [capFocoId, setCapFocoId] = useState(null);
   const [flujoEtapa, setFlujoEtapa] = useState(null); // etapa que abre el «Flujo de Pedidos» (null = la de por defecto)
   function pasarAPreorden(cap, ref) {
     setPrefillPreordenDesde([{ cap, ref }]);
@@ -21433,6 +21444,7 @@ function AppInner() {
     return view === itemId;
   }
   function navClick(itemId) {
+    setCapFocoId(null);
     if (itemId === "pedidos_flujo") { setFlujoEtapa(null); setView("pedidos_flujo"); return; }
     if (itemId === "pm_montar") { setFlujoEtapa("montar"); setView("pedidos_flujo"); return; }
     const aliasFicha = { fi_preordenes: "preordenes", fi_ordenes: "ordenes", fi_historial_ordenes: "historial_ordenes" };
@@ -21692,6 +21704,7 @@ function AppInner() {
             )}
             {view === "capsulas" && (
               <CapsulasView capsulas={capsulasVisibles} protos={protosVisibles} role={role} perms={perms} currentUser={currentUser?.name}
+                soloCapsulaId={capFocoId} onQuitarFoco={() => setCapFocoId(null)} onVolverFlujo={() => { setCapFocoId(null); setFlujoEtapa("montar"); setView("pedidos_flujo"); }}
                 onSelectRef={(capId, refId) => { setSelCapId(capId); setSelRefId(refId); setView("ref-detail"); }}
                 onNewCapsula={() => setModal("new-capsula")}
                 onNewRef={(cap) => { setNewRefCap(cap); setModal("new-ref"); }}
@@ -21817,7 +21830,7 @@ function AppInner() {
                   calcularAvance={calcularAvancePedido}
                   protos={protosVisibles}
                   clienteDeCapsula={capsulaCliente}
-                  onAbrirRef={(capId, refId) => { setSelCapId(capId); setSelRefId(refId); setOrigenNav({ tipo: "flujo" }); empujarHistorial(); setView("ref-detail"); }}
+                  onAbrirCapsula={(capId) => { setCapFocoId(capId); setView("capsulas"); }}
                   onAbrirProto={(id) => { setSelProtoId(id); setOrigenNav({ tipo: "flujo" }); empujarHistorial(); setView("proto-detail"); }}
                 />
               </React.Suspense>

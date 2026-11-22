@@ -24,7 +24,7 @@ function Boton({ children, onClick, pri, title }) {
   return <button type="button" title={title} onClick={onClick} style={{ border: "none", borderRadius: 9, fontWeight: 700, fontSize: 11.5, padding: "6px 11px", cursor: "pointer", fontFamily: "inherit", background: pri ? C.ink : C.greyBg, color: pri ? C.white : C.ink }}>{children}</button>;
 }
 
-export default function PedidosFlujo({ capsulas, preordenes, pedidos, etapaInicial, puedePasarAPreorden, onPasarAPreorden, onIrVista, onAbrirPedido, fechaAprobacion, cargarAvance, calcularAvance, protos, clienteDeCapsula, onAbrirRef, onAbrirProto }) {
+export default function PedidosFlujo({ capsulas, preordenes, pedidos, etapaInicial, puedePasarAPreorden, onPasarAPreorden, onIrVista, onAbrirPedido, fechaAprobacion, cargarAvance, calcularAvance, protos, clienteDeCapsula, onAbrirCapsula, onAbrirProto }) {
   const corto = useAnchoCorto(900);
   const [sel, setSel] = useState(etapaInicial || "montar");
   useEffect(() => { if (etapaInicial) setSel(etapaInicial); }, [etapaInicial]);
@@ -97,16 +97,16 @@ export default function PedidosFlujo({ capsulas, preordenes, pedidos, etapaInici
       <>
         <Cab icono="🧩" titulo="Referencias por montar en una preorden" n={montar.length} nota="Aprobadas en cápsulas y todavía sin preorden. La que más lleva esperando va primero." />
         {!montar.length ? <Vacio t="No hay referencias esperando: todo lo aprobado ya está en una preorden. 🎉" /> : (
-          <Tabla cols={["Referencia", "Cápsula / Prototipo", "Cliente", "Esperando", ""]} filas={montar.map(({ cap, ref, esperando }) => {
-            // (2026-11-22, a pedido de Fredy) Se ve y se abre la cápsula o el prototipo de origen de cada referencia.
+          <Tabla cols={["Referencia", "Cápsula", "Cliente", "Esperando", ""]} filas={montar.map(({ cap, ref, esperando }) => {
+            // (2026-11-22, a pedido de Fredy) Se ve y se abre la cápsula (con todas sus referencias) y, si la referencia nació de un prototipo, ese prototipo.
             const proto = ref.fromProtoId ? (protos || []).find((x) => x.id === ref.fromProtoId) : null;
             const numProto = (proto && (proto.numPrototipo || proto.reference)) || ref.numPrototipo || "";
             const enlace = { color: C.blue, fontWeight: 700, cursor: "pointer", textDecoration: "underline", background: "none", border: "none", padding: 0, font: "inherit", textAlign: "left" };
             return (
-              <tr key={`${cap.id}-${ref.id}`} onClick={() => onAbrirRef && onAbrirRef(cap.id, ref.id)} style={{ cursor: onAbrirRef ? "pointer" : "default" }} title={onAbrirRef ? "Abrir la referencia" : ""}>
+              <tr key={`${cap.id}-${ref.id}`} onClick={() => onAbrirCapsula && onAbrirCapsula(cap.id)} style={{ cursor: onAbrirCapsula ? "pointer" : "default" }} title={onAbrirCapsula ? "Abrir la cápsula con todas sus referencias" : ""}>
                 <td style={td}><b>{ref.reference || "—"}</b>{sub(ref.name)}</td>
                 <td style={td}>
-                  <div>{onAbrirRef ? <button type="button" title="Abrir la referencia en su cápsula" onClick={(e) => { e.stopPropagation(); onAbrirRef(cap.id, ref.id); }} style={enlace}>{cap.name}</button> : cap.name}</div>
+                  <div>{onAbrirCapsula ? <button type="button" title="Abrir la cápsula con todas sus referencias" onClick={(e) => { e.stopPropagation(); onAbrirCapsula(cap.id); }} style={enlace}>{cap.name}</button> : cap.name}</div>
                   {(proto || numProto) && (
                     <div style={{ fontSize: 11.5, marginTop: 3 }}>
                       {proto && onAbrirProto
