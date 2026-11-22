@@ -687,3 +687,170 @@ export function SeguimientoPedido({ pedido, preordenes, currentUser, soloLectura
     </div>
   );
 }
+
+// ───────────────────────── TABLERO DE VIABILIDAD (área «Ficha de inicio» del menú) ─────────────────────────
+// (2026-11-22, a pedido de Fredy) Una fila por referencia de las preórdenes APROBADAS, con los 9 pasos, el estado de la ficha, si el pedido enlazado ya puede salir a cortar
+// y qué falta. Se llena con las mismas fichas de la preorden (ficha_inicio): aquí solo se ven todas juntas, se filtran y se abre el asistente.
+const NOMBRE_ESTADO = ["Sin empezar", "En proceso", "Por revisar", "Ficha lista"];
+const ESTILO_ESTADO = [
+  { c: C.slate, bg: C.greyBg }, { c: C.blue, bg: C.blueBg }, { c: C.amber, bg: C.amberBg }, { c: C.green, bg: C.greenBg },
+];
+const etiquetaPreorden = (p) => {
+  if (p.numeroOrden) {
+    const n = String(p.numeroOrden).padStart(2, "0");
+    const tipo = p.origenPantalla === "reprogramacion" ? "Reprogramación" : "Orden";
+    return p.siglasMarca ? `${tipo} ${p.siglasMarca}-${n}` : `${tipo} N°-${n}`;
+  }
+  return p.nombre || p.cliente || "Preorden";
+};
+
+export function TableroFichaInicio({ preordenes, pedidos, config, currentUser, puedeEditar }) {
+  const db = useMemo(dbDe, []);
+  const todas = useColeccion(COL_FICHA);
+  const [fCli, setFCli] = useState("");
+  const [fPre, setFPre] = useState("");
+  const [q, setQ] = useState("");
+  const [fEst, setFEst] = useState(null);
+  const [abierta, setAbierta] = useState(null); // { pre, item }
+  const [biblio, setBiblio] = useState(false);
+  const mapa = useMemo(() => { const m = {}; (todas || []).forEach((x) => { m[x.id] = x; }); return m; }, [todas]);
+
+  const filas = useMemo(() => {
+    const out = [];
+    (preordenes || []).forEach((pre) => {
+      if ((pre.estado || "montada") !== "aprobada") return;
+      (pre.items || []).forEach((item) => {
+        const f = completarFicha(mapa[idFicha(pre.id, item.itemId)], item, pre);
+        const { estados, porRevisar } = pasosDeReferencia(f, item);
+        const est = porRevisar ? 2 : estados[PASO_FICHA] === 2 ? 3 : estados[PASO_FICHA];
+        out.push({ pre, item, f, estados, porRevisar, est, key: `${pre.id}|${item.itemId}` });
+      });
+    });
+    return out;
+  }, [preordenes, mapa]);
+
+  // Pedido enlazado a cada referencia y si ya puede salir a cortar (misma regla del Seguimiento del Pedido)
+  const corteDe = useMemo(() => {
+    const m = {};
+    if (todas === null) return m;
+    (pedidos || []).forEach((p) => {
+      if (p.estado && p.estado !== "activo") return;
+      const enl = itemsDePedido(p, preordenes);
+      if (!enl.length) return;
+      const refs = enl.map(({ preorden, item }) => pasosDeReferencia(completarFicha(mapa[idFicha(preorden.id, item.itemId)], item, preorden), item).estados);
+      const yaCortado = (p.cortesRealizados || []).length > 0;
+      const est = estadoEtapasPedido(p, refs, yaCortado);
+      enl.forEach(({ preorden, item }) => { const k = `${preorden.id}|${item.itemId}`; if (!m[k]) m[k] = { numero: p.numero, est, yaCortado }; });
+    });
+    return m;
+  }, [pedidos, preordenes, mapa, todas]);
+
+  const clientes = useMemo(() => [...new Set(filas.map((r) => r.pre.cliente).filter(Boolean))].sort(), [filas]);
+  const pres = useMemo(() => {
+    const m = new Map();
+    filas.forEach((r) => { if (!fCli || r.pre.cliente === fCli) m.set(r.pre.id, etiquetaPreorden(r.pre)); });
+    return [...m.entries()];
+  }, [filas, fCli]);
+  const base = useMemo(() => {
+    const t = plano(q);
+    return filas.filter((r) => (!fCli || r.pre.cliente === fCli) && (!fPre || r.pre.id === fPre) && (!t || plano(`${r.item.referencia} ${r.item.nombre || ""}`).includes(t)));
+  }, [filas, fCli, fPre, q]);
+  const cont = [0, 1, 2, 3].map((e) => base.filter((r) => r.est === e).length);
+  const visibles = base.filter((r) => fEst === null || r.est === fEst);
+
+  async function ciclo(r, i) {
+    if (!puedeEditar) return;
+    const pasos = { ...(r.f.pasos || {}) };
+    pasos[i] = (num(pasos[i]) + 1) % 3;
+    await setDoc(doc(db, COL_FICHA, idFicha(r.pre.id, r.item.itemId)), { preordenId: r.pre.id, itemId: r.item.itemId, referencia: r.item.referencia || "", pasos, actualizadoPor: currentUser?.name || "", actualizadoEn: new Date().toISOString() }, { merge: true });
+  }
+  function queFalta(r) {
+    if (r.est === 0) return "Empezar la ficha";
+    if (r.est === 2) return "Las cantidades de la preorden cambiaron: revisar la ficha";
+    const m = [];
+    if (r.est === 1) { const fal = [0, 1, 2, 3, 4, 5].flatMap((i) => faltantesPaso(r.f, i, r.item)); m.push(...fal.slice(0, 2)); }
+    const manual = PASOS_MANUALES.filter((i) => r.estados[i] !== 2).map((i) => PASOS_SEMAFORO[i]);
+    if (manual.length) m.push(`marcar ${manual.join(", ")}`);
+    return m.length ? m.join(" · ") : "Todo listo en la ficha";
+  }
+
+  const th = { padding: "6px 4px", fontSize: 10, textTransform: "uppercase", letterSpacing: 0.4, color: C.slate, fontWeight: 700, textAlign: "center", verticalAlign: "bottom", lineHeight: 1.25 };
+  const sel = { ...inp, width: "auto", minWidth: 170 };
+  const itemAbierto = abierta;
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 4 }}>
+        <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: C.ink }}>🚦 Ficha de inicio</h2>
+        <span style={{ marginLeft: "auto" }}><Boton small onClick={() => setBiblio(true)}>📚 Bibliotecas de colores y vinilos</Boton></span>
+      </div>
+      <p style={{ margin: "0 0 14px", fontSize: 13, color: C.slate }}>Viabilidad del pedido: qué referencias ya tienen su ficha, qué falta y cuáles pueden salir a cortar. Solo aparecen las preórdenes aprobadas.</p>
+
+      {todas === null ? <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>Cargando fichas…</div> : (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: 10, marginBottom: 12 }}>
+            {[0, 1, 2, 3].map((e) => (
+              <button key={e} type="button" onClick={() => setFEst(fEst === e ? null : e)} style={{ textAlign: "left", cursor: "pointer", fontFamily: "inherit", background: ESTILO_ESTADO[e].bg, color: ESTILO_ESTADO[e].c, border: `2px solid ${fEst === e ? ESTILO_ESTADO[e].c : "transparent"}`, borderRadius: 12, padding: "10px 14px" }}>
+                <div style={{ fontSize: 24, fontWeight: 800, lineHeight: 1.1 }}>{cont[e]}</div>
+                <div style={{ fontSize: 12, fontWeight: 700 }}>{NOMBRE_ESTADO[e]}</div>
+              </button>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+            <select value={fCli} onChange={(e) => { setFCli(e.target.value); setFPre(""); }} style={sel}><option value="">Todos los clientes</option>{clientes.map((c) => <option key={c} value={c}>{c}</option>)}</select>
+            <select value={fPre} onChange={(e) => setFPre(e.target.value)} style={sel}><option value="">Todas las preórdenes</option>{pres.map(([id, et]) => <option key={id} value={id}>{et}</option>)}</select>
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="🔍 Buscar referencia o nombre…" style={{ ...inp, width: 240 }} />
+          </div>
+          <div style={{ overflowX: "auto", border: `1px solid ${C.border}`, borderRadius: 12, background: C.white }}>
+            <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 1180 }}>
+              <thead>
+                <tr style={{ background: C.white }}>
+                  <th style={{ ...th, textAlign: "left", paddingLeft: 10 }}>Referencia</th>
+                  <th style={th}>Preorden</th>
+                  {PASOS_SEMAFORO.map((p, i) => <th key={p} style={th}>{i + 1}<br />{p}</th>)}
+                  <th style={th}>Estado</th><th style={th}>Corte</th><th style={{ ...th, textAlign: "left" }}>Qué falta</th><th style={th} />
+                </tr>
+              </thead>
+              <tbody>
+                {visibles.map((r) => {
+                  const cd = corteDe[r.key];
+                  const ec = ESTILO_ESTADO[r.est];
+                  return (
+                    <tr key={r.key} style={{ borderTop: `1px solid ${C.border}` }}>
+                      <td style={{ padding: "8px 4px 8px 10px", fontSize: 13 }}><b>{r.item.referencia || "—"}</b><div style={{ fontSize: 11, color: C.slate, fontWeight: 600 }}>{r.item.nombre || ""}</div></td>
+                      <td style={{ textAlign: "center", fontSize: 11.5, fontWeight: 600, color: C.slate, padding: "0 4px" }}>{etiquetaPreorden(r.pre)}<div style={{ fontWeight: 500 }}>{r.pre.cliente || ""}</div></td>
+                      {PASOS_SEMAFORO.map((p, i) => (
+                        <td key={p} style={{ textAlign: "center", padding: "8px 2px" }}>
+                          {i === PASO_FICHA
+                            ? <Punto estado={r.estados[i]} halo titulo={r.porRevisar ? "Las cantidades de la preorden cambiaron: revisar la ficha" : "Ficha de inicio"} onClick={puedeEditar ? () => setAbierta({ pre: r.pre, item: r.item }) : undefined} />
+                            : PASOS_MANUALES.includes(i)
+                              ? <Punto estado={r.estados[i]} titulo={puedeEditar ? "Tocar para cambiar: pendiente → en proceso → listo" : p} onClick={puedeEditar ? () => ciclo(r, i) : undefined} />
+                              : <Punto estado={r.estados[i]} titulo={i === 8 ? "Se habilita al completar las etapas 1 a 8 del pedido" : "Se marca en el Seguimiento del Pedido"} />}
+                        </td>
+                      ))}
+                      <td style={{ textAlign: "center", padding: "0 4px" }}><span style={{ fontSize: 11, fontWeight: 700, color: ec.c, background: ec.bg, borderRadius: 20, padding: "3px 9px", whiteSpace: "nowrap" }}>{NOMBRE_ESTADO[r.est]}</span></td>
+                      <td style={{ textAlign: "center", padding: "0 4px" }}>
+                        {!cd ? <span style={{ fontSize: 11, color: C.grey, fontWeight: 600 }} title="Esta referencia todavía no está enlazada a un pedido">Sin pedido</span>
+                          : cd.yaCortado ? <span style={{ fontSize: 11, fontWeight: 700, color: C.blue, background: C.blueBg, borderRadius: 20, padding: "3px 9px", whiteSpace: "nowrap" }} title={`Pedido ${cd.numero}`}>✂ Ya cortó</span>
+                          : cd.est.puedeCortar ? <span style={{ fontSize: 11, fontWeight: 700, color: C.green, background: C.greenBg, borderRadius: 20, padding: "3px 9px", whiteSpace: "nowrap" }} title={`Pedido ${cd.numero}`}>✅ Puede</span>
+                          : <span style={{ fontSize: 11, fontWeight: 700, color: C.red, background: C.redBg, borderRadius: 20, padding: "3px 9px", whiteSpace: "nowrap" }} title={`Pedido ${cd.numero}: faltan ${cd.est.faltan.map((x) => PASOS_SEMAFORO[x]).join(", ")}`}>🔒 No puede</span>}
+                        {cd && <div style={{ fontSize: 10.5, color: C.slate, fontWeight: 600, marginTop: 2 }}>Pedido {cd.numero}</div>}
+                      </td>
+                      <td style={{ fontSize: 12, color: C.slate, fontWeight: 600, padding: "0 8px", minWidth: 190 }}>{queFalta(r)}</td>
+                      <td style={{ padding: "0 8px", whiteSpace: "nowrap" }}>
+                        {puedeEditar && <Boton small onClick={() => setAbierta({ pre: r.pre, item: r.item })}>{r.est === 3 ? "Ver ficha" : r.est === 1 ? "Continuar" : r.est === 2 ? "Revisar" : "Empezar"}</Boton>}
+                      </td>
+                    </tr>
+                  );
+                })}
+                {!visibles.length && <tr><td colSpan={15} style={{ padding: 28, textAlign: "center", color: C.slate, fontSize: 13 }}>{filas.length ? "Ninguna referencia con esos filtros." : "Todavía no hay preórdenes aprobadas."}</td></tr>}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ fontSize: 11.5, color: C.slate, fontWeight: 600, marginTop: 8, lineHeight: 1.5 }}>Los pasos 3, 5, 7 y 8 se marcan en el Seguimiento del Pedido; «Corte» queda en 🔒 hasta completar las 8 etapas anteriores del pedido enlazado.{!puedeEditar ? " Para llenar fichas necesitas el permiso «Ficha de inicio» en Roles." : ""}</div>
+        </>
+      )}
+      {itemAbierto && <AsistenteFicha preorden={itemAbierto.pre} item={itemAbierto.item} guardada={mapa[idFicha(itemAbierto.pre.id, itemAbierto.item.itemId)]} config={config} usuario={currentUser?.name || ""} onClose={() => setAbierta(null)} />}
+      {biblio && <BibliotecasFicha puedeEditar={puedeEditar} onClose={() => setBiblio(false)} />}
+    </div>
+  );
+}

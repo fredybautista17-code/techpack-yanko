@@ -46,6 +46,7 @@ const MiDiaTarjetasStandalone = React.lazy(() => import("./mi-dia-tarjetas"));
 // (2026-11-22, a pedido de Fredy) Ficha de inicio del pedido: semáforo de 9 pasos + asistente + bibliotecas de colores y vinilos (dentro de cada preorden aprobada).
 const FichaInicioPreorden = React.lazy(() => import("./ficha-inicio"));
 const SeguimientoPedido = React.lazy(() => import("./ficha-inicio").then((m) => ({ default: m.SeguimientoPedido })));
+const TableroFichaInicio = React.lazy(() => import("./ficha-inicio").then((m) => ({ default: m.TableroFichaInicio })));
 const FinancieraStandalone = React.lazy(() => import("./modulo-financiera").then((m) => ({ default: m.FinancieraStandalone })));
 const ModuloPlanta = React.lazy(() => import("./modulo-planta"));
 const ModuloBodega = React.lazy(() => import("./modulo-bodega"));
@@ -21633,6 +21634,18 @@ function AppInner() {
           ],
         }]
       : []),
+    // (2026-11-22, a pedido de Fredy) Área «Ficha de inicio»: viabilidad del pedido (tablero con los 9 pasos por referencia y si el pedido puede salir a cortar).
+    // Preórdenes y Órdenes también se abren desde aquí (son las mismas pantallas que en Pedidos; los ids fi_* solo evitan marcar dos ítems a la vez).
+    ...(canFichaInicio
+      ? [{
+          id: "ficha_area", icon: "🚦", label: "Ficha de inicio",
+          items: [
+            { id: "ficha_tablero", icon: "🚦", label: "Tablero de viabilidad" },
+            ...(canAccessPreordenes ? [{ id: "fi_preordenes", icon: "🧾", label: "Preórdenes" }] : []),
+            ...(canAccessOrdenes ? [{ id: "fi_ordenes", icon: "🧵", label: "Órdenes" }, { id: "fi_historial_ordenes", icon: "📜", label: "Historial de Órdenes" }] : []),
+          ],
+        }]
+      : []),
     ...(verAreaContabilidad
       ? [{ id: "contabilidad_area", icon: "💰", label: "Contabilidad", items: [{ id: "contabilidad_area", icon: "💰", label: "Módulo Contabilidad" }] }]
       : []),
@@ -21687,10 +21700,14 @@ function AppInner() {
     if (itemId === "pedidos") return view === "pedidos" || view === "pedido-detail";
     if (itemId === "pedidos_admin") return view === "pedidos_admin";
     if (itemId === "pedidos_clientes") return view === "pedidos_clientes";
-    if (itemId === "preordenes") return view === "preordenes";
+    if (itemId === "preordenes") return view === "preordenes" && areaAbierta !== "ficha_area";
+    if (itemId === "ordenes") return view === "ordenes" && areaAbierta !== "ficha_area";
+    if (itemId === "historial_ordenes") return view === "historial_ordenes" && areaAbierta !== "ficha_area";
+    if (itemId === "fi_preordenes") return view === "preordenes" && areaAbierta === "ficha_area";
+    if (itemId === "fi_ordenes") return view === "ordenes" && areaAbierta === "ficha_area";
+    if (itemId === "fi_historial_ordenes") return view === "historial_ordenes" && areaAbierta === "ficha_area";
     if (itemId === "explosion_materiales") return view === "explosion_materiales";
     if (itemId === "lotes_por_integrar") return view === "lotes_por_integrar";
-    if (itemId === "historial_ordenes") return view === "historial_ordenes";
     if (itemId === "produccion") return view === "produccion";
     if (itemId === "devoluciones") return view === "devoluciones";
     if (itemId === "__corte__") return moduloActivo === "corte";
@@ -21706,6 +21723,8 @@ function AppInner() {
     return view === itemId;
   }
   function navClick(itemId) {
+    const aliasFicha = { fi_preordenes: "preordenes", fi_ordenes: "ordenes", fi_historial_ordenes: "historial_ordenes" };
+    if (aliasFicha[itemId]) { setView(aliasFicha[itemId]); return; }
     if (itemId === "__corte__") { setModuloActivo("corte"); return; }
     if (itemId === "contabilidad_area") { setModuloActivo("contabilidad"); return; }
     if (itemId === "cotizaciones") { setModuloActivo("cotizaciones"); return; }
@@ -22067,6 +22086,11 @@ function AppInner() {
                 </div>
                 <LotesPorIntegrarView db={db} functionsClient={functionsClient} T={T} pedidos={pedidosVisibles} />
               </div>
+            )}
+            {view === "ficha_tablero" && canFichaInicio && (
+              <React.Suspense fallback={<div style={{ padding: 30, textAlign: "center", color: T.slate, fontSize: 13 }}>Cargando…</div>}>
+                <TableroFichaInicio preordenes={preordenesVisibles} pedidos={pedidosVisibles} config={config} currentUser={currentUser} puedeEditar={canFichaInicio} />
+              </React.Suspense>
             )}
             {view === "preordenes" && (
               <PreordenesView

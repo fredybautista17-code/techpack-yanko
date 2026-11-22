@@ -22,6 +22,7 @@ import { diasDeTrabajoDelMes } from "./dias-habiles";
 import { useVacacionesCorte } from "./use-vacaciones-corte";
 import { costoCorteConVacaciones, costoDiaCorte, corteSinFicha, resumenVacacionesCorte } from "./corte-vacaciones";
 import AvisoVacacionesCorte from "./aviso-vacaciones-corte";
+import { CandadoCorteContext, AvisoCandadoCorte, useCandadoCorte } from "./ficha-candado";
 import { marcadaDeColor, opcionesCapasMarcada } from "./corte-capas";
 import { huecosLibres, totalLibreMin, fmtDuracionMin, fmtHoraMin, colorDeLote, nombreMesonBonito, MESON_LIBRE_INICIO_MIN, MESON_LIBRE_FIN_MIN } from "./mesones-libre";
 // ─── FIREBASE ────────────────────────────────────────────────────────────────
@@ -1259,6 +1260,7 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
       width={760}
       inline={inline}
     >
+      <AvisoCandadoCorte pedido={pedido} />
       {/* Avance del pedido — cuánto lleva cortado en total (incluye lo ya
           registrado en cortes anteriores más lo que se está por guardar acá
           mismo), para que el cortador no tenga que salir a revisar el
@@ -3615,6 +3617,7 @@ function DetallePedido({
   }
   return (
     <div>
+      <AvisoCandadoCorte pedido={pedido} />
       {showCorte && (
         <ProgramarCorteModal
           pedido={pedido}
@@ -5966,6 +5969,7 @@ function ColaSugerida({ pedidos, vpRefMap, lotesCortadoMap, onSelectPedido }) {
                 <div style={{ fontSize: 12, color: C.slate, margin: "8px 0" }}>
                   Despacho: {p.fechaDespacho || "—"} · <strong style={{ color: C.amber }}>{fmtNum(totalPendiente)}</strong> de {fmtNum(totalPedido)} prendas pendientes
                 </div>
+                <AvisoCandadoCorte pedido={p} chico />
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                   {pendientesRef.slice(0, 8).map((r) => (
                     <span
@@ -6916,6 +6920,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                             }}
                           >
                             <div style={{ fontWeight: 800, fontSize: 12, color: C.ink }}>Pedido #{p.numero}</div>
+                            <AvisoCandadoCorte pedido={p} chico />
                             <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>
                               Despacho {p.fechaDespacho || "—"} · {filas.length} ref.
                               {seleccionadosPedido > 0 && <span style={{ color: C.blue, fontWeight: 700 }}> · {seleccionadosPedido} sel.</span>}
@@ -6959,6 +6964,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                   });
                   return (
                     <div style={{ background: C.white, borderRadius: 12, border: `1px solid ${C.border}`, padding: 16 }}>
+                      <AvisoCandadoCorte pedido={p} />
                       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
                         <span style={{ fontWeight: 800, fontSize: 14, color: C.ink, flex: 1 }}>
                           {clienteSel} · Pedido #{p.numero}
@@ -10470,6 +10476,8 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
     { id: "costo", icon: "💰", label: "Centro de Costo" },
     ...(isAdmin ? [{ id: "admin", icon: "⚙", label: "Admin Corte" }] : []),
   ];
+  // (2026-11-22, a pedido de Fredy) Aviso rojo «No puede salir a cortar» cuando faltan etapas del Seguimiento del Pedido (ver ficha-candado.jsx). Solo avisa; no bloquea.
+  const candadoCorte = useCandadoCorte((p) => calcularCortadoPendiente(p, vpRefMap, lotesCortadoMap).totalCortado > 0);
   if (loading)
     return (
       <div
@@ -10488,6 +10496,7 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
       </div>
     );
   return (
+    <CandadoCorteContext.Provider value={candadoCorte}>
     <div
       style={{
         minHeight: "100vh",
@@ -10777,5 +10786,6 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
         </div>
       </div>
     </div>
+    </CandadoCorteContext.Provider>
   );
 }
