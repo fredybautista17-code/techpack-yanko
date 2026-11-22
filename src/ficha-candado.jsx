@@ -1,19 +1,18 @@
 // ─── CANDADO DE CORTE · aviso en el módulo de Corte ──────────────────────────────────────────────────────────
-// (2026-11-22, a pedido de Fredy) Un pedido NO debe salir a cortar si no están hechas las 8 etapas anteriores del Seguimiento del Pedido.
-// Aquí se calcula, con la misma regla de «Seguimiento del Pedido», si cada pedido activo puede cortar y se muestra un AVISO ROJO en Corte
+// (2026-11-22, a pedido de Fredy) Un pedido NO debe salir a cortar si no están hechas las 9 etapas anteriores del Seguimiento del Pedido.
+// Aquí se calcula, con la misma regla de «Seguimiento del Pedido» (evaluarPedido), si cada pedido activo puede cortar y se muestra un AVISO ROJO en Corte
 // (cola sugerida, detalle del pedido, programación y registro del corte). Es solo un aviso: no bloquea el guardado.
 // Los pedidos que ya tienen corte no se avisan, ni los que el administrador habilitó con motivo.
 import React, { createContext, useContext, useEffect, useRef, useState } from "react";
 import { getApps } from "firebase/app";
 import { collection, getFirestore, onSnapshot, query, where } from "firebase/firestore";
-import { COL_FICHA, PASOS_SEMAFORO, ETAPAS_PEDIDO, ETAPA_CORTE, idFicha, completarFicha, pasosDeReferencia, itemsDePedido, estadoEtapasPedido } from "./ficha-inicio-calculo";
+import { COL_FICHA, PASOS_SEMAFORO, ETAPAS_PEDIDO, ETAPA_CORTE, evaluarPedido } from "./ficha-inicio-calculo";
 
 export const CandadoCorteContext = createContext(null);
 
 export function estadoCandadoDePedido(pedido, preordenesAprobadas, fichasPorId, yaCortado) {
-  const enlaces = itemsDePedido(pedido, preordenesAprobadas);
-  const refs = enlaces.map(({ preorden, item }) => pasosDeReferencia(completarFicha(fichasPorId[idFicha(preorden.id, item.itemId)], item, preorden), item).estados);
-  const est = estadoEtapasPedido(pedido, refs, yaCortado);
+  // Misma función que usan el Seguimiento del Pedido y el tablero de viabilidad (una sola regla)
+  const { enlaces, est } = evaluarPedido(pedido, preordenesAprobadas, fichasPorId, yaCortado);
   const excepcion = !!(pedido.seguimiento && pedido.seguimiento[ETAPAS_PEDIDO[ETAPA_CORTE]] && pedido.seguimientoExcepcion);
   return {
     libre: est.corteLibre || excepcion,

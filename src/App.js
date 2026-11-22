@@ -47,6 +47,7 @@ const MiDiaTarjetasStandalone = React.lazy(() => import("./mi-dia-tarjetas"));
 const FichaInicioPreorden = React.lazy(() => import("./ficha-inicio"));
 const SeguimientoPedido = React.lazy(() => import("./ficha-inicio").then((m) => ({ default: m.SeguimientoPedido })));
 const TableroFichaInicio = React.lazy(() => import("./ficha-inicio").then((m) => ({ default: m.TableroFichaInicio })));
+const PedidosFlujo = React.lazy(() => import("./pedidos-flujo"));
 const FinancieraStandalone = React.lazy(() => import("./modulo-financiera").then((m) => ({ default: m.FinancieraStandalone })));
 const ModuloPlanta = React.lazy(() => import("./modulo-planta"));
 const ModuloBodega = React.lazy(() => import("./modulo-bodega"));
@@ -824,9 +825,9 @@ const INIT_CONFIG = {
   ],
   clientes: [],
 };
-// (2026-11-22, a pedido de Fredy) Las 9 etapas del Seguimiento del Pedido (las mismas del semáforo de la Ficha de inicio); el candado de corte está en ficha-inicio.jsx.
+// (2026-11-22, a pedido de Fredy) Las 10 etapas del Seguimiento del Pedido (con «Montar pedido», que se marca sola) (las mismas del semáforo de la Ficha de inicio); el candado de corte está en ficha-inicio.jsx.
 // Las claves conservan el nombre viejo cuando ya existía, para no perder lo ya marcado.
-const PEDIDO_STAGES = ["Hoja de Vida", "Ficha de inicio", "Combinaciones de vinilo", "Contramuestra", "Alertas de insumos", "Ficha Técnica", "Explosión de Materiales", "Tela en bodega", "Corte"];
+const PEDIDO_STAGES = ["Hoja de Vida", "Ficha de inicio", "Combinaciones de vinilo", "Contramuestra", "Alertas de insumos", "Ficha Técnica", "Montar pedido", "Explosión de Materiales", "Tela en bodega", "Corte"];
 const STATUS = {
   borrador: { label: "Borrador", color: T.slate, bg: "#EDEDF2" },
   en_proceso: { label: "En proceso", color: T.denim, bg: T.denimBg },
@@ -9789,7 +9790,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                 {/* (2026-11-22, a pedido de Fredy) Semáforo de 9 pasos + Ficha de inicio + bibliotecas de colores y vinilos; el cliente no lo ve. */}
                 {!(currentUser?.role === "Cliente" && !currentUser?.isAdmin) && (
                   <React.Suspense fallback={null}>
-                    <FichaInicioPreorden preorden={p} config={config} currentUser={currentUser} puedeEditar={!!puedeFichaInicio} />
+                    <FichaInicioPreorden preorden={p} pedidos={pedidos} config={config} currentUser={currentUser} puedeEditar={!!puedeFichaInicio} />
                   </React.Suspense>
                 )}
                 <div style={{ marginTop: 20 }}>
@@ -17675,6 +17676,12 @@ function normRefKeyPedido(v) { return String(v ?? "").toUpperCase().replace(/[^A
 // (2026-10-30, a pedido de Fredy) Avance de UN pedido, referencia por referencia (lo usan el tablero de Pedidos y el detalle del pedido, para que coincidan):
 // cortado = lo MAYOR entre lo registrado en ATLAS, los lotes de Planeación y las órdenes de producción de Busint; "falta" no se compensa entre referencias
 // (el sobrecorte de una no tapa lo que falta en otra). Facturado = neto de Busint (null si el avance aún no carga). porRef: clave de referencia -> { total, atl, comb }.
+// Fecha (AAAA-MM-DD) en que una referencia o prototipo pasó a «Aprobado» (la misma lógica de Estadísticas Diseño); la usa el Flujo de Pedidos para contar los días esperando.
+function fechaAprobacionItem(x) {
+  const txt = `Estado → "${STATUS.aprobado?.label}".`;
+  const o = [...(x.observations || [])].reverse().find((ob) => ob.type === "update" && ob.text === txt);
+  return (o?.date || x.stageStartedAt || x.createdAt || "").slice(0, 10);
+}
 function calcularAvancePedido(p, avance) {
   const porRef = new Map();
   (p.referencias || []).forEach((r) => {
@@ -20333,6 +20340,7 @@ function AppInner() {
   // arreglo de {cap, ref} de origen y salta directo a Preórdenes en modo
   // "Nueva Orden" con esas filas ya agregadas.
   const [prefillPreordenDesde, setPrefillPreordenDesde] = useState(null);
+  const [flujoEtapa, setFlujoEtapa] = useState(null); // etapa que abre el «Flujo de Pedidos» (null = la de por defecto)
   function pasarAPreorden(cap, ref) {
     setPrefillPreordenDesde([{ cap, ref }]);
     setView("preordenes");
@@ -21620,16 +21628,19 @@ function AppInner() {
       ? [{
           id: "pedidos_area", icon: "🧾", label: "Pedidos",
           items: [
-            ...(canAccessPedidos ? [{ id: "pedidos", icon: "📦", label: "Pedidos" }] : []),
-            ...(canAccessPedidosClientes ? [{ id: "pedidos_clientes", icon: "🏢", label: "Clientes" }] : []),
+            // (2026-11-22, a pedido de Fredy) Orden del proceso: Flujo de Pedidos → Por montar → Preórdenes → Órdenes → Pedidos → Corte; después los ítems de apoyo.
+            ...(!esClienteCot ? [{ id: "pedidos_flujo", icon: "🧭", label: "Flujo de Pedidos" }] : []),
+            ...(!esClienteCot && canAccessPreordenes ? [{ id: "pm_montar", icon: "🧩", label: "Por montar" }] : []),
             ...(canAccessPreordenes ? [{ id: "preordenes", icon: "🧾", label: "Preórdenes" }] : []),
+            ...(canAccessOrdenes ? [{ id: "ordenes", icon: "🧵", label: "Órdenes" }] : []),
+            ...(canAccessPedidos ? [{ id: "pedidos", icon: "📦", label: "Pedidos" }] : []),
+            ...(canAccessCorte ? [{ id: "__corte__", icon: "✂", label: "Corte" }] : []),
+            ...(canAccessPedidosClientes ? [{ id: "pedidos_clientes", icon: "🏢", label: "Clientes" }] : []),
             ...(canAccessExplosionMateriales ? [{ id: "explosion_materiales", icon: "🧮", label: "Explosión de materiales" }] : []),
             ...(canAccessLotesPorIntegrar ? [{ id: "lotes_por_integrar", icon: "📦", label: "Lotes por integrar" }] : []),
-            ...(canAccessOrdenes ? [{ id: "ordenes", icon: "🧵", label: "Órdenes" }] : []),
             ...(canAccessOrdenes ? [{ id: "historial_ordenes", icon: "📜", label: "Historial de Órdenes" }] : []),
             ...(canAccessProduccion ? [{ id: "produccion", icon: "🏭", label: "Producción" }] : []),
             ...(canAccessDevoluciones ? [{ id: "devoluciones", icon: "↩️", label: "Devoluciones" }] : []),
-            ...(canAccessCorte ? [{ id: "__corte__", icon: "✂", label: "Corte" }] : []),
             ...(currentUser?.isAdmin ? [{ id: "pedidos_admin", icon: "⚙", label: "Admin Pedidos" }] : []),
           ],
         }]
@@ -21698,6 +21709,8 @@ function AppInner() {
     if (itemId === "protos") return view === "protos" || view === "proto-detail";
     if (itemId === "capsulas") return view === "capsulas" || view === "ref-detail";
     if (itemId === "pedidos") return view === "pedidos" || view === "pedido-detail";
+    if (itemId === "pedidos_flujo") return view === "pedidos_flujo" && flujoEtapa !== "montar";
+    if (itemId === "pm_montar") return view === "pedidos_flujo" && flujoEtapa === "montar";
     if (itemId === "pedidos_admin") return view === "pedidos_admin";
     if (itemId === "pedidos_clientes") return view === "pedidos_clientes";
     if (itemId === "preordenes") return view === "preordenes" && areaAbierta !== "ficha_area";
@@ -21723,6 +21736,8 @@ function AppInner() {
     return view === itemId;
   }
   function navClick(itemId) {
+    if (itemId === "pedidos_flujo") { setFlujoEtapa(null); setView("pedidos_flujo"); return; }
+    if (itemId === "pm_montar") { setFlujoEtapa("montar"); setView("pedidos_flujo"); return; }
     const aliasFicha = { fi_preordenes: "preordenes", fi_ordenes: "ordenes", fi_historial_ordenes: "historial_ordenes" };
     if (aliasFicha[itemId]) { setView(aliasFicha[itemId]); return; }
     if (itemId === "__corte__") { setModuloActivo("corte"); return; }
@@ -22086,6 +22101,23 @@ function AppInner() {
                 </div>
                 <LotesPorIntegrarView db={db} functionsClient={functionsClient} T={T} pedidos={pedidosVisibles} />
               </div>
+            )}
+            {view === "pedidos_flujo" && !esClienteCot && (
+              <React.Suspense fallback={<div style={{ padding: 30, textAlign: "center", color: T.slate, fontSize: 13 }}>Cargando…</div>}>
+                <PedidosFlujo
+                  capsulas={capsulasVisibles}
+                  preordenes={preordenesVisibles}
+                  pedidos={pedidosVisibles}
+                  etapaInicial={flujoEtapa}
+                  puedePasarAPreorden={!!perms?.editar && canAccessPreordenes}
+                  onPasarAPreorden={pasarAPreorden}
+                  onIrVista={(v) => setView(v)}
+                  onAbrirPedido={(id) => { setSelPedidoId(id); setView("pedido-detail"); }}
+                  fechaAprobacion={fechaAprobacionItem}
+                  cargarAvance={cargarAvancePedidos}
+                  calcularAvance={calcularAvancePedido}
+                />
+              </React.Suspense>
             )}
             {view === "ficha_tablero" && canFichaInicio && (
               <React.Suspense fallback={<div style={{ padding: 30, textAlign: "center", color: T.slate, fontSize: 13 }}>Cargando…</div>}>

@@ -9,11 +9,15 @@ export const COL_COLORES = "ficha_colores";
 export const COL_VINILOS = "ficha_vinilos";
 export const MAX_COLORES = 200;
 
+// (2026-11-22, a pedido de Fredy) Pasan a 10: «Montar pedido» va después de la Ficha técnica y se marca SOLO (la referencia ya aparece en un pedido de ATLAS).
+// OJO: la ficha guarda a mano solo los pasos 0, 3 y 5 (por número); como el paso nuevo entra DESPUÉS de ellos, lo ya guardado no se corre.
 export const PASOS_SEMAFORO = [
   "Hoja de vida", "Ficha de inicio", "Combinaciones de vinilo", "Contramuestra", "Alertas de insumos",
-  "Ficha técnica", "Explosión de materiales", "Tela en bodega", "Corte",
+  "Ficha técnica", "Montar pedido", "Explosión de materiales", "Tela en bodega", "Corte",
 ];
 export const PASO_FICHA = 1; // índice del paso que se llena solo desde la ficha
+export const PASO_MONTAR = 6; // se marca solo: la referencia ya está en un pedido
+export const PASO_CORTE = 9;
 export const PASOS_MANUALES = [0, 3, 5]; // se marcan a mano en la Fase 1; el resto se conectará en fases siguientes
 export const TIPOS_VINILO = ["Vinilo", "DTF", "Sublimación", "Bordado", "Otro"];
 
@@ -139,11 +143,16 @@ export function estadoPasoFicha(f, item) {
 }
 
 // Estado de los 9 pasos de una referencia: { estados:[0..8], porRevisar }
-export function pasosDeReferencia(f, item) {
+// montada = la referencia ya aparece en un pedido de ATLAS (paso «Montar pedido», automático)
+export function pasosDeReferencia(f, item, montada) {
   const estados = PASOS_SEMAFORO.map((_, i) => num(((f || {}).pasos || {})[i]));
   estados[PASO_FICHA] = estadoPasoFicha(f, item);
+  estados[PASO_MONTAR] = montada ? 2 : 0;
   return { estados, porRevisar: fichaPorRevisar(f, item) };
 }
+// Primer paso (antes del corte) que todavía no está hecho; -1 si ya están los 9 anteriores al corte
+export const siguientePaso = (estados) => { for (let i = 0; i < PASO_CORTE; i++) if (num((estados || [])[i]) !== 2) return i; return -1; };
+export const pasosHechos = (estados) => (estados || []).filter((e) => num(e) === 2).length;
 
 export function resumenSemaforo(items, fichasPorItem) {
   let listas = 0, porRevisar = 0;
@@ -180,8 +189,10 @@ export function snapshotVinilo(v) { return { id: v.id, nombre: v.nombre || "", c
 // (2026-11-22, a pedido de Fredy) El «Seguimiento del Pedido» pasó de 17 etapas a estas 9 (las mismas del semáforo). Un pedido NO puede salir a cortar
 // (etapa 9) mientras no estén hechas las 8 anteriores; solo el administrador puede saltarse el candado dejando el motivo. Los pedidos que ya tienen corte
 // no se bloquean. Las etapas guardan su casilla en pedido.seguimiento[clave]; las claves conservan el nombre viejo cuando ya existía (así no se pierde lo marcado).
-export const ETAPAS_PEDIDO = ["Hoja de Vida", "Ficha de inicio", "Combinaciones de vinilo", "Contramuestra", "Alertas de insumos", "Ficha Técnica", "Explosión de Materiales", "Tela en bodega", "Corte"];
-export const ETAPA_CORTE = 8;
+// (2026-11-22) Ahora son 10 etapas: «Montar pedido» (se marca sola, el pedido ya está montado) entra después de la Ficha técnica. Las casillas se guardan por NOMBRE, así que lo ya marcado se conserva.
+export const ETAPAS_PEDIDO = ["Hoja de Vida", "Ficha de inicio", "Combinaciones de vinilo", "Contramuestra", "Alertas de insumos", "Ficha Técnica", "Montar pedido", "Explosión de Materiales", "Tela en bodega", "Corte"];
+export const ETAPA_CORTE = 9;
+export const ETAPA_MONTAR = 6;
 export const ETAPAS_DESDE_FICHA = [0, 1, 3, 5]; // las que salen solas del semáforo de las referencias (pasos manuales 1/4/6 y la ficha); el resto se marca a mano en el pedido
 
 export const normRef = (r) => String(r || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
@@ -213,13 +224,40 @@ export function itemsDePedido(pedido, preordenes) {
 export function estadoEtapasPedido(pedido, refsEstados, yaCortado) {
   const seg = (pedido || {}).seguimiento || {};
   const refs = refsEstados || [];
-  const auto = ETAPAS_PEDIDO.map((_, i) => ETAPAS_DESDE_FICHA.includes(i) && refs.length > 0 && refs.every((e) => e[i] === 2));
-  // Con referencias enlazadas, las etapas que salen de la ficha SOLO dependen de ella (no se pueden marcar a mano en el pedido); sin enlace, se marcan a mano
-  const derivada = ETAPAS_PEDIDO.map((_, i) => ETAPAS_DESDE_FICHA.includes(i) && refs.length > 0);
+  const auto = ETAPAS_PEDIDO.map((_, i) => i === ETAPA_MONTAR || (ETAPAS_DESDE_FICHA.includes(i) && refs.length > 0 && refs.every((e) => e[i] === 2)));
+  // Con referencias enlazadas, las etapas que salen de la ficha SOLO dependen de ella (no se pueden marcar a mano en el pedido); sin enlace, se marcan a mano.
+  // «Montar pedido» siempre es automática: si el pedido existe en ATLAS, ya está montado.
+  const derivada = ETAPAS_PEDIDO.map((_, i) => i === ETAPA_MONTAR || (ETAPAS_DESDE_FICHA.includes(i) && refs.length > 0));
   const hechas = ETAPAS_PEDIDO.map((k, i) => (derivada[i] ? auto[i] : !!seg[k] || auto[i]));
   const faltan = [];
   for (let i = 0; i < ETAPA_CORTE; i++) if (!hechas[i]) faltan.push(i);
   const puedeCortar = faltan.length === 0;
   const siguiente = hechas.findIndex((h) => !h);
   return { hechas, auto, derivada, faltan, puedeCortar, corteLibre: puedeCortar || !!yaCortado, total: hechas.filter(Boolean).length, siguiente };
+}
+
+// Evalúa UN pedido con la misma regla en todas partes (Seguimiento del Pedido, tablero de viabilidad y aviso de Corte):
+// referencias enlazadas → estados de sus 10 pasos → etapas del pedido y si puede salir a cortar.
+// fichasPorId: { "<preordenId>__<itemId>": ficha guardada }
+export function evaluarPedido(pedido, preordenes, fichasPorId, yaCortado) {
+  const enlaces = itemsDePedido(pedido, preordenes);
+  const refs = enlaces.map(({ preorden, item }) => {
+    const f = completarFicha((fichasPorId || {})[idFicha(preorden.id, item.itemId)], item, preorden);
+    const r = pasosDeReferencia(f, item, true);
+    return { preorden, item, ficha: f, estados: r.estados, porRevisar: r.porRevisar };
+  });
+  const est = estadoEtapasPedido(pedido, refs.map((r) => r.estados), yaCortado);
+  return { enlaces, refs, est };
+}
+
+// Pedido al que pertenece cada referencia de las preórdenes aprobadas: { "<preordenId>|<itemId>": pedido } (el más reciente gana si hay varios)
+export function pedidoPorReferencia(pedidos, preordenes) {
+  const m = {};
+  (pedidos || []).forEach((p) => {
+    itemsDePedido(p, preordenes).forEach(({ preorden, item }) => {
+      const k = `${preorden.id}|${item.itemId}`;
+      if (!m[k]) m[k] = p;
+    });
+  });
+  return m;
 }
