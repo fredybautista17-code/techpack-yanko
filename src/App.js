@@ -43,6 +43,8 @@ const ProgramadorProcesosStandalone = React.lazy(() => import("./modulo-planeaci
 const AreasStandalone = React.lazy(() => import("./modulo-planeacion").then((m) => ({ default: m.AreasStandalone })));
 const MiDiaNominaStandalone = React.lazy(() => import("./modulo-planeacion").then((m) => ({ default: m.MiDiaNominaStandalone })));
 const MiDiaTarjetasStandalone = React.lazy(() => import("./mi-dia-tarjetas"));
+// (2026-11-22, a pedido de Fredy) Ficha de inicio del pedido: semáforo de 9 pasos + asistente + bibliotecas de colores y vinilos (dentro de cada preorden aprobada).
+const FichaInicioPreorden = React.lazy(() => import("./ficha-inicio"));
 const FinancieraStandalone = React.lazy(() => import("./modulo-financiera").then((m) => ({ default: m.FinancieraStandalone })));
 const ModuloPlanta = React.lazy(() => import("./modulo-planta"));
 const ModuloBodega = React.lazy(() => import("./modulo-bodega"));
@@ -8392,7 +8394,7 @@ function EtapaRefsModal({ titulo, filas, conOrden, esCliente, puedePasarAOrden, 
     </Modal>
   );
 }
-function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, canAccessBodega, canAccessContabilidad, canAccessDiseno, entregasTela, onAddCapsula, onAddRef, onCrearPreorden, onAgregarAPreordenExistente, onVincularPedido, onAprobarPreorden, onDesaprobarPreorden, onActualizarPreorden, onEliminarPreorden, onActualizarItemPreorden, onActualizarItemsPreorden, puedeVincularPedido, puedePasarAOrden, onCrearEntregaTela, onAsignarEntregaTela, prefillDesdeCapsula, onConsumirPrefillDesdeCapsula, onMarcarRefEnviadaAPreorden, historialNuevaOrden, onRegistrarHistorialNuevaOrden }) {
+function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, canAccessBodega, canAccessContabilidad, canAccessDiseno, entregasTela, onAddCapsula, onAddRef, onCrearPreorden, onAgregarAPreordenExistente, onVincularPedido, onAprobarPreorden, onDesaprobarPreorden, onActualizarPreorden, onEliminarPreorden, onActualizarItemPreorden, onActualizarItemsPreorden, puedeVincularPedido, puedePasarAOrden, onCrearEntregaTela, onAsignarEntregaTela, prefillDesdeCapsula, onConsumirPrefillDesdeCapsula, onMarcarRefEnviadaAPreorden, historialNuevaOrden, onRegistrarHistorialNuevaOrden, puedeFichaInicio }) {
   const [modo, setModo] = useState("lista");
   // (2026-09-30, a pedido de Fredy) "Pasar a Preorden"/"Pasar Cápsula a
   // Preorden" llegan acá con prefillDesdeCapsula (arreglo de {cap, ref}) ya
@@ -9782,6 +9784,12 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                     </tbody>
                   </table>
                 </div>
+                {/* (2026-11-22, a pedido de Fredy) Semáforo de 9 pasos + Ficha de inicio + bibliotecas de colores y vinilos; el cliente no lo ve. */}
+                {!(currentUser?.role === "Cliente" && !currentUser?.isAdmin) && (
+                  <React.Suspense fallback={null}>
+                    <FichaInicioPreorden preorden={p} config={config} currentUser={currentUser} puedeEditar={!!puedeFichaInicio} />
+                  </React.Suspense>
+                )}
                 <div style={{ marginTop: 20 }}>
                   <div style={{ fontWeight: 700, fontSize: 13, color: T.ink, marginBottom: 8 }}>Resumen por categoría</div>
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 10 }}>
@@ -14942,7 +14950,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     // (2026-10-16, a pedido de Fredy) El acceso al módulo sigue en la lista de Diseño ("cotizador"); estos dos son permisos extra por rol.
     { area: "🧮 Cotizaciones", items: [["cotizador_editar", "Puede crear y editar cotizaciones (sin esto, solo consulta)"], ["cotizador_borrar", "Puede borrar cotizaciones"], ["cotizador_aprobar", "Puede aprobar cotizaciones (y aplicar el precio)"], ["cotizador_deshabilitar", "Puede deshabilitar cotizaciones aprobadas"], ["cotizador_costos_reales", "Puede ajustar costos reales de cotizaciones aprobadas (sin cambiar el precio aprobado)"], ["cotizador_autorizar_precio", "Puede autorizar cambios del precio vendido (genera el código para aprobar otro precio)"], ["cotizador_enviar_facturar", "Puede enviar cotizaciones aprobadas a facturar"], ["cotizador_facturar", "Facturación: ve Por facturar y registra el documento y su número"]] },
     // (2026-10-28, a pedido de Fredy) Vincular referencias a pedidos en Preórdenes/Órdenes estaba solo para el administrador.
-    { area: "🧾 Preórdenes y Órdenes", items: [["preordenes_vincular_pedido", "Puede vincular referencias a pedidos (aunque la preorden esté aprobada)"], ["preordenes_pasar_a_orden", "Puede pasar referencias con tela confirmada a Órdenes (botón «Pasar a Orden»)"]] },
+    { area: "🧾 Preórdenes y Órdenes", items: [["preordenes_vincular_pedido", "Puede vincular referencias a pedidos (aunque la preorden esté aprobada)"], ["ficha_inicio", "📋 Ficha de inicio", "Puede llenar la Ficha de inicio de cada referencia en Preórdenes (asistente paso a paso) y administrar las bibliotecas de colores y vinilos; sin esto solo ve el semáforo"], ["preordenes_pasar_a_orden", "Puede pasar referencias con tela confirmada a Órdenes (botón «Pasar a Orden»)"]] },
     { area: "📋 Planeación", items: [["planeacion", "Planeación"]] },
     // (2026-11-21, a pedido de Fredy) Verificador de Precio (Busint en vivo) en Programación Diaria de Planta Yanko y como tarjeta de Mi Día: permiso aparte por rol (el admin siempre). Para Mi Día además se marca la tarjeta en Usuarios.
     { area: "🏭 Planta Yanko", items: [["planta", "Planta Yanko"], ["planta_verificador_precio", "🔍 Verificador de Precio", "Puede ver el Verificador de Precio en la Programación Diaria de Planta Yanko y en Mi Día (muestra precios de mano de obra de Confección y Corte)"]] },
@@ -21413,6 +21421,7 @@ function AppInner() {
   // (2026-11-14, a pedido de Fredy) Autorizar un cambio del precio vendido (genera el código de un solo uso): permiso aparte, por defecto solo el administrador.
   const canAutorizarPrecioCotizacion = canAccessCotizador && !esClienteCot && moduloVisible(userRoleData, "cotizador_autorizar_precio", currentUser?.isAdmin);
   // (2026-11-21, a pedido de Fredy) Verificador de Precio (Planta Yanko → Programación Diaria y tarjeta de Mi Día).
+  const canFichaInicio = !esClienteCot && moduloVisible(userRoleData, "ficha_inicio", currentUser?.isAdmin);
   const canVerificadorPrecio = !esClienteCot && moduloVisible(userRoleData, "planta_verificador_precio", currentUser?.isAdmin);
   // (2026-10-21, a pedido de Fredy) Facturación de cotizaciones aprobadas: quien las envía a facturar (María Fernanda Páez) y quien registra el documento y su número.
   const canEnviarFacturarCotizacion = canAccessCotizador && !esClienteCot && moduloVisible(userRoleData, "cotizador_enviar_facturar", currentUser?.isAdmin);
@@ -22082,6 +22091,7 @@ function AppInner() {
             )}
             {view === "preordenes" && (
               <PreordenesView
+                puedeFichaInicio={canFichaInicio}
                 preordenes={preordenesVisibles}
                 pedidos={pedidosVisibles}
                 capsulas={capsulas}
