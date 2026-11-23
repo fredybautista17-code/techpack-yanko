@@ -11946,7 +11946,7 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
     </div>
   );
 }
-function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, canAccessPlaneacion, canAccessPlanta, canAccessBodega, canAccessNomina, canAccessDiseno, canAccessPedidosArea, canGestionPedido, nPorMontarHome, canAccessKpis, canAccessInformes, canAccessAreas, canAccessCotizador, cotPorAprobar, onGoArea, protos, capsulas, pedidos }) {
+function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, canAccessPlaneacion, canAccessPlanta, canAccessBodega, canAccessNomina, canAccessDiseno, canAccessPedidosArea, canGestionPedido, canAccessKpis, canAccessInformes, canAccessAreas, canAccessCotizador, cotPorAprobar, onGoArea, protos, capsulas, pedidos }) {
   const hoy = new Date();
   const protosEnProceso = protos.filter((p) => p.status === "en_proceso").length;
   const pedidosActivos = pedidos.filter((p) => p.estado === "activo" || p.estado === "terminado").length;
@@ -11961,14 +11961,9 @@ function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, c
       permiso: canAccessDiseno,
     },
     {
-      id: "gestion_pedido_area", icon: "🧭", label: "Gestión de Pedido", desc: "Flujo, preórdenes, órdenes y Ficha de inicio: el camino del pedido hasta cortar", color: T.amber, bg: T.amberBg,
-      stats: [{ label: "Por montar", value: nPorMontarHome || 0, alert: (nPorMontarHome || 0) > 0 }],
-      permiso: canGestionPedido,
-    },
-    {
-      id: "pedidos_area", icon: "🧾", label: "Pedidos", desc: "Pedidos cargados de Busint, por cliente, administración y Corte", color: T.denim, bg: T.denimBg,
+      id: "pedidos_area", icon: "🧾", label: "Pedidos", desc: "Gestión de Pedido (flujo, preórdenes, órdenes y Ficha de inicio), pedidos de Busint, por cliente y Corte", color: T.denim, bg: T.denimBg,
       stats: [{ label: "Pedidos activos", value: pedidosActivos, alert: pedidosVencidos > 0 }],
-      permiso: canAccessPedidosArea,
+      permiso: canAccessPedidosArea || canGestionPedido,
     },
     {
       id: "contabilidad_area", icon: "💰", label: "Contabilidad", desc: "Flujo de caja, informes financieros y control contable", color: T.jade, bg: T.jadeBg,
@@ -21688,7 +21683,7 @@ function AppInner() {
         <div style={{ flex: 1, padding: "28px 32px", overflow: "auto", minWidth: 0 }}>
           <div style={{ maxWidth: 1020, margin: "0 auto" }}>
             {view === "dashboard" && (
-              <HomeView cotPorAprobar={cotPorAprobar} currentUser={currentUser} perms={perms} canAccessCorte={canAccessCorte} canAccessContabilidad={verAreaContabilidad} canAccessPlaneacion={canAccessPlaneacion} canAccessPlanta={canAccessPlanta} canAccessBodega={canAccessBodega} canAccessNomina={canAccessNomina} canAccessDiseno={canAccessDiseno} canAccessPedidosArea={canAccessPedidosArea} canGestionPedido={canGestionPedido} nPorMontarHome={nPorMontar} canAccessKpis={canAccessKpis} canAccessInformes={canAccessInformes} canAccessAreas={canAccessAreas} canAccessCotizador={canAccessCotizador}
+              <HomeView cotPorAprobar={cotPorAprobar} currentUser={currentUser} perms={perms} canAccessCorte={canAccessCorte} canAccessContabilidad={verAreaContabilidad} canAccessPlaneacion={canAccessPlaneacion} canAccessPlanta={canAccessPlanta} canAccessBodega={canAccessBodega} canAccessNomina={canAccessNomina} canAccessDiseno={canAccessDiseno} canAccessPedidosArea={canAccessPedidosArea} canGestionPedido={canGestionPedido} canAccessKpis={canAccessKpis} canAccessInformes={canAccessInformes} canAccessAreas={canAccessAreas} canAccessCotizador={canAccessCotizador}
                 onGoArea={(id) => {
                   if (id === "contabilidad_area") { setModuloActivo("contabilidad"); }
                   else if (id === "cotizaciones_area") { setModuloActivo("cotizaciones"); }
@@ -21699,7 +21694,6 @@ function AppInner() {
                   else if (id === "informes_area") { setModuloActivo("informes"); }
                   else if (id === "areas_internas_area") { setModuloActivo("areas_internas"); }
                   else if (id === "kpis_area") { setAreaAbierta("kpis_area"); setView("kpis"); }
-                  else if (id === "gestion_pedido_area") { setAreaAbierta("pedidos_area"); navClick("gestion_pedido"); }
                   else if (id === "pedidos_area") {
                     setAreaAbierta("pedidos_area");
                     if (canAccessPedidos) setView("pedidos");
