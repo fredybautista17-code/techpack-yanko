@@ -21576,6 +21576,38 @@ function AppInner() {
       {modal === "promote" && promoteProto && <PromoteModal proto={promoteProto} capsulas={capsulas} onSave={promoteToCapsula} onSaveTela={promoverATela} onSaveContenedor={promoverAContenedor} onClose={() => { setModal(null); setPromoteProto(null); }} config={config} />}
       {modal === "new-pedido" && <SubirPedidoModal2 onSave={addPedido} onClose={() => setModal(null)} pedidoConfig={pedidoConfig} pedidos={pedidos} clientes={config.clientes} />}
       <div style={{ display: "flex", minHeight: "100vh" }}>
+        {/* (2026-11-23, a pedido de Fredy) «Gestión de Pedido» se abre en pantalla completa, como Corte: barra lateral propia y «Volver a ATLAS». */}
+        {enGestionPedido && (
+          <div style={{ width: 215, background: T.ink, color: T.white, padding: "24px 14px", display: "flex", flexDirection: "column", flexShrink: 0 }}>
+            <div style={{ marginBottom: 20 }}>
+              <div style={{ fontSize: 16, fontWeight: 900, color: T.white }}>🧭 Gestión de Pedido</div>
+              <div style={{ fontSize: 10, color: T.seam, marginTop: 2, letterSpacing: "0.1em", textTransform: "uppercase" }}>Pedidos · Yanko</div>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", background: "#2A2A45", borderRadius: 10, marginBottom: 20 }}>
+              <div style={{ width: 34, height: 34, borderRadius: "50%", background: `linear-gradient(135deg,${T.seam},${T.seamDark})`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 800, color: T.ink, flexShrink: 0 }}>{currentUser.avatar}</div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: T.white, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{currentUser.name}</div>
+                <div style={{ fontSize: 10, color: T.seam }}>{currentUser.role}</div>
+              </div>
+              <button onClick={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} title="Cerrar sesión" style={{ background: "none", border: "none", color: "rgba(200,184,162,0.5)", cursor: "pointer", fontSize: 16 }}>⏏</button>
+            </div>
+            <nav role="tablist" style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
+              {gpTabs.map((t) => (
+                <button key={t.id} type="button" role="tab" aria-selected={t.activa} title={t.titulo} onClick={t.ir}
+                  style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "10px 12px", border: "none", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", background: t.activa ? T.seam : "transparent", color: t.activa ? T.ink : "#8888AA", fontWeight: t.activa ? 800 : 500, fontSize: 13, textAlign: "left" }}>
+                  <span style={{ fontSize: 15 }}>{t.icon}</span><span style={{ flex: 1 }}>{t.label}</span>
+                  {t.n ? <Insignia n={t.n} title={t.titulo} /> : null}
+                  {t.noPueden ? <InsigniaNoPueden pedidos={pedidosVisibles} /> : null}
+                </button>
+              ))}
+              <button type="button" onClick={() => setView("dashboard")}
+                style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "10px 12px", border: "none", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", background: "transparent", color: "rgba(200,184,162,0.5)", fontWeight: 500, fontSize: 12, textAlign: "left", marginTop: 8 }}>
+                ← Volver a ATLAS
+              </button>
+            </nav>
+          </div>
+        )}
+        {!enGestionPedido && (
         <div style={{ width: 230, background: T.ink, color: T.white, padding: "20px 12px", display: "flex", flexDirection: "column", flexShrink: 0 }}>
           <div style={{ marginBottom: 16, padding: "0 4px" }}>
             <div style={{ fontSize: 16, fontWeight: 900, color: T.white }}>ATLAS</div>
@@ -21645,26 +21677,9 @@ function AppInner() {
             </div>
           )}
         </div>
-        <div style={{ flex: 1, padding: "28px 32px", overflow: "auto" }}>
+        )}
+        <div style={{ flex: 1, padding: "28px 32px", overflow: "auto", minWidth: 0 }}>
           <div style={{ maxWidth: 1020, margin: "0 auto" }}>
-            {enGestionPedido && (
-              <div style={{ marginBottom: 18 }}>
-                <div style={{ marginBottom: 10 }}>
-                  <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>🧭 Gestión de Pedido</h2>
-                  <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Todo el camino del pedido en un solo lugar: de la referencia aprobada hasta que está lista para cortar.</p>
-                </div>
-                <div role="tablist" style={{ display: "flex", gap: 4, borderBottom: `1px solid ${T.border}`, flexWrap: "wrap" }}>
-                  {gpTabs.map((t) => (
-                    <button key={t.id} type="button" role="tab" aria-selected={t.activa} onClick={t.ir}
-                      style={{ display: "flex", alignItems: "center", gap: 7, border: "none", background: "transparent", padding: "10px 14px", fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: "inherit", color: t.activa ? T.ink : T.slate, borderBottom: `3px solid ${t.activa ? T.ink : "transparent"}`, marginBottom: -1 }}>
-                      <span>{t.icon}</span>{t.label}
-                      {t.n ? <Insignia n={t.n} title={t.titulo} /> : null}
-                      {t.noPueden ? <InsigniaNoPueden pedidos={pedidosVisibles} /> : null}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
             {view === "dashboard" && (
               <HomeView cotPorAprobar={cotPorAprobar} currentUser={currentUser} perms={perms} canAccessCorte={canAccessCorte} canAccessContabilidad={verAreaContabilidad} canAccessPlaneacion={canAccessPlaneacion} canAccessPlanta={canAccessPlanta} canAccessBodega={canAccessBodega} canAccessNomina={canAccessNomina} canAccessDiseno={canAccessDiseno} canAccessPedidosArea={canAccessPedidosArea} canGestionPedido={canGestionPedido} nPorMontarHome={nPorMontar} canAccessKpis={canAccessKpis} canAccessInformes={canAccessInformes} canAccessAreas={canAccessAreas} canAccessCotizador={canAccessCotizador}
                 onGoArea={(id) => {
