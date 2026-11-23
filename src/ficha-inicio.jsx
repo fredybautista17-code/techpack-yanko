@@ -751,7 +751,19 @@ const Etiqueta = ({ tipo, children, title }) => {
   return <span title={title} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 800, color: t.c, background: t.bg, borderRadius: 20, padding: "3px 9px", whiteSpace: "nowrap" }}>{children}</span>;
 };
 
-export function TableroFichaInicio({ preordenes, pedidos, config, currentUser, puedeEditar }) {
+// (2026-11-23, a pedido de Fredy) El tablero arranca cuando la referencia está en ÓRDENES (tela confirmada y «Pasar a Orden», sin pedido) y termina cuando se le vincula el pedido.
+// Misma regla que itemPasadoAOrden() de App.js (las confirmadas antes del 2026-10-29 cuentan como ya pasadas).
+const CORTE_PASAR_A_ORDEN = "2026-10-29";
+const itemEnOrden = (it) => !!it && !!it.telaComprada && (it.pasadaAOrden === true || (it.pasadaAOrden == null && String(it.telaCompradaEn || "") < CORTE_PASAR_A_ORDEN));
+const diasEnOrden = (it) => {
+  const d = it.pasadaAOrdenEn || it.telaCompradaEn;
+  const ms = d ? Date.now() - new Date(d).getTime() : NaN;
+  return Number.isFinite(ms) && ms >= 0 ? Math.floor(ms / 86400000) : null;
+};
+const DIAS_VIEJO = 14;
+const enlaceOrigen = { border: "none", background: "none", padding: 0, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700, color: C.blue, textDecoration: "underline", textUnderlineOffset: 2, textAlign: "left", maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+
+export function TableroFichaInicio({ preordenes, pedidos, config, currentUser, puedeEditar, capsulas, protos, onAbrirCapsula, onAbrirProto }) {
   const db = useMemo(dbDe, []);
   const todas = useColeccion(COL_FICHA);
   const tarjetas = useAnchoCorto(820);
@@ -761,6 +773,8 @@ export function TableroFichaInicio({ preordenes, pedidos, config, currentUser, p
   const [abierta, setAbierta] = useState(null); // clave de la fila abierta
   const [asistente, setAsistente] = useState(null); // { pre, item }
   const [biblio, setBiblio] = useState(false);
+  const [fOrigen, setFOrigen] = useState("all"); // all | cap | sue
+  const [ordAb, setOrdAb] = useState({}); // órdenes desplegadas (id de preorden -> true)
   const mapa = useMemo(() => { const m = {}; (todas || []).forEach((x) => { m[x.id] = x; }); return m; }, [todas]);
   const aprobadas = useMemo(() => (preordenes || []).filter((p) => (p.estado || "montada") === "aprobada"), [preordenes]);
 
@@ -777,6 +791,10 @@ export function TableroFichaInicio({ preordenes, pedidos, config, currentUser, p
       (pre.items || []).forEach((item) => {
         const key = `${pre.id}|${item.itemId}`;
         const ped = pedDe[key] || null;
+        if (!itemEnOrden(item) || ped || item.pedidoVinculado?.numero) return; // solo lo que está en Órdenes y aún no tiene pedido
+        const cap = item.capsulaId ? (capsulas || []).find((c) => c.id === item.capsulaId) || null : null;
+        const refCap = cap ? (cap.referencias || []).find((x) => x.id === item.itemId) || null : null;
+        const proto = refCap?.fromProtoId ? (protos || []).find((x) => x.id === refCap.fromProtoId) || null : null;
         const f = completarFicha(mapa[idFicha(pre.id, item.itemId)], item, pre);
         const { estados, porRevisar } = pasosDeReferencia(f, item, !!ped || !!item.pedidoVinculado?.numero);
         let corte = { k: "sin" };
@@ -789,20 +807,37 @@ export function TableroFichaInicio({ preordenes, pedidos, config, currentUser, p
           corte = ya ? { k: "ya", ped } : ev.est.puedeCortar ? { k: "si", ped } : { k: "no", ped, faltan: ev.est.faltan.map((x) => `${x + 1}. ${PASOS_SEMAFORO[x]}`) };
         }
         const est = porRevisar ? 2 : estados[PASO_FICHA] === 2 ? 3 : estados[PASO_FICHA];
-        out.push({ pre, item, f, estados, porRevisar, est, corte, ped, key, sig: siguientePaso(estados) });
+        out.push({ pre, item, f, estados, porRevisar, est, corte, ped, key, sig: siguientePaso(estados), cap, proto, dias: diasEnOrden(item) });
       });
     });
     return out;
-  }, [aprobadas, pedidos, mapa, todas]);
+  }, [aprobadas, pedidos, mapa, todas, capsulas, protos]);
 
   const clientes = useMemo(() => [...new Set(filas.map((r) => r.pre.cliente).filter(Boolean))].sort(), [filas]);
-  const base = useMemo(() => {
+  const antesOrigen = useMemo(() => {
     const t = plano(q);
-    return filas.filter((r) => (!fCli || r.pre.cliente === fCli) && (!t || plano(`${r.item.referencia} ${r.item.nombre || ""}`).includes(t)));
+    return filas.filter((r) => (!fCli || r.pre.cliente === fCli) && (!t || plano(`${r.item.referencia} ${r.item.nombre || ""} ${r.cap?.name || ""}`).includes(t)));
   }, [filas, fCli, q]);
+  const base = antesOrigen.filter((r) => fOrigen === "all" || (fOrigen === "cap" ? !!r.cap : !r.cap));
   const cont = [0, 1, 2, 3].map((e) => base.filter((r) => r.est === e).length);
-  const noPueden = base.filter((r) => r.corte.k === "no").length;
-  const visibles = base.filter((r) => fEst === null || (fEst === "no" ? r.corte.k === "no" : r.est === fEst));
+  const nOrdenes = new Set(base.map((r) => r.pre.id)).size;
+  const visibles = base.filter((r) => fEst === null || r.est === fEst);
+  // Una fila por Orden (la más atrasada primero); al tocarla se despliegan sus referencias. Si se busca algo, se abren solas.
+  const buscando = q.trim() !== "";
+  const grupos = (() => {
+    const m = new Map();
+    visibles.forEach((r) => {
+      if (!m.has(r.pre.id)) m.set(r.pre.id, { pre: r.pre, refs: [], maxDias: null });
+      const g = m.get(r.pre.id);
+      g.refs.push(r);
+      if (r.dias != null && (g.maxDias == null || r.dias > g.maxDias)) g.maxDias = r.dias;
+    });
+    return [...m.values()].sort((x, y) => (y.maxDias ?? -1) - (x.maxDias ?? -1) || etiquetaPreorden(x.pre).localeCompare(etiquetaPreorden(y.pre), "es"));
+  })();
+  const ordAbierta = (id) => buscando || !!ordAb[id];
+  const alternarOrden = (id) => setOrdAb((o) => ({ ...o, [id]: !ordAbierta(id) }));
+  const todasAbiertas = grupos.length > 0 && grupos.every((g) => ordAbierta(g.pre.id));
+  const abrirCerrarTodas = () => setOrdAb(Object.fromEntries(grupos.map((g) => [g.pre.id, !todasAbiertas])));
 
   async function ciclo(r, i) {
     if (!puedeEditar) return;
@@ -811,13 +846,21 @@ export function TableroFichaInicio({ preordenes, pedidos, config, currentUser, p
     await setDoc(doc(db, COL_FICHA, idFicha(r.pre.id, r.item.itemId)), { preordenId: r.pre.id, itemId: r.item.itemId, referencia: r.item.referencia || "", pasos, actualizadoPor: currentUser?.name || "", actualizadoEn: new Date().toISOString() }, { merge: true });
   }
   const textoAccion = (r) => (r.est === 3 ? "Ver ficha" : r.est === 1 ? "Continuar" : r.est === 2 ? "Revisar" : "Empezar");
-  const chipCorte = (r) => {
-    const k = r.corte.k;
-    if (k === "sin") return <Etiqueta tipo="g" title="Esta referencia todavía no está en un pedido">Sin pedido</Etiqueta>;
-    if (k === "ya") return <Etiqueta tipo="b" title="El pedido ya se cortó antes de usar la ficha de inicio">✂ Histórico · ya cortó</Etiqueta>;
-    if (k === "si") return <Etiqueta tipo="v">✅ Puede salir</Etiqueta>;
-    return <Etiqueta tipo="r" title={`Faltan: ${r.corte.faltan.join(", ")}`}>🚫 No puede salir</Etiqueta>;
+  const chipDias = (r) => {
+    if (r.dias == null) return <Etiqueta tipo="g" title="No hay fecha de cuando pasó a Órdenes">—</Etiqueta>;
+    const viejo = r.dias > DIAS_VIEJO;
+    return <Etiqueta tipo={viejo ? "r" : "b"} title={viejo ? `Lleva más de ${DIAS_VIEJO} días esperando en Órdenes` : "Días desde que pasó a Órdenes"}>{viejo ? "⏱" : "🧵"} {r.dias} {r.dias === 1 ? "día" : "días"}</Etiqueta>;
   };
+  const origenDe = (r) => (
+    <div style={{ marginTop: 3, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+      {r.cap
+        ? <button type="button" title="Abrir la cápsula con todas sus referencias" onClick={(e) => { e.stopPropagation(); if (onAbrirCapsula) onAbrirCapsula(r.cap.id); }} style={enlaceOrigen}>⬢ {r.cap.name}</button>
+        : <Etiqueta tipo="g" title="No viene de una cápsula">Suelta</Etiqueta>}
+      {r.proto && (onAbrirProto
+        ? <button type="button" title="Abrir el prototipo de origen" onClick={(e) => { e.stopPropagation(); onAbrirProto(r.proto.id); }} style={enlaceOrigen}>🧪 Prototipo {r.proto.numPrototipo || r.proto.reference || ""}</button>
+        : <span style={{ fontSize: 11, fontWeight: 700, color: C.slate }}>🧪 Prototipo {r.proto.numPrototipo || r.proto.reference || ""}</span>)}
+    </div>
+  );
   const chipVa = (r) => (r.sig < 0 ? <Etiqueta tipo="v">Todo listo para cortar</Etiqueta> : <span style={{ display: "inline-flex", gap: 5, alignItems: "center", fontSize: 12, fontWeight: 700, background: C.blueBg, color: C.blue, borderRadius: 8, padding: "4px 9px" }}>→ {r.sig + 1}. {PASOS_SEMAFORO[r.sig]}</span>);
   const btnAccion = (r) => puedeEditar ? <Boton small tipo={r.est === 0 ? "pri" : "sec"} onClick={() => setAsistente({ pre: r.pre, item: r.item })}>{textoAccion(r)}</Boton> : null;
 
@@ -850,6 +893,30 @@ export function TableroFichaInicio({ preordenes, pedidos, config, currentUser, p
     );
   }
 
+  const cabeceraOrden = (g, ab) => {
+    const n = g.refs.length;
+    const listas = g.refs.filter((r) => r.est === 3).length;
+    const sinEmp = g.refs.filter((r) => r.est === 0).length;
+    const rev = g.refs.filter((r) => r.est === 2).length;
+    const viejo = g.maxDias != null && g.maxDias > DIAS_VIEJO;
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <span aria-hidden="true" style={{ fontSize: 11, color: C.slate, width: 12 }}>{ab ? "▾" : "▸"}</span>
+        <div style={{ minWidth: 150 }}>
+          <b style={{ fontSize: 14, color: C.ink }}>{etiquetaPreorden(g.pre)}</b>
+          <div style={{ fontSize: 11, color: C.slate, fontWeight: 600 }}>{g.pre.cliente || ""}</div>
+        </div>
+        <Etiqueta tipo="g">{n} {n === 1 ? "referencia" : "referencias"}</Etiqueta>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }} title="Referencias con la ficha de inicio lista">
+          <span aria-hidden="true" style={{ width: 90, height: 7, borderRadius: 4, background: C.grey, display: "inline-block", overflow: "hidden" }}><i style={{ display: "block", height: "100%", width: `${Math.round((listas / n) * 100)}%`, background: C.green }} /></span>
+          <span style={{ fontSize: 11.5, fontWeight: 800, color: C.slate }}>{listas} de {n} con ficha lista</span>
+        </span>
+        {g.maxDias != null && <Etiqueta tipo={viejo ? "r" : "b"} title="Días que lleva en Órdenes la referencia más antigua de esta orden">{viejo ? "⏱" : "🧵"} {g.maxDias} {g.maxDias === 1 ? "día" : "días"}</Etiqueta>}
+        <span style={{ fontSize: 11.5, color: C.slate, fontWeight: 600 }}>{[sinEmp ? `${sinEmp} sin empezar` : "", rev ? `${rev} por revisar` : ""].filter(Boolean).join(" · ")}</span>
+      </div>
+    );
+  };
+
   const th = { padding: "10px 12px", fontSize: 10.5, textTransform: "uppercase", letterSpacing: 0.5, color: C.slate, fontWeight: 700, textAlign: "left", borderBottom: `1px solid ${C.border}`, background: "#FAF8F4", position: "sticky", top: 0 };
   const td = { padding: "11px 12px", borderBottom: `1px solid ${C.border}`, fontSize: 13, verticalAlign: "middle" };
   const sel = { ...inp, width: "auto", minWidth: 170 };
@@ -860,7 +927,7 @@ export function TableroFichaInicio({ preordenes, pedidos, config, currentUser, p
         <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: C.ink }}>🚦 Ficha de inicio</h2>
         <span style={{ marginLeft: "auto" }}><Boton small onClick={() => setBiblio(true)}>📚 Bibliotecas de colores y vinilos</Boton></span>
       </div>
-      <p style={{ margin: "0 0 14px", fontSize: 13, color: C.slate, fontWeight: 600, lineHeight: 1.5 }}>Viabilidad del pedido: qué está listo, qué falta y qué puede salir a cortar. Toca una fila para ver los 10 pasos. Solo aparecen las preórdenes aprobadas.</p>
+      <p style={{ margin: "0 0 14px", fontSize: 13, color: C.slate, fontWeight: 600, lineHeight: 1.5 }}>Referencias en Órdenes que esperan su pedido: qué está hecho y qué falta. Toca una orden para ver sus referencias y una referencia para ver los 10 pasos. Cuando se vincula el pedido, la referencia sale de aquí.</p>
 
       {todas === null ? <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>Cargando fichas…</div> : (
         <>
@@ -871,64 +938,88 @@ export function TableroFichaInicio({ preordenes, pedidos, config, currentUser, p
                 <div style={{ fontSize: 12, fontWeight: 700, color: C.slate, marginTop: 4 }}>{NOMBRE_ESTADO[e]}</div>
               </button>
             ))}
-            <button type="button" onClick={() => setFEst(fEst === "no" ? null : "no")} style={tarjeta(fEst === "no", C.red)}>
-              <div style={{ fontSize: 26, fontWeight: 800, lineHeight: 1, color: C.red }}>{noPueden}</div>
-              <div style={{ fontSize: 12, fontWeight: 700, color: C.slate, marginTop: 4 }}>🚫 No pueden salir a cortar</div>
+            <button type="button" onClick={() => setFEst(null)} style={tarjeta(fEst === null, C.blue)} title="Quita el filtro de estado">
+              <div style={{ fontSize: 26, fontWeight: 800, lineHeight: 1, color: C.blue }}>{base.length}</div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: C.slate, marginTop: 4 }}>🧵 En Órdenes · {nOrdenes} {nOrdenes === 1 ? "orden" : "órdenes"}</div>
             </button>
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
             <select value={fCli} onChange={(e) => setFCli(e.target.value)} style={sel} aria-label="Cliente"><option value="">Todos los clientes</option>{clientes.map((c) => <option key={c} value={c}>{c}</option>)}</select>
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="🔍 Buscar referencia o nombre…" aria-label="Buscar" style={{ ...inp, width: 250 }} />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="🔍 Buscar referencia, nombre o cápsula…" aria-label="Buscar" style={{ ...inp, width: 290 }} />
+            <span role="group" aria-label="Origen" style={{ display: "inline-flex", gap: 3, background: C.white, border: `1px solid ${C.border}`, borderRadius: 10, padding: 3 }}>
+              {[["all", "Todas", antesOrigen.length], ["cap", "En cápsula", antesOrigen.filter((r) => r.cap).length], ["sue", "Sueltas", antesOrigen.filter((r) => !r.cap).length]].map(([k, t, n]) => (
+                <button key={k} type="button" aria-pressed={fOrigen === k} onClick={() => setFOrigen(k)} style={{ border: "none", borderRadius: 8, padding: "6px 11px", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", background: fOrigen === k ? C.ink : "transparent", color: fOrigen === k ? C.white : C.slate }}>{t} <span style={{ opacity: 0.7, fontWeight: 600 }}>{n}</span></button>
+              ))}
+            </span>
+            {grupos.length > 1 && !buscando && <Boton small onClick={abrirCerrarTodas}>{todasAbiertas ? "Cerrar todas" : "Abrir todas"}</Boton>}
           </div>
 
           {!visibles.length ? (
-            <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13, background: C.white, borderRadius: 14, border: `1px solid ${C.border}` }}>{filas.length ? "Ninguna referencia con esos filtros." : "Todavía no hay preórdenes aprobadas."}</div>
-          ) : tarjetas ? (
-            <div style={{ display: "grid", gap: 10 }}>
-              {visibles.map((r) => (
-                <div key={r.key} role="button" tabIndex={0} onClick={() => setAbierta(abierta === r.key ? null : r.key)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setAbierta(abierta === r.key ? null : r.key); } }} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: "13px 14px", cursor: "pointer" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" }}>
-                    <div><b style={{ fontSize: 14 }}>{r.item.referencia || "—"}</b><div style={{ fontSize: 11.5, color: C.slate, fontWeight: 600 }}>{r.item.nombre || ""}</div></div>
-                    {chipCorte(r)}
-                  </div>
-                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 9 }}><BarraPasos estados={r.estados} />{chipVa(r)}</div>
-                  {abierta === r.key && <Detalle r={r} />}
-                  <div style={{ marginTop: 10 }} onClick={(e) => e.stopPropagation()}>{btnAccion(r)}</div>
-                </div>
-              ))}
-            </div>
+            <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13, background: C.white, borderRadius: 14, border: `1px solid ${C.border}` }}>{filas.length ? "Ninguna referencia con esos filtros." : "Todavía no hay referencias en Órdenes esperando su pedido."}</div>
           ) : (
-            <div style={{ overflowX: "auto", border: `1px solid ${C.border}`, borderRadius: 14, background: C.white, boxShadow: "0 1px 2px rgba(26,26,46,.05),0 4px 14px rgba(26,26,46,.06)" }}>
-              <table style={{ borderCollapse: "separate", borderSpacing: 0, width: "100%", minWidth: 900 }}>
-                <thead><tr><th style={{ ...th, left: 0, zIndex: 3 }}>Referencia</th><th style={th}>Preorden</th><th style={th}>Avance (10 pasos)</th><th style={th}>Va en</th><th style={th}>Corte</th><th style={th} /></tr></thead>
-                <tbody>
-                  {visibles.map((r) => {
-                    const ab = abierta === r.key;
-                    const fondo = ab ? "#F7F2E9" : C.white;
-                    return (
-                      <React.Fragment key={r.key}>
-                        <tr onClick={() => setAbierta(ab ? null : r.key)} style={{ cursor: "pointer" }}>
-                          <td style={{ ...td, position: "sticky", left: 0, background: fondo, zIndex: 2, boxShadow: `1px 0 0 ${C.border}` }}>
-                            <button type="button" aria-expanded={ab} onClick={(e) => { e.stopPropagation(); setAbierta(ab ? null : r.key); }} style={{ all: "unset", cursor: "pointer", display: "block" }}>
-                              <b style={{ fontSize: 13.5, display: "block", color: C.ink }}>{r.item.referencia || "—"}</b>
-                              <span style={{ display: "block", fontSize: 11, color: C.slate, fontWeight: 600, maxWidth: 200, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.item.nombre || ""}</span>
-                            </button>
-                          </td>
-                          <td style={{ ...td, background: fondo }}>{etiquetaPreorden(r.pre)}<div style={{ fontSize: 11, color: C.slate, fontWeight: 600 }}>{r.pre.cliente || ""}</div></td>
-                          <td style={{ ...td, background: fondo }}><BarraPasos estados={r.estados} /></td>
-                          <td style={{ ...td, background: fondo }}>{chipVa(r)}</td>
-                          <td style={{ ...td, background: fondo }}>{chipCorte(r)}{r.ped && <div style={{ fontSize: 10.5, color: C.slate, fontWeight: 600, marginTop: 2 }}>Pedido {r.ped.numero}</div>}</td>
-                          <td style={{ ...td, background: fondo, textAlign: "right" }} onClick={(e) => e.stopPropagation()}>{btnAccion(r)}</td>
-                        </tr>
-                        {ab && <tr><td colSpan={6} style={{ background: "#FBF8F2", borderBottom: `1px solid ${C.border}`, padding: "0 18px 14px" }}><Detalle r={r} /></td></tr>}
-                      </React.Fragment>
-                    );
-                  })}
-                </tbody>
-              </table>
+            <div style={tarjetas ? { display: "grid", gap: 10 } : { overflowX: "auto", border: `1px solid ${C.border}`, borderRadius: 14, background: C.white, boxShadow: "0 1px 2px rgba(26,26,46,.05),0 4px 14px rgba(26,26,46,.06)" }}>
+              {tarjetas ? grupos.map((g) => {
+                const ab = ordAbierta(g.pre.id);
+                return (
+                  <div key={g.pre.id} style={{ display: "grid", gap: 8 }}>
+                    <div role="button" tabIndex={0} aria-expanded={ab} onClick={() => alternarOrden(g.pre.id)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); alternarOrden(g.pre.id); } }} style={{ background: "#F3EEE4", border: `1px solid ${C.border}`, borderRadius: 12, padding: "11px 13px", cursor: "pointer" }}>
+                      {cabeceraOrden(g, ab)}
+                    </div>
+                    {ab && g.refs.map((r) => (
+                      <div key={r.key} role="button" tabIndex={0} onClick={() => setAbierta(abierta === r.key ? null : r.key)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setAbierta(abierta === r.key ? null : r.key); } }} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: "13px 14px", cursor: "pointer", marginLeft: 8 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" }}>
+                          <div><b style={{ fontSize: 14 }}>{r.item.referencia || "—"}</b><div style={{ fontSize: 11.5, color: C.slate, fontWeight: 600 }}>{r.item.nombre || ""}</div>{origenDe(r)}</div>
+                          {chipDias(r)}
+                        </div>
+                        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 9 }}><BarraPasos estados={r.estados} />{chipVa(r)}</div>
+                        {abierta === r.key && <Detalle r={r} />}
+                        <div style={{ marginTop: 10 }} onClick={(e) => e.stopPropagation()}>{btnAccion(r)}</div>
+                      </div>
+                    ))}
+                  </div>
+                );
+              }) : (
+                <table style={{ borderCollapse: "separate", borderSpacing: 0, width: "100%", minWidth: 820 }}>
+                  <thead><tr><th style={{ ...th, left: 0, zIndex: 3 }}>Referencia</th><th style={th}>En Órdenes</th><th style={th}>Avance (10 pasos)</th><th style={th}>Va en</th><th style={th} /></tr></thead>
+                  <tbody>
+                    {grupos.map((g) => {
+                      const ab = ordAbierta(g.pre.id);
+                      return (
+                        <React.Fragment key={g.pre.id}>
+                          <tr onClick={() => alternarOrden(g.pre.id)} style={{ cursor: "pointer" }}>
+                            <td colSpan={5} style={{ ...td, background: "#F3EEE4", padding: "10px 12px" }}>{cabeceraOrden(g, ab)}</td>
+                          </tr>
+                          {ab && g.refs.map((r) => {
+                            const abr = abierta === r.key;
+                            const fondo = abr ? "#F7F2E9" : C.white;
+                            return (
+                              <React.Fragment key={r.key}>
+                                <tr onClick={() => setAbierta(abr ? null : r.key)} style={{ cursor: "pointer" }}>
+                                  <td style={{ ...td, position: "sticky", left: 0, background: fondo, zIndex: 2, boxShadow: `1px 0 0 ${C.border}`, paddingLeft: 26 }}>
+                                    <button type="button" aria-expanded={abr} onClick={(e) => { e.stopPropagation(); setAbierta(abr ? null : r.key); }} style={{ all: "unset", cursor: "pointer", display: "block" }}>
+                                      <b style={{ fontSize: 13.5, display: "block", color: C.ink }}>{r.item.referencia || "—"}</b>
+                                      <span style={{ display: "block", fontSize: 11, color: C.slate, fontWeight: 600, maxWidth: 220, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.item.nombre || ""}</span>
+                                    </button>
+                                    {origenDe(r)}
+                                  </td>
+                                  <td style={{ ...td, background: fondo }}>{chipDias(r)}</td>
+                                  <td style={{ ...td, background: fondo }}><BarraPasos estados={r.estados} /></td>
+                                  <td style={{ ...td, background: fondo }}>{chipVa(r)}</td>
+                                  <td style={{ ...td, background: fondo, textAlign: "right" }} onClick={(e) => e.stopPropagation()}>{btnAccion(r)}</td>
+                                </tr>
+                                {abr && <tr><td colSpan={5} style={{ background: "#FBF8F2", borderBottom: `1px solid ${C.border}`, padding: "0 18px 14px" }}><Detalle r={r} /></td></tr>}
+                              </React.Fragment>
+                            );
+                          })}
+                        </React.Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
             </div>
           )}
-          <div style={{ fontSize: 11.5, color: C.slate, fontWeight: 600, marginTop: 8, lineHeight: 1.5 }}>🔗 se marca sola. «Corte» queda en 🚫 hasta completar las 9 etapas anteriores del pedido enlazado; los pedidos que ya se cortaron antes de usar la ficha salen como histórico.{!puedeEditar ? " Para llenar fichas necesitas el permiso «Ficha de inicio» en Roles." : ""}</div>
+          <div style={{ fontSize: 11.5, color: C.slate, fontWeight: 600, marginTop: 8, lineHeight: 1.5 }}>🔗 se marca sola. Cuando a una referencia se le vincula el pedido, sale de este tablero y sigue en el Seguimiento del Pedido.</div>
         </>
       )}
       {asistente && <AsistenteFicha preorden={asistente.pre} item={asistente.item} guardada={mapa[idFicha(asistente.pre.id, asistente.item.itemId)]} config={config} usuario={currentUser?.name || ""} onClose={() => setAsistente(null)} />}

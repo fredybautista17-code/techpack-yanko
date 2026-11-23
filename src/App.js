@@ -3641,7 +3641,7 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
     </div>
   );
 }
-function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCapsula, onNewRef, onEditCapsula, stages, isAdmin, onDeleteCapsula, onDeleteRef, config, onSetIlustracion, onSendObsCapsula, onMarkDoneObsCapsula, onCrearEnvio, onPasarAPreorden, onPasarCapsulaCompleta, onDeshacerEnviadoAPreorden, protos, soloCapsulaId, onQuitarFoco, onVolverFlujo }) {
+function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCapsula, onNewRef, onEditCapsula, stages, isAdmin, onDeleteCapsula, onDeleteRef, config, onSetIlustracion, onSendObsCapsula, onMarkDoneObsCapsula, onCrearEnvio, onPasarAPreorden, onPasarCapsulaCompleta, onDeshacerEnviadoAPreorden, protos, soloCapsulaId, onQuitarFoco, onVolverFlujo, textoVolver }) {
   const [filter, setFilter] = useState("todos");
   const [clienteFiltro, setClienteFiltro] = useState("todos");
   const [mesFiltro, setMesFiltro] = useState("todos");
@@ -3823,7 +3823,7 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 14, padding: "10px 14px", background: T.denimBg, border: `1px solid ${T.denim}33`, borderRadius: 10, fontSize: 13, color: T.ink, fontWeight: 600 }}>
           <span>Mostrando solo esta cápsula, con todas sus referencias.</span>
           <span style={{ flex: 1 }} />
-          {onVolverFlujo && <button type="button" onClick={onVolverFlujo} style={{ border: "none", borderRadius: 8, background: T.ink, color: T.white, fontWeight: 700, fontSize: 12, padding: "7px 12px", cursor: "pointer", fontFamily: "inherit" }}>← Volver al Flujo de Pedidos</button>}
+          {onVolverFlujo && <button type="button" onClick={onVolverFlujo} style={{ border: "none", borderRadius: 8, background: T.ink, color: T.white, fontWeight: 700, fontSize: 12, padding: "7px 12px", cursor: "pointer", fontFamily: "inherit" }}>{textoVolver || "← Volver al Flujo de Pedidos"}</button>}
           {onQuitarFoco && <button type="button" onClick={onQuitarFoco} style={{ border: `1px solid ${T.border}`, borderRadius: 8, background: T.white, color: T.ink, fontWeight: 700, fontSize: 12, padding: "7px 12px", cursor: "pointer", fontFamily: "inherit" }}>Ver todas las cápsulas</button>}
         </div>
       )}
@@ -20043,6 +20043,7 @@ function AppInner() {
   const [prefillPreordenDesde, setPrefillPreordenDesde] = useState(null);
   // (2026-11-22, a pedido de Fredy) Cápsula que se abrió desde el Flujo de Pedidos: Cápsulas muestra solo esa, con todas sus referencias (null = normal).
   const [capFocoId, setCapFocoId] = useState(null);
+  const [capFocoVuelta, setCapFocoVuelta] = useState("flujo"); // desde dónde se abrió la cápsula: "flujo" | "ficha"
   const [flujoEtapa, setFlujoEtapa] = useState(null); // etapa que abre el «Flujo de Pedidos» (null = la de por defecto)
   function pasarAPreorden(cap, ref) {
     setPrefillPreordenDesde([{ cap, ref }]);
@@ -21280,6 +21281,7 @@ function AppInner() {
     if (origen.tipo === "mi_dia") { setMiDiaTab(origen.tab || null); setModuloActivo("mi_dia"); }
     else if (origen.tipo === "cronograma") { setView("cronograma_muestras"); }
     else if (origen.tipo === "flujo") { setFlujoEtapa("montar"); setView("pedidos_flujo"); }
+    else if (origen.tipo === "ficha") { setView("ficha_tablero"); }
   }
   function volverAlOrigen(vistaPorDefecto) {
     if (origenNav && empujoHistorial.current) { window.history.back(); return; } // el listener de popstate hace el regreso
@@ -21736,7 +21738,7 @@ function AppInner() {
             )}
             {view === "capsulas" && (
               <CapsulasView capsulas={capsulasVisibles} protos={protosVisibles} role={role} perms={perms} currentUser={currentUser?.name}
-                soloCapsulaId={capFocoId} onQuitarFoco={() => setCapFocoId(null)} onVolverFlujo={() => { setCapFocoId(null); setFlujoEtapa("montar"); setView("pedidos_flujo"); }}
+                soloCapsulaId={capFocoId} onQuitarFoco={() => setCapFocoId(null)} textoVolver={capFocoVuelta === "ficha" ? "← Volver a Ficha de inicio" : null} onVolverFlujo={() => { setCapFocoId(null); if (capFocoVuelta === "ficha") setView("ficha_tablero"); else { setFlujoEtapa("montar"); setView("pedidos_flujo"); } }}
                 onSelectRef={(capId, refId) => { setSelCapId(capId); setSelRefId(refId); setView("ref-detail"); }}
                 onNewCapsula={() => setModal("new-capsula")}
                 onNewRef={(cap) => { setNewRefCap(cap); setModal("new-ref"); }}
@@ -21862,14 +21864,17 @@ function AppInner() {
                   calcularAvance={calcularAvancePedido}
                   protos={protosVisibles}
                   clienteDeCapsula={capsulaCliente}
-                  onAbrirCapsula={(capId) => { setCapFocoId(capId); setView("capsulas"); }}
+                  onAbrirCapsula={(capId) => { setCapFocoVuelta("flujo"); setCapFocoId(capId); setView("capsulas"); }}
                   onAbrirProto={(id) => { setSelProtoId(id); setOrigenNav({ tipo: "flujo" }); empujarHistorial(); setView("proto-detail"); }}
                 />
               </React.Suspense>
             )}
             {view === "ficha_tablero" && canFichaInicio && (
               <React.Suspense fallback={<div style={{ padding: 30, textAlign: "center", color: T.slate, fontSize: 13 }}>Cargando…</div>}>
-                <TableroFichaInicio preordenes={preordenesVisibles} pedidos={pedidosVisibles} config={config} currentUser={currentUser} puedeEditar={canFichaInicio} />
+                <TableroFichaInicio preordenes={preordenesVisibles} pedidos={pedidosVisibles} config={config} currentUser={currentUser} puedeEditar={canFichaInicio}
+                  capsulas={capsulasVisibles} protos={protosVisibles}
+                  onAbrirCapsula={(capId) => { setCapFocoVuelta("ficha"); setCapFocoId(capId); setView("capsulas"); }}
+                  onAbrirProto={(id) => { setSelProtoId(id); setOrigenNav({ tipo: "ficha" }); empujarHistorial(); setView("proto-detail"); }} />
               </React.Suspense>
             )}
             {view === "preordenes" && (
