@@ -21333,7 +21333,8 @@ function AppInner() {
   // (2026-11-23, a pedido de Fredy) Módulo «Gestión de Pedido»: Flujo, Por montar, Preórdenes, Órdenes, Ficha de inicio e Historial de Órdenes en un solo lugar,
   // con pestañas arriba. Son las mismas pantallas de siempre (mismos view); cada persona ve solo las pestañas que ya podía ver.
   const gpTabs = [
-    ...(!esClienteCot ? [{ id: "flujo", icon: "🧭", label: "Flujo", activa: view === "pedidos_flujo" && flujoEtapa !== "montar", ir: () => { setFlujoEtapa(null); setView("pedidos_flujo"); } }] : []),
+    // (2026-11-23) «Flujo» solo con acceso al área Pedidos (antes salía a todo usuario no Cliente y por eso Gestión de Pedido aparecía en roles sin permisos de pedidos).
+    ...(!esClienteCot && canAccessPedidosArea ? [{ id: "flujo", icon: "🧭", label: "Flujo", activa: view === "pedidos_flujo" && flujoEtapa !== "montar", ir: () => { setFlujoEtapa(null); setView("pedidos_flujo"); } }] : []),
     ...(!esClienteCot && canAccessPreordenes ? [{ id: "montar", icon: "🧩", label: "Por montar", n: nPorMontar, titulo: "Referencias aprobadas en cápsulas que faltan por pasar a preorden", activa: view === "pedidos_flujo" && flujoEtapa === "montar", ir: () => { setFlujoEtapa("montar"); setView("pedidos_flujo"); } }] : []),
     ...(canAccessPreordenes ? [{ id: "pre", icon: "🧾", label: "Preórdenes", n: nPreordenesPorAprobar, titulo: "Preórdenes por aprobar", activa: view === "preordenes", ir: () => setView("preordenes") }] : []),
     ...(canAccessOrdenes ? [{ id: "ord", icon: "🧵", label: "Órdenes", activa: view === "ordenes", ir: () => setView("ordenes") }] : []),
