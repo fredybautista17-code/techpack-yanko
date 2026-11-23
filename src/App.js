@@ -5811,7 +5811,7 @@ function NuevaOrdenView({ capsulas, pedidos, preordenes, config, currentUser, fi
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-        <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>🆕 Nueva Orden</h2>
+        <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>🆕 Nueva Preorden</h2>
         <div style={{ display: "flex", gap: 10 }}>
           <Btn variant="ghost" onClick={() => setShowHistorial(true)}>📜 Historial{historial?.length ? ` (${historial.length})` : ""}</Btn>
           <Btn variant="secondary" onClick={onCancelar}>← Volver a Preórdenes</Btn>
@@ -6023,7 +6023,7 @@ function NuevaOrdenView({ capsulas, pedidos, preordenes, config, currentUser, fi
         </Modal>
       )}
       {showHistorial && (
-        <Modal title="📜 Historial de Nueva Orden" onClose={() => setShowHistorial(false)} width={680}>
+        <Modal title="📜 Historial de Nueva Preorden" onClose={() => setShowHistorial(false)} width={680}>
           {!historial?.length ? (
             <div style={{ fontSize: 13, color: T.slate, textAlign: "center", padding: "20px 0" }}>Todavía no se ha guardado nada desde esta pantalla.</div>
           ) : (
@@ -8409,8 +8409,10 @@ function EtapaRefsModal({ titulo, filas, conOrden, esCliente, puedePasarAOrden, 
     </Modal>
   );
 }
-function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, canAccessBodega, canAccessContabilidad, canAccessDiseno, entregasTela, onAddCapsula, onAddRef, onCrearPreorden, onAgregarAPreordenExistente, onVincularPedido, onAprobarPreorden, onDesaprobarPreorden, onActualizarPreorden, onEliminarPreorden, onActualizarItemPreorden, onActualizarItemsPreorden, puedeVincularPedido, puedePasarAOrden, onCrearEntregaTela, onAsignarEntregaTela, prefillDesdeCapsula, onConsumirPrefillDesdeCapsula, onMarcarRefEnviadaAPreorden, historialNuevaOrden, onRegistrarHistorialNuevaOrden, puedeFichaInicio }) {
-  const [modo, setModo] = useState("lista");
+function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, canAccessBodega, canAccessContabilidad, canAccessDiseno, entregasTela, onAddCapsula, onAddRef, onCrearPreorden, onAgregarAPreordenExistente, onVincularPedido, onAprobarPreorden, onDesaprobarPreorden, onActualizarPreorden, onEliminarPreorden, onActualizarItemPreorden, onActualizarItemsPreorden, puedeVincularPedido, puedePasarAOrden, onCrearEntregaTela, onAsignarEntregaTela, prefillDesdeCapsula, onConsumirPrefillDesdeCapsula, onMarcarRefEnviadaAPreorden, historialNuevaOrden, onRegistrarHistorialNuevaOrden, puedeFichaInicio, modoInicial, onConsumirModoInicial }) {
+  // (2026-11-23, a pedido de Fredy) Desde el Flujo de Pedidos («＋ Nuevo ▾») se abre directo el formulario de Nueva Reprogramación / Nueva Preorden.
+  const [modo, setModo] = useState(modoInicial === "reprogramacion" || modoInicial === "orden_nueva" ? modoInicial : "lista");
+  useEffect(() => { if (modoInicial && onConsumirModoInicial) onConsumirModoInicial(); }, []);
   // (2026-09-30, a pedido de Fredy) "Pasar a Preorden"/"Pasar Cápsula a
   // Preorden" llegan acá con prefillDesdeCapsula (arreglo de {cap, ref}) ya
   // listo -- basta con forzar el modo "Nueva Orden" (NuevaOrdenView arranca
@@ -8425,7 +8427,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
   // activa: cambia el botón de crear y filtra la lista sola a ese origen.
   // Las preórdenes creadas antes de este cambio (sin origenPantalla) caen
   // en la tercera opción "Otras", que solo aparece si hay alguna.
-  const [seccionOrigen, setSeccionOrigen] = useState("reprogramacion");
+  const [seccionOrigen, setSeccionOrigen] = useState(modoInicial === "orden_nueva" ? "orden" : "reprogramacion");
   const [showMasMenu, setShowMasMenu] = useState(false);
   // (2026-11-22, a pedido de Fredy, maqueta v17) Etapa elegida tocando uno de los 3 contadores de arriba (null = todas) y menú ⋮ abierto de una tarjeta.
   const [etapaFiltro, setEtapaFiltro] = useState(null);
@@ -9312,7 +9314,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
       <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
       <div style={{ display: "flex", gap: 8, padding: 6, background: T.canvas, borderRadius: 12, marginBottom: 0, width: "fit-content" }}>
         <button onClick={() => setSeccionOrigen("reprogramacion")} style={{ padding: "10px 20px", borderRadius: 9, fontSize: 13, fontWeight: 800, cursor: "pointer", border: "none", background: seccionOrigen === "reprogramacion" ? T.violet : "transparent", color: seccionOrigen === "reprogramacion" ? T.white : T.slate }}>🔁 Nueva Reprogramación</button>
-        <button onClick={() => setSeccionOrigen("orden")} style={{ padding: "10px 20px", borderRadius: 9, fontSize: 13, fontWeight: 800, cursor: "pointer", border: "none", background: seccionOrigen === "orden" ? T.denim : "transparent", color: seccionOrigen === "orden" ? T.white : T.slate }}>🆕 Nueva Orden</button>
+        <button onClick={() => setSeccionOrigen("orden")} style={{ padding: "10px 20px", borderRadius: 9, fontSize: 13, fontWeight: 800, cursor: "pointer", border: "none", background: seccionOrigen === "orden" ? T.denim : "transparent", color: seccionOrigen === "orden" ? T.white : T.slate }}>🆕 Nueva Preorden</button>
         {hayOtras && (
           <button onClick={() => setSeccionOrigen("otras")} style={{ padding: "10px 20px", borderRadius: 9, fontSize: 13, fontWeight: 800, cursor: "pointer", border: "none", background: seccionOrigen === "otras" ? T.slate : "transparent", color: seccionOrigen === "otras" ? T.white : T.slate }}>📦 Otras</button>
         )}
@@ -9322,7 +9324,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
         <button
           onClick={() => setModo(seccionOrigen === "reprogramacion" ? "reprogramacion" : "orden_nueva")}
           style={{ padding: "10px 18px", borderRadius: 9, fontSize: 13, fontWeight: 800, color: T.white, border: "none", cursor: "pointer", background: seccionOrigen === "reprogramacion" ? T.violet : T.denim, marginBottom: 0, display: "inline-flex", alignItems: "center", gap: 8 }}
-        >＋ Crear {seccionOrigen === "reprogramacion" ? "Nueva Reprogramación" : "Nueva Orden"}</button>
+        >＋ Crear {seccionOrigen === "reprogramacion" ? "Nueva Reprogramación" : "Nueva Preorden"}</button>
       )}
       </div>
       {/* (2026-11-22, a pedido de Fredy, maqueta v17) Una sola fila: buscador + los dos filtros como listas (antes eran 4 filas de botones). */}
@@ -9532,7 +9534,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                       <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.violetBg, color: T.violet }}>🔁 Reprogramación</span>
                     )}
                     {p.origenPantalla === "orden" && (
-                      <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.denimBg, color: T.denim }}>🆕 Nueva Orden</span>
+                      <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.denimBg, color: T.denim }}>🆕 Nueva Preorden</span>
                     )}
                     
                   </div>
@@ -20043,6 +20045,7 @@ function AppInner() {
   const [prefillPreordenDesde, setPrefillPreordenDesde] = useState(null);
   // (2026-11-22, a pedido de Fredy) Cápsula que se abrió desde el Flujo de Pedidos: Cápsulas muestra solo esa, con todas sus referencias (null = normal).
   const [capFocoId, setCapFocoId] = useState(null);
+  const [preordenModoInicial, setPreordenModoInicial] = useState(null); // "reprogramacion" | "orden_nueva": abre Preórdenes directo en ese formulario
   const [capFocoVuelta, setCapFocoVuelta] = useState("flujo"); // desde dónde se abrió la cápsula: "flujo" | "ficha"
   const [flujoEtapa, setFlujoEtapa] = useState(null); // etapa que abre el «Flujo de Pedidos» (null = la de por defecto)
   function pasarAPreorden(cap, ref) {
@@ -21866,6 +21869,8 @@ function AppInner() {
                   clienteDeCapsula={capsulaCliente}
                   onAbrirCapsula={(capId) => { setCapFocoVuelta("flujo"); setCapFocoId(capId); setView("capsulas"); }}
                   onAbrirProto={(id) => { setSelProtoId(id); setOrigenNav({ tipo: "flujo" }); empujarHistorial(); setView("proto-detail"); }}
+                  puedeCrearPreorden={canAccessPreordenes}
+                  onNuevaPreorden={(tipo) => { setPreordenModoInicial(tipo); setView("preordenes"); }}
                 />
               </React.Suspense>
             )}
@@ -21879,6 +21884,7 @@ function AppInner() {
             )}
             {view === "preordenes" && (
               <PreordenesView
+                modoInicial={preordenModoInicial} onConsumirModoInicial={() => setPreordenModoInicial(null)}
                 puedeFichaInicio={canFichaInicio}
                 preordenes={preordenesVisibles}
                 pedidos={pedidosVisibles}

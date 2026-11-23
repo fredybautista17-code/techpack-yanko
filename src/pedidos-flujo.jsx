@@ -4,7 +4,7 @@
 //   → Pedidos activos → Por cortar (unidades pendientes, con el aviso del candado de corte).
 // Solo LEE lo que ya existe (cápsulas, preórdenes, pedidos y el avance de corte que ya calcula ATLAS); no cambia ningún dato.
 // Al tocar una tarjeta se abre su lista abajo; «Pasar a Preorden» usa el mismo paso de Cápsulas.
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import useAnchoCorto from "./use-ancho-corto";
 import { CandadoCorteContext, useCandadoCorte } from "./ficha-candado";
 import { itemsDePedido } from "./ficha-inicio-calculo";
@@ -24,7 +24,39 @@ function Boton({ children, onClick, pri, title }) {
   return <button type="button" title={title} onClick={onClick} style={{ border: "none", borderRadius: 9, fontWeight: 700, fontSize: 11.5, padding: "6px 11px", cursor: "pointer", fontFamily: "inherit", background: pri ? C.ink : C.greyBg, color: pri ? C.white : C.ink }}>{children}</button>;
 }
 
-export default function PedidosFlujo({ capsulas, preordenes, pedidos, etapaInicial, puedePasarAPreorden, onPasarAPreorden, onIrVista, onAbrirPedido, fechaAprobacion, cargarAvance, calcularAvance, protos, clienteDeCapsula, onAbrirCapsula, onAbrirProto }) {
+// (2026-11-23, a pedido de Fredy) «＋ Nuevo ▾»: un botón que despliega «Nueva Reprogramación» y «Nueva Preorden»; cada una abre Preórdenes directo en su formulario.
+function MenuNuevo({ onElegir }) {
+  const [ab, setAb] = useState(false);
+  const caja = useRef(null);
+  useEffect(() => {
+    if (!ab) return undefined;
+    const fuera = (e) => { if (caja.current && !caja.current.contains(e.target)) setAb(false); };
+    const tecla = (e) => { if (e.key === "Escape") setAb(false); };
+    document.addEventListener("mousedown", fuera);
+    document.addEventListener("keydown", tecla);
+    return () => { document.removeEventListener("mousedown", fuera); document.removeEventListener("keydown", tecla); };
+  }, [ab]);
+  const op = (tipo, icono, titulo, sub) => (
+    <button type="button" role="menuitem" onClick={() => { setAb(false); onElegir(tipo); }} style={{ display: "block", width: "100%", textAlign: "left", border: "none", background: "transparent", borderRadius: 8, padding: "9px 11px", cursor: "pointer", fontFamily: "inherit" }}
+      onMouseEnter={(e) => { e.currentTarget.style.background = C.canvas; }} onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>
+      <span style={{ display: "block", fontSize: 13, fontWeight: 800, color: C.ink }}>{icono} {titulo}</span>
+      <span style={{ display: "block", fontSize: 11.5, fontWeight: 600, color: C.slate, marginTop: 1 }}>{sub}</span>
+    </button>
+  );
+  return (
+    <span ref={caja} style={{ position: "relative", display: "inline-block" }}>
+      <button type="button" aria-haspopup="menu" aria-expanded={ab} onClick={() => setAb(!ab)} style={{ border: "none", borderRadius: 9, fontWeight: 700, fontSize: 11.5, padding: "6px 11px", cursor: "pointer", fontFamily: "inherit", background: C.ink, color: C.white }}>＋ Nuevo {ab ? "▴" : "▾"}</button>
+      {ab && (
+        <div role="menu" style={{ position: "absolute", right: 0, top: "calc(100% + 6px)", zIndex: 30, background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, boxShadow: "0 8px 28px rgba(26,26,46,.16)", padding: 5, minWidth: 250 }}>
+          {op("reprogramacion", "🔁", "Nueva Reprogramación", "Repetir un pedido anterior")}
+          {op("orden_nueva", "🆕", "Nueva Preorden", "Preorden nueva de un cliente")}
+        </div>
+      )}
+    </span>
+  );
+}
+
+export default function PedidosFlujo({ capsulas, preordenes, pedidos, etapaInicial, puedePasarAPreorden, onPasarAPreorden, onIrVista, onAbrirPedido, fechaAprobacion, cargarAvance, calcularAvance, protos, clienteDeCapsula, onAbrirCapsula, onAbrirProto, puedeCrearPreorden, onNuevaPreorden }) {
   const corto = useAnchoCorto(900);
   const [sel, setSel] = useState(etapaInicial || "montar");
   useEffect(() => { if (etapaInicial) setSel(etapaInicial); }, [etapaInicial]);
@@ -127,7 +159,7 @@ export default function PedidosFlujo({ capsulas, preordenes, pedidos, etapaInici
   } else if (sel === "pre") {
     lista = (
       <>
-        <Cab icono="🧾" titulo="Preórdenes por aprobar" n={pre.length} nota="Montadas; en cuanto el cliente las aprueba pasan a Órdenes y se llena la Ficha de inicio." accion={<Boton onClick={() => onIrVista("preordenes")}>Abrir Preórdenes →</Boton>} />
+        <Cab icono="🧾" titulo="Preórdenes por aprobar" n={pre.length} nota="Montadas; en cuanto el cliente las aprueba pasan a Órdenes y se llena la Ficha de inicio." accion={<span style={{ display: "inline-flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>{puedeCrearPreorden && onNuevaPreorden ? <MenuNuevo onElegir={onNuevaPreorden} /> : null}<Boton onClick={() => onIrVista("preordenes")}>Abrir Preórdenes →</Boton></span>} />
         {!pre.length ? <Vacio t="No hay preórdenes esperando aprobación." /> : (
           <Tabla cols={["Preorden", "Cliente", "Refs", "Unidades"]} filas={pre.map((p) => (
             <tr key={p.id} onClick={() => onIrVista("preordenes")} style={{ cursor: "pointer" }}><td style={td}><b>{etiqueta(p)}</b></td><td style={td}>{p.cliente || "—"}</td><td style={td}>{(p.items || []).length}</td><td style={td}>{fmt((p.items || []).reduce((s, it) => s + (Number(String(it.colombiaCantidad || 0).replace(/\D/g, "")) || 0) + (Number(String(it.venezuelaCantidad || 0).replace(/\D/g, "")) || 0), 0))}</td></tr>
@@ -195,7 +227,7 @@ export default function PedidosFlujo({ capsulas, preordenes, pedidos, etapaInici
           </React.Fragment>
         ))}
       </div>
-      <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, boxShadow: SOMBRA, overflow: "hidden" }}>{lista}</div>
+      <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, boxShadow: SOMBRA, overflow: sel === "pre" ? "visible" : "hidden" }}>{lista}</div>
     </div>
   );
 }
