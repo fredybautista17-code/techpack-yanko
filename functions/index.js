@@ -5648,7 +5648,7 @@ exports.getIngresosClientesBusint = onCallAuth(
     memory: "1GiB",
   },
   async (request) => {
-    await verificarLlamadorEsAdmin(request);
+    await verificarLlamadorPuedeActualizarIngresos(request);
     const meses = Math.max(1, Math.min(24, Number(request.data?.meses) || 13));
     const avisos = [];
     const leer = (t) => consultarTablaBusintBDCompleta(t).catch((e) => { avisos.push(`No se pudo leer "${t}": ${e?.message || String(e)}`); return null; });
@@ -10379,6 +10379,17 @@ async function verificarLlamadorPuedeSincronizarDadoPorCumplido(request) {
   return snap.docs[0];
 }
 
+// (2026-11-23, a pedido de Fredy) «Traer desde TNS/Busint» en Financiera → Ingresos: admin o usuario con el permiso personal
+// «actualizaIngresos» (Usuarios → Accesos especiales). Es por persona, no por rol, para dárselo solo a Tesorería.
+async function verificarLlamadorPuedeActualizarIngresos(request) {
+  if (!request.auth) throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+  const snap = await db.collection("users").where("authUid", "==", request.auth.uid).limit(1).get();
+  if (snap.empty) throw new HttpsError("permission-denied", "No tienes permiso para hacer esto.");
+  const u = snap.docs[0].data();
+  if (u.isAdmin || u.actualizaIngresos === true) return snap.docs[0];
+  throw new HttpsError("permission-denied", "No tienes permiso para actualizar los ingresos de clientes. Pídele al administrador que lo active en Usuarios → Accesos especiales.");
+}
+
 // ─── GASTOS DE PLANTA DESDE BUSINT ("Traer gastos" en Costos y ventas) ──────────────────────────────────────────
 // (2026-11-06, a pedido de Fredy) Facturas de compra de proveedores concretos (p. ej. «repuestos de maquila» e «hilazas») para
 // cargarlas como gastos del área sin digitarlas. Un gasto cuenta cuando se FACTURA (fecha de la factura), no cuando se paga:
@@ -14128,7 +14139,7 @@ exports.getIngresosClientesTNS = onCallAuth(
     memory: "512MiB",
   },
   async (request) => {
-    await verificarLlamadorEsAdmin(request);
+    await verificarLlamadorPuedeActualizarIngresos(request);
     const inicio = Date.now();
     const empresa = request.data?.empresa === "indutex" ? "indutex" : "yanko";
     const meses = Math.max(1, Math.min(24, Number(request.data?.meses) || 13));

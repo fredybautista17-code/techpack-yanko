@@ -192,6 +192,7 @@ export default function FormularioUsuario({ form, setForm, editUser, users, conf
       {!esCliente && especial("nominaLiderArea", "Líder de área: Producción, Horas y Permisos (Nómina)", "Entra a Nómina con solo Registrar Producción, Registrar Horas y Permisos (Calendario) de los trabajadores de su «Área Interna» (se asigna en «Área y trabajo»). No le da la Nómina completa.")}
       {!esCliente && especial("nominaLiderAsistencia", "Líder de área: Asistencia (Nómina)", "Entra a Nómina con solo Tabulador de Asistencia, Historial de Asistencia, Estadísticas de Permisos y Retardos del mes de los trabajadores de su «Área Interna» (sin valores en dinero). Se puede combinar con el interruptor de Producción, Horas y Permisos.")}
       {especial("costosPlanta", "Costos y ventas de planta (Planta Yanko)", "Le muestra la pestaña «💵 Costos y ventas» dentro de Planta Yanko para cargar y borrar gastos de insumos y ventas de MAQUILA, ver la ganancia real y cerrar el mes. Necesita además acceso al módulo Planta. Se guarda al editar un usuario que ya existe.")}
+      {!esCliente && especial("actualizaIngresos", "Actualizar Ingresos de clientes (Financiera)", "Le muestra el botón «🔄 Traer desde…» en Financiera → Ingresos para traer de TNS y Busint lo que han pagado los clientes. Sin este interruptor solo lo ve el administrador. Necesita además acceso al módulo Financiera. Se guarda al editar un usuario que ya existe.")}
     </div>
   );
 
@@ -279,6 +280,7 @@ export default function FormularioUsuario({ form, setForm, editUser, users, conf
   if (form.isAdmin) items.push(["⭐", <span key="ad"><b>Administrador</b></span>]);
   if (form.landingAreas) items.push(["☀️", (form.areasAuditoria || []).length ? <span key="md">Auditoría en <b>Mi Día</b>: <b>{form.areasAuditoria.join(", ")}</b></span> : <span key="md">Con <b>Mi Día</b> de todas las áreas</span>]);
   if (form.costosPlanta) items.push(["💵", <span key="cp">Con <b>Costos y ventas</b> de planta</span>]);
+  if (form.actualizaIngresos) items.push(["🔄", <span key="ai">Puede <b>actualizar Ingresos</b> de clientes</span>]);
 
   const panel = { acceso: panelAcceso, ve: panelVe, trabajo: panelTrabajo, especial: panelEspecial, midia: panelMiDia }[secActual];
 

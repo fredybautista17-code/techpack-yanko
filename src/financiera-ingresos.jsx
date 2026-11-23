@@ -297,7 +297,8 @@ function DetalleIngresoModal({ titulo, recibos, tns, nota, onClose }) {
   );
 }
 
-export function IngresosView({ db, functionsClient, isAdmin, clientesNombres = [] }) {
+// puedeActualizar: admin o usuario con el permiso personal «Actualizar Ingresos» (Usuarios → Accesos especiales). Clasificar ítems sigue solo para admin.
+export function IngresosView({ db, functionsClient, isAdmin, puedeActualizar = false, clientesNombres = [] }) {
   const [fuente, setFuente] = useState("total_yanko");
   const F = FUENTES[fuente];
   const combinada = !!F.combinada;
@@ -507,7 +508,7 @@ export function IngresosView({ db, functionsClient, isAdmin, clientesNombres = [
               <input type="checkbox" checked={incluirTras} onChange={(e) => setIncluirTras(e.target.checked)} /> Sumar traslados externos (consignación)
             </label>
           ) : null}
-          {isAdmin ? <Boton variante="oscuro" onClick={traer} disabled={cargando}>{cargando ? `Consultando ${F.nombre}…` : `🔄 Traer desde ${F.nombre}`}</Boton> : null}
+          {isAdmin || puedeActualizar ? <Boton variante="oscuro" onClick={traer} disabled={cargando}>{cargando ? `Consultando ${F.nombre}…` : `🔄 Traer desde ${F.nombre}`}</Boton> : null}
         </div>
       </div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
