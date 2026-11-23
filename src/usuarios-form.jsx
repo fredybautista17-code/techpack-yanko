@@ -158,12 +158,37 @@ export default function FormularioUsuario({ form, setForm, editUser, users, conf
       <Interruptor on={!!form[campo]} label={titulo} onClick={() => setForm((f) => ({ ...f, [campo]: !f[campo] }))} />
     </div>
   );
+  // (2026-11-23, a pedido de Fredy) Áreas que ve en la Auditoría Busint vs Nómina. Ninguna marcada = todas (Talento Humano, Contabilidad).
+  const bloqueAreasAuditoria = () => (
+    <div style={{ border: borde, borderRadius: 12, padding: "12px 14px", margin: "-2px 0 12px", background: "#FAF8F4" }}>
+      <div style={{ fontSize: 12, fontWeight: 800, color: T.ink, marginBottom: 4 }}>🔍 Auditoría de Nómina: ¿de qué áreas?</div>
+      {!editUser ? (
+        <div style={{ ...nota, marginTop: 0 }}>Las áreas se eligen al editar el usuario, después de crearlo. Mientras tanto ve todas.</div>
+      ) : (
+        <>
+          <div style={{ ...nota, marginTop: 0, marginBottom: 8 }}>Marca las áreas cuya Auditoría puede ver. Si no marcas ninguna, ve todas (Talento Humano, Contabilidad). El administrador siempre ve todas.</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {(areasNomina || []).slice().sort((a, b) => String(a.nombre).localeCompare(String(b.nombre), "es")).map((a) => {
+              const on = (form.areasAuditoria || []).includes(a.nombre);
+              return <button key={a.id} type="button" style={chip(on)} onClick={() => setForm((f) => { const l = f.areasAuditoria || []; return { ...f, areasAuditoria: on ? l.filter((x) => x !== a.nombre) : [...l, a.nombre] }; })}>{a.nombre}</button>;
+            })}
+            {!(areasNomina || []).length && <span style={nota}>No hay áreas cargadas en Nómina todavía.</span>}
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+            {form.areaNomina && <button type="button" style={btn} onClick={() => setForm((f) => ({ ...f, areasAuditoria: [f.areaNomina] }))}>Solo mi Área Interna ({form.areaNomina})</button>}
+            {(form.areasAuditoria || []).length > 0 && <button type="button" style={btn} onClick={() => setForm((f) => ({ ...f, areasAuditoria: [] }))}>Quitar (ver todas)</button>}
+          </div>
+        </>
+      )}
+    </div>
+  );
   const panelEspecial = (
     <div>
       <h3 style={{ fontSize: 15, fontWeight: 800, margin: 0 }}>Accesos especiales</h3>
       <div style={{ ...nota, marginTop: 2, marginBottom: 14 }}>Permisos extra que se dan a una persona puntual.</div>
       {especial("isAdmin", "Acceso de administrador", "Ve y puede hacer todo en ATLAS.")}
-      {especial("landingAreas", "Mostrar «☀️ Mi Día» (Auditoría de Nómina, todas las áreas)", "Le agrega el botón «☀️ Mi Día» a su menú lateral (sin quitarle nada de lo demás) donde puede elegir cualquier área y ver su Auditoría Busint vs Nómina. Deja «Área Interna» vacía para que le salga el selector de TODAS las áreas, y verifica que su rol tenga el permiso «Centro de Costo» en 🗂️ Áreas (Admin → Roles).")}
+      {especial("landingAreas", "Mostrar «☀️ Mi Día» (Auditoría de Nómina)", "Le agrega el botón «☀️ Mi Día» a su menú lateral (sin quitarle nada de lo demás) donde ve la Auditoría Busint vs Nómina. Abajo eliges de qué áreas (sin marcar ninguna ve todas). Verifica que su rol tenga el permiso «Centro de Costo» en 🗂️ Áreas (Admin → Roles).")}
+      {form.landingAreas && bloqueAreasAuditoria()}
       {!esCliente && especial("nominaLiderArea", "Líder de área: Producción, Horas y Permisos (Nómina)", "Entra a Nómina con solo Registrar Producción, Registrar Horas y Permisos (Calendario) de los trabajadores de su «Área Interna» (se asigna en «Área y trabajo»). No le da la Nómina completa.")}
       {!esCliente && especial("nominaLiderAsistencia", "Líder de área: Asistencia (Nómina)", "Entra a Nómina con solo Tabulador de Asistencia, Historial de Asistencia, Estadísticas de Permisos y Retardos del mes de los trabajadores de su «Área Interna» (sin valores en dinero). Se puede combinar con el interruptor de Producción, Horas y Permisos.")}
       {especial("costosPlanta", "Costos y ventas de planta (Planta Yanko)", "Le muestra la pestaña «💵 Costos y ventas» dentro de Planta Yanko para cargar y borrar gastos de insumos y ventas de MAQUILA, ver la ganancia real y cerrar el mes. Necesita además acceso al módulo Planta. Se guarda al editar un usuario que ya existe.")}
@@ -204,6 +229,7 @@ export default function FormularioUsuario({ form, setForm, editUser, users, conf
             </div>
           );
         })}
+        {tiene("auditoria_nomina") && bloqueAreasAuditoria()}
         {tiene("cumpleanos") && (
           <div style={{ border: borde, borderRadius: 12, padding: "12px 14px", marginBottom: 12, background: "#FAF8F4" }}>
             <div style={{ fontSize: 12, fontWeight: 800, color: T.ink, marginBottom: 4 }}>🎂 Cumpleaños: ¿de qué áreas?</div>
@@ -251,7 +277,7 @@ export default function FormularioUsuario({ form, setForm, editUser, users, conf
     items.push(["⚙️", <span key="pr">Procesos a programar: <b>{(form.procesosPlaneacion || []).length || "ninguno"}</b></span>]);
   }
   if (form.isAdmin) items.push(["⭐", <span key="ad"><b>Administrador</b></span>]);
-  if (form.landingAreas) items.push(["☀️", <span key="md">Con <b>Mi Día</b> de todas las áreas</span>]);
+  if (form.landingAreas) items.push(["☀️", (form.areasAuditoria || []).length ? <span key="md">Auditoría en <b>Mi Día</b>: <b>{form.areasAuditoria.join(", ")}</b></span> : <span key="md">Con <b>Mi Día</b> de todas las áreas</span>]);
   if (form.costosPlanta) items.push(["💵", <span key="cp">Con <b>Costos y ventas</b> de planta</span>]);
 
   const panel = { acceso: panelAcceso, ve: panelVe, trabajo: panelTrabajo, especial: panelEspecial, midia: panelMiDia }[secActual];

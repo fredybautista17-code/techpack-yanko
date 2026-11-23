@@ -8462,6 +8462,13 @@ export function MiDiaNominaStandalone({ currentUser, onVolver, onLogout, incrust
     return () => unsub();
   }, []);
   const tieneAuditoria = (nombre) => AREAS_CON_AUDITORIA_BUSINT.includes(nombre) || auditoriaHistorial.some((h) => h.area === nombre);
+  // (2026-11-23, a pedido de Fredy) Áreas que la persona puede ver en la Auditoría: las que se le marcan en Usuarios (areasAuditoria).
+  // Sin ninguna marcada ve todas (Talento Humano, Contabilidad); el administrador siempre ve todas.
+  const normArea = (s) => String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim().toUpperCase();
+  const marcadas = !currentUser?.isAdmin && Array.isArray(currentUser?.areasAuditoria) ? currentUser.areasAuditoria.map(normArea).filter(Boolean) : [];
+  const restringida = marcadas.length > 0;
+  const areasVisibles = restringida ? areas.filter((a) => marcadas.includes(normArea(a.nombre))) : areas;
+  const areaMostrada = areasVisibles.some((a) => a.nombre === areaSel) ? areaSel : (areasVisibles.find((a) => AREAS_CON_AUDITORIA_BUSINT.includes(a.nombre))?.nombre || areasVisibles[0]?.nombre || null);
   if (loading) {
     return (
       <div style={{ minHeight: incrustado ? 120 : "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: C.canvas }}>
@@ -8494,27 +8501,33 @@ export function MiDiaNominaStandalone({ currentUser, onVolver, onLogout, incrust
         <div style={{ maxWidth: 1400, margin: "0 auto" }}>
           <div style={{ marginBottom: 22 }}>
             <h2 style={{ margin: 0, fontSize: 22, fontWeight: 900, color: C.ink }}>☀️ Mi Dia</h2>
-            <p style={{ margin: "6px 0 0", fontSize: 14, color: C.slate }}>Elige el area para ver su Auditoria Busint vs Nomina.</p>
+            <p style={{ margin: "6px 0 0", fontSize: 14, color: C.slate }}>{restringida && areasVisibles.length === 1 ? `Auditoria Busint vs Nomina de tu area: ${areasVisibles[0].nombre}.` : restringida && !areasVisibles.length ? "" : "Elige el area para ver su Auditoria Busint vs Nomina."}</p>
           </div>
-          {!areas.length ? (
+          {restringida && !areasVisibles.length ? (
+            <div style={{ background: C.white, borderRadius: 14, padding: 24, border: `1px solid ${C.border}`, color: C.slate, fontSize: 13 }}>
+              Las areas que te asignaron para la Auditoria ({currentUser.areasAuditoria.join(", ")}) no existen en Nomina → Administrativo → Area Interna. Pidele al administrador que las revise en Usuarios.
+            </div>
+          ) : !areas.length ? (
             <div style={{ background: C.white, borderRadius: 14, padding: 24, border: `1px solid ${C.border}`, color: C.slate, fontSize: 13 }}>
               Todavia no hay ninguna Area Interna creada — creala en Nomina → Administrativo → Area Interna.
             </div>
           ) : (
             <>
+              {areasVisibles.length > 1 && (
               <div style={{ display: "flex", gap: 8, marginBottom: 22, flexWrap: "wrap" }}>
-                {areas.map((a) => (
+                {areasVisibles.map((a) => (
                   <button
                     key={a.id}
                     onClick={() => setAreaSel(a.nombre)}
-                    style={{ padding: "9px 20px", borderRadius: 999, border: `1.5px solid ${areaSel === a.nombre ? C.violet : C.border}`, background: areaSel === a.nombre ? C.violet : C.white, color: areaSel === a.nombre ? "#fff" : C.slate, fontWeight: 800, fontSize: 13, cursor: "pointer", transition: "all 0.15s" }}
+                    style={{ padding: "9px 20px", borderRadius: 999, border: `1.5px solid ${areaMostrada === a.nombre ? C.violet : C.border}`, background: areaMostrada === a.nombre ? C.violet : C.white, color: areaMostrada === a.nombre ? "#fff" : C.slate, fontWeight: 800, fontSize: 13, cursor: "pointer", transition: "all 0.15s" }}
                   >
                     {a.nombre}
                   </button>
                 ))}
               </div>
-              {tieneAuditoria(areaSel) ? (
-                <AuditoriaBusintNominaPanel area={areaSel} currentUser={currentUser} />
+              )}
+              {tieneAuditoria(areaMostrada) ? (
+                <AuditoriaBusintNominaPanel area={areaMostrada} currentUser={currentUser} />
               ) : (
                 <div style={{ background: C.white, borderRadius: 14, padding: 24, border: `1px solid ${C.border}`, color: C.slate, fontSize: 13 }}>
                   Esta area todavia no tiene corridas de auditoria. Por ahora corre automaticamente solo para Zona Calor y Control de Calidad -- un administrador puede correrla manualmente para otra area desde Areas → Centro de Costo Cierre.
