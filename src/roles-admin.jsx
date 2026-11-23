@@ -18,6 +18,14 @@ export const PERMISOS_FLUJO = [
   ["marcar_observaciones", "Marcar observaciones", "Marca como hechas las observaciones de Diseño."],
   ["revision_diseno", "Revisión de diseño", "Hace la revisión de diseño de las muestras que vuelven de taller."],
 ];
+// Módulos con una «puerta de entrada» (switch principal) y switches secundarios que solo funcionan DENTRO del módulo: sin la entrada el usuario no ve nada.
+// Si un rol tiene secundarios encendidos sin la entrada, se avisa; y al encender un secundario se enciende la entrada sola.
+const ENTRADAS = [
+  { grupo: "Cotizaciones", master: "cotizador", nombre: "Puede entrar a Cotizaciones (solo consulta)", esSub: (m) => m.startsWith("cotizador_") },
+  { grupo: "Bodega", master: "bodega", nombre: "Bodega", esSub: (m) => m.startsWith("bodega_") },
+  { grupo: "Contabilidad", master: "contabilidad", nombre: "Contabilidad", esSub: (m) => m.startsWith("contabilidad_") && m !== "contabilidad_ordenes_compra" },
+];
+const entradaDe = (mod) => ENTRADAS.find((e) => e.esSub(mod));
 const PROTEGIDOS = ["r1", "r2"]; // Equipo Interno y Cliente vienen con ATLAS (igual que antes: no se pueden eliminar)
 
 function Interruptor({ on, onClick, label, T }) {
@@ -67,7 +75,10 @@ export default function RolesAdmin({ config, users, onUpdateConfig, effectiveMod
   function alternarModulo(r, mod) {
     const act = activosDe(r);
     const apagar = act.includes(mod);
-    guardarRol(r.id, { modulos: apagar ? effectiveModulos(r).filter((m) => m !== mod) : [...effectiveModulos(r), mod], ...(apagar ? { perms: sinLegado(r, [mod]) } : {}) });
+    // Al encender un switch secundario se enciende también la entrada del módulo (sin ella no serviría)
+    const ent = !apagar ? entradaDe(mod) : null;
+    const conEntrada = ent && !act.includes(ent.master) ? [ent.master] : [];
+    guardarRol(r.id, { modulos: apagar ? effectiveModulos(r).filter((m) => m !== mod) : [...effectiveModulos(r), mod, ...conEntrada], ...(apagar ? { perms: sinLegado(r, [mod]) } : {}) });
   }
   function alternarGrupo(r, keys) {
     const act = activosDe(r);
@@ -197,8 +208,9 @@ export default function RolesAdmin({ config, users, onUpdateConfig, effectiveMod
                     const cuenta = g.id === "diseno" ? g.claveGrupo : claves;
                     const act = cuenta.filter((m) => modActivos.includes(m)).length;
                     const abierto = !!q || abiertos.has(g.id);
-                    // Permisos de Cotizaciones encendidos sin el acceso al módulo: no le saldría nada al usuario
-                    const cotSinAcceso = g.area.includes("Cotizaciones") && !modActivos.includes("cotizador") && modActivos.some((m) => m.startsWith("cotizador_"));
+                    // Opciones del módulo encendidas sin su entrada: no le saldría nada al usuario
+                    const ent = ENTRADAS.find((e) => g.area.includes(e.grupo));
+                    const sinEntrada = !!ent && !modActivos.includes(ent.master) && modActivos.some(ent.esSub);
                     return (
                       <div key={g.id} style={{ border: borde, borderRadius: 12, marginBottom: 8, overflow: "hidden", background: T.white }}>
                         <div onClick={() => setAbiertos((p) => { const n = new Set(p); if (n.has(g.id)) n.delete(g.id); else n.add(g.id); return n; })}
@@ -206,16 +218,16 @@ export default function RolesAdmin({ config, users, onUpdateConfig, effectiveMod
                           <span style={{ fontWeight: 800, fontSize: 13.5, flex: 1, color: T.ink }}>{g.area}</span>
                           <span title={g.id === "diseno" ? "El interruptor general activa las 9 secciones básicas de Diseño (no incluye Admin Diseño)" : undefined}
                             style={{ fontSize: 11, fontWeight: 800, borderRadius: 20, padding: "2px 8px", background: act ? "#E2F4EB" : "#EFEBE4", color: act ? "#1B9467" : T.slate }}>{act}/{cuenta.length} {g.id === "diseno" ? "básicas" : "activas"}</span>
-                          {cotSinAcceso && <span title="Tiene permisos de Cotizaciones pero no el acceso al módulo" style={{ fontSize: 11, fontWeight: 800, borderRadius: 20, padding: "2px 8px", background: "#FDF5E6", color: "#C47C1A" }}>⚠ sin acceso</span>}
+                          {sinEntrada && <span title={`Tiene opciones de ${ent.grupo} pero no el acceso al módulo`} style={{ fontSize: 11, fontWeight: 800, borderRadius: 20, padding: "2px 8px", background: "#FDF5E6", color: "#C47C1A" }}>⚠ sin acceso</span>}
                           <Interruptor on={g.claveGrupo.length > 0 && g.claveGrupo.every((m) => modActivos.includes(m))} label={`Activar todo ${g.area}`} onClick={() => alternarGrupo(rol, g.claveGrupo)} T={T} />
                           <span style={{ fontSize: 11, color: "#A8A39A", transform: abierto ? "rotate(90deg)" : "none", transition: "transform .15s" }}>▶</span>
                         </div>
                         {abierto && (
                           <div style={{ padding: "4px 14px 8px" }}>
-                            {cotSinAcceso && (
+                            {sinEntrada && (
                               <div style={{ margin: "8px 0 4px", padding: "9px 12px", borderRadius: 9, background: "#FDF5E6", color: "#8A5A10", fontSize: 12.5, fontWeight: 600, lineHeight: 1.45 }}>
-                                ⚠ Este rol tiene permisos de Cotizaciones encendidos pero <b>no puede entrar al módulo</b>, así que a sus usuarios no les sale nada. Activa «Puede entrar a Cotizaciones (solo consulta)».
-                                <button type="button" onClick={() => alternarModulo(rol, "cotizador")} style={{ marginLeft: 10, border: "none", borderRadius: 7, padding: "4px 10px", background: "#C47C1A", color: "#fff", fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>Activar acceso</button>
+                                ⚠ Este rol tiene opciones de {ent.grupo} encendidas pero <b>no puede entrar al módulo</b>, así que a sus usuarios no les sale nada. Activa «{ent.nombre}».
+                                <button type="button" onClick={() => alternarModulo(rol, ent.master)} style={{ marginLeft: 10, border: "none", borderRadius: 7, padding: "4px 10px", background: "#C47C1A", color: "#fff", fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>Activar acceso</button>
                               </div>
                             )}
                             {items.map(([m, label, ayuda], i) => (
