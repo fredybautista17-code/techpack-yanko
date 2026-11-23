@@ -81,3 +81,44 @@ export function revisarContraActivos(lista, trabajadores) {
   const activosSinCumple = activos.filter((a) => !usados.has(claveTrab(a.t))).map((a) => a.t).sort((a, b) => String(a.nombre).localeCompare(String(b.nombre), "es"));
   return { coinciden, noAparecen, dudosos, activosSinCumple, totalActivos: activos.length };
 }
+
+// ─── Área de cada cumpleañero (Mi Día solo de las áreas de cada usuario) ───
+// (2026-11-23, a pedido de Fredy) La tarjeta «🎂 Cumpleaños» de un usuario con áreas marcadas (Usuarios → Tarjetas de «☀️ Mi Día») muestra solo los cumpleaños de esas áreas.
+// El área vive en el propio cumpleaños (`area`, texto como en Nómina: CORTE, EMPAQUE…): se toma de Nómina por el nombre (misma regla de la revisión) o la pone Talento Humano
+// a mano (`areaManual: true`, que Nómina ya no pisa). Sin área = solo la ven los usuarios sin áreas marcadas.
+export const normArea = (s) => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase().replace(/\s+/g, " ").trim();
+export const areaDe = (c) => String((c && c.area) || "").trim();
+
+// Cumpleaños que todavía no tienen área ni se les puso a mano, y que encajan con UN solo trabajador activo (o varios de la misma área) que sí tiene área en Nómina.
+export function areasPorAsignar(lista, trabajadores) {
+  const activos = (trabajadores || [])
+    .filter((t) => t && t.activo !== false && String(t.nombre || "").trim() && normArea(t.area))
+    .map((t) => ({ area: String(t.area).trim(), palabras: new Set(normPalabras(t.nombre)) }));
+  const salida = [];
+  (lista || []).forEach((c) => {
+    if (!c || esEspecial(c) || c.areaManual === true || areaDe(c)) return;
+    const w = normPalabras(c.nombre);
+    if (!w.length) return;
+    const hallados = activos.filter((a) => w.every((p) => a.palabras.has(p)));
+    if (!hallados.length) return;
+    const unicas = [...new Set(hallados.map((h) => normArea(h.area)))];
+    if (unicas.length === 1) salida.push({ id: c.id, area: hallados[0].area });
+  });
+  return salida;
+}
+
+// Áreas para elegir: las de los trabajadores activos de Nómina y las que ya tenga algún cumpleaños, sin repetir.
+export function opcionesDeArea(trabajadores, lista) {
+  const vistas = new Map();
+  [...(trabajadores || []).filter((t) => t && t.activo !== false).map((t) => t.area), ...(lista || []).map((c) => c && c.area)].forEach((a) => {
+    const n = normArea(a);
+    if (n && !vistas.has(n)) vistas.set(n, String(a).trim());
+  });
+  return [...vistas.values()].sort((a, b) => a.localeCompare(b, "es"));
+}
+
+// Deja solo los cumpleaños de esas áreas; sin áreas, deja todos.
+export function filtrarPorAreas(lista, areas) {
+  const sel = (areas || []).map(normArea).filter(Boolean);
+  return sel.length ? (lista || []).filter((c) => sel.includes(normArea(c && c.area))) : lista || [];
+}

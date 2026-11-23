@@ -202,6 +202,19 @@ export default function FormularioUsuario({ form, setForm, editUser, users, conf
             </div>
           );
         })}
+        {tiene("cumpleanos") && (
+          <div style={{ border: borde, borderRadius: 12, padding: "12px 14px", marginBottom: 12, background: "#FAF8F4" }}>
+            <div style={{ fontSize: 12, fontWeight: 800, color: T.ink, marginBottom: 4 }}>🎂 Cumpleaños: ¿de qué áreas?</div>
+            <div style={{ ...nota, marginTop: 0, marginBottom: 8 }}>Marca las áreas cuyos cumpleaños debe ver en su Mi Día. Si no marcas ninguna, ve los de todas las áreas (Talento Humano). El correo diario no cambia.</div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {(areasNomina || []).slice().sort((a, b) => String(a.nombre).localeCompare(String(b.nombre), "es")).map((a) => {
+                const on = (form.areasCumpleanos || []).includes(a.nombre);
+                return <button key={a.id} type="button" style={chip(on)} onClick={() => setForm((f) => { const l = f.areasCumpleanos || []; return { ...f, areasCumpleanos: on ? l.filter((x) => x !== a.nombre) : [...l, a.nombre] }; })}>{a.nombre}</button>;
+              })}
+              {!(areasNomina || []).length && <span style={nota}>No hay áreas cargadas en Nómina todavía.</span>}
+            </div>
+          </div>
+        )}
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 4 }}>
           {hayArea && <button type="button" style={btn} onClick={() => setForm((f) => ({ ...f, tarjetasMiDia: [...new Set([...(f.tarjetasMiDia || []), ...TARJETAS_DEFECTO_MIDIA])] }))}>Marcar las recomendadas del cierre</button>}
           <button type="button" style={btn} onClick={() => setForm((f) => ({ ...f, tarjetasMiDia: [] }))}>Quitar todas</button>

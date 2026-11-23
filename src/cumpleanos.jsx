@@ -4,10 +4,10 @@
 //   CumpleanosView   -> pantalla Nómina → Personal → Cumpleaños: ver por mes, agregar, corregir y quitar; carga la lista inicial del documento.
 //   BloqueCumpleanos -> tarjeta «🎂 Cumpleaños» del Mi Día: hoy, próximos 3 días y próximos 30 días.
 // El correo automático (3 días antes y el mismo día) está en functions (avisarCumpleanos) y llega a quien tenga marcada esa tarjeta.
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import { collection, onSnapshot, doc, setDoc, deleteDoc, writeBatch } from "firebase/firestore";
 import { SEMILLA } from "./cumpleanos-semilla";
-import { MESES, diaValido, fechaTexto, nombreBonito, hoyBogotaISO, agruparProximos, cumpleanosSinDia, revisarContraActivos, diasFaltan, esEspecial, nombreConEtiqueta, iniciales } from "./cumpleanos-calculo";
+import { MESES, diaValido, fechaTexto, nombreBonito, hoyBogotaISO, agruparProximos, cumpleanosSinDia, revisarContraActivos, diasFaltan, esEspecial, nombreConEtiqueta, iniciales, areaDe, areasPorAsignar, opcionesDeArea, filtrarPorAreas } from "./cumpleanos-calculo";
 
 const COL = "nomina_cumpleanos";
 const C = {
@@ -45,16 +45,19 @@ function Pastilla({ faltan }) {
 }
 
 // ─── Tarjeta del Mi Día ───
-export function BloqueCumpleanos({ db }) {
+// (2026-11-23, a pedido de Fredy) `areas` = las áreas marcadas al usuario (Usuarios → Tarjetas de «☀️ Mi Día»): con áreas ve solo los cumpleaños de esas áreas; sin áreas, todos.
+export function BloqueCumpleanos({ db, areas }) {
   const { lista, error } = useCumpleanos(db);
   const hoy = hoyBogotaISO();
-  const g = useMemo(() => agruparProximos(lista || [], hoy, 30), [lista, hoy]);
+  const areasSel = useMemo(() => (areas || []).filter(Boolean), [areas]);
+  const listaVista = useMemo(() => (lista ? filtrarPorAreas(lista, areasSel) : lista), [lista, areasSel]);
+  const g = useMemo(() => agruparProximos(listaVista || [], hoy, 30), [listaVista, hoy]);
   const grupo = (titulo, arr, vacio) => (
     <div style={{ marginTop: 16 }}>
       <div style={{ fontSize: 11, fontWeight: 800, color: C.slate, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>{titulo}</div>
       {arr.length ? arr.map((x) => (
         <div key={x.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", padding: "9px 0", borderTop: `1px solid ${C.border}`, fontSize: 14 }}>
-          <b>{nombreConEtiqueta(x)}</b>
+          <b>{nombreConEtiqueta(x)}{areasSel.length > 1 && areaDe(x) ? <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700, color: C.slate }}>{areaDe(x)}</span> : null}</b>
           <span style={{ display: "flex", gap: 10, alignItems: "center" }}>
             <span style={{ fontSize: 12, color: C.slate, whiteSpace: "nowrap" }}>{fechaTexto(x.mes, x.dia, hoy)}</span>
             <Pastilla faltan={x.faltan} />
@@ -68,7 +71,7 @@ export function BloqueCumpleanos({ db }) {
     : g.proximos3.length ? `Hoy no hay cumpleaños. En los próximos 3 días: ${g.proximos3.length}.` : "Hoy no hay cumpleaños ni en los próximos 3 días.";
   return (
     <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: "18px 20px", maxWidth: 820 }}>
-      <div style={{ fontSize: 16, fontWeight: 800, color: C.ink }}>🎂 Cumpleaños</div>
+      <div style={{ fontSize: 16, fontWeight: 800, color: C.ink }}>🎂 Cumpleaños{areasSel.length ? <span style={{ marginLeft: 10, fontSize: 12, fontWeight: 700, color: C.blue, background: C.blueBg, borderRadius: 20, padding: "2px 10px" }}>Solo del área: {areasSel.join(", ")}</span> : null}</div>
       {error ? <div style={{ color: C.red, fontSize: 13, marginTop: 8 }}>{error}</div> : null}
       {lista === null ? <div style={{ fontSize: 13, color: C.slate, marginTop: 8 }}>Cargando…</div>
         : !lista.length ? <div style={{ fontSize: 13, color: C.amber, marginTop: 8 }}>Todavía no hay cumpleaños cargados. Se cargan en Nómina → Personal → Cumpleaños.</div>
@@ -104,11 +107,12 @@ export default function CumpleanosView({ db, puedeEditar = true, trabajadores })
   const [q, setQ] = useState("");
   const [nuevo, setNuevo] = useState({ nombre: "", etiqueta: "", mes: String(mesHoy), dia: "" });
   const [editId, setEditId] = useState(null);
-  const [edit, setEdit] = useState({ nombre: "", etiqueta: "", mes: "1", dia: "" });
+  const [edit, setEdit] = useState({ nombre: "", etiqueta: "", mes: "1", dia: "", area: "" });
   const [quitarId, setQuitarId] = useState(null);
   const [msg, setMsg] = useState({ ok: true, txt: "" });
   const [ocupado, setOcupado] = useState(false);
   const [verRevision, setVerRevision] = useState(false);
+  const asignadoAuto = useRef(false);
   const [dejados, setDejados] = useState([]); // los que Talento Humano decidió «Dejar» en la revisión (solo mientras la pantalla está abierta)
 
   const todos = useMemo(() => lista || [], [lista]);
@@ -126,6 +130,19 @@ export default function CumpleanosView({ db, puedeEditar = true, trabajadores })
     .slice().sort((a, b) => Number(a.mes) - Number(b.mes) || (Number(a.dia) || 99) - (Number(b.dia) || 99) || String(a.nombre).localeCompare(String(b.nombre), "es"));
 
   const avisar = (ok, txt) => setMsg({ ok, txt });
+  const opcionesArea = useMemo(() => opcionesDeArea(trabajadores, todos), [trabajadores, todos]);
+  // (2026-11-23) Al abrir la pantalla, a quien todavía no tiene área (y no se le puso a mano) se le toma de Nómina por el nombre. Una sola vez por visita; nunca pisa lo puesto a mano.
+  useEffect(() => {
+    if (!puedeEditar || !db || lista === null || !trabajadores || !trabajadores.length || asignadoAuto.current) return;
+    asignadoAuto.current = true;
+    const pend = areasPorAsignar(lista, trabajadores);
+    if (!pend.length) return;
+    const batch = writeBatch(db);
+    pend.forEach((p) => batch.set(doc(db, COL, p.id), { area: p.area, areaOrigen: "nomina", actualizadoEn: new Date().toISOString() }, { merge: true }));
+    batch.commit()
+      .then(() => setMsg({ ok: true, txt: `Se tomó de Nómina el área de ${pend.length} ${pend.length === 1 ? "persona" : "personas"}. Puedes corregirla con «Editar».` }))
+      .catch((e) => setMsg({ ok: false, txt: e?.message || "No se pudieron asignar las áreas desde Nómina." }));
+  }, [puedeEditar, db, lista, trabajadores]);
   async function cargarSemilla() {
     setOcupado(true); avisar(true, "");
     try {
@@ -153,7 +170,7 @@ export default function CumpleanosView({ db, puedeEditar = true, trabajadores })
   }
   function empezarEdicion(x) {
     setQuitarId(null); setEditId(x.id);
-    setEdit({ nombre: x.nombre || "", etiqueta: x.etiqueta || "", mes: String(Number(x.mes) || 1), dia: x.dia ? String(x.dia) : "" });
+    setEdit({ nombre: x.nombre || "", etiqueta: x.etiqueta || "", mes: String(Number(x.mes) || 1), dia: x.dia ? String(x.dia) : "", area: areaDe(x) });
   }
   async function guardarEdicion(x) {
     const nombre = edit.nombre.trim().toUpperCase();
@@ -164,6 +181,8 @@ export default function CumpleanosView({ db, puedeEditar = true, trabajadores })
     try {
       const datos = { nombre, mes, dia, actualizadoEn: new Date().toISOString() };
       if (esEspecial(x)) datos.etiqueta = edit.etiqueta.trim();
+      // Si cambió el área a mano, queda fija (Nómina ya no la pisa); «Sin área» también cuenta como decisión.
+      if ((edit.area || "") !== areaDe(x)) { datos.area = edit.area || ""; datos.areaManual = true; datos.areaOrigen = "manual"; }
       await setDoc(doc(db, COL, x.id), datos, { merge: true });
       setEditId(null); avisar(true, "Cambio guardado.");
     } catch (e) { avisar(false, e?.message || "No se pudo guardar."); }
@@ -210,6 +229,11 @@ export default function CumpleanosView({ db, puedeEditar = true, trabajadores })
           {esEspecial(x) ? <input value={edit.etiqueta} onChange={(e) => setEdit({ ...edit, etiqueta: e.target.value })} aria-label="Etiqueta" placeholder="Etiqueta (quién es)" style={{ ...campo, width: 190 }} /> : null}
           <select value={edit.mes} onChange={(e) => setEdit({ ...edit, mes: e.target.value })} aria-label="Mes" style={campo}>{MESES.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}</select>
           <input type="number" min="1" max="31" value={edit.dia} onChange={(e) => setEdit({ ...edit, dia: e.target.value })} aria-label="Día" style={{ ...campo, width: 64 }} />
+          <select value={edit.area || ""} onChange={(e) => setEdit({ ...edit, area: e.target.value })} aria-label="Área" style={campo}>
+            <option value="">Sin área</option>
+            {opcionesArea.map((a) => <option key={a} value={a}>{a}</option>)}
+            {edit.area && !opcionesArea.some((a) => a === edit.area) ? <option value={edit.area}>{edit.area}</option> : null}
+          </select>
           <button disabled={ocupado} onClick={() => guardarEdicion(x)} style={{ ...botonChico, background: C.ink, color: C.white, border: "none" }}>Guardar</button>
           <button onClick={() => setEditId(null)} style={botonChico}>Cancelar</button>
         </div>
@@ -222,6 +246,7 @@ export default function CumpleanosView({ db, puedeEditar = true, trabajadores })
           <div style={{ minWidth: 0 }}>
             <div style={{ fontWeight: 700, fontSize: 13.5, color: C.ink }}>{nombreBonito(x.nombre)}</div>
             <Etiqueta txt={esEspecial(x) ? String(x.etiqueta || "").trim() : ""} />
+            <span data-area="cumple" style={{ display: "inline-block", margin: "3px 0 0 0", padding: "2px 8px", borderRadius: 20, fontSize: 10.5, fontWeight: 800, background: areaDe(x) ? C.blueBg : C.canvas, color: areaDe(x) ? C.blue : C.slate }}>{areaDe(x) || "Sin área"}</span>
             <div style={{ fontSize: 11.5, color: faltan !== null && faltan <= 1 && !pasado ? C.amber : C.slate, fontWeight: faltan !== null && faltan <= 1 && !pasado ? 700 : 400 }}>
               {!valido ? "Falta el día" : pasado ? "ya pasó" : faltan === 0 ? "hoy" : faltan === 1 ? "mañana" : t ? `${MESES[Number(x.mes) - 1]}` : ""}
               {sin ? <span style={{ marginLeft: 6, padding: "1px 8px", borderRadius: 20, fontSize: 10.5, fontWeight: 700, background: C.canvas, color: C.slate }}>Sin avisos</span> : null}

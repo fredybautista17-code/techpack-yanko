@@ -497,7 +497,7 @@ export default function MiDiaTarjetasStandalone({ db, currentUser, onVolver, onL
     });
   }
   if (marcadas.includes("cumpleanos")) {
-    secciones.push({ id: "cumpleanos", icon: "🎂", label: "Cumpleaños", render: () => <BloqueCumpleanos db={db} /> });
+    secciones.push({ id: "cumpleanos", icon: "🎂", label: "Cumpleaños", render: () => <BloqueCumpleanos db={db} areas={currentUser?.areasCumpleanos} /> });
   }
   if (marcadas.includes("gastos_talento")) {
     secciones.push({ id: "gastos_talento", icon: "💜", label: "Gastos de Talento Humano", render: () => <BloqueGastosTalento db={db} /> });
