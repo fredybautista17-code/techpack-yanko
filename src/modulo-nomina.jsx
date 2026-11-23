@@ -17865,7 +17865,7 @@ function DiagnosticoDuplicadosView({ diasTrabajados, faltas, anomalias, retardos
     </div>
   );
 }
-export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNovedades, puedeEditarCatalogos, puedeVerAnomaliasHuellero, puedeVerDuplicadosHuellero, puedeCerrarQuincena, puedeAgregarCobrosManual, puedeAjustarDestajo, puedeEditarHorasExtra, puedeEditarBonificacion, puedeAutorizarPermisos }) {
+export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNovedades, soloLiderArea, puedeEditarCatalogos, puedeVerAnomaliasHuellero, puedeVerDuplicadosHuellero, puedeCerrarQuincena, puedeAgregarCobrosManual, puedeAjustarDestajo, puedeEditarHorasExtra, puedeEditarBonificacion, puedeAutorizarPermisos }) {
   // Líder de área (hoy: Anny Beltrán y Sarai Méndez, cada una con su Área
   // Interna real -- ver Administrativo → Área Interna): entra con un panel
   // reducido, ya filtrado a su propia gente, en vez del panel completo de
@@ -18138,7 +18138,14 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   // del usuario) — pensado para que más adelante, cuando se manejen roles,
   // sea fácil darle a alguien acceso a un grupo completo en vez de ítem por
   // ítem. El de área líder (Anny/Sarai) queda igual, plano, sin grupos.
-  const NAV = areaLider
+  // (2026-11-23, a pedido de Fredy) Con el switch «Líder de área» de Roles → Nómina (sin Nómina completa ni Solo Novedades) el líder solo ve 3 opciones, de su propia gente.
+  const NAV = areaLider && soloLiderArea
+    ? [
+        { id: "produccion", icon: "🧵", label: "Registrar Producción" },
+        { id: "horas", icon: "🕐", label: "Registrar Horas" },
+        { id: "permisos", icon: "🗓️", label: "Permisos (Calendario)" },
+      ]
+    : areaLider
     ? [
         { id: "tabulador_asistencia", icon: "📋", label: "Tabulador de Asistencia" },
         { id: "produccion", icon: "🧵", label: "Registrar Producción" },

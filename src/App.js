@@ -14756,7 +14756,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     // (2026-11-21, a pedido de Fredy) Verificador de Precio (Busint en vivo) en Programación Diaria de Planta Yanko y como tarjeta de Mi Día: permiso aparte por rol (el admin siempre). Para Mi Día además se marca la tarjeta en Usuarios.
     { area: "🏭 Planta Yanko", items: [["planta", "Planta Yanko"], ["planta_verificador_precio", "🔍 Verificador de Precio", "Puede ver el Verificador de Precio en la Programación Diaria de Planta Yanko y en Mi Día (muestra precios de mano de obra de Confección y Corte)"]] },
     { area: "📦 Bodega", items: [["bodega", "Bodega"], ["bodega_despacho_saldo", "📦 Despacho y Saldo", "Ve la tarjeta Despacho y Saldo (abonos y saldos) dentro de Bodega."], ["bodega_control_despacho", "🎛️ Control de Despacho", "Ve la tarjeta Control de Despacho (Despachos Generales y Estado de Despacho) dentro de Bodega."], ["bodega_devoluciones", "↩️ Devoluciones", "Ve la tarjeta Devoluciones de clientes dentro de Bodega."], ["bodega_solo_devoluciones", "Solo Devoluciones (no ve Despacho y Saldo ni Control de Despacho)"], ["bodega_cambiar_estado_devoluciones", "Puede cambiar el estado de las devoluciones (líder)"]] },
-    { area: "👷 Nómina", items: [["nomina", "Completa (todo el módulo)"], ["nomina_novedades", "Solo Novedades"], ["nomina_editar_catalogos", "Puede editar catálogos (Trabajadores, Turnos, etc.) sin admin total"], ["nomina_ver_anomalias_huellero", "Puede ver Anomalías Huellero"], ["nomina_ver_duplicados_huellero", "Puede ver Diagnóstico de Duplicados"], ["nomina_cerrar_quincena", "Puede cerrar Quincena (General y por Área)"], ["nomina_agregar_cobros_manual", "Puede agregar cobros/deducciones manuales"], ["nomina_ajustar_destajo", "Puede agregar Ajustes de Nómina en Destajo"], ["nomina_editar_horas_extra", "Puede editar/borrar Horas Extras"], ["nomina_editar_bonificacion", "Puede editar/borrar Bonificaciones"], ["nomina_autorizar_permisos", "Puede generar códigos de autorización de permisos (4.º permiso del mes en adelante)"]] },
+    { area: "👷 Nómina", items: [["nomina", "Completa (todo el módulo)"], ["nomina_novedades", "Solo Novedades"], ["nomina_lider_area", "Líder de área: ingresa Producción y Horas y ve/registra Permisos de SUS trabajadores (según su Área Interna)"], ["nomina_editar_catalogos", "Puede editar catálogos (Trabajadores, Turnos, etc.) sin admin total"], ["nomina_ver_anomalias_huellero", "Puede ver Anomalías Huellero"], ["nomina_ver_duplicados_huellero", "Puede ver Diagnóstico de Duplicados"], ["nomina_cerrar_quincena", "Puede cerrar Quincena (General y por Área)"], ["nomina_agregar_cobros_manual", "Puede agregar cobros/deducciones manuales"], ["nomina_ajustar_destajo", "Puede agregar Ajustes de Nómina en Destajo"], ["nomina_editar_horas_extra", "Puede editar/borrar Horas Extras"], ["nomina_editar_bonificacion", "Puede editar/borrar Bonificaciones"], ["nomina_autorizar_permisos", "Puede generar códigos de autorización de permisos (4.º permiso del mes en adelante)"]] },
     { area: "🎯 KPIs", items: [["kpis", "KPIs"]] },
     { area: "📋 Informes", items: [["informes", "Informes"]] },
     { area: "🗂️ Áreas", items: [["areas_centro_costo", "Centro de Costo"], ["areas_estadisticas", "Estadísticas"], ["areas_reclamos", "Reclamos"], ["areas_programador", "Programador"]] },
@@ -21158,7 +21158,11 @@ function AppInner() {
   // "nomina" completo ya ve Novedades igual que siempre — este permiso es
   // aditivo, solo importa para quien NO tiene "nomina" completo.
   const canAccessNominaNovedades = moduloVisible(userRoleData, "nomina_novedades", currentUser?.isAdmin);
-  const canAccessNomina = canAccessNominaCompleta || canAccessNominaNovedades;
+  // "nomina_lider_area" (2026-11-23, a pedido de Fredy): entra a Nómina con un menú de solo 3 opciones (Registrar Producción, Registrar Horas y Permisos),
+  // limitado a los trabajadores de su «Área Interna» (Usuarios). Solo cuenta si el rol no tiene Nómina completa ni Solo Novedades (esos ya traen su propio menú).
+  const canAccessNominaLiderArea = moduloVisible(userRoleData, "nomina_lider_area", currentUser?.isAdmin);
+  const canAccessNomina = canAccessNominaCompleta || canAccessNominaNovedades || canAccessNominaLiderArea;
+  const soloLiderAreaNomina = canAccessNominaLiderArea && !canAccessNominaCompleta && !canAccessNominaNovedades;
   const soloNovedadesNomina = !canAccessNominaCompleta && canAccessNominaNovedades;
   // "nomina_editar_catalogos" (2026-09-09, a pedido de Fredy): permiso
   // para editar/crear/borrar en los catálogos administrativos de Nómina
@@ -21547,8 +21551,21 @@ function AppInner() {
   if (moduloActivo === "bodega") {
     return <ModuloBodega currentUser={currentUser} puedeAprobarDespacho={perms.aprobarDespacho} canAccessContabilidad={canAccessContabilidad} soloLecturaBodega={currentUser?.role === "Cliente"} puedeVerControlDespacho={perms.verControlDespacho} puedeVerDespachoSaldo={perms.bodegaDespachoSaldo} puedeVerDevoluciones={perms.bodegaDevoluciones} soloDevoluciones={perms.bodegaSoloDevoluciones} puedeCambiarEstadoDev={perms.bodegaCambiarEstadoDev} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
+  if (moduloActivo === "nomina" && soloLiderAreaNomina && !currentUser?.areaNomina) {
+    // Sin «Área Interna» el menú de líder no tendría a quién filtrar (vería a todos): se pide que el administrador se la asigne.
+    return (
+      <div style={{ minHeight: "100vh", background: T.canvas, display: "grid", placeItems: "center", padding: 24, fontFamily: "inherit" }}>
+        <div style={{ maxWidth: 440, background: T.white, border: `1px solid ${T.border}`, borderRadius: 16, padding: "24px 26px", textAlign: "center" }}>
+          <div style={{ fontSize: 36 }}>👥</div>
+          <div style={{ fontWeight: 800, fontSize: 17, color: T.ink, margin: "8px 0 6px" }}>Falta tu Área Interna</div>
+          <div style={{ fontSize: 13.5, color: T.slate, lineHeight: 1.5 }}>Para ingresar producción, horas y permisos de tus trabajadores, el administrador debe asignarte tu «Área Interna» en Administración → Usuarios.</div>
+          <button onClick={() => setModuloActivo("diseno")} style={{ marginTop: 16, border: "none", borderRadius: 10, background: T.ink, color: "#fff", fontWeight: 700, fontSize: 13, padding: "9px 18px", cursor: "pointer", fontFamily: "inherit" }}>← Volver al inicio</button>
+        </div>
+      </div>
+    );
+  }
   if (moduloActivo === "nomina") {
-    return <ModuloNomina currentUser={currentUser} soloNovedades={soloNovedadesNomina} puedeEditarCatalogos={canAccessNominaEditarCatalogos} puedeVerAnomaliasHuellero={canVerAnomaliasHuellero} puedeVerDuplicadosHuellero={canVerDuplicadosHuellero} puedeCerrarQuincena={canCerrarQuincena} puedeAgregarCobrosManual={canAgregarCobrosManual} puedeAjustarDestajo={canAjustarDestajo} puedeEditarHorasExtra={canEditarHorasExtra} puedeEditarBonificacion={canEditarBonificacion} puedeAutorizarPermisos={canAutorizarPermisos} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+    return <ModuloNomina currentUser={currentUser} soloNovedades={soloNovedadesNomina} soloLiderArea={soloLiderAreaNomina} puedeEditarCatalogos={canAccessNominaEditarCatalogos} puedeVerAnomaliasHuellero={canVerAnomaliasHuellero} puedeVerDuplicadosHuellero={canVerDuplicadosHuellero} puedeCerrarQuincena={canCerrarQuincena} puedeAgregarCobrosManual={canAgregarCobrosManual} puedeAjustarDestajo={canAjustarDestajo} puedeEditarHorasExtra={canEditarHorasExtra} puedeEditarBonificacion={canEditarBonificacion} puedeAutorizarPermisos={canAutorizarPermisos} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (moduloActivo === "informes") {
     return <ModuloInformes currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
