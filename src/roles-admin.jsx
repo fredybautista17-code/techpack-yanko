@@ -52,7 +52,8 @@ export default function RolesAdmin({ config, users, onUpdateConfig, effectiveMod
     },
     ...grupos.map((g) => ({ id: g.area, area: g.area, items: g.items, claveGrupo: g.items.map(([m]) => m) })),
   ];
-  const totalModulos = todosGrupos.reduce((s, g) => s + g.items.length, 0);
+  // «cotizador» aparece en Diseño y en Cotizaciones (es la misma llave): se cuenta una sola vez
+  const totalModulos = new Set(todosGrupos.flatMap((g) => g.items.map(([m]) => m))).size;
 
   function guardarRol(id, cambios) {
     onUpdateConfig({ roles: roles.map((r) => (r.id !== id ? r : { ...r, ...cambios })) });
@@ -196,6 +197,8 @@ export default function RolesAdmin({ config, users, onUpdateConfig, effectiveMod
                     const cuenta = g.id === "diseno" ? g.claveGrupo : claves;
                     const act = cuenta.filter((m) => modActivos.includes(m)).length;
                     const abierto = !!q || abiertos.has(g.id);
+                    // Permisos de Cotizaciones encendidos sin el acceso al módulo: no le saldría nada al usuario
+                    const cotSinAcceso = g.area.includes("Cotizaciones") && !modActivos.includes("cotizador") && modActivos.some((m) => m.startsWith("cotizador_"));
                     return (
                       <div key={g.id} style={{ border: borde, borderRadius: 12, marginBottom: 8, overflow: "hidden", background: T.white }}>
                         <div onClick={() => setAbiertos((p) => { const n = new Set(p); if (n.has(g.id)) n.delete(g.id); else n.add(g.id); return n; })}
@@ -203,11 +206,18 @@ export default function RolesAdmin({ config, users, onUpdateConfig, effectiveMod
                           <span style={{ fontWeight: 800, fontSize: 13.5, flex: 1, color: T.ink }}>{g.area}</span>
                           <span title={g.id === "diseno" ? "El interruptor general activa las 9 secciones básicas de Diseño (no incluye Admin Diseño)" : undefined}
                             style={{ fontSize: 11, fontWeight: 800, borderRadius: 20, padding: "2px 8px", background: act ? "#E2F4EB" : "#EFEBE4", color: act ? "#1B9467" : T.slate }}>{act}/{cuenta.length} {g.id === "diseno" ? "básicas" : "activas"}</span>
+                          {cotSinAcceso && <span title="Tiene permisos de Cotizaciones pero no el acceso al módulo" style={{ fontSize: 11, fontWeight: 800, borderRadius: 20, padding: "2px 8px", background: "#FDF5E6", color: "#C47C1A" }}>⚠ sin acceso</span>}
                           <Interruptor on={g.claveGrupo.length > 0 && g.claveGrupo.every((m) => modActivos.includes(m))} label={`Activar todo ${g.area}`} onClick={() => alternarGrupo(rol, g.claveGrupo)} T={T} />
                           <span style={{ fontSize: 11, color: "#A8A39A", transform: abierto ? "rotate(90deg)" : "none", transition: "transform .15s" }}>▶</span>
                         </div>
                         {abierto && (
                           <div style={{ padding: "4px 14px 8px" }}>
+                            {cotSinAcceso && (
+                              <div style={{ margin: "8px 0 4px", padding: "9px 12px", borderRadius: 9, background: "#FDF5E6", color: "#8A5A10", fontSize: 12.5, fontWeight: 600, lineHeight: 1.45 }}>
+                                ⚠ Este rol tiene permisos de Cotizaciones encendidos pero <b>no puede entrar al módulo</b>, así que a sus usuarios no les sale nada. Activa «Puede entrar a Cotizaciones (solo consulta)».
+                                <button type="button" onClick={() => alternarModulo(rol, "cotizador")} style={{ marginLeft: 10, border: "none", borderRadius: 7, padding: "4px 10px", background: "#C47C1A", color: "#fff", fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>Activar acceso</button>
+                              </div>
+                            )}
                             {items.map(([m, label, ayuda], i) => (
                               <div key={m} title={ayuda || undefined} style={{ display: "flex", gap: 12, alignItems: "center", padding: "9px 0", borderTop: i ? borde : "none" }}>
                                 <div style={{ flex: 1, fontSize: 13, fontWeight: 600, lineHeight: 1.4, color: T.ink }}>
