@@ -11946,7 +11946,7 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
     </div>
   );
 }
-function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, canAccessPlaneacion, canAccessPlanta, canAccessBodega, canAccessNomina, canAccessDiseno, canAccessPedidosArea, canAccessKpis, canAccessInformes, canAccessAreas, canAccessCotizador, cotPorAprobar, onGoArea, protos, capsulas, pedidos }) {
+function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, canAccessPlaneacion, canAccessPlanta, canAccessBodega, canAccessNomina, canAccessDiseno, canAccessPedidosArea, canGestionPedido, nPorMontarHome, canAccessKpis, canAccessInformes, canAccessAreas, canAccessCotizador, cotPorAprobar, onGoArea, protos, capsulas, pedidos }) {
   const hoy = new Date();
   const protosEnProceso = protos.filter((p) => p.status === "en_proceso").length;
   const pedidosActivos = pedidos.filter((p) => p.estado === "activo" || p.estado === "terminado").length;
@@ -11959,6 +11959,11 @@ function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, c
       // flujo de trabajo con visibilidad de módulo. Ahora usa el acceso granular real
       // (si al menos una sección de Diseño está habilitada para el rol).
       permiso: canAccessDiseno,
+    },
+    {
+      id: "gestion_pedido_area", icon: "🧭", label: "Gestión de Pedido", desc: "Flujo, preórdenes, órdenes y Ficha de inicio: el camino del pedido hasta cortar", color: T.amber, bg: T.amberBg,
+      stats: [{ label: "Por montar", value: nPorMontarHome || 0, alert: (nPorMontarHome || 0) > 0 }],
+      permiso: canGestionPedido,
     },
     {
       id: "pedidos_area", icon: "🧾", label: "Pedidos", desc: "Pedidos cargados de Busint, por cliente, administración y Corte", color: T.denim, bg: T.denimBg,
@@ -21261,7 +21266,7 @@ function AppInner() {
   // acá: trabaja directo sobre los mismos pedidos (pedidos_activos es la
   // misma colección que usa "Pedidos"), tiene más que ver con esto que con
   // el flujo de diseño/aprobación.
-  const canAccessPedidosArea = canAccessPedidos || canAccessPedidosClientes || canAccessPreordenes || canAccessExplosionMateriales || canAccessLotesPorIntegrar || canAccessCorte || canAccessProduccion || canAccessDevoluciones || !!currentUser?.isAdmin;
+  const canAccessPedidosArea = canAccessPedidos || canAccessPedidosClientes || canAccessExplosionMateriales || canAccessLotesPorIntegrar || canAccessCorte || canAccessProduccion || canAccessDevoluciones || !!currentUser?.isAdmin;
   const [moduloActivo, setModuloActivo] = useState("diseno");
   // Navegación con «origen» (2026-11-13, a pedido de Fredy): al abrir un prototipo/referencia/cronograma desde una tarjeta de Mi Día (o un
   // prototipo desde el Cronograma de Muestras), «← Volver» y el botón «atrás» del navegador regresan a ese origen y no al listado por defecto.
@@ -21314,6 +21319,19 @@ function AppInner() {
   const nPorMontar = capsulasVisibles.reduce((s, cap) => s + (cap.referencias || []).filter((r) => r.status === "aprobado" && !r.enviadoAPreorden).length, 0);
   const nPreordenesPorAprobar = preordenesVisibles.filter((p) => (p.estado || "montada") !== "aprobada").length;
   const insigniaDe = (id) => (id === "pedidos_flujo" || id === "pm_montar" ? nPorMontar : id === "preordenes" || id === "fi_preordenes" ? nPreordenesPorAprobar : 0);
+  // (2026-11-23, a pedido de Fredy) Módulo «Gestión de Pedido»: Flujo, Por montar, Preórdenes, Órdenes, Ficha de inicio e Historial de Órdenes en un solo lugar,
+  // con pestañas arriba. Son las mismas pantallas de siempre (mismos view); cada persona ve solo las pestañas que ya podía ver.
+  const gpTabs = [
+    ...(!esClienteCot ? [{ id: "flujo", icon: "🧭", label: "Flujo", activa: view === "pedidos_flujo" && flujoEtapa !== "montar", ir: () => { setFlujoEtapa(null); setView("pedidos_flujo"); } }] : []),
+    ...(!esClienteCot && canAccessPreordenes ? [{ id: "montar", icon: "🧩", label: "Por montar", n: nPorMontar, titulo: "Referencias aprobadas en cápsulas que faltan por pasar a preorden", activa: view === "pedidos_flujo" && flujoEtapa === "montar", ir: () => { setFlujoEtapa("montar"); setView("pedidos_flujo"); } }] : []),
+    ...(canAccessPreordenes ? [{ id: "pre", icon: "🧾", label: "Preórdenes", n: nPreordenesPorAprobar, titulo: "Preórdenes por aprobar", activa: view === "preordenes", ir: () => setView("preordenes") }] : []),
+    ...(canAccessOrdenes ? [{ id: "ord", icon: "🧵", label: "Órdenes", activa: view === "ordenes", ir: () => setView("ordenes") }] : []),
+    ...(canFichaInicio ? [{ id: "ficha", icon: "🚦", label: "Ficha de inicio", noPueden: true, activa: view === "ficha_tablero", ir: () => setView("ficha_tablero") }] : []),
+    ...(canAccessOrdenes ? [{ id: "hist", icon: "📜", label: "Historial de Órdenes", activa: view === "historial_ordenes", ir: () => setView("historial_ordenes") }] : []),
+  ];
+  const GP_VISTAS = ["pedidos_flujo", "preordenes", "ordenes", "historial_ordenes", "ficha_tablero"];
+  const canGestionPedido = gpTabs.length > 0;
+  const enGestionPedido = canGestionPedido && GP_VISTAS.includes(view);
   const AREAS = [
     ...(canAccessDiseno
       ? [{
@@ -21332,36 +21350,25 @@ function AppInner() {
           ],
         }]
       : []),
+    ...(canGestionPedido
+      ? [{
+          id: "gestion_pedido_area", icon: "🧭", label: "Gestión de Pedido", directo: true, insignia: nPorMontar + nPreordenesPorAprobar, insigniaTitulo: "Referencias por montar y preórdenes por aprobar", insigniaNoPueden: canFichaInicio,
+          items: [{ id: "gestion_pedido", icon: "🧭", label: "Gestión de Pedido" }],
+        }]
+      : []),
     ...(canAccessPedidosArea
       ? [{
-          id: "pedidos_area", icon: "🧾", label: "Pedidos", insignia: nPorMontar,
+          id: "pedidos_area", icon: "🧾", label: "Pedidos",
           items: [
-            // (2026-11-22, a pedido de Fredy) Orden del proceso: Flujo de Pedidos → Por montar → Preórdenes → Órdenes → Pedidos → Corte; después los ítems de apoyo.
-            ...(!esClienteCot ? [{ id: "pedidos_flujo", icon: "🧭", label: "Flujo de Pedidos" }] : []),
-            ...(!esClienteCot && canAccessPreordenes ? [{ id: "pm_montar", icon: "🧩", label: "Por montar" }] : []),
-            ...(canAccessPreordenes ? [{ id: "preordenes", icon: "🧾", label: "Preórdenes" }] : []),
-            ...(canAccessOrdenes ? [{ id: "ordenes", icon: "🧵", label: "Órdenes" }] : []),
+            // (2026-11-23) Flujo, Por montar, Preórdenes, Órdenes, Ficha de inicio e Historial de Órdenes pasaron al módulo «Gestión de Pedido» (arriba).
             ...(canAccessPedidos ? [{ id: "pedidos", icon: "📦", label: "Pedidos" }] : []),
             ...(canAccessCorte ? [{ id: "__corte__", icon: "✂", label: "Corte" }] : []),
             ...(canAccessPedidosClientes ? [{ id: "pedidos_clientes", icon: "🏢", label: "Clientes" }] : []),
             ...(canAccessExplosionMateriales ? [{ id: "explosion_materiales", icon: "🧮", label: "Explosión de materiales" }] : []),
             ...(canAccessLotesPorIntegrar ? [{ id: "lotes_por_integrar", icon: "📦", label: "Lotes por integrar" }] : []),
-            ...(canAccessOrdenes ? [{ id: "historial_ordenes", icon: "📜", label: "Historial de Órdenes" }] : []),
             ...(canAccessProduccion ? [{ id: "produccion", icon: "🏭", label: "Producción" }] : []),
             ...(canAccessDevoluciones ? [{ id: "devoluciones", icon: "↩️", label: "Devoluciones" }] : []),
             ...(currentUser?.isAdmin ? [{ id: "pedidos_admin", icon: "⚙", label: "Admin Pedidos" }] : []),
-          ],
-        }]
-      : []),
-    // (2026-11-22, a pedido de Fredy) Área «Ficha de inicio»: viabilidad del pedido (tablero con los 9 pasos por referencia y si el pedido puede salir a cortar).
-    // Preórdenes y Órdenes también se abren desde aquí (son las mismas pantallas que en Pedidos; los ids fi_* solo evitan marcar dos ítems a la vez).
-    ...(canFichaInicio
-      ? [{
-          id: "ficha_area", icon: "🚦", label: "Ficha de inicio", insigniaNoPueden: true,
-          items: [
-            { id: "ficha_tablero", icon: "🚦", label: "Tablero de viabilidad" },
-            ...(canAccessPreordenes ? [{ id: "fi_preordenes", icon: "🧾", label: "Preórdenes" }] : []),
-            ...(canAccessOrdenes ? [{ id: "fi_ordenes", icon: "🧵", label: "Órdenes" }, { id: "fi_historial_ordenes", icon: "📜", label: "Historial de Órdenes" }] : []),
           ],
         }]
       : []),
@@ -21417,16 +21424,9 @@ function AppInner() {
     if (itemId === "protos") return view === "protos" || view === "proto-detail";
     if (itemId === "capsulas") return view === "capsulas" || view === "ref-detail";
     if (itemId === "pedidos") return view === "pedidos" || view === "pedido-detail";
-    if (itemId === "pedidos_flujo") return view === "pedidos_flujo" && flujoEtapa !== "montar";
-    if (itemId === "pm_montar") return view === "pedidos_flujo" && flujoEtapa === "montar";
+    if (itemId === "gestion_pedido") return GP_VISTAS.includes(view);
     if (itemId === "pedidos_admin") return view === "pedidos_admin";
     if (itemId === "pedidos_clientes") return view === "pedidos_clientes";
-    if (itemId === "preordenes") return view === "preordenes" && areaAbierta !== "ficha_area";
-    if (itemId === "ordenes") return view === "ordenes" && areaAbierta !== "ficha_area";
-    if (itemId === "historial_ordenes") return view === "historial_ordenes" && areaAbierta !== "ficha_area";
-    if (itemId === "fi_preordenes") return view === "preordenes" && areaAbierta === "ficha_area";
-    if (itemId === "fi_ordenes") return view === "ordenes" && areaAbierta === "ficha_area";
-    if (itemId === "fi_historial_ordenes") return view === "historial_ordenes" && areaAbierta === "ficha_area";
     if (itemId === "explosion_materiales") return view === "explosion_materiales";
     if (itemId === "lotes_por_integrar") return view === "lotes_por_integrar";
     if (itemId === "produccion") return view === "produccion";
@@ -21445,10 +21445,7 @@ function AppInner() {
   }
   function navClick(itemId) {
     setCapFocoId(null);
-    if (itemId === "pedidos_flujo") { setFlujoEtapa(null); setView("pedidos_flujo"); return; }
-    if (itemId === "pm_montar") { setFlujoEtapa("montar"); setView("pedidos_flujo"); return; }
-    const aliasFicha = { fi_preordenes: "preordenes", fi_ordenes: "ordenes", fi_historial_ordenes: "historial_ordenes" };
-    if (aliasFicha[itemId]) { setView(aliasFicha[itemId]); return; }
+    if (itemId === "gestion_pedido") { if (!GP_VISTAS.includes(view) && gpTabs[0]) gpTabs[0].ir(); return; }
     if (itemId === "__corte__") { setModuloActivo("corte"); return; }
     if (itemId === "contabilidad_area") { setModuloActivo("contabilidad"); return; }
     if (itemId === "cotizaciones") { setModuloActivo("cotizaciones"); return; }
@@ -21620,10 +21617,10 @@ function AppInner() {
               const anyItemActive = area.items.some((item) => isViewActive(item.id));
               return (
                 <div key={area.id}>
-                  <button onClick={() => setAreaAbierta(areaActiva ? null : area.id)} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", border: "none", borderRadius: 8, cursor: "pointer", background: anyItemActive && !areaActiva ? "rgba(200,184,162,0.08)" : "transparent", color: anyItemActive ? "rgba(200,184,162,0.9)" : "rgba(136,136,170,0.7)", fontWeight: 700, fontSize: 12, textAlign: "left", textTransform: "uppercase", letterSpacing: "0.06em" }}>
-                    <span style={{ fontSize: 14 }}>{area.icon}</span><span style={{ flex: 1 }}>{area.label}</span>{!areaActiva && area.insignia ? <Insignia n={area.insignia} title={`${area.insignia} referencia(s) por montar`} /> : null}{!areaActiva && area.insigniaNoPueden ? <InsigniaNoPueden pedidos={pedidosVisibles} /> : null}<span style={{ fontSize: 10, opacity: 0.6 }}>{areaActiva ? "▾" : "▸"}</span>
+                  <button onClick={() => { if (area.directo) { setAreaAbierta(area.id); navClick(area.items[0].id); } else setAreaAbierta(areaActiva ? null : area.id); }} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", border: "none", borderRadius: 8, cursor: "pointer", background: anyItemActive && !areaActiva ? "rgba(200,184,162,0.08)" : "transparent", color: anyItemActive ? "rgba(200,184,162,0.9)" : "rgba(136,136,170,0.7)", fontWeight: 700, fontSize: 12, textAlign: "left", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                    <span style={{ fontSize: 14 }}>{area.icon}</span><span style={{ flex: 1 }}>{area.label}</span>{(!areaActiva || area.directo) && area.insignia ? <Insignia n={area.insignia} title={area.insigniaTitulo || `${area.insignia} referencia(s) por montar`} /> : null}{(!areaActiva || area.directo) && area.insigniaNoPueden ? <InsigniaNoPueden pedidos={pedidosVisibles} /> : null}<span style={{ fontSize: 10, opacity: 0.6 }}>{areaActiva ? "▾" : "▸"}</span>
                   </button>
-                  {areaActiva && (
+                  {areaActiva && !area.directo && (
                     <div style={{ marginLeft: 8, marginBottom: 4, display: "flex", flexDirection: "column", gap: 2 }}>
                       {area.items.map((item) => {
                         const active = isViewActive(item.id);
@@ -21650,8 +21647,26 @@ function AppInner() {
         </div>
         <div style={{ flex: 1, padding: "28px 32px", overflow: "auto" }}>
           <div style={{ maxWidth: 1020, margin: "0 auto" }}>
+            {enGestionPedido && (
+              <div style={{ marginBottom: 18 }}>
+                <div style={{ marginBottom: 10 }}>
+                  <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>🧭 Gestión de Pedido</h2>
+                  <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Todo el camino del pedido en un solo lugar: de la referencia aprobada hasta que está lista para cortar.</p>
+                </div>
+                <div role="tablist" style={{ display: "flex", gap: 4, borderBottom: `1px solid ${T.border}`, flexWrap: "wrap" }}>
+                  {gpTabs.map((t) => (
+                    <button key={t.id} type="button" role="tab" aria-selected={t.activa} onClick={t.ir}
+                      style={{ display: "flex", alignItems: "center", gap: 7, border: "none", background: "transparent", padding: "10px 14px", fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: "inherit", color: t.activa ? T.ink : T.slate, borderBottom: `3px solid ${t.activa ? T.ink : "transparent"}`, marginBottom: -1 }}>
+                      <span>{t.icon}</span>{t.label}
+                      {t.n ? <Insignia n={t.n} title={t.titulo} /> : null}
+                      {t.noPueden ? <InsigniaNoPueden pedidos={pedidosVisibles} /> : null}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             {view === "dashboard" && (
-              <HomeView cotPorAprobar={cotPorAprobar} currentUser={currentUser} perms={perms} canAccessCorte={canAccessCorte} canAccessContabilidad={verAreaContabilidad} canAccessPlaneacion={canAccessPlaneacion} canAccessPlanta={canAccessPlanta} canAccessBodega={canAccessBodega} canAccessNomina={canAccessNomina} canAccessDiseno={canAccessDiseno} canAccessPedidosArea={canAccessPedidosArea} canAccessKpis={canAccessKpis} canAccessInformes={canAccessInformes} canAccessAreas={canAccessAreas} canAccessCotizador={canAccessCotizador}
+              <HomeView cotPorAprobar={cotPorAprobar} currentUser={currentUser} perms={perms} canAccessCorte={canAccessCorte} canAccessContabilidad={verAreaContabilidad} canAccessPlaneacion={canAccessPlaneacion} canAccessPlanta={canAccessPlanta} canAccessBodega={canAccessBodega} canAccessNomina={canAccessNomina} canAccessDiseno={canAccessDiseno} canAccessPedidosArea={canAccessPedidosArea} canGestionPedido={canGestionPedido} nPorMontarHome={nPorMontar} canAccessKpis={canAccessKpis} canAccessInformes={canAccessInformes} canAccessAreas={canAccessAreas} canAccessCotizador={canAccessCotizador}
                 onGoArea={(id) => {
                   if (id === "contabilidad_area") { setModuloActivo("contabilidad"); }
                   else if (id === "cotizaciones_area") { setModuloActivo("cotizaciones"); }
@@ -21662,11 +21677,11 @@ function AppInner() {
                   else if (id === "informes_area") { setModuloActivo("informes"); }
                   else if (id === "areas_internas_area") { setModuloActivo("areas_internas"); }
                   else if (id === "kpis_area") { setAreaAbierta("kpis_area"); setView("kpis"); }
+                  else if (id === "gestion_pedido_area") { setAreaAbierta("gestion_pedido_area"); navClick("gestion_pedido"); }
                   else if (id === "pedidos_area") {
                     setAreaAbierta("pedidos_area");
                     if (canAccessPedidos) setView("pedidos");
                     else if (canAccessPedidosClientes) setView("pedidos_clientes");
-                    else if (canAccessPreordenes) setView("preordenes");
                     else if (canAccessExplosionMateriales) setView("explosion_materiales");
                     else if (canAccessLotesPorIntegrar) setView("lotes_por_integrar");
                     else if (canAccessProduccion) setView("produccion");
