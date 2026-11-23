@@ -17865,7 +17865,7 @@ function DiagnosticoDuplicadosView({ diasTrabajados, faltas, anomalias, retardos
     </div>
   );
 }
-export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNovedades, soloLiderArea, puedeEditarCatalogos, puedeVerAnomaliasHuellero, puedeVerDuplicadosHuellero, puedeCerrarQuincena, puedeAgregarCobrosManual, puedeAjustarDestajo, puedeEditarHorasExtra, puedeEditarBonificacion, puedeAutorizarPermisos }) {
+export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNovedades, soloLiderArea, liderProduccion = true, liderAsistencia = false, puedeEditarCatalogos, puedeVerAnomaliasHuellero, puedeVerDuplicadosHuellero, puedeCerrarQuincena, puedeAgregarCobrosManual, puedeAjustarDestajo, puedeEditarHorasExtra, puedeEditarBonificacion, puedeAutorizarPermisos }) {
   // Líder de área (hoy: Anny Beltrán y Sarai Méndez, cada una con su Área
   // Interna real -- ver Administrativo → Área Interna): entra con un panel
   // reducido, ya filtrado a su propia gente, en vez del panel completo de
@@ -17873,7 +17873,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   // el campo "Área de Nómina" del usuario (mismo valor que la Área Interna
   // del trabajador), puesto por un admin en Administrador General → Usuarios.
   const areaLider = !currentUser?.isAdmin && currentUser?.areaNomina ? currentUser.areaNomina : null;
-  const [subView, setSubView] = useState(() => (areaLider ? "produccion" : soloNovedades ? "ausencias" : "dashboard"));
+  const [subView, setSubView] = useState(() => (areaLider ? (soloLiderArea && !liderProduccion ? "tabulador_asistencia" : "produccion") : soloNovedades ? "ausencias" : "dashboard"));
   // Qué grupos del menú están desplegados — si un grupo todavía no se ha
   // tocado (no está en este objeto), se abre solo si contiene el subView
   // activo; una vez el usuario le da clic, queda como él lo dejó.
@@ -18141,9 +18141,17 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   // (2026-11-23, a pedido de Fredy) Con el switch «Líder de área» de Roles → Nómina (sin Nómina completa ni Solo Novedades) el líder solo ve 3 opciones, de su propia gente.
   const NAV = areaLider && soloLiderArea
     ? [
-        { id: "produccion", icon: "🧵", label: "Registrar Producción" },
-        { id: "horas", icon: "🕐", label: "Registrar Horas" },
-        { id: "permisos", icon: "🗓️", label: "Permisos (Calendario)" },
+        ...(liderProduccion ? [
+          { id: "produccion", icon: "🧵", label: "Registrar Producción" },
+          { id: "horas", icon: "🕐", label: "Registrar Horas" },
+          { id: "permisos", icon: "🗓️", label: "Permisos (Calendario)" },
+        ] : []),
+        ...(liderAsistencia ? [
+          { id: "tabulador_asistencia", icon: "📋", label: "Tabulador de Asistencia" },
+          { id: "historial_asistencia_area", icon: "🗓️", label: "Historial de Asistencia" },
+          { id: "estadisticas_permisos", icon: "📊", label: "Estadísticas de Permisos" },
+          { id: "retardos_mes", icon: "🕒", label: "Retardos del mes" },
+        ] : []),
       ]
     : areaLider
     ? [
