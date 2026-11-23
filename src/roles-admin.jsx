@@ -14,7 +14,6 @@ export const PERMISOS_FLUJO = [
   ["ilustracion", "Ilustración", "Aprueba o devuelve la ilustración (rol tipo Directora Creativa), sin los demás permisos de administrador."],
   ["aprobar_corte", "Aprobar corte", "Revisa y aprueba la Programación de Mesones que ingresó el cortador."],
   ["aprobar_despacho", "Aprobar despacho", "Aprueba los despachos que montó la persona de Bodega."],
-  ["control_despacho", "Control de despacho", "Ve la tarjeta Control de Despacho dentro de Bodega."],
   ["editar_kpis", "Editar KPIs", "Edita puestos, funciones y el catálogo de KPIs."],
   ["marcar_observaciones", "Marcar observaciones", "Marca como hechas las observaciones de Diseño."],
   ["revision_diseno", "Revisión de diseño", "Hace la revisión de diseño de las muestras que vuelven de taller."],
@@ -61,21 +60,25 @@ export default function RolesAdmin({ config, users, onUpdateConfig, effectiveMod
   function alternarPermiso(r, perm) {
     guardarRol(r.id, { perms: r.perms.includes(perm) ? r.perms.filter((p) => p !== perm) : [...r.perms, perm] });
   }
+  // «Control de Despacho» antes era el permiso "control_despacho" (Permisos de flujo): se sigue respetando y, al apagarlo aquí, se quita también el permiso viejo.
+  const activosDe = (r) => [...new Set([...effectiveModulos(r), ...(r.perms.includes("control_despacho") ? ["bodega_control_despacho"] : [])])];
+  const sinLegado = (r, keys) => (keys.includes("bodega_control_despacho") ? r.perms.filter((p) => p !== "control_despacho") : r.perms);
   function alternarModulo(r, mod) {
-    const act = effectiveModulos(r);
-    guardarRol(r.id, { modulos: act.includes(mod) ? act.filter((m) => m !== mod) : [...act, mod] });
+    const act = activosDe(r);
+    const apagar = act.includes(mod);
+    guardarRol(r.id, { modulos: apagar ? effectiveModulos(r).filter((m) => m !== mod) : [...effectiveModulos(r), mod], ...(apagar ? { perms: sinLegado(r, [mod]) } : {}) });
   }
   function alternarGrupo(r, keys) {
-    const act = effectiveModulos(r);
+    const act = activosDe(r);
     const todos = keys.every((m) => act.includes(m));
-    const resto = act.filter((m) => !keys.includes(m));
-    guardarRol(r.id, { modulos: todos ? resto : [...resto, ...keys] });
+    const resto = effectiveModulos(r).filter((m) => !keys.includes(m));
+    guardarRol(r.id, { modulos: todos ? resto : [...resto, ...keys], ...(todos ? { perms: sinLegado(r, keys) } : {}) });
   }
   function ponerTodos(r, activar) {
     // «Activar todos» no concede Admin Diseño: ese acceso se da siempre de forma explícita
     const claves = todosGrupos.flatMap((g) => g.items.map(([m]) => m)).filter((m) => m !== "admin_diseno");
     const act = effectiveModulos(r);
-    guardarRol(r.id, { modulos: activar ? [...new Set([...act, ...claves])] : act.filter((m) => !claves.includes(m)) });
+    guardarRol(r.id, { modulos: activar ? [...new Set([...act, ...claves])] : act.filter((m) => !claves.includes(m)), ...(activar ? {} : { perms: sinLegado(r, claves) }) });
   }
   function crear() {
     const n = nuevo.trim();
@@ -103,7 +106,7 @@ export default function RolesAdmin({ config, users, onUpdateConfig, effectiveMod
   if (!rol) {
     return <div style={{ ...tarjeta, padding: 18, fontSize: 13, color: T.slate, fontWeight: 600 }}>No hay roles todavía.</div>;
   }
-  const modActivos = effectiveModulos(rol);
+  const modActivos = activosDe(rol);
   const usuarios = cu(rol.name);
   const q = filtro.trim().toLowerCase();
 

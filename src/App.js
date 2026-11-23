@@ -14755,7 +14755,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     { area: "📋 Planeación", items: [["planeacion", "Planeación"]] },
     // (2026-11-21, a pedido de Fredy) Verificador de Precio (Busint en vivo) en Programación Diaria de Planta Yanko y como tarjeta de Mi Día: permiso aparte por rol (el admin siempre). Para Mi Día además se marca la tarjeta en Usuarios.
     { area: "🏭 Planta Yanko", items: [["planta", "Planta Yanko"], ["planta_verificador_precio", "🔍 Verificador de Precio", "Puede ver el Verificador de Precio en la Programación Diaria de Planta Yanko y en Mi Día (muestra precios de mano de obra de Confección y Corte)"]] },
-    { area: "📦 Bodega", items: [["bodega", "Bodega"], ["bodega_solo_devoluciones", "Solo Devoluciones (no ve Despacho y Saldo ni Control de Despacho)"], ["bodega_cambiar_estado_devoluciones", "Puede cambiar el estado de las devoluciones (líder)"]] },
+    { area: "📦 Bodega", items: [["bodega", "Bodega"], ["bodega_despacho_saldo", "📦 Despacho y Saldo", "Ve la tarjeta Despacho y Saldo (abonos y saldos) dentro de Bodega."], ["bodega_control_despacho", "🎛️ Control de Despacho", "Ve la tarjeta Control de Despacho (Despachos Generales y Estado de Despacho) dentro de Bodega."], ["bodega_devoluciones", "↩️ Devoluciones", "Ve la tarjeta Devoluciones de clientes dentro de Bodega."], ["bodega_solo_devoluciones", "Solo Devoluciones (no ve Despacho y Saldo ni Control de Despacho)"], ["bodega_cambiar_estado_devoluciones", "Puede cambiar el estado de las devoluciones (líder)"]] },
     { area: "👷 Nómina", items: [["nomina", "Completa (todo el módulo)"], ["nomina_novedades", "Solo Novedades"], ["nomina_editar_catalogos", "Puede editar catálogos (Trabajadores, Turnos, etc.) sin admin total"], ["nomina_ver_anomalias_huellero", "Puede ver Anomalías Huellero"], ["nomina_ver_duplicados_huellero", "Puede ver Diagnóstico de Duplicados"], ["nomina_cerrar_quincena", "Puede cerrar Quincena (General y por Área)"], ["nomina_agregar_cobros_manual", "Puede agregar cobros/deducciones manuales"], ["nomina_ajustar_destajo", "Puede agregar Ajustes de Nómina en Destajo"], ["nomina_editar_horas_extra", "Puede editar/borrar Horas Extras"], ["nomina_editar_bonificacion", "Puede editar/borrar Bonificaciones"], ["nomina_autorizar_permisos", "Puede generar códigos de autorización de permisos (4.º permiso del mes en adelante)"]] },
     { area: "🎯 KPIs", items: [["kpis", "KPIs"]] },
     { area: "📋 Informes", items: [["informes", "Informes"]] },
@@ -21069,7 +21069,11 @@ function AppInner() {
     // Ver la tarjeta "Control de Despacho" dentro de Bodega (Despachos
     // Generales + Estado de Despacho) -- separado del acceso a Bodega en
     // si, para poder dejar algunos roles solo con "Despacho y Saldo".
-    verControlDespacho: userRoleData?.perms?.includes("control_despacho") ?? false,
+    // (2026-11-23, a pedido de Fredy) Ahora se activa en Roles → Módulos visibles → 📦 Bodega ("bodega_control_despacho"); el permiso viejo "control_despacho" se sigue respetando para los roles que ya lo tenían.
+    verControlDespacho: !!userRoleData?.modulos?.includes("bodega_control_despacho") || (userRoleData?.perms?.includes("control_despacho") ?? false),
+    // (2026-11-23, a pedido de Fredy) Tarjetas de Bodega por rol (apagadas por defecto; el administrador siempre las ve).
+    bodegaDespachoSaldo: !!userRoleData?.modulos?.includes("bodega_despacho_saldo"),
+    bodegaDevoluciones: !!userRoleData?.modulos?.includes("bodega_devoluciones"),
     // (2026-11-10, a pedido de Fredy) Rol que en Bodega ve SOLO "Devoluciones" (sin Despacho y Saldo ni Control de Despacho). Se marca en Roles → 📦 Bodega (llave de módulos). Apagado por defecto.
     bodegaSoloDevoluciones: !!userRoleData?.modulos?.includes("bodega_solo_devoluciones"),
     // (2026-11-10, a pedido de Fredy) La líder de Bodega puede llevar una devolución a cualquier estado (Roles → 📦 Bodega).
@@ -21541,7 +21545,7 @@ function AppInner() {
     return <ModuloPlanta currentUser={currentUser} puedeVerificadorPrecio={!!canVerificadorPrecio} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (moduloActivo === "bodega") {
-    return <ModuloBodega currentUser={currentUser} puedeAprobarDespacho={perms.aprobarDespacho} canAccessContabilidad={canAccessContabilidad} soloLecturaBodega={currentUser?.role === "Cliente"} puedeVerControlDespacho={perms.verControlDespacho} soloDevoluciones={perms.bodegaSoloDevoluciones} puedeCambiarEstadoDev={perms.bodegaCambiarEstadoDev} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+    return <ModuloBodega currentUser={currentUser} puedeAprobarDespacho={perms.aprobarDespacho} canAccessContabilidad={canAccessContabilidad} soloLecturaBodega={currentUser?.role === "Cliente"} puedeVerControlDespacho={perms.verControlDespacho} puedeVerDespachoSaldo={perms.bodegaDespachoSaldo} puedeVerDevoluciones={perms.bodegaDevoluciones} soloDevoluciones={perms.bodegaSoloDevoluciones} puedeCambiarEstadoDev={perms.bodegaCambiarEstadoDev} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (moduloActivo === "nomina") {
     return <ModuloNomina currentUser={currentUser} soloNovedades={soloNovedadesNomina} puedeEditarCatalogos={canAccessNominaEditarCatalogos} puedeVerAnomaliasHuellero={canVerAnomaliasHuellero} puedeVerDuplicadosHuellero={canVerDuplicadosHuellero} puedeCerrarQuincena={canCerrarQuincena} puedeAgregarCobrosManual={canAgregarCobrosManual} puedeAjustarDestajo={canAjustarDestajo} puedeEditarHorasExtra={canEditarHorasExtra} puedeEditarBonificacion={canEditarBonificacion} puedeAutorizarPermisos={canAutorizarPermisos} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;

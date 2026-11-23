@@ -5242,7 +5242,7 @@ function ControlDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
 // son dos flujos totalmente distintos (despachos a Venezuela/Dubo/Colombia
 // con su saldo, vs. transportador/guía/llegada de los lotes locales de
 // Dado por Cumplido) que no tiene sentido mezclar en un solo menú.
-function BodegaHubView({ onSeleccionar, onVolver, onLogout, puedeVerControlDespacho, puedeDevoluciones }) {
+function BodegaHubView({ onSeleccionar, onVolver, onLogout, puedeVerControlDespacho, puedeDevoluciones, puedeDespachoSaldo }) {
   // (2026-09-10, a pedido de Fredy) El hub queda con solo 2 tarjetas --
   // "Control de Despacho" junta adentro (con pestañas) lo que antes eran
   // "Despachos Generales" y "Estado de Despacho" por separado, y las dos
@@ -5252,7 +5252,7 @@ function BodegaHubView({ onSeleccionar, onVolver, onLogout, puedeVerControlDespa
   // "control_despacho" en Roles, o Administrador). Algunos roles deben ver
   // unicamente "Despacho y Saldo".
   const TARJETAS = [
-    { tipo: "nav", id: "despacho_saldo", icon: "📦", label: "Despacho y Saldo", desc: "Abonos y saldos.", color: C.violet, bg: C.violetBg },
+    ...(puedeDespachoSaldo ? [{ tipo: "nav", id: "despacho_saldo", icon: "📦", label: "Despacho y Saldo", desc: "Abonos y saldos.", color: C.violet, bg: C.violetBg }] : []),
     ...(puedeVerControlDespacho ? [{ tipo: "nav", id: "control_despacho", icon: "🎛️", label: "Control de Despacho", desc: "Despachos Generales y Estado de Despacho.", color: C.green, bg: C.greenBg }] : []),
     // (2026-10-20, a pedido de Fredy) Devoluciones de clientes: Bodega marca "Recibida" cuando llega la mercancía y "Despachada de nuevo" cuando sale otra vez.
     ...(puedeDevoluciones ? [{ tipo: "nav", id: "devoluciones", icon: "↩️", label: "Devoluciones", desc: "Devoluciones de clientes: recibir y despachar de nuevo.", color: C.amber, bg: C.amberBg }] : []),
@@ -5267,6 +5267,11 @@ function BodegaHubView({ onSeleccionar, onVolver, onLogout, puedeVerControlDespa
           <p style={{ margin: "6px 0 0", fontSize: 14, color: C.slate }}>Lo que está pendiente ahora mismo</p>
         </div>
 
+        {TARJETAS.length === 0 && (
+          <div style={{ background: C.white, border: `1.5px solid ${C.border}`, borderRadius: 14, padding: 22, fontSize: 13.5, color: C.slate, lineHeight: 1.5, maxWidth: 520 }}>
+            Tu rol todavía no tiene opciones activadas en Bodega. Pídele al administrador que las encienda en Administración → Roles → Módulos visibles → 📦 Bodega.
+          </div>
+        )}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(240px,1fr))", gap: 16 }}>
           {TARJETAS.map((t) =>
             t.tipo === "nav" ? (
@@ -5327,7 +5332,7 @@ function BodegaHubView({ onSeleccionar, onVolver, onLogout, puedeVerControlDespa
 // (ver BitacorasView en App.js). sincronizarBitacoraTela sigue viviendo en
 // App.js sin cambios -- solo cambió DÓNDE se ve ese catálogo.
 
-export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAccessContabilidad, soloLecturaBodega, puedeVerControlDespacho, puedeRevertirDespacho, soloDevoluciones, puedeCambiarEstadoDev, onVolver, onLogout }) {
+export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAccessContabilidad, soloLecturaBodega, puedeVerControlDespacho, puedeVerDespachoSaldo, puedeVerDevoluciones, puedeRevertirDespacho, soloDevoluciones, puedeCambiarEstadoDev, onVolver, onLogout }) {
   // (2026-11-10, a pedido de Fredy) Rol con el permiso "bodega_solo_devoluciones": en Bodega solo ve Devoluciones (el administrador siempre ve todo).
   const soloDev = !currentUser?.isAdmin && !!soloDevoluciones && currentUser?.role !== "Cliente";
   const [vistaElegida, setVista] = useState(soloDev ? "devoluciones" : "hub");
@@ -5336,11 +5341,15 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
   // el permiso "control_despacho" -- igual que el resto de banderas de
   // Bodega en este componente.
   const puedeControlDespacho = !!currentUser?.isAdmin || !!puedeVerControlDespacho;
+  // (2026-11-23, a pedido de Fredy) Despacho y Saldo y Devoluciones también se activan por rol (Roles → Módulos visibles → 📦 Bodega). Administrador y Cliente (solo lectura, sus módulos van por usuario) mantienen lo de siempre.
+  const esCliente = currentUser?.role === "Cliente";
+  const puedeDespachoSaldo = !!currentUser?.isAdmin || esCliente || !!puedeVerDespachoSaldo;
+  const puedeDevolucionesRol = !esCliente && (!!currentUser?.isAdmin || soloDev || !!puedeVerDevoluciones);
   // (2026-09-14) Igual que arriba, pero para los botones de revertir un
   // lote dentro de Estado de Despacho -- admin siempre los ve, o quien
   // tenga el permiso puntual "revertir_despacho" en su rol.
   const puedeRevertir = !!currentUser?.isAdmin || !!puedeRevertirDespacho;
-  if (vista === "despacho_saldo") {
+  if (vista === "despacho_saldo" && puedeDespachoSaldo) {
     return (
       <DespachoYSaldoView
         currentUser={currentUser}
@@ -5355,7 +5364,7 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
   if (vista === "control_despacho" && puedeControlDespacho) {
     return <ControlDespachoView onVolver={() => setVista("hub")} onLogout={onLogout} puedeRevertirDespacho={puedeRevertir} />;
   }
-  if (vista === "devoluciones" && currentUser?.role !== "Cliente") {
+  if (vista === "devoluciones" && puedeDevolucionesRol) {
     return (
       <div style={{ minHeight: "100vh", background: C.canvas, fontFamily: "'Inter',-apple-system,sans-serif", padding: 24 }}>
         <div style={{ maxWidth: 1000, margin: "0 auto" }}>
@@ -5365,6 +5374,6 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
       </div>
     );
   }
-  return <BodegaHubView onSeleccionar={setVista} onVolver={onVolver} onLogout={onLogout} puedeVerControlDespacho={puedeControlDespacho} puedeDevoluciones={currentUser?.role !== "Cliente"} />;
+  return <BodegaHubView onSeleccionar={setVista} onVolver={onVolver} onLogout={onLogout} puedeVerControlDespacho={puedeControlDespacho} puedeDevoluciones={puedeDevolucionesRol} puedeDespachoSaldo={puedeDespachoSaldo} />;
 }
 
