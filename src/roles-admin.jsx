@@ -48,7 +48,8 @@ export default function RolesAdmin({ config, users, onUpdateConfig, effectiveMod
   const angosto = useAnchoCorto(860);
 
   const rol = roles.find((r) => r.id === sel) || roles[0] || null;
-  const cu = (nombre) => (users || []).filter((u) => (u.role || "").trim() === nombre);
+  const normRol = (s) => String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim().toLowerCase();
+  const cu = (nombre) => (users || []).filter((u) => normRol(u.role) === normRol(nombre));
 
   // Grupos de módulos: Diseño (con "Admin Diseño" al final) + los grupos por área de GRUPOS_MODULOS_DEF
   const todosGrupos = [

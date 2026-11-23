@@ -1108,6 +1108,8 @@ const DISENO_SUBMODULOS = ["protos", "capsulas", "pedidos", "pedidos_clientes", 
 // nada). "areas_internas" queda como llave de compatibilidad: un rol que
 // ya la tenga marcada sigue viendo las 4, igual que antes.
 const AREAS_SUBMODULOS = ["areas_centro_costo", "areas_estadisticas", "areas_reclamos", "areas_programador"];
+// Nombre de rol sin tildes, mayúsculas ni espacios de más: el rol del usuario y el de Roles se comparan así (un espacio o una mayúscula distinta no deja al usuario sin accesos).
+const normRol = (s) => String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim().toLowerCase();
 function moduloVisible(roleData, mod, isAdmin) {
   if (isAdmin) return true;
   if (!roleData) return false;
@@ -21036,7 +21038,7 @@ function AppInner() {
   const selPedido = pedidos.find((p) => p.id === selPedidoId);
   const totalOverdue = [...protos, ...capsulas.flatMap((c) => c.referencias)].filter((x) => isOverdue(x, config.stages)).length;
   const role = currentUser?.role || "Equipo Interno";
-  const userRoleData = config.roles.find((r) => r.name === role);
+  const userRoleData = config.roles.find((r) => r.name === role) || config.roles.find((r) => normRol(r.name) === normRol(role));
   // (2026-09-23, a pedido de Fredy) "Solo lectura" para un usuario Cliente
   // PUNTUAL -- distinto de los demás permisos, que son por ROL (todo el rol
   // Cliente comparte los mismos perms). Este flag vive en el propio usuario
