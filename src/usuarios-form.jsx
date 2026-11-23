@@ -164,6 +164,7 @@ export default function FormularioUsuario({ form, setForm, editUser, users, conf
       <div style={{ ...nota, marginTop: 2, marginBottom: 14 }}>Permisos extra que se dan a una persona puntual.</div>
       {especial("isAdmin", "Acceso de administrador", "Ve y puede hacer todo en ATLAS.")}
       {especial("landingAreas", "Mostrar «☀️ Mi Día» (Auditoría de Nómina, todas las áreas)", "Le agrega el botón «☀️ Mi Día» a su menú lateral (sin quitarle nada de lo demás) donde puede elegir cualquier área y ver su Auditoría Busint vs Nómina. Deja «Área Interna» vacía para que le salga el selector de TODAS las áreas, y verifica que su rol tenga el permiso «Centro de Costo» en 🗂️ Áreas (Admin → Roles).")}
+      {!esCliente && especial("nominaLiderArea", "Líder de área: Producción, Horas y Permisos (Nómina)", "Entra a Nómina con solo Registrar Producción, Registrar Horas y Permisos (Calendario) de los trabajadores de su «Área Interna» (se asigna en «Área y trabajo»). No le da la Nómina completa.")}
       {especial("costosPlanta", "Costos y ventas de planta (Planta Yanko)", "Le muestra la pestaña «💵 Costos y ventas» dentro de Planta Yanko para cargar y borrar gastos de insumos y ventas de MAQUILA, ver la ganancia real y cerrar el mes. Necesita además acceso al módulo Planta. Se guarda al editar un usuario que ya existe.")}
     </div>
   );

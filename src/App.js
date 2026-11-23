@@ -12871,7 +12871,7 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
     setMigrando(false);
   }
   function openNew() { setForm({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", clientesAsociados: [], modulosCliente: [], soloLecturaCliente: false, clienteProduccion: "", clientesProduccion: [], email: "", areaNomina: "", procesosPlaneacion: [], landingAreas: false, costosPlanta: false, tarjetasMiDia: [] }); setEditUser(null); setShowForm(true); setError(""); }
-  function openEdit(u) { setForm({ name: u.name, username: u.username, password: "", role: u.role, isAdmin: u.isAdmin, clienteAsociado: u.clienteAsociado || "", clientesAsociados: u.clientesAsociados || [], modulosCliente: u.modulosCliente || [], soloLecturaCliente: u.soloLecturaCliente || false, clienteProduccion: u.clienteProduccion || "", clientesProduccion: u.clientesProduccion || [], email: u.email || "", areaNomina: u.areaNomina || "", procesosPlaneacion: u.procesosPlaneacion || [], landingAreas: u.landingAreas || false, costosPlanta: !!u.costosPlanta, tarjetasMiDia: u.tarjetasMiDia || [], areasCumpleanos: u.areasCumpleanos || [] }); setEditUser(u); setShowForm(true); setError(""); }
+  function openEdit(u) { setForm({ name: u.name, username: u.username, password: "", role: u.role, isAdmin: u.isAdmin, clienteAsociado: u.clienteAsociado || "", clientesAsociados: u.clientesAsociados || [], modulosCliente: u.modulosCliente || [], soloLecturaCliente: u.soloLecturaCliente || false, clienteProduccion: u.clienteProduccion || "", clientesProduccion: u.clientesProduccion || [], email: u.email || "", areaNomina: u.areaNomina || "", procesosPlaneacion: u.procesosPlaneacion || [], landingAreas: u.landingAreas || false, costosPlanta: !!u.costosPlanta, nominaLiderArea: !!u.nominaLiderArea, tarjetasMiDia: u.tarjetasMiDia || [], areasCumpleanos: u.areasCumpleanos || [] }); setEditUser(u); setShowForm(true); setError(""); }
   // Crear usuario nuevo pasa por la Cloud Function `adminCrearUsuario` (Fase
   // B): a diferencia de editar, crear SÍ necesita generar una cuenta real de
   // Firebase Auth para que esa persona pueda entrar — eso no lo puede hacer
@@ -12888,7 +12888,7 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
       if (!form.name) { setError("El nombre es obligatorio."); return; }
       if (form.email && form.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) { setError("El correo no parece válido."); return; }
       const avatar = form.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
-      onUpdateUsers(users.map((u) => (u.id === editUser.id ? { ...u, name: form.name, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado || "", clientesAsociados: form.clientesAsociados || [], modulosCliente: form.modulosCliente || [], soloLecturaCliente: !!form.soloLecturaCliente, clienteProduccion: form.clienteProduccion || "", clientesProduccion: form.clientesProduccion || [], email: form.email ? form.email.trim() : "", areaNomina: form.areaNomina || "", procesosPlaneacion: form.procesosPlaneacion || [], landingAreas: !!form.landingAreas, costosPlanta: !!form.costosPlanta, tarjetasMiDia: form.tarjetasMiDia || [], areasCumpleanos: form.areasCumpleanos || [], avatar } : (form.aplicarTarjetasArea && form.areaNomina && u.areaNomina === form.areaNomina ? { ...u, tarjetasMiDia: form.tarjetasMiDia || [] } : u))));
+      onUpdateUsers(users.map((u) => (u.id === editUser.id ? { ...u, name: form.name, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado || "", clientesAsociados: form.clientesAsociados || [], modulosCliente: form.modulosCliente || [], soloLecturaCliente: !!form.soloLecturaCliente, clienteProduccion: form.clienteProduccion || "", clientesProduccion: form.clientesProduccion || [], email: form.email ? form.email.trim() : "", areaNomina: form.areaNomina || "", procesosPlaneacion: form.procesosPlaneacion || [], landingAreas: !!form.landingAreas, costosPlanta: !!form.costosPlanta, nominaLiderArea: !!form.nominaLiderArea, tarjetasMiDia: form.tarjetasMiDia || [], areasCumpleanos: form.areasCumpleanos || [], avatar } : (form.aplicarTarjetasArea && form.areaNomina && u.areaNomina === form.areaNomina ? { ...u, tarjetasMiDia: form.tarjetasMiDia || [] } : u))));
       setShowForm(false);
       return;
     }
@@ -21160,7 +21160,8 @@ function AppInner() {
   const canAccessNominaNovedades = moduloVisible(userRoleData, "nomina_novedades", currentUser?.isAdmin);
   // "nomina_lider_area" (2026-11-23, a pedido de Fredy): entra a Nómina con un menú de solo 3 opciones (Registrar Producción, Registrar Horas y Permisos),
   // limitado a los trabajadores de su «Área Interna» (Usuarios). Solo cuenta si el rol no tiene Nómina completa ni Solo Novedades (esos ya traen su propio menú).
-  const canAccessNominaLiderArea = moduloVisible(userRoleData, "nomina_lider_area", currentUser?.isAdmin);
+  // Se activa por rol (switch en Roles → Nómina) o por persona (Usuarios → Accesos especiales, campo nominaLiderArea).
+  const canAccessNominaLiderArea = moduloVisible(userRoleData, "nomina_lider_area", currentUser?.isAdmin) || !!currentUser?.nominaLiderArea;
   const canAccessNomina = canAccessNominaCompleta || canAccessNominaNovedades || canAccessNominaLiderArea;
   const soloLiderAreaNomina = canAccessNominaLiderArea && !canAccessNominaCompleta && !canAccessNominaNovedades;
   const soloNovedadesNomina = !canAccessNominaCompleta && canAccessNominaNovedades;
