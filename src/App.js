@@ -21318,7 +21318,7 @@ function AppInner() {
   // (2026-11-22, a pedido de Fredy) Contadores del menú: referencias por montar (cápsulas aprobadas sin enviar a preorden) y preórdenes por aprobar.
   const nPorMontar = capsulasVisibles.reduce((s, cap) => s + (cap.referencias || []).filter((r) => r.status === "aprobado" && !r.enviadoAPreorden).length, 0);
   const nPreordenesPorAprobar = preordenesVisibles.filter((p) => (p.estado || "montada") !== "aprobada").length;
-  const insigniaDe = (id) => (id === "pedidos_flujo" || id === "pm_montar" ? nPorMontar : id === "preordenes" || id === "fi_preordenes" ? nPreordenesPorAprobar : 0);
+  const insigniaDe = (id) => (id === "pedidos_flujo" || id === "pm_montar" ? nPorMontar : id === "preordenes" || id === "fi_preordenes" ? nPreordenesPorAprobar : id === "gestion_pedido" ? nPorMontar + nPreordenesPorAprobar : 0);
   // (2026-11-23, a pedido de Fredy) Módulo «Gestión de Pedido»: Flujo, Por montar, Preórdenes, Órdenes, Ficha de inicio e Historial de Órdenes en un solo lugar,
   // con pestañas arriba. Son las mismas pantallas de siempre (mismos view); cada persona ve solo las pestañas que ya podía ver.
   const gpTabs = [
@@ -21327,7 +21327,7 @@ function AppInner() {
     ...(canAccessPreordenes ? [{ id: "pre", icon: "🧾", label: "Preórdenes", n: nPreordenesPorAprobar, titulo: "Preórdenes por aprobar", activa: view === "preordenes", ir: () => setView("preordenes") }] : []),
     ...(canAccessOrdenes ? [{ id: "ord", icon: "🧵", label: "Órdenes", activa: view === "ordenes", ir: () => setView("ordenes") }] : []),
     ...(canFichaInicio ? [{ id: "ficha", icon: "🚦", label: "Ficha de inicio", noPueden: true, activa: view === "ficha_tablero", ir: () => setView("ficha_tablero") }] : []),
-    ...(canAccessOrdenes ? [{ id: "hist", icon: "📜", label: "Historial de Órdenes", activa: view === "historial_ordenes", ir: () => setView("historial_ordenes") }] : []),
+    ...(canAccessOrdenes ? [{ id: "hist", hijoDe: "ord", icon: "📜", label: "Historial", titulo: "Historial de Órdenes", activa: view === "historial_ordenes", ir: () => setView("historial_ordenes") }] : []),
   ];
   const GP_VISTAS = ["pedidos_flujo", "preordenes", "ordenes", "historial_ordenes", "ficha_tablero"];
   const canGestionPedido = gpTabs.length > 0;
@@ -21350,17 +21350,14 @@ function AppInner() {
           ],
         }]
       : []),
-    ...(canGestionPedido
-      ? [{
-          id: "gestion_pedido_area", icon: "🧭", label: "Gestión de Pedido", directo: true, insignia: nPorMontar + nPreordenesPorAprobar, insigniaTitulo: "Referencias por montar y preórdenes por aprobar", insigniaNoPueden: canFichaInicio,
-          items: [{ id: "gestion_pedido", icon: "🧭", label: "Gestión de Pedido" }],
-        }]
-      : []),
-    ...(canAccessPedidosArea
+    ...(canAccessPedidosArea || canGestionPedido
       ? [{
           id: "pedidos_area", icon: "🧾", label: "Pedidos",
+          // (2026-11-23, a pedido de Fredy) El número de pendientes también se ve en «Pedidos» cuando la lista está cerrada.
+          insignia: canGestionPedido ? nPorMontar + nPreordenesPorAprobar : 0, insigniaTitulo: "Referencias por montar y preórdenes por aprobar", insigniaNoPueden: canGestionPedido && canFichaInicio,
           items: [
-            // (2026-11-23) Flujo, Por montar, Preórdenes, Órdenes, Ficha de inicio e Historial de Órdenes pasaron al módulo «Gestión de Pedido» (arriba).
+            // (2026-11-23) Flujo, Por montar, Preórdenes, Órdenes, Ficha de inicio e Historial de Órdenes viven en el módulo «Gestión de Pedido», que se abre desde aquí (primera fila).
+            ...(canGestionPedido ? [{ id: "gestion_pedido", icon: "🧭", label: "Gestión de Pedido" }] : []),
             ...(canAccessPedidos ? [{ id: "pedidos", icon: "📦", label: "Pedidos" }] : []),
             ...(canAccessCorte ? [{ id: "__corte__", icon: "✂", label: "Corte" }] : []),
             ...(canAccessPedidosClientes ? [{ id: "pedidos_clientes", icon: "🏢", label: "Clientes" }] : []),
@@ -21592,14 +21589,24 @@ function AppInner() {
               <button onClick={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} title="Cerrar sesión" style={{ background: "none", border: "none", color: "rgba(200,184,162,0.5)", cursor: "pointer", fontSize: 16 }}>⏏</button>
             </div>
             <nav role="tablist" style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
-              {gpTabs.map((t) => (
-                <button key={t.id} type="button" role="tab" aria-selected={t.activa} title={t.titulo} onClick={t.ir}
-                  style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "10px 12px", border: "none", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", background: t.activa ? T.seam : "transparent", color: t.activa ? T.ink : "#8888AA", fontWeight: t.activa ? 800 : 500, fontSize: 13, textAlign: "left" }}>
-                  <span style={{ fontSize: 15 }}>{t.icon}</span><span style={{ flex: 1 }}>{t.label}</span>
-                  {t.n ? <Insignia n={t.n} title={t.titulo} /> : null}
-                  {t.noPueden ? <InsigniaNoPueden pedidos={pedidosVisibles} /> : null}
-                </button>
-              ))}
+              {gpTabs.map((t) => {
+                // (2026-11-23, a pedido de Fredy) «Historial de Órdenes» se despliega debajo de «Órdenes».
+                const hijos = gpTabs.filter((x) => x.hijoDe === t.id);
+                const desplegado = hijos.length > 0 && (t.activa || hijos.some((h) => h.activa));
+                if (t.hijoDe) {
+                  const padre = gpTabs.find((x) => x.id === t.hijoDe);
+                  if (!(t.activa || (padre && padre.activa))) return null;
+                }
+                return (
+                  <button key={t.id} type="button" role="tab" aria-selected={t.activa} title={t.titulo} onClick={t.ir}
+                    style={{ display: "flex", alignItems: "center", gap: 10, width: t.hijoDe ? "calc(100% - 18px)" : "100%", marginLeft: t.hijoDe ? 18 : 0, padding: t.hijoDe ? "8px 12px" : "10px 12px", border: "none", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", background: t.activa ? T.seam : "transparent", color: t.activa ? T.ink : "#8888AA", fontWeight: t.activa ? 800 : 500, fontSize: t.hijoDe ? 12.5 : 13, textAlign: "left" }}>
+                    <span style={{ fontSize: t.hijoDe ? 13 : 15 }}>{t.icon}</span><span style={{ flex: 1 }}>{t.label}</span>
+                    {t.n ? <Insignia n={t.n} title={t.titulo} /> : null}
+                    {t.noPueden ? <InsigniaNoPueden pedidos={pedidosVisibles} /> : null}
+                    {hijos.length > 0 ? <span style={{ fontSize: 10, opacity: 0.6 }}>{desplegado ? "▾" : "▸"}</span> : null}
+                  </button>
+                );
+              })}
               <button type="button" onClick={() => setView("dashboard")}
                 style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "10px 12px", border: "none", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", background: "transparent", color: "rgba(200,184,162,0.5)", fontWeight: 500, fontSize: 12, textAlign: "left", marginTop: 8 }}>
                 ← Volver a ATLAS
@@ -21659,8 +21666,8 @@ function AppInner() {
                         return (
                           <button key={item.id} onClick={() => navClick(item.id)} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", border: "none", borderRadius: 8, cursor: "pointer", background: active ? T.seam : "transparent", color: active ? T.ink : "#8888AA", fontWeight: active ? 800 : 500, fontSize: 13, textAlign: "left", borderLeft: active ? `3px solid ${T.seamDark}` : "3px solid transparent" }}>
                             <span style={{ fontSize: 13 }}>{item.icon}</span>{item.label}
-                            {insigniaDe(item.id) ? <Insignia n={insigniaDe(item.id)} title={item.id === "preordenes" || item.id === "fi_preordenes" ? "Preórdenes por aprobar" : "Referencias aprobadas en cápsulas que faltan por pasar a preorden"} /> : null}
-                            {item.id === "ficha_tablero" ? <InsigniaNoPueden pedidos={pedidosVisibles} /> : null}
+                            {insigniaDe(item.id) ? <Insignia n={insigniaDe(item.id)} title={item.id === "gestion_pedido" ? "Referencias por montar y preórdenes por aprobar" : item.id === "preordenes" || item.id === "fi_preordenes" ? "Preórdenes por aprobar" : "Referencias aprobadas en cápsulas que faltan por pasar a preorden"} /> : null}
+                            {item.id === "ficha_tablero" || (item.id === "gestion_pedido" && canFichaInicio) ? <InsigniaNoPueden pedidos={pedidosVisibles} /> : null}
                           </button>
                         );
                       })}
@@ -21692,7 +21699,7 @@ function AppInner() {
                   else if (id === "informes_area") { setModuloActivo("informes"); }
                   else if (id === "areas_internas_area") { setModuloActivo("areas_internas"); }
                   else if (id === "kpis_area") { setAreaAbierta("kpis_area"); setView("kpis"); }
-                  else if (id === "gestion_pedido_area") { setAreaAbierta("gestion_pedido_area"); navClick("gestion_pedido"); }
+                  else if (id === "gestion_pedido_area") { setAreaAbierta("pedidos_area"); navClick("gestion_pedido"); }
                   else if (id === "pedidos_area") {
                     setAreaAbierta("pedidos_area");
                     if (canAccessPedidos) setView("pedidos");
@@ -21703,6 +21710,7 @@ function AppInner() {
                     else if (canAccessDevoluciones) setView("devoluciones");
                     else if (currentUser?.isAdmin) setView("pedidos_admin");
                     else if (canAccessCorte) setModuloActivo("corte");
+                    else if (canGestionPedido) navClick("gestion_pedido");
                   }
                   else if (id === "diseno") {
                     setAreaAbierta("diseno");
