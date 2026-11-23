@@ -21326,8 +21326,8 @@ function AppInner() {
     ...(!esClienteCot && canAccessPreordenes ? [{ id: "montar", icon: "🧩", label: "Por montar", n: nPorMontar, titulo: "Referencias aprobadas en cápsulas que faltan por pasar a preorden", activa: view === "pedidos_flujo" && flujoEtapa === "montar", ir: () => { setFlujoEtapa("montar"); setView("pedidos_flujo"); } }] : []),
     ...(canAccessPreordenes ? [{ id: "pre", icon: "🧾", label: "Preórdenes", n: nPreordenesPorAprobar, titulo: "Preórdenes por aprobar", activa: view === "preordenes", ir: () => setView("preordenes") }] : []),
     ...(canAccessOrdenes ? [{ id: "ord", icon: "🧵", label: "Órdenes", activa: view === "ordenes", ir: () => setView("ordenes") }] : []),
-    ...(canFichaInicio ? [{ id: "ficha", icon: "🚦", label: "Ficha de inicio", noPueden: true, activa: view === "ficha_tablero", ir: () => setView("ficha_tablero") }] : []),
     ...(canAccessOrdenes ? [{ id: "hist", hijoDe: "ord", icon: "📜", label: "Historial", titulo: "Historial de Órdenes", activa: view === "historial_ordenes", ir: () => setView("historial_ordenes") }] : []),
+    ...(canFichaInicio ? [{ id: "ficha", icon: "🚦", label: "Ficha de inicio", noPueden: true, activa: view === "ficha_tablero", ir: () => setView("ficha_tablero") }] : []),
   ];
   const GP_VISTAS = ["pedidos_flujo", "preordenes", "ordenes", "historial_ordenes", "ficha_tablero"];
   const canGestionPedido = gpTabs.length > 0;
