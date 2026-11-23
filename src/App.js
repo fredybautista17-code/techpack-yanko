@@ -14,6 +14,7 @@ import RolesAdmin from "./roles-admin";
 import FormularioUsuario from "./usuarios-form";
 import { BloqueSolicitudesTela } from "./diseno-muestras";
 import PatronCodigosReferencia, { buscarPorPatron, PrefijosDeCliente } from "./codigos-patron";
+import CentroParametros from "./centro-parametros";
 import { initializeApp } from "firebase/app";
 import {
   getFirestore,
@@ -14762,7 +14763,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     { area: "🗂️ Áreas", items: [["areas_centro_costo", "Centro de Costo"], ["areas_estadisticas", "Estadísticas"], ["areas_reclamos", "Reclamos"], ["areas_programador", "Programador"]] },
     { area: "💰 Financiera", items: [["financiera", "Financiera"]] },
   ];
-  const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["lineas", "📐 Línea"], ["rangos", "📏 Rangos"], ["codigos_referencia", "🔢 Códigos de Referencia"], ["disenadores", "🎨 Diseñadores"], ["kpi_areas", "🏢 Áreas (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"], ["notificaciones", "🔔 Notificaciones"], ["papelera", "🗑 Papelera"], ["busint_test", "🔌 Busint (prueba)"]];
+  const adminTabs = [["centro_parametros", "🧭 Centro de parámetros"], ["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["lineas", "📐 Línea"], ["rangos", "📏 Rangos"], ["codigos_referencia", "🔢 Códigos de Referencia"], ["disenadores", "🎨 Diseñadores"], ["kpi_areas", "🏢 Áreas (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"], ["notificaciones", "🔔 Notificaciones"], ["papelera", "🗑 Papelera"], ["busint_test", "🔌 Busint (prueba)"]];
   const [nuevoCodigo, setNuevoCodigo] = useState({ categoria: "", linea: "", grupo: "", cliente: "", prefijo: "", rangoInicio: "", rangoFin: "", desbordeInicio: "", desbordeFin: "" });
   // Si tiene valor, el formulario de arriba está EDITANDO esa fila (en vez
   // de crear una nueva) — así se puede corregir, por ejemplo, una fila que
@@ -15156,6 +15157,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
             </div>
           </div>
         )}
+        {tab === "centro_parametros" && <CentroParametros db={db} T={T} config={config} users={users} onIrTab={setTab} />}
         {tab === "papelera" && (
           <PapeleraView protos={protos} capsulas={capsulas}
             onRestaurarProto={onRestaurarProto} onRestaurarCapsula={onRestaurarCapsula} onRestaurarRef={onRestaurarRef}
