@@ -4597,12 +4597,12 @@ function esMotivoPermiso(motivo) {
 //  - Aplica a los permisos desde el 16/11/2026, a todos los motivos menos los protegidos (ver MOTIVOS_EXCLUIDOS_DE_PERMISO).
 //  - Solo permisos con hora inicio y fin; el permiso de día completo se trata como hasta hoy.
 //  - Fiscal y Fiscal Destajo: se descuenta (horas no repuestas) × valor hora, con valor hora = sueldo ÷ DIVISOR_HORAS_MES_EXTRA (210).
-//  - Destajo: NO se descuenta; solo se muestran las horas de permiso junto a la ayuda de salario mínimo (Fredy decide la ayuda).
+//  - Destajo (desde 2026-11-24, a pedido de Fredy): también se descuenta, con el sueldo de la ficha o, si no tiene, el salario mínimo ÷ 210. Las horas siguen viéndose junto a la ayuda.
 //  - El plazo para reponer termina con la quincena del permiso; la reposición se canjea hora por hora, sin recargo.
 // El cobro se guarda como un cobro manual con id fijo «permiso_<id de la ausencia>» (nomina_cobros_manuales), así entra solo a
 // Deducciones, a las liquidaciones, al recibo y al desprendible. Si ya está cobrado (cobrado === true) nunca se vuelve a tocar.
 const FECHA_INICIO_COBRO_PERMISO_HORAS = "2026-11-16";
-const TIPOS_NOMINA_COBRAN_PERMISO_HORAS = ["Fiscal", "Fiscal Destajo"];
+const TIPOS_NOMINA_COBRAN_PERMISO_HORAS = ["Fiscal", "Fiscal Destajo", "Destajo"];
 const TIPO_COBRO_PERMISO_HORAS = "Permiso (horas)";
 function esPermisoPorHoras(a) {
   if (!a || !esMotivoPermiso(a.motivo)) return false;
@@ -4628,14 +4628,16 @@ function calcularCobroPermisoHoras(a, { trabajadores, areasNomina, turnos }, hor
   const horas = Math.round((m.horas || 0) * 100) / 100;
   const base = { ...vacio, tipoNomina, horas };
   if (!(horas > 0)) return { ...base, motivoNoAplica: "sin_horas" };
-  if (tipoNomina === "Destajo") return { ...base, aplica: true, informativo: true };
   if (!TIPOS_NOMINA_COBRAN_PERMISO_HORAS.includes(tipoNomina)) return { ...base, motivoNoAplica: "tipo_nomina" };
-  const sueldo = Number(t.sueldo) || 0;
+  const sueldoFicha = Number(t.sueldo) || 0;
+  // Destajo sin sueldo en la ficha: valor hora con el salario mínimo (decisión de Fredy, 2026-11-24).
+  const usaMinimo = tipoNomina === "Destajo" && !(sueldoFicha > 0);
+  const sueldo = usaMinimo ? SMMLV_2026 : sueldoFicha;
   if (!(sueldo > 0)) return { ...base, aplica: true, motivoNoAplica: "sin_sueldo" };
   const valorHora = sueldo / DIVISOR_HORAS_MES_EXTRA;
   const rep = Math.min(horas, Math.max(0, Number(horasRepuestas) || 0));
   const horasACobrar = Math.max(0, horas - rep);
-  return { ...base, aplica: true, cobra: true, valorHora, horasRepuestas: rep, horasACobrar, valor: Math.round(horasACobrar * valorHora) };
+  return { ...base, aplica: true, cobra: true, usaMinimo, valorHora, horasRepuestas: rep, horasACobrar, valor: Math.round(horasACobrar * valorHora) };
 }
 function textoReferenciaPermiso(a, r) {
   return `${fmtFechaISO(a.fechaInicio)} · ${a.horaInicio}–${a.horaFin} · ${fmtHoras(r.horas)}${r.horasRepuestas > 0 ? ` · repuestas ${fmtHoras(r.horasRepuestas)}` : ""}`;
@@ -4667,7 +4669,7 @@ function ChipPermisoHoras({ horas, destajo }) {
   return (
     <span
       title={destajo
-        ? `Tuvo ${fmtHoras(horas)} de permiso por horas en la quincena. En Destajo no se descuenta: tenlo en cuenta al decidir la ayuda de salario mínimo.`
+        ? `Tuvo ${fmtHoras(horas)} de permiso por horas en la quincena. En Destajo también se descuentan en la liquidación (sueldo o salario mínimo ÷ 210); el chip es solo para que lo tengas en cuenta al decidir la ayuda.`
         : `Permiso por horas: ${fmtHoras(horas)}`}
       style={{ display: "inline-block", padding: "1px 7px", borderRadius: 999, background: C.violetBg, color: C.violet, fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}
     >
@@ -4826,11 +4828,10 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
     && (ausencia.trabajadorId || "") === (form.trabajadorId || "")
     && (form.trabajadorId || (ausencia.nombreLibre || "") === form.nombreLibre.trim())
     && (ausencia.fechaInicio || "").slice(0, 7) === mesForm;
-  const necesitaCodigo = esMotivoPermiso(form.motivo) && !!(form.trabajadorId || form.nombreLibre.trim())
-    && permisosEsteMes >= topePermisos && !esEdicionSinCambio;
-  const [codigo, setCodigo] = useState("");
-  const [validando, setValidando] = useState(false);
-  const [errorCodigo, setErrorCodigo] = useState("");
+  // (2026-11-24, a pedido de Fredy) Ya no se pide código de autorización: del permiso #(tope+1) del mes en adelante solo sale una alerta
+  // («ya lleva N permisos») y se guarda igual. Todo permiso por horas se cobra desde el primero.
+  const numeroPermisoMes = permisosEsteMes + 1;
+  const alertaPermisos = esMotivoPermiso(form.motivo) && !!(form.trabajadorId || form.nombreLibre.trim()) && numeroPermisoMes > topePermisos;
   // (2026-11-20, a pedido de Fredy) Desde Permisos (Calendario) un permiso NUEVO exige trabajador, motivo, fecha, hora inicial y hora final
   // (un solo día; ya no hay «Fecha Fin»). Vacaciones, Incapacidad, Licencias, Luto y Suspensión siguen por fechas sin horas.
   // Un permiso viejo guardado sin horas se edita como antes.
@@ -4856,29 +4857,6 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
   })();
   async function guardar() {
     if (faltantes.length || ordenHorasMal) return;
-    if (necesitaCodigo && !codigo.trim()) return;
-    let extra = {};
-    if (necesitaCodigo) {
-      setValidando(true);
-      setErrorCodigo("");
-      try {
-        const llamar = httpsCallable(functionsClient, "nominaPermisoCodigoUsar");
-        const resp = await llamar({
-          codigo: codigo.trim(),
-          trabajadorId: form.trabajadorId || "",
-          nombreLibre: form.trabajadorId ? "" : form.nombreLibre.trim(),
-          nombre: form.trabajadorId ? trabajadorSeleccionado?.nombre : form.nombreLibre.trim(),
-          mes: mesForm,
-          ausenciaId: ausencia?.id || "",
-        });
-        extra = { codigoAutorizacion: resp.data?.codigo || codigo.trim().toUpperCase(), autorizadoPor: resp.data?.autorizadoPor || "" };
-      } catch (err) {
-        setErrorCodigo(err?.message || "No se pudo validar el código.");
-        setValidando(false);
-        return;
-      }
-      setValidando(false);
-    }
     onSave({
       trabajadorId: form.trabajadorId || null,
       nombreLibre: form.trabajadorId ? "" : form.nombreLibre.trim(),
@@ -4892,7 +4870,7 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
       ...(mostrarContarComoTrabajado ? { contarComoTrabajado: !!form.contarComoTrabajado } : {}),
       ...(form.motivo === "Incapacidad" ? { origenIncapacidad: form.origenIncapacidad === "Laboral" ? "Laboral" : "General" } : {}),
       ...(esMotivoPermiso(form.motivo) ? { vinoATrabajar: !!form.vinoATrabajar } : {}),
-      ...extra,
+      ...(esMotivoPermiso(form.motivo) ? { numeroPermisoMes: ausencia?.numeroPermisoMes || numeroPermisoMes } : {}),
     });
     onClose();
   }
@@ -4923,20 +4901,18 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
         </Field>
       )}
       {esMotivoPermiso(form.motivo) && (form.trabajadorId || form.nombreLibre.trim()) && (
-        necesitaCodigo ? (
+        alertaPermisos ? (
           <div style={{ background: C.amberBg, border: `1px solid ${C.amber}`, borderRadius: 10, padding: "10px 12px", margin: "-6px 0 12px" }}>
             <div style={{ fontSize: 12, fontWeight: 800, color: C.amber, marginBottom: 4 }}>
-              🔐 Este sería el permiso #{permisosEsteMes + 1} del mes (el tope normal es {topePermisos})
+              ⚠️ Esta persona ya lleva {permisosEsteMes} {permisosEsteMes === 1 ? "permiso" : "permisos"} este mes: este es el #{numeroPermisoMes}
             </div>
-            <div style={{ fontSize: 11.5, color: C.ink, marginBottom: 8 }}>
-              Para guardarlo necesitas el código de autorización que da gerencia. Vacaciones, Incapacidad, Licencias, Luto y Suspensión no cuentan para este tope.
+            <div style={{ fontSize: 11.5, color: C.ink }}>
+              Se guarda igual y las horas se cobran como siempre. Vacaciones, Incapacidad, Licencias, Luto y Suspensión no cuentan.
             </div>
-            <FInput value={codigo} onChange={(v) => { setCodigo(String(v).toUpperCase()); setErrorCodigo(""); }} placeholder="Código de autorización (ej. PX-7K4M2Q)" />
-            {errorCodigo && <div style={{ fontSize: 11.5, fontWeight: 700, color: C.red, marginTop: 6 }}>🚫 {errorCodigo}</div>}
           </div>
         ) : (
           <div style={{ fontSize: 11.5, fontWeight: 700, color: C.slate, margin: "-6px 0 10px" }}>
-            {`Permisos usados este mes: ${permisosEsteMes}/${topePermisos}.`}
+            {`Permisos usados este mes: ${permisosEsteMes}.`}
             {ausencia?.codigoAutorizacion ? ` · 🔐 Autorizado por ${ausencia.autorizadoPor || "gerencia"} (${ausencia.codigoAutorizacion})` : ""}
           </div>
         )
@@ -4964,17 +4940,9 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
         <div style={{ background: C.violetBg, border: `1px solid ${C.violet}`, borderRadius: 10, padding: "10px 12px", margin: "0 0 12px" }}>
           <div style={{ fontSize: 12, fontWeight: 800, color: C.violet, marginBottom: 4 }}>⏱ Cobro de las horas de este permiso</div>
           <div style={{ fontSize: 12, color: C.ink, lineHeight: 1.5 }}>
-            Permiso de <strong>{fmtHoras(cobroPermiso.horas)}</strong>{mostrarDinero ? <> · valor hora <strong>{fmtMoney(Math.round(cobroPermiso.valorHora))}</strong> (sueldo ÷ {DIVISOR_HORAS_MES_EXTRA})</> : null}.
+            Permiso de <strong>{fmtHoras(cobroPermiso.horas)}</strong>{mostrarDinero ? <> · valor hora <strong>{fmtMoney(Math.round(cobroPermiso.valorHora))}</strong> ({cobroPermiso.usaMinimo ? "salario mínimo, sin sueldo en la ficha" : "sueldo"} ÷ {DIVISOR_HORAS_MES_EXTRA})</> : null}.
             {" "}Si no las repone hasta el <strong>{fmtFechaISO(finQuincenaDeFecha(form.fechaInicio))}</strong> (fin de la quincena), se le descuentan{mostrarDinero ? <> <strong>{fmtMoney(cobroPermiso.valor)}</strong></> : " esas horas"} en la liquidación.
             {" "}Si las repone en otro horario o con horas extras, se canjean hora por hora y el descuento baja.
-          </div>
-        </div>
-      )}
-      {cobroPermiso && cobroPermiso.informativo && (
-        <div style={{ background: C.violetBg, border: `1px solid ${C.violet}`, borderRadius: 10, padding: "10px 12px", margin: "0 0 12px" }}>
-          <div style={{ fontSize: 12, fontWeight: 800, color: C.violet, marginBottom: 4 }}>⏱ Permiso de {fmtHoras(cobroPermiso.horas)} (Destajo)</div>
-          <div style={{ fontSize: 12, color: C.ink, lineHeight: 1.5 }}>
-            En Destajo no se descuenta. Las horas quedan visibles junto a la ayuda de salario mínimo para que decidas si se le da la ayuda.
           </div>
         </div>
       )}
@@ -5002,7 +4970,7 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
           </div>
         )}
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
-        <Btn onClick={guardar} disabled={faltantes.length > 0 || ordenHorasMal || validando || (necesitaCodigo && !codigo.trim())}>{validando ? "Validando..." : "Guardar"}</Btn>
+        <Btn onClick={guardar} disabled={faltantes.length > 0 || ordenHorasMal}>Guardar</Btn>
       </div>
     </Modal>
   );
@@ -13815,7 +13783,7 @@ function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobro
               {sincronizandoPermisos ? "Sincronizando…" : "Sincronizar permisos"}
             </Btn>
             <div style={{ fontSize: 11.5, color: C.slate, maxWidth: 560, lineHeight: 1.4 }}>
-              Cada permiso por horas (Fiscal y Fiscal Destajo) crea solo su cobro al guardarse. Usa este botón si hay permisos guardados antes de este cambio o si alguno no aparece. Los descuentos por retardos (desde el 4.º del mes) también se revisan aquí. Los cobros que ya se descontaron no se tocan.
+              Cada permiso por horas (Fiscal, Fiscal Destajo y Destajo) crea solo su cobro al guardarse. Usa este botón si hay permisos guardados antes de este cambio o si alguno no aparece. Los descuentos por retardos (desde el 4.º del mes) también se revisan aquí. Los cobros que ya se descontaron no se tocan.
             </div>
           </div>
           {msgPermisos && <div style={{ marginTop: 10, fontSize: 12.5, fontWeight: 700, color: msgPermisos.startsWith("Listo") ? C.green : C.red }}>{msgPermisos}</div>}
@@ -15179,7 +15147,7 @@ function ReposicionHorasView({ trabajadores, ausencias, reposiciones, horasExtra
         <ReposicionModal fila={filaModal} extras={extrasDe(filaModal)} mostrarDinero={mostrarDinero} onRegistrar={onRegistrar} onQuitar={onQuitar} onClose={() => setModalId(null)} />
       )}
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 14, maxWidth: 780 }}>
-        Permisos por horas de Fiscal y Fiscal Destajo desde el 16/11/2026. Lo que no se reponga hasta el fin de la quincena se descuenta en la liquidación. La reposición puede ser en otro horario o canjeando horas extras (hora por hora, sin recargo; esa hora extra deja de pagarse).
+        Permisos por horas de Fiscal, Fiscal Destajo y Destajo desde el 16/11/2026. Lo que no se reponga hasta el fin de la quincena se descuenta en la liquidación. La reposición puede ser en otro horario o canjeando horas extras (hora por hora, sin recargo; esa hora extra deja de pagarse).
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
         <Btn variant="secondary" onClick={() => setOffset(offset - 1)}>← Quincena anterior</Btn>
@@ -18634,6 +18602,8 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   }
   async function guardarAusencia(a) {
     const previa = (ausencias || []).find((x) => x.id === a.id);
+    // (2026-11-24) Queda anotado quién registró el permiso (solo permisos nuevos).
+    if (!previa && esMotivoPermiso(a.motivo) && !a.registradoPor) a = { ...a, registradoPor: quienMarca(), registradoEn: new Date().toISOString() };
     await fsSave("nomina_ausencias", a.id, a);
     try { await sincronizarCobroPermiso({ ...(previa || {}), ...a }); } catch (err) { console.error("Cobro de permiso por horas:", err); }
   }
