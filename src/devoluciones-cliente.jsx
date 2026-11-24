@@ -178,7 +178,7 @@ function useDevoluciones(db, soloUid) {
       (s) => {
         setError("");
         // La cliente no ve la parte que se dividió a segundas (solo la devolución original, con su nota).
-        setLista(s.docs.map((x) => ({ ...x.data(), id: x.id })).filter((x) => !(soloUid && x.divididaDe)).sort((a, b) => (b.creadoEn || "").localeCompare(a.creadoEn || "")));
+        setLista(s.docs.map((x) => ({ ...x.data(), id: x.id })).filter((x) => !(soloUid && x.divididaDe && x.estado === "segundas")).sort((a, b) => (b.creadoEn || "").localeCompare(a.creadoEn || "")));
       },
       (e) => { setError(e?.message || "No se pudieron leer las devoluciones."); setLista([]); }
     );
@@ -421,7 +421,12 @@ function Detalle({ T, d, mostrarConteo }) {
       ) : null}
       {d.divididaDe && mostrarConteo ? (
         <div style={{ fontSize: 12, color: T.slate, background: T.canvas, borderRadius: 8, padding: "8px 12px", marginTop: 10 }}>
-          ✂️ Esta es la parte de segundas de la devolución <b>{d.divididaDeNumero}</b>.
+          ✂️ {d.registroManual ? `Registrada a mano como otra parte de la devolución ` : d.estado === "segundas" ? "Esta es la parte de segundas de la devolución " : "Esta es otra parte de la devolución "}<b>{d.divididaDeNumero}</b>{d.registroManual?.nota ? ` · ${d.registroManual.nota}` : ""}.
+        </div>
+      ) : null}
+      {(d.partesManuales || []).length && mostrarConteo ? (
+        <div style={{ fontSize: 12, color: T.slate, background: T.canvas, borderRadius: 8, padding: "8px 12px", marginTop: 10 }}>
+          ➕ Otra parte registrada a mano: {(d.partesManuales || []).map((x) => `${x.numero} (${x.unidades} und., ${x.estado === "segundas" ? "bodega de segundas" : "despachada de nuevo"})`).join(" · ")}.
         </div>
       ) : null}
       {mostrarConteo && d.estado === "segundas" ? (
@@ -1556,6 +1561,99 @@ function FormularioDevolucionesCliente({ db, functionsClient, T: Tp, currentUser
   );
 }
 
+// (2026-11-24, a pedido de Fredy) Registro manual de «la otra parte» de una devolución que ya se cerró (Historial) sin poder dividirla en su momento
+// (ej. lote 7081: 1 und. a segundas y la otra se despachó fuera del sistema). Crea una devolución hermana con las unidades, el destino (despachada de nuevo
+// o bodega de segundas) y deja nota en las dos. La original no cambia (solo suma una línea en su historial). Solo líder / administrador.
+function RegistrarOtraParteDev({ db, T, d, lista, usuario }) {
+  const [abierto, setAbierto] = useState(false);
+  const [vals, setVals] = useState({});
+  const [destino, setDestino] = useState("redespachada");
+  const [fecha, setFecha] = useState(new Date().toISOString().slice(0, 10));
+  const [guia, setGuia] = useState("");
+  const [nuevoDoc, setNuevoDoc] = useState("");
+  const [nota, setNota] = useState("");
+  const [error, setError] = useState("");
+  const [ocupado, setOcupado] = useState(false);
+  const colores = coloresDeLineas(d.lineas?.length ? d.lineas : d.conteo);
+  const tallas = tallasDeLineas(d.lineas?.length ? d.lineas : d.conteo, d.tallas);
+  const lineasNuevas = colores.map((c) => ({ color: c.color, colorNombre: c.nombre || "", cantidades: Object.fromEntries(tallas.map((t) => [t, Number(vals[`${c.color}|${t}`]) || 0]).filter(([, n]) => n > 0)) })).filter((l) => Object.keys(l.cantidades).length);
+  const unidades = totalLineas(lineasNuevas);
+  async function guardar() {
+    setError("");
+    if (unidades < 1) { setError("Escribe cuántas unidades por color y talla."); return; }
+    if (destino === "redespachada" && !fecha) { setError("Pon la fecha en que se despachó."); return; }
+    setOcupado(true);
+    try {
+      const sufijo = destino === "segundas" ? "S" : "D";
+      const base = d.numero;
+      const existentes = new Set((lista || []).map((x) => x.numero));
+      let numero = `${base}-${sufijo}`; let n = 2;
+      while (existentes.has(numero)) { numero = `${base}-${sufijo}${n}`; n += 1; }
+      const id = `${d.id}_${numero.slice(base.length + 1).toLowerCase()}`;
+      const ahora = nowISO();
+      const fechaEv = destino === "redespachada" ? `${fecha}T12:00:00.000Z` : ahora;
+      const hermana = { ...d };
+      ["facturacion", "redespacho", "solicitaDespacho", "division", "partesManuales", "envioId", "envioJunto", "entrega"].forEach((k) => { delete hermana[k]; });
+      const nombreDestino = destino === "segundas" ? "bodega de segundas" : "despachada de nuevo";
+      const notaH = `Registrada a mano como otra parte de ${d.numero}: ${unidades} und. ${nombreDestino}${nota.trim() ? ` — ${nota.trim()}` : ""}`;
+      const batch = writeBatch(db);
+      batch.set(doc(db, COL, id), limpio({
+        ...hermana, id, numero, estado: destino, destino: destino === "segundas" ? "segundas" : "despacho",
+        lineas: lineasNuevas, conteo: lineasNuevas, total: unidades, totalContado: unidades, diferencias: [], resultado: "completa",
+        ...(destino === "redespachada" ? { redespacho: { fecha, guia: guia.trim(), ...(nuevoDoc.trim() ? { documentoNuevo: nuevoDoc.trim() } : {}), por: usuario, manual: true } } : {}),
+        divididaDe: d.id, divididaDeNumero: d.numero, registroManual: { por: usuario, fecha: ahora, nota: nota.trim() },
+        historial: [...(d.historial || []), { estado: destino, fecha: fechaEv, usuario: usuario || "", nota: notaH }], actualizadoEn: ahora,
+      }));
+      batch.update(doc(db, COL, d.id), limpio({
+        partesManuales: [...(d.partesManuales || []), { id, numero, unidades, estado: destino, por: usuario, fecha: ahora }],
+        historial: [...(d.historial || []), { estado: d.estado, fecha: ahora, usuario: usuario || "", nota: `Se registró a mano la otra parte: ${numero} (${unidades} und. ${nombreDestino})` }], actualizadoEn: ahora,
+      }));
+      await batch.commit();
+      setAbierto(false); setVals({}); setNota(""); setGuia(""); setNuevoDoc("");
+    } catch (e) { setError(e?.message || "No se pudo registrar la otra parte."); }
+    finally { setOcupado(false); }
+  }
+  return (
+    <div style={{ marginTop: 12, borderTop: `1px solid ${T.border}`, paddingTop: 10 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 6 }}>OTRA PARTE DE ESTA DEVOLUCIÓN (registro manual · líder)</div>
+      {!abierto ? (
+        <button onClick={() => setAbierto(true)} style={btn(T)}>➕ Registrar la otra parte (manual)</button>
+      ) : (
+        <div style={{ border: `1.5px solid ${T.border}`, borderRadius: 12, padding: "12px 14px", background: T.white }}>
+          <div style={{ fontSize: 12.5, color: T.slate, marginBottom: 8 }}>Úsalo cuando una parte de esta devolución tuvo otro destino y no quedó registrada. No cambia esta devolución: crea una hermana con las unidades que escribas.</div>
+          <GrillaColorTalla T={T} colores={colores} tallas={tallas} valores={vals} infantil={esInfantilDev(d)} onCambiar={(k, v) => setVals((c) => ({ ...c, [k]: v === "" ? "" : entero(v) }))} />
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end", marginTop: 10 }}>
+            <div>
+              <div style={{ fontSize: 11, color: T.slate, marginBottom: 3 }}>¿A dónde fueron?</div>
+              <select value={destino} onChange={(e) => setDestino(e.target.value)} style={{ ...campo(T), minWidth: 200 }}>
+                <option value="redespachada">Despachada de nuevo</option>
+                <option value="segundas">Bodega de segundas</option>
+              </select>
+            </div>
+            {destino === "redespachada" && (
+              <>
+                <div><div style={{ fontSize: 11, color: T.slate, marginBottom: 3 }}>Fecha de despacho</div><input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} style={campo(T)} /></div>
+                <div><div style={{ fontSize: 11, color: T.slate, marginBottom: 3 }}>Guía</div><input value={guia} onChange={(e) => setGuia(e.target.value)} placeholder="Opcional" style={campo(T)} /></div>
+                <div><div style={{ fontSize: 11, color: T.slate, marginBottom: 3 }}>Remisión o factura</div><input value={nuevoDoc} onChange={(e) => setNuevoDoc(e.target.value)} placeholder="Opcional" style={campo(T)} /></div>
+              </>
+            )}
+            <div style={{ flex: 1, minWidth: 180 }}>
+              <div style={{ fontSize: 11, color: T.slate, marginBottom: 3 }}>Nota (opcional)</div>
+              <input value={nota} onChange={(e) => setNota(e.target.value)} placeholder="Ej. se despachó antes de poder dividir" style={{ ...campo(T), width: "100%" }} />
+            </div>
+          </div>
+          <div style={{ marginTop: 10, fontSize: 13, fontWeight: 700, color: T.ink }}>{unidades} und. → {destino === "segundas" ? "bodega de segundas" : "despachada de nuevo"}</div>
+          {error && <div style={{ marginTop: 6, fontSize: 12.5, color: T.coral }}>{error}</div>}
+          <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
+            <button disabled={ocupado || unidades < 1} onClick={guardar} style={btn(T, "primario")}>Registrar</button>
+            <button onClick={() => { setAbierto(false); setVals({}); setError(""); }} style={btn(T)}>Cancelar</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // (2026-11-10, a pedido de Fredy) La líder de Bodega (permiso «Puede cambiar el estado de las devoluciones», o administrador) puede llevar una
 // devolución a CUALQUIER estado, adelante o atrás. Queda en el Historial con su nombre y el motivo; los datos ya guardados (conteo, recibida por…) no se borran.
 function CambiarEstadoDev({ T, d, ocupado, onCambiar }) {
@@ -2090,6 +2188,9 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, puedeFa
                 {modo === "bodega" && (puedeCambiarEstado || currentUser?.isAdmin) && (
                   <CambiarEstadoDev key={`${d.id}-${d.estado}`} T={T} d={d} ocupado={trabajando === d.id}
                     onCambiar={(estado, extra, nota) => accion(d, estado, estado === "redespachada" ? { redespacho: { ...extra.redespacho, por: usuario } } : extra, nota)} />
+                )}
+                {modo === "bodega" && (puedeCambiarEstado || currentUser?.isAdmin) && estaCerrada(d) && (
+                  <RegistrarOtraParteDev key={`otra-${d.id}-${(d.partesManuales || []).length}`} db={db} T={T} d={d} lista={lista} usuario={usuario} />
                 )}
                 <AccionesDevolucion db={db} T={T} d={d} lista={lista} currentUser={currentUser} esCliente={false} onBorrado={() => setAbierto(null)} />
               </>
