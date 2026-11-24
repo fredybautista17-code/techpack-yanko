@@ -483,7 +483,8 @@ function claimsDeUsuario(u) {
   const lista = Array.isArray(u?.clientesAsociados) && u.clientesAsociados.length
     ? u.clientesAsociados
     : (u?.clienteAsociado ? [u.clienteAsociado] : []);
-  const claims = { rol: String(u?.role || ""), admin: !!u?.isAdmin, clientes: lista.map((c) => String(c)).filter(Boolean) };
+  // `correos` (2026-11-24): nivel de acceso a Correos de quien NO es administrador ("total" o "facturas"); las reglas de Firestore lo leen del token.
+  const claims = { rol: String(u?.role || ""), admin: !!u?.isAdmin, clientes: lista.map((c) => String(c)).filter(Boolean), correos: ["total", "facturas"].includes(u?.correosAcceso) ? u.correosAcceso : "" };
   // Los claims no pueden pasar de 1000 bytes: si hiciera falta, se recortan los últimos clientes.
   while (JSON.stringify(claims).length > 900 && claims.clientes.length) claims.clientes.pop();
   return claims;
@@ -504,7 +505,7 @@ exports.sincronizarMisClaims = onCallAuth(async (request) => {
   if (snap.empty) throw new HttpsError("not-found", "Tu cuenta no tiene un perfil asociado.");
   const claims = claimsDeUsuario(snap.docs[0].data());
   await admin.auth().setCustomUserClaims(request.auth.uid, claims);
-  return { ok: true, rol: claims.rol, admin: claims.admin, clientes: claims.clientes.length };
+  return { ok: true, rol: claims.rol, admin: claims.admin, clientes: claims.clientes.length, correos: claims.correos };
 });
 
 exports.getDocumentosPorPedidoBusint = onCallAuth(
@@ -17593,11 +17594,16 @@ exports.getConsumoTelaLotesBusint = onCallAuth(
 const Correos = require("./correos");
 const CORREOS_CLAVE = defineSecret("CORREOS_CLAVE");
 
-async function exigirAdminCorreos(request) {
+// (2026-11-24, a pedido de Fredy) Acceso a Correos por persona: administrador = total; el resto según users.correosAcceso: «total» (igual que el
+// administrador) o «facturas» (solo ve y marca los correos clasificados como factura de proveedor). `minimo` = "total" (cuentas, sincronizar, clasificar)
+// o "facturas" (revisar en Busint y adjuntos de facturas: lo pueden hacer los dos niveles).
+async function exigirAdminCorreos(request, minimo = "total") {
   const snap = await db.collection("users").where("authUid", "==", request.auth.uid).limit(1).get();
   const u = snap.empty ? null : snap.docs[0].data();
-  if (!u || !u.isAdmin) throw new HttpsError("permission-denied", "Solo un administrador maneja las cuentas de correo.");
-  return u;
+  const nivel = !u ? "" : (u.isAdmin ? "total" : (["total", "facturas"].includes(u.correosAcceso) ? u.correosAcceso : ""));
+  const ok = nivel === "total" || (minimo === "facturas" && nivel === "facturas");
+  if (!ok) throw new HttpsError("permission-denied", minimo === "facturas" ? "No tienes acceso a las facturas recibidas por correo." : "Solo un administrador, o quien tenga acceso total a Correos, maneja las cuentas de correo.");
+  return { ...u, nivelCorreos: nivel };
 }
 
 // Lee los correos nuevos de las cuentas activas (o de una sola) y los guarda en correos_mensajes.
@@ -17782,7 +17788,7 @@ exports.correosClasificarAhora = onCallAuth(
 exports.correosRevisarFacturasBusint = onCallAuth(
   { secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY], timeoutSeconds: 540, memory: "1GiB" },
   async (request) => {
-    await exigirAdminCorreos(request);
+    const quien = await exigirAdminCorreos(request, "facturas");
     const entrada = Array.isArray((request.data || {}).facturas) ? request.data.facturas.slice(0, 100) : [];
     const pedidas = entrada
       .map((f) => ({ clave: String((f && f.clave) || "").slice(0, 300), proveedor: String((f && f.proveedor) || "").slice(0, 200), numero: String((f && f.numero) || "").slice(0, 80), valor: Number(f && f.valor) || 0, ids: Array.isArray(f && f.ids) ? f.ids.map(String).slice(0, 50) : [] }))
@@ -17815,6 +17821,8 @@ exports.correosRevisarFacturasBusint = onCallAuth(
         const ref = db.collection("correos_mensajes").doc(id);
         const snap = await ref.get();
         if (!snap.exists) continue;
+        // Quien solo tiene «facturas» no puede tocar correos que no sean facturas de proveedor.
+        if (quien.nivelCorreos !== "total" && !(snap.data().clasificacion && snap.data().clasificacion.categoria === "factura_proveedor")) continue;
         const cambio = { revisionBusint: { estado: r.estado, en: ahora, coincidencia: r.coincidencia || null } };
         const actual = snap.data().factura;
         if (r.estado === "encontrada" && !(actual && actual.estado && actual.origen !== "busint")) {
@@ -17832,7 +17840,7 @@ exports.correosRevisarFacturasBusint = onCallAuth(
 exports.correosAdjunto = onCallAuth(
   { secrets: [CORREOS_CLAVE], timeoutSeconds: 120, memory: "1GiB" },
   async (request) => {
-    await exigirAdminCorreos(request);
+    const quien = await exigirAdminCorreos(request, "facturas");
     const d = request.data || {};
     const id = String(d.mensajeId || "");
     const indice = Number(d.indice);
@@ -17840,6 +17848,7 @@ exports.correosAdjunto = onCallAuth(
     const msg = await db.collection("correos_mensajes").doc(id).get();
     if (!msg.exists) throw new HttpsError("not-found", "No se encontró ese correo.");
     const m = msg.data();
+    if (quien.nivelCorreos !== "total" && !(m.clasificacion && m.clasificacion.categoria === "factura_proveedor")) throw new HttpsError("permission-denied", "Solo puedes abrir los adjuntos de las facturas de proveedores.");
     const partes = id.split("_"); // cuentaId_uidValidity_uid (el cuentaId puede traer guiones bajos)
     const uidValidity = partes[partes.length - 2];
     const uid = Number(partes[partes.length - 1]);

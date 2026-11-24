@@ -75,7 +75,7 @@ function menuDe(tiene, areas) {
     }
     // Las demás áreas se ven si tienen su llave de entrada; solo Diseño y Áreas muestran sus secciones debajo
     const claves = a.items.map((it) => it[0]);
-    const entrada = a.id === "diseno" || a.area.includes("Áreas") ? claves : a.area.includes("Nómina") ? claves.filter((k) => k === "nomina" || k === "nomina_novedades" || k === "nomina_lider_area" || k === "nomina_lider_asistencia")
+    const entrada = a.id === "diseno" || a.area.includes("Áreas") ? claves : a.area.includes("Nómina") ? claves.filter((k) => k === "nomina" || k === "nomina_novedades" || k === "nomina_lider_area" || k === "nomina_lider_asistencia" || k === "nomina_lider_resumen")
       : a.area.includes("Contabilidad") ? ["contabilidad", "contabilidad_ordenes_compra"] : [claves[0]];
     if (!entrada.some(tiene)) return;
     const conSecciones = a.id === "diseno" || a.area.includes("Áreas");

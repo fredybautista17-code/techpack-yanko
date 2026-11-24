@@ -195,7 +195,20 @@ export default function FormularioUsuario({ form, setForm, editUser, users, conf
       {especial("isAdmin", "Acceso de administrador", "Ve y puede hacer todo en ATLAS.")}
       {especial("landingAreas", "Mostrar «☀️ Mi Día» (Auditoría de Nómina)", "Le agrega el botón «☀️ Mi Día» a su menú lateral (sin quitarle nada de lo demás) donde ve la Auditoría Busint vs Nómina. Abajo eliges de qué áreas (sin marcar ninguna ve todas). Verifica que su rol tenga el permiso «Centro de Costo» en 🗂️ Áreas (Admin → Roles).")}
       {form.landingAreas && bloqueAreasAuditoria()}
+      {!esCliente && !form.isAdmin && (
+        <div style={{ ...fila, flexDirection: "column", alignItems: "stretch", gap: 8 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, lineHeight: 1.4, color: T.ink }}>✉ Correos (en Financiera)<div style={{ fontSize: 11.5, color: T.slate, fontWeight: 600, marginTop: 2 }}>Elige qué ve esta persona en «Correos». No necesita tener el área Financiera: le aparece un menú solo con Correos. Debe volver a entrar a ATLAS una vez para que el cambio se active.</div></div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {[["", "Sin acceso"], ["facturas", "Solo Facturas recibidas"], ["total", "Acceso total (como el administrador)"]].map(([v, t]) => (
+              <button key={v || "ninguno"} type="button" style={chip((form.correosAcceso || "") === v)} onClick={() => setForm((f) => ({ ...f, correosAcceso: v }))}>{t}</button>
+            ))}
+          </div>
+          {form.correosAcceso === "facturas" && <div style={nota}>Solo ve los correos clasificados como factura de proveedor: puede marcarlas y abrir sus adjuntos. No ve las cuentas ni el resto de correos, ni sincroniza ni clasifica.</div>}
+          {form.correosAcceso === "total" && <div style={nota}>Ve todas las bandejas, cuentas conectadas (y sus contraseñas de aplicación se guardan en el servidor, no se muestran), sincroniza y clasifica igual que el administrador.</div>}
+        </div>
+      )}
       {!esCliente && especial("nominaLiderArea", "Líder de área: Producción, Horas y Permisos (Nómina)", "Entra a Nómina con solo Registrar Producción, Registrar Horas y Permisos (Calendario) de los trabajadores de su «Área Interna» (se asigna en «Área y trabajo»). No le da la Nómina completa.")}
+      {!esCliente && especial("nominaLiderResumen", "Líder de área: Resumen (Nómina)", "Entra a Nómina con el «💰 Resumen» de la quincena de los trabajadores de su «Área Interna»: lo producido, las horas, el pago y la ayuda (incluye valores en dinero). Se puede combinar con los otros dos interruptores de líder.")}
       {!esCliente && especial("nominaLiderAsistencia", "Líder de área: Asistencia (Nómina)", "Entra a Nómina con solo Tabulador de Asistencia, Historial de Asistencia, Estadísticas de Permisos y Retardos del mes de los trabajadores de su «Área Interna» (sin valores en dinero). Se puede combinar con el interruptor de Producción, Horas y Permisos.")}
       {especial("costosPlanta", "Costos y ventas de planta (Planta Yanko)", "Le muestra la pestaña «💵 Costos y ventas» dentro de Planta Yanko para cargar y borrar gastos de insumos y ventas de MAQUILA, ver la ganancia real y cerrar el mes. Necesita además acceso al módulo Planta. Se guarda al editar un usuario que ya existe.")}
       {!esCliente && especial("actualizaIngresos", "Actualizar Ingresos de clientes (Financiera)", "Le muestra el botón «🔄 Traer desde…» en Financiera → Ingresos para traer de TNS y Busint lo que han pagado los clientes. Sin este interruptor solo lo ve el administrador. Necesita además acceso al módulo Financiera. Se guarda al editar un usuario que ya existe.")}

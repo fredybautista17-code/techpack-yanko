@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
 import { initializeApp, getApps } from "firebase/app";
-import { getFirestore, collection, doc, onSnapshot, query, orderBy, limit, updateDoc } from "firebase/firestore";
+import { getFirestore, collection, doc, onSnapshot, query, orderBy, limit, updateDoc, where } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { agruparFacturas, diasDesde, diasHasta } from "./correos-facturas-calculo";
 
@@ -303,19 +303,28 @@ export default function CorreosView({ currentUser, onVolver, onLogout, notify, i
   const [soloAccion, setSoloAccion] = useState(false);
   const [clasificando, setClasificando] = useState(false);
   const [revisando, setRevisando] = useState(false);
-  const [vista, setVista] = useState("bandeja");
+  const [vista, setVista] = useState(!currentUser?.isAdmin && currentUser?.correosAcceso === "facturas" ? "facturas" : "bandeja");
   const [bajandoAdj, setBajandoAdj] = useState("");
   const [cxp, setCxp] = useState(null);
   const [errorCxp, setErrorCxp] = useState("");
+  // Nivel de acceso (2026-11-24): el administrador y quien tenga «total» lo ven todo; «facturas» ve solo los correos de factura de proveedor
+  // (sin cuentas, sin sincronizar ni clasificar, sin cambiar categorías).
+  const nivel = currentUser?.isAdmin ? "total" : (["total", "facturas"].includes(currentUser?.correosAcceso) ? currentUser.correosAcceso : "");
+  const esTotal = nivel === "total";
 
-  useEffect(() => onSnapshot(collection(db, "correos_cuentas"), (s) => setCuentas(s.docs.map((d) => ({ ...d.data(), id: d.id })).sort((a, b) => String(a.creadoEn || "").localeCompare(String(b.creadoEn || "")))), (e) => setErrorCarga(mensajeError(e))), []);
-  useEffect(() => onSnapshot(query(collection(db, "correos_mensajes"), orderBy("fecha", "desc"), limit(400)), (s) => { setMensajes(s.docs.map((d) => ({ ...d.data(), id: d.id }))); setCargado(true); }, (e) => { setErrorCarga(mensajeError(e)); setCargado(true); }), []);
+  useEffect(() => (esTotal ? onSnapshot(collection(db, "correos_cuentas"), (s) => setCuentas(s.docs.map((d) => ({ ...d.data(), id: d.id })).sort((a, b) => String(a.creadoEn || "").localeCompare(String(b.creadoEn || "")))), (e) => setErrorCarga(mensajeError(e))) : undefined), [esTotal]);
+  useEffect(() => {
+    if (!nivel) return undefined;
+    // «facturas»: la consulta pide solo la categoría permitida (así lo exigen las reglas) y se ordena aquí, sin índice nuevo.
+    const consulta = esTotal ? query(collection(db, "correos_mensajes"), orderBy("fecha", "desc"), limit(400)) : query(collection(db, "correos_mensajes"), where("clasificacion.categoria", "==", "factura_proveedor"), limit(400));
+    return onSnapshot(consulta, (s) => { const l = s.docs.map((d) => ({ ...d.data(), id: d.id })); if (!esTotal) l.sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || ""))); setMensajes(l); setCargado(true); }, (e) => { setErrorCarga(mensajeError(e)); setCargado(true); });
+  }, [nivel, esTotal]);
 
   // Facturas abiertas del último corte de Cuentas por Pagar (Busint), para saber si contabilidad ya registró cada factura.
-  useEffect(() => onSnapshot(collection(db, "contabilidad_cxp_facturas"), (s) => { setCxp(s.docs.map((d) => d.data())); setErrorCxp(""); }, (e) => { setCxp([]); setErrorCxp(mensajeError(e)); }), []);
+  useEffect(() => (nivel ? onSnapshot(collection(db, "contabilidad_cxp_facturas"), (s) => { setCxp(s.docs.map((d) => d.data())); setErrorCxp(""); }, (e) => { setCxp([]); setErrorCxp(mensajeError(e)); }) : undefined), [nivel]);
 
   const colorDe = (id) => COLORES_CUENTA[Math.max(0, cuentas.findIndex((c) => c.id === id)) % COLORES_CUENTA.length];
-  const nombreDe = (id) => { const c = cuentas.find((x) => x.id === id); return c ? (c.nombre || c.email) : id; };
+  const nombreDe = (id) => { const c = cuentas.find((x) => x.id === id); return c ? (c.nombre || c.email) : (esTotal ? id : "Correo de la empresa"); };
 
   const norm = (t) => String(t || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
   const filtrados = useMemo(() => {
@@ -420,8 +429,8 @@ export default function CorreosView({ currentUser, onVolver, onLogout, notify, i
     catch (e) { notify?.("No se pudo cambiar la categoría: " + mensajeError(e)); }
   }
 
-  if (!currentUser?.isAdmin) {
-    return <div style={{ padding: 40, fontFamily: FUENTE }}><button onClick={onVolver} style={btn(C.white, C.slate, C.border)}>← Volver a ATLAS</button><p style={{ marginTop: 20, color: C.slate }}>Por ahora solo un administrador puede ver los correos.</p></div>;
+  if (!nivel) {
+    return <div style={{ padding: 40, fontFamily: FUENTE }}><button onClick={onVolver} style={btn(C.white, C.slate, C.border)}>← Volver a ATLAS</button><p style={{ marginTop: 20, color: C.slate }}>No tienes acceso a Correos. Pídele a un administrador que lo active en tu usuario.</p></div>;
   }
 
   return (
@@ -435,9 +444,9 @@ export default function CorreosView({ currentUser, onVolver, onLogout, notify, i
           <button onClick={() => setVista("facturas")} style={btn(vista === "facturas" ? "#C8B8A2" : "transparent", vista === "facturas" ? C.ink : C.white, vista === "facturas" ? "#C8B8A2" : "rgba(255,255,255,.35)")}>🧾 Facturas recibidas{nFacturasPorRegistrar > 0 ? ` (${nFacturasPorRegistrar})` : ""}</button>
         </div>
         <div style={{ flex: 1 }} />
-        <button onClick={sincronizar} disabled={sincronizando || !cuentas.length} style={{ ...btn("transparent", C.white, "rgba(255,255,255,.35)"), opacity: sincronizando || !cuentas.length ? 0.6 : 1 }}>{sincronizando ? "Leyendo…" : "↻ Sincronizar ahora"}</button>
-        <button onClick={clasificar} disabled={clasificando || !cuentas.length} title="La IA le pone categoría, prioridad y resumen a cada correo. Solo clasifica: no responde ni envía nada." style={{ ...btn("transparent", C.white, "rgba(255,255,255,.35)"), opacity: clasificando || !cuentas.length ? 0.6 : 1 }}>{clasificando ? "Clasificando…" : `✨ Clasificar con IA${pendientesIA ? ` (${pendientesIA})` : ""}`}</button>
-        <button onClick={() => setPanelCuentas(true)} style={btn("#C8B8A2", C.ink)}>⚙ Cuentas</button>
+        {esTotal && <button onClick={sincronizar} disabled={sincronizando || !cuentas.length} style={{ ...btn("transparent", C.white, "rgba(255,255,255,.35)"), opacity: sincronizando || !cuentas.length ? 0.6 : 1 }}>{sincronizando ? "Leyendo…" : "↻ Sincronizar ahora"}</button>}
+        {esTotal && <button onClick={clasificar} disabled={clasificando || !cuentas.length} title="La IA le pone categoría, prioridad y resumen a cada correo. Solo clasifica: no responde ni envía nada." style={{ ...btn("transparent", C.white, "rgba(255,255,255,.35)"), opacity: clasificando || !cuentas.length ? 0.6 : 1 }}>{clasificando ? "Clasificando…" : `✨ Clasificar con IA${pendientesIA ? ` (${pendientesIA})` : ""}`}</button>}
+        {esTotal && <button onClick={() => setPanelCuentas(true)} style={btn("#C8B8A2", C.ink)}>⚙ Cuentas</button>}
         {onLogout && !incrustado && <button onClick={onLogout} style={btn("transparent", "#B9BBDA", "rgba(255,255,255,.2)")}>Salir</button>}
       </div>
 
@@ -445,7 +454,7 @@ export default function CorreosView({ currentUser, onVolver, onLogout, notify, i
         {errorCarga && <div style={{ background: C.redBg, color: C.red, borderRadius: 12, padding: "10px 14px", marginBottom: 14, fontSize: 13 }}>No se pudieron cargar los correos: {errorCarga}. Si es un error de permisos, falta publicar las reglas de Firestore (<code>firebase deploy --only firestore:rules</code>).</div>}
         {vista === "facturas" ? (
           <FacturasRecibidas filas={filasFactura} errorCxp={errorCxp} fechaCorte={fechaCorteCxp} colorDe={colorDe} nombreDe={nombreDe} onVer={verCorreo} onEstado={marcarFactura} onRevisar={revisarEnBusint} revisando={revisando} />
-        ) : cargado && !cuentas.length && !errorCarga ? (
+        ) : esTotal && cargado && !cuentas.length && !errorCarga ? (
           <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 16, padding: 28, maxWidth: 620, margin: "40px auto", textAlign: "center" }}>
             <div style={{ fontSize: 34 }}>✉</div>
             <div style={{ fontWeight: 800, fontSize: 18, margin: "6px 0" }}>Aún no hay cuentas conectadas</div>
@@ -529,9 +538,9 @@ export default function CorreosView({ currentUser, onVolver, onLogout, notify, i
                       <div style={{ background: C.blueBg, borderRadius: 10, padding: "10px 12px", marginBottom: 12, fontSize: 13, lineHeight: 1.55 }}>
                         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 4 }}>
                           <b style={{ color: C.blue, fontSize: 12 }}>✨ Clasificado por IA</b>
-                          <select value={sel.clasificacion.categoria || "otro"} onChange={(e) => corregirCategoria(sel, e.target.value)} title="Si la IA se equivocó, corrige la categoría" style={{ ...inp, width: "auto", padding: "3px 8px", fontSize: 12 }}>
+                          {!esTotal ? <b style={{ fontSize: 12 }}>{(CATEGORIAS[sel.clasificacion.categoria] || {}).nombre || sel.clasificacion.categoria}</b> : <select value={sel.clasificacion.categoria || "otro"} onChange={(e) => corregirCategoria(sel, e.target.value)} title="Si la IA se equivocó, corrige la categoría" style={{ ...inp, width: "auto", padding: "3px 8px", fontSize: 12 }}>
                             {Object.keys(CATEGORIAS).map((k) => <option key={k} value={k}>{CATEGORIAS[k].nombre}</option>)}
-                          </select>
+                          </select>}
                           <Pastilla bg={sel.clasificacion.prioridad === "alta" ? C.redBg : C.white} color={sel.clasificacion.prioridad === "alta" ? C.red : C.slate}>Prioridad {sel.clasificacion.prioridad || "media"}</Pastilla>
                           {sel.clasificacion.corregida && <Pastilla bg={C.greenBg} color={C.green}>Corregida por ti</Pastilla>}
                         </div>
@@ -569,7 +578,7 @@ export default function CorreosView({ currentUser, onVolver, onLogout, notify, i
           </>
         )}
       </div>
-      {panelCuentas && <PanelCuentas cuentas={cuentas} colorDe={colorDe} onCerrar={() => setPanelCuentas(false)} onSincronizar={sincronizar} sincronizando={sincronizando} notify={notify} />}
+      {esTotal && panelCuentas && <PanelCuentas cuentas={cuentas} colorDe={colorDe} onCerrar={() => setPanelCuentas(false)} onSincronizar={sincronizar} sincronizando={sincronizando} notify={notify} />}
     </div>
   );
 }

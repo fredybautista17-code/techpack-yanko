@@ -81,7 +81,7 @@ export function construirParametros({ config, users, datos }) {
   const rolesVacios = roles.filter((r) => !lista(r.modulos).length && !lista(r.perms).length).map((r) => r.name);
   const sinRol = us.filter((u) => u.role !== "Cliente" && !nombresRol.has(norm(u.role))).map((u) => u.name || u.username);
   const admins = us.filter((u) => u.isAdmin).map((u) => u.name || u.username);
-  const lideresSinArea = us.filter((u) => (u.nominaLiderArea || u.nominaLiderAsistencia) && !u.areaNomina).map((u) => u.name || u.username);
+  const lideresSinArea = us.filter((u) => (u.nominaLiderArea || u.nominaLiderAsistencia || u.nominaLiderResumen) && !u.areaNomina).map((u) => u.name || u.username);
   secciones.push({
     id: "accesos", titulo: "Accesos", icono: "🔐", filas: [
       fila("roles", "Roles", roles.length ? (rolesVacios.length ? "aviso" : "ok") : "falta",

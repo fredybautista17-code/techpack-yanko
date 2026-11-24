@@ -3294,8 +3294,8 @@ function VencimientosView({ db, cortes, manuales, nombresProveedor }) {
 // Proyección, Presupuesto Clientes y Programación de Pagos (migradas de
 // Contabilidad, que se queda solo con el registro: saldos, vencidos,
 // cartera y costos) y la vista nueva de Estrategia de Pago.
-export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
-  const [subView, setSubView] = useState("pago_nomina");
+export function FinancieraStandalone({ currentUser, onVolver, onLogout, soloCorreos = false }) {
+  const [subView, setSubView] = useState(soloCorreos ? "correos" : "pago_nomina");
   const [movimientos, setMovimientos] = useState([]);
   const [compras, setCompras] = useState([]);
   const [presupuestos, setPresupuestos] = useState([]);
@@ -3507,8 +3507,10 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
   }
 
   const isAdmin = currentUser?.isAdmin;
+  // Correos dentro de Financiera: el administrador, o quien tenga acceso por persona (Usuarios → Accesos especiales: total o solo facturas).
+  const puedeCorreos = !!isAdmin || ["total", "facturas"].includes(currentUser?.correosAcceso);
   // (2026-11-10) «Vencimientos» y «Estrategia de Pago» salen del menú (a pedido de Fredy) pero siguen abriéndose desde «Lo que cuesta operar».
-  const NAV = [
+  const NAV_COMPLETO = [
     { id: "direccion_financiera", icon: "📊", label: "Dirección financiera" },
     { id: "lo_que_cuesta_operar", icon: "🎯", label: "Lo que cuesta operar" },
     { id: "costos_equilibrio", icon: "⚖️", label: "Costos y equilibrio" },
@@ -3521,8 +3523,10 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
     { id: "insumos_operar", icon: "🧵", label: "Insumos y telas" },
     { id: "pagos_proveedores", icon: "🧾", label: "Pagos a Proveedores" },
     { id: "administracion", icon: "🗂️", label: "Administración" },
-    ...(isAdmin ? [{ id: "correos", icon: "✉", label: "Correos" }] : []),
+    ...(puedeCorreos ? [{ id: "correos", icon: "✉", label: "Correos" }] : []),
   ];
+  // Con acceso solo a Correos (sin el área Financiera) el menú tiene únicamente esa opción.
+  const NAV = soloCorreos ? NAV_COMPLETO.filter((n) => n.id === "correos") : NAV_COMPLETO;
 
   if (loading)
     return (
@@ -3608,7 +3612,7 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
           {subView === "direccion_financiera" && <DireccionFinancieraView db={db} isAdmin={isAdmin} />}
           {subView === "lo_que_cuesta_operar" && <LoQueCuestaOperarView db={db} isAdmin={isAdmin} usuario={currentUser?.name || currentUser?.username || currentUser?.email || ""} onIr={setSubView} />}
           {subView === "costos_equilibrio" && <CostosEquilibrioView db={db} currentUser={currentUser} />}
-          {subView === "correos" && isAdmin && <CorreosView currentUser={currentUser} incrustado notify={(msg) => alert(msg)} />}
+          {subView === "correos" && puedeCorreos && <CorreosView currentUser={currentUser} incrustado notify={(msg) => alert(msg)} />}
           {subView === "pago_nomina" && <PagoNominaView currentUser={currentUser} />}
           {subView === "cuanto_pagar" && <CuantoPagarMesView db={db} functionsClient={functionsClient} isAdmin={isAdmin} onIrEndeudamiento={() => setSubView("endeudamiento")} />}
           {subView === "endeudamiento" && <EndeudamientoView db={db} isAdmin={isAdmin} />}

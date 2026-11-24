@@ -15881,7 +15881,7 @@ ${paginaVacDesp}
   a.click();
   URL.revokeObjectURL(url);
 }
-function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNomina, puedeCerrarQuincena, cierres, onCerrar, onReabrir, lotesConCobros, ajustesDestajo, causacionManual, diasTrabajados, faltas, ausencias, turnos, deduccionesTrabajador, horasExtras, bonificaciones }) {
+function ResumenSemanalView({ sinCorreo = false, trabajadores, produccion, horas, isAdmin, areasNomina, puedeCerrarQuincena, cierres, onCerrar, onReabrir, lotesConCobros, ajustesDestajo, causacionManual, diasTrabajados, faltas, ausencias, turnos, deduccionesTrabajador, horasExtras, bonificaciones }) {
   const [qOffset, setQOffset] = useState(0);
   const [trabajadorAbierto, setTrabajadorAbierto] = useState(null);
   const [correoAbierto, setCorreoAbierto] = useState(false);
@@ -16383,7 +16383,7 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
       )}
       <div style={{ marginBottom: 14, display: "flex", gap: 10 }}>
         <Btn variant="secondary" small onClick={exportarExcel} disabled={!porTrabajador.length}>⬇ Exportar a Excel</Btn>
-        {((modo === "tipo" && (tipoSel === "Destajo" || tipoSel === "Fiscal Destajo")) || (modo === "area" && areaSel)) && (
+        {!sinCorreo && ((modo === "tipo" && (tipoSel === "Destajo" || tipoSel === "Fiscal Destajo")) || (modo === "area" && areaSel)) && (
           <Btn variant="secondary" small onClick={abrirCorreo} disabled={!porTrabajadorCorreo.length}>✉ Enviar desprendibles por correo</Btn>
         )}
         {modo === "tipo" && puedeCerrarQuincena && !cierre && (
@@ -17948,7 +17948,7 @@ function DiagnosticoDuplicadosView({ diasTrabajados, faltas, anomalias, retardos
     </div>
   );
 }
-export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNovedades, soloLiderArea, liderProduccion = true, liderAsistencia = false, puedeEditarCatalogos, puedeVerAnomaliasHuellero, puedeVerDuplicadosHuellero, puedeCerrarQuincena, puedeAgregarCobrosManual, puedeAjustarDestajo, puedeEditarHorasExtra, puedeEditarBonificacion, puedeAutorizarPermisos, puedeMarcarRetardos }) {
+export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNovedades, soloLiderArea, liderProduccion = true, liderAsistencia = false, liderResumen = false, puedeEditarCatalogos, puedeVerAnomaliasHuellero, puedeVerDuplicadosHuellero, puedeCerrarQuincena, puedeAgregarCobrosManual, puedeAjustarDestajo, puedeEditarHorasExtra, puedeEditarBonificacion, puedeAutorizarPermisos, puedeMarcarRetardos }) {
   // Líder de área (hoy: Anny Beltrán y Sarai Méndez, cada una con su Área
   // Interna real -- ver Administrativo → Área Interna): entra con un panel
   // reducido, ya filtrado a su propia gente, en vez del panel completo de
@@ -17956,7 +17956,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   // el campo "Área de Nómina" del usuario (mismo valor que la Área Interna
   // del trabajador), puesto por un admin en Administrador General → Usuarios.
   const areaLider = !currentUser?.isAdmin && currentUser?.areaNomina ? currentUser.areaNomina : null;
-  const [subView, setSubView] = useState(() => (areaLider ? (soloLiderArea && !liderProduccion ? "tabulador_asistencia" : "produccion") : soloNovedades ? "ausencias" : "dashboard"));
+  const [subView, setSubView] = useState(() => (areaLider ? (soloLiderArea && !liderProduccion ? (liderAsistencia ? "tabulador_asistencia" : "resumen") : "produccion") : soloNovedades ? "ausencias" : "dashboard"));
   // Qué grupos del menú están desplegados — si un grupo todavía no se ha
   // tocado (no está en este objeto), se abre solo si contiene el subView
   // activo; una vez el usuario le da clic, queda como él lo dejó.
@@ -18268,6 +18268,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           { id: "estadisticas_permisos", icon: "📊", label: "Estadísticas de Permisos" },
           { id: "retardos_mes", icon: "🕒", label: "Retardos del mes" },
         ] : []),
+        ...(liderResumen ? [{ id: "resumen", icon: "💰", label: "Resumen" }] : []),
       ]
     : areaLider
     ? [
@@ -19123,7 +19124,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "horas" && !soloNovedades && <RegistrarHorasView trabajadores={trabajadoresVisibles} horas={horasVisibles} currentUser={currentUser} onGuardar={guardarHoras} onBorrar={borrarHoras} isAdmin={isAdmin} puedeEditarHoras={isAdmin || !!puedeEditarHorasExtra} />}
           {subView === "horas_extras" && !soloNovedades && <RegistrarHorasExtrasView trabajadores={trabajadoresVisibles} horasExtras={horasExtras} currentUser={currentUser} onGuardar={guardarHorasExtras} onBorrar={borrarHorasExtras} isAdmin={isAdmin} puedeEditarHorasExtra={isAdmin || !!puedeEditarHorasExtra} />}
           {subView === "bonificaciones" && !soloNovedades && <RegistrarBonificacionView trabajadores={trabajadoresVisibles} bonificaciones={bonificaciones} currentUser={currentUser} onGuardar={guardarBonificacion} onBorrar={borrarBonificacion} isAdmin={isAdmin} puedeEditarBonificacion={isAdmin || !!puedeEditarBonificacion} />}
-          {subView === "resumen" && !soloNovedades && <ResumenSemanalView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} isAdmin={isAdmin} areasNomina={areasNomina} puedeCerrarQuincena={isAdmin || !!puedeCerrarQuincena} cierres={cierres} onCerrar={guardarCierre} onReabrir={reabrirCierre} lotesConCobros={lotesConCobrosTotal} ajustesDestajo={ajustesDestajo} causacionManual={causacionManual} diasTrabajados={diasTrabajadosHuellero} faltas={faltasSinJustificar} ausencias={ausencias} turnos={turnos} deduccionesTrabajador={deduccionesTrabajador} horasExtras={horasExtras} bonificaciones={bonificaciones} />}
+          {subView === "resumen" && !soloNovedades && <ResumenSemanalView sinCorreo={!!areaLider} trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} isAdmin={isAdmin} areasNomina={areasNomina} puedeCerrarQuincena={isAdmin || !!puedeCerrarQuincena} cierres={cierres} onCerrar={guardarCierre} onReabrir={reabrirCierre} lotesConCobros={lotesConCobrosTotal} ajustesDestajo={ajustesDestajo} causacionManual={causacionManual} diasTrabajados={diasTrabajadosHuellero} faltas={faltasSinJustificar} ausencias={ausencias} turnos={turnos} deduccionesTrabajador={deduccionesTrabajador} horasExtras={horasExtras} bonificaciones={bonificaciones} />}
           {subView === "historico_cierres" && !soloNovedades && <HistoricoCierresView cierres={cierres} isAdmin={isAdmin} onEliminar={reabrirCierre} />}
           {subView === "historial_quincenas" && !areaLider && !soloNovedades && <HistorialQuincenasView liquidacionesF={liquidacionesF} liquidacionesFD={liquidacionesFD} liquidacionesD={liquidacionesD} liquidacionesPS={liquidacionesPS} trabajadores={trabajadores} />}
           {subView === "reporte_area" && !areaLider && !soloNovedades && <ReporteNominaPorAreaView trabajadores={trabajadores} liquidacionesF={liquidacionesF} liquidacionesFD={liquidacionesFD} liquidacionesD={liquidacionesD} liquidacionesPS={liquidacionesPS} causacionManual={causacionManual} />}

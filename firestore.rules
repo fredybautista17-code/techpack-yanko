@@ -15,6 +15,9 @@ service cloud.firestore {
     function conClaims() { return signedIn() && ('rol' in request.auth.token); }
     function esAdmin() { return conClaims() && request.auth.token.get('admin', false) == true; }
     function esCliente() { return conClaims() && request.auth.token.rol == 'Cliente'; }
+    // Correos (2026-11-24): además del administrador, el claim `correos` da acceso por persona: 'total' (como el admin) o 'facturas' (solo correos de factura de proveedor).
+    function nivelCorreos() { return conClaims() ? request.auth.token.get('correos', '') : ''; }
+    function correosTotal() { return esAdmin() || nivelCorreos() == 'total'; }
 
     // Colecciones internas que un usuario de rol Cliente nunca debe leer ni escribir.
     function sensible(col) {
@@ -85,10 +88,13 @@ service cloud.firestore {
     // el Admin SDK, los escribe al sincronizar). Las contraseñas de aplicación (cifradas) viven en correos_secretos:
     // nadie las lee ni escribe desde el navegador.
     match /correos_cuentas/{id} {
-      allow read, write: if esAdmin();
+      allow read, write: if correosTotal();
     }
+    // «facturas» solo lee los correos clasificados como factura_proveedor (la consulta debe pedir esa categoría) y solo puede cambiar la marca de la factura y «leído».
     match /correos_mensajes/{id} {
-      allow read, update: if esAdmin();
+      allow read: if correosTotal() || (nivelCorreos() == 'facturas' && resource.data.clasificacion.categoria == 'factura_proveedor');
+      allow update: if correosTotal() || (nivelCorreos() == 'facturas' && resource.data.clasificacion.categoria == 'factura_proveedor'
+                       && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['factura', 'leidoAtlas']));
       allow create, delete: if false;
     }
     match /correos_secretos/{id} {
