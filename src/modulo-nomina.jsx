@@ -17962,7 +17962,15 @@ function DiagnosticoDuplicadosView({ diasTrabajados, faltas, anomalias, retardos
     </div>
   );
 }
-export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNovedades, soloLiderArea, liderProduccion = true, liderAsistencia = false, liderResumen = false, todasAreas = false, puedeEditarCatalogos, puedeVerAnomaliasHuellero, puedeVerDuplicadosHuellero, puedeCerrarQuincena, puedeAgregarCobrosManual, puedeAjustarDestajo, puedeEditarHorasExtra, puedeEditarBonificacion, puedeAutorizarPermisos, puedeMarcarRetardos }) {
+// (2026-11-24, a pedido de Fredy) Menú de quien solo tiene el acceso por persona «Liquidaciones (Nómina)».
+const ITEMS_LIQUIDACIONES_SOLO = [
+  { id: "liquidacion_retiro", icon: "📄", label: "Liquidación de Trabajador" },
+  { id: "incapacidades_cobrar", icon: "🏥", label: "Incapacidades por cobrar" },
+  { id: "dias_no_justificados", icon: "📋", label: "Días No Justificados" },
+  { id: "provision_liquidaciones", icon: "📊", label: "Provisión (hasta hoy)" },
+  { id: "prestamos", icon: "💵", label: "Préstamos" },
+];
+export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNovedades, soloLiquidaciones = false, soloLiderArea, liderProduccion = true, liderAsistencia = false, liderResumen = false, todasAreas = false, puedeEditarCatalogos, puedeVerAnomaliasHuellero, puedeVerDuplicadosHuellero, puedeCerrarQuincena, puedeAgregarCobrosManual, puedeAjustarDestajo, puedeEditarHorasExtra, puedeEditarBonificacion, puedeAutorizarPermisos, puedeMarcarRetardos }) {
   // Líder de área (hoy: Anny Beltrán y Sarai Méndez, cada una con su Área
   // Interna real -- ver Administrativo → Área Interna): entra con un panel
   // reducido, ya filtrado a su propia gente, en vez del panel completo de
@@ -17973,8 +17981,8 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   // y a la vez un «Área Interna» (la usa para Mi Día) deja de ser tratado como líder de área en Nómina y ve a los trabajadores de todas las áreas.
   // Un líder que solo tiene los accesos de líder (soloLiderArea) NO lo recibe: seguiría con el menú completo si se ignorara esa condición.
   const verTodasAreas = !!todasAreas && !soloLiderArea;
-  const areaLider = !currentUser?.isAdmin && currentUser?.areaNomina && !verTodasAreas ? currentUser.areaNomina : null;
-  const [subView, setSubView] = useState(() => (areaLider ? (soloLiderArea && !liderProduccion ? (liderAsistencia ? "tabulador_asistencia" : "resumen") : "produccion") : soloNovedades ? "ausencias" : "dashboard"));
+  const areaLider = !currentUser?.isAdmin && currentUser?.areaNomina && !verTodasAreas && !soloLiquidaciones ? currentUser.areaNomina : null;
+  const [subView, setSubView] = useState(() => (areaLider ? (soloLiderArea && !liderProduccion ? (liderAsistencia ? "tabulador_asistencia" : "resumen") : "produccion") : soloNovedades ? "ausencias" : soloLiquidaciones ? "liquidacion_retiro" : "dashboard"));
   // Qué grupos del menú están desplegados — si un grupo todavía no se ha
   // tocado (no está en este objeto), se abre solo si contiene el subView
   // activo; una vez el usuario le da clic, queda como él lo dejó.
@@ -18318,7 +18326,10 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
         { id: "estadisticas_permisos", icon: "📊", label: "Estadísticas de Permisos" },
         { id: "retardos_mes", icon: "🕒", label: "Retardos del mes" },
         { id: "incapacidades_cobrar", icon: "🏥", label: "Incapacidades por cobrar" },
+        ...(soloLiquidaciones ? ITEMS_LIQUIDACIONES_SOLO.filter((i) => i.id !== "incapacidades_cobrar") : []),
       ]
+    : soloLiquidaciones
+    ? ITEMS_LIQUIDACIONES_SOLO
     : [
         { id: "dashboard", icon: "◉", label: "Inicio" },
         { group: "Nómina Producción", icon: "🧵", items: [
@@ -19166,10 +19177,10 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "novedades_tns" && !areaLider && !soloNovedades && <NovedadesTNSView trabajadores={trabajadores} />}
           {subView === "comparar_tns" && !areaLider && !soloNovedades && <CompararNominaTNSView trabajadores={trabajadores} liquidacionesF={liquidacionesF} liquidacionesFD={liquidacionesFD} liquidacionesD={liquidacionesD} />}
           {subView === "novedades_quincena" && !areaLider && !soloNovedades && <NovedadesQuincenaView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} turnos={turnos} motivosDisponibles={nombresMotivosDisponibles} currentUser={currentUser} onGuardarAusencia={guardarAusencia} onGuardarPrestamo={guardarPrestamo} />}
-          {subView === "liquidacion_retiro" && !areaLider && !soloNovedades && <LiquidacionRetiroView trabajadores={trabajadores} ausencias={ausencias} faltas={faltasSinJustificar} liquidacionesRetiro={liquidacionesRetiro} prestamos={prestamos} areasNomina={areasNomina} turnos={turnos} onGuardarLiquidacionRetiro={guardarLiquidacionRetiro} onGuardarTrabajador={guardarTrabajador} onGuardarAusencia={guardarAusencia} onCambiarEstadoPagoLiquidacion={cambiarEstadoPagoLiquidacion} onCambiarEmpleadorLiquidacion={cambiarEmpleadorLiquidacion} onBorrarLiquidacionRetiro={borrarLiquidacionRetiro} currentUser={currentUser} />}
-          {subView === "dias_no_justificados" && !areaLider && !soloNovedades && <DiasNoJustificadosView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} areasNomina={areasNomina} />}
-          {subView === "provision_liquidaciones" && !areaLider && !soloNovedades && <ProvisionLiquidacionesView trabajadores={trabajadores} ausencias={ausencias} areasNomina={areasNomina} turnos={turnos} />}
-          {subView === "prestamos" && !areaLider && !soloNovedades && <PrestamosView trabajadores={trabajadores} prestamos={prestamos} onGuardar={guardarPrestamo} onBorrar={borrarPrestamo} currentUser={currentUser} />}
+          {subView === "liquidacion_retiro" && !areaLider && (!soloNovedades || soloLiquidaciones) && <LiquidacionRetiroView trabajadores={trabajadores} ausencias={ausencias} faltas={faltasSinJustificar} liquidacionesRetiro={liquidacionesRetiro} prestamos={prestamos} areasNomina={areasNomina} turnos={turnos} onGuardarLiquidacionRetiro={guardarLiquidacionRetiro} onGuardarTrabajador={guardarTrabajador} onGuardarAusencia={guardarAusencia} onCambiarEstadoPagoLiquidacion={cambiarEstadoPagoLiquidacion} onCambiarEmpleadorLiquidacion={cambiarEmpleadorLiquidacion} onBorrarLiquidacionRetiro={borrarLiquidacionRetiro} currentUser={currentUser} />}
+          {subView === "dias_no_justificados" && !areaLider && (!soloNovedades || soloLiquidaciones) && <DiasNoJustificadosView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} areasNomina={areasNomina} />}
+          {subView === "provision_liquidaciones" && !areaLider && (!soloNovedades || soloLiquidaciones) && <ProvisionLiquidacionesView trabajadores={trabajadores} ausencias={ausencias} areasNomina={areasNomina} turnos={turnos} />}
+          {subView === "prestamos" && !areaLider && (!soloNovedades || soloLiquidaciones) && <PrestamosView trabajadores={trabajadores} prestamos={prestamos} onGuardar={guardarPrestamo} onBorrar={borrarPrestamo} currentUser={currentUser} />}
           {subView === "ausencias" && !areaLider && <AusenciasView ausencias={ausencias} trabajadores={trabajadores} currentUser={currentUser} motivosDisponibles={nombresMotivosDisponibles} onSave={guardarAusencia} onDelete={borrarAusencia} />}
           {subView === "asistencia" && !areaLider && <ReporteAsistenciaView ausencias={ausencias} trabajadores={trabajadores} turnos={turnos} areasNomina={areasNomina} anomaliasHuellero={anomaliasHuellero} onGuardarTrabajador={guardarTrabajador} />}
           {subView === "codigos_permiso" && puedeCodigosPermiso && !areaLider && <CodigosPermisoView trabajadores={trabajadores} ausencias={ausencias} tope={topePermisos} />}
