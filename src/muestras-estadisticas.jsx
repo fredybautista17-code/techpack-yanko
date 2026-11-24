@@ -314,7 +314,7 @@ export function CostosMuestrasView({ db, muestras, talleresConfig, usuarioNombre
     <div>
       {traer && <TraerPersonalModal db={db} existentes={personal.map((p) => p.nombre)} talleres={todosTalleres} conPrestPorDefecto={Number(datos.prestacionesPct) > 0} onAgregar={(nuevos) => setPersonal([...personal, ...nuevos])} onCerrar={() => setTraer(false)} />}
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 14 }}>
-        <select value={mes} onChange={(e) => setMes(e.target.value)} style={{ ...sel, minWidth: 250 }}>{opcionesMes.map((m) => { const n = resumenMeses.conteo[m] || 0; return <option key={m} value={m}>{mesTxt(m)}{m === mesActual ? " (en curso)" : ""} · {n ? `${n} ${n === 1 ? "muestra" : "muestras"}` : "sin muestras"}</option>; })}</select>
+        <select value={mes} onChange={(e) => setMes(e.target.value)} style={{ ...sel, minWidth: 250 }}>{opcionesMes.map((m) => { const n = resumenMeses.conteo[m] || 0; const est = resumenMeses.estimadas[m] || 0; return <option key={m} value={m}>{mesTxt(m)}{m === mesActual ? " (en curso)" : ""} · {n ? `${n} ${n === 1 ? "muestra" : "muestras"}${est ? (est === n ? " (estimadas)" : ` (${est} estimadas)`) : ""}` : "sin muestras"}</option>; })}</select>
         <span style={{ padding: "6px 12px", borderRadius: 10, background: C.canvas, color: C.slate, fontSize: 12, fontWeight: 700 }}>🔒 Solo administrador y quien tenga el acceso «Costos de muestras»</span>
       </div>
       {r.terminadas === 0 && (
@@ -323,11 +323,12 @@ export function CostosMuestrasView({ db, muestras, talleresConfig, usuarioNombre
           Una muestra cuenta cuando se marca «Recibida del taller»{resumenMeses.primera ? `; ese registro empezó el ${fechaCorta(resumenMeses.primera)}` : "; todavía no hay ninguna registrada"}. Por eso los sueldos de este mes no se pueden repartir por muestra.{Object.keys(resumenMeses.conteo).length ? " Elige un mes que tenga muestras." : ""}
         </div>
       )}
+      {r.estimadas > 0 && <div style={{ background: C.blueBg, color: C.blue, borderRadius: 12, padding: "12px 16px", fontSize: 13, lineHeight: 1.5, marginBottom: 14 }}><strong>{r.estimadas === r.terminadas ? "Todas las muestras de este mes son estimadas." : `${r.estimadas} de las ${r.terminadas} muestras de este mes son estimadas.`}</strong> {resumenMeses.primera ? `Antes del ${fechaCorta(resumenMeses.primera)} no se registraba «Recibida del taller»` : "Todavía no hay entregas registradas con «Recibida del taller»"}, así que se cuentan en el mes de su fecha de entrega esperada. Desde que se marca «Recibida» se usa la fecha real.</div>}
       {enCurso && r.terminadas > 0 && <div style={{ background: C.blueBg, color: C.blue, borderRadius: 12, padding: "12px 16px", fontSize: 13, lineHeight: 1.5, marginBottom: 14 }}><strong>Mes en curso.</strong> Se suma el sueldo completo del mes, pero solo cuentan las muestras entregadas hasta hoy: el costo por muestra bajará a medida que el taller entregue más.</div>}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: 10, marginBottom: 16 }}>
         <Kpi label={r.filas.some((f) => f.modo === "precio" && f.total > 0) ? "COSTO TOTAL DEL MES" : "SUELDOS DEL MES (PARA MUESTRAS)"} valor={money(r.total)} pie={r.terminadas === 0 ? "sin muestras que dividir" : r.filas.some((f) => f.modo === "precio" && f.total > 0) ? "sueldos + pago a externos" : "con prestaciones y % de dedicación"} />
-        <Kpi label="MUESTRAS ENTREGADAS" valor={r.terminadas} pie={r.terminadas ? "marcadas «Recibida del taller»" : "en este mes"} />
+        <Kpi label="MUESTRAS ENTREGADAS" valor={r.terminadas} pie={!r.terminadas ? "en este mes" : r.estimadas ? (r.estimadas === r.terminadas ? "estimadas por la fecha de entrega esperada" : `${r.terminadas - r.estimadas} reales · ${r.estimadas} estimadas`) : "marcadas «Recibida del taller»"} />
         <Kpi label="COSTO POR MUESTRA" valor={r.costoPorMuestra === null ? "—" : money(r.costoPorMuestra)} colorValor={r.costoPorMuestra === null ? C.slate : undefined} pie={r.costoPorMuestra === null ? "no se puede calcular" : `${money(r.total)} ÷ ${r.terminadas}${dCosto === null ? "" : ` · ${dCosto > 0 ? "▲" : "▼"} ${Math.abs(dCosto)}% vs. mes anterior`}`} />
         <Kpi label="GASTADO vs. PRESUPUESTO" valor={r.uso === null ? "—" : `${Math.round(r.uso * 100)}%`} pie={r.presupuesto ? `${money(r.total)} de ${money(r.presupuesto)}` : "sin presupuesto definido"} colorValor={r.uso === null ? C.slate : r.uso > 1 ? C.red : C.ink} />
       </div>
@@ -341,7 +342,7 @@ export function CostosMuestrasView({ db, muestras, talleresConfig, usuarioNombre
               <div style={{ fontSize: 11, fontWeight: 800, color: C.slate, marginBottom: 10 }}>{f.modo === "sueldos" ? `MODO: POR SUELDOS · ${f.personas} ${f.personas === 1 ? "persona" : "personas"}` : `MODO: PRECIO POR MUESTRA · ${money(f.precio)}`}</div>
               <div style={{ fontSize: 11.5, fontWeight: 700, color: C.slate }}>COSTO POR MUESTRA</div>
               <div style={{ fontSize: 22, fontWeight: 800, fontVariantNumeric: "tabular-nums" }}>{f.costoPorMuestra === null ? "—" : money(f.costoPorMuestra)}</div>
-              <div style={{ fontSize: 12, color: C.slate }}>{f.terminadas === 0 ? "0 muestras entregadas este mes" : `${money(f.total)} ÷ ${f.terminadas} entregadas`}</div>
+              <div style={{ fontSize: 12, color: C.slate }}>{f.terminadas === 0 ? "0 muestras entregadas este mes" : `${money(f.total)} ÷ ${f.terminadas} entregadas${f.estimadas ? (f.estimadas === f.terminadas ? " (estimadas)" : ` (${f.estimadas} estimadas)`) : ""}`}</div>
               {f.presupuesto > 0 ? (<>
                 <div style={{ height: 9, borderRadius: 6, background: C.border, overflow: "hidden", margin: "6px 0 4px" }}><div style={{ width: `${Math.min(100, (f.uso || 0) * 100)}%`, height: "100%", background: pass ? C.red : f.uso > 0.85 ? C.amber : C.blue }} /></div>
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: C.slate, fontVariantNumeric: "tabular-nums", gap: 8 }}>

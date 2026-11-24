@@ -30,6 +30,22 @@ export function fechaTerminadaTaller(c) {
   const r0 = (c.revisiones || [])[0];
   return f10(c.fechaRecibida || (r0 && r0.fecha) || c.fechaRevision || c.fechaTerminada || "");
 }
+// (2026-11-24) Para «Costos»: en qué fecha cuenta una muestra como entregada por el taller.
+// Real = «Recibida del taller», 1.ª revisión o fecha de revisión. Antes del 13/11/2026 esa marca no se registraba: las muestras que ya terminaron
+// (recibida, aprobada, a modificar, enviada, terminada) sin fecha real se ESTIMAN con la fecha de entrega esperada (o la de envío si falta).
+// La fecha en que se «cerró» la muestra (fechaTerminada, cierre en bloque) no cuenta como entrega: es el día del cierre, no de la entrega.
+export const ESTADOS_ENTREGADA = ["recibida", "aprobado", "modificar", "enviado", "terminada"];
+export function fechaEntregaCosto(c) {
+  const r0 = (c.revisiones || [])[0];
+  const real = f10(c.fechaRecibida || (r0 && r0.fecha) || c.fechaRevision || "");
+  if (real) return { fecha: real, estimada: false };
+  if (ESTADOS_ENTREGADA.includes(c.estado || "")) {
+    const f = f10(c.fechaEntrega || c.createdAt || c.fechaTerminada || "");
+    // Una muestra que ya terminó no pudo entregarse en el futuro: se topa en hoy.
+    if (f) return { fecha: f > isoLocal(new Date()) ? isoLocal(new Date()) : f, estimada: true };
+  }
+  return { fecha: "", estimada: false };
+}
 export const primeraRevision = (c) => (c.revisiones || [])[0] || null;
 export function fechaAprobacion(c) {
   const r = (c.revisiones || []).find((x) => x.resultado === "aprobada");
@@ -184,17 +200,20 @@ export function costoPersona(p, cfg) {
   return Math.round((Number(p.sueldo) || 0) * pr * (pctDedicacion(p) / 100));
 }
 
-// Cuántas muestras entregó el taller en cada mes (AAAA-MM → n) y la fecha de la primera entrega registrada.
+// Cuántas muestras entregó el taller en cada mes (AAAA-MM → n; `estimadas` = las que no tienen fecha real) y la fecha de la primera entrega REAL registrada.
 export function resumenMesesMuestras(muestras) {
   const conteo = {};
+  const estimadas = {};
   let primera = "";
   (muestras || []).filter((c) => !c.eliminado).forEach((c) => {
-    const f = fechaTerminadaTaller(c);
+    const { fecha: f, estimada } = fechaEntregaCosto(c);
     if (!f) return;
-    conteo[mesDe(f)] = (conteo[mesDe(f)] || 0) + 1;
-    if (!primera || f < primera) primera = f;
+    const m = mesDe(f);
+    conteo[m] = (conteo[m] || 0) + 1;
+    if (estimada) estimadas[m] = (estimadas[m] || 0) + 1;
+    else if (!primera || f < primera) primera = f;
   });
-  return { conteo, primera };
+  return { conteo, estimadas, primera };
 }
 // Mes con el que se abre «Costos»: el actual si ya tiene muestras entregadas; si no, el último mes con muestras; si no hay ninguna, el actual.
 export function mesPorDefecto(conteo, mesActual) {
@@ -222,9 +241,9 @@ export function presupuestoDe(presupuestos, mes, nombreTaller) {
 export function costosDelMes(muestras, cfg, pagos, mes) {
   const personal = cfg.personal || [];
   const todas = (muestras || []).filter((c) => !c.eliminado);
-  const terminadasMes = todas.filter((c) => mesDe(fechaTerminadaTaller(c)) === mes);
+  const terminadasMes = todas.map((c) => ({ c, ...fechaEntregaCosto(c) })).filter((x) => mesDe(x.fecha) === mes);
   const nombres = new Map();
-  terminadasMes.forEach((c) => nombres.set(claveTexto(tallerDe(c)), tallerDe(c)));
+  terminadasMes.forEach(({ c }) => nombres.set(claveTexto(tallerDe(c)), tallerDe(c)));
   personal.forEach((p) => { if (p.taller) nombres.set(claveTexto(p.taller), p.taller); });
   Object.values(cfg.talleres || {}).forEach((t) => { if (t && t.nombre) nombres.set(claveTexto(t.nombre), t.nombre); });
   Object.keys((cfg.presupuestos || {})[mes] || {}).forEach((k) => { if (!nombres.has(k)) nombres.set(k, (cfg.talleres?.[k]?.nombre) || k); });
@@ -235,16 +254,16 @@ export function costosDelMes(muestras, cfg, pagos, mes) {
     const gente = personal.filter((p) => p.activa !== false && claveTexto(p.taller) === clave);
     const sueldos = gente.reduce((s, p) => s + costoPersona(p, cfg), 0);
     const precio = Number((cfg.talleres || {})[clave]?.precio) || 0;
-    const muestrasT = terminadasMes.filter((c) => claveTexto(tallerDe(c)) === clave).sort((a, b) => fechaTerminadaTaller(a).localeCompare(fechaTerminadaTaller(b)));
-    const lineas = muestrasT.map((c) => {
+    const muestrasT = terminadasMes.filter((x) => claveTexto(tallerDe(x.c)) === clave).sort((a, b) => a.fecha.localeCompare(b.fecha));
+    const lineas = muestrasT.map(({ c, fecha, estimada }) => {
       const p = (pagos || {})[c.id] || {};
       const valor = typeof p.valor === "number" ? p.valor : precio;
-      return { id: c.id, referencia: c.referencia || "", nombre: c.nombre || "", recibida: fechaTerminadaTaller(c), valor, ajustado: typeof p.valor === "number" && p.valor !== precio, pagada: !!p.pagada, por: p.por || "", en: p.en || "" };
+      return { id: c.id, referencia: c.referencia || "", nombre: c.nombre || "", recibida: fecha, estimada, valor, ajustado: typeof p.valor === "number" && p.valor !== precio, pagada: !!p.pagada, por: p.por || "", en: p.en || "" };
     });
     const total = modo === "sueldos" ? sueldos : lineas.reduce((s, l) => s + l.valor, 0);
     const pres = presupuestoDe(cfg.presupuestos, mes, nombre);
     return {
-      taller: nombre, clave, modo, personas: gente.length, sueldos, precio, terminadas: muestrasT.length, total,
+      taller: nombre, clave, modo, personas: gente.length, sueldos, precio, terminadas: muestrasT.length, estimadas: muestrasT.filter((x) => x.estimada).length, total,
       costoPorMuestra: muestrasT.length ? total / muestrasT.length : null,
       presupuesto: pres.valor, presupuestoHeredado: pres.heredado,
       uso: pres.valor ? total / pres.valor : null,
@@ -255,8 +274,9 @@ export function costosDelMes(muestras, cfg, pagos, mes) {
 
   const total = filas.reduce((s, f) => s + f.total, 0);
   const terminadas = filas.reduce((s, f) => s + f.terminadas, 0);
+  const estimadas = filas.reduce((s, f) => s + f.estimadas, 0);
   const presupuesto = filas.reduce((s, f) => s + f.presupuesto, 0);
-  return { mes, filas, total, terminadas, costoPorMuestra: terminadas ? total / terminadas : null, presupuesto, uso: presupuesto ? total / presupuesto : null };
+  return { mes, filas, total, terminadas, estimadas, costoPorMuestra: terminadas ? total / terminadas : null, presupuesto, uso: presupuesto ? total / presupuesto : null };
 }
 
 export const mesAnterior = (mes) => {
