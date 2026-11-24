@@ -13,6 +13,7 @@ import { Insignia, InsigniaNoPueden } from "./ficha-candado";
 import RolesAdmin from "./roles-admin";
 import FormularioUsuario from "./usuarios-form";
 import { DISENO_SUBMODULOS, AREAS_SUBMODULOS, modulosDeRol, datosRolDeUsuario } from "./modulos-rol";
+import { EstadisticasMuestrasView, CostosMuestrasView } from "./muestras-estadisticas";
 import { BloqueSolicitudesTela } from "./diseno-muestras";
 import PatronCodigosReferencia, { buscarPorPatron, PrefijosDeCliente } from "./codigos-patron";
 import CentroParametros from "./centro-parametros";
@@ -4157,8 +4158,16 @@ function CronogramaDetalleModal({ entry, config, isAdmin, usuario, puedeRevisar,
 // entradas "Aprobadas" se separan a su propia pestaña (funcionan como
 // historial de muestras ya resueltas); "Sin fecha" agrupa lo que aún no
 // tiene fecha de entrega asignada, para que nada quede invisible.
-function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, usuarioNombre, puedeRevisar, onAdd, onUpdate, onDelete, onGoToItem, onModificarNota }) {
+function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, usuarioNombre, puedeRevisar, onAdd, onUpdate, onDelete, onGoToItem, onModificarNota, protos, capsulas, puedeEstadisticas, puedeCostos }) {
   const [vista, setVista] = useState("agenda");
+  // Estadísticas y Costos (2026-11-24, a pedido de Fredy): la diseñadora sale del prototipo / referencia (assignedTo), como en el Mi Día.
+  const responsablePorItem = useMemo(() => {
+    const m = {};
+    (protos || []).forEach((p) => { if (p.assignedTo) m[p.id] = p.assignedTo; });
+    (capsulas || []).forEach((c) => (c.referencias || []).forEach((r) => { if (r.assignedTo) m[r.id] = r.assignedTo; }));
+    return m;
+  }, [protos, capsulas]);
+  const vistaCalendario = !["tablero", "talleres", "agenda", "estadisticas", "costos"].includes(vista);
   // Agenda por día (2026-11-13, a pedido de Fredy): filtros propios de esa vista.
   const [aQ, setAQ] = useState("");
   const [aTaller, setATaller] = useState("");
@@ -4423,7 +4432,7 @@ function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, usuarioNo
         </div>
       )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
-        {vista !== "tablero" && vista !== "talleres" && vista !== "agenda" ? (
+        {vistaCalendario ? (
           <div style={{ display: "flex", gap: 6 }}>
             {[["activas", "Activas"], ["aprobadas", "✓ Aprobadas y terminadas (Historial)"]].map(([v, label]) => (
               <button key={v} onClick={() => setTab(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${tab === v ? T.denim : T.border}`, background: tab === v ? T.denimBg : T.white, color: tab === v ? T.denim : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{label}</button>
@@ -4431,20 +4440,20 @@ function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, usuarioNo
           </div>
         ) : <div />}
         <div style={{ display: "flex", gap: 6 }}>
-          {[["agenda", "📋 Agenda"], ["semana", "Semana"], ["mes", "Mes"], ["tablero", "🗂 Tablero"], ["talleres", "📊 Talleres"]].map(([v, label]) => (
+          {[["agenda", "📋 Agenda"], ["semana", "Semana"], ["mes", "Mes"], ["tablero", "🗂 Tablero"], ["talleres", "📊 Talleres"], ...(puedeEstadisticas ? [["estadisticas", "📈 Estadísticas"]] : []), ...(puedeCostos ? [["costos", "💲 Costos"]] : [])].map(([v, label]) => (
             <button key={v} onClick={() => setVista(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${vista === v ? T.ink : T.border}`, background: vista === v ? T.ink : T.white, color: vista === v ? T.white : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{label}</button>
           ))}
         </div>
       </div>
-      {vista !== "tablero" && vista !== "talleres" && vista !== "agenda" && (
+      {vistaCalendario && (
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
           <button onClick={() => (vista === "semana" ? setWeekOffset((o) => o - 1) : setMonthOffset((o) => o - 1))} style={{ padding: "6px 12px", background: T.white, border: `1px solid ${T.border}`, borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13, color: T.ink }}>← Anterior</button>
           <div style={{ fontWeight: 800, fontSize: 14, color: T.ink, textTransform: "capitalize" }}>{rangoLabel}</div>
           <button onClick={() => (vista === "semana" ? setWeekOffset((o) => o + 1) : setMonthOffset((o) => o + 1))} style={{ padding: "6px 12px", background: T.white, border: `1px solid ${T.border}`, borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13, color: T.ink }}>Siguiente →</button>
         </div>
       )}
-      {vista === "agenda" ? renderAgenda() : vista === "talleres" ? <FichaTalleresView cronogramaMuestras={cronogramaMuestras} /> : vista === "tablero" ? renderTablero() : vista === "semana" ? renderWeekRow(semanaMonday, "w") : semanasDelMes.map((m, i) => renderWeekRow(m, i))}
-      {vista !== "tablero" && vista !== "talleres" && vista !== "agenda" && sinFecha.length > 0 && (
+      {vista === "agenda" ? renderAgenda() : vista === "talleres" ? <FichaTalleresView cronogramaMuestras={cronogramaMuestras} /> : vista === "estadisticas" && puedeEstadisticas ? <EstadisticasMuestrasView muestras={cronogramaMuestras} responsablePorItem={responsablePorItem} /> : vista === "costos" && puedeCostos ? <CostosMuestrasView db={db} muestras={cronogramaMuestras} talleresConfig={config?.talleresMuestra || []} usuarioNombre={usuarioNombre} /> : vista === "tablero" ? renderTablero() : vista === "semana" ? renderWeekRow(semanaMonday, "w") : semanasDelMes.map((m, i) => renderWeekRow(m, i))}
+      {vistaCalendario && sinFecha.length > 0 && (
         <div style={{ marginTop: 20 }}>
           <div style={{ fontWeight: 800, fontSize: 13, color: T.slate, marginBottom: 10 }}>🗓 Sin fecha de entrega asignada ({sinFecha.length})</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: 10 }}>
@@ -4452,7 +4461,7 @@ function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, usuarioNo
           </div>
         </div>
       )}
-      {vista !== "tablero" && vista !== "talleres" && vista !== "agenda" && !visibles.length && <div style={{ textAlign: "center", padding: 40, color: T.slate, fontSize: 14 }}>{tab === "activas" ? "No hay muestras activas." : "Todavía no hay muestras aprobadas."}</div>}
+      {vistaCalendario && !visibles.length && <div style={{ textAlign: "center", padding: 40, color: T.slate, fontSize: 14 }}>{tab === "activas" ? "No hay muestras activas." : "Todavía no hay muestras aprobadas."}</div>}
       {vista === "tablero" && !cronogramaMuestras.length && <div style={{ textAlign: "center", padding: 40, color: T.slate, fontSize: 14 }}>No hay muestras en el cronograma.</div>}
     </div>
   );
@@ -12878,7 +12887,7 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
     setMigrando(false);
   }
   function openNew() { setForm({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", clientesAsociados: [], modulosCliente: [], soloLecturaCliente: false, clienteProduccion: "", clientesProduccion: [], email: "", areaNomina: "", procesosPlaneacion: [], landingAreas: false, costosPlanta: false, tarjetasMiDia: [] }); setEditUser(null); setShowForm(true); setError(""); }
-  function openEdit(u) { setForm({ name: u.name, username: u.username, password: "", role: u.role, isAdmin: u.isAdmin, clienteAsociado: u.clienteAsociado || "", clientesAsociados: u.clientesAsociados || [], modulosCliente: u.modulosCliente || [], soloLecturaCliente: u.soloLecturaCliente || false, clienteProduccion: u.clienteProduccion || "", clientesProduccion: u.clientesProduccion || [], email: u.email || "", areaNomina: u.areaNomina || "", procesosPlaneacion: u.procesosPlaneacion || [], landingAreas: u.landingAreas || false, costosPlanta: !!u.costosPlanta, actualizaIngresos: !!u.actualizaIngresos, nominaLiderArea: !!u.nominaLiderArea, nominaLiderAsistencia: !!u.nominaLiderAsistencia, nominaLiderResumen: !!u.nominaLiderResumen, tarjetasMiDia: u.tarjetasMiDia || [], areasCumpleanos: u.areasCumpleanos || [], areasAuditoria: u.areasAuditoria || [], modulosPropios: Array.isArray(u.modulosPropios) ? u.modulosPropios : null, correosAcceso: u.correosAcceso || "" }); setEditUser(u); setShowForm(true); setError(""); }
+  function openEdit(u) { setForm({ name: u.name, username: u.username, password: "", role: u.role, isAdmin: u.isAdmin, clienteAsociado: u.clienteAsociado || "", clientesAsociados: u.clientesAsociados || [], modulosCliente: u.modulosCliente || [], soloLecturaCliente: u.soloLecturaCliente || false, clienteProduccion: u.clienteProduccion || "", clientesProduccion: u.clientesProduccion || [], email: u.email || "", areaNomina: u.areaNomina || "", procesosPlaneacion: u.procesosPlaneacion || [], landingAreas: u.landingAreas || false, costosPlanta: !!u.costosPlanta, actualizaIngresos: !!u.actualizaIngresos, nominaLiderArea: !!u.nominaLiderArea, nominaLiderAsistencia: !!u.nominaLiderAsistencia, nominaLiderResumen: !!u.nominaLiderResumen, costosMuestras: !!u.costosMuestras, tarjetasMiDia: u.tarjetasMiDia || [], areasCumpleanos: u.areasCumpleanos || [], areasAuditoria: u.areasAuditoria || [], modulosPropios: Array.isArray(u.modulosPropios) ? u.modulosPropios : null, correosAcceso: u.correosAcceso || "" }); setEditUser(u); setShowForm(true); setError(""); }
   // Crear usuario nuevo pasa por la Cloud Function `adminCrearUsuario` (Fase
   // B): a diferencia de editar, crear SÍ necesita generar una cuenta real de
   // Firebase Auth para que esa persona pueda entrar — eso no lo puede hacer
@@ -12895,7 +12904,7 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
       if (!form.name) { setError("El nombre es obligatorio."); return; }
       if (form.email && form.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) { setError("El correo no parece válido."); return; }
       const avatar = form.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
-      onUpdateUsers(users.map((u) => (u.id === editUser.id ? { ...u, name: form.name, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado || "", clientesAsociados: form.clientesAsociados || [], modulosCliente: form.modulosCliente || [], soloLecturaCliente: !!form.soloLecturaCliente, clienteProduccion: form.clienteProduccion || "", clientesProduccion: form.clientesProduccion || [], email: form.email ? form.email.trim() : "", areaNomina: form.areaNomina || "", procesosPlaneacion: form.procesosPlaneacion || [], landingAreas: !!form.landingAreas, costosPlanta: !!form.costosPlanta, actualizaIngresos: !!form.actualizaIngresos, nominaLiderArea: !!form.nominaLiderArea, nominaLiderAsistencia: !!form.nominaLiderAsistencia, nominaLiderResumen: !!form.nominaLiderResumen, tarjetasMiDia: form.tarjetasMiDia || [], areasCumpleanos: form.areasCumpleanos || [], areasAuditoria: form.areasAuditoria || [], modulosPropios: (!esClienteForm && Array.isArray(form.modulosPropios)) ? form.modulosPropios : null, correosAcceso: (!esClienteForm && ["total", "facturas"].includes(form.correosAcceso)) ? form.correosAcceso : "", avatar } : (form.aplicarTarjetasArea && form.areaNomina && u.areaNomina === form.areaNomina ? { ...u, tarjetasMiDia: form.tarjetasMiDia || [] } : u))));
+      onUpdateUsers(users.map((u) => (u.id === editUser.id ? { ...u, name: form.name, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado || "", clientesAsociados: form.clientesAsociados || [], modulosCliente: form.modulosCliente || [], soloLecturaCliente: !!form.soloLecturaCliente, clienteProduccion: form.clienteProduccion || "", clientesProduccion: form.clientesProduccion || [], email: form.email ? form.email.trim() : "", areaNomina: form.areaNomina || "", procesosPlaneacion: form.procesosPlaneacion || [], landingAreas: !!form.landingAreas, costosPlanta: !!form.costosPlanta, actualizaIngresos: !!form.actualizaIngresos, nominaLiderArea: !!form.nominaLiderArea, nominaLiderAsistencia: !!form.nominaLiderAsistencia, nominaLiderResumen: !!form.nominaLiderResumen, costosMuestras: !!form.costosMuestras, tarjetasMiDia: form.tarjetasMiDia || [], areasCumpleanos: form.areasCumpleanos || [], areasAuditoria: form.areasAuditoria || [], modulosPropios: (!esClienteForm && Array.isArray(form.modulosPropios)) ? form.modulosPropios : null, correosAcceso: (!esClienteForm && ["total", "facturas"].includes(form.correosAcceso)) ? form.correosAcceso : "", avatar } : (form.aplicarTarjetasArea && form.areaNomina && u.areaNomina === form.areaNomina ? { ...u, tarjetasMiDia: form.tarjetasMiDia || [] } : u))));
       setShowForm(false);
       return;
     }
@@ -22009,6 +22018,7 @@ function AppInner() {
               <CronogramaMuestrasView cronogramaMuestras={cronogramaMuestrasVisibles} config={config} isAdmin={currentUser?.isAdmin} usuarioNombre={currentUser?.name} puedeRevisar={!!(currentUser?.isAdmin || perms.admin || perms.revisionDiseno)}
                 onAdd={addCronogramaMuestra} onUpdate={updateCronogramaMuestra} onDelete={deleteCronogramaMuestra}
                 onModificarNota={addObservacionCronograma}
+                protos={protos} capsulas={capsulas} puedeEstadisticas={!clientesUsuario.length && normRol(currentUser?.role) !== "cliente"} puedeCostos={!!(currentUser?.isAdmin || currentUser?.costosMuestras)}
                 onGoToItem={(entry) => {
                   if (entry.kind === "proto") { setOrigenNav({ tipo: "cronograma" }); empujarHistorial(); setSelProtoId(entry.itemId); setView("proto-detail"); }
                   else if (entry.kind === "ref") { setOrigenNav({ tipo: "cronograma" }); empujarHistorial(); setSelCapId(entry.capsulaId); setSelRefId(entry.itemId); setView("ref-detail"); }
