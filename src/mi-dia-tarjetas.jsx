@@ -429,20 +429,39 @@ function BloqueCierre({ db, currentUser, deOtraArea }) {
 }
 
 // (2026-11-10, a pedido de Fredy) Cierre de áreas que no son la del usuario (Corte, Control de calidad, Zona de calor), para quien vigila
-// los costos: reutiliza el cierre diario de arriba con el área elegida en una pestañita. Solo una a la vez, para no leer tres veces los datos.
-function BloqueCierreAreas({ db, currentUser, ids }) {
-  const [elegida, setElegida] = useState(ids[0]);
-  const id = ids.includes(elegida) ? elegida : ids[0];
-  const area = AREA_DE_TARJETA_CIERRE[id];
-  const usuarioArea = useMemo(() => ({ ...currentUser, areaNomina: area, tarjetasMiDia: ["meta_hoy", "saldo_acumulado", "cubren_salario", "meta_dia", "trabajadores"] }), [currentUser, area]);
+// los costos: reutiliza el cierre diario con el área elegida en una pestañita. Solo una a la vez, para no leer tres veces los datos.
+// (2026-11-24, a pedido de Fredy) «Cierre diario» (su área) y «Cierre de áreas» eran la misma pantalla cuando la persona veía su propia
+// área en las dos: ahora es UNA pestaña «Cierre»; su área va primero y las otras después, sin repetir ninguna.
+const NOMBRE_AREA_CIERRE = { CORTE: "Corte", ZONACALOR: "Zona calor", CONTROLCALIDAD: "Control de calidad" };
+function BloqueCierreUnificado({ db, currentUser, conPropia, ids }) {
+  const claveCierrePropia = claveCierreDeArea(currentUser?.areaNomina);
+  const opciones = useMemo(() => {
+    const out = [];
+    if (conPropia) {
+      out.push({ key: "propia", etiqueta: claveCierrePropia ? `${NOMBRE_AREA_CIERRE[claveCierrePropia]} · mi área` : "Mi área", propia: true });
+    }
+    ids.forEach((id) => {
+      const area = AREA_DE_TARJETA_CIERRE[id];
+      if (conPropia && claveCierrePropia && claveCierreDeArea(area) === claveCierrePropia) return;
+      out.push({ key: id, etiqueta: area, area });
+    });
+    return out;
+  }, [conPropia, claveCierrePropia, ids]);
+  const [elegida, setElegida] = useState(null);
+  const op = opciones.find((x) => x.key === elegida) || opciones[0];
+  const usuarioArea = useMemo(
+    () => (op && !op.propia ? { ...currentUser, areaNomina: op.area, tarjetasMiDia: ["meta_hoy", "saldo_acumulado", "cubren_salario", "meta_dia", "trabajadores"] } : currentUser),
+    [currentUser, op]
+  );
+  if (!op) return null;
   return (
     <div>
-      {ids.length > 1 ? (
+      {opciones.length > 1 ? (
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
-          {ids.map((x) => <Chip key={x} activo={x === id} onClick={() => setElegida(x)}>{AREA_DE_TARJETA_CIERRE[x]}</Chip>)}
+          {opciones.map((x) => <Chip key={x.key} activo={x.key === op.key} onClick={() => setElegida(x.key)}>{x.etiqueta}</Chip>)}
         </div>
       ) : null}
-      <BloqueCierre key={id} db={db} currentUser={usuarioArea} deOtraArea />
+      <BloqueCierre key={op.key} db={db} currentUser={usuarioArea} deOtraArea={!op.propia} />
     </div>
   );
 }
@@ -454,15 +473,16 @@ export default function MiDiaTarjetasStandalone({ db, currentUser, onVolver, onL
   const hayCierre = marcadas.some((id) => IDS_CIERRE.includes(id));
   const idsPlaneacion = marcadas.filter((id) => IDS_PLANEACION.includes(id));
   const secciones = [];
+  const idsCierreAreas = IDS_CIERRE_AREAS.filter((id) => marcadas.includes(id));
+  // Una sola pestaña «Cierre» (su área primero y luego las otras); va donde estaba «Cierre diario» y, si solo vigila otras áreas, donde estaba «Cierre de áreas».
+  const seccionCierre = { id: "cierre", icon: "🎯", label: "Cierre", render: () => <BloqueCierreUnificado db={db} currentUser={currentUser} conPropia={hayCierre} ids={idsCierreAreas} /> };
   if (marcadas.includes("programador")) {
     secciones.push({ id: "programador", icon: "📋", label: "Programación", render: () => <ProgramadorProcesosStandalone currentUser={currentUser} incrustado /> });
   }
   if (marcadas.includes("lista_programar")) {
     secciones.push({ id: "lista", icon: "📝", label: "Mi lista por programar", render: () => <ListaPorProgramarBloque currentUser={currentUser} /> });
   }
-  if (hayCierre) {
-    secciones.push({ id: "cierre", icon: "💰", label: "Cierre diario", render: () => <BloqueCierre db={db} currentUser={currentUser} /> });
-  }
+  if (hayCierre) secciones.push(seccionCierre);
   if (marcadas.includes("asistencia_area")) {
     secciones.push({
       id: "asistencia", icon: "🕒", label: "Asistencia",
@@ -480,10 +500,7 @@ export default function MiDiaTarjetasStandalone({ db, currentUser, onVolver, onL
   if (idsOC.length) {
     secciones.push({ id: "ordenes", icon: "🛒", label: "Órdenes de compra", render: () => <BloqueOrdenesCompra db={db} visibles={idsOC} /> });
   }
-  const idsCierreAreas = IDS_CIERRE_AREAS.filter((id) => marcadas.includes(id));
-  if (idsCierreAreas.length) {
-    secciones.push({ id: "cierre_areas", icon: "🎯", label: "Cierre de áreas", render: () => <BloqueCierreAreas db={db} currentUser={currentUser} ids={idsCierreAreas} /> });
-  }
+  if (!hayCierre && idsCierreAreas.length) secciones.push(seccionCierre);
   if (idsPlaneacion.length) {
     secciones.push({ id: "planeacion", icon: "📊", label: "Planeación", render: () => <MiDiaPlaneacionBloque visibles={idsPlaneacion} /> });
   }
@@ -529,7 +546,7 @@ export default function MiDiaTarjetasStandalone({ db, currentUser, onVolver, onL
   if (marcadas.includes("auditoria_nomina")) {
     secciones.push({ id: "auditoria", icon: "🔍", label: "Auditoría Nómina", render: () => <MiDiaNominaStandalone currentUser={currentUser} incrustado /> });
   }
-  const [elegida, setElegida] = useState(tabInicial || null);
+  const [elegida, setElegida] = useState(tabInicial === "cierre_areas" ? "cierre" : tabInicial || null);
   const actual = secciones.find((x) => x.id === elegida) || secciones[0];
   return (
     <div style={{ minHeight: "100vh", background: C.canvas, fontFamily: "'Inter',-apple-system,sans-serif" }}>
