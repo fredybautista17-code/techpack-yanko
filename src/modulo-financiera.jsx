@@ -3616,7 +3616,7 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout, soloCorr
           {subView === "pago_nomina" && <PagoNominaView currentUser={currentUser} />}
           {subView === "cuanto_pagar" && <CuantoPagarMesView db={db} functionsClient={functionsClient} isAdmin={isAdmin} onIrEndeudamiento={() => setSubView("endeudamiento")} />}
           {subView === "endeudamiento" && <EndeudamientoView db={db} isAdmin={isAdmin} />}
-          {subView === "ingresos" && <IngresosView db={db} functionsClient={functionsClient} isAdmin={isAdmin} puedeActualizar={!!isAdmin || !!currentUser?.actualizaIngresos} clientesNombres={[...new Set([...(clientesDiseno || []).map((c) => c.nombre), ...(presupuestosCliente || []).map((p) => p.cliente)])].filter(Boolean).sort((x, y) => x.localeCompare(y))} />}
+          {subView === "ingresos" && <IngresosView db={db} functionsClient={functionsClient} isAdmin={isAdmin} puedeActualizar={!!isAdmin || !!currentUser?.actualizaIngresos} puedeClasificarIngresos={!!isAdmin || !!currentUser?.clasificaIngresos} clientesNombres={[...new Set([...(clientesDiseno || []).map((c) => c.nombre), ...(presupuestosCliente || []).map((p) => p.cliente)])].filter(Boolean).sort((x, y) => x.localeCompare(y))} />}
           {subView === "administracion" && (
             <AdministracionFinancieraView
               compras={compras}

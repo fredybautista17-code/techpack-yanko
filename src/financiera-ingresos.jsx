@@ -297,8 +297,8 @@ function DetalleIngresoModal({ titulo, recibos, tns, nota, onClose }) {
   );
 }
 
-// puedeActualizar: admin o usuario con el permiso personal «Actualizar Ingresos» (Usuarios → Accesos especiales). Clasificar ítems sigue solo para admin.
-export function IngresosView({ db, functionsClient, isAdmin, puedeActualizar = false, clientesNombres = [] }) {
+// puedeActualizar: admin o usuario con el permiso personal «Actualizar Ingresos» (Usuarios → Accesos especiales). Clasificar: admin o permiso personal «Clasificar Ingresos» (puedeClasificarIngresos).
+export function IngresosView({ db, functionsClient, isAdmin, puedeActualizar = false, puedeClasificarIngresos = false, clientesNombres = [] }) {
   const [fuente, setFuente] = useState("total_yanko");
   const F = FUENTES[fuente];
   const combinada = !!F.combinada;
@@ -418,7 +418,7 @@ export function IngresosView({ db, functionsClient, isAdmin, puedeActualizar = f
   const visibles = verTodos ? filtradas : filtradas.slice(0, 40);
 
   // ── Clasificación: filas (cliente × mes con cobro) y lo que falta por clasificar ──
-  const puedeClasificar = !!isAdmin && !!datos && fuente !== "busint" && !!datos.clientes?.porMes;
+  const puedeClasificar = (!!isAdmin || !!puedeClasificarIngresos) && !!datos && fuente !== "busint" && !!datos.clientes?.porMes;
   const filasClasif = useMemo(() => {
     if (!puedeClasificar) return [];
     const out = [];
