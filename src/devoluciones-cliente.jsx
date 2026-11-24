@@ -124,6 +124,7 @@ function estadoInfo(T, estado) {
     lista: { txt: "Lista para despachar", bg: T.jadeBg, fg: T.jade },
     redespachada: { txt: "Despachada de nuevo", bg: T.canvas, fg: T.slate },
     segundas: { txt: "En bodega de segundas", bg: "#FBE8EF", fg: "#B5446E" },
+    entrega: { txt: "Entrega a la cliente", bg: T.jadeBg, fg: T.jade },
   };
   return m[estado] || { txt: estado || "—", bg: T.canvas, fg: T.slate };
 }
@@ -429,6 +430,13 @@ function Detalle({ T, d, mostrarConteo }) {
           Despachada de nuevo el {fmtFecha(d.redespacho.fecha)}{d.redespacho.guia ? ` · guía ${d.redespacho.guia}` : ""}{String(d.redespacho.documentoNuevo || "").trim() ? <> · nueva remisión/factura <b style={{ color: T.ink, ...MONO }}>{d.redespacho.documentoNuevo}</b></> : null}{d.redespacho.junto?.length ? ` · junto con ${d.redespacho.junto.join(", ")}` : ""}
         </div>
       ) : null}
+      {d.entrega ? (
+        <div style={{ fontSize: 12, color: d.entrega.estado === "no" ? T.coral : T.slate, marginTop: 6, fontWeight: d.entrega.estado === "no" ? 700 : 400 }}>
+          {d.entrega.estado === "llego"
+            ? `Entrega: ${d.entrega.porRol === "interno" ? `${d.entrega.por || "Yanko"} anotó que a la cliente le llegó` : "la cliente confirmó que le llegó"} (${fmtFecha(d.entrega.fecha)}).`
+            : `Entrega: la cliente avisó el ${fmtFecha(d.entrega.fecha)} que aún no le llega lo despachado.`}
+        </div>
+      ) : null}
       <div style={{ marginTop: 12, borderTop: `1px solid ${T.border}`, paddingTop: 8 }}>
         <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4 }}>HISTORIAL</div>
         {(d.historial || []).map((h, i) => (
@@ -684,6 +692,354 @@ function SelectorDocumento({ T, tipo, onTipo, doc, onDoc, ayuda }) {
   );
 }
 
+// ─── LISTA MODERNA DE DEVOLUCIONES (2026-11-24, a pedido de Fredy) ─────────────────────────────────────
+// Reemplaza la lista de líneas de texto por tarjetas (o tabla compacta) con: cliente, quién la reportó, recorrido de 6 pasos con quién recibió y
+// quién contó (y cuándo), resultado de la revisión, y el paso «Entregada»: la cliente confirma si le llegó lo que se despachó de nuevo
+// (campo entrega: {estado: "llego"|"no", fecha, por, porRol}). Pensada para cientos de devoluciones: el historial trae una ventana de fechas
+// (30 días por defecto), días plegables, «Ver más», buscador y filtros. No cambia la lógica de estados.
+const MESES_DEV = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
+const PAGINA_DEV = 25;
+const DIAS_SIN_AVANZAR_DEV = 3;
+const ORDEN_ESTADOS_DEV = ["reportada", "en_camino", "recibida", "revisada", "facturacion", "lista", "redespachada", "segundas"];
+const diaDev = (v) => {
+  const x = String(v || "");
+  if (!x) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(x)) return x;
+  const t = new Date(x);
+  return Number.isNaN(t.getTime()) ? "" : t.toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
+};
+const difDiasDev = (a, b) => (a && b ? Math.round((new Date(`${b}T12:00:00Z`) - new Date(`${a}T12:00:00Z`)) / 864e5) : 0);
+const sumarDiasDev = (iso, n) => { const t = new Date(`${iso}T12:00:00Z`); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); };
+const cortoDev = (iso) => (iso ? `${Number(iso.slice(8, 10))} ${MESES_DEV[Number(iso.slice(5, 7)) - 1]}` : "");
+const largoDev = (iso) => (iso ? `${Number(iso.slice(8, 10))} de ${MESES_DEV[Number(iso.slice(5, 7)) - 1]} de ${iso.slice(0, 4)}` : "Sin fecha");
+const idxEstadoDev = (e) => ORDEN_ESTADOS_DEV.indexOf(e);
+const quienReportoDev = (d) => (d.registroManual ? `registro manual${d.creadoPor ? ` de ${d.creadoPor}` : ""}` : d.cliente || d.creadoPor || "");
+const diaDespachoDev = (d) => diaDev(d.redespacho?.fecha || fechaDePaso(d, "redespachada"));
+// Día con el que se agrupa: en proceso, cuando se reportó; en historial, cuando se cerró (despacho de nuevo o paso a segundas).
+const diaListaDev = (d, historial) => (historial ? diaDespachoDev(d) || diaDev(fechaDePaso(d, d.estado)) || diaDev(d.actualizadoEn || d.creadoEn) : diaDev(d.creadoEn));
+const diasSinAvanzarDev = (d, hoy) => {
+  if (!["reportada", "en_camino"].includes(d.estado)) return 0;
+  const n = difDiasDev(diaDev(fechaDePaso(d, d.estado) || d.creadoEn), hoy);
+  return n >= DIAS_SIN_AVANZAR_DEV ? n : 0;
+};
+const sinConfirmarDev = (d) => d.estado === "redespachada" && !d.entrega;
+const diasSinConfirmarDev = (d, hoy) => {
+  if (!sinConfirmarDev(d)) return 0;
+  const n = difDiasDev(diaDespachoDev(d), hoy);
+  return n >= DIAS_SIN_AVANZAR_DEV ? n : 0;
+};
+const noLlegoDev = (d) => d.entrega?.estado === "no";
+const sinRegistroDev = (d) => {
+  const k = idxEstadoDev(d.estado);
+  return (k >= 2 && !d.recibidaPor) || (k >= 3 && !d.revisadoPor);
+};
+// Un solo chip principal por devolución; lo demás va en texto pequeño. La cliente no ve «En facturación» ni «bodega de segundas».
+function estadoPrincipalDev(T, d, cliente) {
+  if (d.estado === "reportada" && !String(d.guia || "").trim()) return { txt: "Falta la guía de salida", ico: "📦", bg: T.coralBg, fg: T.coral };
+  const e = { ...estadoInfo(T, d.estado) };
+  let ico = ICONO_ESTADO[d.estado] || "";
+  if (cliente && d.estado === "revisada") e.txt = "En revisión";
+  if (cliente && d.estado === "recibida") e.txt = "En revisión";
+  if (cliente && (d.estado === "facturacion" || d.estado === "lista")) { Object.assign(e, estadoInfo(T, "lista")); e.txt = "Preparando el reenvío"; ico = ICONO_ESTADO.lista; }
+  if (cliente && d.estado === "segundas") { Object.assign(e, estadoInfo(T, "revisada")); e.txt = "Revisión terminada"; ico = ICONO_ESTADO.revisada; }
+  if (d.estado === "redespachada") { e.bg = T.violetBg; e.fg = T.violet; }
+  return { ...e, ico };
+}
+function pasosDev(d, cliente, hoy) {
+  const k = idxEstadoDev(d.estado);
+  const sinAv = diasSinAvanzarDev(d, hoy);
+  const f = (paso) => cortoDev(diaDev(fechaDePaso(d, paso)));
+  const persona = (n, fecha) => [n, fecha].filter(Boolean).join(" · ");
+  if (cliente) {
+    const P = [
+      { t: "Reportada", s: f("reportada"), ok: true },
+      { t: "En camino", s: k >= 1 ? "guía enviada" : sinAv ? `sin guía hace ${sinAv} d` : "falta la guía", ok: k >= 1, tono: k < 1 && sinAv ? "alerta" : "" },
+      { t: "En revisión", s: k >= 3 ? "terminada" : k >= 2 ? "recibida en Yanko" : "pendiente", ok: k >= 3 },
+    ];
+    P.push(d.estado === "segundas" ? { t: "Revisión terminada", s: "no se reenvía", ok: true } : { t: "Despachada", s: d.estado === "redespachada" ? cortoDev(diaDespachoDev(d)) : k >= 4 ? "preparando el reenvío" : "pendiente", ok: d.estado === "redespachada" });
+    if (d.estado === "redespachada") {
+      if (d.entrega?.estado === "llego") P.push({ t: "Recibida por ti", s: cortoDev(diaDev(d.entrega.fecha)), ok: true });
+      else if (d.entrega?.estado === "no") P.push({ t: "No te llegó", s: `avisaste ${cortoDev(diaDev(d.entrega.fecha))}`, ok: true, tono: "mal" });
+      else P.push({ t: "¿Te llegó?", s: "confírmalo aquí →", ok: false, tono: "alerta" });
+    } else P.push({ t: "Recibida por ti", s: d.estado === "segundas" ? "no aplica" : "pendiente", ok: false });
+    return P;
+  }
+  const P = [{ t: "Reportada", s: persona(quienReportoDev(d), f("reportada")), ok: true }];
+  P.push({ t: "En camino", s: k >= 1 ? f("en_camino") || (d.guia ? `guía ${d.guia}` : "") : sinAv ? `sin guía hace ${sinAv} d` : "—", ok: k >= 1, tono: k < 1 && sinAv ? "alerta" : "" });
+  if (k >= 2) P.push(d.recibidaPor ? { t: "Recibida", s: persona(d.recibidaPor, cortoDev(diaDev(d.recibidaEn || fechaDePaso(d, "recibida")))), ok: true } : { t: "Recibida", s: "sin registro", ok: true, tono: "nada" });
+  else P.push({ t: "Recibida", s: k === 1 && sinAv ? `sin recibir hace ${sinAv} d` : "pendiente", ok: false, tono: k === 1 && sinAv ? "alerta" : "" });
+  if (k >= 3) {
+    const tit = d.resultado === "diferencias" ? "Revisada · con diferencias" : d.resultado === "completa" ? "Revisada · completa" : "Revisada";
+    P.push(d.revisadoPor ? { t: tit, s: persona(d.revisadoPor, cortoDev(diaDev(d.revisadoEn || fechaDePaso(d, "revisada")))), ok: true, tono: d.resultado === "diferencias" ? "dif" : "" } : { t: tit, s: "sin registro", ok: true, tono: "nada" });
+  } else P.push({ t: "Revisada", s: "pendiente", ok: false });
+  if (d.estado === "redespachada") P.push({ t: "Despachada", s: cortoDev(diaDespachoDev(d)), ok: true });
+  else if (d.estado === "segundas") P.push({ t: "A segundas", s: "no se reenvía", ok: true });
+  else P.push({ t: "Despachada", s: k === 4 ? "en facturación" : k === 5 ? "lista para despachar" : "pendiente", ok: false });
+  if (d.estado === "redespachada") {
+    const en = d.entrega;
+    const sc = diasSinConfirmarDev(d, hoy);
+    if (en?.estado === "llego") P.push({ t: "Entregada", s: `${en.porRol === "interno" ? `${en.por || "Yanko"} anotó` : "cliente confirmó"} · ${cortoDev(diaDev(en.fecha))}`, ok: true });
+    else if (en?.estado === "no") P.push({ t: "No le llegó", s: `la cliente avisó · ${cortoDev(diaDev(en.fecha))}`, ok: true, tono: "mal" });
+    else P.push({ t: "Entregada", s: sc ? `sin confirmar hace ${sc} d` : "pendiente", ok: false, tono: sc ? "alerta" : "" });
+  } else P.push({ t: "Entregada", s: d.estado === "segundas" ? "no aplica" : "pendiente", ok: false });
+  return P;
+}
+function RecorridoDev({ T, pasos }) {
+  const col = (tono) => (tono === "mal" || tono === "dif" ? T.coral : tono === "alerta" ? T.amber : T.jade);
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: `repeat(${pasos.length}, minmax(0, 1fr))`, marginTop: 8, maxWidth: pasos.length === 6 ? 800 : 660 }}>
+      {pasos.map((p, i) => {
+        const c = p.ok ? (p.tono === "nada" ? T.jade : col(p.tono)) : p.tono === "alerta" ? T.amber : T.border;
+        const lineaOk = p.ok && p.tono !== "nada";
+        return (
+          <div key={i} style={{ position: "relative", paddingTop: 14, paddingRight: 6, fontSize: 11, color: p.tono === "alerta" || p.tono === "mal" ? col(p.tono) : T.slate, lineHeight: 1.3, minWidth: 0 }}>
+            <span style={{ position: "absolute", top: 4, left: 0, right: 0, height: 2, background: p.ok ? T.jade : T.border }} />
+            <span style={{ position: "absolute", top: 0, left: 0, width: 10, height: 10, borderRadius: "50%", background: p.ok || p.tono === "alerta" ? c : T.white, border: `2px solid ${lineaOk || p.tono === "alerta" || p.tono === "mal" || p.tono === "dif" ? c : p.ok ? T.jade : T.border}`, boxSizing: "border-box" }} />
+            <b style={{ display: "block", color: p.tono === "mal" || p.tono === "alerta" ? col(p.tono) : p.tono === "nada" || !p.ok ? T.slate : T.ink, fontWeight: 700, fontSize: 11.5 }}>{p.t}</b>
+            <span style={{ fontStyle: p.tono === "nada" ? "italic" : "normal" }}>{p.s}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+function ListaDevolucionesModerna({ T, lista, esCliente, vista, onVista, selG, onSelG, sinGuia, bloqueGuia, abierto, onAbrir, renderDetalle, onEntrega, ocupadoEntrega }) {
+  const hoy = hoyBogotaISO();
+  const [modo, setModo] = useState("tarjetas"); // tarjetas | tabla (la tabla es solo para el equipo)
+  const [rango, setRango] = useState(30);
+  const [filtro, setFiltro] = useState("todas");
+  const [q, setQ] = useState("");
+  const [limite, setLimite] = useState(PAGINA_DEV);
+  const [plegados, setPlegados] = useState({});
+  const historial = vista === "historial";
+  const enProc = useMemo(() => (lista || []).filter((d) => !estaCerrada(d)), [lista]);
+  const enHist = useMemo(() => (lista || []).filter(estaCerrada), [lista]);
+  const base = useMemo(() => {
+    let L = historial ? enHist : enProc;
+    if (historial && rango) L = L.filter((d) => { const dia = diaListaDev(d, true); return !dia || difDiasDev(dia, hoy) <= rango; });
+    return L;
+  }, [historial, enHist, enProc, rango, hoy]);
+  const cumple = (d, f) => {
+    if (f === "todas") return true;
+    if (f === "sinavanzar") return diasSinAvanzarDev(d, hoy) > 0;
+    if (f === "dif") return d.resultado === "diferencias";
+    if (f === "sinreg") return sinRegistroDev(d);
+    if (f === "sinconf") return sinConfirmarDev(d);
+    if (f === "nollego") return noLlegoDev(d);
+    return d.estado === f;
+  };
+  const filtrada = useMemo(() => {
+    const t = q.trim().toLowerCase();
+    return base
+      .filter((d) => cumple(d, filtro) && (!t || `${d.numero} ${d.lote} ${d.documentoOriginal || ""} ${d.ref || ""} ${d.cliente || ""} ${d.creadoPor || ""} ${d.recibidaPor || ""} ${d.revisadoPor || ""}`.toLowerCase().includes(t)))
+      .sort((a, b) => (historial ? (diaListaDev(b, true) || "").localeCompare(diaListaDev(a, true) || "") || String(b.actualizadoEn || "").localeCompare(String(a.actualizadoEn || "")) : String(b.creadoEn || "").localeCompare(String(a.creadoEn || ""))));
+  }, [base, filtro, q, historial]); // eslint-disable-line
+  const cuantas = (f) => base.filter((d) => cumple(d, f)).length;
+  const sinGuiaVisibles = filtrada.filter(sinGuia);
+  const conChk = sinGuiaVisibles.length > 0;
+  const unidades = (arr) => arr.reduce((s, d) => s + (Number(d.total) || 0), 0);
+  const diasProm = base.length ? (base.reduce((s, d) => s + tiempoDevolucion(d).dias, 0) / base.length).toFixed(1).replace(".", ",") : "0";
+  const kpis = historial
+    ? esCliente
+      ? [[T.denim, base.length, "devoluciones en el rango"], [T.jade, base.filter((d) => d.entrega?.estado === "llego").length, "ya te llegaron"], [T.amber, base.filter(sinConfirmarDev).length, "por confirmar"], [T.ink, diasProm, "días hábiles promedio en resolverse"]]
+      : [[T.denim, base.length, "devoluciones en el rango"], [T.coral, base.filter((d) => d.resultado === "diferencias").length, "llegaron con diferencias"], [T.amber, base.filter(sinConfirmarDev).length, "despachadas sin confirmar entrega"], [T.jade, diasProm, "días hábiles promedio en resolverse"]]
+    : [[T.denim, base.length, "en proceso"], [T.coral, base.filter(sinGuia).length, "sin guía de salida"], [T.amber, base.filter((d) => diasSinAvanzarDev(d, hoy) > 0).length, `sin avanzar hace ${DIAS_SIN_AVANZAR_DEV}+ días`], [T.ink, base.filter((d) => ["recibida", "revisada"].includes(d.estado)).length, "recibidas, por terminar"]];
+  const estadosPresentes = [...new Set(base.map((d) => d.estado))].sort((a, b) => idxEstadoDev(a) - idxEstadoDev(b));
+  const chips = [["todas", "Todas", T.denim, T.denimBg], ...estadosPresentes.map((e) => [e, estadoPrincipalDev(T, { estado: e, guia: "x" }, esCliente).txt, T.denim, T.denimBg])];
+  if (!historial) chips.push(["sinavanzar", "⏳ Sin avanzar", T.amber, T.amberBg]);
+  if (!esCliente) chips.push(["dif", "Con diferencias", T.coral, T.coralBg], ["sinreg", "Sin registro de quién recibió o contó", T.amber, T.amberBg]);
+  if (historial) chips.push(["sinconf", "Despachadas sin confirmar", T.amber, T.amberBg], ["nollego", "⚠ No le llegó", T.coral, T.coralBg]);
+  const unicos = [];
+  chips.forEach((c) => { if (!unicos.some((u) => u[1] === c[1])) unicos.push(c); });
+  const visibles = filtrada.slice(0, limite);
+  const grupos = [];
+  visibles.forEach((d) => {
+    const dia = diaListaDev(d, historial);
+    const g = grupos[grupos.length - 1];
+    if (g && g.dia === dia) g.items.push(d); else grupos.push({ dia, items: [d] });
+  });
+  const chipBtn = (activo, c, bg) => ({ border: `1px solid ${activo ? c : T.border}`, background: activo ? bg : T.white, color: activo ? c : T.slate, fontSize: 12.5, fontWeight: 700, padding: "5px 12px", borderRadius: 999, cursor: "pointer", fontFamily: "inherit" });
+  const segBtn = (on) => ({ border: 0, background: on ? T.white : "transparent", color: on ? T.denim : T.slate, fontWeight: 700, fontSize: 13, padding: "6px 13px", borderRadius: 8, cursor: "pointer", boxShadow: on ? "0 1px 3px rgba(26,26,46,.12)" : "none", fontFamily: "inherit" });
+  const segWrap = { display: "inline-flex", background: T.canvas, borderRadius: 10, padding: 3, gap: 2 };
+  const pill = (bg, fg) => ({ display: "inline-flex", gap: 5, alignItems: "center", borderRadius: 999, padding: "3px 10px", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap", background: bg, color: fg });
+  const th = { textAlign: "left", fontSize: 11, color: T.slate, fontWeight: 700, padding: "6px 6px", borderBottom: `1px solid ${T.border}`, whiteSpace: "nowrap" };
+  const td = { padding: "6px 6px", borderBottom: `1px solid ${T.border}`, whiteSpace: "nowrap", fontSize: 12.5 };
+  const reiniciar = (f) => { setFiltro(f); setLimite(PAGINA_DEV); };
+  function BotonesEntrega({ d }) {
+    if (d.estado !== "redespachada") return null;
+    const llego = d.entrega?.estado === "llego";
+    if (llego) return null;
+    const no = noLlegoDev(d);
+    return (
+      <span style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }} onClick={(e) => e.stopPropagation()}>
+        {esCliente ? (
+          <>
+            <button disabled={ocupadoEntrega} onClick={() => onEntrega(d, "llego")} style={{ ...chipBtn(true, T.jade, T.jadeBg), borderRadius: 8, padding: "5px 11px", fontSize: 12 }}>✔ Ya me llegó</button>
+            {!no && <button disabled={ocupadoEntrega} onClick={() => onEntrega(d, "no")} style={{ ...chipBtn(true, T.coral, T.coralBg), borderRadius: 8, padding: "5px 11px", fontSize: 12 }}>Aún no me llega</button>}
+          </>
+        ) : (
+          <button disabled={ocupadoEntrega} onClick={() => onEntrega(d, "llego")} style={{ ...chipBtn(false, T.slate, T.white), borderRadius: 8, padding: "5px 11px", fontSize: 12 }}>Marcar «le llegó» por la cliente</button>
+        )}
+      </span>
+    );
+  }
+  function Tarjeta({ d }) {
+    const e = estadoPrincipalDev(T, d, esCliente);
+    const sinAv = diasSinAvanzarDev(d, hoy);
+    const sc = diasSinConfirmarDev(d, hoy);
+    const t = tiempoDevolucion(d);
+    const colorBarra = noLlegoDev(d) ? T.coral : sinAv || sc ? T.amber : d.estado === "reportada" ? T.coral : d.estado === "redespachada" ? T.violet : d.estado === "segundas" ? "#B5446E" : T.jade;
+    const marcada = selG.includes(d.id);
+    const chk = sinGuia(d);
+    const origenTxt = d.origen?.tipo ? `${d.origen.tipo === "factura" ? "🧾" : d.origen.tipo === "sin_dato" ? "" : "🚚"} ${etiquetaOrigen(d.origen)}${d.origen.confirmar ? " · por confirmar" : ""}` : "";
+    return (
+      <div key={d.id} style={{ borderTop: `1px solid ${T.border}`, borderRight: `1px solid ${T.border}`, borderBottom: `1px solid ${T.border}`, borderLeft: `4px solid ${marcada ? T.denim : colorBarra}`, borderRadius: 12, padding: "10px 14px", marginBottom: 8, background: marcada ? T.denimBg : T.white }}>
+        <div onClick={() => onAbrir(abierto === d.id ? null : d.id)} style={{ display: "grid", gridTemplateColumns: conChk ? "22px 1fr auto" : "1fr auto", gap: 12, alignItems: "center", cursor: "pointer" }}>
+          {conChk && (chk ? <input type="checkbox" title="Marcar para ponerle la guía de salida" checked={marcada} onClick={(ev) => ev.stopPropagation()} onChange={(ev) => onSelG((a) => (ev.target.checked ? [...a.filter((x) => x !== d.id), d.id] : a.filter((x) => x !== d.id)))} style={{ width: 16, height: 16 }} /> : <span />)}
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontWeight: 800, fontSize: 14, color: T.ink }}>
+              {d.numero}
+              <span style={{ fontWeight: 600, color: T.slate, fontSize: 12, marginLeft: 8 }}>
+                {!esCliente && d.cliente ? <b style={{ color: T.ink }}>{d.cliente} · </b> : null}Lote {d.lote} · {d.total} und{String(d.documentoOriginal || "").trim() ? ` · ${d.documentoOriginal}` : ""}{d.ref ? ` · Ref. ${d.ref}` : ""}
+              </span>
+            </div>
+            <div style={{ fontSize: 11.5, color: T.slate, marginTop: 3, display: "flex", gap: "2px 12px", flexWrap: "wrap" }}>
+              {origenTxt ? <span>{origenTxt}</span> : null}
+              {d.registroManual ? <span>✍ Registro manual</span> : null}
+              {String(d.guia || "").trim() ? <span>📮 Guía {d.guia}{d.transportadora ? ` · ${d.transportadora}` : ""}</span> : null}
+              <span style={{ color: t.cerrada ? (t.tardo ? T.amber : T.slate) : t.nivel === "rojo" ? T.coral : t.nivel === "ambar" ? T.amber : T.slate }}>{textoTiempo(t)}</span>
+            </div>
+            <RecorridoDev T={T} pasos={pasosDev(d, esCliente, hoy)} />
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 5 }}>
+            <span style={pill(e.bg, e.fg)}>{e.ico ? `${e.ico} ` : ""}{e.txt}</span>
+            {d.solicitaDespacho && !estaCerrada(d) ? <span style={pill(T.violetBg, T.violet)}>{esCliente ? "Despacho solicitado" : "Pide despacho"}</span> : null}
+            {sinAv ? <span style={pill(T.amberBg, T.amber)}>⏳ {sinAv} días sin avanzar</span> : null}
+            {noLlegoDev(d) ? <span style={pill(T.coralBg, T.coral)}>{esCliente ? "Avisaste que no te llegó" : "⚠ La cliente dice que no le llegó"}</span> : sc ? <span style={pill(T.amberBg, T.amber)}>{esCliente ? `Confirma si te llegó · ${sc} d` : `⏳ Sin confirmar entrega · ${sc} d`}</span> : null}
+            {BotonesEntrega({ d })}
+          </div>
+        </div>
+        {abierto === d.id ? renderDetalle(d) : null}
+      </div>
+    );
+  }
+  function FilaTabla({ d }) {
+    const e = estadoPrincipalDev(T, d, false);
+    const sc = diasSinConfirmarDev(d, hoy);
+    const sinReg = <span style={{ color: T.slate, fontStyle: "italic" }}>sin registro</span>;
+    const k = idxEstadoDev(d.estado);
+    const marcada = selG.includes(d.id);
+    return (
+      <React.Fragment key={d.id}>
+        <tr onClick={() => onAbrir(abierto === d.id ? null : d.id)} style={{ cursor: "pointer", background: marcada ? T.denimBg : undefined }}>
+          {conChk && <td style={td} onClick={(ev) => ev.stopPropagation()}>{sinGuia(d) ? <input type="checkbox" checked={marcada} onChange={(ev) => onSelG((a) => (ev.target.checked ? [...a.filter((x) => x !== d.id), d.id] : a.filter((x) => x !== d.id)))} /> : null}</td>}
+          <td style={{ ...td, fontWeight: 800 }}>{d.numero}</td>
+          <td style={{ ...td, fontWeight: 700 }}>{d.cliente || "—"}</td>
+          <td style={td}>{d.lote}</td>
+          <td style={td}>{String(d.documentoOriginal || "").trim() || "—"}</td>
+          <td style={td}>{d.total}</td>
+          <td style={td}><span style={pill(e.bg, e.fg)}>{e.ico ? `${e.ico} ` : ""}{e.txt}</span></td>
+          <td style={td}>{d.recibidaPor ? `${d.recibidaPor} · ${cortoDev(diaDev(d.recibidaEn || fechaDePaso(d, "recibida")))}` : k >= 2 ? sinReg : "—"}</td>
+          <td style={td}>{d.revisadoPor ? `${d.revisadoPor} · ${cortoDev(diaDev(d.revisadoEn || fechaDePaso(d, "revisada")))}` : k >= 3 ? sinReg : "—"}</td>
+          <td style={td}>{d.resultado === "diferencias" ? <span style={pill(T.coralBg, T.coral)}>Con diferencias</span> : d.resultado === "completa" ? <span style={pill(T.jadeBg, T.jade)}>Completa</span> : ""}</td>
+          <td style={td}>{d.estado !== "redespachada" ? "—" : d.entrega?.estado === "llego" ? <span style={pill(T.jadeBg, T.jade)}>Llegó · {cortoDev(diaDev(d.entrega.fecha))}</span> : noLlegoDev(d) ? <span style={pill(T.coralBg, T.coral)}>No le llegó</span> : sc ? <span style={{ color: T.amber, fontWeight: 700 }}>sin confirmar {sc} d</span> : <span style={{ color: T.slate, fontStyle: "italic" }}>pendiente</span>}</td>
+          <td style={td}>{cortoDev(diaDev(d.creadoEn))}</td>
+        </tr>
+        {abierto === d.id ? <tr><td colSpan={conChk ? 12 : 11} style={{ padding: "4px 10px 12px", background: T.canvas }}>{renderDetalle(d)}</td></tr> : null}
+      </React.Fragment>
+    );
+  }
+  const ancho = { numero: 128, cliente: 140, lote: 56, doc: 96, und: 40, estado: 170, rec: 118, cue: 118, res: 118, ent: 132, rep: 66 };
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+        <div style={{ flex: 1, fontSize: 15, fontWeight: 800, color: T.ink }}>{esCliente ? "Tus devoluciones" : "Devoluciones reportadas"}</div>
+        {!esCliente && (
+          <div style={segWrap}>
+            {[["tarjetas", "▦ Tarjetas"], ["tabla", "☰ Tabla"]].map(([k, t]) => <button key={k} onClick={() => setModo(k)} style={segBtn(modo === k)}>{t}</button>)}
+          </div>
+        )}
+        <div style={segWrap}>
+          {[["proceso", "En proceso", enProc.length], ["historial", "Historial", enHist.length]].map(([k, t, n]) => (
+            <button key={k} onClick={() => { onVista(k); setFiltro("todas"); setLimite(PAGINA_DEV); }} style={segBtn(vista === k)}>{t} <span style={{ color: vista === k ? T.denim : T.slate, fontWeight: 600 }}>{n}</span></button>
+          ))}
+        </div>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 10, marginBottom: 14 }}>
+        {kpis.map(([c, v, l], i) => (
+          <div key={i} style={{ border: `1px solid ${T.border}`, borderRadius: 12, padding: "10px 14px" }}>
+            <div style={{ fontSize: 22, fontWeight: 800, color: c, letterSpacing: "-0.02em", fontVariantNumeric: "tabular-nums" }}>{v}</div>
+            <div style={{ fontSize: 11.5, color: T.slate }}>{l}</div>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+        <input value={q} onChange={(e) => { setQ(e.target.value); setLimite(PAGINA_DEV); }} placeholder={esCliente ? "Buscar por número, lote o documento…" : "Buscar por número, lote, documento, cliente o persona…"} style={{ ...campo(T), flex: "1 1 240px" }} />
+        {historial && (
+          <select value={rango} onChange={(e) => { setRango(Number(e.target.value)); setLimite(PAGINA_DEV); }} style={{ ...campo(T), fontWeight: 600 }}>
+            <option value={30}>Últimos 30 días</option>
+            <option value={90}>Últimos 3 meses</option>
+            <option value={365}>Último año</option>
+            <option value={0}>Todo el historial</option>
+          </select>
+        )}
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+        {unicos.map(([k, t, c, bg]) => <button key={k} onClick={() => reiniciar(k)} style={chipBtn(filtro === k, c, bg)}>{t} <span style={{ fontWeight: 600, opacity: 0.7 }}>{cuantas(k)}</span></button>)}
+      </div>
+      <div style={{ fontSize: 12.5, color: T.slate, marginBottom: 6 }}>
+        Mostrando {Math.min(limite, filtrada.length)} de {filtrada.length} {filtrada.length === 1 ? "devolución" : "devoluciones"}{historial && rango ? ` · del ${cortoDev(sumarDiasDev(hoy, -rango))} al ${cortoDev(hoy)}` : ""} · {unidades(filtrada)} unidades
+      </div>
+      {conChk && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, background: T.canvas, borderRadius: 10, padding: "8px 12px", fontSize: 12.5, color: T.slate, margin: "8px 0" }}>
+          <span style={{ flex: 1 }}>Marca las devoluciones sin guía para ponerles <b>una sola guía de salida</b> si las mandas en el mismo envío.</span>
+          <label style={{ cursor: "pointer", fontWeight: 700, color: T.denim }}>
+            <input type="checkbox" style={{ marginRight: 6 }} checked={sinGuiaVisibles.length > 0 && sinGuiaVisibles.every((d) => selG.includes(d.id))} onChange={(e) => onSelG(e.target.checked ? sinGuiaVisibles.map((d) => d.id) : [])} />Seleccionar todas
+          </label>
+        </div>
+      )}
+      {bloqueGuia}
+      {lista === null ? <div style={{ fontSize: 13, color: T.slate }}>Cargando…</div>
+        : !lista.length ? <div style={{ fontSize: 13, color: T.slate }}>Todavía no has reportado devoluciones.</div>
+        : !filtrada.length ? <div style={{ fontSize: 13, color: T.slate, textAlign: "center", padding: "26px 0" }}>{historial && !enHist.length ? "Todavía no hay devoluciones resueltas en el historial." : !historial && !enProc.length ? "No tienes devoluciones en proceso." : "No hay devoluciones con ese filtro."}</div>
+        : grupos.map((g) => {
+          const delDia = filtrada.filter((d) => diaListaDev(d, historial) === g.dia);
+          const pendiente = delDia.some((d) => sinConfirmarDev(d) || noLlegoDev(d));
+          const cerrado = g.dia in plegados ? plegados[g.dia] : historial && difDiasDev(g.dia, hoy) > 7 && !pendiente;
+          const estados = [...new Set(delDia.map((d) => estadoPrincipalDev(T, d, esCliente).txt))];
+          return (
+            <div key={g.dia || "sin"}>
+              <div onClick={() => setPlegados((p) => ({ ...p, [g.dia]: !cerrado }))} style={{ display: "flex", alignItems: "center", gap: 8, margin: "14px 0 8px", fontSize: 12, fontWeight: 800, letterSpacing: "0.04em", textTransform: "uppercase", color: T.slate, cursor: "pointer", userSelect: "none" }}>
+                <span style={{ display: "inline-block", transition: "transform .15s", transform: cerrado ? "rotate(-90deg)" : "none", fontSize: 11 }}>▼</span>
+                {largoDev(g.dia)}
+                <span style={{ fontWeight: 600, letterSpacing: 0, textTransform: "none" }}>· {delDia.length} {delDia.length === 1 ? "devolución" : "devoluciones"} · {unidades(delDia)} und{cerrado ? ` · ${estados.length === 1 ? estados[0] : `${estados.length} estados`}` : ""}</span>
+                <span style={{ flex: 1, height: 1, background: T.border }} />
+              </div>
+              {cerrado ? null : modo === "tabla" && !esCliente ? (
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", minWidth: 1130, tableLayout: "fixed", borderCollapse: "collapse" }}>
+                    <thead><tr>
+                      {conChk && <th style={{ ...th, width: 30 }} />}
+                      <th style={{ ...th, width: ancho.numero }}>Número</th><th style={{ ...th, width: ancho.cliente }}>Cliente</th><th style={{ ...th, width: ancho.lote }}>Lote</th><th style={{ ...th, width: ancho.doc }}>Documento</th><th style={{ ...th, width: ancho.und }}>Und</th>
+                      <th style={{ ...th, width: ancho.estado }}>Estado</th><th style={{ ...th, width: ancho.rec }}>Recibió</th><th style={{ ...th, width: ancho.cue }}>Contó / revisó</th><th style={{ ...th, width: ancho.res }}>Resultado</th><th style={{ ...th, width: ancho.ent }}>Entrega</th><th style={{ ...th, width: ancho.rep }}>Reportada</th>
+                    </tr></thead>
+                    <tbody>{g.items.map((d) => FilaTabla({ d }))}</tbody>
+                  </table>
+                </div>
+              ) : g.items.map((d) => Tarjeta({ d }))}
+            </div>
+          );
+        })}
+      {filtrada.length > limite ? (
+        <div style={{ display: "flex", justifyContent: "center", gap: 10, alignItems: "center", padding: "14px 0 4px", color: T.slate, fontSize: 12.5 }}>
+          <button onClick={() => setLimite((n) => n + PAGINA_DEV)} style={{ ...btn(T), color: T.denim, background: T.denimBg, borderColor: T.denim }}>Ver {Math.min(PAGINA_DEV, filtrada.length - limite)} más</button>
+          <span>Quedan {filtrada.length - limite}</span>
+        </div>
+      ) : filtrada.length > PAGINA_DEV ? <div style={{ textAlign: "center", fontSize: 12.5, color: T.slate, padding: "12px 0 4px" }}>Ya viste las {filtrada.length}. Usa el buscador o el rango para acotar.</div> : null}
+    </div>
+  );
+}
+
 function FormularioDevolucionesCliente({ db, functionsClient, T: Tp, currentUser }) {
   const T = Tp || TEMA_DEFECTO;
   const esCliente = currentUser?.role === "Cliente";
@@ -721,6 +1077,23 @@ function FormularioDevolucionesCliente({ db, functionsClient, T: Tp, currentUser
   const [envio, setEnvio] = useState({ guia: "", transp: "", fecha: new Date().toISOString().slice(0, 10) });
   const [guardandoEnvio, setGuardandoEnvio] = useState(false);
   const [msgEnvio, setMsgEnvio] = useState("");
+  const [ocupadoEntrega, setOcupadoEntrega] = useState(false);
+  // (2026-11-24, a pedido de Fredy) La cliente confirma si le llegó lo que se despachó de nuevo («Ya me llegó» / «Aún no me llega»); el equipo también puede anotarlo por ella.
+  async function marcarEntrega(d, estado) {
+    setOcupadoEntrega(true);
+    setMsgEnvio("");
+    try {
+      const por = usuarioActual(currentUser);
+      const ahora = nowISO();
+      const entrega = { estado, fecha: ahora, por: esCliente ? d.cliente || por : por, porRol: esCliente ? "cliente" : "interno" };
+      const nota = estado === "llego" ? (esCliente ? "La cliente confirmó que le llegó" : `${por} anotó que a la cliente le llegó`) : "La cliente avisó que aún no le llega";
+      await updateDoc(doc(db, COL, d.id), limpio({ entrega, historial: [...(d.historial || []), { estado: "entrega", fecha: ahora, usuario: por, nota }] }));
+    } catch (e) {
+      setMsgEnvio(e?.message || "No se pudo guardar la confirmación de entrega.");
+    } finally {
+      setOcupadoEntrega(false);
+    }
+  }
   // (2026-11-10, a pedido de Fredy) Documento original de TNS: obligatorio al reportar. En Facturadas, si Busint muestra una sola factura del lote, ya viene escrita.
   const [tipo, setTipo] = useState(""); // "factura" | "remision": lo elige quien reporta
   const [docOrig, setDocOrig] = useState("");
@@ -1086,24 +1459,11 @@ function FormularioDevolucionesCliente({ db, functionsClient, T: Tp, currentUser
         )}
       </div>
       <div style={tarjeta}>
-        <div style={{ fontSize: 14, fontWeight: 800, color: T.ink, marginBottom: 8 }}>{esCliente ? "Tus devoluciones" : "Devoluciones reportadas"}</div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
-          {[["proceso", `En proceso (${listaProceso.length})`], ["historial", `Historial (${listaHistorial.length})`]].map(([k, txt]) => (
-            <button key={k} onClick={() => setVistaLista(k)} style={{ ...btn(T), background: vistaLista === k ? T.denimBg : T.white, color: vistaLista === k ? T.denim : T.ink, borderColor: vistaLista === k ? T.denim : T.border }}>{txt}</button>
-          ))}
-        </div>
         {errLista && <div style={{ color: T.coral, fontSize: 13 }}>{errLista}</div>}
         {msgEnvio && selValidas.length === 0 && <div style={{ background: msgEnvio.startsWith("Listo") ? T.jadeBg : T.coralBg, color: msgEnvio.startsWith("Listo") ? T.jade : T.coral, borderRadius: 8, padding: "8px 12px", fontSize: 13, marginBottom: 10 }}>{msgEnvio}</div>}
-        {(listaTipo || []).some(sinGuia) && (
-          <div style={{ fontSize: 12, color: T.slate, marginBottom: 8 }}>
-            Las devoluciones sin guía tienen una casilla: márcalas (una o varias) para ponerles <b>una sola guía de salida</b> si las mandas en el mismo envío.{" "}
-            <label style={{ cursor: "pointer", fontWeight: 700, color: T.denim }}>
-              <input type="checkbox" style={{ marginRight: 4 }} checked={(listaTipo || []).filter(sinGuia).length > 0 && selValidas.length === (listaTipo || []).filter(sinGuia).length}
-                onChange={(e) => setSelG(e.target.checked ? (listaTipo || []).filter(sinGuia).map((d) => d.id) : [])} />Marcar todas
-            </label>
-          </div>
-        )}
-        {selValidas.length > 0 && (
+        <ListaDevolucionesModerna
+          T={T} lista={lista} esCliente={esCliente} vista={vistaLista} onVista={setVistaLista} selG={selValidas} onSelG={setSelG} sinGuia={sinGuia}
+          bloqueGuia={selValidas.length > 0 && (
           <div style={{ background: T.white, border: `1px solid ${T.denim}`, borderRadius: 14, padding: "14px 18px", marginBottom: 12 }}>
             <div style={{ fontSize: 14, fontWeight: 800, color: T.ink }}>Agregar una guía a {selValidas.length} {selValidas.length === 1 ? "devolución" : "devoluciones"}</div>
             <div style={{ fontSize: 12, color: T.slate, margin: "4px 0 10px" }}>Todas pasan a «En camino» con la misma guía y quedan anotadas como un solo envío.</div>
@@ -1117,29 +1477,15 @@ function FormularioDevolucionesCliente({ db, functionsClient, T: Tp, currentUser
             {msgEnvio && <div style={{ fontSize: 13, color: T.coral, marginTop: 8 }}>{msgEnvio}</div>}
           </div>
         )}
-        {lista === null ? <div style={{ fontSize: 13, color: T.slate }}>Cargando…</div>
-          : !lista.length ? <div style={{ fontSize: 13, color: T.slate }}>Todavía no has reportado devoluciones.</div>
-          : !listaVista.length ? <div style={{ fontSize: 13, color: T.slate }}>{vistaLista === "historial" ? "Todavía no hay devoluciones resueltas en el historial." : "No tienes devoluciones en proceso."}</div>
-          : listaVista.map((d) => (
-            <div key={d.id} style={{ borderTop: `1px solid ${T.border}`, padding: "10px 0" }}>
-              <div onClick={() => setAbierto(abierto === d.id ? null : d.id)} style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", cursor: "pointer", fontSize: 13 }}>
-                <span>
-                  {sinGuia(d) && (
-                    <input type="checkbox" title="Marcar para ponerle la guía de salida" checked={selValidas.includes(d.id)} onClick={(e) => e.stopPropagation()}
-                      onChange={(e) => setSelG((a) => (e.target.checked ? [...a.filter((x) => x !== d.id), d.id] : a.filter((x) => x !== d.id)))} style={{ marginRight: 8 }} />
-                  )}
-                  <b>{d.numero}</b> · lote {d.lote} · {d.total} und{String(d.documentoOriginal || "").trim() ? ` · ${d.documentoOriginal}` : ""} · {fmtFecha(d.creadoEn)}
-                </span>
-                <EstadoPill T={T} d={d} cliente={esCliente} />
-              </div>
-              {abierto === d.id && (
-                <>
-                  <Detalle T={T} d={d} mostrarConteo={!esCliente} />
-                  <AccionesDevolucion db={db} functionsClient={functionsClient} T={T} d={d} lista={lista} currentUser={currentUser} esCliente={esCliente} onBorrado={() => setAbierto(null)} />
-                </>
-              )}
-            </div>
-          ))}
+          abierto={abierto} onAbrir={setAbierto}
+          renderDetalle={(d) => (
+            <>
+              <Detalle T={T} d={d} mostrarConteo={!esCliente} />
+              <AccionesDevolucion db={db} functionsClient={functionsClient} T={T} d={d} lista={lista} currentUser={currentUser} esCliente={esCliente} onBorrado={() => setAbierto(null)} />
+            </>
+          )}
+          onEntrega={marcarEntrega} ocupadoEntrega={ocupadoEntrega}
+        />
       </div>
     </div>
   );
