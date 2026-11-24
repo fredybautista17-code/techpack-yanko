@@ -805,21 +805,45 @@ function generarBMP(lotes) {
     }))
     .sort((a, b) => a.categoria.localeCompare(b.categoria) || a.cliente.localeCompare(b.cliente));
 }
+// (2026-11-24, a pedido de Fredy) Fecha REAL de entrada a BPT de un lote:
+// la que registra Terminación al entregar el lote (fecha de entrada del
+// proceso TERMINACION en Busint -- misma señal que ya usa ATLAS para dar un
+// lote por terminado). Los procesos pueden venir como Date (recién leídos)
+// o como texto dd/mm/aaaa (ya guardados en la carga). Si el lote no trae
+// fecha de Terminación (ej. Hoja1 manual), cae a "Fecha Ent BPT" y se marca
+// como estimada para distinguirla.
+function aISODeProceso(v) {
+  if (esFechaValida(v)) return `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, "0")}-${String(v.getDate()).padStart(2, "0")}`;
+  const m = typeof v === "string" ? v.match(/^(\d{2})\/(\d{2})\/(\d{4})$/) : null;
+  return m ? `${m[3]}-${m[2]}-${m[1]}` : null;
+}
+function fechaRealEntBPT(l) {
+  const term = (l?.procesos || []).find((p) =>
+    String(p?.nombre || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toUpperCase().startsWith("TERMINACION")
+  );
+  const real = term ? aISODeProceso(term.entrega) || aISODeProceso(term.entregaTexto) : null;
+  if (real) return { iso: real, estimada: false };
+  return { iso: l?.fechaEntBPTISO || null, estimada: !!l?.fechaEntBPTISO };
+}
 // Informe "BPT": lotes que ya están en Bodega de Producto Terminado
 // (invBPT > 0), agrupados por cliente, con los días transcurridos desde que
-// entraron a BPT (columna "Fecha Ent BPT" de Hoja1).
+// Terminación los entregó a BPT (fecha real; ver fechaRealEntBPT).
 function generarBPT(lotes) {
   const filas = lotes
     .filter((l) => l.invBPT > 0)
-    .map((l) => ({
-      cliente: l.nombreCliente || "(Sin cliente)",
-      numLote: l.numLote,
-      referencia: l.referencia,
-      categoria: l.categoria,
-      cantidad: l.invBPT,
-      fechaEntBPT: l.fechaEntBPTISO,
-      diasEnBPT: l.fechaEntBPTISO ? -diasEntre(l.fechaEntBPTISO) : null,
-    }))
+    .map((l) => {
+      const fe = fechaRealEntBPT(l);
+      return {
+        cliente: l.nombreCliente || "(Sin cliente)",
+        numLote: l.numLote,
+        referencia: l.referencia,
+        categoria: l.categoria,
+        cantidad: l.invBPT,
+        fechaEntBPT: fe.iso,
+        fechaEstimada: fe.estimada,
+        diasEnBPT: fe.iso ? -diasEntre(fe.iso) : null,
+      };
+    })
     .sort((a, b) => (b.diasEnBPT ?? -Infinity) - (a.diasEnBPT ?? -Infinity) || a.cliente.localeCompare(b.cliente));
   const clientesUnicos = [...new Set(filas.map((f) => f.cliente))].sort((a, b) => a.localeCompare(b));
   const resumen = clientesUnicos.map((c) => {
@@ -1716,8 +1740,13 @@ function BloqueCronograma({ data }) {
 // por más días primero para ver de inmediato lo que lleva más tiempo ahí.
 function BloqueBPT({ data }) {
   const { filas, resumen, totalLotes, totalUnidades } = data;
+  const nEstimadas = filas.filter((f) => f.fechaEstimada).length;
   return (
     <div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 12 }}>
+        «Días en BPT» cuenta desde que <b>Terminación entregó el lote</b> (fecha real de Busint).
+        {nEstimadas > 0 && ` ${nEstimadas} de ${filas.length} lotes no traen esa fecha y usan la Fecha Ent BPT anterior (marcados «estimada»).`}
+      </div>
       {resumen.length > 0 && (
         <div style={{ marginBottom: 20 }}>
           <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>RESUMEN POR CLIENTE</div>
@@ -1759,6 +1788,7 @@ function BloqueBPT({ data }) {
           { key: "referencia", label: "Referencia" },
           { key: "categoria", label: "Categoría" },
           { key: "cantidad", label: "Cantidad", align: "right", render: (f) => fmtNum(f.cantidad) },
+          { key: "fechaEntBPT", label: "Fecha Ent. BPT", align: "right", render: (f) => (f.fechaEntBPT ? <span title={f.fechaEstimada ? "Estimada: este lote no trae la fecha de Terminación, se usa la Fecha Ent BPT anterior" : "Real: fecha en que Terminación entregó el lote"}>{fmtFechaISO(f.fechaEntBPT)}{f.fechaEstimada && <span style={{ marginLeft: 4, fontSize: 10, color: C.slate, fontStyle: "italic" }}>estimada</span>}</span> : "—") },
           { key: "diasEnBPT", label: "Días en BPT", align: "right", render: (f) => (f.diasEnBPT === null || f.diasEnBPT === undefined ? "—" : fmtNum(f.diasEnBPT)) },
         ]}
         filas={filas}
@@ -2563,8 +2593,8 @@ function InformesView({
     XLSX.utils.book_append_sheet(
       wb,
       XLSX.utils.aoa_to_sheet([
-        ["Cliente", "Num Lote", "Referencia", "Categoría", "Cantidad", "Fecha Ent. BPT", "Días en BPT"],
-        ...reporteBPT.filas.map((f) => [f.cliente, f.numLote, f.referencia, f.categoria, f.cantidad, fmtFechaISO(f.fechaEntBPT), f.diasEnBPT]),
+        ["Cliente", "Num Lote", "Referencia", "Categoría", "Cantidad", "Fecha Ent. BPT", "Origen de la fecha", "Días en BPT"],
+        ...reporteBPT.filas.map((f) => [f.cliente, f.numLote, f.referencia, f.categoria, f.cantidad, fmtFechaISO(f.fechaEntBPT), f.fechaEntBPT ? (f.fechaEstimada ? "Estimada" : "Terminación") : "", f.diasEnBPT]),
         [],
         ["RESUMEN POR CLIENTE"],
         ["Cliente", "Lotes", "Unidades"],
@@ -9295,7 +9325,7 @@ function TuboProductivoView() {
         // rango a máximo 180 días hacia atrás — para lotes más viejos que
         // eso simplemente no se revisa su facturación automáticamente
         // (mejor eso que tumbar la consulta para todos).
-        const fechasEntBPT = lotesBPT.map((l) => l.fechaEntBPTISO).filter(Boolean).sort();
+        const fechasEntBPT = lotesBPT.map((l) => fechaRealEntBPT(l).iso).filter(Boolean).sort();
         const hoy = new Date();
         const iso = (d) => d.toISOString().slice(0, 10);
         const TOPE_DIAS_ATRAS = 180;
@@ -9340,7 +9370,8 @@ function TuboProductivoView() {
         // nota arriba), no se puede afirmar que esté "Sin facturar" — puede
         // que sí tenga documento, simplemente más viejo de lo que se
         // revisó. Se marca aparte para no dar un falso "Sin facturar".
-        const fueraDeRango = fechaInicioConsultaBPT && l.fechaEntBPTISO && l.fechaEntBPTISO < fechaInicioConsultaBPT;
+        const fechaBPTLote = fechaRealEntBPT(l).iso;
+        const fueraDeRango = fechaInicioConsultaBPT && fechaBPTLote && fechaBPTLote < fechaInicioConsultaBPT;
         return { ...l, _docs: docs, _facturado: docsFacturables.length > 0, _fueraDeRango: fueraDeRango };
       });
       if (soloPendientesBPT) filas = filas.filter((l) => !l._facturado && !l._fueraDeRango);
@@ -9352,7 +9383,8 @@ function TuboProductivoView() {
     if (etapaActiva?.id !== "bpt") return 0;
     const lotesBPT = lotesFiltrados.filter((l) => Number(l.invBPT) > 0);
     return lotesBPT.filter((l) => {
-      const fueraDeRango = fechaInicioConsultaBPT && l.fechaEntBPTISO && l.fechaEntBPTISO < fechaInicioConsultaBPT;
+      const fechaBPTLote = fechaRealEntBPT(l).iso;
+        const fueraDeRango = fechaInicioConsultaBPT && fechaBPTLote && fechaBPTLote < fechaInicioConsultaBPT;
       if (fueraDeRango) return false; // no verificado, no cuenta como "pendiente confirmado"
       const docs = docsPorPedido[String(l.numPedido || "").trim()] || [];
       return !docs.some((d) => d.tipo === "FAC" || d.tipo === "TCO" || d.tipo === "TEX");
