@@ -230,7 +230,7 @@ function BloqueCierre({ db, currentUser, deOtraArea }) {
           <span style={{ fontSize: 15, fontWeight: 700, color: C.slate }}>{verMeta && !todosVac ? `de ${fmt(f.meta)} und` : "und"}</span>
         </div>
         <div style={{ fontSize: 13.5, color: C.slate, marginTop: 8, lineHeight: 1.4 }}>{sub}</div>
-        {hayVac ? <div style={{ fontSize: 12, color: C.blue, fontWeight: 700, marginTop: 4 }}>De vacaciones: {f.vac.nombres.join(", ")}</div> : null}
+        {hayVac ? <div style={{ fontSize: 12, color: C.blue, fontWeight: 700, marginTop: 4 }}>De vacaciones o licencia: {f.vac.nombres.join(", ")}</div> : null}
       </div>
     );
   }

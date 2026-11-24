@@ -2,13 +2,15 @@
 // Cuando parte del grupo está de vacaciones, la meta del día se reduce en proporción a quienes sí trabajan:
 //   meta ajustada = meta × (personas que trabajan ÷ personas activas del área).
 // Si todo el grupo está de vacaciones ese día, el día NO cuenta (ni para cumplir ni para fallar).
-// La fuente es Nómina → Ausencias con motivo «Vacaciones» (nomina_ausencias). Todo es de solo lectura.
+// La fuente es Nómina → Ausencias con motivo «Vacaciones» o «Licencia No Remunerada» (nomina_ausencias): en los dos casos la persona no trabaja y
+// su sueldo del día no se paga / no cuenta contra el equipo (2026-11-24, a pedido de Fredy: la licencia no remunerada se trata igual). Todo es de solo lectura.
 
 const norm = (s) => String(s == null ? "" : s).normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase().replace(/\s+/g, " ").trim();
 const NUM = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 const pad = (n) => String(n).padStart(2, "0");
 
-export const esMotivoVacaciones = (motivo) => norm(motivo) === "VACACIONES";
+// (El nombre se conserva por compatibilidad: ahora también cubre «Licencia No Remunerada».)
+export const esMotivoVacaciones = (motivo) => { const m = norm(motivo); return m === "VACACIONES" || m === "LICENCIA NO REMUNERADA"; };
 
 // ¿Esta persona está de vacaciones ese día? (ausencia con motivo Vacaciones cuyo rango cubre el día)
 export function enVacacionesDia(ausencias, trabajadorId, iso) {
@@ -94,8 +96,8 @@ export function metaPeriodoAjustada(metaBase, vacPorDia, diasTrabajo) {
 // Texto corto para mostrar junto a la meta: «Meta 350 de 500 (3 de 10 en vacaciones)».
 export function textoMetaVacaciones(metaBase, info) {
   if (!info || !info.hay) return "";
-  if (info.todos) return "Todo el grupo está de vacaciones: el día no cuenta";
-  return `Meta ${Math.round(metaAjustadaDia(metaBase, info))} de ${Math.round(NUM(metaBase))} (${info.enVacaciones} de ${info.total} en vacaciones)`;
+  if (info.todos) return "Todo el grupo está de vacaciones o licencia: el día no cuenta";
+  return `Meta ${Math.round(metaAjustadaDia(metaBase, info))} de ${Math.round(NUM(metaBase))} (${info.enVacaciones} de ${info.total} de vacaciones o licencia)`;
 }
 
 export const diaISO = (anio, mes, d) => `${anio}-${pad(mes)}-${pad(d)}`;
