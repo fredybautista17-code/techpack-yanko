@@ -5238,6 +5238,22 @@ function DiagnosticoCuentasCxp({ empresa, onCerrar }) {
   const [informe, setInforme] = useState(null); // { archivo, mapa }
   const [soloDif, setSoloDif] = useState(true);
   const [abiertoNit, setAbiertoNit] = useState(null);
+  // (2026-11-24) Exploración del swagger de TNS: ¿existe el informe «Cuentas por pagar edades» como consulta? (solo lee)
+  const [rutas, setRutas] = useState(null);
+  const [buscandoRutas, setBuscandoRutas] = useState(false);
+  const [palabrasRutas, setPalabrasRutas] = useState("pagar edad proveedor acreedor cxp compra");
+  async function buscarRutas() {
+    setBuscandoRutas(true);
+    setError("");
+    try {
+      const r = await httpsCallable(functionsClient, "explorarRutasTNS", { timeout: 120000 })({ empresa, buscar: palabrasRutas });
+      setRutas(r.data);
+    } catch (err) {
+      setError(err?.message || "No se pudo explorar el swagger de TNS.");
+    } finally {
+      setBuscandoRutas(false);
+    }
+  }
   async function traer() {
     setCargando(true);
     setError("");
@@ -5303,6 +5319,40 @@ function DiagnosticoCuentasCxp({ empresa, onCerrar }) {
         ATLAS suma solo las cuentas 2205, 2335 y los anticipos 1330. Aquí ves el saldo de TODAS las cuentas de pasivo por tercero para encontrar de qué cuenta sale lo que ATLAS no muestra. No cambia ningún saldo.
       </div>
       {error && <div style={{ padding: "8px 12px", background: C.redBg, color: C.red, borderRadius: 8, fontSize: 12.5, fontWeight: 600, marginBottom: 10 }}>⚠ {error}</div>}
+      <div style={{ border: `1px dashed ${C.border}`, borderRadius: 10, padding: "8px 12px", marginBottom: 12 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: C.ink }}>Buscar el informe de edades en TNS</div>
+          <div style={{ flex: "1 1 220px" }}><FInput value={palabrasRutas} onChange={setPalabrasRutas} placeholder="Palabras: pagar, edad, proveedor…" /></div>
+          <Btn small variant="secondary" onClick={buscarRutas} disabled={buscandoRutas}>{buscandoRutas ? "Buscando..." : "Buscar en TNS"}</Btn>
+        </div>
+        {rutas && (
+          <div style={{ marginTop: 8 }}>
+            <div style={{ fontSize: 11.5, color: C.slate, marginBottom: 6 }}>
+              {rutas.totalRutas} rutas en el API de TNS · {(rutas.rutas || []).length} coinciden con «{(rutas.palabras || []).join(" ")}»{(rutas.rutas || []).length === 0 ? ". Prueba con otras palabras (ej. «cartera», «vencimiento», «tercero»)." : "."}
+            </div>
+            <div style={{ maxHeight: 260, overflow: "auto", fontSize: 12 }}>
+              {(rutas.rutas || []).map((r) => (
+                <div key={r.ruta} style={{ padding: "4px 0", borderBottom: `1px solid ${C.border}` }}>
+                  <div style={{ fontFamily: "monospace", fontWeight: 700, color: C.ink, wordBreak: "break-all" }}>{r.ruta}</div>
+                  {r.metodos.map((m, i) => (
+                    <div key={i} style={{ color: C.slate }}>
+                      <b>{m.metodo}</b>{m.resumen ? ` · ${m.resumen}` : ""}{m.query.length ? ` · parámetros: ${m.query.join(", ")}` : ""}{m.cuerpo.length ? ` · cuerpo: ${m.cuerpo.join(", ")}` : ""}
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+            {(rutas.reportes || []).length > 0 && (
+              <details style={{ marginTop: 8 }}>
+                <summary style={{ fontSize: 12, fontWeight: 700, color: C.ink, cursor: "pointer" }}>Todos los reportes del API ({rutas.reportes.length})</summary>
+                <div style={{ fontFamily: "monospace", fontSize: 11.5, color: C.slate, maxHeight: 200, overflow: "auto", marginTop: 4 }}>
+                  {rutas.reportes.map((x) => <div key={x}>{x}</div>)}
+                </div>
+              </details>
+            )}
+          </div>
+        )}
+      </div>
       {data && (data.errores || []).length > 0 && (
         <div style={{ padding: "8px 12px", background: C.amberBg, color: C.ink, borderRadius: 8, fontSize: 12, marginBottom: 10 }}>
           <b>TNS no respondió algunos rangos</b> (los resultados pueden estar incompletos):

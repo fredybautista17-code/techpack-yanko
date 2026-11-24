@@ -14004,6 +14004,79 @@ exports.diagnosticarCuentasPorPagarTNS = onCallAuth(
   }
 );
 
+// (2026-11-24, a pedido de Fredy) Explorar el swagger de TNS: el informe «Cuentas por pagar edades» de Indutex trae saldos que el Balance de Comprobación no
+// muestra (ej. Sofimar: informe $557 M, contabilidad $88 M en 2205). Esta consulta lista las rutas del API de TNS que parecen de cuentas por pagar,
+// edades, proveedores o compras (con el método y los campos que piden) y todos los reportes disponibles, para ver si existe el mismo informe. Solo LEE.
+exports.explorarRutasTNS = onCallAuth(
+  {
+    secrets: TNS_SECRETS_TODAS,
+    timeoutSeconds: 120,
+    memory: "512MiB",
+  },
+  async (request) => {
+    await verificarLlamadorEsAdmin(request);
+    const empresa = request.data?.empresa === "indutex" ? "indutex" : "yanko";
+    const palabras = String(request.data?.buscar || "pagar edad proveedor acreedor cxp compra")
+      .toLowerCase()
+      .split(/[\s,;]+/)
+      .map((w) => w.replace(/[^a-z0-9áéíóúñ]/g, ""))
+      .filter((w) => w.length >= 3)
+      .slice(0, 10);
+    try {
+      const candidatos = ["/swagger/v2/swagger.json", "/swagger/v1/swagger.json", "/swagger/swagger.json", "/swagger.json", "/v2/swagger.json"];
+      const token = await obtenerTokenTNS(empresa);
+      let spec = null;
+      let urlSwagger = "";
+      for (const u of candidatos) {
+        try {
+          const r = await fetch(`${TNS_BASE_URL}${u}`, { headers: { Authorization: `Bearer ${token}` } });
+          if (!r.ok) continue;
+          const j = await r.json();
+          if (j?.paths) { spec = j; urlSwagger = u; break; }
+        } catch (e) { /* siguiente */ }
+      }
+      if (!spec) throw new HttpsError("not-found", "No se pudo leer el swagger de TNS (ninguna de las rutas conocidas respondió).");
+      const esquemas = spec.components?.schemas || spec.definitions || {};
+      const resolver = (sch, n = 0) => {
+        let a = sch;
+        let g = 0;
+        while (a && a.$ref && g++ < 10) a = esquemas[String(a.$ref).split("/").pop()];
+        if (a && Array.isArray(a.allOf) && n < 4) {
+          return a.allOf.reduce((acc, x) => ({ properties: { ...(acc.properties || {}), ...((resolver(x, n + 1) || {}).properties || {}) } }), {});
+        }
+        return a;
+      };
+      const rutas = Object.keys(spec.paths);
+      const coincide = (r) => palabras.some((w) => r.toLowerCase().includes(w));
+      const puntaje = (r) => palabras.reduce((t, w) => t + (r.toLowerCase().includes(w) ? 1 : 0), 0) + (/pagar|edad/i.test(r) ? 2 : 0);
+      const detalle = (ruta) => {
+        const item = spec.paths[ruta] || {};
+        return Object.keys(item)
+          .filter((m) => ["get", "post", "put", "delete"].includes(m))
+          .map((m) => {
+            const op = item[m] || {};
+            const contenido = op.requestBody?.content;
+            const sch = contenido ? (contenido["application/json"] || Object.values(contenido)[0])?.schema : (op.parameters || []).find((x) => x.in === "body")?.schema;
+            return {
+              metodo: m.toUpperCase(),
+              resumen: String(op.summary || op.description || "").slice(0, 160),
+              query: (op.parameters || []).filter((x) => x.in === "query").map((x) => x.name),
+              cuerpo: Object.keys(resolver(sch)?.properties || {}),
+            };
+          });
+      };
+      const coinciden = rutas.filter(coincide).sort((a, b) => puntaje(b) - puntaje(a) || a.localeCompare(b)).slice(0, 70).map((ruta) => ({ ruta, metodos: detalle(ruta) }));
+      const reportes = rutas.filter((r) => /reporte/i.test(r)).sort().slice(0, 80);
+      logger.info("explorarRutasTNS OK", { empresa, totalRutas: rutas.length, coinciden: coinciden.length, reportes: reportes.length, palabras });
+      return { ok: true, empresa, swagger: urlSwagger, totalRutas: rutas.length, palabras, rutas: coinciden, reportes };
+    } catch (err) {
+      if (err instanceof HttpsError) throw err;
+      logger.error("explorarRutasTNS falló", { mensaje: err?.message, stack: err?.stack, empresa });
+      throw new HttpsError("internal", err?.message || "Error desconocido al explorar las rutas de TNS.");
+    }
+  }
+);
+
 // Movimientos de UN proveedor en TNS (2026-10-27, a pedido de Fredy): para ver de qué documentos sale el saldo que TNS
 // tiene de un proveedor (cuentas 2205, 2335 y 1330) y compararlo con Busint. Usa el Libro Auxiliar de TNS
 // (POST /v2/contabilidad/Reportes/LibroAuxiliar). Como en el proyecto todavía no se usaba, el cuerpo se arma leyendo
