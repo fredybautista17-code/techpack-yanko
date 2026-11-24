@@ -5216,6 +5216,198 @@ export function calcularCuadreCxp({ proveedoresBusint, tnsProveedores, enlaces, 
   }).filter((r) => (r.estado === "solotns" ? Math.abs(r.tns) >= 1000 : r.estado === "solobusint" || r.estado === "taller" ? Math.abs(r.busint) >= 1 : true));
   return todas;
 }
+// (2026-11-24, a pedido de Fredy) Diagnóstico de cuentas por pagar (Indutex): lista, por tercero, TODAS las cuentas de pasivo de TNS
+// (2100–2899) y los anticipos 1330, separando lo que ATLAS ya suma (2205 + 2335 − 1330) de lo que NO suma. Se puede cargar el informe
+// «Cuentas por pagar edades» de TNS (xls/xlsx) para ponerlo al lado. Solo lee; no cambia ningún saldo de ATLAS.
+function leerInformeEdadesCxp(filas) {
+  // Cada fila del informe: nombre del tercero (primer texto que no es número ni fecha) y total (último número de la fila).
+  const mapa = {};
+  (filas || []).forEach((fila) => {
+    const celdas = Array.isArray(fila) ? fila : [];
+    const nombre = celdas.find((c) => typeof c === "string" && /[A-Za-zÁÉÍÓÚÑáéíóúñ]{3,}/.test(c) && !/^\s*(total|nit|tercero|nombre|fecha|corte)/i.test(c));
+    const nums = celdas.map((c) => (typeof c === "number" ? c : NaN)).filter((n) => !Number.isNaN(n));
+    if (!nombre || !nums.length) return;
+    mapa[claveNombreCxpTns(nombre)] = { nombre: String(nombre).trim(), total: nums[nums.length - 1] };
+  });
+  return mapa;
+}
+function DiagnosticoCuentasCxp({ empresa, onCerrar }) {
+  const [cargando, setCargando] = useState(false);
+  const [error, setError] = useState("");
+  const [data, setData] = useState(null);
+  const [informe, setInforme] = useState(null); // { archivo, mapa }
+  const [soloDif, setSoloDif] = useState(true);
+  const [abiertoNit, setAbiertoNit] = useState(null);
+  async function traer() {
+    setCargando(true);
+    setError("");
+    try {
+      const r = await httpsCallable(functionsClient, "diagnosticarCuentasPorPagarTNS", { timeout: 300000 })({ empresa });
+      setData(r.data);
+    } catch (err) {
+      setError(err?.message || "No se pudo traer el diagnóstico de cuentas.");
+    } finally {
+      setCargando(false);
+    }
+  }
+  async function cargarInforme(e) {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (!f) return;
+    try {
+      const XLSX = await import("xlsx");
+      const wb = XLSX.read(await f.arrayBuffer(), { type: "array" });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const filas = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+      const mapa = leerInformeEdadesCxp(filas);
+      if (!Object.keys(mapa).length) { setError("No se reconoció ningún proveedor con valores en ese archivo."); return; }
+      setError("");
+      setInforme({ archivo: f.name, mapa });
+    } catch (err) {
+      setError(err?.message || "No se pudo leer el archivo.");
+    }
+  }
+  const th = { textAlign: "right", padding: "8px 10px", fontSize: 11, color: C.slate, fontWeight: 700, borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" };
+  const td = { textAlign: "right", padding: "7px 10px", fontSize: 12.5, borderBottom: `1px solid ${C.border}`, fontVariantNumeric: "tabular-nums" };
+  const filas = useMemo(() => {
+    if (!data) return [];
+    const usados = new Set();
+    const lista = (data.terceros || []).map((t) => {
+      const k = claveNombreCxpTns(t.nombre);
+      const inf = informe?.mapa?.[k];
+      if (inf) usados.add(k);
+      return { ...t, informe: inf ? inf.total : null };
+    });
+    const sinTns = informe ? Object.entries(informe.mapa).filter(([k]) => !usados.has(k)).map(([k, v]) => ({ nit: "", nombre: v.nombre, netoAtlas: 0, otras: 0, total: 0, cuentas: [], informe: v.total, soloInforme: true })) : [];
+    return [...lista, ...sinTns];
+  }, [data, informe]);
+  const visibles = filas.filter((t) => {
+    if (!soloDif) return true;
+    if (t.soloInforme) return Math.abs(t.informe || 0) >= 1000;
+    return Math.abs(t.otras) >= 1000 || (t.informe !== null && Math.abs(t.informe - t.netoAtlas) >= 1000);
+  });
+  return (
+    <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: 14, marginBottom: 16 }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
+        <div style={{ fontSize: 14, fontWeight: 800, color: C.ink, flex: 1 }}>🔬 Diagnóstico de cuentas · {empresa === "indutex" ? "Indutex" : "Yanko"}</div>
+        <Btn small onClick={traer} disabled={cargando}>{cargando ? "Consultando TNS..." : data ? "Volver a consultar" : "Consultar cuentas de TNS"}</Btn>
+        <label style={{ display: "inline-block" }}>
+          <input type="file" accept=".xls,.xlsx" onChange={cargarInforme} style={{ display: "none" }} />
+          <span style={{ display: "inline-block", cursor: "pointer", fontSize: 12, fontWeight: 600, padding: "6px 12px", borderRadius: 8, border: `1px solid ${C.border}`, color: C.ink, background: C.white }}>
+            📎 {informe ? "Cambiar informe de edades" : "Cargar informe de edades (opcional)"}
+          </span>
+        </label>
+        <Btn small variant="secondary" onClick={onCerrar}>Cerrar</Btn>
+      </div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 10 }}>
+        ATLAS suma solo las cuentas 2205, 2335 y los anticipos 1330. Aquí ves el saldo de TODAS las cuentas de pasivo por tercero para encontrar de qué cuenta sale lo que ATLAS no muestra. No cambia ningún saldo.
+      </div>
+      {error && <div style={{ padding: "8px 12px", background: C.redBg, color: C.red, borderRadius: 8, fontSize: 12.5, fontWeight: 600, marginBottom: 10 }}>⚠ {error}</div>}
+      {data && (data.errores || []).length > 0 && (
+        <div style={{ padding: "8px 12px", background: C.amberBg, color: C.ink, borderRadius: 8, fontSize: 12, marginBottom: 10 }}>
+          <b>TNS no respondió algunos rangos</b> (los resultados pueden estar incompletos):
+          {(data.errores || []).slice(0, 5).map((x, i) => <div key={i} style={{ color: C.slate }}>• {x}</div>)}
+        </div>
+      )}
+      {informe && <div style={{ fontSize: 12, color: C.slate, marginBottom: 8 }}>Informe cargado: <b>{informe.archivo}</b> · {Object.keys(informe.mapa).length} terceros reconocidos (cruce por nombre).</div>}
+      {data && (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(190px,1fr))", gap: 10, marginBottom: 12 }}>
+            <KPI icon="📒" label="Lo que ATLAS suma (2205 + 2335 − 1330)" value={fmtMillCxp(data.totales?.netoAtlas || 0)} color={C.blue} bg={C.blueBg} />
+            <KPI icon="❓" label="Otras cuentas de pasivo (ATLAS no las suma)" value={fmtMillCxp(data.totales?.otras || 0)} color={Math.abs(data.totales?.otras || 0) < 1000 ? C.green : C.amber} bg={Math.abs(data.totales?.otras || 0) < 1000 ? C.greenBg : C.amberBg} />
+            <KPI icon="Σ" label="Total pasivos con terceros" value={fmtMillCxp(data.totales?.total || 0)} color={C.slate} bg={C.canvas} />
+          </div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, marginBottom: 6 }}>Cuentas encontradas (corte {data.corte})</div>
+          <div style={{ overflowX: "auto", marginBottom: 14 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 520 }}>
+              <thead>
+                <tr style={{ background: C.canvas }}>
+                  <th style={{ ...th, textAlign: "left" }}>Cuenta</th>
+                  <th style={{ ...th, textAlign: "left" }}>¿ATLAS la suma?</th>
+                  <th style={th}>Terceros</th>
+                  <th style={th}>Saldo (se debe)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(data.cuentas || []).map((c) => (
+                  <tr key={c.codigo} style={{ background: c.enAtlas ? undefined : C.amberBg }}>
+                    <td style={{ ...td, textAlign: "left" }}><b>{c.codigo}</b> <span style={{ color: C.slate }}>{c.nombre}</span></td>
+                    <td style={{ ...td, textAlign: "left", fontWeight: 700, color: c.enAtlas ? C.green : C.amber }}>{c.enAtlas ? "Sí" : "No"}</td>
+                    <td style={td}>{c.terceros}</td>
+                    <td style={{ ...td, fontWeight: 700 }}>{fmtCOP(c.total)}</td>
+                  </tr>
+                ))}
+                {(data.cuentas || []).length === 0 && <tr><td colSpan={4} style={{ ...td, textAlign: "center", color: C.slate, padding: 20 }}>TNS no devolvió cuentas de pasivo con saldo.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 6 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, flex: 1 }}>Por tercero</div>
+            <label style={{ fontSize: 12, color: C.slate }}>
+              <input type="checkbox" checked={soloDif} onChange={(e) => setSoloDif(e.target.checked)} /> Solo con diferencia
+            </label>
+          </div>
+          <div style={{ overflow: "auto", maxHeight: 460 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: informe ? 760 : 620 }}>
+              <thead>
+                <tr style={{ background: C.canvas }}>
+                  <th style={{ ...th, textAlign: "left" }}>Tercero</th>
+                  <th style={th}>ATLAS (2205+2335−1330)</th>
+                  <th style={th}>Otras cuentas</th>
+                  <th style={th}>Total TNS</th>
+                  {informe && <th style={th}>Informe de edades</th>}
+                  {informe && <th style={th}>Informe − ATLAS</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {visibles.length === 0 && <tr><td colSpan={informe ? 6 : 4} style={{ ...td, textAlign: "center", color: C.slate, padding: 24 }}>{filas.length ? "Ningún tercero tiene diferencia." : "Sin terceros."}</td></tr>}
+                {visibles.slice(0, 300).map((t, i) => {
+                  const k = `${t.nit}|${t.nombre}|${i}`;
+                  const ab = abiertoNit === k;
+                  const dif = t.informe !== null && t.informe !== undefined ? t.informe - t.netoAtlas : null;
+                  return (
+                    <Fragment key={k}>
+                      <tr onClick={() => t.cuentas.length && setAbiertoNit(ab ? null : k)} style={{ cursor: t.cuentas.length ? "pointer" : "default", background: ab ? C.canvas : undefined }}>
+                        <td style={{ ...td, textAlign: "left", fontWeight: 600, color: C.ink }}>
+                          {t.cuentas.length > 0 && <span style={{ display: "inline-block", transition: "transform 0.15s", transform: ab ? "rotate(90deg)" : "none", fontSize: 11, marginRight: 6, color: C.slate }}>›</span>}
+                          {t.nombre || "(sin nombre)"}
+                          {t.nit ? <span style={{ color: C.slate, fontSize: 11, fontWeight: 400 }}> · {t.nit}</span> : null}
+                          {t.soloInforme && <span style={{ color: C.red, fontSize: 11, fontWeight: 600 }}> · solo en el informe</span>}
+                        </td>
+                        <td style={td}>{fmtCOP(t.netoAtlas)}</td>
+                        <td style={{ ...td, fontWeight: 700, color: Math.abs(t.otras) >= 1000 ? C.amber : C.slate }}>{fmtCOP(t.otras)}</td>
+                        <td style={td}>{fmtCOP(t.total)}</td>
+                        {informe && <td style={td}>{t.informe !== null && t.informe !== undefined ? fmtCOP(t.informe) : "—"}</td>}
+                        {informe && <td style={{ ...td, fontWeight: 700, color: dif === null ? C.slate : Math.abs(dif) < 1000 ? C.green : C.red }}>{dif === null ? "" : Math.abs(dif) < 1000 ? "cuadra" : fmtCOP(dif)}</td>}
+                      </tr>
+                      {ab && (
+                        <tr>
+                          <td colSpan={informe ? 6 : 4} style={{ padding: "6px 14px 12px", background: C.canvas, borderBottom: `1px solid ${C.border}` }}>
+                            {t.cuentas.map((c) => (
+                              <div key={c.codigo} style={{ display: "flex", gap: 10, fontSize: 12, padding: "2px 0" }}>
+                                <span style={{ width: 70, fontWeight: 700, color: c.enAtlas ? C.green : C.amber }}>{c.codigo}</span>
+                                <span style={{ flex: 1, color: C.slate }}>{c.nombre} · {c.enAtlas ? "ATLAS la suma" : "ATLAS NO la suma"}</span>
+                                <span style={{ fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{fmtCOP(c.aporte)}</span>
+                              </div>
+                            ))}
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ fontSize: 11, color: C.slate, marginTop: 8 }}>
+            Valores positivos = se le debe al tercero; negativos = saldo a favor nuestro (anticipos o pasivos con saldo débito). Si el informe de edades de TNS coincide con «Total TNS» y no con «ATLAS», la diferencia está en las cuentas marcadas «ATLAS NO la suma».
+          </div>
+        </>
+      )}
+      {!data && !cargando && !error && <div style={{ fontSize: 12, color: C.slate }}>Pulsa «Consultar cuentas de TNS» para traer las cuentas de pasivo de este corte.</div>}
+    </div>
+  );
+}
 function CuadreCxpView({ proveedoresBusint: proveedoresBusintProp, corteActivo, detalleFacturas, facturasGuardadas, onTraerBusint, cargandoBusint, plazos, onGuardarPlazo, prontoDias, onGuardarPronto, empresa, setEmpresa }) {
   // (2026-11-05, a pedido de Fredy) La empresa la elige el selector de la pantalla. Busint solo trae a Yanko: para Indutex
   // no hay con qué cruzar, así que se muestra solo lo que dice TNS (sin "Solo Busint", sin diferencia).
@@ -5234,6 +5426,7 @@ function CuadreCxpView({ proveedoresBusint: proveedoresBusintProp, corteActivo, 
   const [abierto, setAbierto] = useState(null); // clave de la fila con el detalle abierto
   const [movs, setMovs] = useState({}); // clave -> { cargando, error, data }
   const [soloCreditos, setSoloCreditos] = useState(true);
+  const [verDiag, setVerDiag] = useState(false);
   // (2026-10-30) Revisión de anticipos de un proveedor (admin): clave de la fila -> { cargando, error, data }.
   const [revAnt, setRevAnt] = useState({});
   async function revisarAnticipos(fila) {
@@ -5410,7 +5603,8 @@ function CuadreCxpView({ proveedoresBusint: proveedoresBusintProp, corteActivo, 
       const dd = digitos(`${f.documento} ${f.detalle || ""}`);
       return abiertasBusint.some((b) => dd.includes(b));
     };
-    const filasMov = (m?.data?.filas || []).filter((f) => !soloCreditos || f.credito);
+    const resumenMov = !!m?.data?.resumenMensual;
+    const filasMov = (m?.data?.filas || []).filter((f) => resumenMov || !soloCreditos || f.credito);
     // Facturas que TNS ya tiene (crédito) y Busint todavía no: la mercancía no se ha ingresado a inventario en Busint.
     // Se descartan las que ya tienen un pago (débito) por el mismo valor y las de hace más de 120 días.
     const isoTns = (t) => {
@@ -5420,7 +5614,7 @@ function CuadreCxpView({ proveedoresBusint: proveedoresBusintProp, corteActivo, 
       return mm ? `${mm[3]}-${mm[2]}-${mm[1]}` : null;
     };
     const debitosLibres = (m?.data?.filas || []).filter((f) => f.debito > 0).map((f) => Math.round(f.debito));
-    const pendientesTns = (m?.data?.filas || []).filter((f) => {
+    const pendientesTns = (resumenMov ? [] : (m?.data?.filas || [])).filter((f) => {
       if (!(f.credito > 0) || enBusint(f)) return false;
       const iso = isoTns(f.fecha);
       if (!iso || difDiasISOCxp(iso, hoyISO) > 120) return false;
@@ -5650,7 +5844,7 @@ function CuadreCxpView({ proveedoresBusint: proveedoresBusintProp, corteActivo, 
             <div>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, flex: 1 }}>Movimientos en TNS (este año)</div>
-                {m?.data && (m.data.filas || []).length > 0 && (
+                {m?.data && (m.data.filas || []).length > 0 && !resumenMov && (
                   <label style={{ fontSize: 12, color: C.slate }}>
                     <input type="checkbox" checked={soloCreditos} onChange={(e) => setSoloCreditos(e.target.checked)} /> Solo facturas (créditos)
                   </label>
@@ -5663,7 +5857,12 @@ function CuadreCxpView({ proveedoresBusint: proveedoresBusintProp, corteActivo, 
               </div>
               {!fila.enTns && <div style={{ fontSize: 12, color: C.slate }}>Este proveedor no tiene saldo en TNS.</div>}
               {m?.error && <div style={{ fontSize: 12, color: C.red, fontWeight: 600 }}>⚠ {m.error}</div>}
-              {m?.data && (m.data.filas || []).length > 0 && (
+              {m?.data && resumenMov && (
+                <div style={{ background: C.amberBg, border: `1px solid ${C.amber}55`, borderRadius: 10, padding: "8px 12px", marginBottom: 10, fontSize: 12, color: C.ink }}>
+                  El Libro Auxiliar de TNS no respondió, así que aquí ves un <b>resumen por mes</b> (débitos, créditos y saldo de cada cuenta) sacado del Balance de Comprobación. No son facturas sueltas: sirve para ver en qué mes se movió el saldo.
+                </div>
+              )}
+              {m?.data && !resumenMov && (m.data.filas || []).length > 0 && (
                 <div style={{ background: pendientesTns.length ? C.amberBg : C.canvas, border: `1px solid ${pendientesTns.length ? C.amber : C.border}55`, borderRadius: 10, padding: "8px 12px", marginBottom: 10 }}>
                   <div style={{ fontSize: 12, fontWeight: 700, color: C.ink }}>
                     {pendientesTns.length
@@ -5724,7 +5923,7 @@ function CuadreCxpView({ proveedoresBusint: proveedoresBusintProp, corteActivo, 
                           <td style={{ ...td, textAlign: "left", maxWidth: 260, whiteSpace: "normal", color: C.slate }}>{f.detalle}</td>
                           <td style={td}>{f.debito ? fmtCOP(f.debito) : ""}</td>
                           <td style={td}>{f.credito ? fmtCOP(f.credito) : ""}</td>
-                          <td style={{ ...td, textAlign: "center" }}>{f.credito ? (enBusint(f) ? <span style={{ color: C.green, fontWeight: 700 }}>✓ abierta</span> : <span style={{ color: C.slate }}>—</span>) : ""}</td>
+                          <td style={{ ...td, textAlign: "center" }}>{f.credito && !resumenMov ? (enBusint(f) ? <span style={{ color: C.green, fontWeight: 700 }}>✓ abierta</span> : <span style={{ color: C.slate }}>—</span>) : ""}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -5762,6 +5961,7 @@ function CuadreCxpView({ proveedoresBusint: proveedoresBusintProp, corteActivo, 
           {cargando === "indutex" ? "Consultando TNS..." : "Indutex"}
         </Btn>
         {d && <Btn small variant="secondary" onClick={() => traerTns(empresa)} disabled={!!cargando}>Volver a traer TNS</Btn>}
+        {soloTns && <Btn small variant={verDiag ? "primary" : "secondary"} onClick={() => setVerDiag((v) => !v)}>🔬 Diagnóstico de cuentas</Btn>}
         <span style={{ fontSize: 12, color: C.slate }}>
           {soloTns ? "Indutex · solo TNS (no tiene Busint)" : `Busint ${fechaBusint || "sin corte"}`}{d ? ` · TNS ${d.corte} (sucursales ${(d.sucursales || []).join(", ")})` : ""}
         </span>
@@ -5778,6 +5978,7 @@ function CuadreCxpView({ proveedoresBusint: proveedoresBusintProp, corteActivo, 
         {corteActivo?.campoEmision ? ` Fecha de emisión tomada de la columna ${corteActivo.campoEmision} de Busint.` : ""}
         {` Vencimiento = emisión + plazo del proveedor en ${(proveedoresBusint || []).filter((p) => p.plazoAplicado).length} proveedores; el resto usa las fechas de Busint (plazos en "⏱ Plazos de pago").`}
       </div>
+      {soloTns && verDiag && <DiagnosticoCuentasCxp empresa={empresa} onCerrar={() => setVerDiag(false)} />}
       {error && <div style={{ padding: "10px 14px", background: C.redBg, color: C.red, borderRadius: 8, fontSize: 13, fontWeight: 600, marginBottom: 12 }}>⚠ {error}</div>}
       {mensaje && <div style={{ color: C.green, fontSize: 13, fontWeight: 600, marginBottom: 10 }}>✓ {mensaje}</div>}
       {!d ? (

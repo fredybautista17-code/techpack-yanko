@@ -13909,6 +13909,101 @@ exports.getCuentasPorPagarTNS = onCallAuth(
   }
 );
 
+// (2026-11-24, a pedido de Fredy) DIAGNÓSTICO DE CUENTAS por pagar (Indutex): ATLAS suma 2205 + 2335 − 1330, pero el informe «Cuentas por pagar
+// edades» de TNS puede incluir otras cuentas de pasivo (ej. 2xxx de otros conceptos). Esta consulta trae TODAS las cuentas de pasivo (2100–2899)
+// y los anticipos 1330 por tercero y separa lo que ATLAS ya suma de lo que NO suma, para ver de qué cuenta sale la diferencia. Solo LEE, solo admin.
+const esCuentaAtlasCxpTNS = (cod) => /^(2205|2335|1330)/.test(String(cod || "").replace(/\D/g, ""));
+exports.diagnosticarCuentasPorPagarTNS = onCallAuth(
+  {
+    secrets: TNS_SECRETS_TODAS,
+    timeoutSeconds: 300,
+    memory: "512MiB",
+  },
+  async (request) => {
+    await verificarLlamadorEsAdmin(request);
+    const empresa = request.data?.empresa === "indutex" ? "indutex" : "yanko";
+    const cfg = await db.collection("config").doc("tns_sucursales").get();
+    const sucursales = clavesSucursalesTNS(cfg.exists ? cfg.data()?.[empresa] : null);
+    if (!sucursales.length) {
+      throw new HttpsError("failed-precondition", "Faltan las sucursales de TNS de esta empresa. Entra a Nómina → Conexión TNS → \"Explorar sucursales\", marca las que son de esta empresa y pulsa \"Guardar\".");
+    }
+    const { fechaFinal, fechaInicial } = fechasCorteTNS(request);
+    const errores = [];
+    try {
+      // Rangos: primero todos los pasivos de una vez; si TNS lo rechaza, clase por clase (2100–2199 … 2800–2899). Los anticipos 1330 siempre aparte.
+      const rangosAmplio = [{ ini: "2100", fin: "289999" }];
+      const rangosPorClase = ["21", "22", "23", "24", "25", "26", "27", "28"].map((c) => ({ ini: `${c}00`, fin: `${c}9999` }));
+      const hojasTodas = [];
+      for (const sucursal of sucursales) {
+        const base = { empresa, sucursal, fechaInicial, fechaFinal };
+        let pasivos = null;
+        try {
+          pasivos = await ingresosTnsCuentasBalance({ ...base, cuentaInicial: rangosAmplio[0].ini, cuentaFinal: rangosAmplio[0].fin });
+        } catch (e) {
+          errores.push(`Pasivos 2100–2899 en bloque (suc. ${sucursal}): ${String(e?.message || e).slice(0, 200)} — se reintenta por clase.`);
+          pasivos = [];
+          const porClase = await Promise.all(
+            rangosPorClase.map((r) =>
+              ingresosTnsCuentasBalance({ ...base, cuentaInicial: r.ini, cuentaFinal: r.fin }).catch((e2) => {
+                errores.push(`Clase ${r.ini.slice(0, 2)} (suc. ${sucursal}): ${String(e2?.message || e2).slice(0, 200)}`);
+                return [];
+              })
+            )
+          );
+          porClase.forEach((l) => pasivos.push(...l));
+        }
+        const anticipos = await ingresosTnsCuentasBalance({ ...base, cuentaInicial: "1330", cuentaFinal: "133099" }).catch((e) => {
+          errores.push(`Anticipos 1330 (suc. ${sucursal}): ${String(e?.message || e).slice(0, 200)}`);
+          return [];
+        });
+        hojasTodas.push(...pasivos, ...anticipos);
+      }
+      const porNit = new Map();
+      const porCuenta = new Map();
+      hojasTodas.forEach((c) => {
+        const codigo = String(c.codigo || "").replace(/\D/g, "");
+        const nombreCta = String(c.nombre || c.descripcion || "").trim();
+        const enAtlas = esCuentaAtlasCxpTNS(codigo);
+        (Array.isArray(c.terceros) ? c.terceros : []).forEach((t) => {
+          const aporte = -numeroTNS(t.nuevoSaldo); // deuda = −saldo (pasivo crédito negativo; 1330 débito positivo resta)
+          if (Math.abs(aporte) < 100) return;
+          const base = baseNitTNS(t);
+          if (!porNit.has(base)) porNit.set(base, { nit: String(t.nit || "").trim(), nombre: String(t.nombre || "").trim(), netoAtlas: 0, otras: 0, cuentas: [] });
+          const p = porNit.get(base);
+          if (enAtlas) p.netoAtlas += aporte; else p.otras += aporte;
+          const ya = p.cuentas.find((x) => x.codigo === codigo);
+          if (ya) ya.aporte += aporte; else p.cuentas.push({ codigo, nombre: nombreCta, aporte, enAtlas });
+          if (!porCuenta.has(codigo)) porCuenta.set(codigo, { codigo, nombre: nombreCta, enAtlas, total: 0, terceros: 0 });
+          const pc = porCuenta.get(codigo);
+          pc.total += aporte;
+          pc.terceros += 1;
+        });
+      });
+      const terceros = [...porNit.values()]
+        .map((p) => ({
+          nit: p.nit,
+          nombre: p.nombre,
+          netoAtlas: r2TNS(p.netoAtlas),
+          otras: r2TNS(p.otras),
+          total: r2TNS(p.netoAtlas + p.otras),
+          cuentas: p.cuentas.map((x) => ({ ...x, aporte: r2TNS(x.aporte) })).sort((a, b) => Math.abs(b.aporte) - Math.abs(a.aporte)),
+        }))
+        .sort((a, b) => Math.abs(b.otras) - Math.abs(a.otras) || Math.abs(b.total) - Math.abs(a.total));
+      const cuentas = [...porCuenta.values()].map((c) => ({ ...c, total: r2TNS(c.total) })).sort((a, b) => a.codigo.localeCompare(b.codigo));
+      const totales = {
+        netoAtlas: r2TNS(terceros.reduce((t, p) => t + p.netoAtlas, 0)),
+        otras: r2TNS(terceros.reduce((t, p) => t + p.otras, 0)),
+        total: r2TNS(terceros.reduce((t, p) => t + p.total, 0)),
+      };
+      logger.info("diagnosticarCuentasPorPagarTNS OK", { empresa, fechaFinal, sucursales, terceros: terceros.length, cuentas: cuentas.length, totales, errores: errores.length });
+      return { ok: true, empresa, corte: fechaFinal, sucursales, terceros, cuentas, totales, errores };
+    } catch (err) {
+      logger.error("diagnosticarCuentasPorPagarTNS falló", { mensaje: err?.message, stack: err?.stack, empresa });
+      throw new HttpsError("internal", err?.message || "Error desconocido al diagnosticar las cuentas por pagar de TNS.");
+    }
+  }
+);
+
 // Movimientos de UN proveedor en TNS (2026-10-27, a pedido de Fredy): para ver de qué documentos sale el saldo que TNS
 // tiene de un proveedor (cuentas 2205, 2335 y 1330) y compararlo con Busint. Usa el Libro Auxiliar de TNS
 // (POST /v2/contabilidad/Reportes/LibroAuxiliar). Como en el proyecto todavía no se usaba, el cuerpo se arma leyendo
@@ -14056,6 +14151,55 @@ exports.getMovimientosProveedorTNS = onCallAuth(
           });
         }
       }
+      // (2026-11-24) Respaldo: el Libro Auxiliar de TNS responde error 500 en varias empresas (Indutex). Si no dio filas se arma un RESUMEN POR MES
+      // con el Balance de Comprobación del tercero (débitos, créditos y saldo de cada cuenta 2205/2335/1330 en el mes). No son facturas sueltas, pero
+      // permite ver en qué mes se movió el saldo.
+      let resumenMensual = false;
+      const erroresResumen = [];
+      if (!filas.length) {
+        const meses = [];
+        const [aI, mI] = [Number(fechaInicial.slice(0, 4)), Number(fechaInicial.slice(5, 7))];
+        const [aF, mF] = [Number(fechaFinal.slice(0, 4)), Number(fechaFinal.slice(5, 7))];
+        for (let a = aI, m = mI; a < aF || (a === aF && m <= mF); m++) {
+          if (m > 12) { m = 1; a++; if (a > aF) break; }
+          const ini = `${a}-${String(m).padStart(2, "0")}-01`;
+          const fin0 = `${a}-${String(m).padStart(2, "0")}-${String(new Date(Date.UTC(a, m, 0)).getUTCDate()).padStart(2, "0")}`;
+          meses.push({ ini, fin: fin0 > fechaFinal ? fechaFinal : fin0 });
+        }
+        const tareas = [];
+        sucursales.forEach((sucursal) => meses.forEach((mes) => [{ ini: "2205", fin: "233599" }, { ini: "1330", fin: "133099" }].forEach((rg) => tareas.push({ sucursal, mes, rg }))));
+        for (let i = 0; i < tareas.length; i += 6) {
+          const lote = tareas.slice(i, i + 6);
+          const res = await Promise.all(lote.map((t) =>
+            ingresosTnsCuentasBalance({ empresa, sucursal: t.sucursal, fechaInicial: t.mes.ini, fechaFinal: t.mes.fin, cuentaInicial: t.rg.ini, cuentaFinal: t.rg.fin })
+              .then((hojas) => ({ t, hojas }))
+              .catch((e) => { erroresResumen.push(`${t.mes.ini.slice(0, 7)} suc. ${t.sucursal}: ${String(e?.message || e).slice(0, 160)}`); return { t, hojas: [] }; })
+          ));
+          res.forEach(({ t, hojas }) => hojas.forEach((c) => {
+            const codigo = String(c.codigo || "").replace(/\D/g, "");
+            const grupo = codigo.startsWith("2205") ? "c2205" : codigo.startsWith("2335") ? "c2335" : codigo.startsWith("1330") ? "a1330" : null;
+            if (!grupo) return;
+            (Array.isArray(c.terceros) ? c.terceros : []).forEach((tt) => {
+              if (!baseNitTNS(tt).startsWith(nit)) return;
+              const deb = numeroTNS(tt.totalDebito);
+              const cre = numeroTNS(tt.totalCredito);
+              if (!deb && !cre) return;
+              filas.push({
+                fecha: t.mes.fin,
+                cuenta: `${codigo} ${String(c.nombre || "").trim()}`.trim(),
+                documento: "Resumen del mes",
+                detalle: `Débitos ${Math.round(deb).toLocaleString("es-CO")} · Créditos ${Math.round(cre).toLocaleString("es-CO")} · Saldo al cierre ${Math.round(numeroTNS(tt.nuevoSaldo)).toLocaleString("es-CO")}`,
+                debito: deb,
+                credito: cre,
+                saldo: numeroTNS(tt.nuevoSaldo),
+                sucursal: t.sucursal,
+                grupo,
+              });
+            });
+          }));
+        }
+        resumenMensual = filas.length > 0;
+      }
       filas.sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)));
       // Plan B de diagnóstico: si el Libro Auxiliar no dio filas, se prueba la consulta de movimientos por tercero
       // (/v2/tablas/Tercero/ObtenerMovimientos, la misma que usan los clientes) para ver si TNS la responde para proveedores.
@@ -14076,7 +14220,7 @@ exports.getMovimientosProveedorTNS = onCallAuth(
         muestraCruda ? (typeof muestraCruda === "string" ? muestraCruda : JSON.stringify(muestraCruda)) : "",
         respaldoTercero,
       ].filter(Boolean).join("\n").slice(0, 4500);
-      return { ok: true, empresa, nit, corte: fechaFinal, desde: fechaInicial, sucursales, filas: filas.slice(0, 600), totalFilas: filas.length, esquema, enviado: ultimoBody, muestraCruda: diagnostico };
+      return { ok: true, empresa, nit, corte: fechaFinal, desde: fechaInicial, sucursales, filas: filas.slice(0, 600), totalFilas: filas.length, esquema, enviado: ultimoBody, muestraCruda: diagnostico, resumenMensual, erroresResumen: erroresResumen.slice(0, 6) };
     } catch (err) {
       logger.error("getMovimientosProveedorTNS falló", { mensaje: err?.message, stack: err?.stack, empresa, nit });
       throw new HttpsError("internal", err?.message || "Error desconocido al traer los movimientos del proveedor en TNS.");
