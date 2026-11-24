@@ -174,6 +174,35 @@ export function estadisticasMuestras(muestras, opts) {
 //   presupuestos: { [AAAA-MM]: { [claveTaller]: pesos } }   (si un mes no tiene el taller, rige el último mes anterior que sí lo tiene)
 //   prestacionesOn, prestacionesPct
 // Pagos en `centro_costo_muestras/pagos`: { pagos: { [idMuestra]: { valor?, pagada, por, en } } }
+// Costo de una persona para muestras = sueldo × (1 + % de prestaciones si tiene la casilla «Con prestaciones») × (% de su sueldo que cuenta para muestras).
+// Compatibilidad: una persona sin la casilla guardada usa el interruptor general anterior (`prestacionesOn`).
+export const conPrestaciones = (p, cfg) => (typeof p.conPrest === "boolean" ? p.conPrest : !!(cfg && cfg.prestacionesOn));
+export const pctDedicacion = (p) => (typeof p.pctMuestras === "number" && p.pctMuestras >= 0 ? p.pctMuestras : 100);
+export function costoPersona(p, cfg) {
+  const pr = conPrestaciones(p, cfg) ? 1 + (Number(cfg && cfg.prestacionesPct) || 0) / 100 : 1;
+  // En pesos enteros, para que la suma de las filas sea igual al total que se muestra.
+  return Math.round((Number(p.sueldo) || 0) * pr * (pctDedicacion(p) / 100));
+}
+
+// Cuántas muestras entregó el taller en cada mes (AAAA-MM → n) y la fecha de la primera entrega registrada.
+export function resumenMesesMuestras(muestras) {
+  const conteo = {};
+  let primera = "";
+  (muestras || []).filter((c) => !c.eliminado).forEach((c) => {
+    const f = fechaTerminadaTaller(c);
+    if (!f) return;
+    conteo[mesDe(f)] = (conteo[mesDe(f)] || 0) + 1;
+    if (!primera || f < primera) primera = f;
+  });
+  return { conteo, primera };
+}
+// Mes con el que se abre «Costos»: el actual si ya tiene muestras entregadas; si no, el último mes con muestras; si no hay ninguna, el actual.
+export function mesPorDefecto(conteo, mesActual) {
+  if (conteo[mesActual]) return mesActual;
+  const meses = Object.keys(conteo).filter((m) => m <= mesActual).sort();
+  return meses.length ? meses[meses.length - 1] : mesActual;
+}
+
 export function modoDeTaller(cfg, nombreTaller, personal) {
   const c = (cfg.talleres || {})[claveTexto(nombreTaller)];
   if (c && (c.modo === "sueldos" || c.modo === "precio")) return c.modo;
@@ -192,7 +221,6 @@ export function presupuestoDe(presupuestos, mes, nombreTaller) {
 
 export function costosDelMes(muestras, cfg, pagos, mes) {
   const personal = cfg.personal || [];
-  const factor = cfg.prestacionesOn ? 1 + (Number(cfg.prestacionesPct) || 0) / 100 : 1;
   const todas = (muestras || []).filter((c) => !c.eliminado);
   const terminadasMes = todas.filter((c) => mesDe(fechaTerminadaTaller(c)) === mes);
   const nombres = new Map();
@@ -205,7 +233,7 @@ export function costosDelMes(muestras, cfg, pagos, mes) {
     const clave = claveTexto(nombre);
     const modo = modoDeTaller(cfg, nombre, personal);
     const gente = personal.filter((p) => p.activa !== false && claveTexto(p.taller) === clave);
-    const sueldos = gente.reduce((s, p) => s + (Number(p.sueldo) || 0), 0) * factor;
+    const sueldos = gente.reduce((s, p) => s + costoPersona(p, cfg), 0);
     const precio = Number((cfg.talleres || {})[clave]?.precio) || 0;
     const muestrasT = terminadasMes.filter((c) => claveTexto(tallerDe(c)) === clave).sort((a, b) => fechaTerminadaTaller(a).localeCompare(fechaTerminadaTaller(b)));
     const lineas = muestrasT.map((c) => {

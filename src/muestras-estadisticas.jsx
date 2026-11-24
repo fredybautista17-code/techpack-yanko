@@ -6,7 +6,7 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { collection, doc, getDocs, onSnapshot, setDoc } from "firebase/firestore";
 import {
-  estadisticasMuestras, costosDelMes, rangoPeriodo, isoLocal, mesAnterior, claveTexto, f10,
+  estadisticasMuestras, costosDelMes, rangoPeriodo, isoLocal, mesAnterior, claveTexto, f10, costoPersona, conPrestaciones, pctDedicacion, resumenMesesMuestras, mesPorDefecto,
 } from "./muestras-calculo";
 
 const C = {
@@ -209,7 +209,7 @@ function InputTexto({ valor, onGuardar, ancho = 160, placeholder }) {
     style={{ width: ancho, padding: "6px 10px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", background: C.white, color: C.ink }} />;
 }
 
-function TraerPersonalModal({ db, existentes, talleres, onAgregar, onCerrar }) {
+function TraerPersonalModal({ db, existentes, talleres, conPrestPorDefecto, onAgregar, onCerrar }) {
   const [lista, setLista] = useState(null);
   const [err, setErr] = useState("");
   const [marca, setMarca] = useState({});
@@ -252,7 +252,7 @@ function TraerPersonalModal({ db, existentes, talleres, onAgregar, onCerrar }) {
           </div>
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
             <button onClick={onCerrar} style={btnG}>Cancelar</button>
-            <button disabled={!elegidos.length || !taller} onClick={() => { onAgregar(elegidos.map((t) => ({ id: nuevoId(), nombre: t.nombre, taller, sueldo: t.sueldo, activa: true }))); onCerrar(); }} style={{ ...btnD, opacity: !elegidos.length || !taller ? 0.5 : 1 }}>Agregar {elegidos.length || ""}</button>
+            <button disabled={!elegidos.length || !taller} onClick={() => { onAgregar(elegidos.map((t) => ({ id: nuevoId(), nombre: t.nombre, taller, sueldo: t.sueldo, conPrest: !!conPrestPorDefecto, pctMuestras: 100, activa: true }))); onCerrar(); }} style={{ ...btnD, opacity: !elegidos.length || !taller ? 0.5 : 1 }}>Agregar {elegidos.length || ""}</button>
           </div>
         </>)}
       </div>
@@ -273,7 +273,7 @@ export function CostosMuestrasView({ db, muestras, talleresConfig, usuarioNombre
   const [cfg, setCfg] = useState(null);
   const [pagos, setPagos] = useState(null);
   const [error, setError] = useState("");
-  const [mes, setMes] = useState(mesAnterior(mesActual));
+  const [mesElegido, setMesElegido] = useState(null);
   const [traer, setTraer] = useState(false);
   const [tallerPago, setTallerPago] = useState("");
   useEffect(() => {
@@ -287,6 +287,10 @@ export function CostosMuestrasView({ db, muestras, talleresConfig, usuarioNombre
   async function guardarPago(id, parcial) {
     try { await setDoc(doc(db, "centro_costo_muestras", "pagos"), { pagos: { [id]: parcial } }, { merge: true }); } catch (e) { setError(e?.message || "No se pudo guardar el pago."); }
   }
+  // Se abre en el mes más reciente que tenga muestras entregadas (el actual si ya tiene alguna).
+  const resumenMeses = useMemo(() => resumenMesesMuestras(muestras), [muestras]);
+  const mes = mesElegido || mesPorDefecto(resumenMeses.conteo, mesActual);
+  const setMes = setMesElegido;
   const datos = cfg || {};
   const r = useMemo(() => (cfg && pagos ? costosDelMes(muestras, datos, pagos, mes) : null), [muestras, cfg, pagos, mes]);
   const previo = useMemo(() => (cfg && pagos ? costosDelMes(muestras, datos, pagos, mesAnterior(mes)) : null), [muestras, cfg, pagos, mes]);
@@ -298,7 +302,7 @@ export function CostosMuestrasView({ db, muestras, talleresConfig, usuarioNombre
   const todosTalleres = [...new Set([...(talleresConfig || []), ...(muestras || []).map((c) => String(c.taller || "").trim()).filter(Boolean), ...personal.map((p) => p.taller).filter(Boolean), ...Object.values(datos.talleres || {}).map((t) => t.nombre).filter(Boolean)])].sort();
   const setPersonal = (lista) => guardar({ personal: lista });
   const editarPersona = (id, patch) => setPersonal(personal.map((p) => (p.id === id ? { ...p, ...patch } : p)));
-  const totalSueldos = personal.filter((p) => p.activa !== false).reduce((s, p) => s + (Number(p.sueldo) || 0), 0);
+  const totalSueldos = personal.filter((p) => p.activa !== false).reduce((s, p) => s + costoPersona(p, datos), 0);
   const guardarTaller = (nombre, patch) => guardar({ talleres: { [claveTexto(nombre)]: { nombre, ...((datos.talleres || {})[claveTexto(nombre)] || {}), ...patch } } });
   const guardarPresupuesto = (nombre, valor) => guardar({ presupuestos: { [mes]: { [claveTexto(nombre)]: Number(valor) || 0 } } });
   const externos = r.filas.filter((f) => f.modo === "precio");
@@ -308,18 +312,24 @@ export function CostosMuestrasView({ db, muestras, talleresConfig, usuarioNombre
 
   return (
     <div>
-      {traer && <TraerPersonalModal db={db} existentes={personal.map((p) => p.nombre)} talleres={todosTalleres} onAgregar={(nuevos) => setPersonal([...personal, ...nuevos])} onCerrar={() => setTraer(false)} />}
+      {traer && <TraerPersonalModal db={db} existentes={personal.map((p) => p.nombre)} talleres={todosTalleres} conPrestPorDefecto={Number(datos.prestacionesPct) > 0} onAgregar={(nuevos) => setPersonal([...personal, ...nuevos])} onCerrar={() => setTraer(false)} />}
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 14 }}>
-        <select value={mes} onChange={(e) => setMes(e.target.value)} style={sel}>{opcionesMes.map((m) => <option key={m} value={m}>{mesTxt(m)}{m === mesActual ? " (en curso)" : ""}</option>)}</select>
+        <select value={mes} onChange={(e) => setMes(e.target.value)} style={{ ...sel, minWidth: 250 }}>{opcionesMes.map((m) => { const n = resumenMeses.conteo[m] || 0; return <option key={m} value={m}>{mesTxt(m)}{m === mesActual ? " (en curso)" : ""} · {n ? `${n} ${n === 1 ? "muestra" : "muestras"}` : "sin muestras"}</option>; })}</select>
         <span style={{ padding: "6px 12px", borderRadius: 10, background: C.canvas, color: C.slate, fontSize: 12, fontWeight: 700 }}>🔒 Solo administrador y quien tenga el acceso «Costos de muestras»</span>
       </div>
-      {enCurso && <div style={{ background: C.amberBg, color: C.amber, borderRadius: 10, padding: "8px 14px", fontSize: 12.5, fontWeight: 700, marginBottom: 14 }}>Mes en curso: se suma el sueldo completo del mes, pero solo cuentan las muestras terminadas hasta hoy; el costo por muestra bajará a medida que se entreguen más.</div>}
+      {r.terminadas === 0 && (
+        <div style={{ background: C.blueBg, color: C.blue, borderRadius: 12, padding: "12px 16px", fontSize: 13, lineHeight: 1.5, marginBottom: 14 }}>
+          <strong>En {mesTxt(mes).split(" ")[0]} ningún taller entregó muestras registradas.</strong>{" "}
+          Una muestra cuenta cuando se marca «Recibida del taller»{resumenMeses.primera ? `; ese registro empezó el ${fechaCorta(resumenMeses.primera)}` : "; todavía no hay ninguna registrada"}. Por eso los sueldos de este mes no se pueden repartir por muestra.{Object.keys(resumenMeses.conteo).length ? " Elige un mes que tenga muestras." : ""}
+        </div>
+      )}
+      {enCurso && r.terminadas > 0 && <div style={{ background: C.blueBg, color: C.blue, borderRadius: 12, padding: "12px 16px", fontSize: 13, lineHeight: 1.5, marginBottom: 14 }}><strong>Mes en curso.</strong> Se suma el sueldo completo del mes, pero solo cuentan las muestras entregadas hasta hoy: el costo por muestra bajará a medida que el taller entregue más.</div>}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: 10, marginBottom: 16 }}>
-        <Kpi label="COSTO TOTAL DEL MES" valor={money(r.total)} pie="sueldos + pago a externos" />
-        <Kpi label="MUESTRAS TERMINADAS" valor={r.terminadas} pie={r.filas.filter((f) => f.terminadas).map((f) => f.terminadas).join(" + ") ? `${r.filas.filter((f) => f.terminadas).map((f) => f.terminadas).join(" + ")} por taller` : "ninguna este mes"} />
-        <Kpi label="COSTO POR MUESTRA" valor={r.costoPorMuestra === null ? "sin muestras" : money(r.costoPorMuestra)} pie={dCosto === null ? null : `${dCosto > 0 ? "▲" : "▼"} ${Math.abs(dCosto)}% vs. ${mesTxt(mesAnterior(mes)).split(" ")[0].toLowerCase()}`} colorPie={dCosto > 0 ? C.red : C.green} />
-        <Kpi label="GASTADO vs. PRESUPUESTO" valor={r.uso === null ? "—" : `${Math.round(r.uso * 100)}%`} pie={r.presupuesto ? `${money(r.total)} de ${money(r.presupuesto)}` : "sin presupuesto definido"} colorValor={r.uso > 1 ? C.red : C.ink} />
+        <Kpi label={r.filas.some((f) => f.modo === "precio" && f.total > 0) ? "COSTO TOTAL DEL MES" : "SUELDOS DEL MES (PARA MUESTRAS)"} valor={money(r.total)} pie={r.terminadas === 0 ? "sin muestras que dividir" : r.filas.some((f) => f.modo === "precio" && f.total > 0) ? "sueldos + pago a externos" : "con prestaciones y % de dedicación"} />
+        <Kpi label="MUESTRAS ENTREGADAS" valor={r.terminadas} pie={r.terminadas ? "marcadas «Recibida del taller»" : "en este mes"} />
+        <Kpi label="COSTO POR MUESTRA" valor={r.costoPorMuestra === null ? "—" : money(r.costoPorMuestra)} colorValor={r.costoPorMuestra === null ? C.slate : undefined} pie={r.costoPorMuestra === null ? "no se puede calcular" : `${money(r.total)} ÷ ${r.terminadas}${dCosto === null ? "" : ` · ${dCosto > 0 ? "▲" : "▼"} ${Math.abs(dCosto)}% vs. mes anterior`}`} />
+        <Kpi label="GASTADO vs. PRESUPUESTO" valor={r.uso === null ? "—" : `${Math.round(r.uso * 100)}%`} pie={r.presupuesto ? `${money(r.total)} de ${money(r.presupuesto)}` : "sin presupuesto definido"} colorValor={r.uso === null ? C.slate : r.uso > 1 ? C.red : C.ink} />
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))", gap: 12, marginBottom: 16 }}>
@@ -330,8 +340,8 @@ export function CostosMuestrasView({ db, muestras, talleresConfig, usuarioNombre
               <div style={{ fontSize: 13.5, fontWeight: 800 }}>{f.taller}</div>
               <div style={{ fontSize: 11, fontWeight: 800, color: C.slate, marginBottom: 10 }}>{f.modo === "sueldos" ? `MODO: POR SUELDOS · ${f.personas} ${f.personas === 1 ? "persona" : "personas"}` : `MODO: PRECIO POR MUESTRA · ${money(f.precio)}`}</div>
               <div style={{ fontSize: 11.5, fontWeight: 700, color: C.slate }}>COSTO POR MUESTRA</div>
-              <div style={{ fontSize: 22, fontWeight: 800, fontVariantNumeric: "tabular-nums" }}>{f.costoPorMuestra === null ? "sin muestras" : money(f.costoPorMuestra)}</div>
-              <div style={{ fontSize: 12, color: C.slate }}>{f.modo === "sueldos" ? `${money(f.total)} ÷ ${f.terminadas} terminadas` : `${money(f.total)} ÷ ${f.terminadas} recibidas`}</div>
+              <div style={{ fontSize: 22, fontWeight: 800, fontVariantNumeric: "tabular-nums" }}>{f.costoPorMuestra === null ? "—" : money(f.costoPorMuestra)}</div>
+              <div style={{ fontSize: 12, color: C.slate }}>{f.terminadas === 0 ? "0 muestras entregadas este mes" : `${money(f.total)} ÷ ${f.terminadas} entregadas`}</div>
               {f.presupuesto > 0 ? (<>
                 <div style={{ height: 9, borderRadius: 6, background: C.border, overflow: "hidden", margin: "6px 0 4px" }}><div style={{ width: `${Math.min(100, (f.uso || 0) * 100)}%`, height: "100%", background: pass ? C.red : f.uso > 0.85 ? C.amber : C.blue }} /></div>
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: C.slate, fontVariantNumeric: "tabular-nums", gap: 8 }}>
@@ -349,31 +359,42 @@ export function CostosMuestrasView({ db, muestras, talleresConfig, usuarioNombre
       <div>
         <div style={card}>
           <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "flex-start" }}>
-            <div><h3 style={h2}>Personal de muestra</h3><p style={nota}>Sueldo mensual de cada persona; el costo del taller en «Por sueldos» es la suma de los suyos.</p></div>
+            <div><h3 style={h2}>Personal de muestra</h3><p style={nota}>El costo para muestras de cada persona = sueldo × prestaciones × % que dedica a muestras. El costo del taller en «Por sueldos» es la suma de los suyos.</p></div>
             <div style={{ display: "flex", gap: 8 }}>
               <button style={btnG} onClick={() => setTraer(true)}>↧ Traer desde Personal</button>
-              <button style={btnD} onClick={() => setPersonal([...personal, { id: nuevoId(), nombre: "", taller: todosTalleres[0] || "", sueldo: 0, activa: true }])}>+ Agregar persona</button>
+              <button style={btnD} onClick={() => setPersonal([...personal, { id: nuevoId(), nombre: "", taller: todosTalleres[0] || "", sueldo: 0, conPrest: Number(datos.prestacionesPct) > 0, pctMuestras: 100, activa: true }])}>+ Agregar persona</button>
             </div>
           </div>
+          <div style={{ background: C.canvas, borderRadius: 10, padding: "10px 14px", fontSize: 12.5, color: C.ink, margin: "0 0 12px", lineHeight: 1.8 }}>
+            <strong>Prestaciones:</strong> <InputTexto ancho={60} valor={String(datos.prestacionesPct ?? 0)} onGuardar={(v) => guardar({ prestacionesPct: Math.max(0, Number(String(v).replace(",", ".").replace(/[^\d.]/g, "")) || 0) })} /> % sobre el sueldo (lo defines una vez; se aplica a quien tenga la casilla «Con prestaciones»).
+          </div>
           <div style={{ overflowX: "auto" }}><table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead><tr><th style={th}>Persona</th><th style={th}>Taller</th><th style={{ ...th, textAlign: "right" }}>Sueldo mensual</th><th style={th}>Cuenta</th><th style={th} /></tr></thead>
+            <thead><tr><th style={th}>Persona</th><th style={th}>Taller</th><th style={{ ...th, textAlign: "right" }}>Sueldo mensual</th><th style={th}>Con prest.</th><th style={{ ...th, textAlign: "right" }}>% a muestras</th><th style={{ ...th, textAlign: "right" }}>Costo para muestras</th><th style={th}>Cuenta</th><th style={th} /></tr></thead>
             <tbody>
               {personal.map((p) => (
                 <tr key={p.id} style={{ opacity: p.activa === false ? 0.5 : 1 }}>
-                  <td style={td}><InputTexto valor={p.nombre} placeholder="Nombre" onGuardar={(v) => editarPersona(p.id, { nombre: v.toUpperCase() })} /></td>
-                  <td style={td}><select value={p.taller || ""} onChange={(e) => editarPersona(p.id, { taller: e.target.value })} style={{ ...sel, padding: "6px 8px", fontSize: 12.5 }}><option value="">— taller —</option>{todosTalleres.map((t) => <option key={t} value={t}>{t}</option>)}</select></td>
-                  <td style={{ ...td, textAlign: "right" }}><InputPesos valor={p.sueldo} onGuardar={(v) => editarPersona(p.id, { sueldo: v })} /></td>
+                  <td style={td}><InputTexto ancho={128} valor={p.nombre} placeholder="Nombre" onGuardar={(v) => editarPersona(p.id, { nombre: v.toUpperCase() })} /></td>
+                  <td style={td}><select value={p.taller || ""} onChange={(e) => editarPersona(p.id, { taller: e.target.value })} style={{ ...sel, padding: "6px 6px", fontSize: 12, maxWidth: 150 }}><option value="">— taller —</option>{todosTalleres.map((t) => <option key={t} value={t}>{t}</option>)}</select></td>
+                  <td style={{ ...td, textAlign: "right" }}><InputPesos ancho={104} valor={p.sueldo} onGuardar={(v) => editarPersona(p.id, { sueldo: v })} /></td>
+                  <td style={td}>
+                    <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontWeight: 700, fontSize: 12.5, cursor: "pointer" }}>
+                      <input type="checkbox" checked={conPrestaciones(p, datos)} onChange={(e) => editarPersona(p.id, { conPrest: e.target.checked })} />{conPrestaciones(p, datos) ? "Sí" : "No"}
+                    </label>
+                  </td>
+                  <td style={{ ...td, textAlign: "right", whiteSpace: "nowrap" }}><InputTexto ancho={56} valor={String(pctDedicacion(p))} onGuardar={(v) => { const n = Number(String(v).replace(",", ".").replace(/[^\d.]/g, "")); editarPersona(p.id, { pctMuestras: Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : 100 }); }} /> %</td>
+                  <td style={{ ...td, textAlign: "right" }}>
+                    <strong style={{ fontVariantNumeric: "tabular-nums" }}>{money(costoPersona(p, datos))}</strong>
+                    <div style={{ fontSize: 11, color: C.slate, whiteSpace: "nowrap" }}>{money(p.sueldo)}{conPrestaciones(p, datos) ? ` × ${(1 + (Number(datos.prestacionesPct) || 0) / 100).toFixed(2).replace(".", ",")}` : ""} × {pctDedicacion(p)}%</div>
+                    {conPrestaciones(p, datos) && !(Number(datos.prestacionesPct) > 0) && <div style={{ fontSize: 11, color: C.amber, fontWeight: 700 }}>Define el % de prestaciones</div>}
+                  </td>
                   <td style={td}><button style={{ ...btnS(p.activa !== false), padding: "4px 10px", fontSize: 11.5 }} onClick={() => editarPersona(p.id, { activa: p.activa === false })}>{p.activa === false ? "Inactiva" : "Activa"}</button></td>
                   <td style={td}><button title="Quitar" style={{ ...btnG, padding: "4px 9px" }} onClick={() => { if (window.confirm(`¿Quitar a ${p.nombre || "esta persona"} del personal de muestra?`)) setPersonal(personal.filter((x) => x.id !== p.id)); }}>✕</button></td>
                 </tr>))}
-              {!personal.length && <tr><td colSpan={5} style={{ ...td, color: C.slate }}>Aún no hay personal. Usa «Traer desde Personal» o «+ Agregar persona».</td></tr>}
-              {personal.length > 0 && <tr><td style={{ ...td, fontWeight: 800, borderTop: `2px solid ${C.border}` }} colSpan={2}>Total sueldos del mes</td><td style={{ ...td, fontWeight: 800, textAlign: "right", borderTop: `2px solid ${C.border}` }}>{money(totalSueldos)}</td><td colSpan={2} style={{ ...td, borderTop: `2px solid ${C.border}` }} /></tr>}
+              {!personal.length && <tr><td colSpan={7} style={{ ...td, color: C.slate }}>Aún no hay personal. Usa «Traer desde Personal» o «+ Agregar persona».</td></tr>}
+              {personal.length > 0 && <tr><td style={{ ...td, fontWeight: 800, borderTop: `2px solid ${C.border}` }} colSpan={5}>Total para muestras del mes</td><td style={{ ...td, fontWeight: 800, textAlign: "right", borderTop: `2px solid ${C.border}` }}>{money(totalSueldos)}</td><td colSpan={2} style={{ ...td, borderTop: `2px solid ${C.border}` }} /></tr>}
             </tbody>
           </table></div>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 12 }}>
-            <div style={{ fontSize: 12.5, fontWeight: 700 }}>Sumar prestaciones al costo <button style={{ ...btnS(!!datos.prestacionesOn), padding: "3px 10px", fontSize: 11.5, marginLeft: 6 }} onClick={() => guardar({ prestacionesOn: !datos.prestacionesOn })}>{datos.prestacionesOn ? "encendido" : "apagado"}</button></div>
-            {datos.prestacionesOn && <div style={{ fontSize: 12, color: C.slate }}>Porcentaje sobre el sueldo: <InputTexto ancho={60} valor={String(datos.prestacionesPct ?? 0)} onGuardar={(v) => guardar({ prestacionesPct: Math.max(0, Number(String(v).replace(",", ".").replace(/[^\d.]/g, "")) || 0) })} /> %</div>}
-          </div>
+          <div style={{ fontSize: 11.5, color: C.slate, marginTop: 10 }}>Si alguien hace muestras todo el tiempo: 100%. Si dedica la mitad del tiempo: 50%. Si no quieres sumar prestaciones a una persona, desmarca «Con prestaciones».</div>
         </div>
 
         <div style={card}>
