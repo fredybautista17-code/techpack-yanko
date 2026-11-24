@@ -5,10 +5,55 @@
 // Los pedidos que ya tienen corte no se avisan, ni los que el administrador habilitó con motivo.
 import React, { createContext, useContext, useEffect, useRef, useState } from "react";
 import { getApps } from "firebase/app";
-import { collection, getFirestore, onSnapshot, query, where } from "firebase/firestore";
+import { collection, doc, getFirestore, onSnapshot, query, setDoc, where } from "firebase/firestore";
 import { COL_FICHA, PASOS_SEMAFORO, ETAPAS_PEDIDO, ETAPA_CORTE, evaluarPedido } from "./ficha-inicio-calculo";
 
 export const CandadoCorteContext = createContext(null);
+
+// (2026-11-24, a pedido de Fredy) Interruptor global del candado de corte: mientras la Ficha de inicio no esté al día se puede DESACTIVAR para que se pueda cortar
+// sin cumplir las etapas. Se guarda en config/candado_corte { activo }. Sin documento = desactivado (así sale la primera vez); el administrador lo enciende cuando quiera exigirlo.
+// Desactivado: Corte no bloquea ni avisa, el menú no cuenta pedidos y el Seguimiento del Pedido deja la casilla «Corte» libre (la franja «Dónde va» sigue como guía).
+export function useCandadoActivo() {
+  const [estado, setEstado] = useState({ activo: false, cargado: false, por: "", en: "" });
+  useEffect(() => {
+    const db = getFirestore(getApps()[0]);
+    return onSnapshot(doc(db, "config", "candado_corte"), (s) => {
+      const d = s.exists() ? s.data() : {};
+      setEstado({ activo: d.activo === true, cargado: true, por: d.por || "", en: d.en || "" });
+    }, () => setEstado({ activo: false, cargado: true, por: "", en: "" }));
+  }, []);
+  return estado;
+}
+
+// Interruptor para el administrador (en el tablero de la Ficha de inicio).
+export function InterruptorCandadoCorte({ esAdmin, usuario }) {
+  const { activo, cargado, por, en } = useCandadoActivo();
+  const [ocupado, setOcupado] = useState(false);
+  const [err, setErr] = useState("");
+  if (!cargado) return null;
+  async function cambiar() {
+    setOcupado(true); setErr("");
+    try {
+      const db = getFirestore(getApps()[0]);
+      await setDoc(doc(db, "config", "candado_corte"), { activo: !activo, por: usuario || "", en: new Date().toISOString() }, { merge: true });
+    } catch (e) { setErr(e?.message || "No se pudo guardar el cambio."); }
+    finally { setOcupado(false); }
+  }
+  const colorFg = activo ? "#1E7A52" : "#B25E0E";
+  const colorBg = activo ? "#EBF7F2" : "#FBF3E4";
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", background: colorBg, color: colorFg, borderRadius: 12, padding: "9px 14px", marginBottom: 12, fontSize: 13, fontWeight: 700 }}>
+      <span>{activo ? "🔒 Candado de corte ACTIVADO: no se corta hasta cumplir las etapas." : "🔓 Candado de corte DESACTIVADO: se puede cortar aunque falten etapas (solo informativo)."}</span>
+      {en && por ? <span style={{ fontSize: 11.5, fontWeight: 600, opacity: 0.85 }}>Último cambio: {por}, {new Date(en).toLocaleDateString("es-CO")}</span> : null}
+      {esAdmin ? (
+        <button disabled={ocupado} onClick={cambiar} style={{ marginLeft: "auto", border: `1.5px solid ${colorFg}`, background: "#fff", color: colorFg, borderRadius: 10, padding: "6px 14px", fontWeight: 800, fontSize: 12.5, cursor: ocupado ? "default" : "pointer", fontFamily: "inherit" }}>
+          {activo ? "Desactivar candado" : "Activar candado"}
+        </button>
+      ) : null}
+      {err ? <span style={{ flexBasis: "100%", fontSize: 12, color: "#C0392B" }}>{err}</span> : null}
+    </div>
+  );
+}
 
 export function estadoCandadoDePedido(pedido, preordenesAprobadas, fichasPorId, yaCortado) {
   // Misma función que usan el Seguimiento del Pedido y el tablero de viabilidad (una sola regla)
@@ -28,6 +73,7 @@ export function useCandadoCorte(yaCortadoFn) {
   const [fich, setFich] = useState(null);
   const fnRef = useRef(yaCortadoFn);
   fnRef.current = yaCortadoFn;
+  const { activo } = useCandadoActivo();
   useEffect(() => {
     const db = getFirestore(getApps()[0]);
     const a = onSnapshot(query(collection(db, "bitacora_preordenes"), where("estado", "==", "aprobada")), (s) => setPre(s.docs.map((d) => ({ ...d.data(), id: d.id }))), () => setPre([]));
@@ -36,7 +82,7 @@ export function useCandadoCorte(yaCortadoFn) {
   }, []);
   return {
     infoDe: (pedido) => {
-      if (!pre || !fich || !pedido || (pedido.estado && pedido.estado !== "activo")) return null;
+      if (!activo || !pre || !fich || !pedido || (pedido.estado && pedido.estado !== "activo")) return null; // candado desactivado → ni bloquea ni avisa
       const ya = fnRef.current ? !!fnRef.current(pedido) : false;
       return estadoCandadoDePedido(pedido, pre, fich, ya);
     },

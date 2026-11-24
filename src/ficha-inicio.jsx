@@ -9,6 +9,7 @@
 // Quién edita lo decide el permiso «ficha_inicio» de Roles (el admin siempre); quien no lo tiene solo ve el semáforo.
 import React, { useEffect, useMemo, useState } from "react";
 import useAnchoCorto from "./use-ancho-corto";
+import { useCandadoActivo, InterruptorCandadoCorte } from "./ficha-candado";
 import { getApps } from "firebase/app";
 import { collection, deleteDoc, doc, getFirestore, onSnapshot, query, setDoc, where, writeBatch } from "firebase/firestore";
 import {
@@ -600,8 +601,9 @@ export function SeguimientoPedido({ pedido, preordenes, currentUser, soloLectura
   // Misma función que usan el tablero de viabilidad y el aviso de Corte: una sola regla para «puede salir a cortar»
   const { refs, est } = useMemo(() => evaluarPedido(pedido, preSeguro, fichas, yaCortado), [pedido, preSeguro, fichas, yaCortado]);
   const pct = Math.round((est.total / ETAPAS_PEDIDO.length) * 100);
-  const bloqueado = !soloLectura && !est.corteLibre;
-  const corteSinCumplir = est.hechas[ETAPA_CORTE] && !est.puedeCortar && !yaCortado;
+  const { activo: candadoActivo } = useCandadoActivo(); // (2026-11-24) interruptor global: desactivado = la etapa «Corte» queda libre
+  const bloqueado = candadoActivo && !soloLectura && !est.corteLibre;
+  const corteSinCumplir = candadoActivo && est.hechas[ETAPA_CORTE] && !est.puedeCortar && !yaCortado;
   const [pidiendo, setPidiendo] = useState(false);
   const [motivo, setMotivo] = useState("");
 
@@ -617,7 +619,7 @@ export function SeguimientoPedido({ pedido, preordenes, currentUser, soloLectura
     if (soloLectura || est.derivada[i]) return;
     const k = ETAPAS_PEDIDO[i];
     const marcar = !pedido.seguimiento?.[k];
-    if (i === ETAPA_CORTE && marcar && !est.corteLibre) {
+    if (i === ETAPA_CORTE && marcar && candadoActivo && !est.corteLibre) {
       if (!esAdmin) return;
       setPidiendo(true);
       return;
@@ -650,6 +652,10 @@ export function SeguimientoPedido({ pedido, preordenes, currentUser, soloLectura
         <div style={{ background: C.blueBg, color: C.blue, borderRadius: 10, padding: "9px 12px", fontSize: 12.5, fontWeight: 700, marginBottom: 12 }}>✂ Este pedido ya tiene corte: el candado de corte no se aplica.</div>
       ) : est.puedeCortar ? (
         <div style={{ background: C.greenBg, color: C.green, borderRadius: 10, padding: "9px 12px", fontSize: 12.5, fontWeight: 700, marginBottom: 12 }}>✅ Puede salir a cortar: las 9 etapas anteriores están hechas.</div>
+      ) : !candadoActivo ? (
+        <div style={{ background: C.amberBg, color: C.amber, borderRadius: 10, padding: "9px 12px", fontSize: 12.5, fontWeight: 700, marginBottom: 12, lineHeight: 1.5 }}>
+          🔓 Candado de corte desactivado: se puede cortar aunque falten etapas. Va en: <b>{est.siguiente >= 0 ? `${est.siguiente + 1}. ${nombre(est.siguiente)}` : "—"}</b> · Faltan: {est.faltan.map((i) => `${i + 1}. ${nombre(i)}`).join(" · ")}
+        </div>
       ) : (
         <div style={{ background: C.redBg, color: C.red, borderRadius: 10, padding: "9px 12px", fontSize: 12.5, fontWeight: 700, marginBottom: 12, lineHeight: 1.5, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           <span style={{ flex: 1, minWidth: 220 }}>🚫 No puede salir a cortar todavía. Va en: <b>{est.siguiente >= 0 ? `${est.siguiente + 1}. ${nombre(est.siguiente)}` : "—"}</b> · Faltan: {est.faltan.map((i) => `${i + 1}. ${nombre(i)}`).join(" · ")}</span>
@@ -927,6 +933,7 @@ export function TableroFichaInicio({ preordenes, pedidos, config, currentUser, p
         <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: C.ink }}>🚦 Ficha de inicio</h2>
         <span style={{ marginLeft: "auto" }}><Boton small onClick={() => setBiblio(true)}>📚 Bibliotecas de colores y vinilos</Boton></span>
       </div>
+      <InterruptorCandadoCorte esAdmin={!!currentUser?.isAdmin} usuario={currentUser?.name || ""} />
       <p style={{ margin: "0 0 14px", fontSize: 13, color: C.slate, fontWeight: 600, lineHeight: 1.5 }}>Referencias en Órdenes que esperan su pedido: qué está hecho y qué falta. Toca una orden para ver sus referencias y una referencia para ver los 10 pasos. Cuando se vincula el pedido, la referencia sale de aquí.</p>
 
       {todas === null ? <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>Cargando fichas…</div> : (
