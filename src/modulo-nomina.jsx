@@ -15092,10 +15092,19 @@ function ReposicionModal({ fila, extras, mostrarDinero, onRegistrar, onQuitar, o
     </Modal>
   );
 }
+// (2026-11-24, a pedido de Fredy) «Día completo»: un permiso cuyas horas cubren toda la jornada de la persona ese día (con 15 min de margen).
+// Se guarda igual que cualquier permiso por horas (hora inicial y final); esto solo lo distingue en la lista de Reposición de horas.
+function permisoCubreJornada(a, trabajador, horas, areasNomina, turnos) {
+  const turno = trabajador ? resolverTurnoDeTrabajador(trabajador, areasNomina, turnos) : null;
+  const h = horasDiaDeTurno(turno, diaCodigoDeISO(a.fechaInicio));
+  const jornada = h == null ? HORAS_DIA_SIN_TURNO : h;
+  return jornada > 0 && horas >= jornada - 0.25;
+}
 function ReposicionHorasView({ trabajadores, ausencias, reposiciones, horasExtras, cobrosManuales, mostrarDinero, onRegistrar, onQuitar }) {
   const [offset, setOffset] = useState(0);
   const [modalId, setModalId] = useState(null);
   const [filtroEstado, setFiltroEstado] = useState("");
+  const [filtroTipo, setFiltroTipo] = useState(""); // "" | "completo" | "parcial"
   const [buscar, setBuscar] = useState("");
   const q = quincenaDe(offset);
   const hoyISO = today();
@@ -15122,12 +15131,13 @@ function ReposicionHorasView({ trabajadores, ausencias, reposiciones, horasExtra
       else if (finPlazo === hoyISO) estado = "venceHoy";
       out.push({
         id: a.id, a, trabajadorNombre: t.nombre, area: t.area || "Sin asignar", horas: calc.horas, repuestas: calc.horasRepuestas, faltan,
-        valorPendiente: calc.valor, finPlazo, estado, reps, yaDescontado,
+        valorPendiente: calc.valor, finPlazo, estado, reps, yaDescontado, diaCompleto: permisoCubreJornada(a, t, calc.horas, areasNomina, turnos),
       });
     });
     return out.sort((x, y) => (ESTADOS_REPOSICION[x.estado].orden - ESTADOS_REPOSICION[y.estado].orden) || x.trabajadorNombre.localeCompare(y.trabajadorNombre, "es") || x.a.fechaInicio.localeCompare(y.a.fechaInicio));
   }, [trabajadores, ausencias, reposiciones, cobrosManuales, q.desde, q.hasta, hoyISO, areasNomina, turnos]);
-  const visibles = filas.filter((f) => (!filtroEstado || f.estado === filtroEstado) && (!buscar.trim() || f.trabajadorNombre.toLowerCase().includes(buscar.trim().toLowerCase())));
+  const nDiaCompleto = filas.filter((f) => f.diaCompleto).length;
+  const visibles = filas.filter((f) => (!filtroEstado || f.estado === filtroEstado) && (!filtroTipo || (filtroTipo === "completo" ? f.diaCompleto : !f.diaCompleto)) && (!buscar.trim() || f.trabajadorNombre.toLowerCase().includes(buscar.trim().toLowerCase())));
   const totHoras = filas.reduce((sum, f) => sum + f.horas, 0);
   const totRep = filas.reduce((sum, f) => sum + f.repuestas, 0);
   const totFaltan = filas.reduce((sum, f) => sum + f.faltan, 0);
@@ -15156,13 +15166,16 @@ function ReposicionHorasView({ trabajadores, ausencias, reposiciones, horasExtra
         {offset !== 0 && <Btn small variant="ghost" onClick={() => setOffset(0)}>Ir a la actual</Btn>}
         <div style={{ marginLeft: "auto", display: "flex", gap: 10, flexWrap: "wrap" }}>
           <div style={{ minWidth: 190 }}><FInput value={buscar} onChange={setBuscar} placeholder="Buscar trabajador" icon="🔍" /></div>
+          <div style={{ minWidth: 190 }}>
+            <FSel value={filtroTipo} onChange={setFiltroTipo} options={[{ value: "completo", label: "📅 Solo día completo" }, { value: "parcial", label: "⏱ Solo por horas (parcial)" }]} placeholder="Día completo y por horas" />
+          </div>
           <div style={{ minWidth: 200 }}>
             <FSel value={filtroEstado} onChange={setFiltroEstado} options={Object.entries(ESTADOS_REPOSICION).map(([v, e]) => ({ value: v, label: `${e.icono} ${e.texto}` }))} placeholder="Todos los estados" />
           </div>
         </div>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: `repeat(${mostrarDinero ? 6 : 5}, minmax(0, 1fr))`, gap: 12, marginBottom: 16 }}>
-        <KPI icon="🗓️" label="Permisos por horas" value={filas.length} color={C.ink} bg={C.canvas} />
+        <KPI icon="🗓️" label="Permisos por horas" value={filas.length} sub={`${nDiaCompleto} de día completo`} color={C.ink} bg={C.canvas} />
         <KPI icon="⏱" label="Horas de permiso" value={fmtHoras(totHoras)} color={C.violet} bg={C.violetBg} />
         <KPI icon="🔁" label="Horas repuestas" value={fmtHoras(totRep)} color={C.green} bg={C.greenBg} />
         <KPI icon="⏳" label="Horas que faltan" value={fmtHoras(totFaltan)} color={C.amber} bg={C.amberBg} />
@@ -15175,7 +15188,12 @@ function ReposicionHorasView({ trabajadores, ausencias, reposiciones, horasExtra
         columnas={[
           { key: "trabajadorNombre", label: "Trabajador", render: (f) => <span><strong>{f.trabajadorNombre}</strong><span style={{ color: C.slate }}> · {f.area}</span></span> },
           { key: "fecha", label: "Permiso", render: (f) => <span>{fmtFechaISO(f.a.fechaInicio)} <span style={{ color: C.slate }}>{f.a.horaInicio}–{f.a.horaFin}</span></span> },
-          { key: "horas", label: "Horas", align: "right", render: (f) => fmtHoras(f.horas) },
+          { key: "horas", label: "Horas", align: "right", render: (f) => (
+            <span>
+              {f.diaCompleto && <span title="Las horas cubren toda la jornada de la persona ese día" style={{ display: "inline-block", marginRight: 6, padding: "1px 7px", borderRadius: 999, background: C.blueBg, color: C.blue, fontSize: 10.5, fontWeight: 800, whiteSpace: "nowrap" }}>📅 Día completo</span>}
+              {fmtHoras(f.horas)}
+            </span>
+          ) },
           { key: "repuestas", label: "Repuestas", align: "right", render: (f) => <span style={{ color: f.repuestas > 0 ? C.green : C.slate, fontWeight: f.repuestas > 0 ? 700 : 400 }}>{fmtHoras(f.repuestas)}</span> },
           { key: "faltan", label: "Faltan", align: "right", render: (f) => <strong style={{ color: f.faltan > 0.001 ? C.amber : C.green }}>{fmtHoras(f.faltan)}</strong> },
           { key: "extras", label: "Extras para canjear", render: (f) => {
