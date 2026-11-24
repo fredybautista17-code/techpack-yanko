@@ -3,6 +3,7 @@
 // verá la persona. Los datos se guardan EXACTAMENTE igual (form → saveUser en App.js); aquí solo cambia cómo se ve y se opera.
 import React, { useState } from "react";
 import useAnchoCorto from "./use-ancho-corto";
+import BloqueAreasUsuario from "./usuario-areas";
 
 function Interruptor({ on, onClick, label }) {
   return (
@@ -13,7 +14,7 @@ function Interruptor({ on, onClick, label }) {
   );
 }
 
-export default function FormularioUsuario({ form, setForm, editUser, users, config, areasNomina, procesosNomina, roleOptions, rolesConfigurados, error, creando, onSave, onCancel, T,
+export default function FormularioUsuario({ form, setForm, editUser, users, config, areasNomina, procesosNomina, roleOptions, rolesConfigurados, rolBase, modulosRol, disenoItems, grupos, error, creando, onSave, onCancel, T,
   MODULOS_CLIENTE_OPCIONES, GRUPOS_CLIENTE_PRODUCCION, GRUPOS_MI_DIA, TARJETAS_DEFECTO_MIDIA, claveCierreDeArea, esAreaCorte, sanitizarUsername }) {
   const [sec, setSec] = useState("acceso");
   const angosto = useAnchoCorto(1000);
@@ -84,7 +85,12 @@ export default function FormularioUsuario({ form, setForm, editUser, users, conf
   const panelVe = (
     <div>
       <h3 style={{ fontSize: 15, fontWeight: 800, margin: 0 }}>Qué ve este usuario</h3>
-      <div style={{ ...nota, marginTop: 2, marginBottom: 14 }}>{esCliente ? "Para un usuario Cliente, aquí defines de qué clientes ve información y qué módulos tiene." : "Lo que ve el personal interno lo define su rol (Administración → Roles). Aquí solo eliges, si hace falta, de qué clientes ve información."}</div>
+      <div style={{ ...nota, marginTop: 2, marginBottom: 14 }}>{esCliente ? "Para un usuario Cliente, aquí defines de qué clientes ve información y qué módulos tiene." : "Qué áreas ve esta persona (las de su rol o una lista propia) y, si hace falta, de qué clientes ve información."}</div>
+      {!esCliente && (
+        <div style={bloque(false)}>
+          <BloqueAreasUsuario form={form} setForm={setForm} editUser={editUser} rolBase={rolBase} modulosRol={modulosRol || []} disenoItems={disenoItems} grupos={grupos} T={T} />
+        </div>
+      )}
       <div style={bloque(false)}>
         <div style={{ fontSize: 12.5, fontWeight: 800, marginBottom: 8, display: "flex", gap: 8, alignItems: "center" }}>{esCliente ? "1 · " : ""}De qué clientes ve información {tag((form.clientesAsociados || []).length ? `${form.clientesAsociados.length} marcado(s)` : "todos", "g")}</div>
         {clientes.length === 0 ? <div style={{ fontSize: 12, color: T.slate }}>No hay clientes cargados todavía.</div> : (
@@ -274,6 +280,7 @@ export default function FormularioUsuario({ form, setForm, editUser, users, conf
     if (necesitaProd) items.push(["🏭", <span key="p">Producción de: <b>{nombresProd.length ? nombresProd.join(", ") : (form.clienteProduccion || "— sin elegir —")}</b></span>]);
     items.push(["🔒", <span key="s"><b>{form.soloLecturaCliente ? "Solo lectura" : "Puede aprobar y editar"}</b></span>]);
   } else {
+    items.push(["🧭", <span key="ar">Áreas: <b>{Array.isArray(form.modulosPropios) ? `lista propia (${form.modulosPropios.length} accesos)` : "las de su rol"}</b></span>]);
     items.push(["🏭", <span key="a">Área: <b>{form.areaNomina || "ninguna"}</b></span>]);
     items.push(["⚙️", <span key="pr">Procesos a programar: <b>{(form.procesosPlaneacion || []).length || "ninguno"}</b></span>]);
   }

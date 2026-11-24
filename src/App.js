@@ -12,6 +12,7 @@ import { DevolucionesClienteView } from "./devoluciones-cliente";
 import { Insignia, InsigniaNoPueden } from "./ficha-candado";
 import RolesAdmin from "./roles-admin";
 import FormularioUsuario from "./usuarios-form";
+import { DISENO_SUBMODULOS, AREAS_SUBMODULOS, modulosDeRol, datosRolDeUsuario } from "./modulos-rol";
 import { BloqueSolicitudesTela } from "./diseno-muestras";
 import PatronCodigosReferencia, { buscarPorPatron, PrefijosDeCliente } from "./codigos-patron";
 import CentroParametros from "./centro-parametros";
@@ -1101,13 +1102,12 @@ function ultimasReferenciasBusint(prefijo, inicio, fin, busintLista, n = 3) {
 // Corte, sin Prototipos ni Cápsulas).
 // Claves granulares de sección dentro de Diseño (Corte y Contabilidad siempre
 // se gestionan como llaves independientes, nunca implícitas en "diseno").
-const DISENO_SUBMODULOS = ["protos", "capsulas", "pedidos", "pedidos_clientes", "stats", "historial", "cronograma_muestras", "bitacora", "observaciones"];
+// DISENO_SUBMODULOS y AREAS_SUBMODULOS viven ahora en modulos-rol.js (los usa también el selector de áreas de cada usuario).
 // Claves granulares de pestaña dentro del módulo "Áreas" (2026-09-01, a
 // pedido de Fredy: poder darle a un rol solo alguna(s) de las 4 pestañas —
 // Centro de Costo/Estadísticas/Reclamos/Programador — en vez de todo o
 // nada). "areas_internas" queda como llave de compatibilidad: un rol que
 // ya la tenga marcada sigue viendo las 4, igual que antes.
-const AREAS_SUBMODULOS = ["areas_centro_costo", "areas_estadisticas", "areas_reclamos", "areas_programador"];
 // Nombre de rol sin tildes, mayúsculas ni espacios de más: el rol del usuario y el de Roles se comparan así (un espacio o una mayúscula distinta no deja al usuario sin accesos).
 const normRol = (s) => String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim().toLowerCase();
 function moduloVisible(roleData, mod, isAdmin) {
@@ -12831,7 +12831,7 @@ function EditNombreModal({ item, tipo, config, onSave, onClose }) {
     </Modal>
   );
 }
-function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesosNomina }) {
+function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesosNomina, disenoItems, grupos }) {
   const [showForm, setShowForm] = useState(false);
   const [editUser, setEditUser] = useState(null);
   const [form, setForm] = useState({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", clientesAsociados: [], modulosCliente: [], soloLecturaCliente: false, clienteProduccion: "", clientesProduccion: [], email: "", areaNomina: "", procesosPlaneacion: [], landingAreas: false, costosPlanta: false, tarjetasMiDia: [] });
@@ -12851,6 +12851,10 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
   const rolesConfigurados = config.roles.map((r) => r.name);
   const rolesSoloEnUsuarios = [...new Set((users || []).map((u) => (u.role || "").trim()).filter(Boolean))].filter((r) => !rolesConfigurados.includes(r));
   const roleOptions = [...rolesConfigurados, ...rolesSoloEnUsuarios];
+  // Rol que tiene puesto el formulario ahora (para partir de lo que da el rol al armar una lista propia de áreas).
+  const rolDelFormulario = config.roles.find((r) => r.name === form.role) || config.roles.find((r) => normRol(r.name) === normRol(form.role));
+  const modulosRolFormulario = modulosDeRol(rolDelFormulario);
+  const esClienteForm = normRol(form.role) === "cliente";
   // --- Migración a Firebase Authentication (Fase A, temporal) ---
   // Botón de un solo uso para crear, por detrás, una cuenta real de Firebase
   // Auth para cada usuario que hoy solo existe como documento en Firestore
@@ -12874,7 +12878,7 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
     setMigrando(false);
   }
   function openNew() { setForm({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", clientesAsociados: [], modulosCliente: [], soloLecturaCliente: false, clienteProduccion: "", clientesProduccion: [], email: "", areaNomina: "", procesosPlaneacion: [], landingAreas: false, costosPlanta: false, tarjetasMiDia: [] }); setEditUser(null); setShowForm(true); setError(""); }
-  function openEdit(u) { setForm({ name: u.name, username: u.username, password: "", role: u.role, isAdmin: u.isAdmin, clienteAsociado: u.clienteAsociado || "", clientesAsociados: u.clientesAsociados || [], modulosCliente: u.modulosCliente || [], soloLecturaCliente: u.soloLecturaCliente || false, clienteProduccion: u.clienteProduccion || "", clientesProduccion: u.clientesProduccion || [], email: u.email || "", areaNomina: u.areaNomina || "", procesosPlaneacion: u.procesosPlaneacion || [], landingAreas: u.landingAreas || false, costosPlanta: !!u.costosPlanta, actualizaIngresos: !!u.actualizaIngresos, nominaLiderArea: !!u.nominaLiderArea, nominaLiderAsistencia: !!u.nominaLiderAsistencia, tarjetasMiDia: u.tarjetasMiDia || [], areasCumpleanos: u.areasCumpleanos || [], areasAuditoria: u.areasAuditoria || [] }); setEditUser(u); setShowForm(true); setError(""); }
+  function openEdit(u) { setForm({ name: u.name, username: u.username, password: "", role: u.role, isAdmin: u.isAdmin, clienteAsociado: u.clienteAsociado || "", clientesAsociados: u.clientesAsociados || [], modulosCliente: u.modulosCliente || [], soloLecturaCliente: u.soloLecturaCliente || false, clienteProduccion: u.clienteProduccion || "", clientesProduccion: u.clientesProduccion || [], email: u.email || "", areaNomina: u.areaNomina || "", procesosPlaneacion: u.procesosPlaneacion || [], landingAreas: u.landingAreas || false, costosPlanta: !!u.costosPlanta, actualizaIngresos: !!u.actualizaIngresos, nominaLiderArea: !!u.nominaLiderArea, nominaLiderAsistencia: !!u.nominaLiderAsistencia, tarjetasMiDia: u.tarjetasMiDia || [], areasCumpleanos: u.areasCumpleanos || [], areasAuditoria: u.areasAuditoria || [], modulosPropios: Array.isArray(u.modulosPropios) ? u.modulosPropios : null }); setEditUser(u); setShowForm(true); setError(""); }
   // Crear usuario nuevo pasa por la Cloud Function `adminCrearUsuario` (Fase
   // B): a diferencia de editar, crear SÍ necesita generar una cuenta real de
   // Firebase Auth para que esa persona pueda entrar — eso no lo puede hacer
@@ -12891,7 +12895,7 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
       if (!form.name) { setError("El nombre es obligatorio."); return; }
       if (form.email && form.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) { setError("El correo no parece válido."); return; }
       const avatar = form.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
-      onUpdateUsers(users.map((u) => (u.id === editUser.id ? { ...u, name: form.name, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado || "", clientesAsociados: form.clientesAsociados || [], modulosCliente: form.modulosCliente || [], soloLecturaCliente: !!form.soloLecturaCliente, clienteProduccion: form.clienteProduccion || "", clientesProduccion: form.clientesProduccion || [], email: form.email ? form.email.trim() : "", areaNomina: form.areaNomina || "", procesosPlaneacion: form.procesosPlaneacion || [], landingAreas: !!form.landingAreas, costosPlanta: !!form.costosPlanta, actualizaIngresos: !!form.actualizaIngresos, nominaLiderArea: !!form.nominaLiderArea, nominaLiderAsistencia: !!form.nominaLiderAsistencia, tarjetasMiDia: form.tarjetasMiDia || [], areasCumpleanos: form.areasCumpleanos || [], areasAuditoria: form.areasAuditoria || [], avatar } : (form.aplicarTarjetasArea && form.areaNomina && u.areaNomina === form.areaNomina ? { ...u, tarjetasMiDia: form.tarjetasMiDia || [] } : u))));
+      onUpdateUsers(users.map((u) => (u.id === editUser.id ? { ...u, name: form.name, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado || "", clientesAsociados: form.clientesAsociados || [], modulosCliente: form.modulosCliente || [], soloLecturaCliente: !!form.soloLecturaCliente, clienteProduccion: form.clienteProduccion || "", clientesProduccion: form.clientesProduccion || [], email: form.email ? form.email.trim() : "", areaNomina: form.areaNomina || "", procesosPlaneacion: form.procesosPlaneacion || [], landingAreas: !!form.landingAreas, costosPlanta: !!form.costosPlanta, actualizaIngresos: !!form.actualizaIngresos, nominaLiderArea: !!form.nominaLiderArea, nominaLiderAsistencia: !!form.nominaLiderAsistencia, tarjetasMiDia: form.tarjetasMiDia || [], areasCumpleanos: form.areasCumpleanos || [], areasAuditoria: form.areasAuditoria || [], modulosPropios: (!esClienteForm && Array.isArray(form.modulosPropios)) ? form.modulosPropios : null, avatar } : (form.aplicarTarjetasArea && form.areaNomina && u.areaNomina === form.areaNomina ? { ...u, tarjetasMiDia: form.tarjetasMiDia || [] } : u))));
       setShowForm(false);
       return;
     }
@@ -12989,6 +12993,7 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
       )}
       {showForm && (
         <FormularioUsuario form={form} setForm={setForm} editUser={editUser} users={users} config={config} areasNomina={areasNomina} procesosNomina={procesosNomina}
+          rolBase={rolDelFormulario} modulosRol={modulosRolFormulario} disenoItems={disenoItems} grupos={grupos}
           roleOptions={roleOptions} rolesConfigurados={rolesConfigurados} error={error} creando={creando} onSave={saveUser} onCancel={() => { setShowForm(false); setError(""); }} T={T}
           MODULOS_CLIENTE_OPCIONES={MODULOS_CLIENTE_OPCIONES} GRUPOS_CLIENTE_PRODUCCION={GRUPOS_CLIENTE_PRODUCCION} GRUPOS_MI_DIA={GRUPOS_MI_DIA}
           TARJETAS_DEFECTO_MIDIA={TARJETAS_DEFECTO_MIDIA} claveCierreDeArea={claveCierreDeArea} esAreaCorte={esAreaCorte} sanitizarUsername={sanitizarUsername} />
@@ -13016,6 +13021,7 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
                 <span style={{ fontWeight: 800, fontSize: 14, color: T.ink }}>{u.name}</span>
                 {u.isAdmin && <span style={{ padding: "2px 8px", borderRadius: 4, background: T.ink, color: T.seam, fontSize: 10, fontWeight: 800 }}>ADMIN</span>}
                 <span style={{ padding: "2px 8px", borderRadius: 4, background: u.role === "Cliente" ? T.violetBg : T.denimBg, color: u.role === "Cliente" ? T.violet : T.denim, fontSize: 10, fontWeight: 700 }}>{u.role}</span>
+                {Array.isArray(u.modulosPropios) && <span title="Ve las áreas que se le marcaron a él, no las de su rol" style={{ marginLeft: 6, padding: "2px 8px", borderRadius: 4, background: T.jadeBg, color: T.jade, fontSize: 10, fontWeight: 700 }}>lista propia</span>}
                 {u.activo === false && <span style={{ padding: "2px 8px", borderRadius: 4, background: T.coralBg, color: T.coral, fontSize: 10, fontWeight: 800 }}>INACTIVO</span>}
               </div>
               <div style={{ fontSize: 12, color: T.slate, marginTop: 3 }}>@{u.username}{u.email ? ` · ${u.email}` : ""}</div>
@@ -15110,7 +15116,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
         {tab === "roles" && (
           <RolesAdmin config={config} users={users} onUpdateConfig={onUpdateConfig} effectiveModulos={effectiveModulos} disenoItems={DISENO_ITEMS_DEF} disenoBasicas={DISENO_SUBMODULOS} grupos={GRUPOS_MODULOS_DEF} T={T} uid={uid} />
         )}
-        {tab === "usuarios" && <UsersTab users={users} onUpdateUsers={onUpdateUsers} config={config} isAdmin={isAdmin} areasNomina={areasNomina} procesosNomina={procesosNomina} />}
+        {tab === "usuarios" && <UsersTab users={users} onUpdateUsers={onUpdateUsers} config={config} isAdmin={isAdmin} areasNomina={areasNomina} procesosNomina={procesosNomina} disenoItems={DISENO_ITEMS_DEF} grupos={GRUPOS_MODULOS_DEF} />}
         {tab === "notificaciones" && (
           <>
             <CorreosProgramacionPanel />
@@ -21038,7 +21044,9 @@ function AppInner() {
   const selPedido = pedidos.find((p) => p.id === selPedidoId);
   const totalOverdue = [...protos, ...capsulas.flatMap((c) => c.referencias)].filter((x) => isOverdue(x, config.stages)).length;
   const role = currentUser?.role || "Equipo Interno";
-  const userRoleData = config.roles.find((r) => r.name === role) || config.roles.find((r) => normRol(r.name) === normRol(role));
+  const userRoleDataRol = config.roles.find((r) => r.name === role) || config.roles.find((r) => normRol(r.name) === normRol(role));
+  // (2026-11-24, a pedido de Fredy) Si el usuario tiene lista propia de áreas (Usuarios → Qué ve este usuario), esa lista reemplaza a los módulos de su rol; los permisos de acción siguen siendo los del rol. Un Cliente no usa lista propia.
+  const userRoleData = normRol(role) === "cliente" ? userRoleDataRol : datosRolDeUsuario(userRoleDataRol, currentUser?.modulosPropios);
   // (2026-09-23, a pedido de Fredy) "Solo lectura" para un usuario Cliente
   // PUNTUAL -- distinto de los demás permisos, que son por ROL (todo el rol
   // Cliente comparte los mismos perms). Este flag vive en el propio usuario

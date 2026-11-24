@@ -25,7 +25,7 @@ const ENTRADAS = [
   { grupo: "Bodega", master: "bodega", nombre: "Bodega", esSub: (m) => m.startsWith("bodega_") },
   { grupo: "Contabilidad", master: "contabilidad", nombre: "Contabilidad", esSub: (m) => m.startsWith("contabilidad_") && m !== "contabilidad_ordenes_compra" },
 ];
-const entradaDe = (mod) => ENTRADAS.find((e) => e.esSub(mod));
+export const entradaDe = (mod) => ENTRADAS.find((e) => e.esSub(mod));
 const PROTEGIDOS = ["r1", "r2"]; // Equipo Interno y Cliente vienen con ATLAS (igual que antes: no se pueden eliminar)
 
 function Interruptor({ on, onClick, label, T }) {
@@ -253,7 +253,7 @@ export default function RolesAdmin({ config, users, onUpdateConfig, effectiveMod
               usuarios.length ? usuarios.map((u) => (
                 <div key={u.id} style={{ display: "flex", gap: 12, alignItems: "center", padding: "10px 0", borderBottom: borde }}>
                   <span style={{ width: 32, height: 32, borderRadius: "50%", background: "#C8B8A2", color: T.ink, fontSize: 11, fontWeight: 800, display: "grid", placeItems: "center" }}>{iniciales(u.name)}</span>
-                  <div><div style={{ fontWeight: 800, fontSize: 13, color: T.ink }}>{u.name}{u.activo === false ? " · desactivado" : ""}</div><div style={{ fontSize: 11.5, color: T.slate, fontWeight: 600 }}>@{u.username}</div></div>
+                  <div><div style={{ fontWeight: 800, fontSize: 13, color: T.ink }}>{u.name}{u.activo === false ? " · desactivado" : ""}{Array.isArray(u.modulosPropios) ? <span title="Este usuario tiene su propia lista de áreas: lo que ve no sale de este rol" style={{ marginLeft: 8, fontSize: 10.5, fontWeight: 800, background: "#EBF1F7", color: "#3D6B9E", borderRadius: 20, padding: "1px 8px" }}>lista propia</span> : null}</div><div style={{ fontSize: 11.5, color: T.slate, fontWeight: 600 }}>@{u.username}</div></div>
                 </div>
               )) : <div style={{ color: T.slate, fontSize: 13, fontWeight: 600, padding: "18px 0" }}>Ningún usuario tiene este rol todavía. Asígnalo en Administración → Usuarios.</div>
             )}
