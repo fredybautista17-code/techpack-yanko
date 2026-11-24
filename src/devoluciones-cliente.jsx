@@ -177,7 +177,8 @@ function useDevoluciones(db, soloUid) {
       q,
       (s) => {
         setError("");
-        setLista(s.docs.map((x) => ({ ...x.data(), id: x.id })).sort((a, b) => (b.creadoEn || "").localeCompare(a.creadoEn || "")));
+        // La cliente no ve la parte que se dividió a segundas (solo la devolución original, con su nota).
+        setLista(s.docs.map((x) => ({ ...x.data(), id: x.id })).filter((x) => !(soloUid && x.divididaDe)).sort((a, b) => (b.creadoEn || "").localeCompare(a.creadoEn || "")));
       },
       (e) => { setError(e?.message || "No se pudieron leer las devoluciones."); setLista([]); }
     );
@@ -413,6 +414,16 @@ function Detalle({ T, d, mostrarConteo }) {
           Despacho de nuevo solicitado{d.solicitaDespacho.por ? ` por ${d.solicitaDespacho.por}` : ""} el {fmtFecha(d.solicitaDespacho.fecha)}{d.solicitaDespacho.nota ? ` · ${d.solicitaDespacho.nota}` : ""}
         </div>
       ) : null}
+      {d.division ? (
+        <div style={{ fontSize: 12, color: "#B5446E", background: "#FBE8EF", borderRadius: 8, padding: "8px 12px", marginTop: 10, fontWeight: 600 }}>
+          ✂️ Se dividió: de {d.division.totalOriginal || (d.division.segundasUnidades + d.division.despachoUnidades)} und., {d.division.segundasUnidades} no se reenvía{d.division.segundasUnidades === 1 ? "" : "n"} (revisión terminada){mostrarConteo && d.division.devolucionSegundas?.numero ? ` y quedó en bodega de segundas como ${d.division.devolucionSegundas.numero}` : ""}; {d.division.despachoUnidades} va{d.division.despachoUnidades === 1 ? "" : "n"} a nuevo despacho.
+        </div>
+      ) : null}
+      {d.divididaDe && mostrarConteo ? (
+        <div style={{ fontSize: 12, color: T.slate, background: T.canvas, borderRadius: 8, padding: "8px 12px", marginTop: 10 }}>
+          ✂️ Esta es la parte de segundas de la devolución <b>{d.divididaDeNumero}</b>.
+        </div>
+      ) : null}
       {mostrarConteo && d.estado === "segundas" ? (
         <div style={{ fontSize: 12, color: "#B5446E", background: "#FBE8EF", borderRadius: 8, padding: "8px 12px", marginTop: 10, fontWeight: 600 }}>
           🏷️ Calidad la mandó a bodega de segundas{d.revisadoPor ? ` (${d.revisadoPor})` : ""}. No se reenvía a la cliente.
@@ -465,6 +476,60 @@ function recalcularDiferencias(lineasDecl, lineasConteo) {
     if (x) dif.push({ color, colorNombre: nombres[color] || "", talla, dif: x });
   });
   return dif;
+}
+
+// (2026-11-24, a pedido de Fredy) Dividir una devolución revisada: una parte va a bodega de segundas y el resto a nuevo despacho.
+// Arma, a partir de lo contado y lo que Calidad marcó para segundas (valores «color|talla»), los tres juegos de líneas.
+function repartirDivision(d, seg) {
+  const cont = valoresDeLineas(d.conteo);
+  const decl = valoresDeLineas(d.lineas);
+  const nombres = {};
+  [...(d.lineas || []), ...(d.conteo || [])].forEach((l) => { nombres[l.color] = l.colorNombre || ""; });
+  const colores = [...new Set([...(d.conteo || []).map((l) => l.color), ...(d.lineas || []).map((l) => l.color)])];
+  const arm = (fn) => colores.map((color) => {
+    const cant = {};
+    new Set([...Object.keys(cont), ...Object.keys(decl)]).forEach((k) => {
+      const [c, t] = k.split("|");
+      if (c !== color) return;
+      const n = fn(k);
+      if (n > 0) cant[t] = n;
+    });
+    return { color, colorNombre: nombres[color] || "", cantidades: cant };
+  }).filter((l) => Object.keys(l.cantidades).length);
+  const segN = (k) => Math.min(Number(seg[k]) || 0, Number(cont[k]) || 0);
+  return {
+    segundas: arm(segN),
+    conteoDespacho: arm((k) => (Number(cont[k]) || 0) - segN(k)),
+    declaradoDespacho: arm((k) => Math.max(0, (Number(decl[k]) || 0) - segN(k))),
+  };
+}
+async function dividirDevolucion(db, d, seg, usuario) {
+  const r = repartirDivision(d, seg);
+  const nSeg = totalLineas(r.segundas);
+  const nDes = totalLineas(r.conteoDespacho);
+  if (nSeg < 1 || nDes < 1) throw new Error("Deja al menos una unidad en cada destino.");
+  const numeroS = `${d.numero}-S`;
+  const idS = `${d.id}_s`;
+  const ahora = nowISO();
+  const difs = recalcularDiferencias(r.declaradoDespacho, r.conteoDespacho);
+  const evP = { estado: "facturacion", fecha: ahora, usuario: usuario || "", nota: `Se dividió: ${nSeg} und. a bodega de segundas (${numeroS}) y ${nDes} und. a nuevo despacho` };
+  const evS = { estado: "segundas", fecha: ahora, usuario: usuario || "", nota: `Dividida de ${d.numero}: ${nSeg} und. a bodega de segundas` };
+  const hija = { ...d };
+  ["facturacion", "redespacho", "solicitaDespacho", "division", "envioId", "envioJunto"].forEach((k) => { delete hija[k]; });
+  const batch = writeBatch(db);
+  batch.update(doc(db, COL, d.id), limpio({
+    estado: "facturacion", destino: "despacho",
+    lineas: r.declaradoDespacho, total: totalLineas(r.declaradoDespacho),
+    conteo: r.conteoDespacho, totalContado: nDes, diferencias: difs, resultado: difs.length ? "diferencias" : "completa",
+    division: { segundasUnidades: nSeg, despachoUnidades: nDes, devolucionSegundas: { id: idS, numero: numeroS }, totalOriginal: d.total || 0, lineasOriginales: d.lineas || [], conteoOriginal: d.conteo || [], por: usuario || "", fecha: ahora },
+    historial: [...(d.historial || []), evP], actualizadoEn: ahora,
+  }));
+  batch.set(doc(db, COL, idS), limpio({
+    ...hija, id: idS, numero: numeroS, estado: "segundas", destino: "segundas",
+    lineas: r.segundas, conteo: r.segundas, total: nSeg, totalContado: nSeg, diferencias: [], resultado: "completa",
+    divididaDe: d.id, divididaDeNumero: d.numero, historial: [...(d.historial || []), evS], actualizadoEn: ahora,
+  }));
+  await batch.commit();
 }
 
 // (2026-10-21, a pedido de Fredy) Editar una devolución: la pueden editar todos los usuarios que tienen Devoluciones
@@ -1698,6 +1763,8 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, puedeFa
   const [juntas, setJuntas] = useState({ fecha: new Date().toISOString().slice(0, 10), guia: "", nuevo: "" });
   const [msgJunto, setMsgJunto] = useState("");
   const [confirmaSegundas, setConfirmaSegundas] = useState(""); // id de la devolución que Calidad está por mandar a segundas (pide confirmar)
+  const [dividiendo, setDividiendo] = useState(""); // (2026-11-24) id de la devolución que Calidad está dividiendo (parte a segundas, parte a despacho)
+  const [segVals, setSegVals] = useState({}); // «color|talla» -> unidades que van a segundas
   const usuario = usuarioActual(currentUser);
 
   const pendiente = (d) => (modo === "bodega" ? ["reportada", "en_camino", "lista"].includes(d.estado) : ["recibida", "revisada"].includes(d.estado));
@@ -1843,6 +1910,38 @@ function ListaEquipo({ db, T: Tp, currentUser, modo, puedeCambiarEstado, puedeFa
               <span style={{ fontSize: 12.5, lineHeight: 1.4, color: T.ink }}>No se reenvía a la cliente. Queda en <b>Bodega de segundas</b> y ahí termina.</span>
             </button>
           </div>
+          {totalLineas(d.conteo) >= 2 && (
+            <div style={{ marginTop: 12 }}>
+              {dividiendo !== d.id ? (
+                <button disabled={ocupado} onClick={() => { setConfirmaSegundas(""); setSegVals({}); setDividiendo(d.id); }} style={{ ...btn(T), fontWeight: 700 }}>✂️ Dividir: una parte a despacho y otra a segundas</button>
+              ) : (() => {
+                const cont = valoresDeLineas(d.conteo);
+                const tallasC = tallasDeLineas(d.conteo, []);
+                const coloresC = coloresDeLineas(d.conteo);
+                const nSeg = Object.keys(cont).reduce((n, k) => n + Math.min(Number(segVals[k]) || 0, Number(cont[k]) || 0), 0);
+                const nTot = totalLineas(d.conteo);
+                const valida = nSeg >= 1 && nSeg < nTot;
+                return (
+                  <div style={{ border: "2px solid #B5446E", background: "#FFF8FA", borderRadius: 14, padding: "14px 16px" }}>
+                    <div style={{ fontSize: 14, fontWeight: 800, color: T.ink }}>✂️ Dividir esta devolución</div>
+                    <div style={{ fontSize: 12.5, color: T.slate, margin: "4px 0 10px" }}>Escribe cuántas unidades de cada color y talla van a <b style={{ color: "#B5446E" }}>bodega de segundas</b>. Lo que no marques sigue a <b style={{ color: "#1D8A8A" }}>nuevo despacho</b> (pasa a En facturación).</div>
+                    <GrillaColorTalla
+                      T={T} colores={coloresC} tallas={tallasC} valores={segVals} tope usado={{}} infantil={esInfantilDev(d)}
+                      onCambiar={(k, v, cap) => setSegVals((c) => ({ ...c, [k]: v === "" ? "" : Math.min(entero(v), cap ?? entero(v)) }))}
+                    />
+                    <div style={{ marginTop: 10, fontSize: 13, fontWeight: 700, color: T.ink }}>
+                      <span style={{ color: "#B5446E" }}>{nSeg} und. a segundas</span> · <span style={{ color: "#1D8A8A" }}>{nTot - nSeg} und. a nuevo despacho</span>
+                    </div>
+                    {!valida && nSeg > 0 && <div style={{ marginTop: 6, fontSize: 12, color: T.coral }}>Deja al menos una unidad en cada destino. Si todas van al mismo lugar, usa uno de los dos botones de arriba.</div>}
+                    <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      <button disabled={ocupado || !valida} onClick={async () => { setTrabajando(d.id); setMsg(""); try { await dividirDevolucion(db, d, segVals, usuario); setDividiendo(""); setSegVals({}); } catch (e) { setMsg(e?.message || "No se pudo dividir la devolución."); } finally { setTrabajando(""); } }} style={{ ...btn(T, "primario"), background: "#B5446E", opacity: valida ? 1 : 0.5 }}>Confirmar división</button>
+                      <button onClick={() => { setDividiendo(""); setSegVals({}); }} style={btn(T)}>Cancelar</button>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          )}
           {confirmaSegundas === d.id && (
             <div style={{ marginTop: 10, background: "#FBE8EF", color: "#7D2347", borderRadius: 10, padding: "10px 14px", fontSize: 13, fontWeight: 600, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
               <span>¿Seguro? Esta devolución ya no se reenviará a la cliente.</span>
