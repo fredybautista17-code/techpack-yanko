@@ -69,6 +69,15 @@ export const GRUPOS_MI_DIA = [
     tarjetas: [{ id: "auditoria_nomina", label: "Auditoría Busint vs Nómina (todas las áreas)" }],
   },
   {
+    // (2026-11-24, a pedido de Fredy) Para Tesorería: solo lo que no cuadra entre Busint y TNS en Cuentas por pagar y en Cartera. Si además
+    // marca «Auditoría Busint vs Nómina», el Resumen de Tesorería también muestra las áreas con diferencia. Consulta Busint y TNS en vivo al abrir.
+    id: "tesoreria", titulo: "Tesorería (lo que no cuadra)",
+    tarjetas: [
+      { id: "tes_cxp", label: "Cuentas por pagar: proveedores donde Busint y TNS no cuadran (diferencias y «Solo Busint»)" },
+      { id: "tes_cartera", label: "Cartera: clientes donde Busint y TNS no cuadran (Saldos de clientes, incluye «Solo TNS sin pareja»)" },
+    ],
+  },
+  {
     // (2026-11-21, a pedido de Fredy) Verificador de Precio: teórico contra real de la mano de obra de Confección y Corte (Busint en vivo), por referencia o lote.
     // Además de marcar la tarjeta, el rol del usuario necesita el permiso «Puede ver el Verificador de Precio» (Roles → Planta Yanko).
     id: "verificador_precio", titulo: "Verificador de precio",

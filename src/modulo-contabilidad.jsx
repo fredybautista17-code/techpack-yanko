@@ -5169,6 +5169,53 @@ function PlazosPagoCxp({ proveedores, plazos, facturasGuardadas, corteId, onGuar
     </div>
   );
 }
+// (2026-11-24, a pedido de Fredy) Cruce de Cuentas por pagar Busint contra TNS, sacado de CuadreCxpView para que lo use también
+// el Mi Día de Tesorería. Devuelve una fila por proveedor con { busint, tns, dif, estado: cuadra | revisar | solotns | solobusint | taller }.
+export function calcularCuadreCxp({ proveedoresBusint, tnsProveedores, enlaces, sinTns }) {
+  const mapa = new Map();
+  const porNit = new Map();
+  const porNombre = new Map();
+  (proveedoresBusint || []).forEach((p) => {
+    const nitProp = baseNitCxp(p.nit);
+    const nitEnl = baseNitCxp(enlaces[claveDocCxp(p.nombre)]);
+    const nit = nitProp || nitEnl;
+    const nk = claveNombreCxpTns(p.nombre);
+    const key = nit ? `n:${nit}` : `m:${nk}`;
+    if (!mapa.has(key)) mapa.set(key, { clave: key, nombre: p.nombreMostrado || p.nombre, nombreBusint: p.nombre, nombreTns: "", nit, busint: 0, vencido: 0, tns: 0, enBusint: true, enTns: false, porEnlace: !nitProp && !!nitEnl, sinTns: false, facturasBusint: 0, anticipoBusint: 0, anticipoTns: 0, anticiposDe: [] });
+    const r = mapa.get(key);
+    r.facturasBusint += Number(p.total) || 0;
+    r.anticipoBusint += Number(p.anticiposTotal) || 0;
+    if ((Number(p.anticiposTotal) || 0) > 0) r.anticiposDe.push({ codigo: p.codigoAnticipo || "", lista: p.anticipos || [] });
+    if (sinTns[claveDocCxp(p.nombre)]) r.sinTns = true;
+    r.busint += (Number(p.total) || 0) - (Number(p.anticiposTotal) || 0); // (2026-10-29) neto de anticipos a proveedores, como el "Gran TOTAL" de Busint
+    r.vencido += (Number(p.dias0a30) || 0) + (Number(p.dias31a60) || 0) + (Number(p.dias61a90) || 0) + (Number(p.dias91mas) || 0);
+    if (nit) porNit.set(nit, key);
+    if (nk && !porNombre.has(nk)) porNombre.set(nk, key);
+  });
+  (tnsProveedores || []).forEach((p) => {
+    const nit = baseNitCxp(p.nit);
+    const nk = claveNombreCxpTns(p.nombre);
+    const key = (nit && porNit.get(nit)) || porNombre.get(nk) || (nit ? `n:${nit}` : `m:${nk}`);
+    if (!mapa.has(key)) mapa.set(key, { clave: key, nombre: p.nombre, nombreBusint: "", nombreTns: p.nombre, nit, busint: 0, vencido: 0, tns: 0, enBusint: false, enTns: false, facturasBusint: 0, anticipoBusint: 0, anticipoTns: 0, anticiposDe: [] });
+    const r = mapa.get(key);
+    r.tns += netoTnsCxp(p);
+    r.c2205Tns = (r.c2205Tns || 0) + (p.c2205 || 0);
+    r.c2335Tns = (r.c2335Tns || 0) + (p.c2335 || 0);
+    r.anticipoTns += p.a1330 || 0;
+    r.enTns = true;
+    r.nombreTns = p.nombre;
+    if (!r.nit) r.nit = nit;
+  });
+  const todas = [...mapa.values()].map((r) => {
+    const dif = r.tns - r.busint;
+    let estado;
+    if (r.enBusint && r.enTns) estado = Math.abs(dif) < 1000 ? "cuadra" : "revisar";
+    else if (r.enTns) estado = "solotns";
+    else estado = r.sinTns ? "taller" : "solobusint";
+    return { ...r, dif, estado };
+  }).filter((r) => (r.estado === "solotns" ? Math.abs(r.tns) >= 1000 : r.estado === "solobusint" || r.estado === "taller" ? Math.abs(r.busint) >= 1 : true));
+  return todas;
+}
 function CuadreCxpView({ proveedoresBusint: proveedoresBusintProp, corteActivo, detalleFacturas, facturasGuardadas, onTraerBusint, cargandoBusint, plazos, onGuardarPlazo, prontoDias, onGuardarPronto, empresa, setEmpresa }) {
   // (2026-11-05, a pedido de Fredy) La empresa la elige el selector de la pantalla. Busint solo trae a Yanko: para Indutex
   // no hay con qué cruzar, así que se muestra solo lo que dice TNS (sin "Solo Busint", sin diferencia).
@@ -5264,48 +5311,7 @@ function CuadreCxpView({ proveedoresBusint: proveedoresBusintProp, corteActivo, 
   let todas = [];
   let resumen = null;
   if (d) {
-    const mapa = new Map();
-    const porNit = new Map();
-    const porNombre = new Map();
-    (proveedoresBusint || []).forEach((p) => {
-      const nitProp = baseNitCxp(p.nit);
-      const nitEnl = baseNitCxp(enlaces[claveDocCxp(p.nombre)]);
-      const nit = nitProp || nitEnl;
-      const nk = claveNombreCxpTns(p.nombre);
-      const key = nit ? `n:${nit}` : `m:${nk}`;
-      if (!mapa.has(key)) mapa.set(key, { clave: key, nombre: p.nombreMostrado || p.nombre, nombreBusint: p.nombre, nombreTns: "", nit, busint: 0, vencido: 0, tns: 0, enBusint: true, enTns: false, porEnlace: !nitProp && !!nitEnl, sinTns: false, facturasBusint: 0, anticipoBusint: 0, anticipoTns: 0, anticiposDe: [] });
-      const r = mapa.get(key);
-      r.facturasBusint += Number(p.total) || 0;
-      r.anticipoBusint += Number(p.anticiposTotal) || 0;
-      if ((Number(p.anticiposTotal) || 0) > 0) r.anticiposDe.push({ codigo: p.codigoAnticipo || "", lista: p.anticipos || [] });
-      if (sinTns[claveDocCxp(p.nombre)]) r.sinTns = true;
-      r.busint += (Number(p.total) || 0) - (Number(p.anticiposTotal) || 0); // (2026-10-29) neto de anticipos a proveedores, como el "Gran TOTAL" de Busint
-      r.vencido += (Number(p.dias0a30) || 0) + (Number(p.dias31a60) || 0) + (Number(p.dias61a90) || 0) + (Number(p.dias91mas) || 0);
-      if (nit) porNit.set(nit, key);
-      if (nk && !porNombre.has(nk)) porNombre.set(nk, key);
-    });
-    (d.proveedores || []).forEach((p) => {
-      const nit = baseNitCxp(p.nit);
-      const nk = claveNombreCxpTns(p.nombre);
-      const key = (nit && porNit.get(nit)) || porNombre.get(nk) || (nit ? `n:${nit}` : `m:${nk}`);
-      if (!mapa.has(key)) mapa.set(key, { clave: key, nombre: p.nombre, nombreBusint: "", nombreTns: p.nombre, nit, busint: 0, vencido: 0, tns: 0, enBusint: false, enTns: false, facturasBusint: 0, anticipoBusint: 0, anticipoTns: 0, anticiposDe: [] });
-      const r = mapa.get(key);
-      r.tns += netoTnsCxp(p);
-      r.c2205Tns = (r.c2205Tns || 0) + (p.c2205 || 0);
-      r.c2335Tns = (r.c2335Tns || 0) + (p.c2335 || 0);
-      r.anticipoTns += p.a1330 || 0;
-      r.enTns = true;
-      r.nombreTns = p.nombre;
-      if (!r.nit) r.nit = nit;
-    });
-    todas = [...mapa.values()].map((r) => {
-      const dif = r.tns - r.busint;
-      let estado;
-      if (r.enBusint && r.enTns) estado = Math.abs(dif) < 1000 ? "cuadra" : "revisar";
-      else if (r.enTns) estado = "solotns";
-      else estado = r.sinTns ? "taller" : "solobusint";
-      return { ...r, dif, estado };
-    }).filter((r) => (r.estado === "solotns" ? Math.abs(r.tns) >= 1000 : r.estado === "solobusint" || r.estado === "taller" ? Math.abs(r.busint) >= 1 : true));
+    todas = calcularCuadreCxp({ proveedoresBusint, tnsProveedores: d.proveedores, enlaces, sinTns });
     const suma = (arr, f) => arr.reduce((s, x) => s + f(x), 0);
     const por = (e) => todas.filter((r) => r.estado === e);
     resumen = {
@@ -7849,7 +7855,7 @@ async function leerCarteraTNS(file) {
 // Yanko: NO maneja los de Indutex. Por eso Busint se compara SOLO contra TNS
 // Yanko; el saldo con Indutex se muestra aparte y no entra en esta comparación.
 // Diferencias de hasta $50 (redondeos / centavos del Balance) se toman como cero.
-const TOLERANCIA_SALDO = 50;
+export const TOLERANCIA_SALDO = 50;
 // (2026-10-14) En "Ambos" se compara el saldo TOTAL de Busint (facturas + traslado externo) contra TNS
 // Yanko: el saldo debe estar igual en los dos lados. `tieneTraslado` solo sirve para explicar la diferencia.
 function estadoSaldoCliente(donde, busint, tnsYanko, hayTnsYanko, tieneTraslado) {
@@ -7878,7 +7884,7 @@ function estadoSaldoCliente(donde, busint, tnsYanko, hayTnsYanko, tieneTraslado)
 // aparte, en el mismo grupo de documentos, con id "<empresa>_vivo". Si el corte
 // en vivo es más reciente que el último Excel subido, manda para el SALDO por
 // cliente; el detalle por factura (edades/vencimientos) sigue viniendo del Excel.
-function mezclarCarteraTns(docs) {
+export function mezclarCarteraTns(docs) {
   const excel = {};
   const vivo = {};
   docs.forEach((d) => {
@@ -7946,6 +7952,66 @@ function RenombrarClienteBusintModal({ codigo, nombreBusint, nombreActual, onSav
       </div>
     </Modal>
   );
+}
+// (2026-11-24, a pedido de Fredy) Cruce de Saldos de clientes (Busint, TNS y traslado externo), sacado de SaldosClientesView para que lo
+// use también el Mi Día de Tesorería. Devuelve null si aún no hay datos de Busint.
+export function calcularFilasSaldosClientes({ busintN, tns, config, traslados, nombresManual }) {
+  if (!busintN) return null;
+  const porCodigo = new Map();
+  const nombresBusint = [];
+  const codigoPorNombre = {};
+  busintN.forEach((c) => {
+    const nombre = String(c.nombre || "").trim();
+    porCodigo.set(String(c.codigo), { clave: `b:${c.codigo}`, nombre, codigo: c.codigo, busint: c.total, busintCartera: c.total, traslado: null, tnsPorEmpresa: { yanko: null, indutex: null }, tnsItems: [], facturaMasReciente: c.facturaMasReciente });
+    if (nombre && !(nombre in codigoPorNombre)) {
+      codigoPorNombre[nombre] = String(c.codigo);
+      nombresBusint.push(nombre);
+    }
+  });
+  // Traslado externo: se suma al saldo Busint del cliente (o se crea la fila si el
+  // cliente no tiene facturas en la cartera, ej. Kamila Venezuela).
+  (traslados?.clientes || []).forEach((t) => {
+    if (Math.abs(t.saldo) < 1) return;
+    const cod = String(t.codigo);
+    let fila = porCodigo.get(cod);
+    if (!fila) {
+      fila = { clave: `b:${cod}`, nombre: nombresManual[cod] || t.nombre, codigo: cod, busint: 0, busintCartera: 0, traslado: null, tnsPorEmpresa: { yanko: null, indutex: null }, tnsItems: [], facturaMasReciente: t.ultimoTraslado };
+      porCodigo.set(cod, fila);
+      const nom = String(nombresManual[cod] || t.nombre || "").trim();
+      if (nom && !(nom in codigoPorNombre)) {
+        codigoPorNombre[nom] = cod;
+        nombresBusint.push(nom);
+      }
+    }
+    fila.traslado = t;
+    fila.busint = (fila.busint || 0) + t.saldo;
+  });
+  const solas = [];
+  EMPRESAS_TNS.forEach((emp) => {
+    (tns[emp.id]?.clientes || []).forEach((t) => {
+      const manual = config.enlaces[claveCampoSaldos(t.nit)];
+      let codigo = null;
+      if (manual !== undefined) codigo = manual === SIN_PAREJA_BUSINT ? null : String(manual);
+      else {
+        const n = emparejarClientePedido(t.nombre, nombresBusint);
+        codigo = n ? codigoPorNombre[n] : null;
+      }
+      let fila = codigo ? porCodigo.get(codigo) : null;
+      if (!fila) {
+        fila = solas.find((x) => x.clave === `t:${t.nit}`);
+        if (!fila) {
+          fila = { clave: `t:${t.nit}`, nombre: t.nombre, codigo: null, busint: null, tnsPorEmpresa: { yanko: null, indutex: null }, tnsItems: [], facturaMasReciente: null };
+          solas.push(fila);
+        }
+      }
+      fila.tnsPorEmpresa[emp.id] = (fila.tnsPorEmpresa[emp.id] || 0) + t.saldo;
+      fila.tnsItems.push({ empresa: emp.id, nit: t.nit, nombre: t.nombre, manual: manual !== undefined });
+    });
+  });
+  return [...porCodigo.values(), ...solas].map((f) => {
+    const donde = config.donde[claveCampoSaldos(f.clave)] || "definir";
+    return { ...f, donde, estado: estadoSaldoCliente(donde, f.busint, f.tnsPorEmpresa.yanko || 0, f.tnsPorEmpresa.yanko !== null, !!f.traslado), magnitud: Math.max(Math.abs(f.busint || 0), Math.abs(f.tnsPorEmpresa.yanko || 0), Math.abs(f.tnsPorEmpresa.indutex || 0)) };
+  });
 }
 function SaldosClientesView({ currentUser }) {
   const [busint, setBusint] = useState(null);
@@ -8103,62 +8169,7 @@ function SaldosClientesView({ currentUser }) {
     await fsSave("contabilidad_saldos_config", "main", { enlaces: { [claveCampoSaldos(nit)]: valor } });
   }
   const filas = useMemo(() => {
-    if (!busintN) return null;
-    const porCodigo = new Map();
-    const nombresBusint = [];
-    const codigoPorNombre = {};
-    busintN.forEach((c) => {
-      const nombre = String(c.nombre || "").trim();
-      porCodigo.set(String(c.codigo), { clave: `b:${c.codigo}`, nombre, codigo: c.codigo, busint: c.total, busintCartera: c.total, traslado: null, tnsPorEmpresa: { yanko: null, indutex: null }, tnsItems: [], facturaMasReciente: c.facturaMasReciente });
-      if (nombre && !(nombre in codigoPorNombre)) {
-        codigoPorNombre[nombre] = String(c.codigo);
-        nombresBusint.push(nombre);
-      }
-    });
-    // Traslado externo: se suma al saldo Busint del cliente (o se crea la fila si el
-    // cliente no tiene facturas en la cartera, ej. Kamila Venezuela).
-    (traslados?.clientes || []).forEach((t) => {
-      if (Math.abs(t.saldo) < 1) return;
-      const cod = String(t.codigo);
-      let fila = porCodigo.get(cod);
-      if (!fila) {
-        fila = { clave: `b:${cod}`, nombre: nombresManual[cod] || t.nombre, codigo: cod, busint: 0, busintCartera: 0, traslado: null, tnsPorEmpresa: { yanko: null, indutex: null }, tnsItems: [], facturaMasReciente: t.ultimoTraslado };
-        porCodigo.set(cod, fila);
-        const nom = String(nombresManual[cod] || t.nombre || "").trim();
-        if (nom && !(nom in codigoPorNombre)) {
-          codigoPorNombre[nom] = cod;
-          nombresBusint.push(nom);
-        }
-      }
-      fila.traslado = t;
-      fila.busint = (fila.busint || 0) + t.saldo;
-    });
-    const solas = [];
-    EMPRESAS_TNS.forEach((emp) => {
-      (tns[emp.id]?.clientes || []).forEach((t) => {
-        const manual = config.enlaces[claveCampoSaldos(t.nit)];
-        let codigo = null;
-        if (manual !== undefined) codigo = manual === SIN_PAREJA_BUSINT ? null : String(manual);
-        else {
-          const n = emparejarClientePedido(t.nombre, nombresBusint);
-          codigo = n ? codigoPorNombre[n] : null;
-        }
-        let fila = codigo ? porCodigo.get(codigo) : null;
-        if (!fila) {
-          fila = solas.find((x) => x.clave === `t:${t.nit}`);
-          if (!fila) {
-            fila = { clave: `t:${t.nit}`, nombre: t.nombre, codigo: null, busint: null, tnsPorEmpresa: { yanko: null, indutex: null }, tnsItems: [], facturaMasReciente: null };
-            solas.push(fila);
-          }
-        }
-        fila.tnsPorEmpresa[emp.id] = (fila.tnsPorEmpresa[emp.id] || 0) + t.saldo;
-        fila.tnsItems.push({ empresa: emp.id, nit: t.nit, nombre: t.nombre, manual: manual !== undefined });
-      });
-    });
-    return [...porCodigo.values(), ...solas].map((f) => {
-      const donde = config.donde[claveCampoSaldos(f.clave)] || "definir";
-      return { ...f, donde, estado: estadoSaldoCliente(donde, f.busint, f.tnsPorEmpresa.yanko || 0, f.tnsPorEmpresa.yanko !== null, !!f.traslado), magnitud: Math.max(Math.abs(f.busint || 0), Math.abs(f.tnsPorEmpresa.yanko || 0), Math.abs(f.tnsPorEmpresa.indutex || 0)) };
-    });
+    return calcularFilasSaldosClientes({ busintN, tns, config, traslados, nombresManual });
   }, [busintN, tns, config, traslados, nombresManual]);
   const visibles = (filas || [])
     .filter((f) => {
