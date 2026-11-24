@@ -14122,33 +14122,48 @@ exports.getMovimientosProveedorTNS = onCallAuth(
       let muestraCruda = null;
       let ultimoBody = null;
       const intentosFallidos = [];
+      // (2026-11-24) El Libro Auxiliar de TNS solo pide fechaInicial, fechaFinal y codigoTercero (no acepta cuentas) y con el NIT pelado
+      // respondía 500. Se prueba el código del tercero con el dígito de verificación (el que venga o el calculado con el algoritmo de la DIAN):
+      // «NIT-DV», «NITDV» y «NIT». Una sola consulta por sucursal trae todas las cuentas del tercero; luego se dejan pasivos (2xxx) y anticipos (1330).
+      const dvNit = (b) => {
+        const w = [3, 7, 13, 17, 19, 23, 29, 37, 41, 43, 47, 53, 59, 67, 71];
+        const t = b.split("").reverse().reduce((acc, c, i) => acc + Number(c) * (w[i] || 0), 0);
+        const r = t % 11;
+        return String(r > 1 ? 11 - r : r);
+      };
+      const nitCrudo = String(request.data?.nit || "").trim();
+      const dvDado = /-\s*(\d)\s*$/.exec(nitCrudo)?.[1];
+      const dv = dvDado || (nit.length <= 15 ? dvNit(nit) : "");
+      const variantes = [...new Set([dv ? `${nit}-${dv}` : "", dv ? `${nit}${dv}` : "", nit].filter(Boolean))];
+      const variantesProbadas = [];
       for (const sucursal of sucursales) {
-        for (const cta of CUENTAS_CXP_TNS) {
-          const datosCta = { fechaInicial, fechaFinal, cuentaInicial: cta.ini, cuentaFinal: cta.fin, nit };
-          // Intento 1: cuerpo armado con los campos del swagger (incluye el NIT si el reporte lo admite).
-          // Intento 2 (si TNS responde error): solo fechas y cuentas, igual que el Balance de Comprobación, y se filtra por NIT acá.
-          const cuerpos = [cuerpoLibroAuxiliarTNS(esquema?.campos, datosCta), { fechaInicial, fechaFinal, cuentaInicial: cta.ini, cuentaFinal: cta.fin }];
+        for (const variante of variantes) {
+          const cuerpo = cuerpoLibroAuxiliarTNS(esquema?.campos, { fechaInicial, fechaFinal, cuentaInicial: "1330", cuentaFinal: "289999", nit: variante });
+          ultimoBody = cuerpo;
           let resp = null;
-          for (const cuerpo of cuerpos) {
-            ultimoBody = cuerpo;
-            try {
-              resp = await llamarTNS(`${path}?codigosucursal=${encodeURIComponent(sucursal)}`, { method: "POST", body: cuerpo, empresa });
-              if (resp && resp.status === false) throw new Error(resp.message || "TNS rechazó la consulta del Libro Auxiliar.");
-              break;
-            } catch (errIntento) {
-              resp = null;
-              intentosFallidos.push({ cuenta: cta.clave, enviado: cuerpo, error: String(errIntento?.message || errIntento).slice(0, 400) });
-            }
+          try {
+            resp = await llamarTNS(`${path}?codigosucursal=${encodeURIComponent(sucursal)}`, { method: "POST", body: cuerpo, empresa });
+            if (resp && resp.status === false) throw new Error(resp.message || "TNS rechazó la consulta del Libro Auxiliar.");
+          } catch (errIntento) {
+            resp = null;
+            intentosFallidos.push({ cuenta: `suc. ${sucursal}`, enviado: cuerpo, error: String(errIntento?.message || errIntento).slice(0, 400) });
           }
           if (!resp) continue;
           const crudas = extraerFilasTNS(resp);
           if (!muestraCruda) muestraCruda = crudas.length ? crudas.slice(0, 2) : resp;
+          if (!crudas.length) continue; // respondió pero sin filas: se prueba la siguiente forma del código
+          variantesProbadas.push(`suc. ${sucursal}: «${variante}» funcionó`);
           crudas.forEach((f) => {
             // Si TNS devolvió varios terceros, se dejan solo los de este NIT.
             const kNit = Object.keys(f).find((k) => /(^|_)(nit|tercero|identific)/i.test(k) && !/nombre/i.test(k));
             if (kNit && String(f[kNit] ?? "").replace(/\D/g, "") && !String(f[kNit]).replace(/\D/g, "").startsWith(nit)) return;
-            filas.push({ ...normalizarFilaLibroTNS(f), sucursal, grupo: cta.clave });
+            const n = normalizarFilaLibroTNS(f);
+            const dig = String(n.cuenta).replace(/\D/g, "");
+            if (dig && !/^(2|1330)/.test(dig)) return; // solo pasivos y anticipos a proveedores
+            const grupo = dig.startsWith("2205") ? "c2205" : dig.startsWith("2335") ? "c2335" : dig.startsWith("1330") ? "a1330" : "otras";
+            filas.push({ ...n, sucursal, grupo });
           });
+          break;
         }
       }
       // (2026-11-24) Respaldo: el Libro Auxiliar de TNS responde error 500 en varias empresas (Indutex). Si no dio filas se arma un RESUMEN POR MES
@@ -14214,7 +14229,7 @@ exports.getMovimientosProveedorTNS = onCallAuth(
           }
         }
       }
-      logger.info("getMovimientosProveedorTNS OK", { empresa, nit, filas: filas.length, esquema });
+      logger.info("getMovimientosProveedorTNS OK", { empresa, nit, filas: filas.length, esquema, variantesProbadas, resumenMensual });
       const diagnostico = filas.length ? null : [
         intentosFallidos.length ? `TNS devolvió error en ${intentosFallidos.length} intento(s):\n${intentosFallidos.slice(0, 4).map((x) => `- ${x.cuenta} con ${JSON.stringify(x.enviado)} → ${x.error}`).join("\n")}` : "",
         muestraCruda ? (typeof muestraCruda === "string" ? muestraCruda : JSON.stringify(muestraCruda)) : "",
