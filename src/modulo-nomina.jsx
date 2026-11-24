@@ -4642,7 +4642,7 @@ function textoReferenciaPermiso(a, r) {
 }
 // Texto del concepto en recibo / desprendible.
 function textoTipoCobro(c) {
-  if (c && c.origen === "retardo") return `Retardo n.º ${c.retardoN || "—"} del mes · 1 h`;
+  if (c && c.origen === "retardo") return `Retardo n.º ${c.retardoN || "—"} del mes · 1 h${c.forzado ? " · descuento decidido por Talento Humano" : ""}`;
   if (c && c.origen === "permiso") {
     return `Permiso por horas · ${fmtHoras(c.horas)}${(Number(c.horasRepuestas) || 0) > 0 ? ` (repuestas ${fmtHoras(c.horasRepuestas)})` : ""}`;
   }
@@ -5654,21 +5654,29 @@ function valorDescuentoRetardo(trabajador) {
   return { aplica: true, valorHora, valor: Math.round(valorHora), motivoNoAplica: "" };
 }
 // Retardos de un mes ("YYYY-MM") agrupados por persona y numerados: [{ clave, trabajador, nombre, area, lista:[{...retardo, n, conDescuento, valor, motivoNoAplica}], total, conDescuento, valorTotal }].
-function retardosDelMesPorPersona(retardos, trabajadores, mes) {
+// (2026-11-24, a pedido de Fredy) Talento Humano puede (1) marcar a mano un retardo que el huellero/Tabulador no registró (se guarda en
+// nomina_retardos con origen "talento_humano" e id `rm__<trabajadorId>__<fecha>`, para que la evaluación del huellero no lo borre) y
+// (2) «Descontar» uno de los 3 libres: decisión en nomina_retardos_decisiones (id `<trabajadorId>__<fecha>`, { descontar: true, nota, por, en }).
+// `decisiones` es ese mapa id -> documento. Del 4.º en adelante siempre descuenta (no hay «dejar pasar»).
+function retardosDelMesPorPersona(retardos, trabajadores, mes, decisiones = {}) {
   const normPorId = new Map((trabajadores || []).map((t) => [t.id, normalizarNombreHuellero(t.nombre)]));
   const grupos = new Map();
   (retardos || [])
     .filter((r) => String(r.fecha || "").slice(0, 7) === mes)
-    .sort((a, b) => (a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0))
+    // En el mismo día los automáticos van primero: si Talento Humano marcó a mano un día que luego el huellero también registró, no se cuenta doble.
+    .sort((a, b) => (a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : (a.origen === "talento_humano" ? 1 : 0) - (b.origen === "talento_humano" ? 1 : 0)))
     .forEach((r) => {
       const t = (trabajadores || []).find((x) => coincideHuellero(r, x, normPorId.get(x.id))) || null;
       const clave = t ? t.id : `sin:${r.nombreNorm || r.nombre || r.id}`;
       if (!grupos.has(clave)) grupos.set(clave, { clave, trabajador: t, nombre: t?.nombre || r.nombre || "—", area: t?.area || r.area || "Sin asignar", lista: [] });
       const g = grupos.get(clave);
+      if (g.lista.some((x) => x.fecha === r.fecha)) return;
       const n = g.lista.length + 1;
       const v = valorDescuentoRetardo(t);
-      const conDescuento = n > RETARDOS_LIBRES_POR_MES && r.fecha >= FECHA_INICIO_DESCUENTO_RETARDOS;
-      g.lista.push({ ...r, n, conDescuento, valor: conDescuento && v.aplica ? v.valor : 0, valorHora: v.valorHora, motivoNoAplica: conDescuento && !v.aplica ? v.motivoNoAplica : "" });
+      const decision = t ? decisiones[`${t.id}__${r.fecha}`] || null : null;
+      const forzado = n <= RETARDOS_LIBRES_POR_MES && !!decision?.descontar;
+      const conDescuento = (n > RETARDOS_LIBRES_POR_MES || forzado) && r.fecha >= FECHA_INICIO_DESCUENTO_RETARDOS;
+      g.lista.push({ ...r, n, conDescuento, forzado, decision, valor: conDescuento && v.aplica ? v.valor : 0, valorHora: v.valorHora, motivoNoAplica: conDescuento && !v.aplica ? v.motivoNoAplica : "" });
     });
   return [...grupos.values()].map((g) => ({
     ...g,
@@ -5681,10 +5689,10 @@ function mesesConRetardos(retardos) {
   return [...new Set((retardos || []).map((r) => String(r.fecha || "").slice(0, 7)).filter((m) => m && m >= FECHA_INICIO_DESCUENTO_RETARDOS.slice(0, 7)))].sort();
 }
 // Cobros «retardo_…» que deberían existir hoy según los retardos guardados: [{ id, datos }].
-function cobrosRetardosEsperados(retardos, trabajadores) {
+function cobrosRetardosEsperados(retardos, trabajadores, decisiones = {}) {
   const out = [];
   mesesConRetardos(retardos).forEach((mes) => {
-    retardosDelMesPorPersona(retardos, trabajadores, mes).forEach((g) => {
+    retardosDelMesPorPersona(retardos, trabajadores, mes, decisiones).forEach((g) => {
       if (!g.trabajador) return;
       g.lista.filter((x) => x.conDescuento && x.valor > 0).forEach((x) => {
         out.push({
@@ -5701,6 +5709,8 @@ function cobrosRetardosEsperados(retardos, trabajadores) {
             retardoN: x.n,
             horas: 1,
             valorHora: Math.round(x.valorHora * 100) / 100,
+            ...(x.forzado ? { forzado: true, decididoPor: x.decision?.por || "", notaDecision: x.decision?.nota || "" } : {}),
+            ...(x.origen === "talento_humano" ? { retardoManual: true } : {}),
           },
         });
       });
@@ -7461,7 +7471,7 @@ function fmtMesLabel(mesStr) {
 // (2026-11-20, a pedido de Fredy) «Retardos del mes»: quién llegó tarde, cuántas veces y cuánto se le descuenta. Sin tolerancia; los 3
 // primeros retardos del mes son libres y desde el 4.º cada uno descuenta 1 hora laboral (sueldo ÷ 210) en la quincena donde cayó.
 // Gerencia y Talento Humano ven todo (con dinero); un líder solo ve su área y sin dinero.
-function RetardosMesView({ retardos, trabajadores, cobrosManuales, mostrarDinero = true, areaLider = "", onSincronizar }) {
+function RetardosMesView({ retardos, trabajadores, cobrosManuales, mostrarDinero = true, areaLider = "", onSincronizar, decisiones = {}, puedeMarcar = false, areasNomina = [], turnos = [], onMarcar, onDecidir, onQuitarRetardo }) {
   const [mes, setMes] = useState(today().slice(0, 7));
   const [busqueda, setBusqueda] = useState("");
   const [areaSel, setAreaSel] = useState("");
@@ -7469,9 +7479,13 @@ function RetardosMesView({ retardos, trabajadores, cobrosManuales, mostrarDinero
   const [verAyuda, setVerAyuda] = useState(false);
   const [sincronizando, setSincronizando] = useState(false);
   const [msgSync, setMsgSync] = useState("");
+  const [formAbierto, setFormAbierto] = useState(false);
+  const [formMarcar, setFormMarcar] = useState({ trabajadorId: "", fecha: today(), hora: "", minutos: "", nota: "" });
+  const [errMarcar, setErrMarcar] = useState("");
+  const [guardandoMarcar, setGuardandoMarcar] = useState(false);
 
   const rige = mes >= FECHA_INICIO_DESCUENTO_RETARDOS.slice(0, 7);
-  const gruposMes = retardosDelMesPorPersona(retardos, trabajadores, mes).filter((g) => !areaLider || g.area === areaLider);
+  const gruposMes = retardosDelMesPorPersona(retardos, trabajadores, mes, decisiones).filter((g) => !areaLider || g.area === areaLider);
   const areasDisponibles = [...new Set(gruposMes.map((g) => g.area))].sort((a, b) => a.localeCompare(b));
   const q = normalizarBusqueda(busqueda);
   const grupos = gruposMes
@@ -7520,6 +7534,43 @@ function RetardosMesView({ retardos, trabajadores, cobrosManuales, mostrarDinero
       setSincronizando(false);
     }
   }
+  // --- Talento Humano: marcar un retardo a mano y decidir su descuento ---
+  const trabajadoresParaMarcar = (trabajadores || []).filter((t) => t.activo !== false).slice().sort((a, b) => String(a.nombre).localeCompare(String(b.nombre)));
+  const tMarcar = trabajadoresParaMarcar.find((t) => t.id === formMarcar.trabajadorId) || null;
+  const turnoMarcar = tMarcar && formMarcar.fecha ? resolverTurnoDeTrabajador(tMarcar, areasNomina, turnos) : null;
+  const calculoMarcar = tMarcar && formMarcar.fecha && formMarcar.hora ? calcularRetardoEntrada(turnoMarcar, diaCodigoDeISO(formMarcar.fecha), formMarcar.hora, formMarcar.fecha) : null;
+  async function guardarMarcado() {
+    setErrMarcar("");
+    if (!tMarcar) { setErrMarcar("Elige la persona."); return; }
+    if (!formMarcar.fecha) { setErrMarcar("Elige la fecha del retardo."); return; }
+    if (formMarcar.fecha > today()) { setErrMarcar("La fecha no puede ser futura."); return; }
+    const normT = normalizarNombreHuellero(tMarcar.nombre);
+    if ((retardos || []).some((r) => r.fecha === formMarcar.fecha && coincideHuellero(r, tMarcar, normT))) { setErrMarcar("Esa persona ya tiene un retardo ese día."); return; }
+    const minutos = Number(formMarcar.minutos) > 0 ? Math.round(Number(formMarcar.minutos)) : (calculoMarcar?.minutosTarde || 0);
+    if (!(minutos > 0)) { setErrMarcar(formMarcar.hora ? "A esa hora no es retardo según su turno. Escribe los minutos de retraso si igual quieres anotarlo." : "Pon la hora de entrada o los minutos de retraso."); return; }
+    setGuardandoMarcar(true);
+    try {
+      await onMarcar({ trabajador: tMarcar, fecha: formMarcar.fecha, horaMarcada: formMarcar.hora || "", horaEsperada: calculoMarcar?.horaEsperada || "", minutosTarde: minutos, nota: formMarcar.nota.trim() });
+      setMes(formMarcar.fecha.slice(0, 7));
+      setAbierto(tMarcar.id);
+      setFormMarcar({ trabajadorId: "", fecha: today(), hora: "", minutos: "", nota: "" });
+      setFormAbierto(false);
+      setMsgSync("Retardo anotado. El descuento (si le toca) se genera solo en unos segundos.");
+    } catch (err) {
+      setErrMarcar(`No se pudo guardar: ${err.message || err}`);
+    } finally {
+      setGuardandoMarcar(false);
+    }
+  }
+  async function decidir(g, x, descontar) {
+    const nota = descontar ? window.prompt("Nota del descuento (opcional):", "") : "";
+    if (nota === null) return;
+    try { await onDecidir(g.trabajador, x.fecha, descontar, (nota || "").trim()); } catch (err) { setMsgSync(`No se pudo guardar: ${err.message || err}`); }
+  }
+  async function quitar(g, x) {
+    if (!window.confirm(`¿Quitar el retardo manual del ${fmtFechaISO(x.fecha)} de ${g.nombre}? Se borra el registro y su descuento (si aún no se ha cobrado).`)) return;
+    try { await onQuitarRetardo(g.trabajador, x); } catch (err) { setMsgSync(`No se pudo quitar: ${err.message || err}`); }
+  }
   async function exportarExcel() {
     const filas = [];
     grupos.forEach((g) => g.lista.forEach((x) => filas.push({
@@ -7532,6 +7583,8 @@ function RetardosMesView({ retardos, trabajadores, cobrosManuales, mostrarDinero
       "Minutos tarde": x.minutosTarde || 0,
       "Retardo n.º del mes": x.n,
       "Descuenta 1 h": x.conDescuento ? "Sí" : "No",
+      Origen: x.origen === "talento_humano" ? "Marcado por Talento Humano" : x.origen === "manual" ? "Tabulador" : "Huellero",
+      Nota: x.nota || x.decision?.nota || "",
       "Valor a descontar": x.valor || 0,
       Quincena: x.fecha.slice(8, 10) <= "15" ? "1–15" : "16–fin",
     })));
@@ -7568,11 +7621,45 @@ function RetardosMesView({ retardos, trabajadores, cobrosManuales, mostrarDinero
         )}
         <span onClick={() => setVerAyuda(!verAyuda)} style={{ fontSize: 12, fontWeight: 700, color: C.blue, background: C.blueBg, borderRadius: 999, padding: "6px 12px", cursor: "pointer" }}>ℹ️ Cómo funciona {verAyuda ? "▴" : "▾"}</span>
         <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          {puedeMarcar && <Btn variant="primary" small onClick={() => { setFormAbierto(!formAbierto); setErrMarcar(""); }}>{formAbierto ? "Cerrar" : "+ Marcar retardo"}</Btn>}
           {mostrarDinero && onSincronizar && <Btn variant="secondary" small onClick={actualizarDescuentos} disabled={sincronizando}>{sincronizando ? "Actualizando…" : "🔄 Actualizar descuentos"}</Btn>}
           {mostrarDinero && <Btn variant="success" small onClick={exportarExcel} disabled={!grupos.length}>📥 Exportar a Excel</Btn>}
         </div>
       </div>
       {msgSync && <div style={{ fontSize: 12, color: C.ink, background: C.greenBg, borderRadius: 8, padding: "8px 12px", marginBottom: 12 }}>{msgSync}</div>}
+      {puedeMarcar && formAbierto && (
+        <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: "14px 16px", marginBottom: 14 }}>
+          <div style={{ fontWeight: 800, fontSize: 14, color: C.ink, marginBottom: 2 }}>Marcar un retardo a mano</div>
+          <div style={{ fontSize: 11.5, color: C.slate, marginBottom: 10 }}>Para anotar un retardo que el huellero o el Tabulador no registraron. Cuenta para el número del mes y, si ya es el {RETARDOS_LIBRES_POR_MES + 1}.º o más, descuenta 1 hora. Queda anotado con tu nombre.</div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+            <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11.5, fontWeight: 700, color: C.slate }}>Persona
+              <select value={formMarcar.trabajadorId} onChange={(e) => setFormMarcar({ ...formMarcar, trabajadorId: e.target.value })} style={{ padding: "8px 10px", borderRadius: 10, border: `1px solid ${C.border}`, background: C.white, fontSize: 13, color: C.ink, minWidth: 220 }}>
+                <option value="">Elige…</option>
+                {trabajadoresParaMarcar.map((t) => <option key={t.id} value={t.id}>{t.nombre}{t.area ? ` · ${t.area}` : ""}</option>)}
+              </select>
+            </label>
+            <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11.5, fontWeight: 700, color: C.slate }}>Fecha
+              <input type="date" value={formMarcar.fecha} max={today()} onChange={(e) => setFormMarcar({ ...formMarcar, fecha: e.target.value })} style={{ padding: "8px 10px", borderRadius: 10, border: `1px solid ${C.border}`, fontSize: 13, color: C.ink }} />
+            </label>
+            <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11.5, fontWeight: 700, color: C.slate }}>Hora de entrada
+              <input type="time" value={formMarcar.hora} onChange={(e) => setFormMarcar({ ...formMarcar, hora: e.target.value })} style={{ padding: "8px 10px", borderRadius: 10, border: `1px solid ${C.border}`, fontSize: 13, color: C.ink }} />
+            </label>
+            <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11.5, fontWeight: 700, color: C.slate }}>Minutos tarde
+              <input type="number" min="1" value={formMarcar.minutos} placeholder={calculoMarcar ? String(calculoMarcar.minutosTarde) : "auto"} onChange={(e) => setFormMarcar({ ...formMarcar, minutos: e.target.value })} style={{ padding: "8px 10px", borderRadius: 10, border: `1px solid ${C.border}`, fontSize: 13, color: C.ink, width: 90 }} />
+            </label>
+            <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11.5, fontWeight: 700, color: C.slate, flex: 1, minWidth: 200 }}>Nota (opcional)
+              <input type="text" value={formMarcar.nota} onChange={(e) => setFormMarcar({ ...formMarcar, nota: e.target.value })} placeholder="Ej. llegó a las 7:20, lo reportó el líder" style={{ padding: "8px 10px", borderRadius: 10, border: `1px solid ${C.border}`, fontSize: 13, color: C.ink }} />
+            </label>
+            <Btn variant="success" small onClick={guardarMarcado} disabled={guardandoMarcar}>{guardandoMarcar ? "Guardando…" : "Anotar retardo"}</Btn>
+          </div>
+          {tMarcar && formMarcar.hora && (
+            <div style={{ fontSize: 11.5, color: calculoMarcar ? C.amber : C.slate, marginTop: 8 }}>
+              {calculoMarcar ? `Según su turno debía entrar a las ${calculoMarcar.horaEsperada}: ${calculoMarcar.minutosTarde} min tarde.` : turnoMarcar ? "A esa hora no es retardo según su turno." : "Esta persona no tiene turno asignado: escribe los minutos de retraso."}
+            </div>
+          )}
+          {errMarcar && <div style={{ fontSize: 12, color: C.red, background: C.redBg, borderRadius: 8, padding: "7px 10px", marginTop: 8 }}>{errMarcar}</div>}
+        </div>
+      )}
       {verAyuda && (
         <div style={{ fontSize: 12, color: C.ink, background: C.blueBg, borderRadius: 10, padding: "12px 14px", marginBottom: 14, maxWidth: 860, lineHeight: 1.6 }}>
           Sin tolerancia: si la entrada del turno es a las 7:00, llegar a las 7:01 ya es retardo. Se cuentan los retardos del mes completo por persona. Los {RETARDOS_LIBRES_POR_MES} primeros no descuentan; desde el {RETARDOS_LIBRES_POR_MES + 1}.º, CADA retardo descuenta 1 hora laboral (sueldo de la ficha ÷ {DIVISOR_HORAS_MES_EXTRA}), sin excepciones, en la quincena donde cae ese retardo. Aplica a Fiscal, Fiscal Destajo y Destajo; quien no tiene sueldo en la ficha se cuenta pero no se le descuenta. El descuento sale solo en la nómina (columna «Desc. retardos»). Los retardos de cada mes se cuentan completos desde el día 1, pero solo se descuentan los ocurridos desde el {fmtFechaISO(FECHA_INICIO_DESCUENTO_RETARDOS)} (la quincena anterior ya se pagó). Los retardos guardados antes de este cambio se calcularon con 5 minutos de tolerancia: se corrigen al volver a evaluar el reporte del huellero.
@@ -7630,6 +7717,16 @@ function RetardosMesView({ retardos, trabajadores, cobrosManuales, mostrarDinero
                   <b style={{ fontSize: 13, minWidth: 90 }}>{fmtFechaISO(x.fecha)}</b>
                   <span style={{ fontSize: 12.5 }}>Marcó {x.horaMarcada || "—"} <span style={{ color: C.slate }}>(esperada {x.horaEsperada || "—"})</span></span>
                   <span style={{ fontSize: 12, fontWeight: 700, color: C.amber }}>+{x.minutosTarde || 0} min</span>
+                  {x.origen === "talento_humano" && <span title={`Marcado a mano por ${x.marcadoPor || "Talento Humano"}${x.marcadoEn ? ` el ${fmtFechaISO(String(x.marcadoEn).slice(0, 10))}` : ""}`} style={{ fontSize: 10.5, fontWeight: 800, color: C.violet, background: C.violetBg, borderRadius: 999, padding: "2px 8px" }}>Manual · {x.marcadoPor || "Talento Humano"}</span>}
+                  {x.forzado && <span title={`Decidido por ${x.decision?.por || "Talento Humano"}`} style={{ fontSize: 10.5, fontWeight: 800, color: C.red, background: C.redBg, borderRadius: 999, padding: "2px 8px" }}>Descuento decidido · {x.decision?.por || "Talento Humano"}</span>}
+                  {(x.nota || x.decision?.nota) && <span style={{ fontSize: 11.5, color: C.slate, fontStyle: "italic" }}>“{[x.nota, x.decision?.nota].filter(Boolean).join(" · ")}”</span>}
+                  {puedeMarcar && detalle.trabajador && !yaCobrado && (
+                    <span style={{ display: "inline-flex", gap: 6 }}>
+                      {rige && x.fecha >= FECHA_INICIO_DESCUENTO_RETARDOS && x.n <= RETARDOS_LIBRES_POR_MES && !x.forzado && <Btn variant="danger" small onClick={() => decidir(detalle, x, true)}>Descontar</Btn>}
+                      {x.forzado && <Btn variant="secondary" small onClick={() => decidir(detalle, x, false)}>Quitar descuento</Btn>}
+                      {x.origen === "talento_humano" && <Btn variant="secondary" small onClick={() => quitar(detalle, x)}>Quitar retardo</Btn>}
+                    </span>
+                  )}
                   <span style={{ marginLeft: "auto", fontSize: 12, fontWeight: 700, color: x.conDescuento ? C.red : C.slate }}>
                     {!rige ? "Informativo" : !x.conDescuento ? (x.n > RETARDOS_LIBRES_POR_MES ? "Sin descuento (quincena ya cerrada)" : "Sin descuento") : x.motivoNoAplica ? "Cuenta, sin descuento (sin sueldo o tipo de nómina)" : `−1 h${mostrarDinero ? ` · ${fmtMoney(x.valor)}` : ""} · ${q2}${yaCobrado ? " · ya descontado ✓" : ""}`}
                   </span>
@@ -17865,7 +17962,7 @@ function DiagnosticoDuplicadosView({ diasTrabajados, faltas, anomalias, retardos
     </div>
   );
 }
-export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNovedades, soloLiderArea, liderProduccion = true, liderAsistencia = false, puedeEditarCatalogos, puedeVerAnomaliasHuellero, puedeVerDuplicadosHuellero, puedeCerrarQuincena, puedeAgregarCobrosManual, puedeAjustarDestajo, puedeEditarHorasExtra, puedeEditarBonificacion, puedeAutorizarPermisos }) {
+export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNovedades, soloLiderArea, liderProduccion = true, liderAsistencia = false, puedeEditarCatalogos, puedeVerAnomaliasHuellero, puedeVerDuplicadosHuellero, puedeCerrarQuincena, puedeAgregarCobrosManual, puedeAjustarDestajo, puedeEditarHorasExtra, puedeEditarBonificacion, puedeAutorizarPermisos, puedeMarcarRetardos }) {
   // Líder de área (hoy: Anny Beltrán y Sarai Méndez, cada una con su Área
   // Interna real -- ver Administrativo → Área Interna): entra con un panel
   // reducido, ya filtrado a su propia gente, en vez del panel completo de
@@ -17921,6 +18018,9 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   const [anomaliasHuellero, setAnomaliasHuellero] = useState([]);
   const [retardosHuellero, setRetardosHuellero] = useState([]);
   const [retardosListos, setRetardosListos] = useState(false);
+  // (2026-11-24) Decisiones de Talento Humano sobre retardos (descontar uno de los 3 libres): id `<trabajadorId>__<fecha>` -> documento.
+  const [decisionesRetardos, setDecisionesRetardos] = useState({});
+  const [decisionesRetardosListas, setDecisionesRetardosListas] = useState(false);
   const [recobrosIncap, setRecobrosIncap] = useState([]);
   const [cobrosListos, setCobrosListos] = useState(false);
   const sincronizandoRetardosRef = useRef(false);
@@ -17996,6 +18096,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
       onSnapshot(collection(db, "nomina_dias_trabajados"), (snap) => setDiasTrabajadosHuellero(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_anomalias_huellero"), (snap) => setAnomaliasHuellero(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_retardos"), (snap) => { setRetardosHuellero(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); setRetardosListos(true); }),
+      onSnapshot(collection(db, "nomina_retardos_decisiones"), (snap) => { const o = {}; snap.docs.forEach((d) => { o[d.id] = { ...d.data(), id: d.id }; }); setDecisionesRetardos(o); setDecisionesRetardosListas(true); }),
       onSnapshot(collection(db, "nomina_fiscal_liquidaciones"), (snap) => setLiquidacionesF(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_fiscal_destajo_liquidaciones"), (snap) => setLiquidacionesFD(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_destajo_liquidaciones"), (snap) => setLiquidacionesD(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
@@ -18019,16 +18120,45 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   // reconcilian los cobros «retardo_…» (ver cobrosRetardosEsperados). No corre para líderes de área ni antes de que carguen los datos,
   // para no borrar cobros por una lectura incompleta.
   useEffect(() => {
-    if (areaLider || !retardosListos || !cobrosListos || !trabajadores.length) return undefined;
+    if (areaLider || !retardosListos || !cobrosListos || !decisionesRetardosListas || !trabajadores.length) return undefined;
     const timer = setTimeout(() => { sincronizarCobrosRetardos().catch((err) => console.error("Cobros por retardos:", err)); }, 1500);
     return () => clearTimeout(timer);
-  }, [retardosHuellero, cobrosManuales, trabajadores, areaLider, retardosListos, cobrosListos]);
+  }, [retardosHuellero, decisionesRetardos, cobrosManuales, trabajadores, areaLider, retardosListos, cobrosListos, decisionesRetardosListas]);
+  const quienMarca = () => currentUser?.name || currentUser?.username || currentUser?.email || "Talento Humano";
+  // Marcar un retardo a mano (Talento Humano / admin). Id propio `rm__…` para que reevaluar el huellero o guardar el Tabulador no lo borre.
+  async function marcarRetardoManual({ trabajador, fecha, horaMarcada, horaEsperada, minutosTarde, nota }) {
+    await setDoc(doc(db, "nomina_retardos", `rm__${trabajador.id}__${fecha}`), {
+      nombre: trabajador.nombre,
+      nombreNorm: normalizarNombreHuellero(trabajador.nombre),
+      trabajadorId: trabajador.id,
+      area: trabajador.area || "",
+      fecha,
+      horaEsperada: horaEsperada || "",
+      horaMarcada: horaMarcada || "",
+      minutosTarde,
+      origen: "talento_humano",
+      nota: nota || "",
+      marcadoPor: quienMarca(),
+      marcadoEn: new Date().toISOString(),
+      cargadoEn: new Date().toISOString(),
+    });
+  }
+  // Descontar (o quitar el descuento de) uno de los 3 retardos libres.
+  async function decidirDescuentoRetardo(trabajador, fecha, descontar, nota) {
+    const ref = doc(db, "nomina_retardos_decisiones", `${trabajador.id}__${fecha}`);
+    if (!descontar) { await deleteDoc(ref); return; }
+    await setDoc(ref, { trabajadorId: trabajador.id, trabajadorNombre: trabajador.nombre, fecha, descontar: true, nota: nota || "", por: quienMarca(), en: new Date().toISOString() });
+  }
+  async function quitarRetardoManual(trabajador, retardo) {
+    await deleteDoc(doc(db, "nomina_retardos", retardo.id));
+    if (trabajador) await deleteDoc(doc(db, "nomina_retardos_decisiones", `${trabajador.id}__${retardo.fecha}`)).catch(() => {});
+  }
   async function sincronizarCobrosRetardos() {
     const vacio = { creados: 0, actualizados: 0, retirados: 0 };
-    if (sincronizandoRetardosRef.current || !retardosListos || !cobrosListos || !trabajadores.length) return vacio;
+    if (sincronizandoRetardosRef.current || !retardosListos || !cobrosListos || !decisionesRetardosListas || !trabajadores.length) return vacio;
     sincronizandoRetardosRef.current = true;
     try {
-      const esperados = cobrosRetardosEsperados(retardosHuellero, trabajadores);
+      const esperados = cobrosRetardosEsperados(retardosHuellero, trabajadores, decisionesRetardos);
       const idsEsperados = new Set(esperados.map((e) => e.id));
       const actuales = (cobrosManuales || []).filter((c) => c.origen === "retardo");
       const porId = new Map(actuales.map((c) => [c.id, c]));
@@ -19041,7 +19171,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "anomalias_huellero" && puedeVerAnomaliasHuellero && <AnomaliasHuelleroView anomalias={anomaliasVisibles} retardos={retardosVisibles} onAjustar={ajustarAnomaliaHuellero} />}
           {subView === "historial_asistencia_area" && <HistorialAsistenciaAreaView areasNomina={areasNomina} trabajadores={trabajadoresVisibles} areaLider={areaLider} diasTrabajados={diasTrabajadosHuellero} faltas={faltasSinJustificar} ausencias={ausenciasVisibles} anomalias={anomaliasVisibles} retardos={retardosVisibles} turnos={turnos} />}
           {subView === "incapacidades_cobrar" && !areaLider && <IncapacidadesPorCobrarView ausencias={ausencias} trabajadores={trabajadores} recobros={recobrosIncap} onGuardarRecobro={guardarRecobroIncapacidad} />}
-          {subView === "retardos_mes" && <RetardosMesView retardos={retardosVisibles} trabajadores={trabajadoresVisibles} cobrosManuales={cobrosManuales} mostrarDinero={!areaLider} areaLider={areaLider || ""} onSincronizar={areaLider ? undefined : sincronizarCobrosRetardos} />}
+          {subView === "retardos_mes" && <RetardosMesView retardos={retardosVisibles} trabajadores={trabajadoresVisibles} cobrosManuales={cobrosManuales} mostrarDinero={!areaLider} areaLider={areaLider || ""} onSincronizar={areaLider ? undefined : sincronizarCobrosRetardos} decisiones={decisionesRetardos} puedeMarcar={!areaLider && (!!currentUser?.isAdmin || !!puedeMarcarRetardos)} areasNomina={areasNomina} turnos={turnos} onMarcar={marcarRetardoManual} onDecidir={decidirDescuentoRetardo} onQuitarRetardo={quitarRetardoManual} />}
           {subView === "estadisticas_permisos" && <EstadisticasPermisosView areasNomina={areasNomina} trabajadores={trabajadoresVisibles} ausencias={ausenciasVisibles} faltas={areaLider ? faltasSinJustificar.filter((f) => areaDeRegistro(f, trabajadoresVisibles) === areaLider) : faltasSinJustificar} retardos={retardosVisibles} turnos={turnos} reposiciones={reposiciones} cobrosManuales={cobrosManuales} mostrarDinero={!areaLider} areaLider={areaLider || ""} />}
           {subView === "tabulador_asistencia" && <TabuladorAsistenciaView areasNomina={areasNomina} trabajadores={trabajadoresVisibles} areaLider={areaLider} turnos={turnos} ausencias={ausenciasVisibles} diasTrabajados={diasTrabajadosHuellero} faltas={faltasSinJustificar} onGuardar={guardarAsistenciaManual} />}
           {subView === "fiscal" && !areaLider && !soloNovedades && <NominaFiscalView areasNomina={areasNomina} trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesF} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionF} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} isAdmin={isAdmin} onAbrirQuincena={abrirQuincenaParaEditar} turnos={turnos} horas={horas} deduccionesTrabajador={deduccionesTrabajador} causacionManual={causacionManual} horasExtras={horasExtras} bonificaciones={bonificaciones} onEliminarLiquidacion={eliminarLiquidacionF} />}
