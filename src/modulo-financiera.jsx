@@ -1979,18 +1979,38 @@ function AdministracionFinancieraView({ compras, categoriasProyeccionLista, cate
   );
 }
 
+// (2026-11-24, a pedido de Fredy) Pantalla modernizada: flechas de mes,
+// 4 resúmenes (incluye «Falta por abonar»), búsqueda + filtro por categoría +
+// orden, cliente en fila compacta que se abre, editar monto, copiar del mes
+// anterior y confirmación al quitar. La lógica de «abonado» no cambió.
+const CATEGORIA_NO_CUENTA_PRESUPUESTO = "Anticipo Tela";
+function sumarMesPresupuesto(mes, delta) {
+  const [a, m] = mes.split("-").map(Number);
+  const d = new Date(a, m - 1 + delta, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+function nombreCategoriaCorto(cat) {
+  return (cat || "").replace(/^Anticipo\s+/i, "");
+}
+function tonoAvance(pct, hayPresupuesto) {
+  if (!hayPresupuesto) return { fg: C.slate, bg: C.canvas, texto: "Sin presupuesto" };
+  if (pct >= 100) return { fg: C.green, bg: C.greenBg, texto: "cumplido" };
+  if (pct >= 50) return { fg: C.amber, bg: C.amberBg, texto: "en curso" };
+  return { fg: C.red, bg: C.redBg, texto: "atrasado" };
+}
 function PresupuestoClientesView({ movimientos, presupuestosCliente, clientesDiseno, onGuardar, onDelete, isAdmin }) {
   const [mes, setMes] = useState(() => today().slice(0, 7));
-  const [showAdd, setShowAdd] = useState(false);
-  const [clienteNuevo, setClienteNuevo] = useState("");
-  const [categoriaNueva, setCategoriaNueva] = useState("");
-  const [montoNuevo, setMontoNuevo] = useState("");
+  const [modal, setModal] = useState(null); // { editId, cliente, categoria, monto }
+  const [busqueda, setBusqueda] = useState("");
+  const [filtroCat, setFiltroCat] = useState("Todas");
+  const [orden, setOrden] = useState("pres");
+  const [abiertos, setAbiertos] = useState({});
   const presupuestosMes = presupuestosCliente.filter((p) => p.mes === mes);
   // Un mismo cliente puede tener varias líneas de presupuesto el mismo mes,
-  // una por categoría (Anticipo Nómina, Insumos, Tela, Maquinaria) — así se
-  // sabe cuánto se espera de cada cliente Y de cada categoría por separado.
-  const pairExiste = (cliente, categoria) =>
-    presupuestosMes.some((p) => p.cliente === cliente && p.categoria === categoria);
+  // una por categoría — así se sabe cuánto se espera de cada cliente Y de
+  // cada categoría por separado.
+  const lineaDe = (cliente, categoria) =>
+    presupuestosMes.find((p) => p.cliente === cliente && p.categoria === categoria);
   function abonadoDe(cliente, categoria) {
     return movimientos
       .filter(
@@ -2002,104 +2022,197 @@ function PresupuestoClientesView({ movimientos, presupuestosCliente, clientesDis
       )
       .reduce((s, m) => s + m.valor, 0);
   }
-  function agregar() {
-    if (!clienteNuevo || !categoriaNueva || !montoNuevo) return;
-    if (pairExiste(clienteNuevo, categoriaNueva)) return;
-    onGuardar({
-      id: uid(),
-      mes,
-      cliente: clienteNuevo,
-      categoria: categoriaNueva,
-      monto: parseFloat(montoNuevo) || 0,
-      creadoEn: new Date().toISOString(),
+  function abrirModal(cliente, categoria) {
+    const p = cliente && categoria ? lineaDe(cliente, categoria) : null;
+    setModal({
+      editId: p ? p.id : null,
+      cliente: cliente || "",
+      categoria: categoria || "",
+      monto: p ? String(p.monto) : "",
     });
-    setClienteNuevo("");
-    setCategoriaNueva("");
-    setMontoNuevo("");
-    setShowAdd(false);
   }
-  // Tela no cuenta para el presupuesto final: hoy se puede llevar abono de
-  // Nómina, Insumos, Tela y Maquinaria, pero solo las primeras tres (menos
-  // Tela) sirven para el total que se compara contra lo abonado.
-  const CATEGORIA_NO_CUENTA = "Anticipo Tela";
-  const totalPresupuestado = presupuestosMes
-    .filter((p) => p.categoria !== CATEGORIA_NO_CUENTA)
-    .reduce((s, p) => s + p.monto, 0);
-  const totalAbonado = presupuestosMes
-    .filter((p) => p.categoria !== CATEGORIA_NO_CUENTA)
-    .reduce((s, p) => s + abonadoDe(p.cliente, p.categoria), 0);
-  // Resumen agregado por categoría: cuánto se presupuestó vs. cuánto entró
-  // realmente ese mes en cada categoría, sumando todos los clientes.
-  const resumenCategorias = CATS_INGRESO.map((cat) => {
-    const presupuestado = presupuestosMes.filter((p) => p.categoria === cat).reduce((s, p) => s + p.monto, 0);
-    const abonado = movimientos
-      .filter((m) => m.tipo === "ingreso" && m.fecha?.slice(0, 7) === mes && m.categoria === cat)
-      .reduce((s, m) => s + m.valor, 0);
-    return { categoria: cat, presupuestado, abonado };
-  }).filter((r) => r.presupuestado > 0 || r.abonado > 0);
-  // Agrupación por cliente: cada cliente muestra las 4 ramificaciones
-  // (Nómina, Tela, Insumos, Maquinaria) por las que se puede llevar abono,
-  // aunque no todas tengan presupuesto asignado todavía.
-  const clientesConPresupuesto = Array.from(new Set(presupuestosMes.map((p) => p.cliente))).sort((a, b) =>
-    a.localeCompare(b)
+  const duplicado =
+    modal && !modal.editId && modal.cliente && modal.categoria && !!lineaDe(modal.cliente, modal.categoria);
+  function guardarModal() {
+    if (!modal || !modal.cliente || !modal.categoria) return;
+    const monto = parseFloat(modal.monto) || 0;
+    if (monto <= 0 || duplicado) return;
+    if (modal.editId) {
+      const previo = presupuestosMes.find((p) => p.id === modal.editId);
+      if (!previo) return;
+      onGuardar({ ...previo, monto, editadoEn: new Date().toISOString() });
+    } else {
+      onGuardar({
+        id: uid(),
+        mes,
+        cliente: modal.cliente,
+        categoria: modal.categoria,
+        monto,
+        creadoEn: new Date().toISOString(),
+      });
+      setAbiertos((a) => ({ ...a, [modal.cliente]: true }));
+    }
+    setModal(null);
+  }
+  function quitar(p) {
+    if (!window.confirm(`¿Quitar el presupuesto de ${nombreCategoriaCorto(p.categoria)} de ${p.cliente} en ${fmtMesLargo(mes)}?`)) return;
+    onDelete(p.id);
+  }
+  const mesAnterior = sumarMesPresupuesto(mes, -1);
+  const porCopiar = presupuestosCliente.filter(
+    (p) => p.mes === mesAnterior && !lineaDe(p.cliente, p.categoria)
   );
-  const yaExisteDuplicado = clienteNuevo && categoriaNueva && pairExiste(clienteNuevo, categoriaNueva);
+  function copiarDelMesAnterior() {
+    if (!porCopiar.length) return;
+    if (
+      !window.confirm(
+        `Se copiarán ${porCopiar.length} presupuesto(s) de ${fmtMesLargo(mesAnterior)} a ${fmtMesLargo(mes)}. Los que ya existen no se tocan. ¿Continuar?`
+      )
+    )
+      return;
+    porCopiar.forEach((p) =>
+      onGuardar({
+        id: uid(),
+        mes,
+        cliente: p.cliente,
+        categoria: p.categoria,
+        monto: p.monto,
+        creadoEn: new Date().toISOString(),
+        copiadoDe: p.id,
+      })
+    );
+  }
+  // Una línea por cliente, con sus categorías.
+  const filas = Array.from(new Set(presupuestosMes.map((p) => p.cliente))).map((cliente) => {
+    const ramas = CATS_INGRESO.map((cat) => {
+      const p = lineaDe(cliente, cat);
+      const monto = p ? p.monto : 0;
+      const abonado = abonadoDe(cliente, cat);
+      const pct = monto > 0 ? (abonado / monto) * 100 : 0;
+      return { cat, p, monto, abonado, pct, cuenta: cat !== CATEGORIA_NO_CUENTA_PRESUPUESTO };
+    });
+    // Con «Todas» no entra Anticipo Tela; si se filtra por Tela, se ve normal.
+    const visibles = ramas.filter((r) => (filtroCat === "Todas" ? r.cuenta : filtroCat === r.cat));
+    const pres = visibles.reduce((s, r) => s + r.monto, 0);
+    const abon = visibles.reduce((s, r) => s + r.abonado, 0);
+    return { cliente, ramas, pres, abon, pct: pres > 0 ? (abon / pres) * 100 : 0 };
+  });
+  const q = busqueda.trim().toLowerCase();
+  const filasVisibles = filas
+    .filter((f) => !q || f.cliente.toLowerCase().includes(q))
+    .filter((f) => filtroCat === "Todas" || f.ramas.some((r) => r.cat === filtroCat && r.p))
+    .sort((a, b) => {
+      if (orden === "az") return a.cliente.localeCompare(b.cliente);
+      if (orden === "avance") {
+        const ra = a.pres > 0 ? a.pct : 9999;
+        const rb = b.pres > 0 ? b.pct : 9999;
+        return ra - rb;
+      }
+      return b.pres - a.pres;
+    });
+  const totalPres = filasVisibles.reduce((s, f) => s + f.pres, 0);
+  const totalAbon = filasVisibles.reduce((s, f) => s + f.abon, 0);
+  const faltaAbonar = Math.max(totalPres - totalAbon, 0);
+  const pctMes = totalPres > 0 ? (totalAbon / totalPres) * 100 : 0;
+  const tonoMes = tonoAvance(pctMes, totalPres > 0);
+  const todosAbiertos = filasVisibles.length > 0 && filasVisibles.every((f) => abiertos[f.cliente]);
+  const btnFlecha = {
+    background: C.white,
+    border: `1px solid ${C.border}`,
+    borderRadius: 8,
+    padding: "7px 12px",
+    cursor: "pointer",
+    fontWeight: 700,
+    color: C.ink,
+    fontFamily: "inherit",
+  };
+  const kpi = (label, valor, extra) => (
+    <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 16px" }}>
+      <div style={{ fontSize: 11, color: C.slate, fontWeight: 700 }}>{label}</div>
+      <div style={{ fontSize: 22, fontWeight: 900, color: C.ink, marginTop: 2 }}>{valor}</div>
+      {extra}
+    </div>
+  );
   return (
     <div>
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: 20,
-        }}
-      >
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: C.ink }}>Presupuesto Clientes</h2>
           <p style={{ margin: "4px 0 0", fontSize: 13, color: C.slate }}>
-            Cuánto esperas que abone cada cliente este mes, por categoría, según sus pedidos
+            Cuánto se espera abonar este mes y cuánto ya abonó cada cliente
           </p>
         </div>
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <FInput type="month" value={mes} onChange={setMes} />
-          {isAdmin && (
-            <Btn variant="danger" onClick={() => setShowAdd(true)}>
-              + Agregar cliente
-            </Btn>
-          )}
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <button style={btnFlecha} aria-label="Mes anterior" onClick={() => setMes(sumarMesPresupuesto(mes, -1))}>
+            ◀
+          </button>
+          <span style={{ fontWeight: 800, fontSize: 16, color: C.ink, minWidth: 150, textAlign: "center" }}>
+            {fmtMesLargo(mes).replace(/^./, (c) => c.toUpperCase())}
+          </span>
+          <button style={btnFlecha} aria-label="Mes siguiente" onClick={() => setMes(sumarMesPresupuesto(mes, 1))}>
+            ▶
+          </button>
+          <button style={btnFlecha} onClick={() => setMes(today().slice(0, 7))}>
+            Hoy
+          </button>
         </div>
       </div>
-      {showAdd && (
-        <Modal title="Agregar presupuesto de cliente" onClose={() => setShowAdd(false)} width={440}>
+      {isAdmin && (
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+          <Btn variant="secondary" onClick={copiarDelMesAnterior} disabled={!porCopiar.length}>
+            Copiar del mes anterior{porCopiar.length ? ` (${porCopiar.length})` : ""}
+          </Btn>
+          <Btn variant="danger" onClick={() => abrirModal("", "")}>
+            + Asignar presupuesto
+          </Btn>
+        </div>
+      )}
+      {modal && (
+        <Modal
+          title={modal.editId ? "Editar presupuesto" : "Asignar presupuesto"}
+          onClose={() => setModal(null)}
+          width={440}
+        >
           <Field label="Cliente">
-            <FSel value={clienteNuevo} onChange={setClienteNuevo} options={(clientesDiseno || []).map((c) => c.nombre)} />
+            {modal.editId ? (
+              <div style={{ fontWeight: 700, color: C.ink, fontSize: 14 }}>{modal.cliente}</div>
+            ) : (
+              <FSel
+                value={modal.cliente}
+                onChange={(v) => setModal({ ...modal, cliente: v })}
+                options={(clientesDiseno || []).map((c) => c.nombre)}
+              />
+            )}
           </Field>
           <Field label="Categoría">
-            <FSel value={categoriaNueva} onChange={setCategoriaNueva} options={CATS_INGRESO} />
+            {modal.editId ? (
+              <div style={{ fontWeight: 700, color: C.ink, fontSize: 14 }}>{modal.categoria}</div>
+            ) : (
+              <FSel value={modal.categoria} onChange={(v) => setModal({ ...modal, categoria: v })} options={CATS_INGRESO} />
+            )}
           </Field>
-          <Field label="Monto esperado este mes">
-            <FInput type="number" value={montoNuevo} onChange={setMontoNuevo} placeholder="Ej: 20000000" />
+          <Field label={`Monto esperado en ${fmtMesLargo(mes)}`}>
+            <FInput
+              type="number"
+              value={modal.monto}
+              onChange={(v) => setModal({ ...modal, monto: v })}
+              placeholder="Ej: 20000000"
+            />
           </Field>
-          {yaExisteDuplicado && (
-            <div
-              style={{
-                padding: "8px 12px",
-                background: C.redBg,
-                borderRadius: 8,
-                fontSize: 12,
-                color: C.red,
-                fontWeight: 600,
-                marginBottom: 14,
-              }}
-            >
-              Ya existe un presupuesto para este cliente en esta categoría este mes.
+          {duplicado && (
+            <div style={{ padding: "8px 12px", background: C.redBg, borderRadius: 8, fontSize: 12, color: C.red, fontWeight: 600, marginBottom: 14 }}>
+              Ya existe un presupuesto para este cliente en esta categoría este mes. Edítalo desde su fila.
             </div>
           )}
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
-            <Btn variant="secondary" onClick={() => setShowAdd(false)}>
+            <Btn variant="secondary" onClick={() => setModal(null)}>
               Cancelar
             </Btn>
-            <Btn variant="danger" onClick={agregar} disabled={!clienteNuevo || !categoriaNueva || !montoNuevo || yaExisteDuplicado}>
+            <Btn
+              variant="danger"
+              onClick={guardarModal}
+              disabled={!modal.cliente || !modal.categoria || !(parseFloat(modal.monto) > 0) || duplicado}
+            >
               Guardar
             </Btn>
           </div>
@@ -2108,172 +2221,191 @@ function PresupuestoClientesView({ movimientos, presupuestosCliente, clientesDis
       {!presupuestosMes.length ? (
         <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>
           Aún no le has puesto presupuesto a ningún cliente en {fmtMesLargo(mes)}.
+          {isAdmin && porCopiar.length > 0 && (
+            <div style={{ marginTop: 12 }}>
+              <Btn variant="secondary" onClick={copiarDelMesAnterior}>
+                Copiar los {porCopiar.length} de {fmtMesLargo(mesAnterior)}
+              </Btn>
+            </div>
+          )}
         </div>
       ) : (
         <>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(2,1fr)",
-              gap: 14,
-              marginBottom: resumenCategorias.length ? 16 : 24,
-            }}
-          >
-            <KPI icon="🎯" label="Total presupuestado" value={fmtCOP(totalPresupuestado)} color={C.violet} bg={C.violetBg} />
-            <KPI
-              icon="💵"
-              label="Total abonado"
-              value={fmtCOP(totalAbonado)}
-              color={totalAbonado >= totalPresupuestado ? C.green : C.amber}
-              bg={totalAbonado >= totalPresupuestado ? C.greenBg : C.amberBg}
-            />
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(190px,1fr))", gap: 10, marginBottom: 16 }}>
+            {kpi("Presupuestado", fmtCOP(totalPres))}
+            {kpi("Abonado", fmtCOP(totalAbon))}
+            {kpi("Falta por abonar", fmtCOP(faltaAbonar))}
+            {kpi(
+              "Avance del mes",
+              `${Math.round(pctMes)}%`,
+              <div style={{ height: 7, borderRadius: 20, background: C.border, overflow: "hidden", marginTop: 6 }}>
+                <div style={{ height: "100%", width: `${Math.min(pctMes, 100)}%`, background: tonoMes.fg, borderRadius: 20 }} />
+              </div>
+            )}
           </div>
-          {resumenCategorias.length > 0 && (
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: `repeat(${resumenCategorias.length},1fr)`,
-                gap: 10,
-                marginBottom: 24,
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
+            <input
+              type="text"
+              value={busqueda}
+              onChange={(e) => setBusqueda(e.target.value)}
+              placeholder="Buscar cliente"
+              style={{ width: 200, padding: "8px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, color: C.ink, background: C.white, outline: "none", fontFamily: "inherit" }}
+            />
+            {["Todas", ...CATS_INGRESO].map((k) => (
+              <button
+                key={k}
+                onClick={() => setFiltroCat(k)}
+                style={{
+                  border: `1px solid ${filtroCat === k ? C.blue : C.border}`,
+                  background: filtroCat === k ? C.blueBg : C.white,
+                  color: filtroCat === k ? C.blue : C.slate,
+                  borderRadius: 20,
+                  padding: "4px 12px",
+                  fontSize: 12,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                }}
+              >
+                {k === "Todas" ? k : nombreCategoriaCorto(k)}
+              </button>
+            ))}
+            <span style={{ flex: 1 }} />
+            <select
+              value={orden}
+              onChange={(e) => setOrden(e.target.value)}
+              style={{ padding: "8px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, color: C.ink, background: C.white, fontFamily: "inherit" }}
+            >
+              <option value="pres">Mayor presupuesto</option>
+              <option value="avance">Menor avance primero</option>
+              <option value="az">A–Z</option>
+            </select>
+            <Btn
+              variant="secondary"
+              small
+              onClick={() => {
+                const nuevo = {};
+                filasVisibles.forEach((f) => (nuevo[f.cliente] = !todosAbiertos));
+                setAbiertos(nuevo);
               }}
             >
-              {resumenCategorias.map((r) => {
-                const pct = r.presupuestado > 0 ? Math.min((r.abonado / r.presupuestado) * 100, 999) : 0;
-                return (
-                  <div key={r.categoria} style={{ background: C.white, borderRadius: 10, border: `1px solid ${C.border}`, padding: 12 }}>
-                    <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, marginBottom: 4 }}>{r.categoria}</div>
-                    <div style={{ fontSize: 13, fontWeight: 800, color: pct >= 100 ? C.green : C.amber }}>
-                      {fmtCOP(r.abonado)} / {fmtCOP(r.presupuestado)}
-                    </div>
-                    <div style={{ fontSize: 10, color: C.slate, fontWeight: 600 }}>{Math.round(pct)}% cumplido</div>
-                  </div>
-                );
-              })}
+              {todosAbiertos ? "Contraer todos" : "Expandir todos"}
+            </Btn>
+          </div>
+          {!filasVisibles.length && (
+            <div style={{ textAlign: "center", padding: 32, color: C.slate, fontSize: 13 }}>
+              Ningún cliente coincide con la búsqueda o el filtro.
             </div>
           )}
-          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            {clientesConPresupuesto.map((cliente) => {
-              const ramas = CATS_INGRESO.map((cat) => {
-                const p = presupuestosMes.find((x) => x.cliente === cliente && x.categoria === cat);
-                const monto = p ? p.monto : 0;
-                const abonado = abonadoDe(cliente, cat);
-                const pct = monto > 0 ? Math.min((abonado / monto) * 100, 999) : 0;
-                return { cat, p, monto, abonado, pct, cuenta: cat !== CATEGORIA_NO_CUENTA };
-              });
-              const clienteTotalPresupuestado = ramas.filter((r) => r.cuenta).reduce((s, r) => s + r.monto, 0);
-              const clienteTotalAbonado = ramas.filter((r) => r.cuenta).reduce((s, r) => s + r.abonado, 0);
-              const clientePct =
-                clienteTotalPresupuestado > 0 ? Math.min((clienteTotalAbonado / clienteTotalPresupuestado) * 100, 999) : 0;
-              const tonoCliente =
-                clienteTotalPresupuestado === 0 ? C.slate : clientePct >= 100 ? C.green : clientePct >= 50 ? C.amber : C.red;
-              const tonoClienteBg =
-                clienteTotalPresupuestado === 0 ? C.canvas : clientePct >= 100 ? C.greenBg : clientePct >= 50 ? C.amberBg : C.redBg;
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {filasVisibles.map((f) => {
+              const tono = tonoAvance(f.pct, f.pres > 0);
+              const abierto = !!abiertos[f.cliente];
+              const abonoAparte = f.ramas.find((r) => !r.cuenta);
               return (
-                <div
-                  key={cliente}
-                  style={{
-                    background: C.white,
-                    borderRadius: 16,
-                    border: `1px solid ${C.border}`,
-                    borderLeft: `4px solid ${tonoCliente}`,
-                    padding: "18px 22px",
-                    boxShadow: "0 1px 3px rgba(26,26,46,0.06), 0 1px 2px rgba(26,26,46,0.04)",
-                  }}
-                >
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <Avatar name={cliente} size={32} />
-                      <span style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>{cliente}</span>
+                <div key={f.cliente} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
+                  <div
+                    onClick={() => setAbiertos((a) => ({ ...a, [f.cliente]: !a[f.cliente] }))}
+                    style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", cursor: "pointer" }}
+                  >
+                    <Avatar name={f.cliente} size={34} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>{f.cliente}</div>
+                      <div style={{ fontSize: 12, color: C.slate }}>
+                        {fmtCOP(f.abon)} de {fmtCOP(f.pres)}
+                      </div>
                     </div>
-                    <span
-                      style={{
-                        fontSize: 12,
-                        fontWeight: 800,
-                        color: tonoCliente,
-                        background: tonoClienteBg,
-                        padding: "4px 10px",
-                        borderRadius: 20,
-                      }}
-                    >
-                      {fmtCOP(clienteTotalAbonado)} / {fmtCOP(clienteTotalPresupuestado)} · {Math.round(clientePct)}%
-                    </span>
-                  </div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                    {ramas.map((r) => {
-                      const tonoRama = !r.p ? C.slate : r.pct >= 100 ? C.green : r.pct >= 50 ? C.amber : C.red;
-                      return (
-                        <div key={r.cat} style={{ background: C.canvas, borderRadius: 10, padding: "10px 14px" }}>
-                          <div
+                    <div style={{ display: "flex", gap: 3 }} aria-hidden="true">
+                      {f.ramas
+                        .filter((r) => r.cuenta)
+                        .map((r) => (
+                          <span
+                            key={r.cat}
+                            title={nombreCategoriaCorto(r.cat)}
                             style={{
-                              display: "flex",
-                              justifyContent: "space-between",
-                              alignItems: "center",
-                              marginBottom: r.p ? 6 : 0,
+                              width: 22,
+                              height: 5,
+                              borderRadius: 3,
+                              background: r.p ? tonoAvance(r.pct, true).fg : C.border,
                             }}
-                          >
-                            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                              <span style={{ fontSize: 12, fontWeight: 700, color: C.ink }}>{r.cat}</span>
-                              {!r.cuenta && (
-                                <span
-                                  style={{
-                                    fontSize: 9,
-                                    fontWeight: 700,
-                                    color: C.slate,
-                                    background: C.border,
-                                    padding: "1px 6px",
-                                    borderRadius: 20,
-                                  }}
-                                >
-                                  No cuenta en el total
+                          />
+                        ))}
+                    </div>
+                    <span style={{ fontSize: 12, fontWeight: 800, color: tono.fg, background: tono.bg, padding: "3px 10px", borderRadius: 20, whiteSpace: "nowrap" }}>
+                      {f.pres > 0 ? `${Math.round(f.pct)}% · ${tono.texto}` : tono.texto}
+                    </span>
+                    <span style={{ color: C.slate, width: 12 }}>{abierto ? "▾" : "▸"}</span>
+                  </div>
+                  {abierto && (
+                    <div style={{ borderTop: `1px solid ${C.border}`, padding: "8px 16px 12px" }}>
+                      {f.ramas
+                        .filter((r) => (filtroCat === "Todas" ? r.cuenta : filtroCat === r.cat))
+                        .map((r) => {
+                          if (!r.p) {
+                            return (
+                              <div key={r.cat} style={{ display: "grid", gridTemplateColumns: "140px 1fr 70px", gap: 12, alignItems: "center", padding: "6px 0", opacity: 0.75 }}>
+                                <span style={{ fontSize: 13, fontWeight: 700, color: C.ink }}>{nombreCategoriaCorto(r.cat)}</span>
+                                <span style={{ fontSize: 12, color: C.slate, fontStyle: "italic" }}>Sin presupuesto</span>
+                                <span style={{ textAlign: "right" }}>
+                                  {isAdmin && (
+                                    <button title="Asignar presupuesto" onClick={() => abrirModal(f.cliente, r.cat)} style={{ background: "none", border: "none", cursor: "pointer", color: C.blue, fontWeight: 800, fontSize: 16 }}>
+                                      ＋
+                                    </button>
+                                  )}
                                 </span>
-                              )}
+                              </div>
+                            );
+                          }
+                          const t = tonoAvance(r.pct, true);
+                          return (
+                            <div key={r.cat} style={{ display: "grid", gridTemplateColumns: "140px 1fr 230px 70px", gap: 12, alignItems: "center", padding: "6px 0" }}>
+                              <span style={{ fontSize: 13, fontWeight: 700, color: C.ink }}>{nombreCategoriaCorto(r.cat)}</span>
+                              <div style={{ height: 7, borderRadius: 20, background: C.border, overflow: "hidden" }}>
+                                <div style={{ height: "100%", width: `${Math.min(r.pct, 100)}%`, background: t.fg, borderRadius: 20, transition: "width 0.3s ease" }} />
+                              </div>
+                              <span style={{ fontSize: 12, fontWeight: 700, color: t.fg }}>
+                                {fmtCOP(r.abonado)} / {fmtCOP(r.monto)} · {Math.round(r.pct)}%
+                              </span>
+                              <span style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                                {isAdmin && (
+                                  <>
+                                    <button title="Editar monto" onClick={() => abrirModal(f.cliente, r.cat)} style={{ background: "none", border: "none", cursor: "pointer", color: C.slate, fontSize: 14 }}>
+                                      ✎
+                                    </button>
+                                    <button title="Quitar presupuesto" onClick={() => quitar(r.p)} style={{ background: "none", border: "none", cursor: "pointer", color: C.red, fontSize: 13, fontWeight: 700 }}>
+                                      ✕
+                                    </button>
+                                  </>
+                                )}
+                              </span>
                             </div>
-                            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                              {r.p ? (
-                                <span style={{ fontSize: 11, fontWeight: 700, color: tonoRama }}>
-                                  {fmtCOP(r.abonado)} / {fmtCOP(r.monto)} · {Math.round(r.pct)}%
-                                </span>
-                              ) : (
-                                <span style={{ fontSize: 11, fontWeight: 600, color: C.slate, fontStyle: "italic" }}>
-                                  Sin presupuesto asignado
-                                </span>
-                              )}
-                              {isAdmin && r.p && (
-                                <button
-                                  onClick={() => onDelete(r.p.id)}
-                                  style={{
-                                    background: C.redBg,
-                                    border: "none",
-                                    borderRadius: 6,
-                                    padding: "3px 7px",
-                                    color: C.red,
-                                    fontWeight: 700,
-                                    fontSize: 10,
-                                    cursor: "pointer",
-                                  }}
-                                >
-                                  ✕
-                                </button>
-                              )}
-                            </div>
-                          </div>
-                          {r.p && (
-                            <div style={{ height: 7, borderRadius: 20, background: C.border, overflow: "hidden" }}>
-                              <div
-                                style={{
-                                  height: "100%",
-                                  width: `${Math.min(r.pct, 100)}%`,
-                                  background: tonoRama,
-                                  borderRadius: 20,
-                                  transition: "width 0.3s ease",
-                                }}
-                              />
-                            </div>
+                          );
+                        })}
+                      {filtroCat === "Todas" && abonoAparte && (abonoAparte.abonado > 0 || abonoAparte.p) && (
+                        <div style={{ fontSize: 12, color: C.slate, borderTop: `1px dashed ${C.border}`, marginTop: 6, paddingTop: 8, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                          <span>
+                            Anticipo Tela: {fmtCOP(abonoAparte.abonado)} abonado
+                            {abonoAparte.p ? ` de ${fmtCOP(abonoAparte.monto)}` : ""} · va aparte, no cuenta en el total
+                          </span>
+                          {isAdmin && abonoAparte.p && (
+                            <>
+                              <button title="Editar monto" onClick={() => abrirModal(f.cliente, abonoAparte.cat)} style={{ background: "none", border: "none", cursor: "pointer", color: C.slate, fontSize: 14 }}>
+                                ✎
+                              </button>
+                              <button title="Quitar presupuesto" onClick={() => quitar(abonoAparte.p)} style={{ background: "none", border: "none", cursor: "pointer", color: C.red, fontSize: 13, fontWeight: 700 }}>
+                                ✕
+                              </button>
+                            </>
+                          )}
+                          {isAdmin && !abonoAparte.p && (
+                            <button title="Asignar presupuesto" onClick={() => abrirModal(f.cliente, abonoAparte.cat)} style={{ background: "none", border: "none", cursor: "pointer", color: C.blue, fontWeight: 800, fontSize: 14 }}>
+                              ＋
+                            </button>
                           )}
                         </div>
-                      );
-                    })}
-                  </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -3277,7 +3409,8 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
     await fsDelete("contabilidad_presupuestos", id);
   }
   async function addPresupuestoCliente(p) {
-    setPresupuestosCliente((ps) => [...ps, p]);
+    // Upsert: si el id ya existe (editar monto) se reemplaza, si no se agrega.
+    setPresupuestosCliente((ps) => (ps.some((x) => x.id === p.id) ? ps.map((x) => (x.id === p.id ? p : x)) : [...ps, p]));
     await fsSave("contabilidad_presupuestos_cliente", p.id, p);
   }
   async function deletePresupuestoCliente(id) {
