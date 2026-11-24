@@ -7895,6 +7895,58 @@ function mezclarCarteraTns(docs) {
   });
   return out;
 }
+// (2026-11-24, a pedido de Fredy) Nombre real, puesto a mano, de un cliente de
+// Busint que llega sin nombre («Cliente 131»). Se guarda por código en
+// contabilidad_nombres_cliente_busint y lo usan Saldos de clientes, Cuadre
+// por cliente e Ingresos de clientes. Si se deja en blanco, vuelve al de Busint.
+const COL_NOMBRES_CLIENTE_BUSINT = "contabilidad_nombres_cliente_busint";
+function useNombresClienteBusint() {
+  const [nombres, setNombres] = useState({});
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, COL_NOMBRES_CLIENTE_BUSINT), (snap) => {
+      const m = {};
+      snap.docs.forEach((d) => {
+        const n = String(d.data().nombre || "").trim();
+        if (n) m[d.id] = n;
+      });
+      setNombres(m);
+    });
+    return () => unsub();
+  }, []);
+  return nombres;
+}
+async function guardarNombreClienteBusint(codigo, nombre, usuario) {
+  const cod = String(codigo || "").trim();
+  if (!cod) return;
+  const limpio = String(nombre || "").trim();
+  if (!limpio) {
+    await fsDelete(COL_NOMBRES_CLIENTE_BUSINT, cod);
+    return;
+  }
+  await fsSave(COL_NOMBRES_CLIENTE_BUSINT, cod, { codigo: cod, nombre: limpio, actualizadoEn: new Date().toISOString(), actualizadoPor: usuario || "" });
+}
+function RenombrarClienteBusintModal({ codigo, nombreBusint, nombreActual, onSave, onClose }) {
+  const [nombre, setNombre] = useState(nombreActual || "");
+  function guardar() {
+    onSave(nombre.trim());
+    onClose();
+  }
+  return (
+    <Modal title={`Nombre del cliente ${codigo} (Busint)`} onClose={onClose} width={440}>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 12, lineHeight: 1.5 }}>
+        Busint lo trae como «{nombreBusint || `Cliente ${codigo}`}». El nombre que escribas aquí queda guardado por código y se usa en Saldos, Cuadre e Ingresos de clientes.
+      </div>
+      <Field label="Nombre real">
+        <FInput value={nombre} onChange={setNombre} placeholder="Ej. KAMILA VENEZUELA" />
+      </Field>
+      <div style={{ fontSize: 11, color: C.slate, marginBottom: 12 }}>Déjalo vacío y guarda para volver al nombre de Busint.</div>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={guardar}>Guardar</Btn>
+      </div>
+    </Modal>
+  );
+}
 function SaldosClientesView({ currentUser }) {
   const [busint, setBusint] = useState(null);
   const [cargando, setCargando] = useState(false);
@@ -7927,6 +7979,12 @@ function SaldosClientesView({ currentUser }) {
     }
   }
   const [enlazarFila, setEnlazarFila] = useState(null);
+  const [renombrarFila, setRenombrarFila] = useState(null);
+  const nombresManual = useNombresClienteBusint();
+  const busintN = useMemo(
+    () => (busint ? busint.map((c) => (nombresManual[String(c.codigo)] ? { ...c, nombre: nombresManual[String(c.codigo)] } : c)) : null),
+    [busint, nombresManual]
+  );
   useEffect(() => {
     const unsub = onSnapshot(collection(db, "contabilidad_saldos_tns"), (snap) => {
       setTns(mezclarCarteraTns(snap.docs));
@@ -8045,11 +8103,11 @@ function SaldosClientesView({ currentUser }) {
     await fsSave("contabilidad_saldos_config", "main", { enlaces: { [claveCampoSaldos(nit)]: valor } });
   }
   const filas = useMemo(() => {
-    if (!busint) return null;
+    if (!busintN) return null;
     const porCodigo = new Map();
     const nombresBusint = [];
     const codigoPorNombre = {};
-    busint.forEach((c) => {
+    busintN.forEach((c) => {
       const nombre = String(c.nombre || "").trim();
       porCodigo.set(String(c.codigo), { clave: `b:${c.codigo}`, nombre, codigo: c.codigo, busint: c.total, busintCartera: c.total, traslado: null, tnsPorEmpresa: { yanko: null, indutex: null }, tnsItems: [], facturaMasReciente: c.facturaMasReciente });
       if (nombre && !(nombre in codigoPorNombre)) {
@@ -8064,9 +8122,9 @@ function SaldosClientesView({ currentUser }) {
       const cod = String(t.codigo);
       let fila = porCodigo.get(cod);
       if (!fila) {
-        fila = { clave: `b:${cod}`, nombre: t.nombre, codigo: cod, busint: 0, busintCartera: 0, traslado: null, tnsPorEmpresa: { yanko: null, indutex: null }, tnsItems: [], facturaMasReciente: t.ultimoTraslado };
+        fila = { clave: `b:${cod}`, nombre: nombresManual[cod] || t.nombre, codigo: cod, busint: 0, busintCartera: 0, traslado: null, tnsPorEmpresa: { yanko: null, indutex: null }, tnsItems: [], facturaMasReciente: t.ultimoTraslado };
         porCodigo.set(cod, fila);
-        const nom = String(t.nombre || "").trim();
+        const nom = String(nombresManual[cod] || t.nombre || "").trim();
         if (nom && !(nom in codigoPorNombre)) {
           codigoPorNombre[nom] = cod;
           nombresBusint.push(nom);
@@ -8101,7 +8159,7 @@ function SaldosClientesView({ currentUser }) {
       const donde = config.donde[claveCampoSaldos(f.clave)] || "definir";
       return { ...f, donde, estado: estadoSaldoCliente(donde, f.busint, f.tnsPorEmpresa.yanko || 0, f.tnsPorEmpresa.yanko !== null, !!f.traslado), magnitud: Math.max(Math.abs(f.busint || 0), Math.abs(f.tnsPorEmpresa.yanko || 0), Math.abs(f.tnsPorEmpresa.indutex || 0)) };
     });
-  }, [busint, tns, config, traslados]);
+  }, [busintN, tns, config, traslados, nombresManual]);
   const visibles = (filas || [])
     .filter((f) => {
       if (soloConSaldo && f.magnitud < 1 && f.donde === "definir") return false;
@@ -8254,6 +8312,12 @@ function SaldosClientesView({ currentUser }) {
                           <div style={{ fontSize: 10.5, color: C.slate, fontWeight: 600 }}>TNS: {[...new Set(f.tnsItems.map((t) => t.nombre))].join(" / ")}</div>
                         )}
                         {f.codigo === null && <div style={{ fontSize: 10.5, color: C.amber, fontWeight: 700 }}>Sin pareja en Busint</div>}
+                        {f.codigo !== null && f.codigo !== undefined && (
+                          <div style={{ fontSize: 10.5, fontWeight: 700 }}>
+                            <span style={{ color: C.slate }}>Código {f.codigo}{nombresManual[String(f.codigo)] ? " · nombre puesto a mano" : ""} </span>
+                            <span style={{ color: C.blue, cursor: "pointer", textDecoration: "underline" }} onClick={() => setRenombrarFila(f)}>renombrar ›</span>
+                          </div>
+                        )}
                         {f.tnsItems.length > 0 && (
                           <span style={{ fontSize: 10.5, color: C.blue, fontWeight: 700, cursor: "pointer", textDecoration: "underline" }} onClick={() => setEnlazarFila(f)}>enlazar con Busint ›</span>
                         )}
@@ -8354,6 +8418,15 @@ function SaldosClientesView({ currentUser }) {
           </Modal>
         );
       })()}
+      {renombrarFila && (
+        <RenombrarClienteBusintModal
+          codigo={renombrarFila.codigo}
+          nombreBusint={(busint || []).find((c) => String(c.codigo) === String(renombrarFila.codigo))?.nombre || (traslados?.clientes || []).find((t) => String(t.codigo) === String(renombrarFila.codigo))?.nombre || ""}
+          nombreActual={nombresManual[String(renombrarFila.codigo)] || ""}
+          onSave={(nombre) => guardarNombreClienteBusint(renombrarFila.codigo, nombre, currentUser?.name || currentUser?.username || currentUser?.email || "")}
+          onClose={() => setRenombrarFila(null)}
+        />
+      )}
       {enlazarFila && (
         <Modal title={`Enlazar con Busint — ${enlazarFila.nombre}`} onClose={() => setEnlazarFila(null)} width={560}>
           <div style={{ fontSize: 12, color: C.slate, marginBottom: 12, lineHeight: 1.5 }}>
@@ -8376,7 +8449,7 @@ function SaldosClientesView({ currentUser }) {
                 >
                   <option value="__auto__" disabled>Automático por nombre</option>
                   <option value={SIN_PAREJA_BUSINT}>Sin cliente en Busint (solo existe en TNS)</option>
-                  {[...(busint || [])].sort((a, b) => String(a.nombre).localeCompare(String(b.nombre))).map((c) => (
+                  {[...(busintN || [])].sort((a, b) => String(a.nombre).localeCompare(String(b.nombre))).map((c) => (
                     <option key={c.codigo} value={String(c.codigo)}>{c.nombre} ({c.codigo})</option>
                   ))}
                 </select>
@@ -8492,6 +8565,7 @@ function CuadrePorClienteView({ currentUser, pedidos }) {
   const [tnsCartera, setTnsCartera] = useState({});
   const [tnsRemisiones, setTnsRemisiones] = useState({});
   const [busint, setBusint] = useState(null);
+  const nombresManualCuadre = useNombresClienteBusint();
   const [cargandoBusint, setCargandoBusint] = useState(false);
   const [subiendo, setSubiendo] = useState("");
   const [error, setError] = useState("");
@@ -8662,11 +8736,11 @@ function CuadrePorClienteView({ currentUser, pedidos }) {
       (x.remis?.pendientes || []).forEach((p) => p.flags.forEach((f) => avisos.push(`${p.ref}: ${f}`)));
       (x.remis?.extras || []).forEach((e) => avisos.push(`${e.remision}: pendiente en el detalle pero no en el resumen de remisiones (suele ser de un periodo anterior al del reporte)`));
     });
-    const bus = busint ? busint.filter((b) => cli.palabras.some((p) => normalizarNombreCliente(b.nombre).includes(p))) : null;
+    const bus = busint ? busint.map((b) => (nombresManualCuadre[String(b.codigo)] ? { ...b, nombre: nombresManualCuadre[String(b.codigo)] } : b)).filter((b) => cli.palabras.some((p) => normalizarNombreCliente(b.nombre).includes(p))) : null;
     const saldoBusint = bus ? bus.reduce((s, b) => s + (Number(b.total) || 0), 0) : null;
     const total = EMPRESAS_TNS.reduce((s, emp) => s + (porEmpresa[emp.id].cartera?.saldo || 0) + (porEmpresa[emp.id].remis?.valorPendiente || 0), 0);
     return { porEmpresa, avisos, saldoBusint, nombresBusint: bus ? bus.map((b) => b.nombre) : [], total };
-  }, [tnsCartera, tnsRemisiones, busint, cli, quitadasCfg]);
+  }, [tnsCartera, tnsRemisiones, busint, cli, quitadasCfg, nombresManualCuadre]);
   const pendientesTodas = EMPRESAS_TNS.flatMap((emp) => datos.porEmpresa[emp.id].remis?.pendientes || []);
   const extrasTodas = EMPRESAS_TNS.flatMap((emp) => datos.porEmpresa[emp.id].remis?.extras || []);
   const valCliente = useMemo(() => {

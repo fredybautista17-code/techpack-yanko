@@ -303,6 +303,22 @@ export function IngresosView({ db, functionsClient, isAdmin, puedeActualizar = f
   const F = FUENTES[fuente];
   const combinada = !!F.combinada;
   const esTns = fuente === "tns_yanko" || fuente === "tns_indutex";
+  // (2026-11-24) Nombres puestos a mano a clientes de Busint sin nombre («Cliente 131»);
+  // se editan desde Contabilidad → Saldos de clientes. Solo aplican a códigos de Busint.
+  const [nombresManual, setNombresManual] = useState({});
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "contabilidad_nombres_cliente_busint"), (snap) => {
+      const m = {};
+      snap.docs.forEach((d) => { const n = String(d.data().nombre || "").trim(); if (n) m[d.id] = n; });
+      setNombresManual(m);
+    }, () => {});
+    return () => unsub();
+  }, [db]);
+  const nombreManualDe = (key) => {
+    const k = String(key);
+    if (k.startsWith("bus:")) return nombresManual[k.slice(4)] ? `${nombresManual[k.slice(4)]} (traslado externo, Busint)` : "";
+    return fuente === "busint" ? nombresManual[k] || "" : "";
+  };
   const [datos, setDatos] = useState(null); // respuesta completa del servidor (en memoria)
   const [cache, setCache] = useState(null); // resumen guardado { actualizadoEn, meses: [{ ym, total, traslados }] }
   const [cargando, setCargando] = useState(false);
@@ -371,7 +387,7 @@ export function IngresosView({ db, functionsClient, isAdmin, puedeActualizar = f
       [datos.clientes?.porMes?.[ym], incluirTras ? datos.traslados?.porMes?.[ym] : null].forEach((mm) => {
         if (!mm) return;
         Object.entries(mm.porCliente).forEach(([cod, v]) => {
-          if (!mapa.has(cod)) mapa.set(cod, { cod, nombre: datos.nombres[cod] || `Cliente ${cod}`, porMes: {}, total: 0 });
+          if (!mapa.has(cod)) mapa.set(cod, { cod, nombre: nombreManualDe(cod) || datos.nombres[cod] || `Cliente ${cod}`, porMes: {}, total: 0 });
           const f = mapa.get(cod);
           f.porMes[ym] = (f.porMes[ym] || 0) + v;
           f.total += v;
@@ -379,7 +395,7 @@ export function IngresosView({ db, functionsClient, isAdmin, puedeActualizar = f
       });
     });
     return [...mapa.values()].sort((a, b) => b.total - a.total);
-  }, [datos, incluirTras]);
+  }, [datos, incluirTras, nombresManual]);
   const filasMedio = useMemo(() => {
     if (!datos) return [];
     const mapa = new Map();
@@ -395,7 +411,7 @@ export function IngresosView({ db, functionsClient, isAdmin, puedeActualizar = f
       });
     });
     return [...mapa.values()].sort((a, b) => b.total - a.total);
-  }, [datos, incluirTras]);
+  }, [datos, incluirTras, nombresManual]);
   const filas = vista === "cliente" ? filasCliente : filasMedio;
   const q = busqueda.trim().toLowerCase();
   const filtradas = q ? filas.filter((f) => f.nombre.toLowerCase().includes(q)) : filas;
@@ -413,11 +429,11 @@ export function IngresosView({ db, functionsClient, isAdmin, puedeActualizar = f
         if (!ck || mapa[ck] === NO_APLICA) return;
         const items = clasif[idClasif(ym, ck)]?.items || {};
         const ya = CATS_CLASIF.reduce((t, c) => t + (items[c] || 0), 0);
-        out.push({ id: idClasif(ym, ck), ym, key, ck, nombre: datos.nombres?.[key] || key, monto, items, rubros: rubrosDe(clasif[idClasif(ym, ck)]), pendiente: Math.round(monto - ya) });
+        out.push({ id: idClasif(ym, ck), ym, key, ck, nombre: nombreManualDe(key) || datos.nombres?.[key] || key, monto, items, rubros: rubrosDe(clasif[idClasif(ym, ck)]), pendiente: Math.round(monto - ya) });
       });
     });
     return out;
-  }, [puedeClasificar, datos, fuente, mapa, clasif]);
+  }, [puedeClasificar, datos, fuente, mapa, clasif, nombresManual]);
   const numPendientes = filasClasif.filter((f) => f.pendiente > 1 || !mapa[f.ck]).length;
   const pendSet = useMemo(() => new Set(filasClasif.filter((f) => f.pendiente > 1 || !mapa[f.ck]).map((f) => `${f.ym}|${f.key}`)), [filasClasif, mapa]);
   const ckDeKey = (key) => claveClasif(fuente, key);
@@ -478,7 +494,7 @@ export function IngresosView({ db, functionsClient, isAdmin, puedeActualizar = f
   // ── Ver detalle: de qué se compone el cobro de un cliente en un mes ──
   function detalleDe(key, ym) {
     if (!datos) return null;
-    const nombre = datos.nombres?.[key] || key;
+    const nombre = nombreManualDe(key) || datos.nombres?.[key] || key;
     const titulo = `${nombre} · ${etiquetaMes(ym)}`;
     const deRecibos = (lista, cod, origen) => (lista || []).filter((r) => r.partes && r.partes[cod] !== undefined).map((r) => ({ np: r.np, fecha: r.fecha, parte: r.partes[cod], monto: r.monto, medio: r.medio, docs: r.docs, origen }));
     const mm = datos.clientes?.porMes?.[ym] || {};
