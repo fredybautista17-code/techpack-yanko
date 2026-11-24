@@ -4855,6 +4855,13 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
     const { areasNomina: areasCtx, turnos: turnosCtx } = CONTEXTO_VACACIONES;
     return calcularCobroPermisoHoras({ ...form, fechaFin: exigirHoras ? form.fechaInicio : form.fechaFin, id: ausencia?.id }, { trabajadores, areasNomina: areasCtx, turnos: turnosCtx }, 0);
   })();
+  // (2026-11-24, a pedido de Fredy) Si las horas del permiso cubren toda la jornada de la persona ese día, se dice «Día completo de ausencia». Solo es visual.
+  const diaCompletoPermiso = (() => {
+    if (!trabajadorSeleccionado || !esMotivoPermiso(form.motivo) || !esPermisoPorHoras(form)) return false;
+    const { areasNomina: areasCtx, turnos: turnosCtx } = CONTEXTO_VACACIONES;
+    const horasForm = medirPermisoHorasCosto({ ...form, fechaFin: exigirHoras ? form.fechaInicio : form.fechaFin }, { trabajadores: [trabajadorSeleccionado], areasNomina: areasCtx, turnos: turnosCtx }).horas || 0;
+    return horasForm > 0 && permisoCubreJornada({ fechaInicio: form.fechaInicio }, trabajadorSeleccionado, horasForm, areasCtx, turnosCtx);
+  })();
   async function guardar() {
     if (faltantes.length || ordenHorasMal) return;
     onSave({
@@ -4936,11 +4943,16 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
           </label>
         </div>
       )}
+      {diaCompletoPermiso && (
+        <div style={{ margin: "0 0 12px" }}>
+          <span title="Las horas cubren toda la jornada de la persona ese día" style={{ display: "inline-block", padding: "3px 10px", borderRadius: 999, background: C.blueBg, color: C.blue, fontSize: 12, fontWeight: 800 }}>📅 Día completo de ausencia</span>
+        </div>
+      )}
       {cobroPermiso && cobroPermiso.cobra && (
         <div style={{ background: C.violetBg, border: `1px solid ${C.violet}`, borderRadius: 10, padding: "10px 12px", margin: "0 0 12px" }}>
           <div style={{ fontSize: 12, fontWeight: 800, color: C.violet, marginBottom: 4 }}>⏱ Cobro de las horas de este permiso</div>
           <div style={{ fontSize: 12, color: C.ink, lineHeight: 1.5 }}>
-            Permiso de <strong>{fmtHoras(cobroPermiso.horas)}</strong>{mostrarDinero ? <> · valor hora <strong>{fmtMoney(Math.round(cobroPermiso.valorHora))}</strong> ({cobroPermiso.usaMinimo ? "salario mínimo, sin sueldo en la ficha" : "sueldo"} ÷ {DIVISOR_HORAS_MES_EXTRA})</> : null}.
+            {diaCompletoPermiso ? "Día completo de ausencia · " : "Permiso de "}<strong>{fmtHoras(cobroPermiso.horas)}</strong>{mostrarDinero ? <> · valor hora <strong>{fmtMoney(Math.round(cobroPermiso.valorHora))}</strong> ({cobroPermiso.usaMinimo ? "salario mínimo, sin sueldo en la ficha" : "sueldo"} ÷ {DIVISOR_HORAS_MES_EXTRA})</> : null}.
             {" "}Si no las repone hasta el <strong>{fmtFechaISO(finQuincenaDeFecha(form.fechaInicio))}</strong> (fin de la quincena), se le descuentan{mostrarDinero ? <> <strong>{fmtMoney(cobroPermiso.valor)}</strong></> : " esas horas"} en la liquidación.
             {" "}Si las repone en otro horario o con horas extras, se canjean hora por hora y el descuento baja.
           </div>
@@ -5387,6 +5399,7 @@ function PermisosCalendarioView({ trabajadores, produccion, horas, ausencias, cu
             <div style={{ padding: 10, display: "flex", flexDirection: "column", gap: 8, maxHeight: 460, overflowY: "auto" }}>
               {conAusencia.map(({ trabajador, ausencia }) => {
                 const h = horasDePermiso(ausencia, trabajador);
+                const completo = h > 0 && ausencia.horaInicio && ausencia.horaFin && permisoCubreJornada(ausencia, trabajador, h, CONTEXTO_VACACIONES.areasNomina, CONTEXTO_VACACIONES.turnos);
                 return (
                   <div key={ausencia.id} onClick={() => setModal(ausencia)} title="Click para ver o editar este permiso"
                     style={{ display: "flex", gap: 10, alignItems: "center", padding: "9px 10px", borderRadius: 10, border: `1px solid ${C.border}`, cursor: "pointer" }}>
@@ -5397,6 +5410,7 @@ function PermisosCalendarioView({ trabajadores, produccion, horas, ausencias, cu
                     </div>
                     <div style={{ textAlign: "right", flexShrink: 0 }}>
                       <div style={{ fontSize: 11.5, fontWeight: 700, color: C.amber }}>{ausencia.horaInicio && ausencia.horaFin ? `${ausencia.horaInicio}–${ausencia.horaFin}` : "Día completo"}</div>
+                      {completo && <div style={{ fontSize: 10.5, fontWeight: 800, color: C.blue }}>📅 Día completo</div>}
                       {h > 0 && <div style={{ fontSize: 10.5, fontWeight: 700, color: C.violet }}>⏱ {Math.round(h * 10) / 10} h</div>}
                     </div>
                   </div>
