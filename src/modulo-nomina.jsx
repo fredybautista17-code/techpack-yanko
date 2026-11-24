@@ -17948,14 +17948,18 @@ function DiagnosticoDuplicadosView({ diasTrabajados, faltas, anomalias, retardos
     </div>
   );
 }
-export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNovedades, soloLiderArea, liderProduccion = true, liderAsistencia = false, liderResumen = false, puedeEditarCatalogos, puedeVerAnomaliasHuellero, puedeVerDuplicadosHuellero, puedeCerrarQuincena, puedeAgregarCobrosManual, puedeAjustarDestajo, puedeEditarHorasExtra, puedeEditarBonificacion, puedeAutorizarPermisos, puedeMarcarRetardos }) {
+export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNovedades, soloLiderArea, liderProduccion = true, liderAsistencia = false, liderResumen = false, todasAreas = false, puedeEditarCatalogos, puedeVerAnomaliasHuellero, puedeVerDuplicadosHuellero, puedeCerrarQuincena, puedeAgregarCobrosManual, puedeAjustarDestajo, puedeEditarHorasExtra, puedeEditarBonificacion, puedeAutorizarPermisos, puedeMarcarRetardos }) {
   // Líder de área (hoy: Anny Beltrán y Sarai Méndez, cada una con su Área
   // Interna real -- ver Administrativo → Área Interna): entra con un panel
   // reducido, ya filtrado a su propia gente, en vez del panel completo de
   // admin (nada de Trabajadores/Precios ni ver otras áreas). Se define con
   // el campo "Área de Nómina" del usuario (mismo valor que la Área Interna
   // del trabajador), puesto por un admin en Administrador General → Usuarios.
-  const areaLider = !currentUser?.isAdmin && currentUser?.areaNomina ? currentUser.areaNomina : null;
+  // (2026-11-24, a pedido de Fredy) Interruptor por persona «Ve todas las áreas (Nómina)» (Talento Humano): quien ya tiene Nómina Completa o Solo Novedades
+  // y a la vez un «Área Interna» (la usa para Mi Día) deja de ser tratado como líder de área en Nómina y ve a los trabajadores de todas las áreas.
+  // Un líder que solo tiene los accesos de líder (soloLiderArea) NO lo recibe: seguiría con el menú completo si se ignorara esa condición.
+  const verTodasAreas = !!todasAreas && !soloLiderArea;
+  const areaLider = !currentUser?.isAdmin && currentUser?.areaNomina && !verTodasAreas ? currentUser.areaNomina : null;
   const [subView, setSubView] = useState(() => (areaLider ? (soloLiderArea && !liderProduccion ? (liderAsistencia ? "tabulador_asistencia" : "resumen") : "produccion") : soloNovedades ? "ausencias" : "dashboard"));
   // Qué grupos del menú están desplegados — si un grupo todavía no se ha
   // tocado (no está en este objeto), se abre solo si contiene el subView
