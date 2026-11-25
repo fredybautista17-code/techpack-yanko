@@ -135,3 +135,43 @@ test("hex, combinados y estado de un color", () => {
   expect(colorSePuedePintar({ hex: "" })).toBe(false);
   expect(snapshotColor({ id: "1", nombre: "A", hex: "#111111", pantone: "P" })).toMatchObject({ hex: "#111111", pantone: "P" });
 });
+
+import { leerCartaColores, planCartaColores } from "./ficha-inicio-calculo";
+
+test("carta de colores: lee encabezados, hex y Pantone; avisa del hex mal escrito", () => {
+  const r = leerCartaColores([["Cód. Busint", "Nombre", "Hex", "Pantone"], ["004", "NEGRO", "#1a1a1a", "19-0303 TCX"], ["7", "AZUL MARINO", "1F3A5F", ""], ["9", "RARO", "zzz", ""], ["", "", "", ""], ["12", "SOLO NOMBRE", "", ""]]);
+  expect(r.conEncabezado).toBe(true);
+  expect(r.filas).toEqual([{ cod: "004", nombre: "NEGRO", hex: "#1A1A1A", pantone: "19-0303 TCX" }, { cod: "7", nombre: "AZUL MARINO", hex: "#1F3A5F", pantone: "" }]);
+  expect(r.invalidos.map((x) => x.cod)).toEqual(["9"]);
+});
+
+test("carta de colores: sin encabezado reconoce el código, el hex y el Pantone por su forma", () => {
+  const r = leerCartaColores([["LILA", "106", "#B4A3CE", "14-3612 TCX"]]);
+  expect(r.conEncabezado).toBe(false);
+  expect(r.filas).toEqual([{ cod: "106", nombre: "LILA", hex: "#B4A3CE", pantone: "14-3612 TCX" }]);
+});
+
+test("plan de carta: cruza por código (004 = 4), llena vacíos, no pisa y avisa", () => {
+  const ex = [
+    { id: "a", nombre: "NEGRO", codBusint: "004" },
+    { id: "b", nombre: "AZUL MARINO", codBusint: "007", hex: "#111111", pantone: "19-3832 TCX" },
+    { id: "c", nombre: "LILA", codBusint: "106", hex: "#B4A3CE" },
+    { id: "d", nombre: "Verde", codBusint: "" },
+  ];
+  const filas = [
+    { cod: "4", nombre: "NEGRO", hex: "#1A1A1A", pantone: "" },
+    { cod: "007", nombre: "AZUL MARINO", hex: "#1F3A5F", pantone: "19-3832 tcx" },
+    { cod: "106", nombre: "LILA", hex: "#B4A3CE", pantone: "14-3612 TCX" },
+    { cod: "", nombre: "verde", hex: "#00AA00", pantone: "" },
+    { cod: "999", nombre: "NO EXISTE", hex: "#000000", pantone: "" },
+    { cod: "004", nombre: "NEGRO", hex: "#000000", pantone: "" },
+  ];
+  const p = planCartaColores(ex, filas);
+  expect(p.actualizar.map((x) => [x.ex.id, x.datos])).toEqual([["a", { hex: "#1A1A1A" }], ["c", { pantone: "14-3612 TCX" }], ["d", { hex: "#00AA00" }]]);
+  expect(p.avisos).toEqual([{ ex: ex[1], campo: "hex", actual: "#111111", nuevo: "#1F3A5F" }]);
+  expect(p.sinCoincidencia).toEqual([{ cod: "999", nombre: "NO EXISTE" }]);
+  expect(p.repetidosArchivo).toBe(1);
+  const q = planCartaColores(ex, filas, { pisar: true });
+  expect(q.actualizar.find((x) => x.ex.id === "b").datos).toEqual({ hex: "#1F3A5F" });
+  expect(q.avisos).toEqual([]);
+});
