@@ -73,3 +73,65 @@ test("tallas y curvas", () => {
   const d = distribuirPorTalla({ S: 1, M: 2, L: 2, XL: 1 }, 100, ["S", "M", "L", "XL"]);
   expect(Object.values(d).reduce((a, b) => a + b, 0)).toBe(100);
 });
+
+// ───────── Maestro de colores sincronizado con Busint ─────────
+import { leerInformeBusintColores, planSincronizacion, parsearColoresPegados, normHex, esCombinado, estadoColor, colorSePuedePintar, snapshotColor } from "./ficha-inicio-calculo";
+
+const filasBusint = [
+  ["2026-11-24 -", "0.41"], [null, null, null, "Texto31"], ["ACTIVOS"],
+  [null, "004", null, "NEGRO", "Sí"], [null, "034", null, "VERDE", "Sí"], [null, "042", null, "VERDE BENETTON", "Sí"],
+  [null, "525", null, "AZUL BEBE", "Sí"], [null, "536", null, "AZUL BEBÉ", "Sí"], [null, "336", null, "AMARILLO/NEGRO", "Sí"],
+  [null, "554", null, "", "Sí"], ["INACTIVOS"], [null, "038", null, "VERDE HOJA", "No"], [null, "7", null, "", "No"], ["Texto24:", "556"],
+];
+
+test("leerInformeBusintColores toma código, nombre y activo; ignora títulos y totales", () => {
+  const r = leerInformeBusintColores(filasBusint);
+  expect(r).toHaveLength(9);
+  expect(r.find((x) => x.cod === "042")).toEqual({ cod: "042", nombre: "VERDE BENETTON", activo: true });
+  expect(r.find((x) => x.cod === "554").nombre).toBe("");
+  expect(r.find((x) => x.cod === "038").activo).toBe(false);
+});
+
+test("planSincronizacion: une por nombre, corrige el código, crea el resto y avisa lo raro", () => {
+  const informe = leerInformeBusintColores(filasBusint);
+  const existentes = [{ id: "a", nombre: "NEGRO", codBusint: "26", codProveedor: "10" }, { id: "b", nombre: "verde" }];
+  const p = planSincronizacion(existentes, informe);
+  expect(p.unidos.map((u) => [u.ex.id, u.cod, u.antes])).toEqual([["a", "004", "26"], ["b", "034", ""]]);
+  expect(p.nuevos.map((n) => n.cod)).toEqual(["042", "525", "536", "336", "554"]);
+  expect(p.nuevos.find((n) => n.cod === "336").combinado).toBe(true);
+  expect(p.nuevos.find((n) => n.cod === "525").repetido).toBe(true); // AZUL BEBE = AZUL BEBÉ sin tildes
+  expect(p.nuevos.find((n) => n.cod === "554").nombre).toBe("(sin nombre) 554");
+  expect(p.sinNombre).toEqual(["554"]);
+  expect(p.inactivosNoCargados).toBe(2);
+  expect(p.huerfanos).toHaveLength(0);
+});
+
+test("planSincronizacion: lo que ya tiene el código no se duplica y un código raro queda como aviso", () => {
+  const informe = leerInformeBusintColores(filasBusint);
+  const p = planSincronizacion([{ id: "x", nombre: "VERDE BENETTON", codBusint: "042" }, { id: "y", nombre: "ROJO", codBusint: "999" }, { id: "z", nombre: "Verde hoja", codBusint: "038" }], informe);
+  expect(p.vinculados).toBe(1);
+  expect(p.porMarcar.map((m) => m.cod)).toEqual(["042"]);
+  expect(p.nuevos.find((n) => n.cod === "042")).toBeUndefined();
+  expect(p.huerfanos.map((h) => h.cod)).toEqual(["999"]);
+  expect(p.inactivosMarcados.map((m) => m.cod)).toEqual(["038"]);
+});
+
+test("pegar colores: acepta hex y Pantone, usa el código de Busint como llave", () => {
+  const r = parsearColoresPegados("LILA ; ; 106 ; B4A3CE ; 14-3612 TCX\nOTRO ; ; 106\nVerde ; PV ; ; #zzz", [{ nombre: "x", codBusint: "042" }]);
+  expect(r.nuevos).toEqual([{ nombre: "LILA", codProveedor: "", codBusint: "106", hex: "#B4A3CE", pantone: "14-3612 TCX" }, { nombre: "Verde", codProveedor: "PV", codBusint: "" }]);
+  expect(r.repetidos).toEqual(["OTRO"]);
+  expect(parsearColoresPegados("X ; ; 042", [{ nombre: "x", codBusint: "042" }]).repetidos).toEqual(["X"]);
+});
+
+test("hex, combinados y estado de un color", () => {
+  expect(normHex("b4a3ce")).toBe("#B4A3CE");
+  expect(normHex("#12")).toBe("");
+  expect(esCombinado("NEGRO/BLANCO")).toBe(true);
+  expect(esCombinado("NEGRO")).toBe(false);
+  expect(estadoColor({ busintSync: true })).toBe("busint");
+  expect(estadoColor({ busintSync: true, activoBusint: false })).toBe("inactivo");
+  expect(estadoColor({})).toBe("solo");
+  expect(colorSePuedePintar({ hex: "#234654" })).toBe(true);
+  expect(colorSePuedePintar({ hex: "" })).toBe(false);
+  expect(snapshotColor({ id: "1", nombre: "A", hex: "#111111", pantone: "P" })).toMatchObject({ hex: "#111111", pantone: "P" });
+});

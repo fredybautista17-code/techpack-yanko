@@ -16,6 +16,7 @@ import {
   COL_FICHA, COL_COLORES, COL_VINILOS, MAX_COLORES, PASOS_SEMAFORO, PASO_FICHA, PASOS_MANUALES, TIPOS_VINILO, NOMBRES_ASISTENTE,
   idFicha, num, plano, tallasDeRango, distribuirPorTalla, completarFicha, totalPreorden, totalFicha, faltantesPaso, fichaCompleta,
   pasosDeReferencia, resumenSemaforo, parsearColoresPegados, snapshotColor, snapshotVinilo,
+  esHex, normHex, normCod, esCombinado, estadoColor, leerInformeBusintColores, planSincronizacion,
   ETAPAS_PEDIDO, ETAPA_CORTE, ETAPA_MONTAR, PASO_MONTAR, PASO_CORTE, itemsDePedido, evaluarPedido, pedidoPorReferencia, siguientePaso, pasosHechos,
 } from "./ficha-inicio-calculo";
 
@@ -64,38 +65,168 @@ function Ventana({ titulo, onClose, ancho = 860, children }) {
 }
 
 // ───────────────────────── BIBLIOTECAS (colores y vinilos) ─────────────────────────
+// Colores: el código de Busint es la llave; cada color lleva Pantone y hex (con él se pinta el avatar de la prenda) y se sincroniza con el informe de Busint.
+function Cuadrito({ hex, tam = 28 }) {
+  const ok = esHex(hex);
+  return <span title={ok ? normHex(hex) : "Sin color todavía"} style={{ display: "inline-block", width: tam, height: tam, borderRadius: Math.round(tam * 0.3), flex: "none", verticalAlign: "middle", border: ok ? "1px solid rgba(26,26,46,.18)" : `1px dashed ${C.grey}`, background: ok ? normHex(hex) : "repeating-linear-gradient(45deg,#F2EEE6,#F2EEE6 4px,#E3DDD1 4px,#E3DDD1 8px)" }} />;
+}
+function Pil({ children, tono = "gris", title }) {
+  const t = { ok: [C.greenBg, C.green], sol: [C.blueBg, C.blue], av: [C.amberBg, C.amber], gris: [C.greyBg, C.slate] }[tono];
+  return <span title={title} style={{ display: "inline-block", background: t[0], color: t[1], borderRadius: 20, padding: "2px 8px", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>{children}</span>;
+}
+function CampoHex({ value, onChange }) {
+  return (
+    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+      <input type="color" aria-label="Escoger el color" value={esHex(value) ? normHex(value) : "#CCCCCC"} onChange={(e) => onChange(e.target.value.toUpperCase())} style={{ width: 38, height: 38, border: `1.5px solid ${C.border}`, borderRadius: 10, padding: 2, background: C.white, cursor: "pointer", flex: "none" }} />
+      <input style={inp} value={value || ""} onChange={(e) => onChange(e.target.value.toUpperCase())} placeholder="#234654" />
+    </div>
+  );
+}
+const FILTROS_COLOR = [["todos", "Todos"], ["hex", "Con color"], ["sinhex", "Sin color"], ["solo", "Solo ATLAS"], ["liso", "Solo lisos"], ["comb", "Combinados (con «/»)"], ["aviso", "Con aviso"]];
+const esComb = (c) => (c.combinado !== undefined ? !!c.combinado : esCombinado(c.nombre));
+
+function SincronizarBusint({ colores, db, onClose }) {
+  const [plan, setPlan] = useState(null);
+  const [info, setInfo] = useState(null);
+  const [error, setError] = useState("");
+  const [trabajando, setTrabajando] = useState(false);
+  const [hecho, setHecho] = useState("");
+
+  async function leer(e) {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    setError(""); setPlan(null); setHecho("");
+    try {
+      const XLSX = await import("xlsx");
+      const wb = XLSX.read(await file.arrayBuffer(), { type: "array" });
+      const filas = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: false, defval: "" });
+      const informe = leerInformeBusintColores(filas);
+      if (!informe.length) { setError("No encontré colores en ese archivo. Debe ser el informe «Colores» de Busint (Diseño → Informes → Otros maestros), en Excel."); return; }
+      setInfo({ archivo: file.name, filas: informe.length, activos: informe.filter((x) => x.activo).length });
+      setPlan(planSincronizacion(colores || [], informe));
+    } catch (err) { setError(`No pude leer el archivo: ${err.message || err}`); }
+  }
+  async function aplicar() {
+    if (!plan || trabajando) return;
+    setTrabajando(true);
+    try {
+      const ahora = new Date().toISOString();
+      const ops = [];
+      plan.nuevos.forEach((n) => ops.push((b) => b.set(doc(db, COL_COLORES, `bus_${n.cod}`), { nombre: n.nombre, codBusint: n.cod, codProveedor: "", hex: "", pantone: "", busintSync: true, nombreBusint: n.nombreBusint, activoBusint: true, combinado: n.combinado, nombreRepetido: n.repetido, creadoEn: ahora, sincronizadoEn: ahora }, { merge: true })));
+      plan.unidos.forEach((u) => ops.push((b) => b.set(doc(db, COL_COLORES, u.ex.id), { codBusint: u.cod, busintSync: true, nombreBusint: u.nombre, activoBusint: true, combinado: esCombinado(u.nombre), sincronizadoEn: ahora }, { merge: true })));
+      plan.porMarcar.forEach((m) => ops.push((b) => b.set(doc(db, COL_COLORES, m.ex.id), { busintSync: true, nombreBusint: m.nombre, activoBusint: true, sincronizadoEn: ahora }, { merge: true })));
+      plan.inactivosMarcados.forEach((m) => ops.push((b) => b.set(doc(db, COL_COLORES, m.ex.id), { busintSync: true, activoBusint: false, nombreBusint: m.nombre, sincronizadoEn: ahora }, { merge: true })));
+      for (let i = 0; i < ops.length; i += 400) {
+        const lote = writeBatch(db);
+        ops.slice(i, i + 400).forEach((op) => op(lote));
+        await lote.commit();
+      }
+      setHecho(`Listo: ${plan.nuevos.length} colores creados, ${plan.unidos.length} unidos por nombre y ${plan.porMarcar.length + plan.inactivosMarcados.length} ya existentes marcados como sincronizados.`);
+      setPlan(null);
+    } catch (err) { setError(`No se pudo guardar: ${err.message || err}`); }
+    setTrabajando(false);
+  }
+
+  const tarjeta = (n, t, bg, col) => <div style={{ background: bg, borderRadius: 12, padding: "10px 12px" }}><div style={{ fontSize: 24, fontWeight: 800, color: col || C.ink, letterSpacing: -0.5 }}>{n}</div><div style={{ fontSize: 12, fontWeight: 700, color: C.slate }}>{t}</div></div>;
+  const aviso = (children) => <div style={{ background: "#FFF8EA", border: `1px solid ${C.amberLine}`, borderRadius: 12, padding: "9px 12px", marginBottom: 8, fontSize: 13, lineHeight: 1.5 }}>{children}</div>;
+  const cambio = (a, d) => <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4, flexWrap: "wrap" }}><span style={{ background: C.redBg, color: C.red, borderRadius: 8, padding: "2px 8px", fontWeight: 700, fontSize: 12, textDecoration: "line-through" }}>{a}</span>→<span style={{ background: C.greenBg, color: C.green, borderRadius: 8, padding: "2px 8px", fontWeight: 700, fontSize: 12 }}>{d}</span></div>;
+  return (
+    <Ventana titulo="🔄 Sincronizar con Busint" onClose={onClose} ancho={780}>
+      <p style={{ fontSize: 12.5, color: C.slate, fontWeight: 600, margin: "0 0 10px", lineHeight: 1.5 }}>Sube el informe «Colores» de Busint (Diseño → Informes → Otros maestros → Colores), en Excel. Antes de guardar nada, ATLAS te muestra qué haría. Tus hex, Pantone y códigos de proveedor no se tocan.</p>
+      <label style={{ display: "flex", alignItems: "center", gap: 12, border: `1.5px dashed ${C.grey}`, borderRadius: 14, padding: "12px 16px", background: C.canvas, cursor: "pointer", marginBottom: 12 }}>
+        <span style={{ fontSize: 26 }}>📄</span>
+        <span style={{ flex: 1, fontSize: 13, fontWeight: 700 }}>{info ? info.archivo : "Escoger el archivo de Busint (.xls o .xlsx)"}{info && <span style={{ display: "block", fontSize: 12, color: C.slate, fontWeight: 600 }}>{info.filas} filas leídas · {info.activos} activas · {info.filas - info.activos} inactivas</span>}</span>
+        <input data-testid="archivo-busint" type="file" accept=".xls,.xlsx,.csv" onChange={leer} style={{ display: "none" }} />
+        <span style={{ background: C.greyBg, borderRadius: 10, padding: "7px 13px", fontWeight: 700, fontSize: 12.5 }}>{info ? "Cambiar archivo" : "Escoger"}</span>
+      </label>
+      {error && <div style={{ background: C.redBg, color: C.red, borderRadius: 10, padding: "8px 12px", fontSize: 13, fontWeight: 700, marginBottom: 10 }}>{error}</div>}
+      {hecho && <div style={{ background: C.greenBg, color: C.green, borderRadius: 10, padding: "9px 12px", fontSize: 13, fontWeight: 700, marginBottom: 10 }}>✔ {hecho}</div>}
+      {plan && (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 12 }}>
+            {tarjeta(plan.nuevos.length, "Colores nuevos que se crean", C.greenBg, C.green)}
+            {tarjeta(plan.unidos.length, "Ya existen y se unen por nombre", C.blueBg, C.blue)}
+            {tarjeta(plan.vinculados, "Ya estaban con su código", C.canvas)}
+            {tarjeta(plan.inactivosNoCargados, "Inactivos en Busint (no se cargan)", C.greyBg)}
+          </div>
+          {!!(plan.unidos.length || plan.huerfanos.length || plan.repetidos.length || plan.sinNombre.length || plan.inactivosMarcados.length || plan.combinados) && <h4 style={{ margin: "4px 0 8px", fontSize: 14 }}>⚠️ Avisos</h4>}
+          {plan.unidos.map((u) => (
+            <div key={u.ex.id}>{aviso(<><b>{u.antes ? `«${u.ex.nombre}» tiene un código que no es el de Busint.` : `«${u.ex.nombre}» no tiene código.`}</b> {u.antes ? `En ATLAS guarda ${u.antes}; en` : "En"} Busint es <b>{u.cod}</b> ({u.nombre}). Se une y queda sincronizado.{cambio(u.antes ? `Cód. Busint ${u.antes}` : "sin código", `Cód. Busint ${u.cod}`)}</>)}</div>
+          ))}
+          {plan.huerfanos.length > 0 && aviso(<><b>{plan.huerfanos.length} color(es) de la biblioteca tienen un código que no existe en Busint:</b> {plan.huerfanos.slice(0, 8).map((h) => `${h.ex.nombre} (${h.cod})`).join(", ")}{plan.huerfanos.length > 8 ? "…" : ""}. No se tocan: revísalos.</>)}
+          {plan.repetidos.length > 0 && aviso(<><b>{plan.repetidos.length} nombres aparecen repetidos con códigos distintos.</b> Se cargan todos, cada uno con su código y la etiqueta «nombre repetido». Ejemplos: {plan.repetidos.slice(0, 5).join(", ")}.</>)}
+          {plan.sinNombre.length > 0 && aviso(<><b>Código(s) sin nombre en Busint: {plan.sinNombre.join(", ")}.</b> Se cargan como «(sin nombre) código» para que los bautices tú.</>)}
+          {plan.inactivosMarcados.length > 0 && aviso(<><b>{plan.inactivosMarcados.length} color(es) de tu biblioteca están inactivos en Busint:</b> {plan.inactivosMarcados.slice(0, 8).map((m) => m.ex.nombre).join(", ")}. Quedan marcados «Inactivo en Busint»; las fichas que ya los usan no cambian.</>)}
+          {plan.combinados > 0 && <p style={{ fontSize: 12.5, color: C.slate, fontWeight: 600, margin: "4px 0 8px" }}>{plan.combinados} de los nuevos son combinados (NEGRO/BLANCO…): quedan marcados «combinado» y se pueden filtrar.</p>}
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <Boton onClick={onClose}>Cancelar</Boton>
+            <Boton tipo="ok" onClick={aplicar} disabled={trabajando || !(plan.nuevos.length || plan.unidos.length || plan.porMarcar.length || plan.inactivosMarcados.length)}>{trabajando ? "Guardando…" : "✔ Aplicar sincronización"}</Boton>
+          </div>
+        </>
+      )}
+      {!plan && !hecho && !error && !info && <p style={{ fontSize: 12.5, color: C.slate, fontStyle: "italic" }}>Todavía no has escogido el archivo.</p>}
+      {hecho && <div style={{ marginTop: 6 }}><Boton onClick={onClose}>Cerrar</Boton></div>}
+    </Ventana>
+  );
+}
+
 function BibliotecasFicha({ onClose, puedeEditar, inicial = "colores" }) {
   const db = useMemo(dbDe, []);
   const colores = useColeccion(COL_COLORES);
   const vinilos = useColeccion(COL_VINILOS);
   const [tab, setTab] = useState(inicial);
   const [buscar, setBuscar] = useState("");
-  const [nuevo, setNuevo] = useState({ nombre: "", a: "", b: "", tipo: TIPOS_VINILO[0] });
+  const [filtro, setFiltro] = useState("todos");
+  const [limite, setLimite] = useState(80);
+  const [nuevo, setNuevo] = useState({ nombre: "", a: "", b: "", pantone: "", hex: "", tipo: TIPOS_VINILO[0] });
   const [pegar, setPegar] = useState("");
   const [msg, setMsg] = useState("");
   const [editId, setEditId] = useState(null);
   const [borrador, setBorrador] = useState({});
+  const [sincronizando, setSincronizando] = useState(false);
+  const esColor = tab === "colores";
+
+  const resumen = useMemo(() => {
+    const l = colores || [];
+    const conHex = l.filter((c) => esHex(c.hex)).length;
+    return { total: l.length, busint: l.filter((c) => estadoColor(c) !== "solo").length, solo: l.filter((c) => estadoColor(c) === "solo").length, conHex, sinHex: l.length - conHex };
+  }, [colores]);
 
   const lista = useMemo(() => {
-    const base = (tab === "colores" ? colores : vinilos) || [];
+    const base = (esColor ? colores : vinilos) || [];
     const q = plano(buscar);
     return base
-      .filter((x) => !q || plano(`${x.nombre} ${x.codProveedor || ""} ${x.codBusint || ""} ${x.codigo || ""}`).includes(q))
-      .sort((a, b) => plano(a.nombre).localeCompare(plano(b.nombre)));
-  }, [tab, colores, vinilos, buscar]);
+      .filter((x) => !q || plano(`${x.nombre} ${x.codProveedor || ""} ${x.codBusint || ""} ${x.pantone || ""} ${x.codigo || ""}`).includes(q))
+      .filter((x) => {
+        if (!esColor || filtro === "todos") return true;
+        if (filtro === "hex") return esHex(x.hex);
+        if (filtro === "sinhex") return !esHex(x.hex);
+        if (filtro === "solo") return estadoColor(x) === "solo";
+        if (filtro === "liso") return !esComb(x);
+        if (filtro === "comb") return esComb(x);
+        if (filtro === "aviso") return estadoColor(x) === "inactivo" || !!x.nombreRepetido;
+        return true;
+      })
+      .sort((a, b) => (esColor ? (esHex(b.hex) ? 1 : 0) - (esHex(a.hex) ? 1 : 0) : 0) || plano(a.nombre).localeCompare(plano(b.nombre)));
+  }, [esColor, colores, vinilos, buscar, filtro]);
 
   async function agregar() {
     const nombre = nuevo.nombre.trim();
     if (!nombre || !puedeEditar) return;
-    const col = tab === "colores" ? COL_COLORES : COL_VINILOS;
-    const existentes = (tab === "colores" ? colores : vinilos) || [];
-    if (existentes.some((x) => plano(x.nombre) === plano(nombre))) { setMsg(`«${nombre}» ya está en la biblioteca.`); return; }
+    const col = esColor ? COL_COLORES : COL_VINILOS;
+    const existentes = (esColor ? colores : vinilos) || [];
+    const cod = normCod(nuevo.b);
+    if (esColor && cod) {
+      const dup = existentes.find((x) => normCod(x.codBusint) === cod);
+      if (dup) { setMsg(`El código de Busint ${cod} ya es de «${dup.nombre}».`); return; }
+    } else if (existentes.some((x) => plano(x.nombre) === plano(nombre))) { setMsg(`«${nombre}» ya está en la biblioteca.`); return; }
     const ref = doc(collection(db, col));
-    const datos = tab === "colores"
-      ? { nombre, codProveedor: nuevo.a.trim(), codBusint: nuevo.b.trim() }
+    const datos = esColor
+      ? { nombre, codProveedor: nuevo.a.trim(), codBusint: cod, pantone: nuevo.pantone.trim(), hex: normHex(nuevo.hex) }
       : { nombre, codigo: nuevo.a.trim(), tipo: nuevo.tipo };
     await setDoc(ref, { ...datos, creadoEn: new Date().toISOString() });
-    setNuevo({ nombre: "", a: "", b: "", tipo: nuevo.tipo });
+    setNuevo({ nombre: "", a: "", b: "", pantone: "", hex: "", tipo: nuevo.tipo });
     setMsg("");
   }
   async function pegarColores() {
@@ -108,75 +239,141 @@ function BibliotecasFicha({ onClose, puedeEditar, inicial = "colores" }) {
     setMsg(`Se agregaron ${nuevos.length} colores${repetidos.length ? ` · ${repetidos.length} ya estaban y se omitieron` : ""}.`);
   }
   async function guardarEdicion(x) {
-    const col = tab === "colores" ? COL_COLORES : COL_VINILOS;
+    const col = esColor ? COL_COLORES : COL_VINILOS;
     const nombre = (borrador.nombre || "").trim();
     if (!nombre) return;
-    const datos = tab === "colores" ? { nombre, codProveedor: (borrador.codProveedor || "").trim(), codBusint: (borrador.codBusint || "").trim() } : { nombre, codigo: (borrador.codigo || "").trim(), tipo: borrador.tipo || TIPOS_VINILO[0] };
+    const cod = normCod(borrador.codBusint);
+    if (esColor && cod) {
+      const dup = (colores || []).find((c) => c.id !== x.id && normCod(c.codBusint) === cod);
+      if (dup) { setMsg(`El código de Busint ${cod} ya es de «${dup.nombre}».`); return; }
+    }
+    const datos = esColor
+      ? { nombre, codProveedor: (borrador.codProveedor || "").trim(), codBusint: cod, pantone: (borrador.pantone || "").trim(), hex: normHex(borrador.hex) }
+      : { nombre, codigo: (borrador.codigo || "").trim(), tipo: borrador.tipo || TIPOS_VINILO[0] };
     await setDoc(doc(db, col, x.id), datos, { merge: true });
-    setEditId(null);
+    setEditId(null); setMsg("");
   }
   async function borrar(x) {
     if (!window.confirm(`¿Quitar «${x.nombre}» de la biblioteca? Las fichas que ya lo usan lo conservan.`)) return;
-    await deleteDoc(doc(db, tab === "colores" ? COL_COLORES : COL_VINILOS, x.id));
+    await deleteDoc(doc(db, esColor ? COL_COLORES : COL_VINILOS, x.id));
   }
 
   const cargando = colores === null || vinilos === null;
-  const celda = { padding: "7px 8px", borderBottom: `1px solid ${C.border}`, fontSize: 13 };
+  const celda = { padding: "6px 8px", borderBottom: `1px solid ${C.border}`, fontSize: 13, verticalAlign: "middle" };
+  const cols = esColor ? ["#", "Color", "Nombre", "Cód. Busint", "Pantone", "Hex", "Cód. prov.", "Estado", ""] : ["#", "Vinilo / logo", "Código", "Tipo", ""];
+  const visibles = lista.slice(0, limite);
+  const kpi = (n, t, testid) => <div data-testid={testid} style={{ background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 12, padding: "7px 12px", fontSize: 11.5, color: C.slate, fontWeight: 700 }}><b style={{ display: "block", fontSize: 18, color: C.ink, letterSpacing: -0.3 }}>{n}</b>{t}</div>;
   return (
-    <Ventana titulo="📚 Bibliotecas de la Ficha de inicio" onClose={onClose}>
+    <Ventana titulo="📚 Bibliotecas de la Ficha de inicio" onClose={onClose} ancho={1040}>
       <p style={{ fontSize: 12.5, color: C.slate, fontWeight: 600, margin: "0 0 12px", lineHeight: 1.5 }}>Se alistan antes: cada ficha escoge sus colores y vinilos de aquí. Si corriges algo en la biblioteca, las fichas ya terminadas conservan lo que tenían.</p>
       <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
-        <Chip activo={tab === "colores"} onClick={() => { setTab("colores"); setMsg(""); setEditId(null); }}>🎨 Colores ({(colores || []).length})</Chip>
-        <Chip activo={tab === "vinilos"} onClick={() => { setTab("vinilos"); setMsg(""); setEditId(null); }}>🏷 Vinilos y logos ({(vinilos || []).length})</Chip>
-        <input value={buscar} onChange={(e) => setBuscar(e.target.value)} placeholder="🔍 Buscar…" style={{ ...inp, maxWidth: 240, marginLeft: "auto" }} />
+        <Chip activo={esColor} onClick={() => { setTab("colores"); setMsg(""); setEditId(null); setLimite(80); }}>🎨 Colores ({(colores || []).length})</Chip>
+        <Chip activo={!esColor} onClick={() => { setTab("vinilos"); setMsg(""); setEditId(null); setLimite(80); }}>🏷 Vinilos y logos ({(vinilos || []).length})</Chip>
+        {esColor && puedeEditar && <button type="button" onClick={() => setSincronizando(true)} style={{ border: "none", background: C.blue, color: C.white, borderRadius: 20, padding: "8px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>🔄 Sincronizar con Busint</button>}
+        <input value={buscar} onChange={(e) => { setBuscar(e.target.value); setLimite(80); }} placeholder={esColor ? "🔍 Buscar nombre, código o Pantone…" : "🔍 Buscar…"} style={{ ...inp, maxWidth: 270, marginLeft: "auto" }} />
       </div>
-      {puedeEditar && (
-        <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr auto", gap: 8, alignItems: "end", marginBottom: 10 }}>
-          <div><label style={lbl}>{tab === "colores" ? "Color" : "Vinilo / logo"}</label><input style={inp} value={nuevo.nombre} onChange={(e) => setNuevo({ ...nuevo, nombre: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") agregar(); }} placeholder={tab === "colores" ? "Ej. Verde menta" : "Ej. Logo Kamila pecho"} /></div>
-          <div><label style={lbl}>{tab === "colores" ? "Cód. proveedor" : "Código"}</label><input style={inp} value={nuevo.a} onChange={(e) => setNuevo({ ...nuevo, a: e.target.value })} /></div>
-          {tab === "colores"
-            ? <div><label style={lbl}>Cód. Busint</label><input style={inp} value={nuevo.b} onChange={(e) => setNuevo({ ...nuevo, b: e.target.value })} /></div>
-            : <div><label style={lbl}>Tipo</label><select style={inp} value={nuevo.tipo} onChange={(e) => setNuevo({ ...nuevo, tipo: e.target.value })}>{TIPOS_VINILO.map((t) => <option key={t}>{t}</option>)}</select></div>}
-          <Boton tipo="pri" onClick={agregar} disabled={!nuevo.nombre.trim()}>+ Agregar</Boton>
-        </div>
+      {esColor && !cargando && (
+        <>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+            {kpi(resumen.busint, "Sincronizados con Busint", "kpi-busint")}
+            {kpi(resumen.solo, "Solo ATLAS", "kpi-solo")}
+            {kpi(resumen.conHex, "Con color (hex)", "kpi-hex")}
+            {kpi(resumen.sinHex, "Sin color todavía", "kpi-sinhex")}
+          </div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+            {FILTROS_COLOR.map(([k, t]) => <button key={k} type="button" data-filtro={k} onClick={() => { setFiltro(k); setLimite(80); }} style={{ border: `1.5px solid ${filtro === k ? C.ink : C.border}`, background: filtro === k ? C.ink : "#FAF8F4", color: filtro === k ? C.white : C.ink, borderRadius: 20, padding: "5px 12px", fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>{t}</button>)}
+          </div>
+        </>
       )}
-      {puedeEditar && tab === "colores" && (
+      {puedeEditar && (
+        esColor ? (
+          <div style={{ display: "grid", gridTemplateColumns: "1.3fr .8fr .9fr 1.15fr .8fr auto", gap: 8, alignItems: "end", marginBottom: 10 }}>
+            <div><label style={lbl}>Color</label><input style={inp} value={nuevo.nombre} onChange={(e) => setNuevo({ ...nuevo, nombre: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") agregar(); }} placeholder="Ej. Verde menta" /></div>
+            <div><label style={lbl}>Cód. Busint</label><input style={inp} value={nuevo.b} onChange={(e) => setNuevo({ ...nuevo, b: e.target.value })} placeholder="046" /></div>
+            <div><label style={lbl}>Pantone</label><input style={inp} value={nuevo.pantone} onChange={(e) => setNuevo({ ...nuevo, pantone: e.target.value })} placeholder="19-4052 TCX" /></div>
+            <div><label style={lbl}>Color en pantalla</label><CampoHex value={nuevo.hex} onChange={(v) => setNuevo({ ...nuevo, hex: v })} /></div>
+            <div><label style={lbl}>Cód. proveedor</label><input style={inp} value={nuevo.a} onChange={(e) => setNuevo({ ...nuevo, a: e.target.value })} /></div>
+            <Boton tipo="pri" onClick={agregar} disabled={!nuevo.nombre.trim()}>+ Agregar</Boton>
+          </div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr auto", gap: 8, alignItems: "end", marginBottom: 10 }}>
+            <div><label style={lbl}>Vinilo / logo</label><input style={inp} value={nuevo.nombre} onChange={(e) => setNuevo({ ...nuevo, nombre: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") agregar(); }} placeholder="Ej. Logo Kamila pecho" /></div>
+            <div><label style={lbl}>Código</label><input style={inp} value={nuevo.a} onChange={(e) => setNuevo({ ...nuevo, a: e.target.value })} /></div>
+            <div><label style={lbl}>Tipo</label><select style={inp} value={nuevo.tipo} onChange={(e) => setNuevo({ ...nuevo, tipo: e.target.value })}>{TIPOS_VINILO.map((t) => <option key={t}>{t}</option>)}</select></div>
+            <Boton tipo="pri" onClick={agregar} disabled={!nuevo.nombre.trim()}>+ Agregar</Boton>
+          </div>
+        )
+      )}
+      {puedeEditar && esColor && (
         <details style={{ marginBottom: 10 }}>
           <summary style={{ cursor: "pointer", fontSize: 12.5, fontWeight: 700, color: C.blue }}>Pegar varios colores desde Excel</summary>
           <div style={{ marginTop: 8 }}>
-            <textarea value={pegar} onChange={(e) => setPegar(e.target.value)} rows={4} placeholder={"Una línea por color: nombre ; cód. proveedor ; cód. Busint\nFucsia ; PV-2210 ; 100245"} style={{ ...inp, fontFamily: "inherit" }} />
+            <textarea value={pegar} onChange={(e) => setPegar(e.target.value)} rows={4} placeholder={"Una línea por color: nombre ; cód. proveedor ; cód. Busint ; #hex ; Pantone\nLILA ; ; 106 ; #B4A3CE ; 14-3612 TCX"} style={{ ...inp, fontFamily: "inherit" }} />
             <div style={{ marginTop: 6 }}><Boton small tipo="pri" onClick={pegarColores} disabled={!pegar.trim()}>Agregar los pegados</Boton></div>
           </div>
         </details>
       )}
       {msg && <div style={{ background: C.amberBg, color: C.amber, borderRadius: 10, padding: "7px 12px", fontSize: 12.5, fontWeight: 700, marginBottom: 8 }}>{msg}</div>}
-      <div style={{ maxHeight: 360, overflow: "auto", border: `1px solid ${C.border}`, borderRadius: 12 }}>
+      <div style={{ maxHeight: 400, overflow: "auto", border: `1px solid ${C.border}`, borderRadius: 12 }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ position: "sticky", top: 0, background: C.canvas }}>
-              {(tab === "colores" ? ["#", "Color", "Cód. proveedor", "Cód. Busint", ""] : ["#", "Vinilo / logo", "Código", "Tipo", ""]).map((h, i) => <th key={i} style={{ ...celda, textAlign: "left", fontSize: 10.5, textTransform: "uppercase", letterSpacing: 0.4, color: C.slate }}>{h}</th>)}
+            <tr style={{ position: "sticky", top: 0, background: C.canvas, zIndex: 1 }}>
+              {cols.map((h, i) => <th key={i} style={{ ...celda, textAlign: "left", fontSize: 10.5, textTransform: "uppercase", letterSpacing: 0.4, color: C.slate }}>{h}</th>)}
             </tr>
           </thead>
           <tbody>
-            {cargando ? <tr><td colSpan={5} style={{ ...celda, color: C.slate }}>Cargando…</td></tr>
-              : !lista.length ? <tr><td colSpan={5} style={{ ...celda, color: C.slate, fontStyle: "italic" }}>{buscar ? "Sin resultados." : "Todavía no hay nada en esta biblioteca."}</td></tr>
-              : lista.map((x, i) => {
+            {cargando ? <tr><td colSpan={cols.length} style={{ ...celda, color: C.slate }}>Cargando…</td></tr>
+              : !lista.length ? <tr><td colSpan={cols.length} style={{ ...celda, color: C.slate, fontStyle: "italic" }}>{buscar || filtro !== "todos" ? "Sin resultados." : "Todavía no hay nada en esta biblioteca."}</td></tr>
+              : visibles.map((x, i) => {
                 const enEdicion = editId === x.id;
+                if (!esColor) {
+                  return (
+                    <tr key={x.id}>
+                      <td style={{ ...celda, color: C.slate, width: 36 }}>{i + 1}</td>
+                      {enEdicion ? (
+                        <>
+                          <td style={celda}><input style={inp} value={borrador.nombre || ""} onChange={(e) => setBorrador({ ...borrador, nombre: e.target.value })} /></td>
+                          <td style={celda}><input style={inp} value={borrador.codigo || ""} onChange={(e) => setBorrador({ ...borrador, codigo: e.target.value })} /></td>
+                          <td style={celda}><select style={inp} value={borrador.tipo || TIPOS_VINILO[0]} onChange={(e) => setBorrador({ ...borrador, tipo: e.target.value })}>{TIPOS_VINILO.map((t) => <option key={t}>{t}</option>)}</select></td>
+                          <td style={{ ...celda, whiteSpace: "nowrap" }}><Boton small tipo="ok" onClick={() => guardarEdicion(x)}>Guardar</Boton> <Boton small onClick={() => setEditId(null)}>Cancelar</Boton></td>
+                        </>
+                      ) : (
+                        <>
+                          <td style={{ ...celda, fontWeight: 700 }}>{x.nombre}</td>
+                          <td style={celda}>{x.codigo || "—"}</td>
+                          <td style={celda}>{x.tipo || "—"}</td>
+                          <td style={{ ...celda, whiteSpace: "nowrap", textAlign: "right" }}>
+                            {puedeEditar && <><Boton small onClick={() => { setEditId(x.id); setBorrador({ ...x }); }}>✏️</Boton> <Boton small tipo="rojo" onClick={() => borrar(x)}>🗑</Boton></>}
+                          </td>
+                        </>
+                      )}
+                    </tr>
+                  );
+                }
+                const est = estadoColor(x);
                 return (
                   <tr key={x.id}>
                     <td style={{ ...celda, color: C.slate, width: 36 }}>{i + 1}</td>
                     {enEdicion ? (
                       <>
+                        <td style={celda}><Cuadrito hex={borrador.hex} /></td>
                         <td style={celda}><input style={inp} value={borrador.nombre || ""} onChange={(e) => setBorrador({ ...borrador, nombre: e.target.value })} /></td>
-                        <td style={celda}><input style={inp} value={(tab === "colores" ? borrador.codProveedor : borrador.codigo) || ""} onChange={(e) => setBorrador({ ...borrador, [tab === "colores" ? "codProveedor" : "codigo"]: e.target.value })} /></td>
-                        <td style={celda}>{tab === "colores" ? <input style={inp} value={borrador.codBusint || ""} onChange={(e) => setBorrador({ ...borrador, codBusint: e.target.value })} /> : <select style={inp} value={borrador.tipo || TIPOS_VINILO[0]} onChange={(e) => setBorrador({ ...borrador, tipo: e.target.value })}>{TIPOS_VINILO.map((t) => <option key={t}>{t}</option>)}</select>}</td>
+                        <td style={celda}><input style={{ ...inp, minWidth: 70 }} value={borrador.codBusint || ""} onChange={(e) => setBorrador({ ...borrador, codBusint: e.target.value })} /></td>
+                        <td style={celda}><input style={{ ...inp, minWidth: 100 }} value={borrador.pantone || ""} onChange={(e) => setBorrador({ ...borrador, pantone: e.target.value })} /></td>
+                        <td style={celda}><div style={{ minWidth: 150 }}><CampoHex value={borrador.hex} onChange={(v) => setBorrador({ ...borrador, hex: v })} /></div></td>
+                        <td style={celda}><input style={{ ...inp, minWidth: 70 }} value={borrador.codProveedor || ""} onChange={(e) => setBorrador({ ...borrador, codProveedor: e.target.value })} /></td>
+                        <td style={celda} />
                         <td style={{ ...celda, whiteSpace: "nowrap" }}><Boton small tipo="ok" onClick={() => guardarEdicion(x)}>Guardar</Boton> <Boton small onClick={() => setEditId(null)}>Cancelar</Boton></td>
                       </>
                     ) : (
                       <>
-                        <td style={{ ...celda, fontWeight: 700 }}>{x.nombre}</td>
-                        <td style={celda}>{(tab === "colores" ? x.codProveedor : x.codigo) || "—"}</td>
-                        <td style={celda}>{(tab === "colores" ? x.codBusint : x.tipo) || "—"}</td>
+                        <td style={{ ...celda, width: 44 }}><Cuadrito hex={x.hex} /></td>
+                        <td style={{ ...celda, fontWeight: 700 }}>{x.nombre} {esComb(x) && <Pil>combinado</Pil>} {x.nombreRepetido && <Pil tono="av" title="Hay otro color con este mismo nombre y otro código">nombre repetido</Pil>}</td>
+                        <td style={{ ...celda, fontVariantNumeric: "tabular-nums" }}>{x.codBusint || "—"}</td>
+                        <td style={celda}>{x.pantone || "—"}</td>
+                        <td style={{ ...celda, fontVariantNumeric: "tabular-nums" }}>{esHex(x.hex) ? normHex(x.hex) : "—"}</td>
+                        <td style={celda}>{x.codProveedor || "—"}</td>
+                        <td style={celda}>{est === "busint" ? <Pil tono="ok">✔ Busint</Pil> : est === "inactivo" ? <Pil tono="av">Inactivo en Busint</Pil> : <Pil tono="sol">Solo ATLAS</Pil>}</td>
                         <td style={{ ...celda, whiteSpace: "nowrap", textAlign: "right" }}>
                           {puedeEditar && <><Boton small onClick={() => { setEditId(x.id); setBorrador({ ...x }); }}>✏️</Boton> <Boton small tipo="rojo" onClick={() => borrar(x)}>🗑</Boton></>}
                         </td>
@@ -188,7 +385,9 @@ function BibliotecasFicha({ onClose, puedeEditar, inicial = "colores" }) {
           </tbody>
         </table>
       </div>
+      {lista.length > limite && <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center" }}><Boton small onClick={() => setLimite(limite + 120)}>Mostrar más</Boton><span style={{ fontSize: 12, color: C.slate, fontWeight: 600 }}>Mostrando {limite} de {lista.length}. Busca o filtra para acortar.</span></div>}
       {!puedeEditar && <p style={{ fontSize: 12, color: C.slate, marginTop: 8 }}>Solo consulta: para agregar o corregir necesitas el permiso «Ficha de inicio» en Roles.</p>}
+      {sincronizando && <SincronizarBusint colores={colores} db={db} onClose={() => setSincronizando(false)} />}
     </Ventana>
   );
 }
@@ -202,7 +401,7 @@ function AsistenteFicha({ preorden, item, guardada, config, onClose, usuario }) 
   const [paso, setPaso] = useState(0);
   const [pais, setPais] = useState("CO");
   const [buscar, setBuscar] = useState("");
-  const [nuevo, setNuevo] = useState({ nombre: "", a: "", b: "", tipo: TIPOS_VINILO[0] });
+  const [nuevo, setNuevo] = useState({ nombre: "", a: "", b: "", pantone: "", hex: "", tipo: TIPOS_VINILO[0] });
   const [biblio, setBiblio] = useState(null);
   const [tallaNueva, setTallaNueva] = useState("");
   const [guardando, setGuardando] = useState(false);
@@ -237,15 +436,16 @@ function AsistenteFicha({ preorden, item, guardada, config, onClose, usuario }) 
   async function crearColorRapido() {
     const nombre = nuevo.nombre.trim();
     if (!nombre) return;
-    const ya = (colores || []).find((c) => plano(c.nombre) === plano(nombre));
+    const codB = normCod(nuevo.b);
+    const ya = (codB && (colores || []).find((c) => normCod(c.codBusint) === codB)) || (colores || []).find((c) => plano(c.nombre) === plano(nombre));
     let c = ya;
     if (!c) {
       const ref = doc(collection(db, COL_COLORES));
-      c = { id: ref.id, nombre, codProveedor: nuevo.a.trim(), codBusint: nuevo.b.trim() };
-      await setDoc(ref, { nombre: c.nombre, codProveedor: c.codProveedor, codBusint: c.codBusint, creadoEn: new Date().toISOString() });
+      c = { id: ref.id, nombre, codProveedor: nuevo.a.trim(), codBusint: codB, hex: normHex(nuevo.hex), pantone: (nuevo.pantone || "").trim() };
+      await setDoc(ref, { nombre: c.nombre, codProveedor: c.codProveedor, codBusint: c.codBusint, hex: c.hex, pantone: c.pantone, creadoEn: new Date().toISOString() });
     }
     if (!f.colores.some((x) => x.id === c.id) && f.colores.length < MAX_COLORES) set({ colores: [...f.colores, snapshotColor(c)] });
-    setNuevo({ ...nuevo, nombre: "", a: "", b: "" });
+    setNuevo({ ...nuevo, nombre: "", a: "", b: "", hex: "", pantone: "" });
   }
   async function crearViniloRapido() {
     const nombre = nuevo.nombre.trim();
@@ -268,7 +468,7 @@ function AsistenteFicha({ preorden, item, guardada, config, onClose, usuario }) 
 
   const coloresFiltrados = useMemo(() => {
     const q = plano(buscar);
-    return (colores || []).filter((c) => !q || plano(`${c.nombre} ${c.codProveedor} ${c.codBusint}`).includes(q)).sort((a, b) => plano(a.nombre).localeCompare(plano(b.nombre)));
+    return (colores || []).filter((c) => !q || plano(`${c.nombre} ${c.codProveedor || ""} ${c.codBusint || ""} ${c.pantone || ""}`).includes(q)).sort((a, b) => plano(a.nombre).localeCompare(plano(b.nombre)));
   }, [colores, buscar]);
   const vinilosFiltrados = useMemo(() => {
     const q = plano(buscar);
@@ -350,12 +550,19 @@ function AsistenteFicha({ preorden, item, guardada, config, onClose, usuario }) 
             : coloresFiltrados.map((c) => {
               const on = f.colores.some((x) => x.id === c.id);
               return (
-                <label key={c.id} style={{ display: "grid", gridTemplateColumns: "26px 1.4fr 1fr 1fr", gap: 8, alignItems: "center", padding: "7px 12px", borderBottom: `1px solid ${C.border}`, fontSize: 13, cursor: "pointer", background: on ? C.greenBg : C.white }}>
-                  <input type="checkbox" checked={on} onChange={() => togColor(c)} /><b>{c.nombre}</b><span style={{ color: C.slate }}>{c.codProveedor || "—"}</span><span style={{ color: C.slate }}>{c.codBusint || "—"}</span>
+                <label key={c.id} style={{ display: "grid", gridTemplateColumns: "26px 30px 1.4fr 1fr 1fr 1fr", gap: 8, alignItems: "center", padding: "7px 12px", borderBottom: `1px solid ${C.border}`, fontSize: 13, cursor: "pointer", background: on ? C.greenBg : C.white }}>
+                  <input type="checkbox" checked={on} onChange={() => togColor(c)} /><Cuadrito hex={c.hex} tam={24} /><b>{c.nombre}</b><span style={{ color: C.slate }}>{c.pantone || "—"}</span><span style={{ color: C.slate }}>{c.codProveedor || "—"}</span><span style={{ color: C.slate }}>{c.codBusint || "—"}</span>
                 </label>
               );
             })}
         </div>
+        {f.colores.length > 0 && (
+          <div data-testid="paleta-ficha" style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginTop: 10 }}>
+            <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, color: C.slate }}>Paleta</span>
+            {f.colores.map((c) => <Cuadrito key={c.id} hex={c.hex} tam={22} />)}
+            {f.colores.some((c) => !esHex(c.hex)) && <span style={{ fontSize: 11.5, color: C.slate, fontWeight: 600 }}>· {f.colores.filter((c) => !esHex(c.hex)).length} sin color en pantalla (no se podrán pintar en el avatar)</span>}
+          </div>
+        )}
         <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr auto", gap: 8, alignItems: "end", marginTop: 12 }}>
           <div><label style={lbl}>Crear color nuevo</label><input style={inp} value={nuevo.nombre} onChange={(e) => setNuevo({ ...nuevo, nombre: e.target.value })} placeholder="Nombre del color" /></div>
           <div><label style={lbl}>Cód. proveedor</label><input style={inp} value={nuevo.a} onChange={(e) => setNuevo({ ...nuevo, a: e.target.value })} /></div>

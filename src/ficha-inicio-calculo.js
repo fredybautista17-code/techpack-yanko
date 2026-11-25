@@ -165,9 +165,19 @@ export function resumenSemaforo(items, fichasPorItem) {
   return { total: (items || []).length, listas, porRevisar };
 }
 
-// Pegar varios colores desde Excel: «nombre ; cód. proveedor ; cód. Busint» (o separados por tabulador / coma) por línea
+// ───────────────── Maestro de colores sincronizado con Busint (2026-11-25, para el avatar de la prenda) ─────────────────
+// El CÓDIGO de Busint es la llave (el nombre no sirve: Busint tiene nombres repetidos con códigos distintos y los corta a 15-20 letras).
+// Cada color guarda además su Pantone y el hex (color en pantalla) con el que se pinta el avatar.
+export const esHex = (s) => /^#?[0-9a-f]{6}$/i.test(String(s || "").trim());
+export const normHex = (s) => (esHex(s) ? `#${String(s).trim().replace("#", "").toUpperCase()}` : "");
+export const normCod = (s) => String(s == null ? "" : s).trim(); // texto: conserva el cero inicial (042)
+export const esCombinado = (nombre) => /\//.test(String(nombre || "")); // NEGRO/BLANCO, LILA/ROSADO…
+
+// Pegar varios colores desde Excel: «nombre ; cód. proveedor ; cód. Busint ; #hex ; pantone» (o separados por tabulador / barra) por línea
 export function parsearColoresPegados(texto, existentes) {
-  const vistos = new Set((existentes || []).map((c) => plano(c.nombre)));
+  const lista = existentes || [];
+  const nombres = new Set(lista.map((c) => plano(c.nombre)));
+  const codigos = new Set(lista.map((c) => normCod(c.codBusint)).filter(Boolean));
   const nuevos = [], repetidos = [];
   String(texto || "").split(/\r?\n/).forEach((linea) => {
     const l = linea.trim();
@@ -175,14 +185,82 @@ export function parsearColoresPegados(texto, existentes) {
     const partes = l.split(/\t|;|\|/).map((x) => x.trim());
     const nombre = partes[0];
     if (!nombre) return;
-    if (vistos.has(plano(nombre))) { repetidos.push(nombre); return; }
-    vistos.add(plano(nombre));
-    nuevos.push({ nombre, codProveedor: partes[1] || "", codBusint: partes[2] || "" });
+    const cod = normCod(partes[2]);
+    // con código de Busint la llave es el código; sin código, el nombre
+    if (cod ? codigos.has(cod) : nombres.has(plano(nombre))) { repetidos.push(nombre); return; }
+    if (cod) codigos.add(cod); else nombres.add(plano(nombre));
+    const c = { nombre, codProveedor: partes[1] || "", codBusint: cod };
+    const hex = normHex(partes[3]);
+    if (hex) c.hex = hex;
+    if (partes[4]) c.pantone = partes[4];
+    nuevos.push(c);
   });
   return { nuevos, repetidos };
 }
 
-export function snapshotColor(c) { return { id: c.id, nombre: c.nombre || "", codProveedor: c.codProveedor || "", codBusint: c.codBusint || "", hex: c.hex || "" }; }
+// Lee las filas (matriz) de la hoja del informe de Busint «Colores»: en cada fila busca «Sí/No» (activo), el código (solo dígitos) y el nombre.
+export function leerInformeBusintColores(filas) {
+  const colores = [], vistos = new Set();
+  (filas || []).forEach((fila) => {
+    const celdas = (fila || []).map((x) => (x == null ? "" : String(x).trim()));
+    const k = celdas.findIndex((x) => ["si", "no"].includes(plano(x)));
+    if (k < 0) return;
+    const previas = celdas.slice(0, k).filter(Boolean);
+    const cod = previas.find((x) => /^\d{1,6}$/.test(x));
+    if (!cod || vistos.has(cod)) return;
+    const nombre = previas.find((x) => x !== cod) || "";
+    vistos.add(cod);
+    colores.push({ cod, nombre: nombre.replace(/\s+/g, " "), activo: plano(celdas[k]) === "si" });
+  });
+  return colores;
+}
+
+// Compara la biblioteca con el informe de Busint y dice qué haría (no escribe nada).
+export function planSincronizacion(existentes, informe) {
+  const ex = existentes || [];
+  const porCod = new Map(), libresPorNombre = new Map();
+  ex.forEach((c) => { const k = normCod(c.codBusint); if (k) porCod.set(k, c); });
+  ex.forEach((c) => { if (!normCod(c.codBusint) || !informe.some((b) => b.cod === normCod(c.codBusint))) { const n = plano(c.nombre); if (!libresPorNombre.has(n)) libresPorNombre.set(n, c); } });
+  const activos = informe.filter((b) => b.activo);
+  const cuenta = {};
+  activos.forEach((b) => { const n = plano(b.nombre); if (n) cuenta[n] = (cuenta[n] || 0) + 1; });
+  const plan = { nuevos: [], unidos: [], vinculados: 0, porMarcar: [], inactivosNoCargados: 0, inactivosMarcados: [], huerfanos: [], sinNombre: [], repetidos: [], combinados: 0, total: informe.length, activos: activos.length };
+  const usados = new Set();
+  informe.forEach((b) => {
+    const enBiblio = porCod.get(b.cod);
+    if (!b.activo) {
+      if (enBiblio) plan.inactivosMarcados.push({ ex: enBiblio, cod: b.cod, nombre: b.nombre });
+      else plan.inactivosNoCargados += 1;
+      return;
+    }
+    if (enBiblio) {
+      usados.add(enBiblio.id); plan.vinculados += 1;
+      if (!(enBiblio.busintSync && enBiblio.nombreBusint === b.nombre && enBiblio.activoBusint !== false)) plan.porMarcar.push({ ex: enBiblio, cod: b.cod, nombre: b.nombre });
+      return;
+    }
+    const porNombre = b.nombre ? libresPorNombre.get(plano(b.nombre)) : null;
+    if (porNombre && !usados.has(porNombre.id)) {
+      usados.add(porNombre.id);
+      plan.unidos.push({ ex: porNombre, cod: b.cod, nombre: b.nombre, antes: normCod(porNombre.codBusint) });
+      return;
+    }
+    const rep = !!b.nombre && cuenta[plano(b.nombre)] > 1, comb = esCombinado(b.nombre);
+    if (!b.nombre) plan.sinNombre.push(b.cod);
+    if (rep) plan.repetidos.push(b.nombre);
+    if (comb) plan.combinados += 1;
+    plan.nuevos.push({ cod: b.cod, nombre: b.nombre || `(sin nombre) ${b.cod}`, nombreBusint: b.nombre, repetido: rep, combinado: comb });
+  });
+  // colores de la biblioteca con un código que no existe en Busint y que tampoco se unieron
+  ex.forEach((c) => { const k = normCod(c.codBusint); if (k && !informe.some((b) => b.cod === k) && !usados.has(c.id)) plan.huerfanos.push({ ex: c, cod: k }); });
+  plan.repetidos = [...new Set(plan.repetidos.map(plano))];
+  return plan;
+}
+
+// Estado de un color de la biblioteca: «busint» (sincronizado), «solo» (solo ATLAS), «inactivo» (Busint lo dio de baja)
+export function estadoColor(c) { return c && c.activoBusint === false ? "inactivo" : (c && c.busintSync ? "busint" : "solo"); }
+export function colorSePuedePintar(c) { return !!(c && esHex(c.hex)); }
+
+export function snapshotColor(c) { return { id: c.id, nombre: c.nombre || "", codProveedor: c.codProveedor || "", codBusint: c.codBusint || "", hex: c.hex || "", pantone: c.pantone || "" }; }
 export function snapshotVinilo(v) { return { id: v.id, nombre: v.nombre || "", codigo: v.codigo || "", tipo: v.tipo || "" }; }
 
 // ───────────────── Seguimiento del PEDIDO: las mismas 9 etapas + candado de corte ─────────────────
