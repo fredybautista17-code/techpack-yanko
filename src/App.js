@@ -23,6 +23,7 @@ import {
   collection,
   doc,
   getDoc,
+  getDocFromServer,
   getDocs,
   setDoc,
   updateDoc,
@@ -14780,7 +14781,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     { area: "🗂️ Áreas", items: [["areas_centro_costo", "Centro de Costo"], ["areas_estadisticas", "Estadísticas"], ["areas_reclamos", "Reclamos"], ["areas_programador", "Programador"]] },
     { area: "💰 Financiera", items: [["financiera", "Financiera"]] },
   ];
-  const adminTabs = [["centro_parametros", "🧭 Centro de parámetros"], ["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["lineas", "📐 Línea"], ["rangos", "📏 Rangos"], ["codigos_referencia", "🔢 Códigos de Referencia"], ["disenadores", "🎨 Diseñadores"], ["kpi_areas", "🏢 Áreas (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"], ["notificaciones", "🔔 Notificaciones"], ["papelera", "🗑 Papelera"], ["busint_test", "🔌 Busint (prueba)"]];
+  const adminTabs = [["centro_parametros", "🧭 Centro de parámetros"], ["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["lineas", "📐 Línea"], ["rangos", "📏 Rangos"], ["codigos_referencia", "🔢 Códigos de Referencia"], ["disenadores", "🎨 Diseñadores"], ["kpi_areas", "🏢 Áreas (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"], ["notificaciones", "🔔 Notificaciones"], ["papelera", "🗑 Papelera"], ["respaldos", "💾 Respaldos"], ["busint_test", "🔌 Busint (prueba)"]];
   const [nuevoCodigo, setNuevoCodigo] = useState({ categoria: "", linea: "", grupo: "", cliente: "", prefijo: "", rangoInicio: "", rangoFin: "", desbordeInicio: "", desbordeFin: "" });
   // Si tiene valor, el formulario de arriba está EDITANDO esa fila (en vez
   // de crear una nueva) — así se puede corregir, por ejemplo, una fila que
@@ -15181,7 +15182,56 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
             onPurgarProto={onPurgarProto} onPurgarCapsula={onPurgarCapsula} onPurgarRef={onPurgarRef}
           />
         )}
+        {tab === "respaldos" && <RespaldosConfigView isAdmin={isAdmin} />}
         {tab === "busint_test" && <BusintCatalogoTestView />}
+      </div>
+    </div>
+  );
+}
+// (2026-11-25, a pedido de Fredy) Administración → Respaldos: copias diarias de la configuración (clientes, roles, categorías, códigos de referencia…).
+// Se crean solas antes del primer cambio de configuración de cada día (ver respaldarConfigDelDia). «Restaurar» devuelve esa copia a config/main
+// (antes guarda una copia de lo actual en config_respaldos/antes_de_restaurar_…).
+function RespaldosConfigView({ isAdmin }) {
+  const [lista, setLista] = useState(null);
+  const [msg, setMsg] = useState("");
+  const [trabajando, setTrabajando] = useState(false);
+  useEffect(() => onSnapshot(collection(db, "config_respaldos"), (s) => setLista(s.docs.map((d) => ({ ...d.data(), id: d.id }))), () => setLista([])), []);
+  const n = (v) => (Array.isArray(v) ? v.length : 0);
+  const filas = (lista || []).filter((x) => /^\d{4}-\d{2}-\d{2}$/.test(x.id)).sort((a, b) => b.id.localeCompare(a.id)).slice(0, 30);
+  async function restaurar(x) {
+    if (!isAdmin || trabajando) return;
+    if (!window.confirm(`¿Restaurar la configuración del ${x.id}?\n\nSe reemplazan clientes, roles, categorías, códigos de referencia, etc. por los de esa copia. Antes se guarda una copia de lo actual.`)) return;
+    setTrabajando(true); setMsg("");
+    try {
+      const actual = await getDocFromServer(doc(db, "config", "main"));
+      await setDoc(doc(db, "config_respaldos", `antes_de_restaurar_${new Date().toISOString().replace(/[:.]/g, "-")}`), { ...(actual.exists() ? actual.data() : {}), _respaldoDe: "config/main", _respaldoEn: new Date().toISOString() });
+      const { id, _respaldoDe, _respaldoEn, ...datos } = x;
+      await setDoc(doc(db, "config", "main"), datos, { merge: true });
+      setMsg(`Listo: se restauró la copia del ${x.id}. Recarga la página (Ctrl+Shift+R) para verla.`);
+    } catch (e) { setMsg("No se pudo restaurar: " + (e.message || e)); }
+    setTrabajando(false);
+  }
+  const th = { textAlign: "left", padding: "8px 10px", fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4, color: T.slate, borderBottom: `1px solid ${T.border}` };
+  const td = { padding: "8px 10px", fontSize: 13, borderBottom: `1px solid ${T.border}`, color: T.ink };
+  return (
+    <div>
+      <div style={{ fontWeight: 700, fontSize: 15, color: T.ink }}>Respaldos de la configuración</div>
+      <div style={{ fontSize: 12, color: T.slate, margin: "2px 0 14px", lineHeight: 1.5, maxWidth: 720 }}>Cada día, antes del primer cambio a la configuración (clientes, roles, categorías, códigos de referencia…), ATLAS guarda una copia. Si algo se pierde, restaura la copia del último día en que estaba bien.</div>
+      {msg && <div style={{ background: T.canvas, border: `1px solid ${T.border}`, borderRadius: 8, padding: "8px 12px", fontSize: 13, fontWeight: 700, marginBottom: 12, color: T.ink }}>{msg}</div>}
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ borderCollapse: "collapse", width: "100%", maxWidth: 820 }}>
+          <thead><tr><th style={th}>Copia del día</th><th style={th}>Clientes</th><th style={th}>Roles</th><th style={th}>Categorías</th><th style={th}>Códigos de ref.</th><th style={th}>Marcas</th><th style={th} /></tr></thead>
+          <tbody>
+            {lista === null ? <tr><td style={td} colSpan={7}>Cargando…</td></tr>
+              : !filas.length ? <tr><td style={{ ...td, color: T.slate, fontStyle: "italic" }} colSpan={7}>Todavía no hay copias. La primera se guarda sola cuando alguien cambie algo de la configuración.</td></tr>
+              : filas.map((x) => (
+                <tr key={x.id}>
+                  <td style={{ ...td, fontWeight: 700 }}>{x.id}</td><td style={td}>{n(x.clientes)}</td><td style={td}>{n(x.roles)}</td><td style={td}>{n(x.categorias)}</td><td style={td}>{n(x.codigosReferencia)}</td><td style={td}>{n(x.marcasPrefijos)}</td>
+                  <td style={{ ...td, textAlign: "right" }}>{isAdmin && <Btn small variant="secondary" disabled={trabajando} onClick={() => restaurar(x)}>Restaurar</Btn>}</td>
+                </tr>
+              ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );
@@ -19974,6 +20024,10 @@ function AppInner() {
   const [currentUser, setCurrentUser] = useState(null);
   const [users, setUsers] = useState([]);
   const [config, setConfig] = useState(INIT_CONFIG);
+  // (2026-11-25) true solo cuando ya llegó el documento REAL config/main. Mientras sea false, `config` es la copia inicial vacía y no se permite guardar
+  // configuración (un guardado calculado sobre esa copia, p.ej. «agregar un cliente», borraría la lista real).
+  const configCargadaRef = useRef(false);
+  const respaldoConfigDiaRef = useRef("");
   const [areasNomina, setAreasNomina] = useState([]);
   const [procesosNomina, setProcesosNomina] = useState([]);
   const [protos, setProtos] = useState([]);
@@ -20178,7 +20232,16 @@ function AppInner() {
         // chequeo fuera del listener, este solo siembra una vez, al arrancar,
         // y de ahí en adelante el listener SOLO lee, nunca vuelve a escribir.
         let dbConfig = await fsGet("config");
-        if (!dbConfig.length) { await fsSave("config", "main", INIT_CONFIG); }
+        if (!dbConfig.length) {
+          // (2026-11-25, a pedido de Fredy) La configuración inicial (clientes, roles, categorías, códigos de referencia… vacíos) SOLO se siembra si el
+          // SERVIDOR confirma que config/main no existe. Antes bastaba con que esta lectura saliera vacía: si la pantalla se abría sin conexión, la
+          // lectura (de la memoria local, vacía) no daba error, ATLAS creía que no había configuración y, al volver la conexión, escribía la inicial
+          // encima de la real (así se perdió la configuración el 22-nov-2026).
+          try {
+            const delServidor = await getDocFromServer(doc(db, "config", "main"));
+            if (!delServidor.exists()) await setDoc(doc(db, "config", "main"), INIT_CONFIG);
+          } catch (e) { console.warn("Sin conexión con el servidor: no se siembra la configuración inicial", e); }
+        }
         else {
           // Migración una sola vez: a los "config" ya guardados antes de que
           // existiera la etapa "Por Enviar" les falta ese ítem en `stages`
@@ -20214,6 +20277,7 @@ function AppInner() {
         const unsubConfig = onSnapshot(collection(db, "config"), (snap) => {
           if (!snap.docs.length) { setConfig(INIT_CONFIG); return; }
           const mainDoc = snap.docs.find((d) => d.id === "main") || snap.docs[0];
+          if (snap.docs.some((d) => d.id === "main")) configCargadaRef.current = true;
           // (2026-11-05) «Días sin trabajar» (Administración → Notificaciones) también descuentan días hábiles en Cierre/Costos/Corte.
           const corrProg = snap.docs.find((d) => d.id === "correos_programacion");
           setDiasSinTrabajar(corrProg ? corrProg.data().diasSinTrabajar : []);
@@ -20291,8 +20355,31 @@ function AppInner() {
   // puede pisar "clientes" (u otro campo) con una copia local vieja. Ver
   // fsUpdate.
   async function saveConfig(partial) {
+    // (2026-11-25) No se guarda hasta que haya cargado la configuración real del servidor (ver configCargadaRef).
+    if (!configCargadaRef.current) {
+      window.alert("La configuración todavía no ha cargado desde el servidor, así que no se guardó el cambio. Espera unos segundos (o recarga con Ctrl+Shift+R) y vuelve a intentarlo.");
+      return;
+    }
+    await respaldarConfigDelDia();
     setConfig((c) => ({ ...c, ...partial }));
     await fsUpdate("config", "main", partial);
+  }
+  // (2026-11-25, a pedido de Fredy) Respaldo diario de config/main: antes del primer cambio de configuración de cada día se guarda una copia en
+  // config_respaldos/AAAA-MM-DD (se restaura desde Administración → Respaldos). Si el respaldo falla no se bloquea el guardado.
+  async function respaldarConfigDelDia() {
+    const hoy = new Date().toISOString().slice(0, 10);
+    if (respaldoConfigDiaRef.current === hoy) return;
+    respaldoConfigDiaRef.current = hoy;
+    try {
+      const refDia = doc(db, "config_respaldos", hoy);
+      const yaHay = await getDocFromServer(refDia);
+      if (yaHay.exists()) return;
+      const actual = await getDocFromServer(doc(db, "config", "main"));
+      if (actual.exists()) await setDoc(refDia, { ...actual.data(), _respaldoDe: "config/main", _respaldoEn: new Date().toISOString() });
+    } catch (e) {
+      respaldoConfigDiaRef.current = "";
+      console.warn("No se pudo guardar el respaldo diario de la configuración", e);
+    }
   }
   // Igual que saveConfig: recibe solo los campos que cambiaron (p.ej.
   // { vendedores: [...] }), nunca el objeto completo, para no arriesgar
