@@ -5,6 +5,7 @@
 //    pago. Se guarda en `centro_costo_muestras/main` y `centro_costo_muestras/pagos`. Solo administrador o quien tenga «costosMuestras».
 import React, { useState, useEffect, useMemo } from "react";
 import { collection, doc, getDocs, onSnapshot, setDoc } from "firebase/firestore";
+import TarifaMuestrasCard from "./muestras-tarifa-vista";
 import {
   estadisticasMuestras, costosDelMes, rangoPeriodo, isoLocal, mesAnterior, claveTexto, f10, costoPersona, conPrestaciones, pctDedicacion, resumenMesesMuestras, mesPorDefecto,
 } from "./muestras-calculo";
@@ -332,6 +333,8 @@ export function CostosMuestrasView({ db, muestras, talleresConfig, usuarioNombre
         <Kpi label="COSTO POR MUESTRA" valor={r.costoPorMuestra === null ? "—" : money(r.costoPorMuestra)} colorValor={r.costoPorMuestra === null ? C.slate : undefined} pie={r.costoPorMuestra === null ? "no se puede calcular" : `${money(r.total)} ÷ ${r.terminadas}${dCosto === null ? "" : ` · ${dCosto > 0 ? "▲" : "▼"} ${Math.abs(dCosto)}% vs. mes anterior`}`} />
         <Kpi label="GASTADO vs. PRESUPUESTO" valor={r.uso === null ? "—" : `${Math.round(r.uso * 100)}%`} pie={r.presupuesto ? `${money(r.total)} de ${money(r.presupuesto)}` : "sin presupuesto definido"} colorValor={r.uso === null ? C.slate : r.uso > 1 ? C.red : C.ink} />
       </div>
+
+      <TarifaMuestrasCard db={db} muestras={muestras} cfg={datos} pagos={pagos} mes={mes} usuarioNombre={usuarioNombre} enCurso={enCurso} />
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))", gap: 12, marginBottom: 16 }}>
         {r.filas.map((f) => {

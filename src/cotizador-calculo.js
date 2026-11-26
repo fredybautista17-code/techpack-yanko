@@ -41,7 +41,7 @@ export const FIJOS_BASE = {
 };
 export const ETIQUETAS_FIJOS = {
   bodega: "Área de bodega",
-  diseno: "Área de diseño",
+  diseno: "Área de diseño y muestras",
   administrativa: "Área administrativa",
   termofijacion: "Área de termofijación / sublimación",
   empaque: "Área de empaque",

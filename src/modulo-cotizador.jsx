@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
+import { aplicarTarifaMuestras, tarifaVigente, mesCorto } from "./muestras-tarifa";
 import { initializeApp, getApps } from "firebase/app";
 import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, query, where, getDocs } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
@@ -447,7 +448,7 @@ function ModalAutorizarPrecio({ cot, usuario, vendido, precioInicial, crearVersi
 }
 
 // ─── EDITOR DE UNA COTIZACIÓN ────────────────────────────────────────────────
-function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsulas, cotizaciones, onGuardar, onVolver, onEliminar, onAplicar, onSucio, puedeBorrar, puedeAprobar, puedeDeshabilitar, puedeCostosReales = false, puedeAutorizarPrecio = false, puedeEditar = true, puedeEnviarFacturar = false, puedeFacturar = false, usuario, notify }) {
+function CotizacionEditor({ inicial, minis, parametros, tarifaMuestras = null, clientes, protos, capsulas, cotizaciones, onGuardar, onVolver, onEliminar, onAplicar, onSucio, puedeBorrar, puedeAprobar, puedeDeshabilitar, puedeCostosReales = false, puedeAutorizarPrecio = false, puedeEditar = true, puedeEnviarFacturar = false, puedeFacturar = false, usuario, notify }) {
   const [cot, setCot] = useState(inicial);
   const [sucio, setSucio] = useState(false);
   useEffect(() => { onSucio?.(sucio); }, [sucio]); // eslint-disable-line
@@ -1273,6 +1274,7 @@ function CotizacionEditor({ inicial, minis, parametros, clientes, protos, capsul
               {Object.keys(ETIQUETAS_FIJOS).map((k) => (
                 <Campo key={k} label={ETIQUETAS_FIJOS[k]}>
                   <input type="text" inputMode="decimal" value={ver.v.fijos[k] ?? ""} onChange={(e) => setV((v) => { v.fijos[k] = e.target.value; })} style={inp} />
+                  {k === "diseno" && tarifaMuestras && <div style={{ fontSize: 10.5, color: C.slate, marginTop: 3 }}>Tarifa por prenda de {mesCorto(tarifaMuestras.mes)}</div>}
                 </Campo>
               ))}
             </div>
@@ -1816,6 +1818,7 @@ function ParametrosView({ parametros, clientesApp, currentUser, notify, soloLect
           </div>
         </Seccion>
         <Seccion titulo="Costos fijos por prenda ($)" sub="Administrativos, bodega, diseño, empaque, transporte, servicios…">
+          <div style={{ fontSize: 12, color: C.slate, marginBottom: 10 }}>«Área de diseño y muestras»: si en Cronograma de Muestras → Costos hay una tarifa publicada, las cotizaciones nuevas usan esa tarifa en lugar de este valor.</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10 }}>
             {Object.keys(ETIQUETAS_FIJOS).map((k) => (
               <Campo key={k} label={ETIQUETAS_FIJOS[k]}><input type="text" inputMode="decimal" value={borrador.fijos[k] ?? ""} onChange={(e) => setB((b) => { b.fijos[k] = e.target.value; })} style={inp} /></Campo>
@@ -2675,6 +2678,7 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
   }, [cotizacionesTodas, esCliente, clientesPermitidos]); // eslint-disable-line
   const cotizacionesEliminadas = useMemo(() => cotizacionesTodas.filter((c) => c.eliminado).sort((a, b) => String(b.eliminadoEn || "").localeCompare(String(a.eliminadoEn || ""))), [cotizacionesTodas]);
   const [parametros, setParametros] = useState([]);
+  const [tarifaMuestras, setTarifaMuestras] = useState(null); // tarifa por prenda publicada desde Costos de muestras (solo el número)
   const [cargado, setCargado] = useState(false);
   const [edit, setEdit] = useState(null); // cotización en edición
   const [busqueda, setBusqueda] = useState("");
@@ -2702,8 +2706,11 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
     const u1 = onSnapshot(collection(db, "cotizaciones"), (s) => { setCotizaciones(s.docs.map((d) => ({ ...d.data(), id: d.id }))); setCargado(true); }, () => setCargado(true));
     const u2 = onSnapshot(collection(db, "cotizador_parametros"), (s) => setParametros(s.docs.map((d) => ({ ...d.data(), id: d.id }))), () => {});
     const u3 = onSnapshot(collection(db, "cotizador_vinilo"), (s) => setMinis(s.docs.filter((d) => d.id !== "_estandar").map((d) => ({ ...d.data(), id: d.id }))), () => {});
-    return () => { u1(); u2(); u3(); };
+    const u4 = onSnapshot(doc(db, "cotizador_tarifas", "muestras"), (s) => setTarifaMuestras(s.exists() ? s.data() : null), () => setTarifaMuestras(null));
+    return () => { u1(); u2(); u3(); u4(); };
   }, []);
+  // Fichas tal como se usan para COTIZAR: el «Área de diseño y muestras» sale de la tarifa publicada (si hay). La pantalla de Parámetros sigue con las fichas guardadas.
+  const parametrosCot = useMemo(() => aplicarTarifaMuestras(parametros, tarifaMuestras), [parametros, tarifaMuestras]);
 
   const clientesApp = useMemo(() => {
     const set = new Set(["General", "Kamila", "Surtiexport"]);
@@ -2714,7 +2721,7 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
 
   function cotNueva(extra = {}) {
     const cliente = extra.cliente || "General";
-    const ficha = buscarFicha(parametros, cliente);
+    const ficha = buscarFicha(parametrosCot, cliente);
     return {
       id: uid() + uid(), existe: false, referencia: "", nombre: "", cliente, vinculo: null, precioAplicado: null,
       versiones: [{ id: uid(), numero: 1, fecha: hoyISO(), nota: "", v: versionDesdeFicha(ficha) }], activa: 0,
@@ -2921,7 +2928,7 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
       <MenuCotizaciones activo={edit ? "cotizaciones" : tab} onIr={irA} onVolver={onVolver} onLogout={onLogout} currentUser={currentUser} nAprobar={cotizaciones.filter((c) => estadoUltima(c) === "aprobacion").length} nFacturar={nFacturar} nPapelera={cotizacionesEliminadas.length} verPapelera={!!puedeBorrar && !esCliente} verFacturar={verFacturar} puedeAprobar={puedeAprobar} soloConsulta={!puedeEditar} soloCliente={esCliente} />
       <div style={{ flex: 1, minWidth: 0, padding: "24px 34px", boxSizing: "border-box" }}>
       {edit ? (
-        <CotizacionEditor key={edit.id} inicial={edit} minis={minis} parametros={parametros} clientes={clientesApp} protos={protos} capsulas={capsulas} cotizaciones={cotizaciones}
+        <CotizacionEditor key={edit.id} inicial={edit} minis={minis} parametros={parametrosCot} tarifaMuestras={tarifaVigente(tarifaMuestras)} clientes={clientesApp} protos={protos} capsulas={capsulas} cotizaciones={cotizaciones}
           onGuardar={guardar} onVolver={() => { setEdit(null); setEdSucio(false); }} onEliminar={pedirBorrar} puedeBorrar={puedeBorrar} onSucio={setEdSucio} puedeAprobar={puedeAprobar} puedeDeshabilitar={puedeDeshabilitar} puedeCostosReales={puedeCostosReales} puedeAutorizarPrecio={puedeAutorizarPrecio} puedeEditar={puedeEditar} puedeEnviarFacturar={puedeEnviarFacturar} puedeFacturar={puedeFacturar} usuario={currentUser?.name || ""} notify={notify}
           onAplicar={(destino, valor) => onAplicarPrecio(destino, valor)} />
       ) : (
