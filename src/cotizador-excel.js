@@ -109,7 +109,7 @@ function llenarHoja(ws, cot, ver) {
   fx("F63", `F60*${t("retencion")}`);
   fx("F64", `F60*${t("autorenta")}`);
   fx("F65", `F60*${t("renta")}`);
-  Object.entries(FILAS_FIJOS).forEach(([k, r]) => val(`F${r}`, num(fijos[k])));
+  Object.entries(FILAS_FIJOS).forEach(([k, r]) => val(`F${r}`, num(fijos[k]) + (k === "diseno" ? num(fijos.muestras) : 0))); // la fila 68 de la plantilla es «diseño y muestras»: suma los dos para que el total coincida con la pantalla
   fx("D74", "SUM(F60:F65)+SUM(F67:F73)");
   val("F76", t("baseUtilidad"));
   fx("F79", `+F78*${t("iva")}`);

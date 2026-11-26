@@ -1,3 +1,4 @@
+import { ETIQUETAS_FIJOS, FIJOS_BASE, tasasYFijosEfectivos, calcularCotizacion } from "./cotizador-calculo";
 import { prendasCortadasPorMes, calcularTarifaMuestras, mesesDeTarifa, tarifaVigente, aplicarTarifaMuestras, mesAnteriorDe, ultimoMesCerrado, periodoTarifa } from "./muestras-tarifa";
 
 const pedidos = [
@@ -64,11 +65,27 @@ test("tarifa vigente y fichas del cotizador con el valor publicado", () => {
   expect(tarifaVigente({ valorPorPrenda: "1234.6" }).valorPorPrenda).toBe(1235);
   const params = [{ id: "general", nombre: "General", fijos: { diseno: 400, bodega: 100 } }, { id: "kamila", nombre: "Kamila", fijos: { diseno: 400 } }];
   const out = aplicarTarifaMuestras(params, { valorPorPrenda: 2000 });
-  expect(out[0].fijos).toEqual({ diseno: 2000, bodega: 100 });
-  expect(out[1].fijos.diseno).toBe(2000);
-  expect(params[0].fijos.diseno).toBe(400); // no muta
+  expect(out[0].fijos).toEqual({ diseno: 400, muestras: 2000, bodega: 100 }); // diseño NO se toca
+  expect(out[1].fijos.diseno).toBe(400);
+  expect(out[1].fijos.muestras).toBe(2000);
+  expect(params[0].fijos.muestras).toBeUndefined(); // no muta
   expect(aplicarTarifaMuestras(params, null)).toBe(params);
   // sin ficha General guardada: se agrega una para que la tarifa llegue
   const sinGeneral = aplicarTarifaMuestras([{ id: "kamila", nombre: "Kamila", fijos: {} }], { valorPorPrenda: 700 });
-  expect(sinGeneral.find((p) => p.id === "general").fijos.diseno).toBe(700);
+  expect(sinGeneral.find((p) => p.id === "general").fijos.muestras).toBe(700);
+});
+
+test("cotizador: «Área de diseño» y «Área de muestras» son dos líneas y las dos suman al costo fijo", () => {
+  expect(ETIQUETAS_FIJOS.diseno).toBe("Área de diseño");
+  expect(ETIQUETAS_FIJOS.muestras).toBe("Área de muestras");
+  expect(FIJOS_BASE.diseno).toBe(400);
+  expect(FIJOS_BASE.muestras).toBe(0); // sin tarifa no suma nada
+  const [ficha] = aplicarTarifaMuestras([{ id: "general", nombre: "General", fijos: {} }], { valorPorPrenda: 65 });
+  const { fijos } = tasasYFijosEfectivos({ fijos: ficha.fijos });
+  expect(fijos.diseno).toBe(400);
+  expect(fijos.muestras).toBe(65);
+  const base = calcularCotizacion({ fijos: { diseno: 400 } }).fijosTotal;
+  expect(calcularCotizacion({ fijos: ficha.fijos }).fijosTotal).toBe(base + 65);
+  // una cotización guardada antes de este cambio (sin «muestras») queda igual
+  expect(calcularCotizacion({ fijos: { diseno: 65 } }).fijosTotal).toBe(base - 400 + 65);
 });

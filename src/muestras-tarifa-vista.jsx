@@ -1,7 +1,7 @@
 // ─── «Tarifa para cotizar» dentro de Cronograma de Muestras → 💲 Costos ───────────────────────────────────────────
 // (2026-11-26, a pedido de Fredy: «que se autocalcule siempre») Costo de muestras ÷ prendas cortadas de los últimos meses CERRADOS = valor por
 // prenda (tipo CIF). Lo calcula SOLA una función del servidor todos los días (3:00 a. m.) y escribe solo el número en cotizador_tarifas/muestras;
-// el Cotizador lo usa como «Área de diseño y muestras». Aquí se ve cómo sale el cálculo, se elige la base y se puede pedir «Recalcular ahora».
+// el Cotizador lo usa como «Área de muestras» (aparte de «Área de diseño»). Aquí se ve cómo sale el cálculo, se elige la base y se puede pedir «Recalcular ahora».
 import React, { useEffect, useMemo, useState } from "react";
 import { collection, doc, getDocs, onSnapshot, setDoc } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
@@ -67,7 +67,7 @@ export default function TarifaMuestrasCard({ db, muestras, cfg, pagos }) {
         <div>
           <h3 style={{ margin: "0 0 4px", fontSize: 12, fontWeight: 800, letterSpacing: "0.05em", textTransform: "uppercase", color: C.slate }}>Tarifa para cotizar (tipo CIF) · se calcula sola</h3>
           <p style={{ fontSize: 12, color: C.slate, margin: "0 0 12px", maxWidth: 660, lineHeight: 1.5 }}>
-            El costo de muestras se reparte entre las prendas cortadas en los <strong>meses ya cerrados</strong>. El sistema la recalcula solo todos los días a las 3:00 a. m. y el Cotizador suma <strong>un solo valor por prenda</strong> («Área de diseño y muestras»); quien cotiza no ve sueldos ni talleres.
+            El costo de muestras se reparte entre las prendas cortadas en los <strong>meses ya cerrados</strong>. El sistema la recalcula solo todos los días a las 3:00 a. m. y el Cotizador suma <strong>un solo valor por prenda</strong> («Área de muestras», aparte de «Área de diseño»); quien cotiza no ve sueldos ni talleres.
           </p>
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
@@ -110,7 +110,7 @@ export default function TarifaMuestrasCard({ db, muestras, cfg, pagos }) {
         <div style={{ flex: "1 1 280px", fontSize: 12.5, color: C.slate, lineHeight: 1.5 }} data-testid="tarifa-vigente">
           {pub === undefined ? "Leyendo la tarifa vigente…" : vigente
             ? <><strong style={{ color: C.ink }}>Vigente en el Cotizador: {money(vigente.valorPorPrenda)} por prenda</strong> ({periodoTarifa(vigente)}{vigente.calculadoEn ? `, calculada el ${fechaHora(vigente.calculadoEn)}` : vigente.publicadoEn ? `, publicada el ${fechaHora(vigente.publicadoEn)}` : ""}). {aldia ? "Coincide con el cálculo de arriba." : calc.valor ? "El cálculo de arriba es distinto: se actualiza en el próximo recálculo o con «Recalcular ahora»." : ""} Las cotizaciones ya guardadas no cambian; las nuevas, o con «Cargar ficha», sí.</>
-            : "Todavía no hay tarifa calculada: el Cotizador usa el valor fijo de «Área de diseño y muestras» de cada ficha hasta el primer recálculo (esta noche a las 3:00 a. m., o ya con «Recalcular ahora»)."}
+            : "Todavía no hay tarifa calculada: el Cotizador usa el valor de «Área de muestras» de cada ficha (0 si no lo tiene) hasta el primer recálculo (esta noche a las 3:00 a. m., o ya con «Recalcular ahora»)."}
         </div>
         <button style={{ padding: "8px 16px", borderRadius: 8, border: `1.5px solid ${C.violet}`, background: C.violet, color: C.white, fontWeight: 800, fontSize: 12.5, cursor: ocupado ? "default" : "pointer", fontFamily: "inherit", opacity: ocupado ? 0.6 : 1 }}
           disabled={ocupado} onClick={recalcular} data-testid="tarifa-recalcular">{ocupado ? "Recalculando…" : "↻ Recalcular ahora"}</button>

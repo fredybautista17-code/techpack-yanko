@@ -58,13 +58,13 @@ export function periodoTarifa(t) {
   return `promedio de ${mesCorto(meses[meses.length - 1])} a ${mesCorto(meses[0])}`;
 }
 
-// Fichas del Cotizador con el «Área de diseño y muestras» reemplazado por la tarifa publicada.
+// Fichas del Cotizador con el «Área de muestras» llenada con la tarifa calculada. «Área de diseño» no se toca (2026-11-26: antes la tarifa pisaba el valor de diseño).
 // No toca los documentos guardados: solo lo que se usa para crear/cargar cotizaciones.
 export function aplicarTarifaMuestras(parametros, tarifa) {
   const t = tarifaVigente(tarifa);
   if (!t) return parametros;
-  const lista = (parametros || []).map((p) => ({ ...p, fijos: { ...(p.fijos || {}), diseno: t.valorPorPrenda } }));
-  if (!lista.some((p) => p.id === "general")) lista.push({ id: "general", nombre: "General", fijos: { diseno: t.valorPorPrenda } });
+  const lista = (parametros || []).map((p) => ({ ...p, fijos: { ...(p.fijos || {}), muestras: t.valorPorPrenda } }));
+  if (!lista.some((p) => p.id === "general")) lista.push({ id: "general", nombre: "General", fijos: { muestras: t.valorPorPrenda } });
   return lista;
 }
 

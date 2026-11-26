@@ -33,6 +33,7 @@ export const ETIQUETAS_TASAS = {
 export const FIJOS_BASE = {
   bodega: 74,
   diseno: 400,
+  muestras: 0, // (2026-11-26) lo llena sola la tarifa de muestras (Contabilidad → Costos de muestras); es aparte de «diseño»
   administrativa: 700,
   termofijacion: 170.63,
   empaque: 44,
@@ -41,7 +42,8 @@ export const FIJOS_BASE = {
 };
 export const ETIQUETAS_FIJOS = {
   bodega: "Área de bodega",
-  diseno: "Área de diseño y muestras",
+  diseno: "Área de diseño",
+  muestras: "Área de muestras",
   administrativa: "Área administrativa",
   termofijacion: "Área de termofijación / sublimación",
   empaque: "Área de empaque",

@@ -1274,7 +1274,7 @@ function CotizacionEditor({ inicial, minis, parametros, tarifaMuestras = null, c
               {Object.keys(ETIQUETAS_FIJOS).map((k) => (
                 <Campo key={k} label={ETIQUETAS_FIJOS[k]}>
                   <input type="text" inputMode="decimal" value={ver.v.fijos[k] ?? ""} onChange={(e) => setV((v) => { v.fijos[k] = e.target.value; })} style={inp} />
-                  {k === "diseno" && tarifaMuestras && <div style={{ fontSize: 10.5, color: C.slate, marginTop: 3 }}>Tarifa por prenda (calculada sola): {periodoTarifa(tarifaMuestras)}</div>}
+                  {k === "muestras" && tarifaMuestras && <div style={{ fontSize: 10.5, color: C.slate, marginTop: 3 }}>Tarifa por prenda (calculada sola): {periodoTarifa(tarifaMuestras)}</div>}
                 </Campo>
               ))}
             </div>
@@ -1818,7 +1818,7 @@ function ParametrosView({ parametros, clientesApp, currentUser, notify, soloLect
           </div>
         </Seccion>
         <Seccion titulo="Costos fijos por prenda ($)" sub="Administrativos, bodega, diseño, empaque, transporte, servicios…">
-          <div style={{ fontSize: 12, color: C.slate, marginBottom: 10 }}>«Área de diseño y muestras»: el sistema la calcula solo (costo de muestras ÷ prendas cortadas de los últimos meses cerrados, ver Cronograma de Muestras → Costos). Si ya hay una tarifa calculada, las cotizaciones nuevas usan esa en lugar de este valor.</div>
+          <div style={{ fontSize: 12, color: C.slate, marginBottom: 10 }}>«Área de muestras»: el sistema la calcula solo (costo de muestras ÷ prendas cortadas de los últimos meses cerrados, ver Contabilidad → Costos de muestras). Si ya hay una tarifa calculada, las cotizaciones nuevas usan esa en lugar de este valor. «Área de diseño» es aparte y sale de esta ficha.</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10 }}>
             {Object.keys(ETIQUETAS_FIJOS).map((k) => (
               <Campo key={k} label={ETIQUETAS_FIJOS[k]}><input type="text" inputMode="decimal" value={borrador.fijos[k] ?? ""} onChange={(e) => setB((b) => { b.fijos[k] = e.target.value; })} style={inp} /></Campo>
@@ -2709,7 +2709,7 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
     const u4 = onSnapshot(doc(db, "cotizador_tarifas", "muestras"), (s) => setTarifaMuestras(s.exists() ? s.data() : null), () => setTarifaMuestras(null));
     return () => { u1(); u2(); u3(); u4(); };
   }, []);
-  // Fichas tal como se usan para COTIZAR: el «Área de diseño y muestras» sale de la tarifa publicada (si hay). La pantalla de Parámetros sigue con las fichas guardadas.
+  // Fichas tal como se usan para COTIZAR: el «Área de muestras» sale de la tarifa calculada (si hay); «Área de diseño» se queda con la ficha. La pantalla de Parámetros sigue con las fichas guardadas.
   const parametrosCot = useMemo(() => aplicarTarifaMuestras(parametros, tarifaMuestras), [parametros, tarifaMuestras]);
 
   const clientesApp = useMemo(() => {
