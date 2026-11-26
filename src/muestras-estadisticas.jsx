@@ -334,7 +334,7 @@ export function CostosMuestrasView({ db, muestras, talleresConfig, usuarioNombre
         <Kpi label="GASTADO vs. PRESUPUESTO" valor={r.uso === null ? "—" : `${Math.round(r.uso * 100)}%`} pie={r.presupuesto ? `${money(r.total)} de ${money(r.presupuesto)}` : "sin presupuesto definido"} colorValor={r.uso === null ? C.slate : r.uso > 1 ? C.red : C.ink} />
       </div>
 
-      <TarifaMuestrasCard db={db} muestras={muestras} cfg={datos} pagos={pagos} mes={mes} usuarioNombre={usuarioNombre} enCurso={enCurso} />
+      <TarifaMuestrasCard db={db} muestras={muestras} cfg={datos} pagos={pagos} />
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))", gap: 12, marginBottom: 16 }}>
         {r.filas.map((f) => {

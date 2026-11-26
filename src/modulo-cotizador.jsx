@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import { aplicarTarifaMuestras, tarifaVigente, mesCorto } from "./muestras-tarifa";
+import { aplicarTarifaMuestras, tarifaVigente, periodoTarifa } from "./muestras-tarifa";
 import { initializeApp, getApps } from "firebase/app";
 import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, query, where, getDocs } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
@@ -1274,7 +1274,7 @@ function CotizacionEditor({ inicial, minis, parametros, tarifaMuestras = null, c
               {Object.keys(ETIQUETAS_FIJOS).map((k) => (
                 <Campo key={k} label={ETIQUETAS_FIJOS[k]}>
                   <input type="text" inputMode="decimal" value={ver.v.fijos[k] ?? ""} onChange={(e) => setV((v) => { v.fijos[k] = e.target.value; })} style={inp} />
-                  {k === "diseno" && tarifaMuestras && <div style={{ fontSize: 10.5, color: C.slate, marginTop: 3 }}>Tarifa por prenda de {mesCorto(tarifaMuestras.mes)}</div>}
+                  {k === "diseno" && tarifaMuestras && <div style={{ fontSize: 10.5, color: C.slate, marginTop: 3 }}>Tarifa por prenda (calculada sola): {periodoTarifa(tarifaMuestras)}</div>}
                 </Campo>
               ))}
             </div>
@@ -1818,7 +1818,7 @@ function ParametrosView({ parametros, clientesApp, currentUser, notify, soloLect
           </div>
         </Seccion>
         <Seccion titulo="Costos fijos por prenda ($)" sub="Administrativos, bodega, diseño, empaque, transporte, servicios…">
-          <div style={{ fontSize: 12, color: C.slate, marginBottom: 10 }}>«Área de diseño y muestras»: si en Cronograma de Muestras → Costos hay una tarifa publicada, las cotizaciones nuevas usan esa tarifa en lugar de este valor.</div>
+          <div style={{ fontSize: 12, color: C.slate, marginBottom: 10 }}>«Área de diseño y muestras»: el sistema la calcula solo (costo de muestras ÷ prendas cortadas de los últimos meses cerrados, ver Cronograma de Muestras → Costos). Si ya hay una tarifa calculada, las cotizaciones nuevas usan esa en lugar de este valor.</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10 }}>
             {Object.keys(ETIQUETAS_FIJOS).map((k) => (
               <Campo key={k} label={ETIQUETAS_FIJOS[k]}><input type="text" inputMode="decimal" value={borrador.fijos[k] ?? ""} onChange={(e) => setB((b) => { b.fijos[k] = e.target.value; })} style={inp} /></Campo>
@@ -2678,7 +2678,7 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
   }, [cotizacionesTodas, esCliente, clientesPermitidos]); // eslint-disable-line
   const cotizacionesEliminadas = useMemo(() => cotizacionesTodas.filter((c) => c.eliminado).sort((a, b) => String(b.eliminadoEn || "").localeCompare(String(a.eliminadoEn || ""))), [cotizacionesTodas]);
   const [parametros, setParametros] = useState([]);
-  const [tarifaMuestras, setTarifaMuestras] = useState(null); // tarifa por prenda publicada desde Costos de muestras (solo el número)
+  const [tarifaMuestras, setTarifaMuestras] = useState(null); // tarifa por prenda de muestras, calculada sola por el servidor (solo el número)
   const [cargado, setCargado] = useState(false);
   const [edit, setEdit] = useState(null); // cotización en edición
   const [busqueda, setBusqueda] = useState("");

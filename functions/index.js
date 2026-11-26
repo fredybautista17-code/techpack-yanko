@@ -17863,3 +17863,53 @@ exports.correosAdjunto = onCallAuth(
     }
   }
 );
+
+// (2026-11-26, a pedido de Fredy: «que se autocalcule siempre») Tarifa de muestras por prenda (tipo CIF) para el Cotizador.
+// Cada día a las 3:00 a. m. (hora de Colombia) se calcula: costo de muestras de los últimos meses CERRADOS ÷ prendas cortadas de esos meses
+// y se escribe SOLO el número en cotizador_tarifas/muestras (el Cotizador lo lee; los sueldos no salen del servidor). La base se elige en
+// Cronograma de Muestras → Costos (centro_costo_muestras/main.tarifaBase: «prom3» = promedio de 3 meses cerrados, «mes» = último mes cerrado).
+// Si no hay datos suficientes se conserva el último valor bueno y se deja el aviso. Las reglas de cálculo están en tarifa-muestras.js.
+const tarifaMuestras = require("./tarifa-muestras");
+async function recalcularTarifaMuestras(motivo) {
+  const hoy = fechaHoyBogota();
+  const cc = db.collection("centro_costo_muestras");
+  const [cfgSnap, pagosSnap, muestrasSnap, pedidosSnap] = await Promise.all([
+    cc.doc("main").get(), cc.doc("pagos").get(), db.collection("cronograma_muestras").get(), db.collection("pedidos_activos").get(),
+  ]);
+  const cfg = cfgSnap.exists ? cfgSnap.data() : {};
+  const pagos = pagosSnap.exists ? (pagosSnap.data().pagos || {}) : {};
+  const calculo = tarifaMuestras.calcularTarifaAutomatica({
+    hoy,
+    base: cfg.tarifaBase === "mes" ? "mes" : "prom3",
+    muestras: muestrasSnap.docs.map((d) => ({ ...d.data(), id: d.id })),
+    cfg,
+    pagos,
+    pedidos: pedidosSnap.docs.map((d) => d.data()),
+  });
+  const ref = db.collection("cotizador_tarifas").doc("muestras");
+  const ahora = new Date().toISOString();
+  if (!calculo.valor) {
+    await ref.set({ automatica: true, base: calculo.base, meses: calculo.meses, aviso: calculo.aviso, calculadoEn: ahora }, { merge: true });
+    logger.warn("recalcularTarifaMuestras: sin datos para calcular; se conserva el último valor", { motivo, hoy, aviso: calculo.aviso });
+    return { ok: false, aviso: calculo.aviso };
+  }
+  await ref.set(tarifaMuestras.documentoTarifaAutomatica(calculo, ahora));
+  logger.info("recalcularTarifaMuestras listo", { motivo, hoy, valorPorPrenda: calculo.valor, base: calculo.base, meses: calculo.meses, prendas: calculo.prendas });
+  return { ok: true, valorPorPrenda: calculo.valor };
+}
+exports.calcularTarifaMuestrasDiaria = onSchedule(
+  { schedule: "0 3 * * *", timeZone: "America/Bogota", timeoutSeconds: 120, memory: "512MiB" },
+  async () => {
+    try { await recalcularTarifaMuestras("diario"); } catch (err) { logger.error("calcularTarifaMuestrasDiaria falló", { error: err?.message || String(err) }); }
+  }
+);
+// Botón «Recalcular ahora» de Costos (y al cambiar la base): solo administrador o quien tenga el acceso «Costos de muestras».
+exports.recalcularTarifaMuestrasAhora = onCallAuth(
+  { timeoutSeconds: 120, memory: "512MiB" },
+  async (request) => {
+    const snapUser = await db.collection("users").where("authUid", "==", request.auth.uid).limit(1).get();
+    const u = snapUser.empty ? null : snapUser.docs[0].data();
+    if (!u || !(u.isAdmin || u.costosMuestras)) throw new HttpsError("permission-denied", "Solo el administrador o quien tenga el acceso «Costos de muestras» puede recalcular la tarifa.");
+    return recalcularTarifaMuestras(`manual:${u.name || ""}`);
+  }
+);

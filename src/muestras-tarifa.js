@@ -1,9 +1,10 @@
 // ─── TARIFA DE MUESTRAS POR PRENDA (tipo CIF) → Cotizador ─────────────────────────────────────────────────────
-// (2026-11-26, a pedido de Fredy) El costo del área de muestras del mes se reparte entre las prendas que se cortaron ese mes y el
-// resultado («valor por prenda») se publica en `cotizador_tarifas/muestras`. El Cotizador solo lee ese número: el detalle (sueldos,
-// talleres) se queda en Cronograma de Muestras → Costos. Todo aquí es lógica pura para poder probarla.
+// (2026-11-26, a pedido de Fredy: «que se autocalcule siempre») El costo del área de muestras se reparte entre las prendas que se cortaron
+// en los últimos meses CERRADOS y el resultado («valor por prenda») lo escribe SOLA una función del servidor cada día en
+// `cotizador_tarifas/muestras` (functions/tarifa-muestras.js, con las mismas reglas que aquí). El Cotizador solo lee ese número: el detalle
+// (sueldos, talleres) se queda en Cronograma de Muestras → Costos. Aquí: lógica pura para mostrar el cálculo y aplicar el valor.
 
-export const MODOS_TARIFA = { mes: "El mes elegido", prom3: "Promedio de los últimos 3 meses" };
+export const BASES_TARIFA = { mes: "Último mes cerrado", prom3: "Promedio de los últimos 3 meses cerrados" };
 
 const NUM = (x) => { const n = Number(x); return Number.isFinite(n) ? n : 0; };
 const mesDeFecha = (f) => String(f || "").slice(0, 7);
@@ -30,35 +31,31 @@ export function mesAnteriorDe(mes) {
 export const mesesDeTarifa = (mes, modo) => (modo === "prom3" ? [mes, mesAnteriorDe(mes), mesAnteriorDe(mesAnteriorDe(mes))] : [mes]);
 
 // costoPorMes: { "2026-10": 4800000, … }   prendasPorMes: { "2026-10": 3200, … }
-// prendasManual: solo vale con modo «mes» (cuando el corte no tiene datos del mes).
-export function calcularTarifaMuestras({ mes, modo = "mes", costoPorMes = {}, prendasPorMes = {}, prendasManual = null }) {
+// mes = último mes CERRADO (el mes en curso nunca entra): modo «mes» usa solo ese; «prom3» ese y los 2 anteriores.
+export function calcularTarifaMuestras({ mes, modo = "mes", costoPorMes = {}, prendasPorMes = {} }) {
   const meses = mesesDeTarifa(mes, modo);
-  const filas = meses.map((m, i) => {
-    const manual = modo === "mes" && i === 0 && prendasManual !== null && prendasManual !== "" && NUM(prendasManual) > 0 ? NUM(prendasManual) : null;
-    return { mes: m, costo: NUM(costoPorMes[m]), prendas: manual !== null ? manual : NUM(prendasPorMes[m]), manual: manual !== null };
-  });
+  const filas = meses.map((m) => ({ mes: m, costo: NUM(costoPorMes[m]), prendas: NUM(prendasPorMes[m]) }));
   const costo = filas.reduce((s, f) => s + f.costo, 0);
   const prendas = filas.reduce((s, f) => s + f.prendas, 0);
   const valor = costo > 0 && prendas > 0 ? Math.round(costo / prendas) : null;
   let aviso = "";
-  if (!prendas) aviso = "No hay prendas cortadas en ese periodo: escribe la cantidad a mano o elige el promedio de 3 meses.";
-  else if (!costo) aviso = "El costo de muestras de ese periodo es $0: define sueldos o precios en la pestaña de costos.";
-  return { modo, meses: filas, costo, prendas, valor, manual: filas.some((f) => f.manual), aviso };
+  if (!prendas) aviso = "No hay prendas cortadas en esos meses: no se puede calcular la tarifa.";
+  else if (!costo) aviso = "El costo de muestras de esos meses es $0: define sueldos o precios en la pestaña de costos.";
+  return { modo, meses: filas, costo, prendas, valor, aviso };
 }
 
 // Un documento de tarifa publicado es utilizable solo si trae un valor por prenda positivo
 export const tarifaVigente = (t) => (t && NUM(t.valorPorPrenda) > 0 ? { ...t, valorPorPrenda: Math.round(NUM(t.valorPorPrenda)) } : null);
 
-// Lo que se guarda al publicar: SOLO el número, el periodo y quién lo publicó (nada de sueldos)
-export function documentoTarifa(calculo, mes, usuario, ahora) {
-  return {
-    valorPorPrenda: calculo.valor,
-    mes,
-    modo: calculo.modo,
-    prendas: Math.round(calculo.prendas),
-    publicadoPor: usuario || "",
-    publicadoEn: ahora || new Date().toISOString(),
-  };
+// Último mes cerrado a partir de una fecha AAAA-MM-DD (hora de Colombia)
+export const ultimoMesCerrado = (hoyISO) => mesAnteriorDe(String(hoyISO).slice(0, 7));
+
+// Texto corto de qué periodo cubre la tarifa publicada (acepta también el formato anterior con `mes`)
+export function periodoTarifa(t) {
+  const meses = Array.isArray(t && t.meses) && t.meses.length ? t.meses : (t && t.mes ? [t.mes] : []);
+  if (!meses.length) return "";
+  if (meses.length === 1) return mesCorto(meses[0]);
+  return `promedio de ${mesCorto(meses[meses.length - 1])} a ${mesCorto(meses[0])}`;
 }
 
 // Fichas del Cotizador con el «Área de diseño y muestras» reemplazado por la tarifa publicada.

@@ -1,4 +1,4 @@
-import { prendasCortadasPorMes, calcularTarifaMuestras, mesesDeTarifa, tarifaVigente, documentoTarifa, aplicarTarifaMuestras, mesAnteriorDe } from "./muestras-tarifa";
+import { prendasCortadasPorMes, calcularTarifaMuestras, mesesDeTarifa, tarifaVigente, aplicarTarifaMuestras, mesAnteriorDe, ultimoMesCerrado, periodoTarifa } from "./muestras-tarifa";
 
 const pedidos = [
   { id: "1", cortesRealizados: [{ fecha: "2026-10-03", totalUnidades: 1200 }, { fecha: "2026-10-20", totalUnidades: 800 }, { fecha: "2026-09-28", totalUnidades: 500 }] },
@@ -37,16 +37,10 @@ test("promedio de 3 meses = suma de costos ÷ suma de prendas (no promedio de ta
   expect(r.meses.length).toBe(3);
 });
 
-test("sin prendas cortadas: no hay tarifa, avisa; con cantidad manual sí", () => {
-  const sin = calcularTarifaMuestras({ mes: "2026-11", costoPorMes: { "2026-11": 900000 }, prendasPorMes: {} });
+test("sin prendas cortadas: no hay tarifa y avisa", () => {
+  const sin = calcularTarifaMuestras({ mes: "2026-10", costoPorMes: { "2026-10": 900000 }, prendasPorMes: {} });
   expect(sin.valor).toBeNull();
   expect(sin.aviso).toMatch(/No hay prendas/);
-  const man = calcularTarifaMuestras({ mes: "2026-11", costoPorMes: { "2026-11": 900000 }, prendasPorMes: {}, prendasManual: "1800" });
-  expect(man.valor).toBe(500);
-  expect(man.manual).toBe(true);
-  // el manual no aplica al promedio de 3 meses
-  const p3 = calcularTarifaMuestras({ mes: "2026-11", modo: "prom3", costoPorMes: { "2026-11": 900000 }, prendasPorMes: {}, prendasManual: "1800" });
-  expect(p3.valor).toBeNull();
 });
 
 test("sin costo: avisa y no publica", () => {
@@ -55,12 +49,13 @@ test("sin costo: avisa y no publica", () => {
   expect(r.aviso).toMatch(/\$0/);
 });
 
-test("el documento publicado trae solo el número y el contexto, sin sueldos", () => {
-  const c = calcularTarifaMuestras({ mes: "2026-10", costoPorMes: { "2026-10": 4300000 }, prendasPorMes: { "2026-10": 2150 } });
-  const d = documentoTarifa(c, "2026-10", "Fredy", "2026-11-26T10:00:00Z");
-  expect(Object.keys(d).sort()).toEqual(["mes", "modo", "prendas", "publicadoEn", "publicadoPor", "valorPorPrenda"]);
-  expect(d.valorPorPrenda).toBe(2000);
-  expect(JSON.stringify(d)).not.toMatch(/4300000/);
+test("último mes cerrado y periodo en texto (también con el formato anterior)", () => {
+  expect(ultimoMesCerrado("2026-11-26")).toBe("2026-10");
+  expect(ultimoMesCerrado("2026-01-02")).toBe("2025-12");
+  expect(periodoTarifa({ meses: ["2026-10", "2026-09", "2026-08"] })).toBe("promedio de agosto 2026 a octubre 2026");
+  expect(periodoTarifa({ meses: ["2026-10"] })).toBe("octubre 2026");
+  expect(periodoTarifa({ mes: "2026-09" })).toBe("septiembre 2026");
+  expect(periodoTarifa(null)).toBe("");
 });
 
 test("tarifa vigente y fichas del cotizador con el valor publicado", () => {
