@@ -184,3 +184,83 @@ export function planLote(trabajadores, expedientes, codigo, estado) {
   });
   return { aplicar, omitir };
 }
+
+// ───────── Evaluación del desempeño (TH-FO-04) ─────────
+// Factores tal como están en el formato de Industrias Yanko. Trabajo y personales se califican de 1 a 10; SST con 1, 3, 5 o 0 (no aplica).
+export const FACTORES_TRABAJO = [
+  { id: "calidad", nombre: "Calidad del trabajo", desc: "Cuidado, esmero y preocupación mostrada en el trabajo ejecutado." },
+  { id: "equipo", nombre: "Trabajo en equipo", desc: "Tiene capacidad de trabajo en equipo." },
+  { id: "ambiente", nombre: "Ambiente de trabajo", desc: "Colabora, comparte ideas, descubre e informa oportunidades, maneja una forma de actuar amigable y de cooperación." },
+  { id: "problemas", nombre: "Solución de problemas", desc: "Identifica los problemas, reconoce las causas y propone soluciones." },
+  { id: "cantidad", nombre: "Cantidad de trabajo", desc: "Número de tareas que ejecuta, rapidez y la forma en que realiza las labores." },
+  { id: "instrucciones", nombre: "Capacidad para seguir instrucciones", desc: "Habilidad para captar las órdenes establecidas por el supervisor." },
+  { id: "colaboracion", nombre: "Colaboración", desc: "Aptitud para integrarse al trabajo con esfuerzo conjunto con los compañeros, dirigido al logro de los objetivos propuestos." },
+];
+export const FACTORES_PERSONAL = [
+  { id: "iniciativa", nombre: "Iniciativa", desc: "Toma iniciativa para aprender nuevas habilidades y extender sus metas." },
+  { id: "excelencia", nombre: "Excelencia", desc: "Va más allá de los estándares o los requisitos mínimos de cada actividad o trabajo." },
+  { id: "integridad", nombre: "Integridad", desc: "Es honesto en lo que dice y hace, asume la responsabilidad de las acciones colectivas e individuales, asegura la transparencia en la administración de recursos." },
+  { id: "comunicacion", nombre: "Comunicación", desc: "Se dirige al personal con respeto y justicia, desarrolla efectivas relaciones de trabajo con jefes, compañeros y clientes, solicita y brinda retroalimentación." },
+  { id: "supervision", nombre: "Supervisión", desc: "Compromete al personal a desempeñar al máximo de su habilidad, brinda información clara y da soporte a compañeros." },
+  { id: "apertura", nombre: "Apertura al cambio", desc: "Muestra tolerancia hacia los puntos de vista de otros, solicita y aprovecha la retroalimentación de compañeros y superiores." },
+  { id: "servicio", nombre: "Compromiso de servicio", desc: "Posee alta capacidad de servicio y cumple con los plazos previstos de sus actividades." },
+];
+export const FACTORES_SST = [
+  { id: "politicas", nombre: "Compromiso con las políticas y objetivos del SG-SST", desc: "Cumple y hace cumplir las políticas y objetivos establecidos por la empresa para el SG-SST." },
+  { id: "mejora", nombre: "Mejoramiento continuo", desc: "Reporta oportunamente los actos y condiciones inseguras identificadas en el desarrollo de sus actividades." },
+  { id: "salud", nombre: "Condiciones de salud", desc: "Suministra información clara, veraz y completa sobre su estado de salud al área del SG-SST." },
+  { id: "capacitaciones", nombre: "Capacitaciones", desc: "Asiste a las reuniones, capacitaciones e inducciones y/o reinducciones del SG-SST programadas por la empresa." },
+  { id: "promocion", nombre: "Promoción y prevención", desc: "Participa en las actividades de promoción y prevención programadas por el SG-SST, tales como pausas activas." },
+  { id: "liderazgo", nombre: "Liderazgo SG-SST", desc: "Promueve dentro y fuera de la organización el SG-SST, velando por el cumplimiento de procedimientos, instructivos, planes y programas." },
+  { id: "epp", nombre: "Uso de EPP", desc: "Da el uso adecuado de los elementos de protección personal suministrados y cumple con los programas y estándares relacionados." },
+];
+export const OPCIONES_SST = [{ v: 1, t: "Insatisfactorio" }, { v: 3, t: "Aceptable" }, { v: 5, t: "Excelente" }, { v: 0, t: "No aplica" }];
+// Nombre del nivel de una nota de 1 a 10 (columnas del formato: 1-5 Insatisfactorio, 6 Deficiente, 7 Bueno, 8 Muy bueno, 9-10 Excelente)
+export const nivelNota = (n) => (n >= 9 ? "Excelente" : n === 8 ? "Muy bueno" : n === 7 ? "Bueno" : n === 6 ? "Deficiente" : n >= 1 ? "Insatisfactorio" : "");
+
+const notaValida = (v) => Number.isInteger(v) && v >= 1 && v <= 10;
+const sstValida = (v) => v === 0 || v === 1 || v === 3 || v === 5;
+const promedio = (a) => (a.length ? a.reduce((s, x) => s + x, 0) / a.length : null);
+const r2 = (n) => (n === null || n === undefined ? null : Math.round(n * 100) / 100);
+
+// Resultado de UNA evaluación. «Puntaje total / ítems evaluados»: en SST el «No aplica» (0) no cuenta.
+export function calcularEvaluacion(ev) {
+  const e = ev || {};
+  const t = FACTORES_TRABAJO.map((f) => (e.trabajo || {})[f.id]).filter(notaValida);
+  const p = FACTORES_PERSONAL.map((f) => (e.personal || {})[f.id]).filter(notaValida);
+  const sRespondidos = FACTORES_SST.map((f) => (e.sst || {})[f.id]).filter(sstValida);
+  const s = sRespondidos.filter((v) => v > 0);
+  return {
+    promTrabajo: r2(promedio(t)), promPersonal: r2(promedio(p)), promGeneral: r2(promedio([...t, ...p])), promSst: r2(promedio(s)),
+    respondidos: t.length + p.length + sRespondidos.length, total: FACTORES_TRABAJO.length + FACTORES_PERSONAL.length + FACTORES_SST.length,
+    completa: t.length === FACTORES_TRABAJO.length && p.length === FACTORES_PERSONAL.length && sRespondidos.length === FACTORES_SST.length,
+  };
+}
+
+// Semáforo de la hoja de tabulación: desempeño = promedio/10 (rojo < 70 %, naranja < 80 %, verde ≥ 80 %); SST = promedio/5 (rojo < 60 %, naranja < 80 %, verde ≥ 80 %)
+export function semaforoEvaluacion(prom, tipo) {
+  if (typeof prom !== "number" || Number.isNaN(prom)) return "";
+  const x = tipo === "sst" ? prom / 5 : prom / 10;
+  const rojo = tipo === "sst" ? 0.6 : 0.7;
+  return x < rojo ? "rojo" : x < 0.8 ? "ambar" : "verde";
+}
+
+// Hoja de tabulación: promedio por factor sobre varias evaluaciones (el «No aplica» de SST no cuenta)
+export function tabulacionEvaluaciones(evaluaciones) {
+  const lista = evaluaciones || [];
+  const grupo = (factores, clave, esSst) => factores.map((f) => {
+    const v = lista.map((e) => (e[clave] || {})[f.id]).filter((x) => (esSst ? sstValida(x) && x > 0 : notaValida(x)));
+    return { id: f.id, nombre: f.nombre, n: v.length, prom: r2(promedio(v)) };
+  });
+  const trabajo = grupo(FACTORES_TRABAJO, "trabajo", false), personal = grupo(FACTORES_PERSONAL, "personal", false), sst = grupo(FACTORES_SST, "sst", true);
+  const proms = (g) => g.map((x) => x.prom).filter((x) => x !== null);
+  return { n: lista.length, trabajo, personal, sst, promTrabajo: r2(promedio(proms(trabajo))), promPersonal: r2(promedio(proms(personal))), promGeneral: r2(promedio([...proms(trabajo), ...proms(personal)])), promSst: r2(promedio(proms(sst))) };
+}
+
+// Evaluaciones de los trabajadores activos de la lista (para la pestaña «Evaluaciones»); más reciente primero
+export function evaluacionesDe(trabajadores, evaluaciones) {
+  const porId = {};
+  (evaluaciones || []).forEach((e) => { porId[e.trabajadorId || e.id] = e; });
+  return (trabajadores || []).filter(esActivo).filter((t) => porId[t.id]).map((t) => ({ t, ev: porId[t.id], calc: calcularEvaluacion(porId[t.id]) }))
+    .sort((a, b) => String((b.ev && b.ev.fecha) || "").localeCompare(String((a.ev && a.ev.fecha) || "")) || String(a.t.nombre).localeCompare(String(b.t.nombre)));
+}

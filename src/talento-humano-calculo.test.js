@@ -128,3 +128,57 @@ test("carga por lote: omite a quien no le aplica o ya está en ese estado", () =
   expect(planLote(trab, [], "TH-FO-19", "pend").omitir.length).toBe(3);
   expect(planLote(trab, [], "TH-FO-19", "na").aplicar.length).toBe(3);
 });
+
+import { calcularEvaluacion, semaforoEvaluacion, tabulacionEvaluaciones, evaluacionesDe, nivelNota, FACTORES_TRABAJO, FACTORES_PERSONAL, FACTORES_SST } from "./talento-humano-calculo";
+
+const todo = (n, s) => ({
+  trabajo: Object.fromEntries(FACTORES_TRABAJO.map((f) => [f.id, n])),
+  personal: Object.fromEntries(FACTORES_PERSONAL.map((f) => [f.id, n])),
+  sst: Object.fromEntries(FACTORES_SST.map((f) => [f.id, s])),
+});
+
+test("evaluación: 7 + 7 + 7 factores y promedios", () => {
+  expect(FACTORES_TRABAJO.length + FACTORES_PERSONAL.length + FACTORES_SST.length).toBe(21);
+  const c = calcularEvaluacion(todo(8, 5));
+  expect(c).toMatchObject({ promTrabajo: 8, promPersonal: 8, promGeneral: 8, promSst: 5, respondidos: 21, completa: true });
+  const ev = todo(8, 5); ev.trabajo.calidad = 10; ev.personal.iniciativa = 4;
+  expect(calcularEvaluacion(ev)).toMatchObject({ promTrabajo: 8.29, promPersonal: 7.43, promGeneral: 7.86 });
+});
+
+test("evaluación: incompleta, valores inválidos y SST «No aplica» no cuenta", () => {
+  expect(calcularEvaluacion(null)).toMatchObject({ promGeneral: null, promSst: null, completa: false, respondidos: 0 });
+  const ev = todo(9, 3); ev.sst.epp = 0; ev.sst.salud = 5;
+  const c = calcularEvaluacion(ev);
+  expect(c.promSst).toBe(3.33); // (3*5 + 5) / 6, sin el 0
+  expect(c.completa).toBe(true);
+  ev.trabajo.equipo = 11; ev.personal.integridad = 0; ev.sst.mejora = 2; // fuera de escala
+  const d = calcularEvaluacion(ev);
+  expect(d.completa).toBe(false);
+  expect(d.respondidos).toBe(18);
+});
+
+test("semáforo del formato: desempeño 70/80 % y SST 60/80 %", () => {
+  expect(["", null, undefined].map((x) => semaforoEvaluacion(x))).toEqual(["", "", ""]);
+  expect(semaforoEvaluacion(6.9)).toBe("rojo"); expect(semaforoEvaluacion(7)).toBe("ambar"); expect(semaforoEvaluacion(7.9)).toBe("ambar"); expect(semaforoEvaluacion(8)).toBe("verde");
+  expect(semaforoEvaluacion(2.9, "sst")).toBe("rojo"); expect(semaforoEvaluacion(3, "sst")).toBe("ambar"); expect(semaforoEvaluacion(3.9, "sst")).toBe("ambar"); expect(semaforoEvaluacion(4, "sst")).toBe("verde");
+  expect(["Insatisfactorio", "Deficiente", "Bueno", "Muy bueno", "Excelente", "Excelente", ""]).toEqual([5, 6, 7, 8, 9, 10, 0].map(nivelNota));
+});
+
+test("tabulación: promedio por factor sobre varias personas", () => {
+  const a = todo(10, 5), b = todo(6, 1); b.sst.epp = 0;
+  const t = tabulacionEvaluaciones([a, b]);
+  expect(t.n).toBe(2);
+  expect(t.trabajo[0]).toMatchObject({ id: "calidad", n: 2, prom: 8 });
+  expect(t.sst.find((x) => x.id === "epp")).toMatchObject({ n: 1, prom: 5 }); // el 0 no cuenta
+  expect(t.sst.find((x) => x.id === "politicas").prom).toBe(3);
+  expect(t.promGeneral).toBe(8);
+  expect(tabulacionEvaluaciones([]).promGeneral).toBeNull();
+});
+
+test("evaluaciones de los activos de la lista, la más reciente primero", () => {
+  const trab = [T("a", { nombre: "Ana" }), T("b", { nombre: "Beto" }), T("c", { nombre: "Ceci", fechaRetiro: "2026-10-01" }), T("d")];
+  const evs = [{ id: "a", trabajadorId: "a", fecha: "2026-11-01", ...todo(8, 5) }, { id: "b", trabajadorId: "b", fecha: "2026-11-20", ...todo(7, 3) }, { id: "c", trabajadorId: "c", fecha: "2026-11-25", ...todo(7, 3) }];
+  const r = evaluacionesDe(trab, evs);
+  expect(r.map((x) => x.t.nombre)).toEqual(["Beto", "Ana"]);
+  expect(r[0].calc.promGeneral).toBe(7);
+});

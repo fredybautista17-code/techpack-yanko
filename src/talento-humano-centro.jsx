@@ -5,8 +5,10 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { collection, onSnapshot, doc, setDoc, writeBatch } from "firebase/firestore";
 import { ref as storageRef, uploadString, getDownloadURL } from "firebase/storage";
-import { hoyBogotaISO, resumenTablero, avancePorArea, mapaExpedientes, esActivo, formatosDe, porcentajeExpediente, pasoDe, PASOS_TH, fechaCorta, sugerirFinPrueba, aplicaDotacion, esTerminoFijo, diasEntre, areasDe, planLote, FORMATOS_TH } from "./talento-humano-calculo";
+import { FormularioEvaluacion, PestanaEvaluaciones, imprimirEvaluacion } from "./talento-humano-evaluacion";
+import { calcularEvaluacion, hoyBogotaISO, resumenTablero, avancePorArea, mapaExpedientes, esActivo, formatosDe, porcentajeExpediente, pasoDe, PASOS_TH, fechaCorta, sugerirFinPrueba, aplicaDotacion, esTerminoFijo, diasEntre, areasDe, planLote, FORMATOS_TH } from "./talento-humano-calculo";
 
+const COL_EV = "nomina_th_evaluaciones"; // evaluación del desempeño TH-FO-04, un documento por trabajador
 const COL = "nomina_th_expedientes"; // prefijo nomina_: las reglas de Firestore ya la bloquean al rol Cliente
 const C = {
   ink: "#1A1A2E", slate: "#5A5A7A", border: "#E8E2DB", canvas: "#F7F4F0", white: "#FFFFFF",
@@ -18,6 +20,7 @@ const th = { padding: "8px 10px", fontSize: 11, fontWeight: 800, color: C.slate,
 const td = { padding: "9px 10px", fontSize: 13, color: C.ink, borderBottom: `1px solid ${C.border}`, verticalAlign: "top" };
 const tarjeta = { background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16 };
 
+const fmtNota = (n) => (n === null || n === undefined ? "—" : String(n).replace(".", ","));
 const colorPct = (p) => (p >= 90 ? C.green : p >= 70 ? C.amber : C.red);
 function Pastilla({ bg, fg, children }) {
   return <span style={{ display: "inline-block", padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: bg, color: fg, whiteSpace: "nowrap" }}>{children}</span>;
@@ -38,6 +41,15 @@ function useExpedientes(db) {
     return onSnapshot(collection(db, COL), (s) => { setError(""); setLista(s.docs.map((x) => ({ ...x.data(), id: x.id, trabajadorId: x.data().trabajadorId || x.id }))); }, (e) => { setError(e?.message || "No se pudieron leer los expedientes."); setLista([]); });
   }, [db]);
   return { lista, error };
+}
+
+function useEvaluaciones(db) {
+  const [lista, setLista] = useState([]);
+  useEffect(() => {
+    if (!db) return undefined;
+    return onSnapshot(collection(db, COL_EV), (s) => setLista(s.docs.map((x) => ({ ...x.data(), id: x.id, trabajadorId: x.data().trabajadorId || x.id }))), (e) => { console.error("No se pudieron leer las evaluaciones:", e); setLista([]); });
+  }, [db]);
+  return lista;
 }
 
 function Indicador({ n, texto, tono }) {
@@ -121,7 +133,7 @@ function Tablero({ trabajadores, expedientes, candidatos, hoy, onAbrir, opts, so
   );
 }
 
-function Expediente({ trabajador: t, exp, hoy, onFecha, onFormato, onSubir, subiendo, opts, soloLectura }) {
+function Expediente({ trabajador: t, exp, hoy, onFecha, onFormato, onSubir, subiendo, opts, soloLectura, evaluacion, onEvaluar }) {
   const fmts = formatosDe(t, exp, opts);
   const pct = porcentajeExpediente(t, exp, opts);
   const paso = pasoDe(t, exp);
@@ -175,13 +187,17 @@ function Expediente({ trabajador: t, exp, hoy, onFecha, onFormato, onSubir, subi
                   <td style={td}>{PASTILLA_ESTADO[f.estado]}</td>
                   <td style={{ ...td, textAlign: "right", minWidth: 300 }}>
                     <div style={{ display: "inline-flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                      {f.codigo === "TH-FO-04" && <>
+                        {evaluacion && <Pastilla bg={C.blueBg} fg={C.blue}>Nota {fmtNota(calcularEvaluacion(evaluacion).promGeneral)}</Pastilla>}
+                        <button style={boton(!evaluacion)} onClick={() => onEvaluar(t.id)}>{evaluacion ? "Ver / editar evaluación" : "Evaluar"}</button>
+                      </>}
                       {!soloLectura && (f.estado === "pend" || f.estado === "venc") && <>
                         <button style={boton(true)} disabled={!!subiendo} onClick={() => { setCodigoFoto(f.codigo); setTimeout(() => inputFoto.current && inputFoto.current.click(), 0); }}>{subiendo === f.codigo ? "Subiendo…" : "Subir foto"}</button>
                         <button style={boton(false)} onClick={() => onFormato(t, f.codigo, { estado: "ok" })}>Firmado sin foto</button>
                         <button style={boton(false)} onClick={() => onFormato(t, f.codigo, { estado: "na" })}>No aplica</button>
                       </>}
                       {f.estado === "ok" && <>
-                        {f.dato.url ? <a href={f.dato.url} target="_blank" rel="noopener noreferrer" style={{ ...boton(false), display: "inline-flex", alignItems: "center", textDecoration: "none" }}>Ver foto</a> : <span style={{ fontSize: 11, color: C.slate, alignSelf: "center" }}>sin foto</span>}
+                        {f.dato.url ? <a href={f.dato.url} target="_blank" rel="noopener noreferrer" style={{ ...boton(false), display: "inline-flex", alignItems: "center", textDecoration: "none" }}>Ver foto</a> : !soloLectura ? <button style={boton(false)} disabled={!!subiendo} onClick={() => { setCodigoFoto(f.codigo); setTimeout(() => inputFoto.current && inputFoto.current.click(), 0); }}>{subiendo === f.codigo ? "Subiendo…" : "Subir foto del firmado"}</button> : <span style={{ fontSize: 11, color: C.slate, alignSelf: "center" }}>sin foto</span>}
                         {!soloLectura && <button style={boton(false)} onClick={() => onFormato(t, f.codigo, { estado: "venc" })}>Desactualizado</button>}
                         {!soloLectura && <button style={boton(false)} onClick={() => onFormato(t, f.codigo, { estado: "pend", url: "", nombre: "" })}>Deshacer</button>}
                       </>}
@@ -286,6 +302,11 @@ export default function CentroTalentoHumano({ db, storage, trabajadores, candida
   const [filtro, setFiltro] = useState("");
   const [areaFiltro, setAreaFiltro] = useState("");
   const [aviso, setAviso] = useState("");
+  const evaluaciones = useEvaluaciones(db);
+  const [evaluando, setEvaluando] = useState("");
+  const [guardandoEv, setGuardandoEv] = useState(false);
+  const [errorEv, setErrorEv] = useState("");
+  useEffect(() => { setEvaluando(""); }, [vista]); // al cambiar de pestaña se sale del formulario
   const [subiendo, setSubiendo] = useState("");
   const opts = useMemo(() => (ocultarSensibles ? { sinSensibles: true } : undefined), [ocultarSensibles]);
   const exps = useMemo(() => mapaExpedientes(lista || []), [lista]);
@@ -297,7 +318,7 @@ export default function CentroTalentoHumano({ db, storage, trabajadores, candida
   }, [activos, filtro, areaFiltro]);
   const actual = activos.find((t) => t.id === sel) || visibles[0] || null;
   const quien = (currentUser && (currentUser.name || currentUser.username)) || "";
-  const pestanas = [["tablero", "Tablero"], ["expediente", "Expediente"], ...(soloLectura ? [] : [["lote", "Carga por lote"]])];
+  const pestanas = [["tablero", "Tablero"], ["expediente", "Expediente"], ["evaluaciones", "Evaluaciones"], ...(soloLectura ? [] : [["lote", "Carga por lote"]])];
 
   async function guardar(t, parche) {
     if (soloLectura) return;
@@ -307,6 +328,23 @@ export default function CentroTalentoHumano({ db, storage, trabajadores, candida
   }
   const onFecha = (t, campoNombre, valor) => guardar(t, { [campoNombre]: valor });
   const onFormato = (t, codigo, parche) => guardar(t, { formatos: { [codigo]: { fecha: hoy, ...parche, por: quien, en: new Date().toISOString() } } });
+  const evDe = (id) => evaluaciones.find((x) => x.trabajadorId === id) || null;
+  async function guardarEvaluacion(t, datos) {
+    setGuardandoEv(true); setErrorEv("");
+    try {
+      const calc = calcularEvaluacion(datos);
+      const ahora = new Date().toISOString();
+      await setDoc(doc(db, COL_EV, t.id), { ...datos, trabajadorId: t.id, resultado: { promTrabajo: calc.promTrabajo, promPersonal: calc.promPersonal, promGeneral: calc.promGeneral, promSst: calc.promSst }, por: quien, en: ahora });
+      // Al guardar la evaluación el formato TH-FO-04 queda registrado (la foto del firmado se puede subir después)
+      await setDoc(doc(db, COL, t.id), { trabajadorId: t.id, formatos: { "TH-FO-04": { estado: "ok", fecha: datos.fecha, digital: true, por: quien, en: ahora } } }, { merge: true });
+      setEvaluando(""); setSel(t.id); setVista("expediente");
+    } catch (e) { console.error("No se pudo guardar la evaluación:", e); setErrorEv("No se pudo guardar la evaluación. Revisa tu conexión e inténtalo de nuevo."); }
+    finally { setGuardandoEv(false); }
+  }
+  function imprimir(t, datos) { if (!imprimirEvaluacion(t, datos)) setErrorEv("El navegador bloqueó la ventana de impresión. Permite las ventanas emergentes de ATLAS e inténtalo de nuevo."); else setErrorEv(""); }
+  const abrirEvaluacion = (id) => { setErrorEv(""); setSel(id); setEvaluando(id); };
+  const tEval = evaluando ? activos.find((x) => x.id === evaluando) : null;
+
   async function onSubir(t, codigo, archivo) {
     if (soloLectura) return;
     if (archivo.size > 8 * 1024 * 1024) { setAviso("El archivo pesa más de 8 MB. Toma la foto con menos resolución o súbela en PDF liviano."); return; }
@@ -327,7 +365,7 @@ export default function CentroTalentoHumano({ db, storage, trabajadores, candida
       <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: 10, alignItems: "flex-end", marginBottom: 12 }}>
         <div>
           <div style={{ fontSize: 22, fontWeight: 800, color: C.ink }}>🧭 Centro de Talento Humano</div>
-          <div style={{ fontSize: 13, color: C.slate }}>{soloLectura ? "El estado de tu gente: vencimientos, inducción, dotación y EPP. Solo lectura." : "Alertas, vencimientos y el expediente de cada trabajador. Lo ven solo Talento Humano y gerencia: lleva datos personales y de salud."}</div>
+          <div style={{ fontSize: 13, color: C.slate }}>{soloLectura ? "El estado de tu gente: vencimientos, inducción, dotación y EPP. Aquí también evalúas a tu gente (TH-FO-04)." : "Alertas, vencimientos y el expediente de cada trabajador. Lo ven solo Talento Humano y gerencia: lleva datos personales y de salud."}</div>
         </div>
         {!vistaProp && (
           <div style={{ display: "inline-flex", border: `1px solid ${C.border}`, borderRadius: 8, overflow: "hidden", background: C.white }} role="tablist">
@@ -339,7 +377,12 @@ export default function CentroTalentoHumano({ db, storage, trabajadores, candida
       </div>
       {error && <div style={{ background: C.redBg, color: C.red, borderRadius: 8, padding: "8px 12px", fontSize: 13, marginBottom: 10 }}>{error}</div>}
       {aviso && <div style={{ background: C.amberBg, color: C.amber, borderRadius: 8, padding: "8px 12px", fontSize: 13, marginBottom: 10 }}>{aviso}</div>}
-      {lista === null ? <div style={{ padding: 20, color: C.slate }}>Cargando…</div> : vista === "tablero" ? (
+      {lista === null ? <div style={{ padding: 20, color: C.slate }}>Cargando…</div> : tEval ? (
+        <FormularioEvaluacion key={tEval.id} trabajador={tEval} evaluacion={evDe(tEval.id)} evaluadorInicial={quien} guardando={guardandoEv} error={errorEv}
+          onGuardar={(datos) => guardarEvaluacion(tEval, datos)} onImprimir={(datos) => imprimir(tEval, datos)} onCancelar={() => { setEvaluando(""); setErrorEv(""); }} />
+      ) : vista === "evaluaciones" ? (
+        <PestanaEvaluaciones trabajadores={activos} evaluaciones={evaluaciones} onAbrir={abrirEvaluacion} />
+      ) : vista === "tablero" ? (
         <Tablero trabajadores={trabajadores} expedientes={lista} candidatos={candidatos} hoy={hoy} opts={opts} soloLectura={soloLectura} onAbrir={(id) => { setSel(id); setVista("expediente"); }} />
       ) : vista === "lote" && !soloLectura ? (
         <CargaLote visibles={visibles} expedientes={lista} quien={quien} hoy={hoy} db={db} areaFiltro={areaFiltro} />
@@ -368,7 +411,7 @@ export default function CentroTalentoHumano({ db, storage, trabajadores, candida
               {visibles.length === 0 && <div style={{ fontSize: 13, color: C.slate, padding: 8 }}>Sin resultados.</div>}
             </div>
           </div>
-          {actual ? <Expediente key={actual.id} trabajador={actual} exp={exps[actual.id]} hoy={hoy} opts={opts} soloLectura={soloLectura} onFecha={onFecha} onFormato={onFormato} onSubir={onSubir} subiendo={subiendo} /> : <div style={{ ...tarjeta, color: C.slate }}>No hay trabajadores activos.</div>}
+          {actual ? <Expediente key={actual.id} trabajador={actual} exp={exps[actual.id]} hoy={hoy} opts={opts} soloLectura={soloLectura} evaluacion={evDe(actual.id)} onEvaluar={abrirEvaluacion} onFecha={onFecha} onFormato={onFormato} onSubir={onSubir} subiendo={subiendo} /> : <div style={{ ...tarjeta, color: C.slate }}>No hay trabajadores activos.</div>}
         </div>
       )}
     </div>

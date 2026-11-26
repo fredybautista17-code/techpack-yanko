@@ -50,6 +50,7 @@ export default function ModuloTalentoHumano({ currentUser, onVolver, onLogout, v
   const NAV = [
     { id: "tablero", icon: "📊", label: "Tablero" },
     { id: "expediente", icon: "🗂️", label: porArea ? "Mi gente" : "Expediente" },
+    { id: "evaluaciones", icon: "📝", label: "Evaluaciones" },
     ...(verTodo ? [{ id: "lote", icon: "⚡", label: "Carga por lote" }] : []),
   ];
   const sinArea = porArea && !String(areaLider || "").trim();
