@@ -13,7 +13,7 @@ import { Insignia, InsigniaNoPueden } from "./ficha-candado";
 import RolesAdmin from "./roles-admin";
 import FormularioUsuario from "./usuarios-form";
 import { DISENO_SUBMODULOS, AREAS_SUBMODULOS, modulosDeRol, datosRolDeUsuario } from "./modulos-rol";
-import { EstadisticasMuestrasView, CostosMuestrasView } from "./muestras-estadisticas";
+import { EstadisticasMuestrasView } from "./muestras-estadisticas";
 import { BloqueSolicitudesTela } from "./diseno-muestras";
 import PatronCodigosReferencia, { buscarPorPatron, PrefijosDeCliente } from "./codigos-patron";
 import CentroParametros from "./centro-parametros";
@@ -4172,7 +4172,7 @@ function CronogramaDetalleModal({ entry, config, isAdmin, usuario, puedeRevisar,
 // entradas "Aprobadas" se separan a su propia pestaña (funcionan como
 // historial de muestras ya resueltas); "Sin fecha" agrupa lo que aún no
 // tiene fecha de entrega asignada, para que nada quede invisible.
-function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, usuarioNombre, puedeRevisar, onAdd, onUpdate, onDelete, onGoToItem, onModificarNota, protos, capsulas, puedeEstadisticas, puedeCostos }) {
+function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, usuarioNombre, puedeRevisar, onAdd, onUpdate, onDelete, onGoToItem, onModificarNota, protos, capsulas, puedeEstadisticas }) {
   const [vista, setVista] = useState("agenda");
   // Estadísticas y Costos (2026-11-24, a pedido de Fredy): la diseñadora sale del prototipo / referencia (assignedTo), como en el Mi Día.
   const responsablePorItem = useMemo(() => {
@@ -4181,7 +4181,7 @@ function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, usuarioNo
     (capsulas || []).forEach((c) => (c.referencias || []).forEach((r) => { if (r.assignedTo) m[r.id] = r.assignedTo; }));
     return m;
   }, [protos, capsulas]);
-  const vistaCalendario = !["tablero", "talleres", "agenda", "estadisticas", "costos"].includes(vista);
+  const vistaCalendario = !["tablero", "talleres", "agenda", "estadisticas"].includes(vista);
   // Agenda por día (2026-11-13, a pedido de Fredy): filtros propios de esa vista.
   const [aQ, setAQ] = useState("");
   const [aTaller, setATaller] = useState("");
@@ -4454,7 +4454,7 @@ function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, usuarioNo
           </div>
         ) : <div />}
         <div style={{ display: "flex", gap: 6 }}>
-          {[["agenda", "📋 Agenda"], ["semana", "Semana"], ["mes", "Mes"], ["tablero", "🗂 Tablero"], ["talleres", "📊 Talleres"], ...(puedeEstadisticas ? [["estadisticas", "📈 Estadísticas"]] : []), ...(puedeCostos ? [["costos", "💲 Costos"]] : [])].map(([v, label]) => (
+          {[["agenda", "📋 Agenda"], ["semana", "Semana"], ["mes", "Mes"], ["tablero", "🗂 Tablero"], ["talleres", "📊 Talleres"], ...(puedeEstadisticas ? [["estadisticas", "📈 Estadísticas"]] : [])].map(([v, label]) => (
             <button key={v} onClick={() => setVista(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${vista === v ? T.ink : T.border}`, background: vista === v ? T.ink : T.white, color: vista === v ? T.white : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{label}</button>
           ))}
         </div>
@@ -4466,7 +4466,7 @@ function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, usuarioNo
           <button onClick={() => (vista === "semana" ? setWeekOffset((o) => o + 1) : setMonthOffset((o) => o + 1))} style={{ padding: "6px 12px", background: T.white, border: `1px solid ${T.border}`, borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13, color: T.ink }}>Siguiente →</button>
         </div>
       )}
-      {vista === "agenda" ? renderAgenda() : vista === "talleres" ? <FichaTalleresView cronogramaMuestras={cronogramaMuestras} /> : vista === "estadisticas" && puedeEstadisticas ? <EstadisticasMuestrasView muestras={cronogramaMuestras} responsablePorItem={responsablePorItem} /> : vista === "costos" && puedeCostos ? <CostosMuestrasView db={db} muestras={cronogramaMuestras} talleresConfig={config?.talleresMuestra || []} usuarioNombre={usuarioNombre} /> : vista === "tablero" ? renderTablero() : vista === "semana" ? renderWeekRow(semanaMonday, "w") : semanasDelMes.map((m, i) => renderWeekRow(m, i))}
+      {vista === "agenda" ? renderAgenda() : vista === "talleres" ? <FichaTalleresView cronogramaMuestras={cronogramaMuestras} /> : vista === "estadisticas" && puedeEstadisticas ? <EstadisticasMuestrasView muestras={cronogramaMuestras} responsablePorItem={responsablePorItem} /> : vista === "tablero" ? renderTablero() : vista === "semana" ? renderWeekRow(semanaMonday, "w") : semanasDelMes.map((m, i) => renderWeekRow(m, i))}
       {vistaCalendario && sinFecha.length > 0 && (
         <div style={{ marginTop: 20 }}>
           <div style={{ fontWeight: 800, fontSize: 13, color: T.slate, marginBottom: 10 }}>🗓 Sin fecha de entrega asignada ({sinFecha.length})</div>
@@ -21626,13 +21626,13 @@ function AppInner() {
     return <ModuloCorte currentUser={currentUser} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} puedeAprobarCorte={perms.aprobarCorte} />;
   }
   if (isContabilidadPura) {
-    return <ModuloContabilidad currentUser={currentUser} pedidos={pedidos} puedeAdministrarBasesDadoPorCumplido={puedeAdministrarBasesDadoPorCumplido} puedeSincronizarDadoPorCumplido={puedeSincronizarDadoPorCumplido} puedeEditarAprobadosDadoPorCumplido={puedeEditarAprobadosDadoPorCumplido} puedeVerOrdenesCompra={puedeVerOrdenesCompra} soloOrdenesCompra={soloOrdenesCompra} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+    return <ModuloContabilidad currentUser={currentUser} pedidos={pedidos} puedeAdministrarBasesDadoPorCumplido={puedeAdministrarBasesDadoPorCumplido} puedeSincronizarDadoPorCumplido={puedeSincronizarDadoPorCumplido} puedeEditarAprobadosDadoPorCumplido={puedeEditarAprobadosDadoPorCumplido} puedeVerOrdenesCompra={puedeVerOrdenesCompra} soloOrdenesCompra={soloOrdenesCompra} puedeVerCostosMuestras={!!(currentUser?.isAdmin || currentUser?.costosMuestras) && currentUser?.role !== "Cliente"} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (canAccessCorte && moduloActivo === "corte") {
     return <ModuloCorte currentUser={currentUser} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} onVolver={() => setModuloActivo("diseno")} puedeAprobarCorte={perms.aprobarCorte} />;
   }
   if (moduloActivo === "contabilidad") {
-    return <ModuloContabilidad currentUser={currentUser} pedidos={pedidos} puedeAdministrarBasesDadoPorCumplido={puedeAdministrarBasesDadoPorCumplido} puedeSincronizarDadoPorCumplido={puedeSincronizarDadoPorCumplido} puedeEditarAprobadosDadoPorCumplido={puedeEditarAprobadosDadoPorCumplido} puedeVerOrdenesCompra={puedeVerOrdenesCompra} soloOrdenesCompra={soloOrdenesCompra} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+    return <ModuloContabilidad currentUser={currentUser} pedidos={pedidos} puedeAdministrarBasesDadoPorCumplido={puedeAdministrarBasesDadoPorCumplido} puedeSincronizarDadoPorCumplido={puedeSincronizarDadoPorCumplido} puedeEditarAprobadosDadoPorCumplido={puedeEditarAprobadosDadoPorCumplido} puedeVerOrdenesCompra={puedeVerOrdenesCompra} soloOrdenesCompra={soloOrdenesCompra} puedeVerCostosMuestras={!!(currentUser?.isAdmin || currentUser?.costosMuestras) && currentUser?.role !== "Cliente"} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (moduloActivo === "cotizaciones" && canAccessCotizador) {
     // (2026-10-16, a pedido de Fredy) Cotizaciones se abre como módulo aparte
@@ -22122,7 +22122,7 @@ function AppInner() {
               <CronogramaMuestrasView cronogramaMuestras={cronogramaMuestrasVisibles} config={config} isAdmin={currentUser?.isAdmin} usuarioNombre={currentUser?.name} puedeRevisar={!!(currentUser?.isAdmin || perms.admin || perms.revisionDiseno)}
                 onAdd={addCronogramaMuestra} onUpdate={updateCronogramaMuestra} onDelete={deleteCronogramaMuestra}
                 onModificarNota={addObservacionCronograma}
-                protos={protos} capsulas={capsulas} puedeEstadisticas={!clientesUsuario.length && normRol(currentUser?.role) !== "cliente"} puedeCostos={!!(currentUser?.isAdmin || currentUser?.costosMuestras)}
+                protos={protos} capsulas={capsulas} puedeEstadisticas={!clientesUsuario.length && normRol(currentUser?.role) !== "cliente"}
                 onGoToItem={(entry) => {
                   if (entry.kind === "proto") { setOrigenNav({ tipo: "cronograma" }); empujarHistorial(); setSelProtoId(entry.itemId); setView("proto-detail"); }
                   else if (entry.kind === "ref") { setOrigenNav({ tipo: "cronograma" }); empujarHistorial(); setSelCapId(entry.capsulaId); setSelRefId(entry.itemId); setView("ref-detail"); }

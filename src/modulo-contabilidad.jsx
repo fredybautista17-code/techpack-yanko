@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, Fragment } from "react";
+import { useState, useEffect, useRef, useMemo, Fragment, lazy, Suspense } from "react";
 import { initializeApp, getApps } from "firebase/app";
 import {
   getFirestore,
@@ -14,6 +14,7 @@ import {
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { rangoMeses, rangoSugerido, gruposDesdeBusint, nombresConocidos } from "./compras-busint-traer";
 import OrdenesCompraView from "./contabilidad-ordenes-compra";
+const CostosMuestrasContabilidad = lazy(() => import("./costos-muestras-contabilidad")); // (2026-11-26) antes era la pestaña «💲 Costos» del Cronograma de Muestras
 import { DevolucionesFacturacionView } from "./devoluciones-cliente";
 import { precioVendidoDe, versionVendidaDe, redondeaPrecio } from "./precio-vendido";
 import DadoPorCumplidoTablero from "./dado-por-cumplido-tablero";
@@ -9423,7 +9424,7 @@ function CuadrePorClienteView({ currentUser, pedidos }) {
   );
 }
 
-export default function ModuloContabilidad({ currentUser, onVolver, onLogout, puedeAdministrarBasesDadoPorCumplido, puedeSincronizarDadoPorCumplido, puedeEditarAprobadosDadoPorCumplido, puedeVerOrdenesCompra, soloOrdenesCompra, pedidos }) {
+export default function ModuloContabilidad({ currentUser, onVolver, onLogout, puedeAdministrarBasesDadoPorCumplido, puedeSincronizarDadoPorCumplido, puedeEditarAprobadosDadoPorCumplido, puedeVerOrdenesCompra, soloOrdenesCompra, puedeVerCostosMuestras, pedidos }) {
   const [subView, setSubView] = useState(soloOrdenesCompra ? "ordenes_compra" : "home");
   const [movimientos, setMovimientos] = useState([]);
   const [compras, setCompras] = useState([]);
@@ -9754,6 +9755,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
     { id: "dado_por_cumplido", icon: "✅", label: "Dado por Cumplido" },
     { id: "devoluciones_facturar", icon: "🔁", label: "Devoluciones por facturar" },
     { id: "cxp", icon: "🧾", label: "Cuentas por Pagar" },
+    ...(isAdmin || puedeVerCostosMuestras ? [{ id: "costos_muestras", icon: "💲", label: "Costos de muestras" }] : []),
     ...(isAdmin || puedeVerOrdenesCompra ? [{ id: "ordenes_compra", icon: "🛒", label: "Órdenes de compra" }] : []),
     { id: "administracion", icon: "🗂️", label: "Administración" },
   ];
@@ -9969,6 +9971,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
           )}
           {subView === "facturacion_clientes" && <FacturacionClientesView />}
           {subView === "cartera_clientes" && <CarteraClientesView currentUser={currentUser} pedidos={pedidos} />}
+          {subView === "costos_muestras" && (isAdmin || puedeVerCostosMuestras) && <Suspense fallback={<div style={{ padding: 20, color: C.slate }}>Cargando…</div>}><CostosMuestrasContabilidad db={db} currentUser={currentUser} /></Suspense>}
           {subView === "devoluciones_facturar" && <DevolucionesFacturacionView db={db} currentUser={currentUser} />}
           {subView === "dado_por_cumplido" && <DadoPorCumplidoView currentUser={currentUser} puedeAdministrarBases={puedeAdministrarBasesDadoPorCumplido} puedeSincronizar={puedeSincronizarDadoPorCumplido} puedeEditarAprobados={puedeEditarAprobadosDadoPorCumplido} />}
           {subView === "ordenes_compra" && (isAdmin || puedeVerOrdenesCompra) && <OrdenesCompraView db={db} functionsClient={functionsClient} currentUser={currentUser} C={C} Btn={Btn} />}
