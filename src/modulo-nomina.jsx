@@ -264,14 +264,15 @@ function Field({ label, children }) {
     </div>
   );
 }
-function FInput({ value, onChange, placeholder, type = "text", icon }) {
+function FInput({ value, onChange, placeholder, type = "text", icon, disabled = false }) {
   const input = (
     <input
       type={type}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
-      style={{ width: "100%", padding: icon ? "9px 12px 9px 32px" : "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, color: C.ink, background: C.white, outline: "none", fontFamily: "inherit" }}
+      disabled={disabled}
+      style={{ width: "100%", padding: icon ? "9px 12px 9px 32px" : "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, color: C.ink, background: disabled ? C.canvas : C.white, outline: "none", fontFamily: "inherit", ...(disabled ? { cursor: "not-allowed", opacity: 0.8 } : {}) }}
     />
   );
   // (2026-09-26, a pedido de Fredy) `icon` es opcional -- para los buscadores
@@ -4814,6 +4815,8 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
     // (2026-11-20, a pedido de Fredy) Permiso sin horas (o que cubre el día) pero la persona SÍ vino a trabajar: en el Historial de
     // asistencia sale como «Asistió y tuvo permiso». Solo es visual: no cambia la nómina ni los días trabajados del huellero.
     vinoATrabajar: !!ausencia?.vinoATrabajar,
+    // (2026-11-26, a pedido de Fredy) Casilla «Día completo»: llena sola las horas con la entrada y la salida del turno de esa persona ese día.
+    diaCompleto: false,
   });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   const trabajadorSeleccionado = trabajadores.find((t) => t.id === form.trabajadorId);
@@ -4862,6 +4865,28 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
     const horasForm = medirPermisoHorasCosto({ ...form, fechaFin: exigirHoras ? form.fechaInicio : form.fechaFin }, { trabajadores: [trabajadorSeleccionado], areasNomina: areasCtx, turnos: turnosCtx }).horas || 0;
     return horasForm > 0 && permisoCubreJornada({ fechaInicio: form.fechaInicio }, trabajadorSeleccionado, horasForm, areasCtx, turnosCtx);
   })();
+  // Entrada y salida del turno de la persona en la fecha elegida (para la casilla «Día completo»).
+  const turnoDiaCompleto = (() => {
+    if (!trabajadorSeleccionado || !form.fechaInicio) return null;
+    const { areasNomina: areasCtx, turnos: turnosCtx } = CONTEXTO_VACACIONES;
+    const turno = resolverTurnoDeTrabajador(trabajadorSeleccionado, areasCtx, turnosCtx);
+    if (!turno) return { problema: "sin_turno" };
+    const dia = diaCodigoDeISO(form.fechaInicio);
+    const entrada = horaEntradaEsperada(turno, dia, form.fechaInicio);
+    const salida = horaSalidaEsperada(turno, dia, form.fechaInicio);
+    if (!entrada || !salida) return { problema: "no_laborable" };
+    return { entrada, salida };
+  })();
+  const diaCompletoMarcado = exigirHoras && (form.diaCompleto || diaCompletoPermiso);
+  const horasBloqueadas = exigirHoras && form.diaCompleto && !!turnoDiaCompleto?.entrada;
+  useEffect(() => {
+    if (!exigirHoras || !form.diaCompleto || !turnoDiaCompleto?.entrada) return;
+    if (form.horaInicio === turnoDiaCompleto.entrada && form.horaFin === turnoDiaCompleto.salida) return;
+    setForm((f) => ({ ...f, horaInicio: turnoDiaCompleto.entrada, horaFin: turnoDiaCompleto.salida }));
+  }, [exigirHoras, form.diaCompleto, form.horaInicio, form.horaFin, turnoDiaCompleto?.entrada, turnoDiaCompleto?.salida]);
+  function cambiarDiaCompleto(marcado) {
+    setForm((f) => ({ ...f, diaCompleto: marcado, ...(marcado ? {} : { horaInicio: "", horaFin: "" }) }));
+  }
   async function guardar() {
     if (faltantes.length || ordenHorasMal) return;
     onSave({
@@ -4931,9 +4956,27 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
           Déjalo vacío si el permiso es por el día completo. Si es solo por unas horas (ej. 8:00 a 10:00), complétalas acá.
         </div>
       )}
+      {exigirHoras && (
+        <div style={{ margin: "0 0 12px" }}>
+          <label htmlFor="diaCompletoPermiso" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 700, color: C.ink, cursor: "pointer" }}>
+            <input type="checkbox" id="diaCompletoPermiso" checked={!!diaCompletoMarcado} onChange={(e) => cambiarDiaCompleto(e.target.checked)} />
+            📅 Día completo
+          </label>
+          <div style={{ fontSize: 11, color: C.slate, marginTop: 3 }}>Llena solo las horas con la entrada y la salida del turno de esa persona ese día.</div>
+          {form.diaCompleto && !trabajadorSeleccionado && (
+            <div style={{ fontSize: 11.5, fontWeight: 700, color: C.amber, marginTop: 4 }}>⚠ Elige primero al trabajador de la lista para llenar las horas de su turno; si no, escríbelas a mano.</div>
+          )}
+          {form.diaCompleto && turnoDiaCompleto?.problema === "sin_turno" && (
+            <div style={{ fontSize: 11.5, fontWeight: 700, color: C.amber, marginTop: 4 }}>⚠ Esta persona no tiene turno asignado: escribe las horas a mano.</div>
+          )}
+          {form.diaCompleto && turnoDiaCompleto?.problema === "no_laborable" && (
+            <div style={{ fontSize: 11.5, fontWeight: 700, color: C.amber, marginTop: 4 }}>⚠ Ese día no es laborable en su turno: escribe las horas a mano o cambia la fecha.</div>
+          )}
+        </div>
+      )}
       <div style={{ display: "flex", gap: 12 }}>
-        <div style={{ flex: 1 }}><Field label={exigirHoras ? "Hora inicial *" : "Hora Inicio (opcional)"}><FInput type="time" value={form.horaInicio} onChange={set("horaInicio")} /></Field></div>
-        <div style={{ flex: 1 }}><Field label={exigirHoras ? "Hora final *" : "Hora Fin (opcional)"}><FInput type="time" value={form.horaFin} onChange={set("horaFin")} /></Field></div>
+        <div style={{ flex: 1 }}><Field label={exigirHoras ? "Hora inicial *" : "Hora Inicio (opcional)"}><FInput type="time" value={form.horaInicio} onChange={set("horaInicio")} disabled={horasBloqueadas} /></Field></div>
+        <div style={{ flex: 1 }}><Field label={exigirHoras ? "Hora final *" : "Hora Fin (opcional)"}><FInput type="time" value={form.horaFin} onChange={set("horaFin")} disabled={horasBloqueadas} /></Field></div>
       </div>
       {esMotivoPermiso(form.motivo) && !exigirHoras && !esPermisoPorHoras(form) && !mostrarContarComoTrabajado && (
         <div style={{ fontSize: 12.5, color: C.ink, margin: "0 0 14px", display: "flex", alignItems: "flex-start", gap: 8 }}>
