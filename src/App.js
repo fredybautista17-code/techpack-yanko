@@ -64,6 +64,7 @@ const FinancieraStandalone = React.lazy(() => import("./modulo-financiera").then
 const ModuloPlanta = React.lazy(() => import("./modulo-planta"));
 const ModuloBodega = React.lazy(() => import("./modulo-bodega"));
 const ModuloNomina = React.lazy(() => import("./modulo-nomina"));
+const ModuloTalentoHumano = React.lazy(() => import("./modulo-talento-humano")); // (2026-11-26) Talento Humano deja de ser solo un ítem de Nómina: módulo propio, completo o por área
 const ModuloInformes = React.lazy(() => import("./modulo-informes"));
 const CotizadorView = React.lazy(() => import("./modulo-cotizador"));
 const firebaseConfig = {
@@ -11974,7 +11975,7 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
     </div>
   );
 }
-function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, canAccessPlaneacion, canAccessPlanta, canAccessBodega, canAccessNomina, canAccessDiseno, canAccessPedidosArea, canGestionPedido, canAccessKpis, canAccessInformes, canAccessAreas, canAccessCotizador, cotPorAprobar, onGoArea, protos, capsulas, pedidos }) {
+function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, canAccessPlaneacion, canAccessPlanta, canAccessBodega, canAccessNomina, canAccessTalentoHumano, canAccessDiseno, canAccessPedidosArea, canGestionPedido, canAccessKpis, canAccessInformes, canAccessAreas, canAccessCotizador, cotPorAprobar, onGoArea, protos, capsulas, pedidos }) {
   const hoy = new Date();
   const protosEnProceso = protos.filter((p) => p.status === "en_proceso").length;
   const pedidosActivos = pedidos.filter((p) => p.estado === "activo" || p.estado === "terminado").length;
@@ -12021,9 +12022,14 @@ function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, c
       permiso: canAccessBodega,
     },
     {
-      id: "nomina_area", icon: "👷", label: "Talento Humano", desc: "Nómina — producción por proceso, horas sueltas y cierre de quincena", color: T.amber, bg: T.amberBg,
+      id: "nomina_area", icon: "👷", label: "Nómina", desc: "Producción por proceso, horas sueltas y cierre de quincena", color: T.amber, bg: T.amberBg,
       stats: [],
       permiso: canAccessNomina,
+    },
+    {
+      id: "talento_humano_area", icon: "🧭", label: "Talento Humano", desc: "Alertas de vencimientos, expediente de cada trabajador, dotación y formatos de ingreso — completo o solo tu área", color: T.amber, bg: T.amberBg,
+      stats: [],
+      permiso: canAccessTalentoHumano,
     },
     {
       id: "kpis_area", icon: "🎯", label: "KPIs", desc: "Indicadores por área y persona en toda la compañía — Diseño, Corte, Ventas, Contabilidad, Planeación...", color: T.coral, bg: T.coralBg,
@@ -14789,6 +14795,8 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     { area: "🏭 Planta Yanko", items: [["planta", "Planta Yanko"], ["planta_verificador_precio", "🔍 Verificador de Precio", "Puede ver el Verificador de Precio en la Programación Diaria de Planta Yanko y en Mi Día (muestra precios de mano de obra de Confección y Corte)"]] },
     { area: "📦 Bodega", items: [["bodega", "Bodega"], ["bodega_despacho_saldo", "📦 Despacho y Saldo", "Ve la tarjeta Despacho y Saldo (abonos y saldos) dentro de Bodega."], ["bodega_control_despacho", "🎛️ Control de Despacho", "Ve la tarjeta Control de Despacho (Despachos Generales y Estado de Despacho) dentro de Bodega."], ["bodega_devoluciones", "↩️ Devoluciones", "Ve la tarjeta Devoluciones de clientes dentro de Bodega."], ["bodega_solo_devoluciones", "Solo Devoluciones (no ve Despacho y Saldo ni Control de Despacho)"], ["bodega_cambiar_estado_devoluciones", "Puede cambiar el estado de las devoluciones (líder)"]] },
     { area: "👷 Nómina", items: [["nomina", "Completa (todo el módulo)"], ["nomina_novedades", "Solo Novedades"], ["nomina_lider_area", "Líder de área: ingresa Producción y Horas y ve/registra Permisos de SUS trabajadores (según su Área Interna)"], ["nomina_lider_asistencia", "Líder de área: Asistencia de SUS trabajadores (Tabulador, Historial, Estadísticas de Permisos y Retardos del mes)"], ["nomina_lider_resumen", "Líder de área: Resumen de SUS trabajadores (💰 Resumen de la quincena: producido, horas, pago y ayuda; incluye valores en dinero)"], ["nomina_editar_catalogos", "Puede editar catálogos (Trabajadores, Turnos, etc.) sin admin total"], ["nomina_ver_anomalias_huellero", "Puede ver Anomalías Huellero"], ["nomina_ver_duplicados_huellero", "Puede ver Diagnóstico de Duplicados"], ["nomina_cerrar_quincena", "Puede cerrar Quincena (General y por Área)"], ["nomina_agregar_cobros_manual", "Puede agregar cobros/deducciones manuales"], ["nomina_ajustar_destajo", "Puede agregar Ajustes de Nómina en Destajo"], ["nomina_editar_horas_extra", "Puede editar/borrar Horas Extras"], ["nomina_editar_bonificacion", "Puede editar/borrar Bonificaciones"], ["nomina_marcar_retardos", "Puede marcar retardos a mano y decidir su descuento (Retardos del mes)"], ["nomina_autorizar_permisos", "Puede generar códigos de autorización de permisos (4.º permiso del mes en adelante)"]] },
+    // (2026-11-26) Módulo propio «Talento Humano»: alertas, expediente y formatos. "Líder de área" ve solo a su gente (su «Área Interna»), solo lectura y sin salud/antecedentes/hoja de vida.
+    { area: "🧭 Talento Humano", items: [["talento_humano", "Completo (todos los trabajadores; incluye salud, antecedentes y hoja de vida)"], ["talento_humano_area", "Líder de área: solo SU gente (según su Área Interna), sin datos sensibles"]] },
     { area: "🎯 KPIs", items: [["kpis", "KPIs"]] },
     { area: "📋 Informes", items: [["informes", "Informes"]] },
     { area: "🗂️ Áreas", items: [["areas_centro_costo", "Centro de Costo"], ["areas_estadisticas", "Estadísticas"], ["areas_reclamos", "Reclamos"], ["areas_programador", "Programador"]] },
@@ -21294,6 +21302,10 @@ function AppInner() {
   const canAccessNomina = canAccessNominaCompleta || canAccessNominaNovedades || canAccessNominaLiderArea || canAccessNominaLiderAsistencia || canAccessNominaLiderResumen || canAccessNominaLiquidaciones;
   const soloLiderAreaNomina = (canAccessNominaLiderArea || canAccessNominaLiderAsistencia || canAccessNominaLiderResumen) && !canAccessNominaCompleta && !canAccessNominaNovedades && !soloLiquidacionesNomina;
   const soloNovedadesNomina = !canAccessNominaCompleta && canAccessNominaNovedades;
+  // Módulo Talento Humano: completo (Talento Humano/gerencia, ve salud y antecedentes) o por área (líder: solo SU gente, solo lectura, sin datos sensibles).
+  const canTHCompleto = moduloVisible(userRoleData, "talento_humano", currentUser?.isAdmin) || !!currentUser?.centroTalentoHumano;
+  const canTHArea = moduloVisible(userRoleData, "talento_humano_area", currentUser?.isAdmin) && !canTHCompleto;
+  const canAccessTalentoHumano = canTHCompleto || canTHArea;
   // "nomina_editar_catalogos" (2026-09-09, a pedido de Fredy): permiso
   // para editar/crear/borrar en los catálogos administrativos de Nómina
   // (Trabajadores, Turnos, Motivos de Ausencia, Área Interna, Área TNS,
@@ -21538,8 +21550,8 @@ function AppInner() {
     // dejando espacio para futuros módulos de Talento Humano (contratos,
     // novedades TNS, etc.) sin tocar el ruteo — el id interno sigue siendo
     // "nomina_area" porque isViewActive/navClick ya lo reconocen.
-    ...(canAccessNomina
-      ? [{ id: "nomina_area", icon: "👷", label: "Talento Humano", items: [{ id: "nomina_area", icon: "👷", label: "Nómina" }] }]
+    ...(canAccessNomina || canAccessTalentoHumano
+      ? [{ id: "nomina_area", icon: "👷", label: "Talento Humano", items: [...(canAccessNomina ? [{ id: "nomina_area", icon: "👷", label: "Nómina" }] : []), ...(canAccessTalentoHumano ? [{ id: "talento_humano_area", icon: "🧭", label: "Centro de Talento Humano" }] : [])] }]
       : []),
     // KPIs es su propia área de nivel superior (cubre toda la compañía).
     // A diferencia de Contabilidad/Planeación, no es un módulo externo aparte
@@ -21579,6 +21591,7 @@ function AppInner() {
     if (itemId === "planta_area") return moduloActivo === "planta";
     if (itemId === "bodega_area") return moduloActivo === "bodega";
     if (itemId === "nomina_area") return moduloActivo === "nomina";
+    if (itemId === "talento_humano_area") return moduloActivo === "talento_humano";
     if (itemId === "informes_area") return moduloActivo === "informes";
     if (itemId === "areas_internas_area") return moduloActivo === "areas_internas";
     if (itemId === "financiera_area") return moduloActivo === "financiera";
@@ -21594,6 +21607,7 @@ function AppInner() {
     if (itemId === "planta_area") { setModuloActivo("planta"); return; }
     if (itemId === "bodega_area") { setModuloActivo("bodega"); return; }
     if (itemId === "nomina_area") { setModuloActivo("nomina"); return; }
+    if (itemId === "talento_humano_area") { setModuloActivo("talento_humano"); return; }
     if (itemId === "informes_area") { setModuloActivo("informes"); return; }
     if (itemId === "areas_internas_area") { setModuloActivo("areas_internas"); return; }
     if (itemId === "financiera_area") { setModuloActivo("financiera"); return; }
@@ -21618,6 +21632,7 @@ function AppInner() {
     !canAccessPlanta &&
     !canAccessPlaneacion &&
     !canAccessNomina &&
+    !canAccessTalentoHumano &&
     !canAccessKpis &&
     !canAccessInformes;
   if (appState === "loading") return <LoadingScreen message="Conectando con Firebase..." />;
@@ -21687,6 +21702,9 @@ function AppInner() {
   if (moduloActivo === "bodega") {
     return <ModuloBodega currentUser={currentUser} puedeAprobarDespacho={perms.aprobarDespacho} canAccessContabilidad={canAccessContabilidad} soloLecturaBodega={currentUser?.role === "Cliente"} puedeVerControlDespacho={perms.verControlDespacho} puedeVerDespachoSaldo={perms.bodegaDespachoSaldo} puedeVerDevoluciones={perms.bodegaDevoluciones} soloDevoluciones={perms.bodegaSoloDevoluciones} puedeCambiarEstadoDev={perms.bodegaCambiarEstadoDev} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
+  if (moduloActivo === "talento_humano" && canAccessTalentoHumano) {
+    return <ModuloTalentoHumano currentUser={currentUser} verTodo={canTHCompleto} areaLider={currentUser?.areaNomina || ""} canNomina={canAccessNomina} onIrANomina={() => setModuloActivo("nomina")} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+  }
   if (moduloActivo === "nomina" && soloLiderAreaNomina && !currentUser?.areaNomina) {
     // Sin «Área Interna» el menú de líder no tendría a quién filtrar (vería a todos): se pide que el administrador se la asigne.
     return (
@@ -21701,7 +21719,7 @@ function AppInner() {
     );
   }
   if (moduloActivo === "nomina") {
-    return <ModuloNomina currentUser={currentUser} soloNovedades={soloNovedadesNomina} soloLiquidaciones={soloLiquidacionesNomina} soloLiderArea={soloLiderAreaNomina} liderProduccion={canAccessNominaLiderArea} liderAsistencia={canAccessNominaLiderAsistencia} liderResumen={canAccessNominaLiderResumen} todasAreas={!!currentUser?.nominaTodasAreas} puedeEditarCatalogos={canAccessNominaEditarCatalogos} puedeVerAnomaliasHuellero={canVerAnomaliasHuellero} puedeVerDuplicadosHuellero={canVerDuplicadosHuellero} puedeCerrarQuincena={canCerrarQuincena} puedeAgregarCobrosManual={canAgregarCobrosManual} puedeAjustarDestajo={canAjustarDestajo} puedeEditarHorasExtra={canEditarHorasExtra} puedeEditarBonificacion={canEditarBonificacion} puedeAutorizarPermisos={canAutorizarPermisos} puedeMarcarRetardos={canMarcarRetardos} puedeCentroTalentoHumano={!!currentUser?.centroTalentoHumano} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+    return <ModuloNomina currentUser={currentUser} soloNovedades={soloNovedadesNomina} soloLiquidaciones={soloLiquidacionesNomina} soloLiderArea={soloLiderAreaNomina} liderProduccion={canAccessNominaLiderArea} liderAsistencia={canAccessNominaLiderAsistencia} liderResumen={canAccessNominaLiderResumen} todasAreas={!!currentUser?.nominaTodasAreas} puedeEditarCatalogos={canAccessNominaEditarCatalogos} puedeVerAnomaliasHuellero={canVerAnomaliasHuellero} puedeVerDuplicadosHuellero={canVerDuplicadosHuellero} puedeCerrarQuincena={canCerrarQuincena} puedeAgregarCobrosManual={canAgregarCobrosManual} puedeAjustarDestajo={canAjustarDestajo} puedeEditarHorasExtra={canEditarHorasExtra} puedeEditarBonificacion={canEditarBonificacion} puedeAutorizarPermisos={canAutorizarPermisos} puedeMarcarRetardos={canMarcarRetardos} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (moduloActivo === "informes") {
     return <ModuloInformes currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
@@ -21853,6 +21871,7 @@ function AppInner() {
                   else if (id === "planta_area") { setModuloActivo("planta"); }
                   else if (id === "bodega_area") { setModuloActivo("bodega"); }
                   else if (id === "nomina_area") { setModuloActivo("nomina"); }
+                  else if (id === "talento_humano_area") { setModuloActivo("talento_humano"); }
                   else if (id === "informes_area") { setModuloActivo("informes"); }
                   else if (id === "areas_internas_area") { setModuloActivo("areas_internas"); }
                   else if (id === "kpis_area") { setAreaAbierta("kpis_area"); setView("kpis"); }

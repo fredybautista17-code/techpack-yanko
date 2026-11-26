@@ -85,12 +85,13 @@ export function estadoFormato(t, exp, codigo) {
   return "pend";
 }
 
-export function formatosDe(t, exp) {
-  return FORMATOS_TH.map((f) => ({ ...f, estado: estadoFormato(t, exp, f.codigo), dato: (exp && exp.formatos && exp.formatos[f.codigo]) || {} }));
+// opts.sinSensibles: el líder de área no ve ni cuenta los formatos con datos personales o de salud (hoja de vida, autorreporte, antecedentes).
+export function formatosDe(t, exp, opts) {
+  return FORMATOS_TH.filter((f) => !(opts && opts.sinSensibles && f.sensible)).map((f) => ({ ...f, estado: estadoFormato(t, exp, f.codigo), dato: (exp && exp.formatos && exp.formatos[f.codigo]) || {} }));
 }
-export const pendientesDe = (t, exp) => formatosDe(t, exp).filter((f) => f.estado === "pend" || f.estado === "venc");
-export function porcentajeExpediente(t, exp) {
-  const aplica = formatosDe(t, exp).filter((f) => f.estado !== "na");
+export const pendientesDe = (t, exp, opts) => formatosDe(t, exp, opts).filter((f) => f.estado === "pend" || f.estado === "venc");
+export function porcentajeExpediente(t, exp, opts) {
+  const aplica = formatosDe(t, exp, opts).filter((f) => f.estado !== "na");
   return aplica.length ? Math.round((100 * aplica.filter((f) => f.estado === "ok").length) / aplica.length) : 100;
 }
 
@@ -133,13 +134,13 @@ export function mapaExpedientes(expedientes) {
 }
 
 // Números del tablero
-export function resumenTablero(trabajadores, expedientes, candidatos, hoyISO) {
+export function resumenTablero(trabajadores, expedientes, candidatos, hoyISO, opts) {
   const exps = mapaExpedientes(expedientes);
   const activos = (trabajadores || []).filter(esActivo);
   const alertas = alertasVencimiento(activos, exps, hoyISO);
   const conDotacion = activos.filter((t) => aplicaDotacion(t, exps[t.id]));
   const dotListos = conDotacion.filter((t) => estadoFormato(t, exps[t.id], "TH-FO-02") === "ok");
-  const conPend = activos.filter((t) => pendientesDe(t, exps[t.id]).length > 0);
+  const conPend = activos.filter((t) => pendientesDe(t, exps[t.id], opts).length > 0);
   const sinInduccion = activos.filter((t) => ["TH-FO-05", "TH-FO-06"].some((c) => estadoFormato(t, exps[t.id], c) !== "ok"));
   const prox = proximaDotacion(hoyISO);
   return {
@@ -154,12 +155,32 @@ export function resumenTablero(trabajadores, expedientes, candidatos, hoyISO) {
 }
 
 // Porcentaje promedio del expediente por área (de menor a mayor)
-export function avancePorArea(trabajadores, expedientes) {
+export function avancePorArea(trabajadores, expedientes, opts) {
   const exps = mapaExpedientes(expedientes);
   const por = {};
-  (trabajadores || []).filter(esActivo).forEach((t) => { const a = t.area || "Sin asignar"; (por[a] = por[a] || []).push(porcentajeExpediente(t, exps[t.id])); });
+  (trabajadores || []).filter(esActivo).forEach((t) => { const a = t.area || "Sin asignar"; (por[a] = por[a] || []).push(porcentajeExpediente(t, exps[t.id], opts)); });
   return Object.entries(por).map(([area, v]) => ({ area, n: v.length, pct: Math.round(v.reduce((s, x) => s + x, 0) / v.length) })).sort((a, b) => a.pct - b.pct || a.area.localeCompare(b.area));
 }
 
 // Sugerencia al marcar «Fin del período de prueba»: 2 meses desde el ingreso (máximo legal)
 export const sugerirFinPrueba = (t) => (esFecha(t && t.fechaIngreso) ? sumarDias(sumarMeses(t.fechaIngreso, 2), -1) : "");
+
+// Áreas distintas de los trabajadores activos (para el filtro de la lista)
+export const areasDe = (trabajadores) => [...new Set((trabajadores || []).filter(esActivo).map((t) => t.area || "Sin asignar"))].sort((a, b) => a.localeCompare(b));
+
+// Carga por lote: marcar un formato (estado «ok», «na» o «pend») a varias personas a la vez.
+// Omite a quien no le aplica el formato (si se va a firmar) y a quien ya está en ese estado.
+export function planLote(trabajadores, expedientes, codigo, estado) {
+  const exps = mapaExpedientes(expedientes);
+  const aplicar = [], omitir = [];
+  (trabajadores || []).forEach((t) => {
+    const actual = estadoFormato(t, exps[t.id], codigo);
+    const manual = exps[t.id] && exps[t.id].formatos && exps[t.id].formatos[codigo] && exps[t.id].formatos[codigo].estado;
+    if (estado === "ok" && actual === "na" && manual !== "na") omitir.push({ t, motivo: "no le aplica" });
+    else if (estado === "ok" && actual === "ok") omitir.push({ t, motivo: "ya está firmado" });
+    else if (estado === "na" && manual === "na") omitir.push({ t, motivo: "ya está como no aplica" });
+    else if (estado === "pend" && actual === "pend") omitir.push({ t, motivo: "ya está pendiente" });
+    else aplicar.push(t);
+  });
+  return { aplicar, omitir };
+}

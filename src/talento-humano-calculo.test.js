@@ -1,4 +1,4 @@
-import { proximaDotacion, aplicaDotacion, estadoFormato, formatosDe, porcentajeExpediente, alertasVencimiento, resumenTablero, avancePorArea, sumarMeses, sumarDias, diasEntre, sugerirFinPrueba, esActivo, LIMITE_DOTACION } from "./talento-humano-calculo";
+import { areasDe, planLote, proximaDotacion, aplicaDotacion, estadoFormato, formatosDe, porcentajeExpediente, alertasVencimiento, resumenTablero, avancePorArea, sumarMeses, sumarDias, diasEntre, sugerirFinPrueba, esActivo, LIMITE_DOTACION } from "./talento-humano-calculo";
 
 const HOY = "2026-11-26";
 const T = (id, o = {}) => ({ id, nombre: "N" + id, area: "Confección", sueldo: 1750905, tipoContrato: "Término Fijo", fechaIngreso: "2026-10-05", ...o });
@@ -100,4 +100,31 @@ test("avance por área, de menor a mayor", () => {
   ["TH-FO-19", "TH-FO-20", "TH-FO-01", "ANTEC", "TH-FO-21", "TH-FO-16", "TH-FO-17", "TH-FO-12", "TH-FO-18", "TH-FO-05", "TH-FO-06", "TH-FO-02", "TH-FO-03"].forEach((c) => { formatos[c] = ok(); });
   const r = avancePorArea(trab, [{ trabajadorId: "b", formatos }]);
   expect(r).toEqual([{ area: "Corte", n: 1, pct: 0 }, { area: "Empaque", n: 1, pct: 100 }]);
+});
+
+test("líder de área: los formatos sensibles no se ven ni cuentan", () => {
+  const t = T("a");
+  expect(formatosDe(t, null, { sinSensibles: true }).length).toBe(11);
+  expect(formatosDe(t, null, { sinSensibles: true }).some((f) => f.sensible)).toBe(false);
+  const formatos = {};
+  formatosDe(t, null, { sinSensibles: true }).forEach((f) => { if (f.estado !== "na") formatos[f.codigo] = ok(); });
+  expect(porcentajeExpediente(t, { formatos }, { sinSensibles: true })).toBe(100); // sin los 3 sensibles
+  expect(porcentajeExpediente(t, { formatos })).toBeLessThan(100); // con ellos no
+  const r = resumenTablero([t], [{ trabajadorId: "a", formatos }], [], HOY, { sinSensibles: true });
+  expect(r.conPendientes).toBe(0);
+});
+
+test("áreas distintas de los activos", () => {
+  expect(areasDe([T("a", { area: "Corte" }), T("b", { area: "Bodega" }), T("c", { area: "Corte" }), T("d", { area: "X", fechaRetiro: "2026-01-01" }), T("e", { area: "" })])).toEqual(["Bodega", "Corte", "Sin asignar"]);
+});
+
+test("carga por lote: omite a quien no le aplica o ya está en ese estado", () => {
+  const trab = [T("a"), T("b", { sueldo: 9000000 }), T("c")];
+  const exps = [{ trabajadorId: "c", formatos: { "TH-FO-02": ok() } }];
+  const r = planLote(trab, exps, "TH-FO-02", "ok");
+  expect(r.aplicar.map((x) => x.id)).toEqual(["a"]);
+  expect(r.omitir.map((x) => [x.t.id, x.motivo])).toEqual([["b", "no le aplica"], ["c", "ya está firmado"]]);
+  expect(planLote(trab, [], "TH-FO-19", "ok").aplicar.length).toBe(3);
+  expect(planLote(trab, [], "TH-FO-19", "pend").omitir.length).toBe(3);
+  expect(planLote(trab, [], "TH-FO-19", "na").aplicar.length).toBe(3);
 });
