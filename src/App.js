@@ -55,6 +55,7 @@ const FichaInicioPreorden = React.lazy(() => import("./ficha-inicio"));
 const SeguimientoPedido = React.lazy(() => import("./ficha-inicio").then((m) => ({ default: m.SeguimientoPedido })));
 const TableroFichaInicio = React.lazy(() => import("./ficha-inicio").then((m) => ({ default: m.TableroFichaInicio })));
 // (2026-11-26) Las 2 imágenes de la referencia (ficha con datos + dibujo plano) para la Ficha de inicio: se suben aquí o en la propia ficha
+const FichaConfeccionPanel = React.lazy(() => import("./ficha-confeccion-vista"));
 const ImagenesReferenciaTarjeta = React.lazy(() => import("./combinaciones-prenda-vista").then((m) => ({ default: m.ImagenesReferenciaTarjeta })));
 const PedidosFlujo = React.lazy(() => import("./pedidos-flujo"));
 const FinancieraStandalone = React.lazy(() => import("./modulo-financiera").then((m) => ({ default: m.FinancieraStandalone })));
@@ -2503,7 +2504,7 @@ function PromoteModal({ proto, capsulas, onSave, onSaveTela, onSaveContenedor, o
   function save() {
     if (!capId || !refName || !refCode) return;
     onSave(capId, {
-      id: uid(), name: refName, reference: refCode, categoria: proto.categoria, silueta: proto.silueta, rango: proto.rango, fromProtoId: proto.id, numPrototipo: proto.numPrototipo || "", status: "en_proceso", currentStage: proto.currentStage, stageStartedAt: today(), assignedTo: proto.assignedTo, createdAt: today(), image: proto.image, colores: cliente ? [cliente] : [], tallas: rangoTallas ? [rangoTallas] : [], bom: [...proto.bom], pom: [...proto.pom], approvals: [], especificaciones: proto.especificaciones || null,
+      id: uid(), name: refName, reference: refCode, categoria: proto.categoria, silueta: proto.silueta, rango: proto.rango, fromProtoId: proto.id, numPrototipo: proto.numPrototipo || "", status: "en_proceso", currentStage: proto.currentStage, stageStartedAt: today(), assignedTo: proto.assignedTo, createdAt: today(), image: proto.image, colores: cliente ? [cliente] : [], tallas: rangoTallas ? [rangoTallas] : [], bom: [...proto.bom], pom: [...proto.pom], approvals: [], especificaciones: proto.especificaciones || null, fichaConfeccion: proto.fichaConfeccion || null,
       observations: [{ id: uid(), user: "Sistema", role: "Sistema", text: `Promovida desde ${proto.reference}.`, date: nowISO(), type: "info", done: false }],
     }, proto.id);
     onClose();
@@ -3069,6 +3070,7 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
     { id: "pom", label: `POM (${item.pom.length})` },
     ...(kind === "ref" ? [{ id: "aprobaciones", label: `Aprobaciones (${item.approvals?.length || 0})` }] : []),
     { id: "especificaciones", label: "📐 Especificaciones" },
+    { id: "confeccion", label: "🧵 Ficha de confección" },
     { id: "chat", label: `Observaciones (${item.observations.length})` },
   ];
   const st = item.status;
@@ -3377,6 +3379,7 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
             )}
           </div>
         )}
+        {tab === "confeccion" && (<React.Suspense fallback={null}><FichaConfeccionPanel item={item} kind={kind} canEdit={canEdit} onPatch={patch} capsula={capsula} protos={protos} capsulas={capsulas} currentUser={currentUser} T={T} Btn={Btn} /></React.Suspense>)}
         {tab === "especificaciones" && <EspecificacionesPanel item={item} canEdit={canEdit} onPatch={patch} kind={kind} capsulaName={capsula?.name} />}
         {tab === "chat" && <ChatPanel observations={item.observations.filter((o) => o.type !== "update" && o.user !== "Sistema")} currentUser={currentUser} role={role} perms={perms} onSend={sendObs} onMarkDone={markDone} />}
       </div>
@@ -21020,7 +21023,7 @@ function AppInner() {
     const stageInicial = d.yaProd ? "corte" : pr.currentStage;
     const textoProd = d.yaProd ? ` Ya estaba en producción (corte ${d.fechaCorte || today()}${d.lote ? `, lote ${d.lote}` : ""}).` : "";
     const ref = {
-      id: uid(), name: d.refName, reference: d.refCode, categoria: pr.categoria, silueta: pr.silueta, rango: pr.rango, fromProtoId: pr.id, numPrototipo: pr.numPrototipo || "", status: "en_proceso", currentStage: stageInicial, stageStartedAt: d.yaProd ? (d.fechaCorte || today()) : today(), assignedTo: pr.assignedTo, createdAt: today(), image: pr.image, colores: d.cliente ? [d.cliente] : [], tallas: d.rangoTallas ? [d.rangoTallas] : [], bom: [...(pr.bom || [])], pom: [...(pr.pom || [])], approvals: [], especificaciones: pr.especificaciones || null,
+      id: uid(), name: d.refName, reference: d.refCode, categoria: pr.categoria, silueta: pr.silueta, rango: pr.rango, fromProtoId: pr.id, numPrototipo: pr.numPrototipo || "", status: "en_proceso", currentStage: stageInicial, stageStartedAt: d.yaProd ? (d.fechaCorte || today()) : today(), assignedTo: pr.assignedTo, createdAt: today(), image: pr.image, colores: d.cliente ? [d.cliente] : [], tallas: d.rangoTallas ? [d.rangoTallas] : [], bom: [...(pr.bom || [])], pom: [...(pr.pom || [])], approvals: [], especificaciones: pr.especificaciones || null, fichaConfeccion: pr.fichaConfeccion || null,
       ...(d.yaProd ? { enProduccionDirecta: true, fechaCorte: d.fechaCorte || today(), loteCorte: d.lote || "" } : {}),
       observations: [{ id: uid(), user: "Sistema", role: "Sistema", text: `Promovida desde ${pr.reference} al contenedor del cliente.${textoProd}`, date: nowISO(), type: "info", done: false }],
     };
