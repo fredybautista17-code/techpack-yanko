@@ -54,6 +54,8 @@ const MiDiaTarjetasStandalone = React.lazy(() => import("./mi-dia-tarjetas"));
 const FichaInicioPreorden = React.lazy(() => import("./ficha-inicio"));
 const SeguimientoPedido = React.lazy(() => import("./ficha-inicio").then((m) => ({ default: m.SeguimientoPedido })));
 const TableroFichaInicio = React.lazy(() => import("./ficha-inicio").then((m) => ({ default: m.TableroFichaInicio })));
+// (2026-11-26) Las 2 imágenes de la referencia (ficha con datos + dibujo plano) para la Ficha de inicio: se suben aquí o en la propia ficha
+const ImagenesReferenciaTarjeta = React.lazy(() => import("./combinaciones-prenda-vista").then((m) => ({ default: m.ImagenesReferenciaTarjeta })));
 const PedidosFlujo = React.lazy(() => import("./pedidos-flujo"));
 const FinancieraStandalone = React.lazy(() => import("./modulo-financiera").then((m) => ({ default: m.FinancieraStandalone })));
 const ModuloPlanta = React.lazy(() => import("./modulo-planta"));
@@ -3097,6 +3099,9 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
           <div><span style={{ fontSize: 11, color: "#5A5A7A", fontWeight: 700, textTransform: "uppercase" }}>Guía</span><div style={{ fontWeight: 800, color: "#0369A1" }}>{item.envioGuia || "—"}</div></div>
           <div><span style={{ fontSize: 11, color: "#5A5A7A", fontWeight: 700, textTransform: "uppercase" }}>Fecha</span><div style={{ fontWeight: 800, color: "#0369A1" }}>{item.envioFecha}</div></div>
         </div>
+      )}
+      {item.reference && (
+        <React.Suspense fallback={null}><ImagenesReferenciaTarjeta referencia={item.reference} puedeEditar={!!canEdit} usuario={typeof currentUser === "string" ? currentUser : (currentUser && currentUser.name) || ""} /></React.Suspense>
       )}
       <div style={{ display: "grid", gridTemplateColumns: "220px 1fr", gap: 16, marginBottom: 16, alignItems: "start" }}>
         <ImageUploader image={item.image} onImage={(img) => patch({ image: img })} readonly={!canEdit} />

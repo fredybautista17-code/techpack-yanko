@@ -9,18 +9,20 @@
 // Quién edita lo decide el permiso «ficha_inicio» de Roles (el admin siempre); quien no lo tiene solo ve el semáforo.
 import React, { useEffect, useMemo, useState } from "react";
 import useAnchoCorto from "./use-ancho-corto";
+import { C, inp, lbl, Boton, Chip, Ventana, Cuadrito } from "./ficha-ui";
+import SubirCartaColores from "./ficha-carta-colores";
+import { usePrenda, EditorCombinaciones, VentanaCombinaciones } from "./combinaciones-prenda-vista";
 import { useCandadoActivo, InterruptorCandadoCorte } from "./ficha-candado";
 import { getApps } from "firebase/app";
 import { collection, deleteDoc, doc, getFirestore, onSnapshot, query, setDoc, where, writeBatch } from "firebase/firestore";
 import {
   COL_FICHA, COL_COLORES, COL_VINILOS, MAX_COLORES, PASOS_SEMAFORO, PASO_FICHA, PASOS_MANUALES, TIPOS_VINILO, NOMBRES_ASISTENTE,
   idFicha, num, plano, tallasDeRango, distribuirPorTalla, completarFicha, totalPreorden, totalFicha, faltantesPaso, fichaCompleta,
-  pasosDeReferencia, resumenSemaforo, parsearColoresPegados, snapshotColor, snapshotVinilo,
+  PASO_COMBOS, pasosDeReferencia, resumenSemaforo, parsearColoresPegados, snapshotVinilo,
   esHex, normHex, normCod, esCombinado, estadoColor, leerInformeBusintColores, planSincronizacion,
   ETAPAS_PEDIDO, ETAPA_CORTE, ETAPA_MONTAR, PASO_MONTAR, PASO_CORTE, itemsDePedido, evaluarPedido, pedidoPorReferencia, siguientePaso, pasosHechos,
 } from "./ficha-inicio-calculo";
 
-const C = { ink: "#1A1A2E", slate: "#5A5A7A", border: "#E8E2DB", canvas: "#F7F4F0", white: "#FFFFFF", green: "#2D9E6B", greenBg: "#EBF7F2", amber: "#C47C1A", amberBg: "#FBF3E4", amberLine: "#E3A33A", red: "#E85D4A", redBg: "#FDF0EE", blue: "#3D6B9E", blueBg: "#EBF1F7", grey: "#B9B3A8", greyBg: "#EFEBE4" };
 const fmtNum = (n) => Math.round(Number(n) || 0).toLocaleString("es-CO");
 const limpiar = (x) => JSON.parse(JSON.stringify(x));
 const dbDe = () => getFirestore(getApps()[0]);
@@ -36,40 +38,10 @@ function useColeccion(nombre, filtro) {
   return lista;
 }
 
-const inp = { width: "100%", border: `1.5px solid ${C.border}`, borderRadius: 10, padding: "9px 11px", background: C.white, color: C.ink, fontSize: 14, fontFamily: "inherit", boxSizing: "border-box" };
-const lbl = { display: "block", fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, color: C.slate, marginBottom: 5 };
 
-function Boton({ children, onClick, tipo = "sec", disabled, small, title }) {
-  const col = tipo === "pri" ? { background: C.ink, color: C.white } : tipo === "ok" ? { background: C.green, color: C.white } : tipo === "rojo" ? { background: C.redBg, color: C.red } : { background: C.greyBg, color: C.ink };
-  return (
-    <button type="button" title={title} disabled={disabled} onClick={onClick} style={{ border: "none", borderRadius: small ? 8 : 10, fontWeight: 700, fontSize: small ? 12 : 13, padding: small ? "5px 11px" : "9px 16px", cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.4 : 1, fontFamily: "inherit", ...col }}>{children}</button>
-  );
-}
-function Chip({ activo, onClick, children, title }) {
-  return (
-    <button type="button" title={title} onClick={onClick} style={{ border: `1.5px solid ${activo ? C.ink : C.border}`, background: activo ? C.ink : "#FAF8F4", color: activo ? C.white : C.ink, borderRadius: 20, padding: "7px 14px", fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>{children}</button>
-  );
-}
-function Ventana({ titulo, onClose, ancho = 860, children }) {
-  return (
-    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,.55)", zIndex: 1100, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "4vh 12px", overflowY: "auto" }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: C.white, borderRadius: 16, width: "100%", maxWidth: ancho, padding: "18px 20px", boxShadow: "0 12px 40px rgba(0,0,0,.25)" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 12 }}>
-          <div style={{ fontWeight: 800, fontSize: 16, color: C.ink }}>{titulo}</div>
-          <button type="button" onClick={onClose} aria-label="Cerrar" style={{ border: "none", background: "transparent", fontSize: 22, color: C.slate, cursor: "pointer" }}>×</button>
-        </div>
-        {children}
-      </div>
-    </div>
-  );
-}
 
 // ───────────────────────── BIBLIOTECAS (colores y vinilos) ─────────────────────────
 // Colores: el código de Busint es la llave; cada color lleva Pantone y hex (con él se pinta el avatar de la prenda) y se sincroniza con el informe de Busint.
-function Cuadrito({ hex, tam = 28 }) {
-  const ok = esHex(hex);
-  return <span title={ok ? normHex(hex) : "Sin color todavía"} style={{ display: "inline-block", width: tam, height: tam, borderRadius: Math.round(tam * 0.3), flex: "none", verticalAlign: "middle", border: ok ? "1px solid rgba(26,26,46,.18)" : `1px dashed ${C.grey}`, background: ok ? normHex(hex) : "repeating-linear-gradient(45deg,#F2EEE6,#F2EEE6 4px,#E3DDD1 4px,#E3DDD1 8px)" }} />;
-}
 function Pil({ children, tono = "gris", title }) {
   const t = { ok: [C.greenBg, C.green], sol: [C.blueBg, C.blue], av: [C.amberBg, C.amber], gris: [C.greyBg, C.slate] }[tono];
   return <span title={title} style={{ display: "inline-block", background: t[0], color: t[1], borderRadius: 20, padding: "2px 8px", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>{children}</span>;
@@ -185,6 +157,7 @@ function BibliotecasFicha({ onClose, puedeEditar, inicial = "colores" }) {
   const [editId, setEditId] = useState(null);
   const [borrador, setBorrador] = useState({});
   const [sincronizando, setSincronizando] = useState(false);
+  const [subiendoCarta, setSubiendoCarta] = useState(false);
   const esColor = tab === "colores";
 
   const resumen = useMemo(() => {
@@ -270,6 +243,7 @@ function BibliotecasFicha({ onClose, puedeEditar, inicial = "colores" }) {
         <Chip activo={esColor} onClick={() => { setTab("colores"); setMsg(""); setEditId(null); setLimite(80); }}>🎨 Colores ({(colores || []).length})</Chip>
         <Chip activo={!esColor} onClick={() => { setTab("vinilos"); setMsg(""); setEditId(null); setLimite(80); }}>🏷 Vinilos y logos ({(vinilos || []).length})</Chip>
         {esColor && puedeEditar && <button type="button" onClick={() => setSincronizando(true)} style={{ border: "none", background: C.blue, color: C.white, borderRadius: 20, padding: "8px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>🔄 Sincronizar con Busint</button>}
+        {esColor && puedeEditar && <button type="button" data-testid="btn-subir-carta" onClick={() => setSubiendoCarta(true)} style={{ border: "none", background: C.ink, color: C.white, borderRadius: 20, padding: "8px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>📤 Subir hex y Pantone</button>}
         <input value={buscar} onChange={(e) => { setBuscar(e.target.value); setLimite(80); }} placeholder={esColor ? "🔍 Buscar nombre, código o Pantone…" : "🔍 Buscar…"} style={{ ...inp, maxWidth: 270, marginLeft: "auto" }} />
       </div>
       {esColor && !cargando && (
@@ -388,6 +362,7 @@ function BibliotecasFicha({ onClose, puedeEditar, inicial = "colores" }) {
       {lista.length > limite && <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center" }}><Boton small onClick={() => setLimite(limite + 120)}>Mostrar más</Boton><span style={{ fontSize: 12, color: C.slate, fontWeight: 600 }}>Mostrando {limite} de {lista.length}. Busca o filtra para acortar.</span></div>}
       {!puedeEditar && <p style={{ fontSize: 12, color: C.slate, marginTop: 8 }}>Solo consulta: para agregar o corregir necesitas el permiso «Ficha de inicio» en Roles.</p>}
       {sincronizando && <SincronizarBusint colores={colores} db={db} onClose={() => setSincronizando(false)} />}
+      {subiendoCarta && <SubirCartaColores colores={colores || []} db={db} onClose={() => setSubiendoCarta(false)} />}
     </Ventana>
   );
 }
@@ -398,6 +373,9 @@ function AsistenteFicha({ preorden, item, guardada, config, onClose, usuario }) 
   const colores = useColeccion(COL_COLORES);
   const vinilos = useColeccion(COL_VINILOS);
   const [f, setF] = useState(() => completarFicha(guardada, item, preorden));
+  const prenda = usePrenda(item.referencia || f.referencia);
+  // (2026-11-26) El paso Colores exige el dibujo plano de la referencia y que cada color tenga sus materiales
+  const ctx = { exigirDibujo: true, tieneDibujo: !!(prenda && prenda.planoImg) };
   const [paso, setPaso] = useState(0);
   const [pais, setPais] = useState("CO");
   const [buscar, setBuscar] = useState("");
@@ -408,7 +386,7 @@ function AsistenteFicha({ preorden, item, guardada, config, onClose, usuario }) 
   const [error, setError] = useState("");
 
   const set = (patch) => setF((p) => ({ ...p, ...patch }));
-  const faltan = faltantesPaso(f, paso, item);
+  const faltan = faltantesPaso(f, paso, item, ctx);
 
   async function guardar(extra) {
     const tallas = f.tallas;
@@ -425,27 +403,13 @@ function AsistenteFicha({ preorden, item, guardada, config, onClose, usuario }) 
     if (await guardar()) setPaso((p) => Math.max(0, Math.min(NOMBRES_ASISTENTE.length - 1, p + d)));
   }
   async function irA(i) {
-    for (let k = 0; k < i; k++) if (faltantesPaso(f, k, item).length) { setPaso(k); return; }
+    for (let k = 0; k < i; k++) if (faltantesPaso(f, k, item, ctx).length) { setPaso(k); return; }
     setPaso(i);
   }
   async function marcarLista() {
     if (f.listo) { if (await guardar({ listo: false })) onClose(); return; }
-    if (!fichaCompleta(f, item)) return;
+    if (!fichaCompleta(f, item, ctx)) return;
     if (await guardar({ listo: true, listoEn: new Date().toISOString(), base: { co: Math.round(num(item.colombiaCantidad)), ve: Math.round(num(item.venezuelaCantidad)) } })) onClose();
-  }
-  async function crearColorRapido() {
-    const nombre = nuevo.nombre.trim();
-    if (!nombre) return;
-    const codB = normCod(nuevo.b);
-    const ya = (codB && (colores || []).find((c) => normCod(c.codBusint) === codB)) || (colores || []).find((c) => plano(c.nombre) === plano(nombre));
-    let c = ya;
-    if (!c) {
-      const ref = doc(collection(db, COL_COLORES));
-      c = { id: ref.id, nombre, codProveedor: nuevo.a.trim(), codBusint: codB, hex: normHex(nuevo.hex), pantone: (nuevo.pantone || "").trim() };
-      await setDoc(ref, { nombre: c.nombre, codProveedor: c.codProveedor, codBusint: c.codBusint, hex: c.hex, pantone: c.pantone, creadoEn: new Date().toISOString() });
-    }
-    if (!f.colores.some((x) => x.id === c.id) && f.colores.length < MAX_COLORES) set({ colores: [...f.colores, snapshotColor(c)] });
-    setNuevo({ ...nuevo, nombre: "", a: "", b: "", hex: "", pantone: "" });
   }
   async function crearViniloRapido() {
     const nombre = nuevo.nombre.trim();
@@ -466,17 +430,12 @@ function AsistenteFicha({ preorden, item, guardada, config, onClose, usuario }) 
     return [...s];
   }, [config, f.clientes, preorden.cliente]);
 
-  const coloresFiltrados = useMemo(() => {
-    const q = plano(buscar);
-    return (colores || []).filter((c) => !q || plano(`${c.nombre} ${c.codProveedor || ""} ${c.codBusint || ""} ${c.pantone || ""}`).includes(q)).sort((a, b) => plano(a.nombre).localeCompare(plano(b.nombre)));
-  }, [colores, buscar]);
   const vinilosFiltrados = useMemo(() => {
     const q = plano(buscar);
     return (vinilos || []).filter((v) => !q || plano(`${v.nombre} ${v.codigo}`).includes(q)).sort((a, b) => plano(a.nombre).localeCompare(plano(b.nombre)));
   }, [vinilos, buscar]);
 
   const togCliente = (c) => set({ clientes: f.clientes.includes(c) ? f.clientes.filter((x) => x !== c) : [...f.clientes, c] });
-  const togColor = (c) => set({ colores: f.colores.some((x) => x.id === c.id) ? f.colores.filter((x) => x.id !== c.id) : (f.colores.length < MAX_COLORES ? [...f.colores, snapshotColor(c)] : f.colores) });
   const togVinilo = (v) => set({ vinilos: f.vinilos.some((x) => x.id === v.id) ? f.vinilos.filter((x) => x.id !== v.id) : [...f.vinilos, snapshotVinilo(v)], sinVinilos: false });
   const setPaisDato = (k, campo, valor) => setF((p) => ({ ...p, pais: { ...p.pais, [k]: { ...p.pais[k], [campo]: valor } } }));
   const setCurva = (k, t, v) => setF((p) => ({ ...p, pais: { ...p.pais, [k]: { ...p.pais[k], curva: { ...p.pais[k].curva, [t]: v === "" ? "" : num(v) } } } }));
@@ -535,40 +494,9 @@ function AsistenteFicha({ preorden, item, guardada, config, onClose, usuario }) 
   } else if (paso === 3) {
     panel = (
       <>
-        <h3 style={tit}>Colores de la referencia</h3>
-        <p style={ayuda}>Se escogen de la biblioteca (hasta {MAX_COLORES}). Si el color no está, créalo abajo y queda en la biblioteca.</p>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
-          <input style={{ ...inp, maxWidth: 260 }} value={buscar} onChange={(e) => setBuscar(e.target.value)} placeholder="🔍 Buscar color o código…" />
-          <Boton small onClick={() => set({ colores: [...f.colores, ...coloresFiltrados.filter((c) => !f.colores.some((x) => x.id === c.id)).map(snapshotColor)].slice(0, MAX_COLORES) })}>Marcar los {coloresFiltrados.length} visibles</Boton>
-          <Boton small onClick={() => set({ colores: [] })} disabled={!f.colores.length}>Quitar todos</Boton>
-          <Boton small onClick={() => setBiblio("colores")}>📚 Biblioteca</Boton>
-          <b style={{ fontSize: 12.5, color: C.slate, marginLeft: "auto" }}>{f.colores.length} de {MAX_COLORES} escogidos</b>
-        </div>
-        <div style={{ maxHeight: 250, overflow: "auto", border: `1px solid ${C.border}`, borderRadius: 12 }}>
-          {colores === null ? <div style={{ padding: 12, color: C.slate }}>Cargando…</div>
-            : !coloresFiltrados.length ? <div style={{ padding: 12, color: C.slate, fontStyle: "italic" }}>{(colores || []).length ? "Sin resultados." : "La biblioteca de colores está vacía: crea el primero abajo o pega varios en 📚 Biblioteca."}</div>
-            : coloresFiltrados.map((c) => {
-              const on = f.colores.some((x) => x.id === c.id);
-              return (
-                <label key={c.id} style={{ display: "grid", gridTemplateColumns: "26px 30px 1.4fr 1fr 1fr 1fr", gap: 8, alignItems: "center", padding: "7px 12px", borderBottom: `1px solid ${C.border}`, fontSize: 13, cursor: "pointer", background: on ? C.greenBg : C.white }}>
-                  <input type="checkbox" checked={on} onChange={() => togColor(c)} /><Cuadrito hex={c.hex} tam={24} /><b>{c.nombre}</b><span style={{ color: C.slate }}>{c.pantone || "—"}</span><span style={{ color: C.slate }}>{c.codProveedor || "—"}</span><span style={{ color: C.slate }}>{c.codBusint || "—"}</span>
-                </label>
-              );
-            })}
-        </div>
-        {f.colores.length > 0 && (
-          <div data-testid="paleta-ficha" style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginTop: 10 }}>
-            <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, color: C.slate }}>Paleta</span>
-            {f.colores.map((c) => <Cuadrito key={c.id} hex={c.hex} tam={22} />)}
-            {f.colores.some((c) => !esHex(c.hex)) && <span style={{ fontSize: 11.5, color: C.slate, fontWeight: 600 }}>· {f.colores.filter((c) => !esHex(c.hex)).length} sin color en pantalla (no se podrán pintar en el avatar)</span>}
-          </div>
-        )}
-        <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr auto", gap: 8, alignItems: "end", marginTop: 12 }}>
-          <div><label style={lbl}>Crear color nuevo</label><input style={inp} value={nuevo.nombre} onChange={(e) => setNuevo({ ...nuevo, nombre: e.target.value })} placeholder="Nombre del color" /></div>
-          <div><label style={lbl}>Cód. proveedor</label><input style={inp} value={nuevo.a} onChange={(e) => setNuevo({ ...nuevo, a: e.target.value })} /></div>
-          <div><label style={lbl}>Cód. Busint</label><input style={inp} value={nuevo.b} onChange={(e) => setNuevo({ ...nuevo, b: e.target.value })} /></div>
-          <Boton tipo="pri" onClick={crearColorRapido} disabled={!nuevo.nombre.trim()}>+ Crear y escoger</Boton>
-        </div>
+        <h3 style={tit}>Colores de la prenda y sus materiales</h3>
+        <p style={ayuda}>Toca una zona del dibujo (o un material) y escoge su color de la biblioteca: el dibujo se pinta solo. Cada fila es un color de la prenda con el color de cada material (hasta {MAX_COLORES}).</p>
+        <EditorCombinaciones f={f} set={set} colores={colores} prenda={prenda} item={item} puedeEditar usuario={usuario} onBiblioteca={() => setBiblio("colores")} />
       </>
     );
   } else if (paso === 4) {
@@ -624,7 +552,7 @@ function AsistenteFicha({ preorden, item, guardada, config, onClose, usuario }) 
       </>
     );
   } else {
-    const todo = fichaCompleta(f, item);
+    const todo = fichaCompleta(f, item, ctx);
     const caja = (t, c) => <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 14px", background: "#FAF8F4" }}><div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, color: C.slate, fontWeight: 700, marginBottom: 6 }}>{t}</div><div style={{ fontSize: 13.5, fontWeight: 600, lineHeight: 1.55 }}>{c}</div></div>;
     panel = (
       <>
@@ -634,7 +562,7 @@ function AsistenteFicha({ preorden, item, guardada, config, onClose, usuario }) 
           {caja("Clientes", f.clientes.join(" · ") || "—")}
           {caja("Referencia", <>{f.datos.categoria || "—"} · {f.datos.silueta || "—"}<br />{f.datos.linea || "—"} · {f.datos.tela || "—"}</>)}
           {caja("Tallas", f.tallas.join(" · ") || "—")}
-          {caja(`Colores (${f.colores.length})`, (f.colores.slice(0, 8).map((c) => c.nombre).join(", ") || "—") + (f.colores.length > 8 ? "…" : ""))}
+          {caja(`Colores de la prenda (${((f.combinaciones || {}).filas || []).length || f.colores.length})`, (((f.combinaciones || {}).filas || []).length ? ((f.combinaciones || {}).filas || []).slice(0, 6).map((x) => (x.m || []).filter(Boolean).map((c) => c.nombre).join(" / ")).join(" · ") + (((f.combinaciones || {}).filas || []).length > 6 ? "…" : "") : (f.colores.slice(0, 8).map((c) => c.nombre).join(", ") || "—")))}
           {caja(`Vinilos (${f.vinilos.length})`, f.sinVinilos ? "No lleva vinilos" : (f.vinilos.map((v) => v.nombre).join(", ") || "—"))}
           {caja("Cantidades", <>Colombia {fmtNum(f.pais.CO.cant)} · Venezuela {fmtNum(f.pais.VE.cant)}<br /><b>Total {fmtNum(tot)}</b> de {fmtNum(esp)} en la preorden</>)}
         </div>
@@ -648,7 +576,7 @@ function AsistenteFicha({ preorden, item, guardada, config, onClose, usuario }) 
     <Ventana titulo={`Ficha de inicio · ${item.referencia || ""}${item.nombre ? ` — ${item.nombre}` : ""}`} onClose={onClose} ancho={980}>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
         {NOMBRES_ASISTENTE.map((n, i) => {
-          const hecho = i < paso && !faltantesPaso(f, i, item).length;
+          const hecho = i < paso && !faltantesPaso(f, i, item, ctx).length;
           return (
             <button key={n} type="button" onClick={() => irA(i)} style={{ flex: "1 1 110px", border: `1.5px solid ${i === paso ? C.ink : hecho ? "#BFE3D2" : C.border}`, background: hecho ? C.greenBg : C.white, color: hecho ? C.green : i === paso ? C.ink : C.slate, borderRadius: 12, padding: "8px 10px", textAlign: "left", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
               <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: 0.5, opacity: 0.7 }}>Paso {i + 1}{hecho ? " ✓" : ""}</div>{n}
@@ -665,7 +593,7 @@ function AsistenteFicha({ preorden, item, guardada, config, onClose, usuario }) 
         </div>
         <span style={{ fontSize: 12.5, color: C.amber, fontWeight: 700 }}>{!esUltimo && faltan.length ? `Para seguir: ${faltan.join(", ")}` : ""}</span>
         {esUltimo
-          ? <Boton tipo={f.listo ? "sec" : "ok"} onClick={marcarLista} disabled={guardando || (!f.listo && !fichaCompleta(f, item))}>{f.listo ? "✓ Ficha lista (desmarcar)" : "Marcar ficha como lista"}</Boton>
+          ? <Boton tipo={f.listo ? "sec" : "ok"} onClick={marcarLista} disabled={guardando || (!f.listo && !fichaCompleta(f, item, ctx))}>{f.listo ? "✓ Ficha lista (desmarcar)" : "Marcar ficha como lista"}</Boton>
           : <Boton tipo="pri" onClick={() => mover(1)} disabled={guardando || !!faltan.length}>Siguiente →</Boton>}
       </div>
       {biblio && <BibliotecasFicha inicial={biblio} puedeEditar onClose={() => setBiblio(null)} />}
@@ -696,6 +624,7 @@ export default function FichaInicioPreorden({ preorden, config, currentUser, pue
   const fichas = useColeccion(COL_FICHA, ["preordenId", preorden.id]);
   const [abierta, setAbierta] = useState(null); // itemId con el asistente abierto
   const [biblio, setBiblio] = useState(false);
+  const [combos, setCombos] = useState(null); // itemId con la ventana de Combinaciones abierta
   const aprobada = (preorden.estado || "montada") === "aprobada";
   const items = preorden.items || [];
   const porItem = useMemo(() => { const m = {}; (fichas || []).forEach((x) => { m[x.itemId] = x; }); return m; }, [fichas]);
@@ -747,6 +676,8 @@ export default function FichaInicioPreorden({ preorden, config, currentUser, pue
                         <td key={p} style={{ textAlign: "center", padding: "8px 2px" }}>
                           {i === PASO_FICHA
                             ? <Punto estado={estados[i]} halo titulo={porRevisar ? "Las cantidades de la preorden cambiaron: revisar la ficha" : "Ficha de inicio"} onClick={puedeEditar ? () => setAbierta(it.itemId) : undefined} />
+                            : i === PASO_COMBOS
+                              ? <Punto estado={estados[i]} titulo="Combinaciones: colores de la prenda y el color de cada material (toca para abrir)" onClick={() => setCombos(it.itemId)} />
                             : i === PASO_MONTAR
                               ? <Punto estado={estados[i]} titulo="Se marca sola: la referencia ya está en un pedido" />
                             : PASOS_MANUALES.includes(i)
@@ -768,6 +699,7 @@ export default function FichaInicioPreorden({ preorden, config, currentUser, pue
           <div style={{ fontSize: 11.5, color: C.slate, fontWeight: 600, marginTop: 6, lineHeight: 1.5 }}>Se marca a mano: Hoja de vida, Contramuestra y Ficha técnica. «Montar pedido» se marca sola cuando la referencia ya está en un pedido. Punteado = se marca en el Seguimiento del Pedido o se conecta en una fase siguiente. El paso 2 se pone verde solo cuando la ficha queda lista.{!puedeEditar ? " Para llenar fichas necesitas el permiso «Ficha de inicio» en Roles." : ""}</div>
         </>
       )}
+      {combos && items.find((it) => it.itemId === combos) && <VentanaCombinaciones preorden={preorden} item={items.find((it) => it.itemId === combos)} guardada={porItem[combos]} puedeEditar={puedeEditar} usuario={currentUser?.name || ""} onClose={() => setCombos(null)} />}
       {itemAbierto && <AsistenteFicha preorden={preorden} item={itemAbierto} guardada={porItem[itemAbierto.itemId]} config={config} usuario={currentUser?.name || ""} onClose={() => setAbierta(null)} />}
       {biblio && <BibliotecasFicha puedeEditar={puedeEditar} onClose={() => setBiblio(false)} />}
     </div>

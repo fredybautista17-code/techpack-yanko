@@ -12,10 +12,11 @@ export const MAX_COLORES = 200;
 // (2026-11-22, a pedido de Fredy) Pasan a 10: «Montar pedido» va después de la Ficha técnica y se marca SOLO (la referencia ya aparece en un pedido de ATLAS).
 // OJO: la ficha guarda a mano solo los pasos 0, 3 y 5 (por número); como el paso nuevo entra DESPUÉS de ellos, lo ya guardado no se corre.
 export const PASOS_SEMAFORO = [
-  "Hoja de vida", "Ficha de inicio", "Combinaciones de vinilo", "Contramuestra", "Alertas de insumos",
+  "Hoja de vida", "Ficha de inicio", "Combinaciones", "Contramuestra", "Alertas de insumos",
   "Ficha técnica", "Montar pedido", "Explosión de materiales", "Tela en bodega", "Corte",
 ];
 export const PASO_FICHA = 1; // índice del paso que se llena solo desde la ficha
+export const PASO_COMBOS = 2; // (2026-11-26) «Combinaciones»: se pone solo según los colores que la ficha asignó a cada material de la prenda
 export const PASO_MONTAR = 6; // se marca solo: la referencia ya está en un pedido
 export const PASO_CORTE = 9;
 export const PASOS_MANUALES = [0, 3, 5]; // se marcan a mano en la Fase 1; el resto se conectará en fases siguientes
@@ -118,12 +119,20 @@ export function fichaPorRevisar(f, item) {
 
 // Qué falta en cada paso del asistente (vacío = listo para seguir)
 export const NOMBRES_ASISTENTE = ["Cliente(s)", "Referencia", "Tallas", "Colores", "Vinilos", "Curva y cantidades", "Resumen"];
-export function faltantesPaso(f, paso, item) {
+// ctx (opcional, 2026-11-26): { exigirDibujo, tieneDibujo } → el paso Colores pide el dibujo plano de la referencia y que cada color de la prenda tenga sus materiales.
+export function faltantesPaso(f, paso, item, ctx) {
   const m = [];
   if (paso === 0 && !f.clientes.length) m.push("elige al menos un cliente");
   if (paso === 1 && (!f.datos.categoria || !f.datos.tela)) m.push("completa categoría y tela");
   if (paso === 2 && !f.tallas.length) m.push("elige las tallas");
-  if (paso === 3 && !f.colores.length) m.push("elige al menos un color");
+  if (paso === 3 && ctx && ctx.exigirDibujo) {
+    if (!ctx.tieneDibujo) m.push("sube el dibujo plano de la referencia (sin él no se pueden asignar los materiales)");
+    else {
+      const e = estadoCombinaciones(f);
+      if (e === 0) m.push("agrega al menos un color de la prenda");
+      else if (e === 1) m.push("a algún color le falta un material: completa todos");
+    }
+  } else if (paso === 3 && !f.colores.length) m.push("elige al menos un color");
   if (paso === 4 && !f.vinilos.length && !f.sinVinilos) m.push("elige los vinilos o marca «No lleva vinilos»");
   if (paso === 5) {
     if (!f.tallas.every((t) => num(f.pais.CO.curva[t]) > 0 || num(f.pais.VE.curva[t]) > 0)) m.push("falta la curva de alguna talla");
@@ -131,7 +140,18 @@ export function faltantesPaso(f, paso, item) {
   }
   return m;
 }
-export const fichaCompleta = (f, item) => [0, 1, 2, 3, 4, 5].every((i) => !faltantesPaso(f, i, item).length);
+export const fichaCompleta = (f, item, ctx) => [0, 1, 2, 3, 4, 5].every((i) => !faltantesPaso(f, i, item, ctx).length);
+
+// (2026-11-26) Combinaciones: f.combinaciones = { activos:[0,1,2], filas:[{ id, m:[color|null, color|null, color|null] }] }; «activos» son los materiales que el
+// detector encontró en el dibujo plano (0 = Material 1 blanco, 1 = Material 2 lila, 2 = Material 3 gris). 0 sin filas · 1 incompleta · 2 todas completas.
+export function estadoCombinaciones(f) {
+  const c = (f || {}).combinaciones;
+  const filas = (c && c.filas) || [];
+  if (!filas.length) return 0;
+  const activos = (c.activos && c.activos.length ? c.activos : [0]);
+  const completa = (fila) => activos.every((i) => !!((fila.m || [])[i] && fila.m[i].id));
+  return filas.every(completa) ? 2 : 1;
+}
 
 // 0 pendiente · 1 en proceso (o por revisar) · 2 listo
 export function estadoPasoFicha(f, item) {
@@ -147,6 +167,7 @@ export function estadoPasoFicha(f, item) {
 export function pasosDeReferencia(f, item, montada) {
   const estados = PASOS_SEMAFORO.map((_, i) => num(((f || {}).pasos || {})[i]));
   estados[PASO_FICHA] = estadoPasoFicha(f, item);
+  { const ec = estadoCombinaciones(f); if (ec) estados[PASO_COMBOS] = ec; }
   estados[PASO_MONTAR] = montada ? 2 : 0;
   return { estados, porRevisar: fichaPorRevisar(f, item) };
 }
@@ -338,4 +359,73 @@ export function pedidoPorReferencia(pedidos, preordenes) {
     });
   });
   return m;
+}
+
+// ───────────────── Carta de colores (Excel con código de Busint, hex y Pantone) ─────────────────
+// (2026-11-26, a pedido de Fredy) Sube el hex y el Pantone de los colores YA sincronizados con Busint. Cruza por el código de Busint (004 = 4 = 04),
+// llena solo lo que está vacío (si ya había otro dato avisa y no lo pisa, salvo que se pida) y dice qué no encontró.
+const normCodNum = (c) => normCod(c).replace(/^0+(?=\d)/, "");
+const esPantone = (s) => /^\d{2}-\d{4}\s*(TCX|TPX|TPG|TN|C|U)?$/i.test(String(s || "").trim());
+
+export function leerCartaColores(filas) {
+  const lista = (filas || []).filter((r) => Array.isArray(r) && r.some((c) => String(c == null ? "" : c).trim() !== ""));
+  const txt = (v) => String(v == null ? "" : v).trim();
+  const primera = lista[0] || [];
+  const iHex = primera.findIndex((c) => /^\s*(hex|color en pantalla)\b/i.test(txt(c)));
+  const iPan = primera.findIndex((c) => /pantone/i.test(txt(c)));
+  const iCod = primera.findIndex((c) => /^\s*(c[oó]d(igo|\.)?\s*(de\s*)?busint|c[oó]d(igo|\.)?)\s*$/i.test(txt(c)));
+  const iNom = primera.findIndex((c) => /^\s*(nombre|color)\s*$/i.test(txt(c)));
+  const conEncabezado = [iHex, iPan, iCod, iNom].filter((i) => i >= 0).length >= 2;
+  const cuerpo = conEncabezado ? lista.slice(1) : lista;
+  const out = [], invalidos = [];
+  cuerpo.forEach((r) => {
+    let cod = "", nombre = "", hex = "", pantone = "";
+    if (conEncabezado) {
+      cod = iCod >= 0 ? txt(r[iCod]) : ""; nombre = iNom >= 0 ? txt(r[iNom]) : ""; hex = iHex >= 0 ? txt(r[iHex]) : ""; pantone = iPan >= 0 ? txt(r[iPan]) : "";
+    } else {
+      r.map(txt).filter(Boolean).forEach((c) => {
+        if (/^#[0-9a-f]{3,8}$/i.test(c) || (/^[0-9a-f]{6}$/i.test(c) && /[a-f]/i.test(c))) hex = hex || c;
+        else if (esPantone(c)) pantone = pantone || c;
+        else if (/^\d{1,5}$/.test(c)) cod = cod || c;
+        else nombre = nombre || c;
+      });
+    }
+    if (!cod && !nombre) return;
+    if (hex && !esHex(hex)) { invalidos.push({ cod, nombre, hex }); return; }
+    if (!hex && !pantone) return; // solo código y nombre: no trae nada que cargar
+    out.push({ cod, nombre, hex: normHex(hex), pantone });
+  });
+  return { conEncabezado, filas: out, invalidos };
+}
+
+export function planCartaColores(existentes, filas, opciones) {
+  const pisar = !!(opciones && opciones.pisar);
+  const ex = existentes || [];
+  const porCod = new Map();
+  ex.forEach((c) => { const k = normCodNum(c.codBusint); if (k && !porCod.has(k)) porCod.set(k, c); });
+  const porNombre = new Map();
+  ex.forEach((c) => { const k = plano(c.nombre); if (k && !porNombre.has(k)) porNombre.set(k, c); });
+  const vistos = new Set();
+  const actualizar = [], avisos = [], sinCoincidencia = [];
+  let repetidosArchivo = 0;
+  (filas || []).forEach((fila) => {
+    const k = normCodNum(fila.cod) || `n:${plano(fila.nombre)}`;
+    if (vistos.has(k)) { repetidosArchivo += 1; return; }
+    vistos.add(k);
+    const c = normCodNum(fila.cod) ? porCod.get(normCodNum(fila.cod)) : porNombre.get(plano(fila.nombre));
+    if (!c) { sinCoincidencia.push({ cod: fila.cod, nombre: fila.nombre }); return; }
+    const datos = {};
+    if (fila.hex) {
+      const actual = normHex(c.hex);
+      if (!actual) datos.hex = fila.hex;
+      else if (actual !== fila.hex) { if (pisar) datos.hex = fila.hex; else avisos.push({ ex: c, campo: "hex", actual: c.hex, nuevo: fila.hex }); }
+    }
+    if (fila.pantone) {
+      const actual = String(c.pantone || "").trim();
+      if (!actual) datos.pantone = fila.pantone;
+      else if (plano(actual) !== plano(fila.pantone)) { if (pisar) datos.pantone = fila.pantone; else avisos.push({ ex: c, campo: "pantone", actual, nuevo: fila.pantone }); }
+    }
+    if (Object.keys(datos).length) actualizar.push({ ex: c, datos });
+  });
+  return { actualizar, avisos, sinCoincidencia, repetidosArchivo };
 }
