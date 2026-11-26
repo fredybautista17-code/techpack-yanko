@@ -11,6 +11,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import useAnchoCorto from "./use-ancho-corto";
 import { C, inp, lbl, Boton, Chip, Ventana, Cuadrito } from "./ficha-ui";
 import SubirCartaColores from "./ficha-carta-colores";
+import SubirLogos, { Miniatura, CambiarFotoLogo } from "./ficha-logos-vista";
 import { usePrenda, EditorCombinaciones, VentanaCombinaciones } from "./combinaciones-prenda-vista";
 import { useCandadoActivo, InterruptorCandadoCorte } from "./ficha-candado";
 import { getApps } from "firebase/app";
@@ -158,6 +159,7 @@ function BibliotecasFicha({ onClose, puedeEditar, inicial = "colores" }) {
   const [borrador, setBorrador] = useState({});
   const [sincronizando, setSincronizando] = useState(false);
   const [subiendoCarta, setSubiendoCarta] = useState(false);
+  const [subiendoLogos, setSubiendoLogos] = useState(false);
   const esColor = tab === "colores";
 
   const resumen = useMemo(() => {
@@ -222,7 +224,7 @@ function BibliotecasFicha({ onClose, puedeEditar, inicial = "colores" }) {
     }
     const datos = esColor
       ? { nombre, codProveedor: (borrador.codProveedor || "").trim(), codBusint: cod, pantone: (borrador.pantone || "").trim(), hex: normHex(borrador.hex) }
-      : { nombre, codigo: (borrador.codigo || "").trim(), tipo: borrador.tipo || TIPOS_VINILO[0] };
+      : { nombre, codigo: (borrador.codigo || "").trim(), tipo: borrador.tipo || TIPOS_VINILO[0], imagen: borrador.imagen || "" };
     await setDoc(doc(db, col, x.id), datos, { merge: true });
     setEditId(null); setMsg("");
   }
@@ -233,7 +235,7 @@ function BibliotecasFicha({ onClose, puedeEditar, inicial = "colores" }) {
 
   const cargando = colores === null || vinilos === null;
   const celda = { padding: "6px 8px", borderBottom: `1px solid ${C.border}`, fontSize: 13, verticalAlign: "middle" };
-  const cols = esColor ? ["#", "Color", "Nombre", "Cód. Busint", "Pantone", "Hex", "Cód. prov.", "Estado", ""] : ["#", "Vinilo / logo", "Código", "Tipo", ""];
+  const cols = esColor ? ["#", "Color", "Nombre", "Cód. Busint", "Pantone", "Hex", "Cód. prov.", "Estado", ""] : ["#", "Foto", "Vinilo / logo", "Código", "Tipo", ""];
   const visibles = lista.slice(0, limite);
   const kpi = (n, t, testid) => <div data-testid={testid} style={{ background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 12, padding: "7px 12px", fontSize: 11.5, color: C.slate, fontWeight: 700 }}><b style={{ display: "block", fontSize: 18, color: C.ink, letterSpacing: -0.3 }}>{n}</b>{t}</div>;
   return (
@@ -244,6 +246,7 @@ function BibliotecasFicha({ onClose, puedeEditar, inicial = "colores" }) {
         <Chip activo={!esColor} onClick={() => { setTab("vinilos"); setMsg(""); setEditId(null); setLimite(80); }}>🏷 Vinilos y logos ({(vinilos || []).length})</Chip>
         {esColor && puedeEditar && <button type="button" onClick={() => setSincronizando(true)} style={{ border: "none", background: C.blue, color: C.white, borderRadius: 20, padding: "8px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>🔄 Sincronizar con Busint</button>}
         {esColor && puedeEditar && <button type="button" data-testid="btn-subir-carta" onClick={() => setSubiendoCarta(true)} style={{ border: "none", background: C.ink, color: C.white, borderRadius: 20, padding: "8px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>📤 Subir hex y Pantone</button>}
+        {!esColor && puedeEditar && <button type="button" data-testid="btn-subir-logos" onClick={() => setSubiendoLogos(true)} style={{ border: "none", background: C.ink, color: C.white, borderRadius: 20, padding: "8px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>📤 Subir logos desde foto</button>}
         <input value={buscar} onChange={(e) => { setBuscar(e.target.value); setLimite(80); }} placeholder={esColor ? "🔍 Buscar nombre, código o Pantone…" : "🔍 Buscar…"} style={{ ...inp, maxWidth: 270, marginLeft: "auto" }} />
       </div>
       {esColor && !cargando && (
@@ -306,6 +309,7 @@ function BibliotecasFicha({ onClose, puedeEditar, inicial = "colores" }) {
                       <td style={{ ...celda, color: C.slate, width: 36 }}>{i + 1}</td>
                       {enEdicion ? (
                         <>
+                          <td style={celda}><CambiarFotoLogo imagen={borrador.imagen} onChange={(img) => setBorrador({ ...borrador, imagen: img })} onError={setMsg} /></td>
                           <td style={celda}><input style={inp} value={borrador.nombre || ""} onChange={(e) => setBorrador({ ...borrador, nombre: e.target.value })} /></td>
                           <td style={celda}><input style={inp} value={borrador.codigo || ""} onChange={(e) => setBorrador({ ...borrador, codigo: e.target.value })} /></td>
                           <td style={celda}><select style={inp} value={borrador.tipo || TIPOS_VINILO[0]} onChange={(e) => setBorrador({ ...borrador, tipo: e.target.value })}>{TIPOS_VINILO.map((t) => <option key={t}>{t}</option>)}</select></td>
@@ -313,6 +317,7 @@ function BibliotecasFicha({ onClose, puedeEditar, inicial = "colores" }) {
                         </>
                       ) : (
                         <>
+                          <td style={celda}><Miniatura src={x.imagen} titulo={x.nombre} /></td>
                           <td style={{ ...celda, fontWeight: 700 }}>{x.nombre}</td>
                           <td style={celda}>{x.codigo || "—"}</td>
                           <td style={celda}>{x.tipo || "—"}</td>
@@ -363,6 +368,7 @@ function BibliotecasFicha({ onClose, puedeEditar, inicial = "colores" }) {
       {!puedeEditar && <p style={{ fontSize: 12, color: C.slate, marginTop: 8 }}>Solo consulta: para agregar o corregir necesitas el permiso «Ficha de inicio» en Roles.</p>}
       {sincronizando && <SincronizarBusint colores={colores} db={db} onClose={() => setSincronizando(false)} />}
       {subiendoCarta && <SubirCartaColores colores={colores || []} db={db} onClose={() => setSubiendoCarta(false)} />}
+      {subiendoLogos && <SubirLogos vinilos={vinilos || []} db={db} onClose={() => setSubiendoLogos(false)} />}
     </Ventana>
   );
 }
@@ -512,7 +518,7 @@ function AsistenteFicha({ preorden, item, guardada, config, onClose, usuario }) 
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", opacity: f.sinVinilos ? 0.4 : 1, pointerEvents: f.sinVinilos ? "none" : "auto" }}>
           {vinilos === null ? <span style={{ color: C.slate }}>Cargando…</span>
             : !vinilosFiltrados.length ? <span style={{ color: C.slate, fontStyle: "italic" }}>{(vinilos || []).length ? "Sin resultados." : "La biblioteca de vinilos está vacía: crea el primero abajo."}</span>
-            : vinilosFiltrados.map((v) => <Chip key={v.id} activo={f.vinilos.some((x) => x.id === v.id)} onClick={() => togVinilo(v)} title={`${v.tipo || ""} ${v.codigo || ""}`}>{v.nombre}{v.codigo ? ` · ${v.codigo}` : ""}</Chip>)}
+            : vinilosFiltrados.map((v) => <Chip key={v.id} activo={f.vinilos.some((x) => x.id === v.id)} onClick={() => togVinilo(v)} title={`${v.tipo || ""} ${v.codigo || ""}`}>{v.imagen && <span style={{ marginRight: 6, verticalAlign: "middle" }}><Miniatura src={v.imagen} tam={26} titulo={v.nombre} /></span>}{v.nombre}{v.codigo ? ` · ${v.codigo}` : ""}</Chip>)}
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr auto", gap: 8, alignItems: "end", marginTop: 14 }}>
           <div><label style={lbl}>Crear vinilo nuevo</label><input style={inp} value={nuevo.nombre} onChange={(e) => setNuevo({ ...nuevo, nombre: e.target.value })} placeholder="Nombre del vinilo o logo" /></div>
