@@ -40,6 +40,8 @@ import { parsearNumProto, maxNumeros, formatearNumProto, siguienteNumProto, numP
 // mas abajo, y la nota completa junto a `const storage = ...`).
 import { getStorage, ref as storageRef, uploadString, getDownloadURL } from "firebase/storage";
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, updatePassword, EmailAuthProvider, reauthenticateWithCredential, setPersistence, browserSessionPersistence } from "firebase/auth";
+import PuntosRevisionAdmin from "./revision-diseno-puntos-admin";
+import { PUNTOS_REVISION_BASE, puntosRevision } from "./revision-diseno-puntos";
 // (2026-11-19, a pedido de Fredy) Carga por demanda: cada módulo grande es un archivo aparte que se descarga al entrar a él
 // (index.js muestra «Cargando módulo…» mientras llega y precarga Planeación y Corte en segundo plano).
 const ModuloCorte = React.lazy(() => import("./modulo-corte"));
@@ -827,6 +829,8 @@ const INIT_CONFIG = {
   kpiAreas: ["Diseño", "Corte", "Ventas", "Contabilidad", "Planeación"],
   talleresMuestra: [],
   prioridadesMuestra: ["Media", "Urgente", "Súper urgente", "Espera", "Modificación"],
+  // Puntos de la «Revisión de diseño» de una muestra (se editan en Administración → Revisión de diseño).
+  checklistRevision: PUNTOS_REVISION_BASE.slice(),
   roles: [
     { id: "r1", name: "Equipo Interno", perms: ["editar", "aprobar", "declinar", "admin", "corte"], modulos: ["protos", "capsulas", "pedidos", "pedidos_clientes", "corte", "stats", "historial", "contabilidad"] },
     { id: "r2", name: "Cliente", perms: ["aprobar", "declinar"], modulos: ["protos", "capsulas", "pedidos", "pedidos_clientes", "stats", "historial"] },
@@ -2324,7 +2328,7 @@ const TELA_ESTADOS = {
 // REVISIÓN DE DISEÑO de la muestra que vuelve de un taller (a pedido de
 // Fredy, 2026-11-13): checklist + Aprobada/Modificar, guardada por taller en
 // cronograma_muestras.revisiones — de ahí sale la ficha de talleres.
-const CHECKLIST_REVISION = ["Medidas y tallas", "Tela, color y caída", "Costuras y acabados", "Bordado, estampado y detalles", "Ajuste y patrón", "Etiquetas y empaque"];
+// Los puntos del checklist ya no están fijos: salen de config.checklistRevision (Administración → Revisión de diseño); ver revision-diseno-puntos.js.
 function armarPatchRevision(entry, rev, usuario) {
   const aprobada = rev.resultado === "aprobada";
   const registro = { id: uid(), fecha: nowISO(), por: usuario || "", resultado: rev.resultado, checklist: rev.checklist, nota: rev.nota || "", taller: entry.taller || "" };
@@ -2341,7 +2345,8 @@ function textoRevision(rev, taller) {
   if (rev.resultado === "aprobada") return `🔍 Revisión de diseño (${taller || "taller"}): muestra APROBADA.${rev.nota ? ` Nota: ${rev.nota}` : ""}`;
   return `🔍 Revisión de diseño (${taller || "taller"}): MODIFICAR — ${rev.nota}${malos.length ? ` · Corregir: ${malos.join(", ")}.` : ""}`;
 }
-function RevisionDisenoModal({ nombre, taller, onSave, onClose }) {
+function RevisionDisenoModal({ nombre, taller, puntos, onSave, onClose }) {
+  const CHECKLIST_REVISION = puntos && puntos.length ? puntos : PUNTOS_REVISION_BASE;
   const [marcas, setMarcas] = useState({});
   const [nota, setNota] = useState("");
   const completo = CHECKLIST_REVISION.every((pt) => marcas[pt] === 1 || marcas[pt] === 0);
@@ -3081,7 +3086,7 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
       {showEdit && kind === "ref" && <EditRefModal refData={item} config={config} protos={protos} onSave={(p) => onUpdateItem(p)} onClose={() => setShowEdit(false)} />}
       {showEnviado && <EnviadoModal onSave={handleEnviado} onClose={() => setShowEnviado(false)} />}
       {showTaller && <EnviarTallerModal item={item} existing={!["enviado", "terminada"].includes(tallerMasReciente?.estado) ? tallerMasReciente : null} ultimoTaller={tallerMasReciente} config={config} cronogramaMuestras={cronogramaMuestras} onSave={handleGuardarTaller} onClose={() => setShowTaller(false)} />}
-      {showRevisarTaller && tallerMasReciente && <RevisionDisenoModal nombre={`${item.name} — ${item.reference}`} taller={tallerMasReciente.taller} onSave={guardarRevisionTaller} onClose={() => setShowRevisarTaller(false)} />}
+      {showRevisarTaller && tallerMasReciente && <RevisionDisenoModal nombre={`${item.name} — ${item.reference}`} taller={tallerMasReciente.taller} puntos={puntosRevision(config)} onSave={guardarRevisionTaller} onClose={() => setShowRevisarTaller(false)} />}
       {showRevision && <NotaRevisionModal onSave={handleMarcarRevision} onClose={() => setShowRevision(false)} />}
       {showPrecioCotizacion && <PrecioCotizacionModal item={item} onSave={(precio) => { patch({ precioCotizacion: precio }); setShowPrecioCotizacion(false); }} onClose={() => setShowPrecioCotizacion(false)} />}
       <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 16 }}>
@@ -4143,7 +4148,7 @@ function CronogramaDetalleModal({ entry, config, isAdmin, usuario, puedeRevisar,
         </div>
       )}
       {entry.revisiones?.length > 0 && (() => { const ur = entry.revisiones[entry.revisiones.length - 1]; return <div style={{ fontSize: 11, color: T.slate, marginBottom: 10 }}>Última revisión de diseño: {String(ur.fecha).slice(0, 10)}{ur.por ? ` · ${ur.por}` : ""} — {ur.resultado === "aprobada" ? "Aprobada" : "Modificar"}</div>; })()}
-      {revisando && <RevisionDisenoModal nombre={entry.nombre || entry.referencia || "Muestra"} taller={entry.taller} onClose={() => setRevisando(false)} onSave={(rev) => {
+      {revisando && <RevisionDisenoModal nombre={entry.nombre || entry.referencia || "Muestra"} taller={entry.taller} puntos={puntosRevision(config)} onClose={() => setRevisando(false)} onSave={(rev) => {
         onUpdate(entry.id, armarPatchRevision(entry, rev, usuario));
         if (entry.itemId && onModificarNota) onModificarNota(entry, textoRevision(rev, entry.taller), true);
         onClose();
@@ -14789,7 +14794,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     { area: "🗂️ Áreas", items: [["areas_centro_costo", "Centro de Costo"], ["areas_estadisticas", "Estadísticas"], ["areas_reclamos", "Reclamos"], ["areas_programador", "Programador"]] },
     { area: "💰 Financiera", items: [["financiera", "Financiera"]] },
   ];
-  const adminTabs = [["centro_parametros", "🧭 Centro de parámetros"], ["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["lineas", "📐 Línea"], ["rangos", "📏 Rangos"], ["codigos_referencia", "🔢 Códigos de Referencia"], ["disenadores", "🎨 Diseñadores"], ["kpi_areas", "🏢 Áreas (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"], ["notificaciones", "🔔 Notificaciones"], ["papelera", "🗑 Papelera"], ["respaldos", "💾 Respaldos"], ["busint_test", "🔌 Busint (prueba)"]];
+  const adminTabs = [["centro_parametros", "🧭 Centro de parámetros"], ["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["lineas", "📐 Línea"], ["rangos", "📏 Rangos"], ["codigos_referencia", "🔢 Códigos de Referencia"], ["disenadores", "🎨 Diseñadores"], ["kpi_areas", "🏢 Áreas (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["revision_diseno", "🔍 Revisión de diseño"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"], ["notificaciones", "🔔 Notificaciones"], ["papelera", "🗑 Papelera"], ["respaldos", "💾 Respaldos"], ["busint_test", "🔌 Busint (prueba)"]];
   const [nuevoCodigo, setNuevoCodigo] = useState({ categoria: "", linea: "", grupo: "", cliente: "", prefijo: "", rangoInicio: "", rangoFin: "", desbordeInicio: "", desbordeFin: "" });
   // Si tiene valor, el formulario de arriba está EDITANDO esa fila (en vez
   // de crear una nueva) — así se puede corregir, por ejemplo, una fila que
@@ -15131,6 +15136,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
         )}
         {tab === "talleres" && <ListEditor listKey="talleresMuestra" title="Talleres de Muestra" />}
         {tab === "prioridades" && <ListEditor listKey="prioridadesMuestra" title="Prioridades de Muestra" />}
+        {tab === "revision_diseno" && <PuntosRevisionAdmin config={config} onUpdateConfig={onUpdateConfig} T={T} Btn={Btn} />}
         {tab === "roles" && (
           <RolesAdmin config={config} users={users} onUpdateConfig={onUpdateConfig} effectiveModulos={effectiveModulos} disenoItems={DISENO_ITEMS_DEF} disenoBasicas={DISENO_SUBMODULOS} grupos={GRUPOS_MODULOS_DEF} T={T} uid={uid} />
         )}
