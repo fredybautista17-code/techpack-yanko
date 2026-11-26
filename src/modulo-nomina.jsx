@@ -16,6 +16,7 @@ import { getFunctions, httpsCallable } from "firebase/functions";
 import { getStorage, ref as storageRef, uploadString, getDownloadURL } from "firebase/storage";
 import { claveArea } from "./centro-costo-historico-parser";
 import CumpleanosView from "./cumpleanos";
+import CentroTalentoHumano from "./talento-humano-centro";
 import GastosTalentoHumanoView from "./talento-gastos";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
@@ -17970,7 +17971,7 @@ const ITEMS_LIQUIDACIONES_SOLO = [
   { id: "provision_liquidaciones", icon: "📊", label: "Provisión (hasta hoy)" },
   { id: "prestamos", icon: "💵", label: "Préstamos" },
 ];
-export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNovedades, soloLiquidaciones = false, soloLiderArea, liderProduccion = true, liderAsistencia = false, liderResumen = false, todasAreas = false, puedeEditarCatalogos, puedeVerAnomaliasHuellero, puedeVerDuplicadosHuellero, puedeCerrarQuincena, puedeAgregarCobrosManual, puedeAjustarDestajo, puedeEditarHorasExtra, puedeEditarBonificacion, puedeAutorizarPermisos, puedeMarcarRetardos }) {
+export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNovedades, soloLiquidaciones = false, soloLiderArea, liderProduccion = true, liderAsistencia = false, liderResumen = false, todasAreas = false, puedeEditarCatalogos, puedeVerAnomaliasHuellero, puedeVerDuplicadosHuellero, puedeCerrarQuincena, puedeAgregarCobrosManual, puedeAjustarDestajo, puedeEditarHorasExtra, puedeEditarBonificacion, puedeAutorizarPermisos, puedeMarcarRetardos, puedeCentroTalentoHumano }) {
   // Líder de área (hoy: Anny Beltrán y Sarai Méndez, cada una con su Área
   // Interna real -- ver Administrativo → Área Interna): entra con un panel
   // reducido, ya filtrado a su propia gente, en vez del panel completo de
@@ -18314,6 +18315,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
     : soloNovedades
     ? [
         { id: "cumpleanos", icon: "🎂", label: "Cumpleaños" },
+        ...(isAdmin || puedeCentroTalentoHumano ? [{ id: "centro_th", icon: "🧭", label: "Centro de Talento Humano" }] : []),
         { id: "gastos_talento", icon: "💜", label: "Gastos de Talento Humano" },
         { id: "ausencias", icon: "📅", label: "Motivos de Ausencia" },
         { id: "vacaciones", icon: "🏖️", label: "Vacaciones" },
@@ -18355,6 +18357,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
             ...(isAdmin || puedeVerDuplicadosHuellero ? [{ id: "diagnostico_duplicados", icon: "🧹", label: "Diagnóstico de Duplicados (Huellero)" }] : []),
           ] },
         { group: "Personal", icon: "🪪", items: [
+            ...(isAdmin || puedeCentroTalentoHumano ? [{ id: "centro_th", icon: "🧭", label: "Centro de Talento Humano" }] : []),
             { id: "ingreso_personal", icon: "🪪", label: "Ingreso de Personal" },
             { id: "cumpleanos", icon: "🎂", label: "Cumpleaños" },
         { id: "gastos_talento", icon: "💜", label: "Gastos de Talento Humano" },
@@ -19159,6 +19162,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "reporte_area" && !areaLider && !soloNovedades && <ReporteNominaPorAreaView trabajadores={trabajadores} liquidacionesF={liquidacionesF} liquidacionesFD={liquidacionesFD} liquidacionesD={liquidacionesD} liquidacionesPS={liquidacionesPS} causacionManual={causacionManual} />}
           {subView === "trabajadores" && !areaLider && !soloNovedades && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarTrabajador} onDelete={borrarTrabajador} areasNomina={areasNomina} areasTNS={areasTNS} zonasNomina={zonasNomina} tiposContrato={tiposContrato} onSaveArea={guardarAreaNomina} onSaveZona={guardarZonaNomina} turnos={turnos} gruposTrabajo={gruposTrabajo} />}
           {subView === "cumpleanos" && !areaLider && <CumpleanosView db={db} trabajadores={trabajadores} />}
+          {subView === "centro_th" && !areaLider && (isAdmin || !!puedeCentroTalentoHumano) && <CentroTalentoHumano db={db} storage={storage} trabajadores={trabajadores} candidatos={candidatos} currentUser={currentUser} />}
           {subView === "vacaciones" && !areaLider && <VacacionesView trabajadores={trabajadores} ausencias={ausencias} faltas={faltasSinJustificar} areasNomina={areasNomina} turnos={turnos} />}
           {subView === "gastos_talento" && !areaLider && <GastosTalentoHumanoView db={db} functionsClient={functionsClient} currentUser={currentUser} isAdmin={isAdmin} />}
           {subView === "ingreso_personal" && !areaLider && !soloNovedades && <IngresoPersonalView trabajadores={trabajadores} candidatos={candidatos} liquidacionesRetiro={liquidacionesRetiro} isAdmin={isAdminCatalogos} areasNomina={areasNomina} areasTNS={areasTNS} zonasNomina={zonasNomina} tiposContrato={tiposContrato} turnos={turnos} gruposTrabajo={gruposTrabajo} onGuardarTrabajador={guardarTrabajador} onGuardarCandidato={guardarCandidato} onBorrarCandidato={borrarCandidato} onContratarCandidato={contratarCandidato} />}
