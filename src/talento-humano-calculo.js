@@ -2,7 +2,7 @@
 // (2026-11-26, a pedido de Fredy) Tablero de alertas + expediente por trabajador, armado sobre el procedimiento TH-PR-01 (Vinculación y
 // desvinculación). Datos:
 //   nomina_trabajadores/{id}  -> ya existe: nombre, area, zona (cargo), tipoContrato, fechaIngreso, fechaRetiro, sueldo, activo.
-//   th_expedientes/{trabajadorId} -> NUEVO: { fechaFinPrueba, fechaFinContrato, dotacion (false = no le aplica),
+//   nomina_th_expedientes/{trabajadorId} -> NUEVO: { fechaFinPrueba, fechaFinContrato, dotacion (false = no le aplica),
 //                                        formatos: { [codigo]: { estado: "ok"|"venc"|"na"|"pend", fecha, url, nombre, por, en, nota } } }
 // «pend» (o no estar en el mapa) = pendiente. Las fechas del expediente son las que Talento Humano pone: la ficha de Nómina no las guarda.
 

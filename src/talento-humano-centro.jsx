@@ -7,7 +7,7 @@ import { collection, onSnapshot, doc, setDoc } from "firebase/firestore";
 import { ref as storageRef, uploadString, getDownloadURL } from "firebase/storage";
 import { hoyBogotaISO, resumenTablero, avancePorArea, mapaExpedientes, esActivo, formatosDe, porcentajeExpediente, pasoDe, PASOS_TH, fechaCorta, sugerirFinPrueba, aplicaDotacion, esTerminoFijo, diasEntre } from "./talento-humano-calculo";
 
-const COL = "th_expedientes";
+const COL = "nomina_th_expedientes"; // prefijo nomina_: las reglas de Firestore ya la bloquean al rol Cliente
 const C = {
   ink: "#1A1A2E", slate: "#5A5A7A", border: "#E8E2DB", canvas: "#F7F4F0", white: "#FFFFFF",
   red: "#E85D4A", redBg: "#FDF0EE", blue: "#3D6B9E", blueBg: "#EBF1F7", amber: "#C47C1A", amberBg: "#FDF5E6", green: "#2D9E6B", greenBg: "#EBF7F2",
