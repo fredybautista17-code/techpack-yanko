@@ -111,7 +111,6 @@ export default function FichaConfeccionPanel({ item, kind, canEdit, onPatch, cap
   useEffect(() => () => {
     const u = ultimo.current;
     if (u.canEdit && hayCambios(u.b, u.item.fichaConfeccion)) onPatch({ fichaConfeccion: aGuardar(u.b, usuario, new Date().toISOString()) });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const setOp = (id, k, v) => setB((p) => ({ ...p, operaciones: p.operaciones.map((o) => (o.id === id ? { ...o, [k]: v } : o)) }));
