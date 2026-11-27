@@ -15,6 +15,7 @@ import {
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { getStorage, ref as storageRef, uploadString, getDownloadURL } from "firebase/storage";
 import { claveArea } from "./centro-costo-historico-parser";
+import { excesoVacaciones, fechaCorteVacaciones, fmtDiasVac } from "./vacaciones-exceso";
 import CumpleanosView from "./cumpleanos";
 import GastosTalentoHumanoView from "./talento-gastos";
 const firebaseConfig = {
@@ -9182,7 +9183,9 @@ function calcularLiquidacionRetiro(trabajador, fechaCorte, ausencias, faltas = [
   const valorVacacionesTomadas = (sueldoMensual / 30) * diasVacacionesTomados;
   const vacaciones = Math.max(0, vacacionesAcumuladas - valorVacacionesTomadas);
   const totalAPagar = cesantias + intereses + prima + vacaciones;
-  return { fechaIngreso, fechaCorte, diasCalendario, diasNoRemunerados, diasLicenciaNoRemunerada, diasSinJustificar, fechasSinJustificar, diasBase, diasVacacionesTomados, cesantias, intereses, prima, vacaciones, totalAPagar };
+  // (2026-11-27, a pedido de Fredy) Si disfrutó más días de los que ganó, el adelanto no se descuenta (vacaciones queda en $0) pero se muestra.
+  const exc = excesoVacaciones({ diasBase, tomados: diasVacacionesTomados, sueldo: sueldoMensual });
+  return { fechaIngreso, fechaCorte, diasCalendario, diasNoRemunerados, diasLicenciaNoRemunerada, diasSinJustificar, fechasSinJustificar, diasBase, diasVacacionesTomados, diasVacacionesGanados: exc.ganados, diasVacacionesExceso: exc.dias, valorVacacionesExceso: exc.valor, cesantias, intereses, prima, vacaciones, totalAPagar };
 }
 // (2026-09-13, a pedido de Fredy) Cesantias/intereses de un trabajador
 // Fiscal se deben consignar al fondo antes del 14 de febrero del anio
@@ -11261,6 +11264,7 @@ function exportReciboLiquidacionRetiroHTML({ trabajador, liquidacion }) {
       <tr><td style="padding-left:24px;font-size:12px;color:#8A8AA0">— Licencia No Remunerada</td><td style="text-align:right;font-size:12px;color:#8A8AA0">${fmtNum(liquidacion.diasLicenciaNoRemunerada || 0)}</td></tr>
       <tr><td style="padding-left:24px;font-size:12px;color:#8A8AA0">— Días sin justificar</td><td style="text-align:right;font-size:12px;color:#8A8AA0">${fmtNum(liquidacion.diasSinJustificar || 0)}</td></tr>` : ""}
       <tr><td>Días de vacaciones ya tomados</td><td style="text-align:right">${fmtNum(liquidacion.diasVacacionesTomados || 0)}</td></tr>
+      ${(liquidacion.valorVacacionesExceso || 0) > 0 ? `<tr><td style="color:#B23A48">Vacaciones adelantadas (no se descuentan)</td><td style="text-align:right;color:#B23A48;font-weight:700">${fmtDiasVac(liquidacion.diasVacacionesExceso)} días · ${fmtMoney(liquidacion.valorVacacionesExceso)}</td></tr>` : ""}
     </tbody></table>
     ${(liquidacion.fechasSinJustificar && liquidacion.fechasSinJustificar.length) ? `
     <div class="section-title">📋 Fechas de días sin justificar</div>
@@ -17207,12 +17211,16 @@ function VacacionesView({ trabajadores, ausencias, faltas, areasNomina, turnos }
         const tipo = t.tipoNomina || "";
         const sueldo = Number(t.sueldo) || 0;
         const base = { id: t.id, t, nombre: t.nombre || "", area: t.area || "Sin asignar", tipo, sueldo, ingreso: t.fechaIngreso || "", conVacaciones: TIPOS_NOMINA_CON_VACACIONES.includes(tipo) };
-        if (!t.fechaIngreso) return { ...base, sinIngreso: true, ganados: 0, tomados: 0, pendientes: 0, valor: 0, estado: null, calculo: null };
+        if (!t.fechaIngreso) return { ...base, sinIngreso: true, ganados: 0, tomados: 0, pendientes: 0, valor: 0, estado: null, calculo: null, exceso: null };
         const r = calcularLiquidacionRetiro(t, hoy, ausencias, faltas, areasNomina, turnos);
         const ganados = (r.diasBase / 360) * VACACIONES_DIAS_POR_ANIO;
         const tomados = r.diasVacacionesTomados;
         const pendientes = Math.max(0, ganados - tomados);
-        return { ...base, sinIngreso: false, ganados, tomados, pendientes, valor: pendientes * (sueldo / 30), estado: estadoVacaciones(pendientes), calculo: r };
+        // (2026-11-27, a pedido de Fredy) Adelanto: se proyecta hasta el fin de la última vacación programada (ej. 15/12), no solo a hoy.
+        const fProy = fechaCorteVacaciones(ausencias, t.id, hoy);
+        const rProy = fProy > hoy ? calcularLiquidacionRetiro(t, fProy, ausencias, faltas, areasNomina, turnos) : r;
+        const exceso = { fecha: fProy, ganados: rProy.diasVacacionesGanados, tomados: rProy.diasVacacionesTomados, dias: rProy.diasVacacionesExceso, valor: rProy.valorVacacionesExceso };
+        return { ...base, sinIngreso: false, ganados, tomados, pendientes, valor: pendientes * (sueldo / 30), estado: estadoVacaciones(pendientes), calculo: r, exceso };
       });
   }, [trabajadores, ausencias, faltas, areasNomina, turnos, hoy]);
   const filasTipo = filasBase.filter((f) => verTodos || f.conVacaciones);
@@ -17225,6 +17233,9 @@ function VacacionesView({ trabajadores, ausencias, faltas, areasNomina, turnos }
   const totalDias = filas.reduce((s, f) => s + f.pendientes, 0);
   const totalValor = filas.reduce((s, f) => s + f.valor, 0);
   const aRevisar = filas.filter((f) => f.estado && f.estado.key === "revisar").length;
+  const conExceso = filas.filter((f) => f.exceso && f.exceso.dias > 0);
+  const excesoDias = conExceso.reduce((sum, f) => sum + f.exceso.dias, 0);
+  const excesoValor = conExceso.reduce((sum, f) => sum + f.exceso.valor, 0);
   const sinIngreso = filasTipo.filter((f) => f.sinIngreso).length;
   const fmtD = (n) => Number(n || 0).toLocaleString("es-CO", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
   const antiguedad = (dias) => `${Math.floor(dias / 360)} a ${Math.floor((dias % 360) / 30)} m`;
@@ -17255,7 +17266,16 @@ function VacacionesView({ trabajadores, ausencias, faltas, areasNomina, turnos }
     { key: "tomados", label: "Tomados", align: "right", render: (f) => (f.sinIngreso ? "—" : fmtNum(f.tomados)) },
     { key: "pendientes", label: "Pendientes", align: "right", render: (f) => (f.sinIngreso ? "—" : <b>{fmtD(f.pendientes)}</b>) },
     { key: "valor", label: "Valor pendiente", align: "right", render: (f) => (f.sinIngreso ? "—" : fmtMoney(f.valor)) },
-    { key: "estado", label: "Estado", align: "right", render: (f) => (f.estado ? <span style={{ background: f.estado.bg, color: f.estado.color, fontWeight: 700, fontSize: 11, padding: "3px 10px", borderRadius: 99 }}>{f.estado.label}</span> : "—") },
+    { key: "estado", label: "Estado", align: "right", render: (f) => (f.estado ? (
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+        <span style={{ background: f.estado.bg, color: f.estado.color, fontWeight: 700, fontSize: 11, padding: "3px 10px", borderRadius: 99 }}>{f.estado.label}</span>
+        {f.exceso && f.exceso.dias > 0 && (
+          <span title={`Al ${fmtFechaISO(f.exceso.fecha)} habrá disfrutado ${fmtNum(f.exceso.tomados)} días y ganado ${fmtD(f.exceso.ganados)}`} style={{ background: C.redBg, color: C.red, fontWeight: 700, fontSize: 11, padding: "3px 10px", borderRadius: 99 }}>
+            {f.exceso.fecha > hoy ? "Adelanto previsto" : "Adelantó"} {fmtDiasVac(f.exceso.dias)} d
+          </span>
+        )}
+      </div>
+    ) : "—") },
   ];
   const selStyle = { padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, color: C.ink, background: C.white, fontFamily: "inherit" };
   return (
@@ -17268,6 +17288,7 @@ function VacacionesView({ trabajadores, ausencias, faltas, areasNomina, turnos }
         <KPI icon="📅" label="Días pendientes (total)" value={fmtD(totalDias)} color={C.ink} bg={C.canvas} sub="días hábiles" />
         <KPI icon="💰" label="Acumulado en vacaciones" value={fmtMoney(totalValor)} color={C.violet} bg={C.violetBg} sub="lo que se debe hoy" />
         <KPI icon="⚠️" label="Para revisar" value={fmtNum(aRevisar)} color={C.red} bg={C.redBg} sub="más de 30 días sin tomar" />
+        {conExceso.length > 0 && <KPI icon="⏩" label="Vacaciones adelantadas" value={fmtDiasVac(excesoDias)} color={C.red} bg={C.redBg} sub={`${fmtNum(conExceso.length)} ${conExceso.length === 1 ? "trabajador" : "trabajadores"} · ${fmtMoney(excesoValor)}`} />}
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", marginBottom: 12 }}>
         <div style={{ flex: "1 1 200px", minWidth: 160 }}><FInput value={busqueda} onChange={setBusqueda} placeholder="Buscar trabajador…" icon="🔍" /></div>
@@ -17306,6 +17327,12 @@ function VacacionesView({ trabajadores, ausencias, faltas, areasNomina, turnos }
             <KPI icon="✅" label="Tomados" value={fmtNum(detalle.tomados)} color={C.green} bg={C.greenBg} />
             <KPI icon="⏳" label="Pendientes" value={fmtD(detalle.pendientes)} color={detalle.estado.color} bg={detalle.estado.bg} sub={detalle.estado.label} />
           </div>
+          {detalle.exceso && detalle.exceso.dias > 0 && (
+            <div style={{ fontSize: 12.5, color: C.ink, background: C.redBg, border: `1px solid ${C.red}33`, borderRadius: 8, padding: "10px 12px", marginBottom: 12, lineHeight: 1.55 }}>
+              <b style={{ color: C.red }}>⏩ Vacaciones adelantadas: {fmtDiasVac(detalle.exceso.dias)} días ({fmtMoney(detalle.exceso.valor)})</b><br />
+              {detalle.exceso.fecha > hoy ? `Al ${fmtFechaISO(detalle.exceso.fecha)}, cuando termine lo programado, habrá disfrutado ${fmtNum(detalle.exceso.tomados)} días y habrá ganado ${fmtD(detalle.exceso.ganados)}.` : `Ha disfrutado ${fmtNum(detalle.exceso.tomados)} días y ha ganado ${fmtD(detalle.exceso.ganados)}.`} ATLAS no se lo descuenta de la liquidación (queda en $0): es un adelanto de la empresa, salvo que se decida otra cosa con autorización escrita del trabajador.
+            </div>
+          )}
           {periodos.length > 0 && (
             <div style={{ fontSize: 12, color: C.slate, marginBottom: 10 }}>
               Registrados: <b>{fmtNum(periodos.reduce((sum, p) => sum + p.dias, 0))}</b> días hábiles · <b>{fmtNum(detalle.tomados)}</b> ya disfrutados a hoy · <b>{fmtNum(Math.max(0, periodos.reduce((sum, p) => sum + p.dias, 0) - detalle.tomados))}</b> programados
@@ -17597,6 +17624,12 @@ function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesR
             <KPI icon="🏖️" label="Vacaciones" value={fmtMoney(resultado.vacaciones)} color={C.violet} bg={C.violetBg} />
             <KPI icon="✅" label="Total a pagar" value={fmtMoney(resultado.totalAPagar)} color={C.green} bg={C.greenBg} />
           </div>
+          {(resultado.valorVacacionesExceso || 0) > 0 && (
+            <div style={{ fontSize: 12.5, color: C.ink, background: C.redBg, border: `1px solid ${C.red}33`, borderRadius: 8, padding: "10px 12px", marginBottom: 14, maxWidth: 700, lineHeight: 1.55 }}>
+              <b style={{ color: C.red }}>⏩ Vacaciones adelantadas: {fmtDiasVac(resultado.diasVacacionesExceso)} días ({fmtMoney(resultado.valorVacacionesExceso)})</b><br />
+              Disfrutó {fmtNum(resultado.diasVacacionesTomados)} días de vacaciones y ganó {fmtDiasVac(resultado.diasVacacionesGanados)}. En esta liquidación las vacaciones quedan en $0: ATLAS no descuenta el adelanto; si se va a descontar, debe tener autorización escrita del trabajador.
+            </div>
+          )}
           {!!(resultado.fechasSinJustificar || []).length && (
             <div style={{ fontSize: 12, color: C.slate, marginBottom: 14, maxWidth: 700 }}>
               <strong style={{ color: C.ink }}>Fechas sin justificar descontadas:</strong> {resultado.fechasSinJustificar.map((f) => fmtFechaISO(f)).join(" · ")}
