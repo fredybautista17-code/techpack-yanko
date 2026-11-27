@@ -20,8 +20,8 @@ import { evaluarCorteContraTeorico } from "./consumo-tela-calculo";
 import EquiposCorteVista from "./corte-equipos-vista";
 import { diasDeTrabajoDelMes } from "./dias-habiles";
 import { useVacacionesCorte } from "./use-vacaciones-corte";
-import { costoCorteConVacaciones, costoDiaCorte, corteSinFicha, resumenVacacionesCorte } from "./corte-vacaciones";
-import AvisoVacacionesCorte from "./aviso-vacaciones-corte";
+import { costoCorteConVacaciones, costoDiaCorte, corteSinFicha, resumenVacacionesCorte, lecturaCostoPagado, textoDiasAusencia } from "./corte-vacaciones";
+import AvisoVacacionesCorte, { LineaCostoPagado } from "./aviso-vacaciones-corte";
 import { CandadoCorteContext, AvisoCandadoCorte, useCandadoCorte } from "./ficha-candado";
 import { marcadaDeColor, opcionesCapasMarcada } from "./corte-capas";
 import { huecosLibres, totalLibreMin, fmtDuracionMin, fmtHoraMin, colorDeLote, nombreMesonBonito, MESON_LIBRE_INICIO_MIN, MESON_LIBRE_FIN_MIN } from "./mesones-libre";
@@ -8900,8 +8900,13 @@ function CentroCosto({ pedidos, trabajadores, preciosMap, isAdmin, currentUser }
       unidades: datos?.unidades || 0,
       ingreso: datos?.ingreso || 0,
       costo: aj.costo,
+      costoPagado: aj.costoPagado,
       vacDias: aj.dias.length,
+      vacDiasVac: aj.diasVac.length,
+      vacDiasLic: aj.diasLic.length,
       vacReduccion: aj.reduccion,
+      vacReduccionVac: aj.reduccionVac,
+      vacReduccionLic: aj.reduccionLic,
       enNomina: true,
     });
     usados.add(key);
@@ -8919,6 +8924,7 @@ function CentroCosto({ pedidos, trabajadores, preciosMap, isAdmin, currentUser }
   const estado = totalCosto === 0 ? null : totalIngreso >= totalCosto ? "ok" : "bad";
   const resumenVac = resumenVacacionesCorte((trabajadores || []).filter(trabajadorActivoPeriodo), periodo, { fechaDia, mesSel, anioSel }, vacCtx);
   const reduccionVac = filas.reduce((s, f) => s + (f.vacReduccion || 0), 0);
+  const lectPagado = lecturaCostoPagado(filas, totalIngreso);
   const sinFichaCorte = corteSinFicha(trabajadores, vacCtx.fichas);
   const etiquetaPeriodo =
     periodo === "dia"
@@ -9113,18 +9119,20 @@ function CentroCosto({ pedidos, trabajadores, preciosMap, isAdmin, currentUser }
         </div>
       )}
       {periodo === "anio" && <CentroCostoAnioPanel key={anioSel} areaNombre="CORTE" anioInicial={anioSel} currentUser={currentUser} puedeCargar={!!isAdmin} />}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 20 }}>
+      <div style={{ display: "grid", gridTemplateColumns: lectPagado.hay ? "repeat(auto-fit, minmax(200px, 1fr))" : "repeat(4,1fr)", gap: 14, marginBottom: 20 }}>
         <KPICard icon="✂" label={`Unidades ${periodo === "dia" ? "Día" : periodo === "anio" ? "Año" : "Mes"}`} value={fmtNum(totalUnidades)} color={C.blue} bg={C.blueBg} />
         <KPICard icon="💵" label="Ingreso Corte" value={fmtCOP(totalIngreso)} color={C.green} bg={C.greenBg} />
-        <KPICard icon="💸" label="Costo Nómina" value={fmtCOP(totalCosto)} color={C.amber} bg={C.amberBg} />
+        <KPICard icon="💸" label={lectPagado.hay ? "Costo de días trabajados" : "Costo Nómina"} value={fmtCOP(totalCosto)} color={C.amber} bg={C.amberBg} sub={lectPagado.hay ? "sin vacaciones ni licencia · lo que mide la meta" : undefined} />
+        {lectPagado.hay && <KPICard icon="🧾" label="Costo pagado" value={fmtCOP(lectPagado.costoPagado)} color="#6D4FB3" bg="#F1ECFA" sub="nómina real: con vacaciones, sin licencia" />}
         <KPICard
           icon={rentabilidad >= 0 ? "📈" : "📉"}
-          label="Rentabilidad"
+          label={lectPagado.hay ? "Rentabilidad (días trabajados)" : "Rentabilidad"}
           value={fmtCOP(rentabilidad)}
           color={rentabilidad >= 0 ? C.green : C.red}
           bg={rentabilidad >= 0 ? C.greenBg : C.redBg}
           sub={rentabilidad >= 0 ? "✓ Rentable" : "⚠ Pérdida"}
         />
+        {lectPagado.hay && <KPICard icon={lectPagado.resultado >= 0 ? "📈" : "📉"} label="Resultado con costo pagado" value={fmtCOP(lectPagado.resultado)} color={lectPagado.resultado >= 0 ? C.green : C.red} bg={lectPagado.resultado >= 0 ? C.greenBg : C.redBg} sub="las vacaciones pagadas no producen" />}
       </div>
       {estado && (
         <div
@@ -9142,10 +9150,11 @@ function CentroCosto({ pedidos, trabajadores, preciosMap, isAdmin, currentUser }
           }}
         >
           <span style={{ width: 12, height: 12, borderRadius: "50%", background: estado === "ok" ? C.green : C.red, display: "inline-block" }} />
-          {estado === "ok" ? "El corte cubre la nómina" : "El corte NO cubre la nómina"} · {pctCobertura.toFixed(1)}% de cobertura
+          {estado === "ok" ? (lectPagado.hay ? "El corte cubre la nómina de lo trabajado" : "El corte cubre la nómina") : (lectPagado.hay ? "El corte NO cubre la nómina de lo trabajado" : "El corte NO cubre la nómina")} · {pctCobertura.toFixed(1)}% de cobertura
         </div>
       )}
-      <AvisoVacacionesCorte resumen={resumenVac} reduccion={reduccionVac} sinFicha={sinFichaCorte} etiqueta={etiquetaPeriodo} />
+      <LineaCostoPagado lectura={lectPagado} />
+      <AvisoVacacionesCorte resumen={resumenVac} reduccion={reduccionVac} reduccionVac={lectPagado.reduccionVac} reduccionLic={lectPagado.reduccionLic} sinFicha={sinFichaCorte} etiqueta={etiquetaPeriodo} />
       <EquiposCorteVista db={db} filas={filas} />
       {!filas.length ? (
         <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>
@@ -9181,7 +9190,7 @@ function CentroCosto({ pedidos, trabajadores, preciosMap, isAdmin, currentUser }
                     )}
                     {f.vacDias > 0 && (
                       <span title="Sueldo de esos días no cuenta en el costo" style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: C.blue, background: C.blueBg, padding: "2px 6px", borderRadius: 10 }}>
-                        🏖 {f.vacDias} {f.vacDias === 1 ? "día" : "días"} de vacaciones
+                        🏖 {textoDiasAusencia(f)}
                       </span>
                     )}
                   </td>

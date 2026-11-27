@@ -5,6 +5,8 @@ import { calcularEquiposCorte } from "./corte-equipos";
 import { unirPorAlias } from "./nombres-alias";
 import { superponerNominaReal, resultadoPersona, matrizAyudaPorMes } from "./centro-costo-nomina-real";
 import { esDiaDeTrabajoISO, diasDeTrabajoDelMes } from "./dias-habiles";
+import { ajustarCostoPagadoCorte, reduccionLicenciaPersonaMes } from "./corte-vacaciones";
+import { useVacacionesCorte } from "./use-vacaciones-corte";
 import { AREAS_HISTORICO, claveArea, nombreAreaPorClave, normTexto, parsearHojaHistorico, unirResultados } from "./centro-costo-historico-parser";
 
 // ─── CENTRO DE COSTO — HISTÓRICO DEL AÑO POR ÁREA ───────────────────────────
@@ -818,7 +820,15 @@ export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentU
 
 
   const claveSel = claveArea(areaNombre || "CORTE");
-  const { historico, pedidos, trabajadoresCorte, cargando, cierresReales: cierresResueltos, datosAreaReal: datosArea, congelados } = useCentroCostoDatos(anioSel, claveSel, true);
+  const { historico, pedidos, trabajadoresCorte, cargando, cierresReales: cierresResueltos, datosAreaReal: datosAreaBase, congelados } = useCentroCostoDatos(anioSel, claveSel, true);
+  // (2026-11-27) CORTE muestra el costo PAGADO: nómina completa menos solo la licencia no remunerada (las vacaciones sí se pagan).
+  const vacCtx = useVacacionesCorte(db);
+  const ajusteCorte = useMemo(
+    () => ajustarCostoPagadoCorte(datosAreaBase.CORTE, anioSel, trabajadoresCorte, vacCtx),
+    [datosAreaBase, anioSel, trabajadoresCorte, vacCtx]
+  );
+  const datosArea = useMemo(() => (datosAreaBase.CORTE ? { ...datosAreaBase, CORTE: ajusteCorte } : datosAreaBase), [datosAreaBase, ajusteCorte]);
+  const conPagado = claveSel === "CORTE" && ajusteCorte.ajustado;
   // Roles de los equipos de Corte (se arman en Corte → Centro de Costo).
   const [aliasCorte, setAliasCorte] = useState({});
   useEffect(() => {
@@ -896,8 +906,16 @@ export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentU
     if (!f) return [];
     if (f.fuente === "cierre") return cierresResueltos.get(`${claveSel}|${anioSel}-${String(mesAbierto).padStart(2, "0")}`)?.trabajadores || [];
     if (f.fuente !== "vivo") return [];
-    return filasCorteMes(pedidos, trabajadoresCorte, `${anioSel}-${String(mesAbierto).padStart(2, "0")}`, congelados);
-  }, [mesAbierto, sel, cierresResueltos, claveSel, anioSel, pedidos, trabajadoresCorte, congelados]);
+    const mkAb = `${anioSel}-${String(mesAbierto).padStart(2, "0")}`;
+    const filasMes = filasCorteMes(pedidos, trabajadoresCorte, mkAb, congelados);
+    if (!(claveSel === "CORTE" && f.ausencias)) return filasMes;
+    // Igual que el mes: a cada persona se le descuenta solo su licencia no remunerada.
+    return filasMes.map((x) => {
+      const t = (trabajadoresCorte || []).find((y) => normTexto(y.nombre) === normTexto(x.nombre));
+      const red = t ? reduccionLicenciaPersonaMes(t, vacCtx, mkAb) : 0;
+      return red > 0 ? { ...x, costo: Math.max(0, x.costo - red) } : x;
+    });
+  }, [mesAbierto, sel, cierresResueltos, claveSel, anioSel, pedidos, trabajadoresCorte, congelados, vacCtx]);
 
   const hoy = new Date();
   const mesActual = hoy.getFullYear() === Number(anioSel) ? hoy.getMonth() + 1 : hoy.getFullYear() > Number(anioSel) ? 12 : 0;
@@ -999,7 +1017,7 @@ export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentU
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
             <tr style={{ borderBottom: `2px solid ${C.border}` }}>
-              {th("Mes")}{th("Valor producido", true)}{th("Costo nómina", true)}{th("Resultado", true)}{th("Cobertura", true)}{th("")}{th("Fuente")}
+              {th("Mes")}{th("Valor producido", true)}{th(conPagado ? "Costo pagado" : "Costo nómina", true)}{th("Resultado", true)}{th("Cobertura", true)}{th("")}{th("Fuente")}
             </tr>
           </thead>
           <tbody>
@@ -1024,7 +1042,14 @@ export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentU
                 <tr onClick={() => setMesAbierto(abierto ? null : m)} style={{ borderBottom: abierto ? "none" : `1px solid ${C.border}`, cursor: "pointer", background: abierto ? C.canvas : "transparent" }} title="Toca para ver el detalle de este mes">
                   <td style={{ padding: "9px 10px", fontWeight: 800, color: C.ink }}>{abierto ? "▾" : "▸"} {nombre}</td>
                   <td style={{ padding: "9px 10px", textAlign: "right", color: C.green, fontWeight: 700 }}>{fmtMoney(f.valor)}</td>
-                  <td style={{ padding: "9px 10px", textAlign: "right", color: C.amber, fontWeight: 700 }}>{fmtMoney(f.costo)}</td>
+                  <td style={{ padding: "9px 10px", textAlign: "right", color: C.amber, fontWeight: 700 }}>
+                    {fmtMoney(f.costo)}
+                    {f.ausencias && (f.ausencias.diasVac > 0 || f.ausencias.diasLic > 0) && (
+                      <div style={{ fontSize: 10, fontWeight: 600, color: C.slate, maxWidth: 230, marginLeft: "auto" }}>
+                        {[f.ausencias.diasVac > 0 ? `incluye ${f.ausencias.diasVac} ${f.ausencias.diasVac === 1 ? "día" : "días"} de vacaciones pagadas (${fmtMoney(f.ausencias.reduccionVac)})` : "", f.ausencias.diasLic > 0 ? `licencia no remunerada descontada (${fmtMoney(f.ausencias.reduccionLic)})` : ""].filter(Boolean).join(" · ")}
+                      </div>
+                    )}
+                  </td>
                   <td style={{ padding: "9px 10px", textAlign: "right", color: res >= 0 ? C.green : C.red, fontWeight: 800 }}>
                     {fmtMoney(res)}
                     <div style={{ fontSize: 10, fontWeight: 700 }}>{res >= 0 ? "excedente" : f.nominaReal ? "ayuda: horas + nómina" : "pérdida"}</div>
@@ -1074,6 +1099,12 @@ export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentU
         </table>
       </div>
       <div style={{ fontSize: 11, color: C.slate, marginTop: 6 }}>La barra verde es el valor producido; la raya naranja marca el costo de nómina de ese mes.</div>
+      {conPagado && (
+        <div style={{ fontSize: 11, color: C.slate, marginTop: 4, lineHeight: 1.5 }}>
+          Costo pagado = nómina completa menos solo la licencia no remunerada: las vacaciones sí se pagan, por eso siguen contando como costo. Los meses cerrados no se modifican; el descuento se aplica al mostrarlos.
+          {ajusteCorte.mesesSinAusencias.length > 0 && ` Los meses anteriores a ${MESES_LARGOS[Number(ajusteCorte.primerMes.slice(5, 7)) - 1]} ${ajusteCorte.primerMes.slice(0, 4)} no tienen Ausencias en ATLAS: se muestran como estaban.`}
+        </div>
+      )}
 
       {resumenAreas.length > 1 && (
         <div style={{ marginTop: 22 }}>

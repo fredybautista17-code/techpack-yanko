@@ -7,8 +7,8 @@ import ConsumoTelaCortePanel from "./consumo-tela-corte";
 import EquiposCorteVista from "./corte-equipos-vista";
 import { diasDeTrabajoDelMes } from "./dias-habiles";
 import { useVacacionesCorte } from "./use-vacaciones-corte";
-import { costoCorteConVacaciones, costoDiaCorte, corteSinFicha, resumenVacacionesCorte } from "./corte-vacaciones";
-import AvisoVacacionesCorte from "./aviso-vacaciones-corte";
+import { costoCorteConVacaciones, costoDiaCorte, corteSinFicha, resumenVacacionesCorte, lecturaCostoPagado, textoDiasAusencia } from "./corte-vacaciones";
+import AvisoVacacionesCorte, { LineaCostoPagado } from "./aviso-vacaciones-corte";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
   authDomain: "techpack-yanko-f37b8.firebaseapp.com",
@@ -152,7 +152,7 @@ export default function CentroCostoCorteEnAreas({ areaNombre, currentUser }) {
     const key = norm(t.nombre);
     const datos = porCortador.get(key);
     const aj = costoCorteConVacaciones(t, costoPeriodo(t.sueldo || 0), periodo, { fechaDia, mesSel, anioSel }, vacCtx);
-    filas.push({ nombre: t.nombre, unidades: datos?.unidades || 0, ingreso: datos?.ingreso || 0, costo: aj.costo, vacDias: aj.dias.length, vacReduccion: aj.reduccion, enNomina: true });
+    filas.push({ nombre: t.nombre, unidades: datos?.unidades || 0, ingreso: datos?.ingreso || 0, costo: aj.costo, costoPagado: aj.costoPagado, vacDias: aj.dias.length, vacDiasVac: aj.diasVac.length, vacDiasLic: aj.diasLic.length, vacReduccion: aj.reduccion, vacReduccionVac: aj.reduccionVac, vacReduccionLic: aj.reduccionLic, enNomina: true });
     usados.add(key);
   });
   porCortador.forEach((datos, key) => {
@@ -168,6 +168,7 @@ export default function CentroCostoCorteEnAreas({ areaNombre, currentUser }) {
   const estado = totalCosto === 0 ? null : totalIngreso >= totalCosto ? "ok" : "bad";
   const resumenVac = resumenVacacionesCorte(trabajadores.filter(trabajadorActivoPeriodo), periodo, { fechaDia, mesSel, anioSel }, vacCtx);
   const reduccionVac = filas.reduce((s, f) => s + (f.vacReduccion || 0), 0);
+  const lectPagado = lecturaCostoPagado(filas, totalIngreso);
   const sinFichaCorte = corteSinFicha(trabajadores, vacCtx.fichas);
   // Ingreso por pedido: los mismos cortes del periodo, agrupados por pedido.
   const porPedido = [];
@@ -322,16 +323,19 @@ export default function CentroCostoCorteEnAreas({ areaNombre, currentUser }) {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 14, marginBottom: 20 }}>
         <KPI icon="✂" label={`Unidades ${nombrePeriodoUnid}`} value={fmtNum(totalUnidades)} color={C.blue} bg={C.blueBg} />
         <KPI icon="💵" label="Ingreso Corte" value={fmtMoney(totalIngreso)} color={C.green} bg={C.greenBg} />
-        <KPI icon="💸" label="Costo Nómina" value={fmtMoney(totalCosto)} color={C.amber} bg={C.amberBg} />
-        <KPI icon={rentabilidad >= 0 ? "📈" : "📉"} label="Rentabilidad" value={fmtMoney(rentabilidad)} color={rentabilidad >= 0 ? C.green : C.red} bg={rentabilidad >= 0 ? C.greenBg : C.redBg} sub={rentabilidad >= 0 ? "✓ Rentable" : "⚠ Pérdida"} />
+        <KPI icon="💸" label={lectPagado.hay ? "Costo de días trabajados" : "Costo Nómina"} value={fmtMoney(totalCosto)} color={C.amber} bg={C.amberBg} sub={lectPagado.hay ? "sin vacaciones ni licencia · lo que mide la meta" : undefined} />
+        {lectPagado.hay && <KPI icon="🧾" label="Costo pagado" value={fmtMoney(lectPagado.costoPagado)} color="#6D4FB3" bg="#F1ECFA" sub="nómina real: con vacaciones, sin licencia" />}
+        <KPI icon={rentabilidad >= 0 ? "📈" : "📉"} label={lectPagado.hay ? "Rentabilidad (días trabajados)" : "Rentabilidad"} value={fmtMoney(rentabilidad)} color={rentabilidad >= 0 ? C.green : C.red} bg={rentabilidad >= 0 ? C.greenBg : C.redBg} sub={rentabilidad >= 0 ? "✓ Rentable" : "⚠ Pérdida"} />
+        {lectPagado.hay && <KPI icon={lectPagado.resultado >= 0 ? "📈" : "📉"} label="Resultado con costo pagado" value={fmtMoney(lectPagado.resultado)} color={lectPagado.resultado >= 0 ? C.green : C.red} bg={lectPagado.resultado >= 0 ? C.greenBg : C.redBg} sub="las vacaciones pagadas no producen" />}
       </div>
       {estado && (
         <div style={{ display: "inline-flex", alignItems: "center", gap: 10, padding: "8px 18px", borderRadius: 30, fontWeight: 800, fontSize: 13, marginBottom: 24, background: estado === "ok" ? C.greenBg : C.redBg, color: estado === "ok" ? C.green : C.red }}>
           <span style={{ width: 12, height: 12, borderRadius: "50%", background: estado === "ok" ? C.green : C.red, display: "inline-block" }} />
-          {estado === "ok" ? "El corte cubre la nómina" : "El corte NO cubre la nómina"} · {pctCobertura.toFixed(1)}% de cobertura
+          {estado === "ok" ? (lectPagado.hay ? "El corte cubre la nómina de lo trabajado" : "El corte cubre la nómina") : (lectPagado.hay ? "El corte NO cubre la nómina de lo trabajado" : "El corte NO cubre la nómina")} · {pctCobertura.toFixed(1)}% de cobertura
         </div>
       )}
-      <AvisoVacacionesCorte resumen={resumenVac} reduccion={reduccionVac} sinFicha={sinFichaCorte} etiqueta={etiquetaPeriodo} />
+      <LineaCostoPagado lectura={lectPagado} />
+      <AvisoVacacionesCorte resumen={resumenVac} reduccion={reduccionVac} reduccionVac={lectPagado.reduccionVac} reduccionLic={lectPagado.reduccionLic} sinFicha={sinFichaCorte} etiqueta={etiquetaPeriodo} />
       <EquiposCorteVista db={db} filas={filas} />
       {!filas.length ? (
         <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>Sin trabajadores en nómina ni cortes registrados en este periodo.</div>
@@ -353,7 +357,7 @@ export default function CentroCostoCorteEnAreas({ areaNombre, currentUser }) {
                     {f.enNomina && f.unidades === 0 && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: C.slate, background: C.canvas, padding: "2px 6px", borderRadius: 10 }}>sin cortes en el periodo</span>}
                     {f.vacDias > 0 && (
                       <span title="Sueldo de esos días no cuenta en el costo" style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: C.blue, background: C.blueBg, padding: "2px 6px", borderRadius: 10 }}>
-                        🏖 {f.vacDias} {f.vacDias === 1 ? "día" : "días"} de vacaciones
+                        🏖 {textoDiasAusencia(f)}
                       </span>
                     )}
                   </td>
@@ -473,7 +477,7 @@ function calcularFilasCorteCC({ pedidos, trabajadores, periodo, fechaDia, mesSel
     const d = por.get(k);
     // (2026-11-18) Las vacaciones de Nómina se restan del costo del periodo.
     const aj = costoCorteConVacaciones(t, costoP(t.sueldo || 0), periodo, { fechaDia, mesSel, anioSel }, vac || { fichas: [], ausencias: [] });
-    filas.push({ id: t.id || k, nombre: t.nombre, unidades: d?.unidades || 0, valorProducido: d?.ingreso || 0, costo: aj.costo, vacDias: aj.dias.length, vacReduccion: aj.reduccion, sinSueldo: !t.sueldo });
+    filas.push({ id: t.id || k, nombre: t.nombre, unidades: d?.unidades || 0, valorProducido: d?.ingreso || 0, costo: aj.costo, vacDias: aj.dias.length, vacDiasVac: aj.diasVac.length, vacDiasLic: aj.diasLic.length, vacReduccion: aj.reduccion, vacReduccionVac: aj.reduccionVac, vacReduccionLic: aj.reduccionLic, sinSueldo: !t.sueldo });
     usados.add(k);
   });
   por.forEach((d, k) => {
@@ -787,7 +791,7 @@ export function CentroCostoCierreCorte({ currentUser }) {
         )}
         {periodo === "anio" && <input type="number" value={anioSel} onChange={(e) => setAnioSel(Number(e.target.value) || anioSel)} style={{ ...inp, width: 90 }} />}
       </div>
-      <AvisoVacacionesCorte resumen={resumenVacCierre} reduccion={reduccionVacCierre} sinFicha={sinFichaCierre} etiqueta={etiquetaPeriodo} />
+      <AvisoVacacionesCorte resumen={resumenVacCierre} reduccion={reduccionVacCierre} reduccionVac={filas.reduce((s, f) => s + (f.vacReduccionVac || 0), 0)} reduccionLic={filas.reduce((s, f) => s + (f.vacReduccionLic || 0), 0)} sinFicha={sinFichaCierre} etiqueta={etiquetaPeriodo} />
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 14 }}>
         <KPI icon="💵" label="Valor producido (Ingreso Corte)" value={fmtMoney(totalValor)} color={C.green} bg={C.greenBg} />
         <KPI icon="🏦" label={`Costo nómina (${etiquetaPeriodo})`} value={fmtMoney(totalCosto)} color={C.violet} bg={C.violetBg} />

@@ -18,6 +18,18 @@ export function enVacacionesDia(ausencias, trabajadorId, iso) {
     && String(a.fechaInicio || "") <= iso && String(a.fechaFin || a.fechaInicio || "") >= iso);
 }
 
+// (2026-11-27) Cómo se paga ese día: "vacaciones" (se paga: es costo real) o "licencia" (licencia no remunerada: no se paga). null = no hay ausencia.
+// Si coinciden las dos el mismo día, manda la licencia (lo que no se paga).
+export function tipoAusenciaDia(ausencias, trabajadorId, iso) {
+  let tipo = null;
+  (ausencias || []).forEach((a) => {
+    if (!a || a.trabajadorId !== trabajadorId || !esMotivoVacaciones(a.motivo)) return;
+    if (!(String(a.fechaInicio || "") <= iso && String(a.fechaFin || a.fechaInicio || "") >= iso)) return;
+    if (norm(a.motivo) === "LICENCIA NO REMUNERADA") tipo = "licencia"; else if (tipo !== "licencia") tipo = "vacaciones";
+  });
+  return tipo;
+}
+
 // Quiénes cuentan como «grupo» del área: fichas activas (se excluyen las medidas como base administrativa).
 export function personasDelGrupo(trabajadores, filtro) {
   return (trabajadores || []).filter((t) => t && t.activo !== false && !t.medirComoBaseAdministrativa && (!filtro || filtro(t)));
