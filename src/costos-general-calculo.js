@@ -7,6 +7,7 @@
 // aquí solo cuenta la diferencia entre lo que se les pagó y lo que produjeron, más su provisión.
 import { normTexto, parseNumero } from "./centro-costo-historico-parser";
 import { calcularEquiposCorte } from "./corte-equipos";
+import { diasDeTrabajoDelMes } from "./dias-habiles";
 
 // Mismas tasas de Nómina (modulo-nomina.jsx): cesantías y prima 8,33 %, intereses 12 % de las cesantías, vacaciones 4,17 %.
 export const TASA_CESANTIAS = 0.0833;
@@ -334,18 +335,60 @@ export function detalleFiscal(liquidaciones, fichas, areasFuera, excepciones) {
     .sort((a, b) => (a.cuenta === b.cuenta ? b.costo - a.costo : a.cuenta ? -1 : 1));
 }
 
+// ─── Periodo de la pantalla (2026-11-27, a pedido de Fredy) ──────────────────
+// Los gastos del Excel son mensuales; para compararlos con lo que recogen los lotes DÍA A DÍA se reparten por días de trabajo
+// (misma regla de dias-habiles.js: sin domingos ni festivos, con sábado puente). tipo: "mes" | "hoy" | "q1" | "q2".
+// «Hasta hoy» solo aplica al mes en curso; en un mes ya pasado (o futuro) equivale a «mes completo».
+const pad2 = (n) => String(n).padStart(2, "0");
+export function periodoCosto({ anio, mes, tipo = "mes", hoyISO = "" }) {
+  const ult = new Date(Date.UTC(anio, mes, 0)).getUTCDate();
+  const ym = `${anio}-${pad2(mes)}`;
+  const diasMes = diasDeTrabajoDelMes(anio, mes);
+  let ini = 1;
+  let fin = ult;
+  let t = "mes";
+  let etiqueta = "mes completo";
+  if (tipo === "q1") { t = "q1"; fin = Math.min(15, ult); etiqueta = "1.ª quincena (1 al 15)"; }
+  else if (tipo === "q2") { t = "q2"; ini = 16; etiqueta = `2.ª quincena (16 al ${ult})`; }
+  else if (tipo === "hoy" && String(hoyISO).slice(0, 7) === ym) { t = "hoy"; fin = Math.max(1, Math.min(ult, Number(String(hoyISO).slice(8, 10)) || ult)); etiqueta = `hasta hoy (día ${fin})`; }
+  const dias = diasDeTrabajoDelMes(anio, mes, fin) - (ini > 1 ? diasDeTrabajoDelMes(anio, mes, ini - 1) : 0);
+  const quincenas = t === "q1" ? ["Q1"] : t === "q2" ? ["Q2"] : t === "hoy" && fin < 16 ? ["Q1"] : ["Q1", "Q2"];
+  return {
+    tipo: t, desde: `${ym}-${pad2(ini)}`, hasta: `${ym}-${pad2(fin)}`, dias, diasMes,
+    factor: diasMes > 0 ? dias / diasMes : 1, quincenas, etiqueta, esMes: t === "mes",
+  };
+}
+// Fecha (AAAA-MM-DD, hora de Bogotá) de un Timestamp de Firestore, Date, milisegundos o texto ISO.
+export function fechaISOBogota(v) {
+  if (!v) return "";
+  if (typeof v === "string") return /^\d{4}-\d{2}-\d{2}$/.test(v.slice(0, 10)) && v.length <= 10 ? v : new Date(new Date(v).getTime() - 5 * 3600 * 1000).toISOString().slice(0, 10);
+  const d = typeof v.toDate === "function" ? v.toDate() : v instanceof Date ? v : new Date(v);
+  const t = d.getTime();
+  return Number.isFinite(t) ? new Date(t - 5 * 3600 * 1000).toISOString().slice(0, 10) : "";
+}
+// Lotes aprobados dentro de un periodo ([desde, hasta] inclusive).
+export function lotesDelPeriodo(lotes, periodo) {
+  if (!periodo || periodo.esMes) return lotes || [];
+  return (lotes || []).filter((l) => { const f = fechaISOBogota(l.fechaAprobacion); return f && f >= periodo.desde && f <= periodo.hasta; });
+}
+
 // ─── Todo junto ──────────────────────────────────────────────────────────────
-export function cierreGeneral({ lotes, bases, gastos, liquidacionesFiscal, areasDestajo, fichas, areasFuera, excepciones, equiposCorte, destajoOpc }) {
+// factorPeriodo (0-1): parte del mes que cuenta. Se aplica a los gastos del Excel y a lo de destajo (ayudas y provisión), que son mensuales.
+// La nómina fiscal ya viene por quincena confirmada: se filtra antes de llamar. Con 1 todo queda como siempre (mes completo).
+export function cierreGeneral({ lotes, bases, gastos, liquidacionesFiscal, areasDestajo, fichas, areasFuera, excepciones, equiposCorte, destajoOpc, factorPeriodo = 1 }) {
+  const f = Number.isFinite(factorPeriodo) && factorPeriodo >= 0 ? factorPeriodo : 1;
   const recogido = recogidoDeLotes(lotes, bases);
-  const g = totalGastos(gastos);
+  const gMes = totalGastos(gastos);
+  const g = { ...gMes, totalMes: gMes.total, total: gMes.total * f };
   const fiscal = resumenFiscal(liquidacionesFiscal, fichas, areasFuera, excepciones);
-  const destajo = destajoDelMes(areasDestajo, fichas, equiposCorte, destajoOpc);
+  const destajoMes = destajoDelMes(areasDestajo, fichas, equiposCorte, destajoOpc);
+  const destajo = f === 1 ? destajoMes : { ...destajoMes, ayudas: destajoMes.ayudas * f, neta: destajoMes.neta * f, provision: destajoMes.provision * f, extra: destajoMes.extra * f, extraMes: destajoMes.extra };
   const estructura = g.total + fiscal.total + destajo.extra;
   const resultado = recogido.aporte - estructura;
   // Aporte por prenda DESPACHADA (el aporte ya se cobra sobre lo despachado).
   const aportePorPrenda = recogido.despachadas > 0 ? recogido.aporte / recogido.despachadas : 0;
   return {
-    recogido, gastos: g, fiscal, destajo, estructura, resultado,
+    recogido, gastos: g, fiscal, destajo, estructura, resultado, factorPeriodo: f,
     cobertura: estructura > 0 ? (recogido.aporte / estructura) * 100 : null,
     aportePorPrenda,
     prendasQueFaltan: resultado < 0 && aportePorPrenda > 0 ? Math.ceil(-resultado / aportePorPrenda) : 0,

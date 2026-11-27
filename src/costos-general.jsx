@@ -19,7 +19,7 @@ import { diasDeTrabajoDelMes } from "./dias-habiles";
 import { mismoNombre } from "./corte-equipos";
 import { unirPorAlias } from "./nombres-alias";
 import { lineasDesdeBusint, fusionarBusint } from "./costos-gastos-busint";
-import { cierreGeneral, parsearGastos, totalGastos, detalleLotes, detalleFiscal, AREAS_FUERA_DEFECTO, cuentaPorDefecto, TIPO_FISCAL, TIPO_FISCAL_DESTAJO, TIPO_PRESTACION, DESTAJO_AYUDA_FUERA_DEFECTO, DESTAJO_PROVISION_FUERA_DEFECTO } from "./costos-general-calculo";
+import { cierreGeneral, periodoCosto, lotesDelPeriodo, parsearGastos, totalGastos, detalleLotes, detalleFiscal, AREAS_FUERA_DEFECTO, cuentaPorDefecto, TIPO_FISCAL, TIPO_FISCAL_DESTAJO, TIPO_PRESTACION, DESTAJO_AYUDA_FUERA_DEFECTO, DESTAJO_PROVISION_FUERA_DEFECTO } from "./costos-general-calculo";
 
 const C = {
   ink: "#1A1A2E", slate: "#5A5A7A", border: "#E8E2DB", canvas: "#F7F4F0", white: "#FFFFFF",
@@ -289,6 +289,9 @@ export default function CostosGeneralView({ db }) {
   const [anio, setAnio] = useState(hoy.getUTCFullYear());
   const [mes, setMes] = useState(hoy.getUTCMonth() + 1);
   const ym = `${anio}-${String(mes).padStart(2, "0")}`;
+  // (2026-11-27, a pedido de Fredy) Periodo: los gastos del Excel son mensuales y se reparten por días de trabajo para compararlos con lo recogido día a día.
+  const [periodoSel, setPeriodoSel] = useState("hoy");
+  const per = useMemo(() => periodoCosto({ anio, mes, tipo: periodoSel, hoyISO: hoy.toISOString().slice(0, 10) }), [anio, mes, periodoSel, hoy]);
   const { cierresResueltos, datosArea, pedidos: pedidosCorte, trabajadoresCorte, congelados: congeladosCorte, cargando: cargandoCC } = useCentroCostoDatos(anio, "CORTE");
 
   const [recarga, setRecarga] = useState(0);
@@ -525,12 +528,17 @@ export default function CostosGeneralView({ db }) {
   }).filter(Boolean), [cierresResueltos, datosArea, ym, mes, aliasCorte, pedidosCorte, trabajadoresCorte, congeladosCorte, ayudaQMaqNomina, nominaQ]);
 
   // Toda la nómina que no es destajo puro, con su tipo: Fiscal, Fiscal Destajo y Prestación de Servicios.
-  const liqTodas = useMemo(() => [
+  const liqMes = useMemo(() => [
     ...datos.liqFiscal.map((l) => ({ ...l, tipoNomina: TIPO_FISCAL })),
     ...datos.liqFD.map((l) => ({ ...l, tipoNomina: TIPO_FISCAL_DESTAJO })),
     ...datos.liqPS.map((l) => ({ ...l, tipoNomina: TIPO_PRESTACION })),
   ], [datos.liqFiscal, datos.liqFD, datos.liqPS]);
-  const r = useMemo(() => cierreGeneral({ lotes: datos.lotes, bases: datos.bases, gastos: lineasGastos, liquidacionesFiscal: liqTodas, areasDestajo, fichas: datos.fichas, areasFuera, excepciones, equiposCorte, destajoOpc: destajoCfg }), [datos, liqTodas, lineasGastos, areasDestajo, areasFuera, excepciones, equiposCorte, destajoCfg]);
+  // Nómina fiscal del periodo: solo las quincenas que le tocan (cada liquidación ya es de una quincena).
+  const liqTodas = useMemo(() => (per.esMes ? liqMes : liqMes.filter((l) => per.quincenas.includes(String(l.periodoId || "").slice(-2)))), [liqMes, per]);
+  const lotesPeriodo = useMemo(() => lotesDelPeriodo(datos.lotes, per), [datos.lotes, per]);
+  const r = useMemo(() => cierreGeneral({ lotes: lotesPeriodo, bases: datos.bases, gastos: lineasGastos, liquidacionesFiscal: liqTodas, areasDestajo, fichas: datos.fichas, areasFuera, excepciones, equiposCorte, destajoOpc: destajoCfg, factorPeriodo: per.factor }), [datos, lotesPeriodo, liqTodas, per, lineasGastos, areasDestajo, areasFuera, excepciones, equiposCorte, destajoCfg]);
+  // El cierre del mes que se guarda siempre es del MES COMPLETO, sin importar el periodo que se esté viendo.
+  const rMes = useMemo(() => (per.esMes ? r : cierreGeneral({ lotes: datos.lotes, bases: datos.bases, gastos: lineasGastos, liquidacionesFiscal: liqMes, areasDestajo, fichas: datos.fichas, areasFuera, excepciones, equiposCorte, destajoOpc: destajoCfg })), [per, r, datos, liqMes, lineasGastos, areasDestajo, areasFuera, excepciones, equiposCorte, destajoCfg]);
 
   const ayudaQ = useMemo(
     () => ayudaQuincenasPorPersona(ym, r.destajo.personas, { fichas: datos.fichas, ...nominaQ }, hoy.toISOString().slice(0, 10)),
@@ -650,12 +658,12 @@ export default function CostosGeneralView({ db }) {
       await setDoc(doc(db, "costos_cierres_mes", ym), {
         anio, mes, guardadoEn: new Date().toISOString(), gastosOrigen: origenGastos, areasFueraDeNominaFiscal: areasFuera, excepcionesNominaFiscal: excepciones, destajoAyudaFuera: destajoCfg.ayudaFuera, destajoProvisionFuera: destajoCfg.provisionFuera, destajoAyudaExc: destajoCfg.ayudaExc, destajoProvisionExc: destajoCfg.provisionExc,
         resumen: {
-          aporte: Math.round(r.recogido.aporte), basicos: Math.round(r.recogido.basicos), porcentajes: Math.round(r.recogido.porcentajes), lotes: r.recogido.lotes, cortadas: r.recogido.cortadas, despachadas: r.recogido.despachadas,
-          gastos: Math.round(r.gastos.total), fiscal: Math.round(r.fiscal.total), fiscalFuera: Math.round(r.fiscal.fuera.total), fiscalPorTipo: r.fiscal.porTipo.map((t) => ({ tipo: t.tipo, total: Math.round(t.total), personas: t.personas, fueraTotal: Math.round(t.fueraTotal), fueraPersonas: t.fueraPersonas })), destajoAyudas: Math.round(r.destajo.ayudas), destajoExcedentes: Math.round(r.destajo.excedentes), destajoProvision: Math.round(r.destajo.provision), destajoAyudasTodas: Math.round(r.destajo.ayudasTodas), destajoProvisionTodas: Math.round(r.destajo.provisionTodas),
-          estructura: Math.round(r.estructura), resultado: Math.round(r.resultado),
+          aporte: Math.round(rMes.recogido.aporte), basicos: Math.round(rMes.recogido.basicos), porcentajes: Math.round(rMes.recogido.porcentajes), lotes: rMes.recogido.lotes, cortadas: rMes.recogido.cortadas, despachadas: rMes.recogido.despachadas,
+          gastos: Math.round(rMes.gastos.total), fiscal: Math.round(rMes.fiscal.total), fiscalFuera: Math.round(rMes.fiscal.fuera.total), fiscalPorTipo: rMes.fiscal.porTipo.map((t) => ({ tipo: t.tipo, total: Math.round(t.total), personas: t.personas, fueraTotal: Math.round(t.fueraTotal), fueraPersonas: t.fueraPersonas })), destajoAyudas: Math.round(rMes.destajo.ayudas), destajoExcedentes: Math.round(rMes.destajo.excedentes), destajoProvision: Math.round(rMes.destajo.provision), destajoAyudasTodas: Math.round(rMes.destajo.ayudasTodas), destajoProvisionTodas: Math.round(rMes.destajo.provisionTodas),
+          estructura: Math.round(rMes.estructura), resultado: Math.round(rMes.resultado),
         },
-        areas: r.destajo.areas.map((a) => ({ clave: a.clave, nombre: a.nombre, ayudas: Math.round(a.ayudas), ayudasTodas: Math.round(a.ayudasTodas), excedentes: Math.round(a.excedentes), provision: Math.round(a.provision), provisionTodas: Math.round(a.provisionTodas), cuentaAyuda: a.estadoAyuda, cuentaProvision: a.estadoProvision })),
-        personas: r.destajo.personas.map(limpio),
+        areas: rMes.destajo.areas.map((a) => ({ clave: a.clave, nombre: a.nombre, ayudas: Math.round(a.ayudas), ayudasTodas: Math.round(a.ayudasTodas), excedentes: Math.round(a.excedentes), provision: Math.round(a.provision), provisionTodas: Math.round(a.provisionTodas), cuentaAyuda: a.estadoAyuda, cuentaProvision: a.estadoProvision })),
+        personas: rMes.destajo.personas.map(limpio),
       });
       setMsgCierre("Cierre del mes guardado.");
       setRecarga((x) => x + 1);
@@ -668,14 +676,14 @@ export default function CostosGeneralView({ db }) {
 
   // Qué muestra cada ventana (clic en una fila o tarjeta).
   function armarVentana(v) {
-    const mesTxt = `${MESES[mes - 1]} ${anio}`;
+    const mesTxt = `${MESES[mes - 1]} ${anio}${per.esMes ? "" : ` · ${per.etiqueta}`}`;
     const cerrar = () => setVentana(null);
     const sinDetalle = r.destajo.areas.filter((a) => !a.detalle);
     const porEquipos = r.destajo.areas.filter((a) => a.porEquipos);
     const personasAyuda = r.destajo.personas.filter((p) => p.resultado < 0 || p.horas > 0);
     if (v.tipo === "lotes") {
       const cat = v.categoria === undefined || v.categoria === null ? null : r.recogido.categorias.find((c) => c.id === v.categoria);
-      const filas = detalleLotes(datos.lotes, datos.bases, v.categoria);
+      const filas = detalleLotes(lotesPeriodo, datos.bases, v.categoria);
       return {
         titulo: cat ? `Lotes de ${cat.nombre} — ${mesTxt}` : `Lotes aprobados en ${mesTxt}`,
         sub: "Lotes aprobados por Contabilidad en Dado por Cumplido este mes. Aporte = (base + % sobre costo + % sobre venta por prenda) × prendas despachadas.",
@@ -689,18 +697,18 @@ export default function CostosGeneralView({ db }) {
       };
     }
     if (v.tipo === "gastos") {
-      const filas = lineasGastos.map((l) => ({ estado: l.incluir ? "Incluido" : "Fuera", empresa: l.empresa, concepto: l.concepto, dia: l.dia || "", valor: Number(l.valor) || 0, nota: l.motivo || l.frecuencia || "", apagada: !l.incluir, incluido: l.incluir ? Number(l.valor) || 0 : 0 }));
+      const filas = lineasGastos.map((l) => ({ estado: l.incluir ? "Incluido" : "Fuera", empresa: l.empresa, concepto: l.concepto, dia: l.dia || "", valor: Number(l.valor) || 0, nota: l.motivo || l.frecuencia || "", apagada: !l.incluir, incluido: l.incluir ? (Number(l.valor) || 0) * per.factor : 0 }));
       return {
         titulo: `Gastos — ${mesTxt}`,
         sub: origenGastos === "anterior" ? `Este mes no tiene gastos guardados: son los del último mes cargado (${datos.gastosAnterior?.id}).` : origenGastos === "ninguno" ? "Todavía no hay gastos cargados." : "Gastos del Excel de control de gastos y vencimientos. Los que están «Fuera» no suman.",
         total: money(r.gastos.total),
         columnas: [
           { k: "estado", label: "Estado", izq: true }, { k: "empresa", label: "Empresa", izq: true }, { k: "concepto", label: "Concepto", izq: true }, { k: "dia", label: "Día" },
-          { k: "valor", label: "Valor mensual", ver: (f) => (f.valor > 0 ? money(f.valor) : "Por definir") }, { k: "incluido", label: "Cuenta", suma: true }, { k: "nota", label: "Nota", izq: true },
+          { k: "valor", label: "Valor mensual", ver: (f) => (f.valor > 0 ? money(f.valor) : "Por definir") }, { k: "incluido", label: per.esMes ? "Cuenta" : `Cuenta (${per.dias} de ${per.diasMes} días)`, suma: true }, { k: "nota", label: "Nota", izq: true },
         ],
         filas, nombreExcel: `Gastos_${ym}`, vacio: "Sin gastos cargados. Usa «Cargar Excel de gastos».", onClose: cerrar,
         accion: <Boton onClick={() => { cerrar(); setVerGastos(true); }}>Ver y ajustar abajo</Boton>,
-        nota: "Para cambiar qué gastos cuentan, usa las casillas de la sección «Gastos del mes».",
+        nota: per.esMes ? "Para cambiar qué gastos cuentan, usa las casillas de la sección «Gastos del mes»." : `Cada gasto mensual se reparte por días de trabajo: ${per.dias} de ${per.diasMes} del mes (${(per.factor * 100).toFixed(1)} %). Para cambiar qué gastos cuentan, usa las casillas de la sección «Gastos del mes».`,
       };
     }
     const nada = { horas: 0, ayuda: 0, ayudaRaw: 0, ayudaCuenta: true, excedente: 0, provision: 0, provisionRaw: 0, provCuenta: true, cesantias: 0, cesantiasRaw: 0, prima: 0, primaRaw: 0, intereses: 0, interesesRaw: 0, vacaciones: 0, vacacionesRaw: 0 };
@@ -824,7 +832,7 @@ export default function CostosGeneralView({ db }) {
       titulo: `Por pagar fuera de los lotes — ${mesTxt}`,
       sub: "Haz clic en una fila para ver su detalle.",
       total: money(r.estructura),
-      columnas: [{ k: "concepto", label: "Concepto", izq: true }, { k: "valor", label: "Valor del mes", suma: true }, { k: "porc", label: "% del total" }],
+      columnas: [{ k: "concepto", label: "Concepto", izq: true }, { k: "valor", label: per.esMes ? "Valor del mes" : "Valor del periodo", suma: true }, { k: "porc", label: "% del total" }],
       filas: piezas, nombreExcel: `Por_pagar_${ym}`, onClose: cerrar,
     };
   }
@@ -858,6 +866,18 @@ export default function CostosGeneralView({ db }) {
         <div style={{ flex: 1 }} />
         <Boton primario onClick={cerrarMes} disabled={guardando || datos.cargando || sinDatos}>💾 Cerrar el mes y guardar</Boton>
       </div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
+        {[["hoy", "Hasta hoy"], ["mes", "Mes completo"], ["q1", "1.ª quincena"], ["q2", "2.ª quincena"]].map(([k, txt]) => {
+          const activo = periodoSel === k;
+          return (
+            <button key={k} type="button" onClick={() => setPeriodoSel(k)} aria-pressed={activo}
+              style={{ padding: "6px 14px", borderRadius: 999, border: `1px solid ${activo ? C.ink : C.border}`, background: activo ? C.ink : C.white, color: activo ? C.white : C.ink, fontWeight: 700, fontSize: 12.5, cursor: "pointer", fontFamily: "inherit" }}>{txt}</button>
+          );
+        })}
+        <span style={{ fontSize: 12, color: C.slate }}>
+          {per.esMes ? `Mes completo · ${per.diasMes} días de trabajo.` : `${per.etiqueta} · ${per.dias} de ${per.diasMes} días de trabajo (${(per.factor * 100).toFixed(1)} % de los gastos mensuales y de lo de destajo). Nómina fiscal: ${per.quincenas.join(" y ").replace(/Q/g, "quincena ")} confirmada${per.quincenas.length > 1 ? "s" : ""}. Lotes aprobados del ${per.desde.split("-").reverse().join("/")} al ${per.hasta.split("-").reverse().join("/")}.`}
+        </span>
+      </div>
       {msgCierre ? <div style={{ fontSize: 12.5, color: C.green, fontWeight: 700, marginBottom: 10 }}>{msgCierre}</div> : null}
       {datos.cierreGuardado ? (
         <div style={{ fontSize: 12, color: C.slate, marginBottom: 10 }}>
@@ -869,7 +889,7 @@ export default function CostosGeneralView({ db }) {
 
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 22 }}>
         <Tile onClick={() => setVentana({ tipo: "lotes", categoria: null })} titulo="Recogido con los básicos" valor={money(r.recogido.aporte)} color={C.green} sub={`${r.recogido.lotes} lotes aprobados · ${fmt(r.recogido.despachadas)} prendas despachadas (${fmt(r.recogido.cortadas)} cortadas)${r.recogido.sinDespachada ? ` · ⚠ ${r.recogido.sinDespachada} sin despachada, aportan $0` : ""}`} />
-        <Tile onClick={() => setVentana({ tipo: "estructura" })} titulo="Por pagar fuera de los lotes" valor={money(r.estructura)} color={C.amber} sub="gastos + nómina fiscal + destajo (ayudas y provisión)" />
+        <Tile onClick={() => setVentana({ tipo: "estructura" })} titulo="Por pagar fuera de los lotes" valor={money(r.estructura)} color={C.amber} sub={per.esMes ? "gastos + nómina fiscal + destajo (ayudas y provisión)" : `gastos (${per.dias}/${per.diasMes} días) + nómina fiscal + destajo (ayudas y provisión)`} />
         <Tile
           titulo={alcanza ? "Me alcanza" : "Me falta"}
           valor={`${alcanza ? "+" : "−"}${money(Math.abs(r.resultado))}`}
@@ -877,8 +897,8 @@ export default function CostosGeneralView({ db }) {
           fondo={alcanza ? C.greenBg : C.redBg}
           sub={`${r.cobertura === null ? "—" : Math.round(r.cobertura)} % cubierto${!alcanza && r.prendasQueFaltan ? ` · faltan ≈ ${fmt(r.prendasQueFaltan)} prendas` : ""}`}
         />
-        <Tile onClick={() => setVentana({ tipo: "areasAyuda" })} titulo="Ayudas del mes" valor={money(r.destajo.ayudas)} color={C.red} sub={`${r.destajo.areas.filter((a) => a.ayudasTodas > 0).length} área(s) ayudadas · ${r.destajo.areas.reduce((t, a) => t + (a.porEquipos ? 0 : a.ayudados), 0)} persona(s)`} />
-        <Tile titulo="Punto de equilibrio" valor={r.prendasEquilibrio ? `${fmt(r.prendasEquilibrio)} und` : "—"} sub={r.aportePorPrenda ? `aporte por prenda ${money(r.aportePorPrenda)}` : "sin lotes aprobados en el mes"} />
+        <Tile onClick={() => setVentana({ tipo: "areasAyuda" })} titulo={per.esMes ? "Ayudas del mes" : "Ayudas del periodo"} valor={money(r.destajo.ayudas)} color={C.red} sub={`${r.destajo.areas.filter((a) => a.ayudasTodas > 0).length} área(s) ayudadas · ${r.destajo.areas.reduce((t, a) => t + (a.porEquipos ? 0 : a.ayudados), 0)} persona(s)`} />
+        <Tile titulo="Punto de equilibrio" valor={r.prendasEquilibrio ? `${fmt(r.prendasEquilibrio)} und` : "—"} sub={r.aportePorPrenda ? `aporte por prenda ${money(r.aportePorPrenda)}` : "sin lotes aprobados en el periodo"} />
       </div>
 
       <div style={{ fontSize: 15, fontWeight: 800, color: C.ink, marginBottom: 8 }}>1 · Lo que recogí con los básicos</div>
