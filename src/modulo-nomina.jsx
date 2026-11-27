@@ -264,15 +264,14 @@ function Field({ label, children }) {
     </div>
   );
 }
-function FInput({ value, onChange, placeholder, type = "text", icon, disabled = false }) {
+function FInput({ value, onChange, placeholder, type = "text", icon }) {
   const input = (
     <input
       type={type}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
-      disabled={disabled}
-      style={{ width: "100%", padding: icon ? "9px 12px 9px 32px" : "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, color: C.ink, background: disabled ? C.canvas : C.white, outline: "none", fontFamily: "inherit", ...(disabled ? { cursor: "not-allowed", opacity: 0.8 } : {}) }}
+      style={{ width: "100%", padding: icon ? "9px 12px 9px 32px" : "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, color: C.ink, background: C.white, outline: "none", fontFamily: "inherit" }}
     />
   );
   // (2026-09-26, a pedido de Fredy) `icon` es opcional -- para los buscadores
@@ -4795,7 +4794,8 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
   const [form, setForm] = useState({
     trabajadorId: ausencia?.trabajadorId || trabajadorIdSugerido || "",
     nombreLibre: ausencia?.nombreLibre || "",
-    motivo: ausencia?.motivo || "",
+    // (2026-11-27) Un día completo se guarda como Licencia No Remunerada y el motivo que escogió quien dio el permiso queda en motivoPermiso.
+    motivo: (ausencia?.diaCompleto && ausencia?.motivoPermiso) || ausencia?.motivo || "",
     fechaInicio: ausencia?.fechaInicio || fechaInicioSugerida || today(),
     fechaFin: ausencia?.fechaFin || fechaInicioSugerida || today(),
     // (2026-08-31) Fredy pidio poder ubicar un permiso por hora (ej. "8 a
@@ -4815,8 +4815,9 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
     // (2026-11-20, a pedido de Fredy) Permiso sin horas (o que cubre el día) pero la persona SÍ vino a trabajar: en el Historial de
     // asistencia sale como «Asistió y tuvo permiso». Solo es visual: no cambia la nómina ni los días trabajados del huellero.
     vinoATrabajar: !!ausencia?.vinoATrabajar,
-    // (2026-11-26, a pedido de Fredy) Casilla «Día completo»: llena sola las horas con la entrada y la salida del turno de esa persona ese día.
-    diaCompleto: false,
+    // (2026-11-27, a pedido de Fredy) Casilla «Día completo»: la persona no viene el día entero, así que no hay horas que reponer:
+    // se guarda como día sin pago (Licencia No Remunerada) y la nómina descuenta el día (sueldo ÷ 30 y auxilio ÷ 30).
+    diaCompleto: !!ausencia?.diaCompleto,
   });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   const trabajadorSeleccionado = trabajadores.find((t) => t.id === form.trabajadorId);
@@ -4834,27 +4835,29 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
   // (2026-11-24, a pedido de Fredy) Ya no se pide código de autorización: del permiso #(tope+1) del mes en adelante solo sale una alerta
   // («ya lleva N permisos») y se guarda igual. Todo permiso por horas se cobra desde el primero.
   const numeroPermisoMes = permisosEsteMes + 1;
-  const alertaPermisos = esMotivoPermiso(form.motivo) && !!(form.trabajadorId || form.nombreLibre.trim()) && numeroPermisoMes > topePermisos;
+  const alertaPermisos = esMotivoPermiso(form.motivo) && !form.diaCompleto && !!(form.trabajadorId || form.nombreLibre.trim()) && numeroPermisoMes > topePermisos;
   // (2026-11-20, a pedido de Fredy) Desde Permisos (Calendario) un permiso NUEVO exige trabajador, motivo, fecha, hora inicial y hora final
   // (un solo día; ya no hay «Fecha Fin»). Vacaciones, Incapacidad, Licencias, Luto y Suspensión siguen por fechas sin horas.
   // Un permiso viejo guardado sin horas se edita como antes.
   const exigirHoras = exigirHorasPermiso && (ausencia
-    ? esMotivoPermiso(form.motivo) && esPermisoPorHoras(ausencia)
+    ? esMotivoPermiso(form.motivo) && (esPermisoPorHoras(ausencia) || !!ausencia.diaCompleto)
     : (!form.motivo || esMotivoPermiso(form.motivo)));
+  // Con «Día completo» no se piden ni se guardan horas.
+  const comoDiaCompleto = exigirHoras && !!form.diaCompleto && esMotivoPermiso(form.motivo);
   const faltantes = [];
   if (!form.trabajadorId && !form.nombreLibre.trim()) faltantes.push("trabajador");
   if (!form.motivo) faltantes.push("motivo");
   if (exigirHoras) {
     if (!form.fechaInicio) faltantes.push("fecha");
-    if (!form.horaInicio) faltantes.push("hora inicial");
-    if (!form.horaFin) faltantes.push("hora final");
+    if (!comoDiaCompleto && !form.horaInicio) faltantes.push("hora inicial");
+    if (!comoDiaCompleto && !form.horaFin) faltantes.push("hora final");
   }
-  const ordenHorasMal = exigirHoras && !!form.horaInicio && !!form.horaFin && !(minutosDeHoraTurno(form.horaFin) > minutosDeHoraTurno(form.horaInicio));
+  const ordenHorasMal = exigirHoras && !comoDiaCompleto && !!form.horaInicio && !!form.horaFin && !(minutosDeHoraTurno(form.horaFin) > minutosDeHoraTurno(form.horaInicio));
   const faltaTexto = faltantes.length > 1 ? `${faltantes.slice(0, -1).join(", ")} y ${faltantes[faltantes.length - 1]}` : (faltantes[0] || "");
   // (2026-11-20) Cobro de las horas de permiso: se calcula en vivo para que quien da el permiso vea qué pasa con el trabajador.
   const cobroPermiso = (() => {
     if (!form.trabajadorId || !esMotivoPermiso(form.motivo) || (form.fechaInicio || "") < FECHA_INICIO_COBRO_PERMISO_HORAS) return null;
-    if (!esPermisoPorHoras(form)) return null;
+    if (comoDiaCompleto || !esPermisoPorHoras(form)) return null;
     const { areasNomina: areasCtx, turnos: turnosCtx } = CONTEXTO_VACACIONES;
     return calcularCobroPermisoHoras({ ...form, fechaFin: exigirHoras ? form.fechaInicio : form.fechaFin, id: ausencia?.id }, { trabajadores, areasNomina: areasCtx, turnos: turnosCtx }, 0);
   })();
@@ -4865,7 +4868,7 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
     const horasForm = medirPermisoHorasCosto({ ...form, fechaFin: exigirHoras ? form.fechaInicio : form.fechaFin }, { trabajadores: [trabajadorSeleccionado], areasNomina: areasCtx, turnos: turnosCtx }).horas || 0;
     return horasForm > 0 && permisoCubreJornada({ fechaInicio: form.fechaInicio }, trabajadorSeleccionado, horasForm, areasCtx, turnosCtx);
   })();
-  // Entrada y salida del turno de la persona en la fecha elegida (para la casilla «Día completo»).
+  // Jornada de la persona en la fecha elegida (solo informativa para la casilla «Día completo»).
   const turnoDiaCompleto = (() => {
     if (!trabajadorSeleccionado || !form.fechaInicio) return null;
     const { areasNomina: areasCtx, turnos: turnosCtx } = CONTEXTO_VACACIONES;
@@ -4877,15 +4880,19 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
     if (!entrada || !salida) return { problema: "no_laborable" };
     return { entrada, salida };
   })();
-  const diaCompletoMarcado = exigirHoras && (form.diaCompleto || diaCompletoPermiso);
-  const horasBloqueadas = exigirHoras && form.diaCompleto && !!turnoDiaCompleto?.entrada;
-  useEffect(() => {
-    if (!exigirHoras || !form.diaCompleto || !turnoDiaCompleto?.entrada) return;
-    if (form.horaInicio === turnoDiaCompleto.entrada && form.horaFin === turnoDiaCompleto.salida) return;
-    setForm((f) => ({ ...f, horaInicio: turnoDiaCompleto.entrada, horaFin: turnoDiaCompleto.salida }));
-  }, [exigirHoras, form.diaCompleto, form.horaInicio, form.horaFin, turnoDiaCompleto?.entrada, turnoDiaCompleto?.salida]);
+  // Lo que se descuenta por un día sin pago: sueldo ÷ 30 + auxilio de transporte ÷ 30 (como cualquier Licencia No Remunerada).
+  const descuentoDiaCompleto = (() => {
+    if (!comoDiaCompleto || !trabajadorSeleccionado) return null;
+    const sueldo = Number(trabajadorSeleccionado.sueldo) || 0;
+    if (!(sueldo > 0)) return null;
+    const tipo = trabajadorSeleccionado.tipoNomina || "";
+    if (tipo === "Destajo" && !trabajadorSeleccionado.salarioMinimoGarantizado) return { sinDinero: true };
+    const aux = tipo === "Fiscal" && sueldo > TOPE_SUELDO_PARA_AUXILIO ? 0 : (Number(trabajadorSeleccionado.auxilioTransporte) || 0);
+    const baseSueldo = tipo === "Destajo" ? SMMLV_2026 : sueldo; // Destajo con mínimo garantizado: el pago fijo es el mínimo legal
+    return { sueldoDia: baseSueldo / 30, auxilioDia: aux / 30, total: baseSueldo / 30 + aux / 30 };
+  })();
   function cambiarDiaCompleto(marcado) {
-    setForm((f) => ({ ...f, diaCompleto: marcado, ...(marcado ? {} : { horaInicio: "", horaFin: "" }) }));
+    setForm((f) => ({ ...f, diaCompleto: marcado, horaInicio: "", horaFin: "" }));
   }
   async function guardar() {
     if (faltantes.length || ordenHorasMal) return;
@@ -4893,16 +4900,17 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
       trabajadorId: form.trabajadorId || null,
       nombreLibre: form.trabajadorId ? "" : form.nombreLibre.trim(),
       nombre: form.trabajadorId ? trabajadorSeleccionado?.nombre : form.nombreLibre.trim(),
-      motivo: form.motivo,
+      motivo: comoDiaCompleto ? "Licencia No Remunerada" : form.motivo,
       fechaInicio: form.fechaInicio,
       fechaFin: exigirHoras ? form.fechaInicio : form.fechaFin,
-      horaInicio: form.horaInicio || "",
-      horaFin: form.horaFin || "",
+      horaInicio: comoDiaCompleto ? "" : form.horaInicio || "",
+      horaFin: comoDiaCompleto ? "" : form.horaFin || "",
+      ...(comoDiaCompleto ? { diaCompleto: true, motivoPermiso: form.motivo } : ausencia?.diaCompleto ? { diaCompleto: false, motivoPermiso: "" } : {}),
       observaciones: form.observaciones.trim(),
       ...(mostrarContarComoTrabajado ? { contarComoTrabajado: !!form.contarComoTrabajado } : {}),
       ...(form.motivo === "Incapacidad" ? { origenIncapacidad: form.origenIncapacidad === "Laboral" ? "Laboral" : "General" } : {}),
-      ...(esMotivoPermiso(form.motivo) ? { vinoATrabajar: !!form.vinoATrabajar } : {}),
-      ...(esMotivoPermiso(form.motivo) ? { numeroPermisoMes: ausencia?.numeroPermisoMes || numeroPermisoMes } : {}),
+      ...(esMotivoPermiso(form.motivo) && !comoDiaCompleto ? { vinoATrabajar: !!form.vinoATrabajar } : {}),
+      ...(esMotivoPermiso(form.motivo) && !comoDiaCompleto ? { numeroPermisoMes: ausencia?.numeroPermisoMes || numeroPermisoMes } : {}),
     });
     onClose();
   }
@@ -4959,25 +4967,34 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
       {exigirHoras && (
         <div style={{ margin: "0 0 12px" }}>
           <label htmlFor="diaCompletoPermiso" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 700, color: C.ink, cursor: "pointer" }}>
-            <input type="checkbox" id="diaCompletoPermiso" checked={!!diaCompletoMarcado} onChange={(e) => cambiarDiaCompleto(e.target.checked)} />
-            📅 Día completo
+            <input type="checkbox" id="diaCompletoPermiso" checked={!!form.diaCompleto} onChange={(e) => cambiarDiaCompleto(e.target.checked)} />
+            📅 Día completo (día sin pago)
           </label>
-          <div style={{ fontSize: 11, color: C.slate, marginTop: 3 }}>Llena solo las horas con la entrada y la salida del turno de esa persona ese día.</div>
-          {form.diaCompleto && !trabajadorSeleccionado && (
-            <div style={{ fontSize: 11.5, fontWeight: 700, color: C.amber, marginTop: 4 }}>⚠ Elige primero al trabajador de la lista para llenar las horas de su turno; si no, escríbelas a mano.</div>
-          )}
-          {form.diaCompleto && turnoDiaCompleto?.problema === "sin_turno" && (
-            <div style={{ fontSize: 11.5, fontWeight: 700, color: C.amber, marginTop: 4 }}>⚠ Esta persona no tiene turno asignado: escribe las horas a mano.</div>
-          )}
-          {form.diaCompleto && turnoDiaCompleto?.problema === "no_laborable" && (
-            <div style={{ fontSize: 11.5, fontWeight: 700, color: C.amber, marginTop: 4 }}>⚠ Ese día no es laborable en su turno: escribe las horas a mano o cambia la fecha.</div>
-          )}
+          <div style={{ fontSize: 11, color: C.slate, marginTop: 3 }}>La persona no viene ese día: no hay horas que reponer. Se guarda como Licencia No Remunerada y la nómina descuenta el día.</div>
         </div>
       )}
-      <div style={{ display: "flex", gap: 12 }}>
-        <div style={{ flex: 1 }}><Field label={exigirHoras ? "Hora inicial *" : "Hora Inicio (opcional)"}><FInput type="time" value={form.horaInicio} onChange={set("horaInicio")} disabled={horasBloqueadas} /></Field></div>
-        <div style={{ flex: 1 }}><Field label={exigirHoras ? "Hora final *" : "Hora Fin (opcional)"}><FInput type="time" value={form.horaFin} onChange={set("horaFin")} disabled={horasBloqueadas} /></Field></div>
-      </div>
+      {comoDiaCompleto ? (
+        <div style={{ background: C.violetBg, border: `1px solid ${C.violet}`, borderRadius: 10, padding: "10px 12px", margin: "0 0 12px" }}>
+          <div style={{ fontSize: 12, fontWeight: 800, color: C.violet, marginBottom: 4 }}>📅 Día sin pago</div>
+          <div style={{ fontSize: 12, color: C.ink, lineHeight: 1.5 }}>
+            {turnoDiaCompleto?.entrada ? <>Jornada de ese día: {turnoDiaCompleto.entrada} a {turnoDiaCompleto.salida}. </> : null}
+            Se descuenta <strong>1 día de salario</strong> (sueldo ÷ 30) y el auxilio de transporte de ese día; no se puede reponer.
+            {descuentoDiaCompleto && !descuentoDiaCompleto.sinDinero && mostrarDinero ? <> Aproximado: <strong>{fmtMoney(Math.round(descuentoDiaCompleto.total))}</strong> ({fmtMoney(Math.round(descuentoDiaCompleto.sueldoDia))} de sueldo{descuentoDiaCompleto.auxilioDia > 0 ? ` + ${fmtMoney(Math.round(descuentoDiaCompleto.auxilioDia))} de auxilio` : ""}).</> : null}
+            {descuentoDiaCompleto?.sinDinero ? " En Destajo por producción no se descuenta dinero: ese día simplemente no cuenta como trabajado." : ""}
+          </div>
+          {turnoDiaCompleto?.problema === "no_laborable" && (
+            <div style={{ fontSize: 11.5, fontWeight: 700, color: C.amber, marginTop: 4 }}>⚠ Ese día no es laborable en su turno: no se descontará nada. Revisa la fecha.</div>
+          )}
+          {!trabajadorSeleccionado && (
+            <div style={{ fontSize: 11.5, fontWeight: 700, color: C.amber, marginTop: 4 }}>⚠ Elige al trabajador de la lista para que la nómina le descuente el día.</div>
+          )}
+        </div>
+      ) : (
+        <div style={{ display: "flex", gap: 12 }}>
+          <div style={{ flex: 1 }}><Field label={exigirHoras ? "Hora inicial *" : "Hora Inicio (opcional)"}><FInput type="time" value={form.horaInicio} onChange={set("horaInicio")} /></Field></div>
+          <div style={{ flex: 1 }}><Field label={exigirHoras ? "Hora final *" : "Hora Fin (opcional)"}><FInput type="time" value={form.horaFin} onChange={set("horaFin")} /></Field></div>
+        </div>
+      )}
       {esMotivoPermiso(form.motivo) && !exigirHoras && !esPermisoPorHoras(form) && !mostrarContarComoTrabajado && (
         <div style={{ fontSize: 12.5, color: C.ink, margin: "0 0 14px", display: "flex", alignItems: "flex-start", gap: 8 }}>
           <input type="checkbox" id="vinoATrabajar" style={{ marginTop: 2 }} checked={!!form.vinoATrabajar} onChange={(e) => set("vinoATrabajar")(e.target.checked)} />
@@ -4986,7 +5003,7 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
           </label>
         </div>
       )}
-      {diaCompletoPermiso && (
+      {diaCompletoPermiso && !comoDiaCompleto && (
         <div style={{ margin: "0 0 12px" }}>
           <span title="Las horas cubren toda la jornada de la persona ese día" style={{ display: "inline-block", padding: "3px 10px", borderRadius: 999, background: C.blueBg, color: C.blue, fontSize: 12, fontWeight: 800 }}>📅 Día completo de ausencia</span>
         </div>
@@ -5449,7 +5466,7 @@ function PermisosCalendarioView({ trabajadores, produccion, horas, ausencias, cu
                     <span style={{ width: 34, height: 34, borderRadius: "50%", background: C.violetBg, color: C.violet, fontWeight: 800, fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{iniciales(trabajador.nombre)}</span>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: 13, fontWeight: 700, color: C.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{trabajador.nombre}</div>
-                      <div style={{ fontSize: 11, color: C.slate }}>{trabajador.area || "Sin asignar"} · {motivoIcono[ausencia.motivo] || "❔"} {ausencia.motivo}{ausencia.codigoAutorizacion ? " 🔐" : ""}</div>
+                      <div style={{ fontSize: 11, color: C.slate }}>{trabajador.area || "Sin asignar"} · {motivoIcono[ausencia.motivo] || "❔"} {ausencia.motivo}{ausencia.diaCompleto && ausencia.motivoPermiso ? ` · ${ausencia.motivoPermiso}` : ""}{ausencia.codigoAutorizacion ? " 🔐" : ""}</div>
                     </div>
                     <div style={{ textAlign: "right", flexShrink: 0 }}>
                       <div style={{ fontSize: 11.5, fontWeight: 700, color: C.amber }}>{ausencia.horaInicio && ausencia.horaFin ? `${ausencia.horaInicio}–${ausencia.horaFin}` : "Día completo"}</div>
@@ -11717,7 +11734,7 @@ function HistorialPrestacionServicioView({ liquidaciones, trabajadores }) {
 //  - (2026-11-04) Fiscal Destajo ya se corrigió igual: cesantías y prima sobre
 //    sueldo + auxilio (confirmado por Fredy con su contador). Aplica a las
 //    liquidaciones nuevas; las ya confirmadas no se recalcularon.
-function calcularLiquidacionDestajo(trabajador, netoProduccion, totalHoras = 0, diasTrabajadosQuincena = 0) {
+function calcularLiquidacionDestajo(trabajador, netoProduccion, totalHoras = 0, diasTrabajadosQuincena = 0, diasSinSueldo = 0) {
   // (2026-09-18, a pedido de Fredy) "Pagar por día": no se liquida por
   // producción ni por un sueldo fijo -- se paga (días trabajados según el
   // huellero de la quincena) x (Valor día), más las Horas Sueltas que le
@@ -11753,8 +11770,11 @@ function calcularLiquidacionDestajo(trabajador, netoProduccion, totalHoras = 0, 
   // provisiones (cesantias/prima/vacaciones) NO cambian con la casilla de
   // "Salario mínimo garantizado" de abajo -- siguen usando el campo
   // "Sueldo" que ya tenga la ficha del trabajador, tal como siempre.
-  const sueldoQuincena = sueldo / 2;
-  const auxilioQuincena = auxilio / 2;
+  // (2026-11-27, a pedido de Fredy) Los días de Licencia No Remunerada (incluido el «Día completo» de un permiso) restan sueldo ÷ 30 y
+  // auxilio ÷ 30 de la base de las provisiones y del pago fijo del mínimo garantizado, igual que en Nómina Fiscal Destajo.
+  const diasSS = Math.max(0, Number(diasSinSueldo) || 0);
+  const sueldoQuincena = Math.max(0, sueldo / 2 - (sueldo / 30) * diasSS);
+  const auxilioQuincena = Math.max(0, auxilio / 2 - (auxilio / 30) * diasSS);
   const saldoCesantiasInicio = Number(trabajador.cesantiasAcumuladas) || 0;
   const baseConAuxilio = sueldoQuincena + auxilioQuincena;
   const cesantiasPeriodo = baseConAuxilio * TASA_CESANTIAS_MENSUAL;
@@ -11785,7 +11805,7 @@ function calcularLiquidacionDestajo(trabajador, netoProduccion, totalHoras = 0, 
   let sueldoFijoQuincena = 0;
   let auxilioFijoQuincena = 0;
   if (salarioMinimoGarantizado) {
-    sueldoFijoQuincena = SMMLV_2026 / 2;
+    sueldoFijoQuincena = Math.max(0, SMMLV_2026 / 2 - (SMMLV_2026 / 30) * diasSS);
     auxilioFijoQuincena = auxilioQuincena;
     const pagoFijo = sueldoFijoQuincena + auxilioFijoQuincena;
     ayudaSalarioMinimo = Math.max(0, pagoFijo - totalBruto);
@@ -11904,7 +11924,9 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
       // (2026-09-21, a pedido de Fredy) Bonificación puntual -- se suma
       // siempre, incluso con Salario mínimo garantizado.
       const bonificacionPuntual = valorBonificacion(bonificaciones, t.id, periodoId);
-      const base = calcularLiquidacionDestajo(t, netoProduccion, totalHorasQuincena, diasTrabajadosCount);
+      const turnoDestajo = resolverTurnoDeTrabajador(t, CONTEXTO_VACACIONES.areasNomina, CONTEXTO_VACACIONES.turnos) || undefined;
+      const diasSinSueldoDestajo = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_SUELDO, t, turnoDestajo, inicio, fin);
+      const base = calcularLiquidacionDestajo(t, netoProduccion, totalHorasQuincena, diasTrabajadosCount, diasSinSueldoDestajo);
       // (2026-10-30) Incapacidad: se suma su devengado (con piso del minimo). Si tiene salario minimo garantizado, esos dias se descuentan del pago fijo (SMMLV/30).
       const incap = calcularIncapacidadPeriodo(ausencias, t, inicio, fin);
       const incapNeto = (incap.devengado || 0) - (base.salarioMinimoGarantizado ? (SMMLV_2026 / 30) * incap.dias : 0);
@@ -18694,7 +18716,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   async function guardarAusencia(a) {
     const previa = (ausencias || []).find((x) => x.id === a.id);
     // (2026-11-24) Queda anotado quién registró el permiso (solo permisos nuevos).
-    if (!previa && esMotivoPermiso(a.motivo) && !a.registradoPor) a = { ...a, registradoPor: quienMarca(), registradoEn: new Date().toISOString() };
+    if (!previa && (esMotivoPermiso(a.motivo) || a.diaCompleto) && !a.registradoPor) a = { ...a, registradoPor: quienMarca(), registradoEn: new Date().toISOString() };
     await fsSave("nomina_ausencias", a.id, a);
     try { await sincronizarCobroPermiso({ ...(previa || {}), ...a }); } catch (err) { console.error("Cobro de permiso por horas:", err); }
   }
