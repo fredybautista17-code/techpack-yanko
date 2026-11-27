@@ -1,4 +1,4 @@
-import { excesoVacaciones, fechaCorteVacaciones, fmtDiasVac } from "./vacaciones-exceso";
+import { excesoVacaciones, fechaCorteVacaciones, fmtDiasVac, inicioContinuidad, diasPagadosEnDinero } from "./vacaciones-exceso";
 
 describe("excesoVacaciones", () => {
   test("Hubert al 15/12: 164 días trabajados, 15 tomados → ~8,2 días ($517 mil)", () => {
@@ -36,3 +36,37 @@ describe("fechaCorteVacaciones", () => {
 });
 
 test("formato de días", () => { expect(fmtDiasVac(8.167)).toBe("8,2"); expect(fmtDiasVac(0)).toBe("0,0"); });
+
+describe("continuidad entre contratos (Hubert: Yanko → Indutex)", () => {
+  const hubert = { id: "h", fechaIngreso: "2026-07-01", continuaContrato: true, fechaInicioContinuidad: "2026-01-13" };
+  const yanko = { trabajadorId: "h", fechaCorte: "2026-06-30", diasBase: 168, diasVacacionesTomados: 0, vacaciones: 443333 };
+  test("inicioContinuidad: solo si la casilla está activa y la fecha es anterior al ingreso", () => {
+    expect(inicioContinuidad(hubert)).toBe("2026-01-13");
+    expect(inicioContinuidad({ ...hubert, continuaContrato: false })).toBe("");
+    expect(inicioContinuidad({ ...hubert, fechaInicioContinuidad: "2026-07-02" })).toBe("");
+    expect(inicioContinuidad({ ...hubert, fechaInicioContinuidad: "" })).toBe("");
+    expect(inicioContinuidad(null)).toBe("");
+  });
+  test("días pagados en dinero: 168 días → 7 días", () => {
+    expect(diasPagadosEnDinero([yanko], "h", "2026-07-01")).toBeCloseTo(7, 5);
+  });
+  test("si las vacaciones de Yanko continúan (no se pagaron), no hay días pagados", () => {
+    expect(diasPagadosEnDinero([{ ...yanko, vacaciones: 0, vacacionesContinuan: true }], "h", "2026-07-01")).toBe(0);
+    expect(diasPagadosEnDinero([{ ...yanko, vacaciones: 0 }], "h", "2026-07-01")).toBe(0);
+  });
+  test("otra persona o una liquidación que no es anterior al ingreso no cuenta", () => {
+    expect(diasPagadosEnDinero([{ ...yanko, trabajadorId: "x" }], "h", "2026-07-01")).toBe(0);
+    expect(diasPagadosEnDinero([{ ...yanko, fechaCorte: "2026-07-01" }], "h", "2026-07-01")).toBe(0);
+  });
+  test("resta los tomados dentro de lo pagado y nunca da negativo", () => {
+    expect(diasPagadosEnDinero([{ ...yanko, diasVacacionesTomados: 3 }], "h", "2026-07-01")).toBeCloseTo(4, 5);
+    expect(diasPagadosEnDinero([{ ...yanko, diasVacacionesTomados: 20, vacaciones: 1000 }], "h", "2026-07-01")).toBe(0);
+  });
+  test("con continuidad y sin pagar en dinero: 337 días → ~14 ganados, 15 tomados → adelanto de ~1 día; pagando 7 días en dinero vuelve a ~8", () => {
+    const sinPago = excesoVacaciones({ diasBase: 337, tomados: 15, sueldo: 1900000 });
+    expect(sinPago.dias).toBeCloseTo(15 - (337 / 360) * 15, 5);
+    expect(sinPago.dias).toBeLessThan(1.1);
+    const conPago = excesoVacaciones({ diasBase: 337, tomados: 15 + 7, sueldo: 1900000 });
+    expect(conPago.dias).toBeGreaterThan(7.9);
+  });
+});

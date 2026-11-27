@@ -33,3 +33,28 @@ export function fechaCorteVacaciones(ausencias, trabajadorId, hoy) {
 
 // Texto corto de días con un decimal: 8,2
 export const fmtDiasVac = (n) => (Math.round(NUM(n) * 10) / 10).toLocaleString("es-CO", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+
+// ─── CONTINUIDAD ENTRE CONTRATOS (2026-11-27, a pedido de Fredy) ─────────────────────────────────────────────
+// Caso Hubert: trabajó en Yanko (13/01–30/06) y pasó a Indutex (01/07). Con la casilla «Continúa con el contrato anterior» de la ficha
+// (continuaContrato + fechaInicioContinuidad) las vacaciones se cuentan desde la antigüedad continua, no solo desde el último ingreso.
+// Los días que ya se pagaron en DINERO en una liquidación anterior se descuentan del saldo (si no, se pagarían dos veces).
+
+// ¿La ficha pide contar la antigüedad continua? Devuelve la fecha de inicio o "".
+export function inicioContinuidad(t) {
+  if (!t || !t.continuaContrato) return "";
+  const d = String(t.fechaInicioContinuidad || "").slice(0, 10);
+  const ing = String(t.fechaIngreso || "").slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(d) && ing && d < ing ? d : "";
+}
+
+// Días de vacaciones pagados en dinero en las liquidaciones de retiro ANTERIORES de esa persona.
+// Una liquidación guarda diasBase, diasVacacionesTomados y vacaciones = sueldo/30 × (diasBase/24 − tomados): de ahí salen los días pagados.
+// Las marcadas «vacacionesContinuan» (vacaciones = 0) no pagaron nada. Solo cuentan las que terminan antes de `antesDe` (el ingreso actual).
+export function diasPagadosEnDinero(liquidaciones, trabajadorId, antesDe) {
+  return (liquidaciones || []).reduce((suma, l) => {
+    if (!l || l.trabajadorId !== trabajadorId || l.vacacionesContinuan) return suma;
+    if (antesDe && !(String(l.fechaCorte || "").slice(0, 10) < antesDe)) return suma;
+    if (!(NUM(l.vacaciones) > 0.5)) return suma;
+    return suma + Math.max(0, (NUM(l.diasBase) / 360) * VAC_DIAS_POR_ANIO - NUM(l.diasVacacionesTomados));
+  }, 0);
+}

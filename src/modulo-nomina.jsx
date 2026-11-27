@@ -15,7 +15,7 @@ import {
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { getStorage, ref as storageRef, uploadString, getDownloadURL } from "firebase/storage";
 import { claveArea } from "./centro-costo-historico-parser";
-import { excesoVacaciones, fechaCorteVacaciones, fmtDiasVac } from "./vacaciones-exceso";
+import { excesoVacaciones, fechaCorteVacaciones, fmtDiasVac, inicioContinuidad, diasPagadosEnDinero } from "./vacaciones-exceso";
 import CumpleanosView from "./cumpleanos";
 import GastosTalentoHumanoView from "./talento-gastos";
 const firebaseConfig = {
@@ -1995,6 +1995,8 @@ function TrabajadorModal({ trabajador, valoresIniciales, onSave, onClose, areasN
     auxilioTransporte: base?.auxilioTransporte ?? "",
     fechaIngreso: base?.fechaIngreso || "",
     fechaRetiro: base?.fechaRetiro || "",
+    continuaContrato: !!base?.continuaContrato,
+    fechaInicioContinuidad: base?.fechaInicioContinuidad || "",
     medirComoBaseAdministrativa: base?.medirComoBaseAdministrativa ?? false,
     salarioMinimoGarantizado: base?.salarioMinimoGarantizado ?? false,
     pagoPorDia: base?.pagoPorDia ?? false,
@@ -2092,6 +2094,8 @@ function TrabajadorModal({ trabajador, valoresIniciales, onSave, onClose, areasN
       auxilioTransporte: Number(form.auxilioTransporte) || 0,
       fechaIngreso: form.fechaIngreso || "",
       fechaRetiro: form.fechaRetiro || "",
+      continuaContrato: !!form.continuaContrato && !!form.fechaInicioContinuidad,
+      fechaInicioContinuidad: form.continuaContrato ? (form.fechaInicioContinuidad || "") : "",
       medirComoBaseAdministrativa: !!form.medirComoBaseAdministrativa,
       salarioMinimoGarantizado: !!form.salarioMinimoGarantizado,
       pagoPorDia: !!form.pagoPorDia,
@@ -2174,6 +2178,13 @@ function TrabajadorModal({ trabajador, valoresIniciales, onSave, onClose, areasN
           <Field label="Auxilio de transporte mensual"><FInput type="number" value={form.auxilioTransporte} onChange={set("auxilioTransporte")} placeholder="Ej: 249095" /></Field>
           <Field label="Fecha de ingreso (para el acumulado de parafiscales)"><FInput type="date" value={form.fechaIngreso} onChange={set("fechaIngreso")} /></Field>
           <Field label="Fecha de retiro (si ya no trabaja aquí)"><FInput type="date" value={form.fechaRetiro} onChange={set("fechaRetiro")} /></Field>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+            <input type="checkbox" id="continuaContrato" checked={!!form.continuaContrato} onChange={(e) => set("continuaContrato")(e.target.checked)} />
+            <label htmlFor="continuaContrato" style={{ fontSize: 12.5, color: C.ink, cursor: "pointer" }}>Continúa con el contrato anterior (cuenta sus vacaciones con la antigüedad continua)</label>
+          </div>
+          {form.continuaContrato && (
+            <Field label="Antigüedad continua desde (inicio del contrato anterior)"><FInput type="date" value={form.fechaInicioContinuidad} onChange={set("fechaInicioContinuidad")} /></Field>
+          )}
         </>
       )}
       {form.tipoNomina === "Prestación de Servicios" && (
@@ -9136,7 +9147,7 @@ function segmentosPorSemestre(desde, hasta) {
 // diasSinJustificarEnRango arriba) -- si le quita un dia laboral, le
 // cambia cesantias/intereses/prima/vacaciones, igual que ya pasaba con
 // Licencia No Remunerada.
-function calcularLiquidacionRetiro(trabajador, fechaCorte, ausencias, faltas = [], areasNomina = [], turnos = []) {
+function calcularLiquidacionRetiro(trabajador, fechaCorte, ausencias, faltas = [], areasNomina = [], turnos = [], previas = []) {
   const fechaIngreso = trabajador.fechaIngreso || fechaCorte;
   const nombreNorm = normalizarNombreHuellero(trabajador.nombre);
   const esDestajo = trabajador.tipoNomina === "Destajo";
@@ -9178,14 +9189,20 @@ function calcularLiquidacionRetiro(trabajador, fechaCorte, ausencias, faltas = [
   const diasLicenciaNoRemunerada = diasCalendarioSinSueldo(ausencias, trabajador, areasNomina, turnos, fechaIngreso, fechaCorte);
   const diasSinJustificar = diasSinJustificarEnRango(faltas, ausencias, trabajador, nombreNorm, fechaIngreso, fechaCorte);
   const fechasSinJustificar = fechasSinJustificarEnRango(faltas, ausencias, trabajador, nombreNorm, fechaIngreso, fechaCorte);
-  const vacacionesAcumuladas = (sueldoMensual * diasBase) / 720;
-  const diasVacacionesTomados = diasHabilesPorMotivos(ausencias, trabajador, areasNomina, turnos, ["Vacaciones"], fechaIngreso, fechaCorte);
-  const valorVacacionesTomadas = (sueldoMensual / 30) * diasVacacionesTomados;
+  // (2026-11-27, a pedido de Fredy) Continuidad entre contratos (Yanko -> Indutex): las vacaciones se cuentan desde la antigüedad continua
+  // de la ficha y se descuentan los días ya pagados en dinero en liquidaciones anteriores. Cesantías, prima e intereses siguen por tramo.
+  const iniCont = inicioContinuidad(trabajador);
+  const diasPagadosAntes = iniCont ? diasPagadosEnDinero(previas, trabajador.id, fechaIngreso) : 0;
+  const fechaVac = iniCont || fechaIngreso;
+  const diasBaseVac = iniCont ? diasTrabajadosDelTramo(iniCont, fechaCorte) : diasBase;
+  const vacacionesAcumuladas = (sueldoMensual * diasBaseVac) / 720;
+  const diasVacacionesTomados = diasHabilesPorMotivos(ausencias, trabajador, areasNomina, turnos, ["Vacaciones"], fechaVac, fechaCorte);
+  const valorVacacionesTomadas = (sueldoMensual / 30) * (diasVacacionesTomados + diasPagadosAntes);
   const vacaciones = Math.max(0, vacacionesAcumuladas - valorVacacionesTomadas);
   const totalAPagar = cesantias + intereses + prima + vacaciones;
   // (2026-11-27, a pedido de Fredy) Si disfrutó más días de los que ganó, el adelanto no se descuenta (vacaciones queda en $0) pero se muestra.
-  const exc = excesoVacaciones({ diasBase, tomados: diasVacacionesTomados, sueldo: sueldoMensual });
-  return { fechaIngreso, fechaCorte, diasCalendario, diasNoRemunerados, diasLicenciaNoRemunerada, diasSinJustificar, fechasSinJustificar, diasBase, diasVacacionesTomados, diasVacacionesGanados: exc.ganados, diasVacacionesExceso: exc.dias, valorVacacionesExceso: exc.valor, cesantias, intereses, prima, vacaciones, totalAPagar };
+  const exc = excesoVacaciones({ diasBase: diasBaseVac, tomados: diasVacacionesTomados + diasPagadosAntes, sueldo: sueldoMensual });
+  return { fechaIngreso, fechaCorte, diasCalendario, diasNoRemunerados, diasLicenciaNoRemunerada, diasSinJustificar, fechasSinJustificar, diasBase, diasVacacionesTomados, diasBaseVacaciones: diasBaseVac, diasVacacionesPagadasAntes: diasPagadosAntes, continuidadDesde: iniCont, diasVacacionesGanados: exc.ganados, diasVacacionesExceso: exc.dias, valorVacacionesExceso: exc.valor, cesantias, intereses, prima, vacaciones, totalAPagar };
 }
 // (2026-09-13, a pedido de Fredy) Cesantias/intereses de un trabajador
 // Fiscal se deben consignar al fondo antes del 14 de febrero del anio
@@ -11264,6 +11281,7 @@ function exportReciboLiquidacionRetiroHTML({ trabajador, liquidacion }) {
       <tr><td style="padding-left:24px;font-size:12px;color:#8A8AA0">— Licencia No Remunerada</td><td style="text-align:right;font-size:12px;color:#8A8AA0">${fmtNum(liquidacion.diasLicenciaNoRemunerada || 0)}</td></tr>
       <tr><td style="padding-left:24px;font-size:12px;color:#8A8AA0">— Días sin justificar</td><td style="text-align:right;font-size:12px;color:#8A8AA0">${fmtNum(liquidacion.diasSinJustificar || 0)}</td></tr>` : ""}
       <tr><td>Días de vacaciones ya tomados</td><td style="text-align:right">${fmtNum(liquidacion.diasVacacionesTomados || 0)}</td></tr>
+      ${liquidacion.continuidadDesde ? `<tr><td>Antigüedad continua para vacaciones desde</td><td style="text-align:right">${fmtFechaISO(liquidacion.continuidadDesde)}${(liquidacion.diasVacacionesPagadasAntes || 0) > 0.05 ? ` · ${fmtDiasVac(liquidacion.diasVacacionesPagadasAntes)} d ya pagados antes` : ""}</td></tr>` : ""}
       ${(liquidacion.valorVacacionesExceso || 0) > 0 ? `<tr><td style="color:#B23A48">Vacaciones adelantadas (no se descuentan)</td><td style="text-align:right;color:#B23A48;font-weight:700">${fmtDiasVac(liquidacion.diasVacacionesExceso)} días · ${fmtMoney(liquidacion.valorVacacionesExceso)}</td></tr>` : ""}
     </tbody></table>
     ${(liquidacion.fechasSinJustificar && liquidacion.fechasSinJustificar.length) ? `
@@ -11276,7 +11294,7 @@ function exportReciboLiquidacionRetiroHTML({ trabajador, liquidacion }) {
       <tr><td>Cesantías</td><td style="text-align:right">${fmtMoney(liquidacion.cesantias)}</td></tr>
       <tr><td>Intereses de cesantías</td><td style="text-align:right">${fmtMoney(liquidacion.intereses)}</td></tr>
       <tr><td>Prima de servicios</td><td style="text-align:right">${fmtMoney(liquidacion.prima)}</td></tr>
-      <tr><td>Vacaciones</td><td style="text-align:right">${fmtMoney(liquidacion.vacaciones)}</td></tr>
+      <tr><td>Vacaciones${liquidacion.vacacionesContinuan ? " (continúan en la nueva empresa: no se pagan en dinero)" : ""}</td><td style="text-align:right">${fmtMoney(liquidacion.vacaciones)}</td></tr>
     </tbody></table>
     <div class="totales">
       <div class="total-card" style="background:#EBF7F2;color:#2D9E6B"><label>Total a Pagar</label><div class="val">${fmtMoney(liquidacion.totalAPagar)}</div></div>
@@ -17197,7 +17215,7 @@ function abrirDesprendiblesVacaciones(docs, titulo) {
   const w = window.open(url, "_blank");
   return !!w;
 }
-function VacacionesView({ trabajadores, ausencias, faltas, areasNomina, turnos }) {
+function VacacionesView({ trabajadores, ausencias, faltas, areasNomina, turnos, liquidacionesRetiro }) {
   const [busqueda, setBusqueda] = useState("");
   const [areaFiltro, setAreaFiltro] = useState("");
   const [estadoFiltro, setEstadoFiltro] = useState("");
@@ -17212,17 +17230,19 @@ function VacacionesView({ trabajadores, ausencias, faltas, areasNomina, turnos }
         const sueldo = Number(t.sueldo) || 0;
         const base = { id: t.id, t, nombre: t.nombre || "", area: t.area || "Sin asignar", tipo, sueldo, ingreso: t.fechaIngreso || "", conVacaciones: TIPOS_NOMINA_CON_VACACIONES.includes(tipo) };
         if (!t.fechaIngreso) return { ...base, sinIngreso: true, ganados: 0, tomados: 0, pendientes: 0, valor: 0, estado: null, calculo: null, exceso: null };
-        const r = calcularLiquidacionRetiro(t, hoy, ausencias, faltas, areasNomina, turnos);
-        const ganados = (r.diasBase / 360) * VACACIONES_DIAS_POR_ANIO;
+        const previas = (liquidacionesRetiro || []).filter((l) => l.trabajadorId === t.id);
+        const r = calcularLiquidacionRetiro(t, hoy, ausencias, faltas, areasNomina, turnos, previas);
+        const ganados = ((r.diasBaseVacaciones ?? r.diasBase) / 360) * VACACIONES_DIAS_POR_ANIO;
         const tomados = r.diasVacacionesTomados;
-        const pendientes = Math.max(0, ganados - tomados);
+        const pagadas = r.diasVacacionesPagadasAntes || 0;
+        const pendientes = Math.max(0, ganados - pagadas - tomados);
         // (2026-11-27, a pedido de Fredy) Adelanto: se proyecta hasta el fin de la última vacación programada (ej. 15/12), no solo a hoy.
         const fProy = fechaCorteVacaciones(ausencias, t.id, hoy);
-        const rProy = fProy > hoy ? calcularLiquidacionRetiro(t, fProy, ausencias, faltas, areasNomina, turnos) : r;
+        const rProy = fProy > hoy ? calcularLiquidacionRetiro(t, fProy, ausencias, faltas, areasNomina, turnos, previas) : r;
         const exceso = { fecha: fProy, ganados: rProy.diasVacacionesGanados, tomados: rProy.diasVacacionesTomados, dias: rProy.diasVacacionesExceso, valor: rProy.valorVacacionesExceso };
-        return { ...base, sinIngreso: false, ganados, tomados, pendientes, valor: pendientes * (sueldo / 30), estado: estadoVacaciones(pendientes), calculo: r, exceso };
+        return { ...base, sinIngreso: false, ganados, tomados, pagadas, continuidadDesde: r.continuidadDesde || "", pendientes, valor: pendientes * (sueldo / 30), estado: estadoVacaciones(pendientes), calculo: r, exceso };
       });
-  }, [trabajadores, ausencias, faltas, areasNomina, turnos, hoy]);
+  }, [trabajadores, ausencias, faltas, areasNomina, turnos, hoy, liquidacionesRetiro]);
   const filasTipo = filasBase.filter((f) => verTodos || f.conVacaciones);
   const areas = [...new Set(filasTipo.map((f) => f.area))].sort((a, b) => a.localeCompare(b, "es"));
   const q = normalizarNombreParaComparar(busqueda);
@@ -17243,8 +17263,9 @@ function VacacionesView({ trabajadores, ausencias, faltas, areasNomina, turnos }
   const periodos = useMemo(() => (detalle ? periodosVacaciones(detalle.t, ausencias, areasNomina, turnos).reverse() : []), [detalle, ausencias, areasNomina, turnos]);
   function datosDesprendible(f) {
     const per = periodosVacaciones(f.t, ausencias, areasNomina, turnos);
-    const anios = Math.floor(f.calculo.diasBase / 360);
-    const resto = f.calculo.diasBase % 360;
+    const diasServ = f.calculo.diasBaseVacaciones ?? f.calculo.diasBase;
+    const anios = Math.floor(diasServ / 360);
+    const resto = diasServ % 360;
     const aniosServicio = [];
     for (let k = 1; k <= anios; k++) aniosServicio.push({ label: `Año ${k} de servicio`, dias: VACACIONES_DIAS_POR_ANIO });
     if (resto > 0) aniosServicio.push({ label: `Año ${anios + 1} (en curso, ${resto} días trabajados)`, dias: (resto / 360) * VACACIONES_DIAS_POR_ANIO });
@@ -17261,9 +17282,9 @@ function VacacionesView({ trabajadores, ausencias, faltas, areasNomina, turnos }
   }
   const columnas = [
     { key: "nombre", label: "Trabajador", render: (f) => (<div><div style={{ fontWeight: 700 }}>{f.nombre}</div><div style={{ fontSize: 10, color: C.slate }}>{f.area} · {f.tipo || "Sin clasificar"}</div></div>) },
-    { key: "ingreso", label: "Ingreso", align: "right", render: (f) => (f.sinIngreso ? <span style={{ color: C.amber, fontWeight: 700 }}>Sin fecha</span> : <div><div>{fmtFechaISO(f.ingreso)}</div><div style={{ fontSize: 10, color: C.slate }}>{antiguedad(f.calculo.diasBase)}</div></div>) },
+    { key: "ingreso", label: "Ingreso", align: "right", render: (f) => (f.sinIngreso ? <span style={{ color: C.amber, fontWeight: 700 }}>Sin fecha</span> : <div><div>{fmtFechaISO(f.ingreso)}</div><div style={{ fontSize: 10, color: C.slate }}>{antiguedad(f.calculo.diasBase)}</div>{f.continuidadDesde && <div title="Las vacaciones se cuentan desde la antigüedad continua (contrato anterior)" style={{ fontSize: 10, color: C.violet, fontWeight: 700 }}>Continuo desde {fmtFechaISO(f.continuidadDesde)}</div>}</div>) },
     { key: "ganados", label: "Ganados", align: "right", render: (f) => (f.sinIngreso ? "—" : fmtD(f.ganados)) },
-    { key: "tomados", label: "Tomados", align: "right", render: (f) => (f.sinIngreso ? "—" : fmtNum(f.tomados)) },
+    { key: "tomados", label: "Tomados", align: "right", render: (f) => (f.sinIngreso ? "—" : <div><div>{fmtNum(f.tomados)}</div>{f.pagadas > 0.05 && <div title="Ya pagados en dinero en la liquidación del contrato anterior" style={{ fontSize: 10, color: C.violet, fontWeight: 700 }}>+ {fmtD(f.pagadas)} pagados</div>}</div>) },
     { key: "pendientes", label: "Pendientes", align: "right", render: (f) => (f.sinIngreso ? "—" : <b>{fmtD(f.pendientes)}</b>) },
     { key: "valor", label: "Valor pendiente", align: "right", render: (f) => (f.sinIngreso ? "—" : fmtMoney(f.valor)) },
     { key: "estado", label: "Estado", align: "right", render: (f) => (f.estado ? (
@@ -17359,7 +17380,7 @@ function VacacionesView({ trabajadores, ausencias, faltas, areasNomina, turnos }
             </div>
           ))}
           <div style={{ fontSize: 11.5, color: C.slate, background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", marginTop: 14, lineHeight: 1.55 }}>
-            Cálculo: {fmtNum(detalle.calculo.diasBase)} días trabajados ÷ 360 × {VACACIONES_DIAS_POR_ANIO} = {fmtD(detalle.ganados)} ganados. Menos {fmtNum(detalle.tomados)} tomados = {fmtD(detalle.pendientes)} pendientes × {fmtMoney(detalle.sueldo / 30)} = {fmtMoney(detalle.valor)}.
+            Cálculo: {fmtNum(detalle.calculo.diasBaseVacaciones ?? detalle.calculo.diasBase)} días trabajados{detalle.continuidadDesde ? ` (antigüedad continua desde ${fmtFechaISO(detalle.continuidadDesde)}, contrato anterior incluido)` : ""} ÷ 360 × {VACACIONES_DIAS_POR_ANIO} = {fmtD(detalle.ganados)} ganados. Menos {fmtNum(detalle.tomados)} tomados{detalle.pagadas > 0.05 ? ` y ${fmtD(detalle.pagadas)} ya pagados en dinero en la liquidación anterior` : ""} = {fmtD(detalle.pendientes)} pendientes × {fmtMoney(detalle.sueldo / 30)} = {fmtMoney(detalle.valor)}.
             {detalle.calculo.diasNoRemunerados > 0 && ` Se descontaron ${fmtNum(detalle.calculo.diasNoRemunerados)} días de licencia no remunerada o sin justificar.`}
           </div>
         </Modal>
@@ -17367,7 +17388,7 @@ function VacacionesView({ trabajadores, ausencias, faltas, areasNomina, turnos }
     </div>
   );
 }
-function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesRetiro, prestamos, areasNomina, turnos, onGuardarLiquidacionRetiro, onGuardarTrabajador, onGuardarAusencia, onCambiarEstadoPagoLiquidacion, onCambiarEmpleadorLiquidacion, onBorrarLiquidacionRetiro, currentUser }) {
+function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesRetiro, prestamos, areasNomina, turnos, onGuardarLiquidacionRetiro, onGuardarTrabajador, onGuardarAusencia, onCambiarEstadoPagoLiquidacion, onCambiarEmpleadorLiquidacion, onCambiarVacacionesContinuan, onBorrarLiquidacionRetiro, currentUser }) {
   const [areaFiltro, setAreaFiltro] = useState("");
   const [trabajadorId, setTrabajadorId] = useState("");
   const [fechaRetiro, setFechaRetiro] = useState("");
@@ -17451,7 +17472,7 @@ function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesR
 
   function calcular() {
     if (!trabajador || !fechaRetiro || !trabajador.fechaIngreso) return;
-    setResultado(calcularLiquidacionRetiro(trabajador, fechaRetiro, ausencias, faltas, areasNomina, turnos));
+    setResultado(calcularLiquidacionRetiro(trabajador, fechaRetiro, ausencias, faltas, areasNomina, turnos, (liquidacionesRetiro || []).filter((l) => l.trabajadorId === trabajador.id)));
     setGuardadoOk(false);
     setErrorGuardar("");
   }
@@ -17627,7 +17648,7 @@ function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesR
           {(resultado.valorVacacionesExceso || 0) > 0 && (
             <div style={{ fontSize: 12.5, color: C.ink, background: C.redBg, border: `1px solid ${C.red}33`, borderRadius: 8, padding: "10px 12px", marginBottom: 14, maxWidth: 700, lineHeight: 1.55 }}>
               <b style={{ color: C.red }}>⏩ Vacaciones adelantadas: {fmtDiasVac(resultado.diasVacacionesExceso)} días ({fmtMoney(resultado.valorVacacionesExceso)})</b><br />
-              Disfrutó {fmtNum(resultado.diasVacacionesTomados)} días de vacaciones y ganó {fmtDiasVac(resultado.diasVacacionesGanados)}. En esta liquidación las vacaciones quedan en $0: ATLAS no descuenta el adelanto; si se va a descontar, debe tener autorización escrita del trabajador.
+              Disfrutó {fmtNum(resultado.diasVacacionesTomados)} días de vacaciones{resultado.diasVacacionesPagadasAntes > 0.05 ? ` (más ${fmtDiasVac(resultado.diasVacacionesPagadasAntes)} ya pagados en dinero en la liquidación anterior)` : ""} y ganó {fmtDiasVac(resultado.diasVacacionesGanados)}{resultado.continuidadDesde ? ` (antigüedad continua desde ${fmtFechaISO(resultado.continuidadDesde)})` : ""}. En esta liquidación las vacaciones quedan en $0: ATLAS no descuenta el adelanto; si se va a descontar, debe tener autorización escrita del trabajador.
             </div>
           )}
           {!!(resultado.fechasSinJustificar || []).length && (
@@ -17712,6 +17733,13 @@ function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesR
               { key: "generadaEn", label: "Generada", render: (f) => (f.generadaEn ? new Date(f.generadaEn).toLocaleString("es-CO") : "—") },
               { key: "acciones", label: "", align: "right", render: (f) => (
                 <span style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                  {onCambiarVacacionesContinuan && f.estadoPago !== "pagada" && ((f.vacaciones || 0) > 0 || f.vacacionesContinuan) && (
+                    <span
+                      onClick={() => { if (window.confirm(f.vacacionesContinuan ? `¿Volver a pagar en dinero las vacaciones de ${f.nombre} (${fmtMoney(f.vacacionesOriginal || 0)}) en esta liquidación?` : `¿Las vacaciones de ${f.nombre} (${fmtMoney(f.vacaciones || 0)}) continúan en la nueva empresa y NO se pagan en dinero en esta liquidación? El total baja en ese valor. Confírmalo antes con tu contador o abogado.`)) onCambiarVacacionesContinuan(f); }}
+                      title={f.vacacionesContinuan ? "Las vacaciones continúan en la nueva empresa (no se pagan). Clic para volver a pagarlas" : "Clic: las vacaciones continúan en la nueva empresa (no pagarlas en dinero)"}
+                      style={{ cursor: "pointer", fontWeight: 700, fontSize: 11, padding: "2px 8px", borderRadius: 20, background: f.vacacionesContinuan ? C.violetBg : C.canvas, color: f.vacacionesContinuan ? C.violet : C.slate, border: `1px solid ${C.border}` }}
+                    >🏖 {f.vacacionesContinuan ? "Continúan" : "Pagar en dinero"}</span>
+                  )}
                   <span onClick={() => descargarRecibo(f)} style={{ cursor: "pointer", color: C.blue, fontWeight: 700 }} title="Descargar recibo de liquidación">🖨</span>
                   {onBorrarLiquidacionRetiro && <span onClick={() => setConfirmDelLiquidacion(f)} style={{ cursor: "pointer", color: C.red, fontWeight: 700 }} title="Borrar esta liquidación">🗑</span>}
                 </span>
@@ -18895,6 +18923,12 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   // "No pagada" a "Pagada" (o viceversa, por si se equivoca) desde el
   // Historial -- ver LiquidacionRetiroView.
   // (2026-11-06, a pedido de Fredy) Al marcar «Pagada» se guarda la fecha (`pagadaEn`): Financiera la usa para saber cuánto de las liquidaciones se pagó en cada mes.
+  // (2026-11-27, a pedido de Fredy) Quien pasa de una empresa a otra con continuidad: las vacaciones NO se pagan en dinero en la primera liquidación
+  // (continúan en la nueva). Es reversible: se guarda el valor original y el total baja en ese valor. Solo en liquidaciones no pagadas.
+  async function cambiarVacacionesContinuanLiquidacion(l) {
+    if (l.vacacionesContinuan) await fsSave("nomina_liquidaciones_retiro", l.id, { vacacionesContinuan: false, vacaciones: Number(l.vacacionesOriginal) || 0, totalAPagar: (Number(l.totalAPagar) || 0) + (Number(l.vacacionesOriginal) || 0), vacacionesOriginal: 0 });
+    else await fsSave("nomina_liquidaciones_retiro", l.id, { vacacionesContinuan: true, vacacionesOriginal: Number(l.vacaciones) || 0, vacaciones: 0, totalAPagar: Math.max(0, (Number(l.totalAPagar) || 0) - (Number(l.vacaciones) || 0)) });
+  }
   async function cambiarEstadoPagoLiquidacion(id, estadoPago) { await fsSave("nomina_liquidaciones_retiro", id, { estadoPago, pagadaEn: estadoPago === "pagada" ? today() : "" }); }
   // (2026-09-26, a pedido de Fredy) Corregir/asignar el Empleador (Yanko/
   // Indutex) de una liquidacion ya guardada -- pensado para gente como
@@ -19257,7 +19291,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "reporte_area" && !areaLider && !soloNovedades && <ReporteNominaPorAreaView trabajadores={trabajadores} liquidacionesF={liquidacionesF} liquidacionesFD={liquidacionesFD} liquidacionesD={liquidacionesD} liquidacionesPS={liquidacionesPS} causacionManual={causacionManual} />}
           {subView === "trabajadores" && !areaLider && !soloNovedades && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarTrabajador} onDelete={borrarTrabajador} areasNomina={areasNomina} areasTNS={areasTNS} zonasNomina={zonasNomina} tiposContrato={tiposContrato} onSaveArea={guardarAreaNomina} onSaveZona={guardarZonaNomina} turnos={turnos} gruposTrabajo={gruposTrabajo} />}
           {subView === "cumpleanos" && !areaLider && <CumpleanosView db={db} trabajadores={trabajadores} />}
-          {subView === "vacaciones" && !areaLider && <VacacionesView trabajadores={trabajadores} ausencias={ausencias} faltas={faltasSinJustificar} areasNomina={areasNomina} turnos={turnos} />}
+          {subView === "vacaciones" && !areaLider && <VacacionesView trabajadores={trabajadores} ausencias={ausencias} faltas={faltasSinJustificar} areasNomina={areasNomina} turnos={turnos} liquidacionesRetiro={liquidacionesRetiro} />}
           {subView === "gastos_talento" && !areaLider && <GastosTalentoHumanoView db={db} functionsClient={functionsClient} currentUser={currentUser} isAdmin={isAdmin} />}
           {subView === "ingreso_personal" && !areaLider && !soloNovedades && <IngresoPersonalView trabajadores={trabajadores} candidatos={candidatos} liquidacionesRetiro={liquidacionesRetiro} isAdmin={isAdminCatalogos} areasNomina={areasNomina} areasTNS={areasTNS} zonasNomina={zonasNomina} tiposContrato={tiposContrato} turnos={turnos} gruposTrabajo={gruposTrabajo} onGuardarTrabajador={guardarTrabajador} onGuardarCandidato={guardarCandidato} onBorrarCandidato={borrarCandidato} onContratarCandidato={contratarCandidato} />}
           {subView === "grupos_trabajo" && !areaLider && !soloNovedades && <GruposTrabajoView grupos={gruposTrabajo} areasNomina={areasNomina} isAdmin={isAdminCatalogos} onSave={guardarGrupoTrabajo} onDelete={borrarGrupoTrabajo} />}
@@ -19275,7 +19309,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "novedades_tns" && !areaLider && !soloNovedades && <NovedadesTNSView trabajadores={trabajadores} />}
           {subView === "comparar_tns" && !areaLider && !soloNovedades && <CompararNominaTNSView trabajadores={trabajadores} liquidacionesF={liquidacionesF} liquidacionesFD={liquidacionesFD} liquidacionesD={liquidacionesD} />}
           {subView === "novedades_quincena" && !areaLider && !soloNovedades && <NovedadesQuincenaView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} turnos={turnos} motivosDisponibles={nombresMotivosDisponibles} currentUser={currentUser} onGuardarAusencia={guardarAusencia} onGuardarPrestamo={guardarPrestamo} />}
-          {subView === "liquidacion_retiro" && !areaLider && (!soloNovedades || soloLiquidaciones) && <LiquidacionRetiroView trabajadores={trabajadores} ausencias={ausencias} faltas={faltasSinJustificar} liquidacionesRetiro={liquidacionesRetiro} prestamos={prestamos} areasNomina={areasNomina} turnos={turnos} onGuardarLiquidacionRetiro={guardarLiquidacionRetiro} onGuardarTrabajador={guardarTrabajador} onGuardarAusencia={guardarAusencia} onCambiarEstadoPagoLiquidacion={cambiarEstadoPagoLiquidacion} onCambiarEmpleadorLiquidacion={cambiarEmpleadorLiquidacion} onBorrarLiquidacionRetiro={borrarLiquidacionRetiro} currentUser={currentUser} />}
+          {subView === "liquidacion_retiro" && !areaLider && (!soloNovedades || soloLiquidaciones) && <LiquidacionRetiroView trabajadores={trabajadores} ausencias={ausencias} faltas={faltasSinJustificar} liquidacionesRetiro={liquidacionesRetiro} prestamos={prestamos} areasNomina={areasNomina} turnos={turnos} onGuardarLiquidacionRetiro={guardarLiquidacionRetiro} onGuardarTrabajador={guardarTrabajador} onGuardarAusencia={guardarAusencia} onCambiarEstadoPagoLiquidacion={cambiarEstadoPagoLiquidacion} onCambiarEmpleadorLiquidacion={cambiarEmpleadorLiquidacion} onCambiarVacacionesContinuan={cambiarVacacionesContinuanLiquidacion} onBorrarLiquidacionRetiro={borrarLiquidacionRetiro} currentUser={currentUser} />}
           {subView === "dias_no_justificados" && !areaLider && (!soloNovedades || soloLiquidaciones) && <DiasNoJustificadosView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} areasNomina={areasNomina} />}
           {subView === "provision_liquidaciones" && !areaLider && (!soloNovedades || soloLiquidaciones) && <ProvisionLiquidacionesView trabajadores={trabajadores} ausencias={ausencias} areasNomina={areasNomina} turnos={turnos} />}
           {subView === "prestamos" && !areaLider && (!soloNovedades || soloLiquidaciones) && <PrestamosView trabajadores={trabajadores} prestamos={prestamos} onGuardar={guardarPrestamo} onBorrar={borrarPrestamo} currentUser={currentUser} />}
