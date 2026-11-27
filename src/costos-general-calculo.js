@@ -155,11 +155,13 @@ export function totalGastos(lineas) {
 
 // ─── Nómina fiscal (liquidaciones confirmadas) ───────────────────────────────
 // Mismo costo para la empresa que usa el Reporte de Nómina por Área: neto + seguridad social + prestaciones.
+// (2026-11-27) Una quincena estimada (estimada: true) trae `factorEstimado` (0-1): la parte ya causada de esa quincena.
+export const factorLiquidacion = (l) => (l && l.estimada && Number.isFinite(l.factorEstimado) ? l.factorEstimado : 1);
 export function costoTotalLiquidacion(l) {
-  return num(l.netoAPagar)
+  return factorLiquidacion(l) * (num(l.netoAPagar)
     + num(l.epsTrabajador) + num(l.pensionTrabajador)
     + num(l.pensionEmpleador) + num(l.arlEmpleador) + num(l.cajaCompensacionEmpleador) + num(l.epsEmpleador)
-    + num(l.cesantiasPeriodo) + num(l.interesesPeriodo) + num(l.primaPeriodo) + num(l.vacacionesPeriodo);
+    + num(l.cesantiasPeriodo) + num(l.interesesPeriodo) + num(l.primaPeriodo) + num(l.vacacionesPeriodo));
 }
 
 // Áreas cuyo sueldo ya va dentro del costo del lote (su centro de costo está en la cotización): no son estructura.
@@ -199,10 +201,13 @@ export function resumenFiscal(liquidaciones, fichas, areasFuera, excepciones) {
   lista.forEach((l) => (personaCuenta(l.trabajadorId || l.nombre || l.id, areaDeLiquidacion(l, fichas), areasFuera, excepciones, l.tipoNomina) ? cuenta : noCuenta).push(l));
   const suma = (a) => a.reduce((s, l) => s + costoTotalLiquidacion(l), 0);
   const personas = (a) => new Set(a.map((l) => l.trabajadorId || l.nombre)).size;
+  const estimadas = cuenta.filter((l) => l.estimada);
   return {
     total: suma(cuenta),
     personas: personas(cuenta),
-    quincenas: [...new Set(lista.filter((l) => !l.tipoNomina || l.tipoNomina === TIPO_FISCAL).map((l) => l.periodoId).filter(Boolean))].sort(),
+    // Solo quincenas CONFIRMADAS: las estimadas (día a día) no cuentan como quincena cerrada.
+    quincenas: [...new Set(lista.filter((l) => !l.estimada && (!l.tipoNomina || l.tipoNomina === TIPO_FISCAL)).map((l) => l.periodoId).filter(Boolean))].sort(),
+    estimado: { total: suma(estimadas), personas: personas(estimadas), fraccion: estimadas.reduce((m, l) => Math.max(m, factorLiquidacion(l)), 0), todo: suma(lista.filter((l) => l.estimada)) },
     porTipo: [TIPO_FISCAL, TIPO_FISCAL_DESTAJO, TIPO_PRESTACION].map((t) => { const c = cuenta.filter((l) => (l.tipoNomina || TIPO_FISCAL) === t); const n = noCuenta.filter((l) => (l.tipoNomina || TIPO_FISCAL) === t); return { tipo: t, total: suma(c), personas: personas(c), fueraTotal: suma(n), fueraPersonas: personas(n) }; }),
     fuera: { total: suma(noCuenta), personas: personas(noCuenta) },
     totalTodo: suma(lista),
@@ -324,11 +329,14 @@ export function detalleFiscal(liquidaciones, fichas, areasFuera, excepciones) {
     const ficha = (fichas || []).find((f) => f.id === l.trabajadorId);
     if (!por.has(id)) por.set(id, { id, nombre: l.nombre || ficha?.nombre || "—", area: ficha?.area || "Sin asignar", tipoNomina: l.tipoNomina || TIPO_FISCAL, quincenas: [], neto: 0, seguridad: 0, prestaciones: 0, costo: 0 });
     const g = por.get(id);
-    if (l.periodoId && !g.quincenas.includes(l.periodoId)) g.quincenas.push(l.periodoId);
-    g.neto += num(l.netoAPagar);
-    g.seguridad += num(l.epsTrabajador) + num(l.pensionTrabajador) + num(l.pensionEmpleador) + num(l.arlEmpleador) + num(l.cajaCompensacionEmpleador) + num(l.epsEmpleador);
-    g.prestaciones += num(l.cesantiasPeriodo) + num(l.interesesPeriodo) + num(l.primaPeriodo) + num(l.vacacionesPeriodo);
+    if (l.periodoId && !l.estimada && !g.quincenas.includes(l.periodoId)) g.quincenas.push(l.periodoId);
+    const fq = factorLiquidacion(l);
+    if (l.estimada) g.fraccionEstimada = Math.max(g.fraccionEstimada || 0, fq);
+    g.neto += fq * num(l.netoAPagar);
+    g.seguridad += fq * (num(l.epsTrabajador) + num(l.pensionTrabajador) + num(l.pensionEmpleador) + num(l.arlEmpleador) + num(l.cajaCompensacionEmpleador) + num(l.epsEmpleador));
+    g.prestaciones += fq * (num(l.cesantiasPeriodo) + num(l.interesesPeriodo) + num(l.primaPeriodo) + num(l.vacacionesPeriodo));
     g.costo += costoTotalLiquidacion(l);
+    if (l.estimada) g.costoEstimado = (g.costoEstimado || 0) + costoTotalLiquidacion(l);
   });
   return [...por.values()]
     .map((g) => { const cuenta = personaCuenta(g.id, g.area, areasFuera, excepciones, g.tipoNomina); return { ...g, quincenas: g.quincenas.sort(), cuenta, costoCuenta: cuenta ? g.costo : 0, apagada: !cuenta }; })
@@ -370,6 +378,44 @@ export function fechaISOBogota(v) {
 export function lotesDelPeriodo(lotes, periodo) {
   if (!periodo || periodo.esMes) return lotes || [];
   return (lotes || []).filter((l) => { const f = fechaISOBogota(l.fechaAprobacion); return f && f >= periodo.desde && f <= periodo.hasta; });
+}
+
+// ─── Quincena sin confirmar: se causa día a día ──────────────────────────────
+// (2026-11-27, a pedido de Fredy) La 1.ª quincena ya se pagó y está confirmada; la 2.ª se está trabajando día a día y aún no tiene liquidación.
+// Para cada persona de Fiscal y Fiscal Destajo con su 1.ª quincena confirmada y sin 2.ª, se estima la 2.ª con el costo de su 1.ª
+// × (días de trabajo del periodo dentro de la quincena ÷ días de trabajo de la quincena). «Mes completo» la proyecta al 100 %.
+// Solo el mes en curso (en un mes pasado una quincena sin liquidación es un dato que falta, no algo por causar). Cuando se confirma la
+// liquidación real de la 2.ª, la estimación de esa persona desaparece sola. Prestación de Servicios no se estima.
+// periodo = periodoCosto(...); fichas: para no estimar a quien ya se retiró.
+export function estimarQuincenaFiscal(liquidaciones, periodo, hoyISO, fichas) {
+  if (!periodo || !periodo.desde || !periodo.hasta) return [];
+  const ym = periodo.desde.slice(0, 7);
+  if (String(hoyISO || "").slice(0, 7) !== ym) return [];
+  const anio = Number(ym.slice(0, 4));
+  const mes = Number(ym.slice(5, 7));
+  const hastaDia = Number(periodo.hasta.slice(8, 10));
+  const desdeDia = Number(periodo.desde.slice(8, 10));
+  if (hastaDia < 16) return [];
+  const diasQ2 = diasDeTrabajoDelMes(anio, mes) - diasDeTrabajoDelMes(anio, mes, 15);
+  if (!(diasQ2 > 0)) return [];
+  const ini = Math.max(16, desdeDia);
+  const diasPeriodo = diasDeTrabajoDelMes(anio, mes, hastaDia) - diasDeTrabajoDelMes(anio, mes, ini - 1);
+  const fraccion = Math.min(1, Math.max(0, diasPeriodo / diasQ2));
+  if (!(fraccion > 0)) return [];
+  const q1 = `${ym}-Q1`;
+  const q2 = `${ym}-Q2`;
+  const clave = (l) => `${l.tipoNomina || TIPO_FISCAL}|${l.trabajadorId || l.nombre || ""}`;
+  const lista = liquidaciones || [];
+  const tienenQ2 = new Set(lista.filter((l) => l.periodoId === q2 && !l.estimada).map(clave));
+  return lista
+    .filter((l) => l.periodoId === q1 && !l.estimada && (!l.tipoNomina || l.tipoNomina === TIPO_FISCAL || l.tipoNomina === TIPO_FISCAL_DESTAJO) && !tienenQ2.has(clave(l)))
+    .filter((l) => {
+      const f = (fichas || []).find((x) => x.id === l.trabajadorId);
+      if (!f) return true;
+      const retiro = String(f.fechaRetiro || "").slice(0, 10);
+      return !(f.activo === false || (retiro && retiro < `${ym}-16`));
+    })
+    .map((l) => ({ ...l, id: `${l.id || clave(l)}_est`, periodoId: q2, estimada: true, factorEstimado: fraccion, baseId: l.id || null }));
 }
 
 // ─── Todo junto ──────────────────────────────────────────────────────────────

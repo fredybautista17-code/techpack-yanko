@@ -19,7 +19,7 @@ import { diasDeTrabajoDelMes } from "./dias-habiles";
 import { mismoNombre } from "./corte-equipos";
 import { unirPorAlias } from "./nombres-alias";
 import { lineasDesdeBusint, fusionarBusint } from "./costos-gastos-busint";
-import { cierreGeneral, periodoCosto, lotesDelPeriodo, parsearGastos, totalGastos, detalleLotes, detalleFiscal, AREAS_FUERA_DEFECTO, cuentaPorDefecto, TIPO_FISCAL, TIPO_FISCAL_DESTAJO, TIPO_PRESTACION, DESTAJO_AYUDA_FUERA_DEFECTO, DESTAJO_PROVISION_FUERA_DEFECTO } from "./costos-general-calculo";
+import { cierreGeneral, periodoCosto, lotesDelPeriodo, parsearGastos, totalGastos, detalleLotes, detalleFiscal, estimarQuincenaFiscal, AREAS_FUERA_DEFECTO, cuentaPorDefecto, TIPO_FISCAL, TIPO_FISCAL_DESTAJO, TIPO_PRESTACION, DESTAJO_AYUDA_FUERA_DEFECTO, DESTAJO_PROVISION_FUERA_DEFECTO } from "./costos-general-calculo";
 
 const C = {
   ink: "#1A1A2E", slate: "#5A5A7A", border: "#E8E2DB", canvas: "#F7F4F0", white: "#FFFFFF",
@@ -179,6 +179,7 @@ const bonito = (n) => String(n || "").toLowerCase().replace(/(^|\s)(\S)/g, (m, a
 
 // Nómina fiscal del mes, persona por persona y agrupada por área; cada persona y cada área tiene su interruptor.
 function VentanaFiscal({ mesTxt, ym, quincenas, resumen, filas, marcas, onArea, onPersona, msg, onClose }) {
+  const est = resumen.estimado || { total: 0, personas: 0, fraccion: 0, todo: 0 };
   const [q, setQ] = useState("");
   useEffect(() => {
     const h = (e) => { if (e.key === "Escape") onClose(); };
@@ -198,7 +199,7 @@ function VentanaFiscal({ mesTxt, ym, quincenas, resumen, filas, marcas, onArea, 
   async function bajarExcel() {
     const XLSX = await import("xlsx");
     const wb = XLSX.utils.book_new();
-    const datos = visibles.map((f) => ({ Trabajador: f.nombre, Área: f.area, Quincenas: f.quincenas.join(", "), Neto: Math.round(f.neto), "Seguridad social": Math.round(f.seguridad), Prestaciones: Math.round(f.prestaciones), "Costo total": Math.round(f.costo), Tipo: f.tipoNomina, Estado: f.cuenta ? "Cuenta" : "No cuenta", "Suma a la estructura": Math.round(f.costoCuenta) }));
+    const datos = visibles.map((f) => ({ Trabajador: f.nombre, Área: f.area, Quincenas: f.quincenas.join(", ") + (f.fraccionEstimada ? ` + Q2 estimada ${Math.round(f.fraccionEstimada * 100)} %` : ""), "Estimado (causado)": Math.round(f.costoEstimado || 0), Neto: Math.round(f.neto), "Seguridad social": Math.round(f.seguridad), Prestaciones: Math.round(f.prestaciones), "Costo total": Math.round(f.costo), Tipo: f.tipoNomina, Estado: f.cuenta ? "Cuenta" : "No cuenta", "Suma a la estructura": Math.round(f.costoCuenta) }));
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(datos), "Nómina fiscal");
     XLSX.writeFile(wb, `Nomina_fiscal_${ym}.xlsx`);
   }
@@ -209,7 +210,7 @@ function VentanaFiscal({ mesTxt, ym, quincenas, resumen, filas, marcas, onArea, 
       <div style={{ width: 36, height: 36, borderRadius: "50%", background: `${col}22`, color: col, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 12.5, flex: "none", filter: f.cuenta ? "none" : "grayscale(1)", opacity: f.cuenta ? 1 : 0.6 }}>{iniciales(f.nombre)}</div>
       <div style={{ flex: 1, minWidth: 0, opacity: f.cuenta ? 1 : 0.6 }}>
         <div style={{ fontSize: 13.5, fontWeight: 800, color: C.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{bonito(f.nombre)}{f.tipoNomina && f.tipoNomina !== TIPO_FISCAL ? <span style={{ marginLeft: 8, fontSize: 10.5, fontWeight: 800, padding: "2px 8px", borderRadius: 10, background: f.tipoNomina === TIPO_FISCAL_DESTAJO ? "#EFE9F7" : C.blueBg, color: f.tipoNomina === TIPO_FISCAL_DESTAJO ? "#6B4C9A" : C.blue }}>{f.tipoNomina}</span> : null}</div>
-        <div style={{ fontSize: 11.5, color: C.slate }}>{f.quincenas.length >= 2 ? "Quincenas 1 y 2" : f.quincenas.length === 1 ? `Quincena ${f.quincenas[0].slice(-1)}` : "—"}</div>
+        <div style={{ fontSize: 11.5, color: C.slate }}>{f.quincenas.length >= 2 ? "Quincenas 1 y 2" : f.quincenas.length === 1 ? `Quincena ${f.quincenas[0].slice(-1)}` : "—"}{f.fraccionEstimada ? <span style={{ marginLeft: 8, fontSize: 10.5, fontWeight: 800, padding: "2px 8px", borderRadius: 10, background: C.amberBg, color: C.amber }} title="La 2.ª quincena aún no tiene liquidación: se estima con la 1.ª de esta persona × días trabajados ÷ días de la quincena">+ Quincena 2 estimada {Math.round(f.fraccionEstimada * 100)} %</span> : null}</div>
         {marcas && marcas.get(f.id) ? <div style={{ fontSize: 11, fontWeight: 700, color: C.amber, marginTop: 2 }}>{marcas.get(f.id)}</div> : null}
       </div>
       <div style={{ ...mini, opacity: f.cuenta ? 1 : 0.6 }}><span style={miniEt}>Neto</span>{money(f.neto)}</div>
@@ -250,7 +251,7 @@ function VentanaFiscal({ mesTxt, ym, quincenas, resumen, filas, marcas, onArea, 
         <div style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "20px 26px 12px" }}>
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 20, fontWeight: 800, color: C.ink }}>Nómina fiscal completa — {mesTxt}</div>
-            <div style={{ fontSize: 12.5, color: C.slate, marginTop: 4, lineHeight: 1.5 }}>Liquidaciones confirmadas de Fiscal ({quincenas} de 2 quincenas), Fiscal Destajo y Prestación de Servicios. Costo para la empresa = neto + seguridad social + prestaciones (Prestación de Servicios: lo que se le paga). El interruptor decide si esa persona (o toda el área) cuenta como estructura. Arrancan apagados: las áreas con centro de costo (Fiscal Destajo) y toda la Prestación de Servicios (puede estar ya en el Excel de gastos).</div>
+            <div style={{ fontSize: 12.5, color: C.slate, marginTop: 4, lineHeight: 1.5 }}>Liquidaciones confirmadas de Fiscal ({quincenas} de 2 quincenas){est.todo > 0 ? ` y la 2.ª quincena estimada día a día (${Math.round(est.fraccion * 100)} %: costo de su 1.ª quincena × días trabajados ÷ días de la quincena; se reemplaza sola al confirmar la liquidación real)` : ""}, Fiscal Destajo y Prestación de Servicios. Costo para la empresa = neto + seguridad social + prestaciones (Prestación de Servicios: lo que se le paga). El interruptor decide si esa persona (o toda el área) cuenta como estructura. Arrancan apagados: las áreas con centro de costo (Fiscal Destajo) y toda la Prestación de Servicios (puede estar ya en el Excel de gastos).</div>
           </div>
           <button onClick={onClose} aria-label="Cerrar" style={{ border: "none", background: "transparent", fontSize: 26, lineHeight: 1, cursor: "pointer", color: C.slate }}>×</button>
         </div>
@@ -258,6 +259,7 @@ function VentanaFiscal({ mesTxt, ym, quincenas, resumen, filas, marcas, onArea, 
           {stat("Suma a la estructura", money(resumen.total), `${resumen.personas} ${resumen.personas === 1 ? "persona" : "personas"} con el interruptor encendido`, C.amber, C.amberBg)}
           {stat("Ya va en el costo del lote", money(resumen.fuera.total), `${resumen.fuera.personas} ${resumen.fuera.personas === 1 ? "persona" : "personas"} · no suman`, C.green, C.greenBg)}
           {stat("Nómina fiscal total del mes", money(resumen.totalTodo), `${filas.length} personas`)}
+          {est.todo > 0 ? stat("De eso, causado estimado", money(est.todo), `2.ª quincena al ${Math.round(est.fraccion * 100)} % · el resto (${money(resumen.totalTodo - est.todo)}) está confirmado`, C.amber, C.amberBg) : null}
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", padding: "0 26px 12px" }}>
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar por nombre o área…" style={{ padding: "8px 12px", border: `1.5px solid ${C.border}`, borderRadius: 10, fontSize: 13, width: 240, fontFamily: "inherit" }} />
@@ -534,11 +536,14 @@ export default function CostosGeneralView({ db }) {
     ...datos.liqPS.map((l) => ({ ...l, tipoNomina: TIPO_PRESTACION })),
   ], [datos.liqFiscal, datos.liqFD, datos.liqPS]);
   // Nómina fiscal del periodo: solo las quincenas que le tocan (cada liquidación ya es de una quincena).
-  const liqTodas = useMemo(() => (per.esMes ? liqMes : liqMes.filter((l) => per.quincenas.includes(String(l.periodoId || "").slice(-2)))), [liqMes, per]);
+  const liqReales = useMemo(() => (per.esMes ? liqMes : liqMes.filter((l) => per.quincenas.includes(String(l.periodoId || "").slice(-2)))), [liqMes, per]);
+  // (2026-11-27) La quincena que aún no tiene liquidación se estima día a día con la quincena anterior confirmada de cada persona.
+  const liqEst = useMemo(() => estimarQuincenaFiscal(liqMes, per, hoy.toISOString().slice(0, 10), datos.fichas), [liqMes, per, hoy, datos.fichas]);
+  const liqTodas = useMemo(() => (liqEst.length ? [...liqReales, ...liqEst] : liqReales), [liqReales, liqEst]);
   const lotesPeriodo = useMemo(() => lotesDelPeriodo(datos.lotes, per), [datos.lotes, per]);
   const r = useMemo(() => cierreGeneral({ lotes: lotesPeriodo, bases: datos.bases, gastos: lineasGastos, liquidacionesFiscal: liqTodas, areasDestajo, fichas: datos.fichas, areasFuera, excepciones, equiposCorte, destajoOpc: destajoCfg, factorPeriodo: per.factor }), [datos, lotesPeriodo, liqTodas, per, lineasGastos, areasDestajo, areasFuera, excepciones, equiposCorte, destajoCfg]);
   // El cierre del mes que se guarda siempre es del MES COMPLETO, sin importar el periodo que se esté viendo.
-  const rMes = useMemo(() => (per.esMes ? r : cierreGeneral({ lotes: datos.lotes, bases: datos.bases, gastos: lineasGastos, liquidacionesFiscal: liqMes, areasDestajo, fichas: datos.fichas, areasFuera, excepciones, equiposCorte, destajoOpc: destajoCfg })), [per, r, datos, liqMes, lineasGastos, areasDestajo, areasFuera, excepciones, equiposCorte, destajoCfg]);
+  const rMes = useMemo(() => (per.esMes && !liqEst.length ? r : cierreGeneral({ lotes: datos.lotes, bases: datos.bases, gastos: lineasGastos, liquidacionesFiscal: liqMes, areasDestajo, fichas: datos.fichas, areasFuera, excepciones, equiposCorte, destajoOpc: destajoCfg })), [per, r, liqEst, datos, liqMes, lineasGastos, areasDestajo, areasFuera, excepciones, equiposCorte, destajoCfg]);
 
   const ayudaQ = useMemo(
     () => ayudaQuincenasPorPersona(ym, r.destajo.personas, { fichas: datos.fichas, ...nominaQ }, hoy.toISOString().slice(0, 10)),
@@ -845,6 +850,8 @@ export default function CostosGeneralView({ db }) {
   const alcanza = r.resultado >= 0;
   const sinDatos = r.recogido.lotes === 0 && r.estructura === 0;
   const quincenasFiscal = r.fiscal.quincenas.length;
+  const estFiscal = r.fiscal.estimado || { total: 0, personas: 0, fraccion: 0, todo: 0 };
+  const pctEst = Math.round(estFiscal.fraccion * 100);
   const sinDetalle = r.destajo.areas.filter((a) => !a.detalle);
   // «Ayuda por quincena (Nómina)» por área: suma de las personas de destajo del área (las de Corte por equipos no la llevan).
   const ayudaQAreas = new Map(r.destajo.areas.map((a) => {
@@ -875,7 +882,7 @@ export default function CostosGeneralView({ db }) {
           );
         })}
         <span style={{ fontSize: 12, color: C.slate }}>
-          {per.esMes ? `Mes completo · ${per.diasMes} días de trabajo.` : `${per.etiqueta} · ${per.dias} de ${per.diasMes} días de trabajo (${(per.factor * 100).toFixed(1)} % de los gastos mensuales y de lo de destajo). Nómina fiscal: ${per.quincenas.join(" y ").replace(/Q/g, "quincena ")} confirmada${per.quincenas.length > 1 ? "s" : ""}. Lotes aprobados del ${per.desde.split("-").reverse().join("/")} al ${per.hasta.split("-").reverse().join("/")}.`}
+          {per.esMes ? `Mes completo · ${per.diasMes} días de trabajo.` : `${per.etiqueta} · ${per.dias} de ${per.diasMes} días de trabajo (${(per.factor * 100).toFixed(1)} % de los gastos mensuales y de lo de destajo). Nómina fiscal: ${estFiscal.todo > 0 ? `${per.quincenas.includes("Q1") ? "quincena 1 confirmada + " : ""}quincena 2 estimada al ${pctEst} % (aún sin liquidar)` : `${per.quincenas.join(" y ").replace(/Q/g, "quincena ")} confirmada${per.quincenas.length > 1 ? "s" : ""}`}. Lotes aprobados del ${per.desde.split("-").reverse().join("/")} al ${per.hasta.split("-").reverse().join("/")}.`}
         </span>
       </div>
       {msgCierre ? <div style={{ fontSize: 12.5, color: C.green, fontWeight: 700, marginBottom: 10 }}>{msgCierre}</div> : null}
@@ -923,7 +930,7 @@ export default function CostosGeneralView({ db }) {
           <thead><tr><th style={thL}>Concepto</th><th style={thL}>De dónde sale</th><th style={th}>Valor del mes</th></tr></thead>
           <tbody>
             <tr onClick={() => setVentana({ tipo: "gastos" })} style={{ cursor: "pointer" }}><td style={tdL}>▸ Gastos del Excel</td><td style={{ ...td, textAlign: "left", color: C.slate }}>{r.gastos.incluidas} gastos incluidos{r.gastos.excluidas ? ` · ${r.gastos.excluidas} fuera (${money(r.gastos.excluidoValor)})` : ""}{origenGastos === "anterior" ? " · del mes anterior" : origenGastos === "ninguno" ? " · sin cargar" : ""}</td><td style={td}>{money(r.gastos.total)}</td></tr>
-            <tr onClick={() => setVentana({ tipo: "fiscal" })} style={{ cursor: "pointer" }}><td style={tdL}>▸ Nómina fiscal completa</td><td style={{ ...td, textAlign: "left", color: C.slate }}>{r.fiscal.personas} personas · {quincenasFiscal} de 2 quincenas confirmadas (neto + seguridad social + prestaciones){r.fiscal.porTipo.filter((t) => t.tipo !== TIPO_FISCAL && (t.personas || t.fueraPersonas)).map((t) => ` · ${t.tipo}: ${t.personas} ${money(t.total)}${t.fueraPersonas ? ` (${t.fueraPersonas} apagadas, ${money(t.fueraTotal)})` : ""}`).join("")}{r.fiscal.fuera.personas ? ` · ${r.fiscal.fuera.personas} ${r.fiscal.fuera.personas === 1 ? "persona" : "personas"} (${money(r.fiscal.fuera.total)}) apagadas: no suman` : ""}</td><td style={td}>{money(r.fiscal.total)}</td></tr>
+            <tr onClick={() => setVentana({ tipo: "fiscal" })} style={{ cursor: "pointer" }}><td style={tdL}>▸ Nómina fiscal completa</td><td style={{ ...td, textAlign: "left", color: C.slate }}>{r.fiscal.personas} personas · {quincenasFiscal} de 2 quincenas confirmadas{estFiscal.todo > 0 ? ` + 2.ª quincena estimada al ${pctEst} % (${money(estFiscal.todo)} causado)` : ""} (neto + seguridad social + prestaciones){r.fiscal.porTipo.filter((t) => t.tipo !== TIPO_FISCAL && (t.personas || t.fueraPersonas)).map((t) => ` · ${t.tipo}: ${t.personas} ${money(t.total)}${t.fueraPersonas ? ` (${t.fueraPersonas} apagadas, ${money(t.fueraTotal)})` : ""}`).join("")}{r.fiscal.fuera.personas ? ` · ${r.fiscal.fuera.personas} ${r.fiscal.fuera.personas === 1 ? "persona" : "personas"} (${money(r.fiscal.fuera.total)}) apagadas: no suman` : ""}</td><td style={td}>{money(r.fiscal.total)}</td></tr>
             <tr onClick={() => setVentana({ tipo: "ayudas" })} style={{ cursor: "pointer" }}><td style={tdL}>▸ Destajo: ayudas</td><td style={{ ...td, textAlign: "left", color: C.slate }}>{r.destajo.areas.reduce((s, a) => s + (a.porEquipos ? 0 : a.ayudados), 0)} personas ayudadas{r.destajo.areas.some((a) => a.porEquipos) ? " + Corte medido por equipos" : ""} · los excedentes ({money(r.destajo.excedentes)}) no se restan</td><td style={td}>{money(r.destajo.neta)}</td></tr>
             <tr onClick={() => setVentana({ tipo: "provision" })} style={{ cursor: "pointer" }}><td style={tdL}>▸ Destajo: provisión</td><td style={{ ...td, textAlign: "left", color: C.slate }}>Cesantías, prima, intereses y vacaciones</td><td style={td}>{money(r.destajo.provision)}</td></tr>
             <tr style={{ background: C.canvas }}><td style={tdL}>Total por pagar</td><td style={td} /><td style={{ ...td, fontWeight: 800, color: C.amber }}>{money(r.estructura)}</td></tr>
@@ -1032,7 +1039,7 @@ export default function CostosGeneralView({ db }) {
       ) : null}
 
       <div style={{ background: C.amberBg, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 16px", fontSize: 12.5, color: C.amber, lineHeight: 1.6 }}>
-        Antes de decidir con estas cifras: {quincenasFiscal < 2 ? `la nómina fiscal solo tiene ${quincenasFiscal} de 2 quincenas confirmadas este mes; ` : ""}
+        Antes de decidir con estas cifras: {estFiscal.todo > 0 ? `la 2.ª quincena de la nómina fiscal aún no está liquidada: se estima al ${pctEst} % con la 1.ª de cada persona (${money(estFiscal.todo)}) y se reemplaza sola cuando confirmes la liquidación real; ` : quincenasFiscal < 2 ? `la nómina fiscal solo tiene ${quincenasFiscal} de 2 quincenas confirmadas este mes; ` : ""}
         {sinDetalle.length ? `${sinDetalle.map((a) => a.nombre).join(", ")} sin detalle por trabajador (se usó el total del área); ` : ""}
         el aporte cuenta cuando Contabilidad aprueba el lote en Dado por Cumplido; Confección y Terminación todavía no tienen cierre de ayuda; Prestación de Servicios aparece en la nómina fiscal pero apagada: enciéndela solo si esos pagos no están ya en los gastos del Excel.
       </div>
